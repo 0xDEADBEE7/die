@@ -8,10 +8,10 @@
       "evil": "The cursor can rest on the empty line after a file's final newline: G, 5j, w, }, dd, dk, dG, L, C-d and gj all reach it, and j there succeeds.",
       "die_vim": "As in Vim: motions stop on the last line, j and gj on it signal an error, and a macro ends at that error.",
       "cases": [
-        { "case": "motions/w-last-word-of-buffer" },
-        { "case": "motions/G-trailing-newline" },
-        { "case": "motions/5j-past-end" },
-        { "case": "motions/close-brace-last-paragraph" },
+        { "case": "motions/w-last-word-of-buffer", "fixture": "hand-written/motions.json" },
+        { "case": "motions/G-trailing-newline", "fixture": "hand-written/motions.json" },
+        { "case": "motions/5j-past-end", "fixture": "hand-written/motions.json" },
+        { "case": "motions/close-brace-last-paragraph", "fixture": "hand-written/motions.json" },
         { "case": "operators/dd-last-line" },
         { "case": "operators/dk", "note": "Vim's line, Evil's column: die-vim keeps the column after dk (S5 row 2)" },
         { "case": "operators/dG", "note": "Vim's line, Evil's column: die-vim keeps the column after dG (S5 row 2)" },
@@ -88,7 +88,10 @@
       "kind": "needs-modes",
       "evil": "In emacs-lisp-mode and python-mode, a new line is indented by the language.",
       "die_vim": "Until file-type modes (M1) give die-vim a language's indentation, a new line is indented like the line above, as Evil does in text.",
-      "cases": [{ "case": "insert/o-elisp-mode-indent" }, { "case": "insert/o-python-mode-indent" }]
+      "cases": [
+        { "case": "insert/o-elisp-mode-indent", "fixture": "hand-written/insert.json" },
+        { "case": "insert/o-python-mode-indent", "fixture": "hand-written/insert.json" }
+      ]
     }
   ]
 }
