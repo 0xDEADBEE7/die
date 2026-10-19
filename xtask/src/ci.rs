@@ -44,7 +44,7 @@ pub fn run(root: &Path, source: Source) -> Result {
                 .current_dir(&tree)
                 .args(args)
                 .env("CARGO_TARGET_DIR", &target)
-                .env("DIE_FONT_DIR", root.join("fonts")),
+                .env("DIE_FONT_DIR", fonts::dir(root)),
         )
     };
 
