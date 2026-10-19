@@ -1,5 +1,5 @@
 use xtask::util::{Result, root};
-use xtask::{api, budget, ci, clean, cross, fonts, guards, lint, mutate};
+use xtask::{api, budget, ci, clean, cross, fonts, guards, lint, linux, mutate};
 
 const USAGE: &str = "usage: cargo xtask <task>
 
@@ -21,7 +21,11 @@ const USAGE: &str = "usage: cargo xtask <task>
   mutate [--cases N]   die-core's planted bugs; the property tests must catch each
   ci [--worktree | --rev R]
                        every check in a fresh clone of HEAD (or R), or of the
-                       working tree as git would commit it";
+                       working tree as git would commit it
+  ci --linux [--worktree | --rev R]
+                       the tests, the oracle and the Linux clean-build on aarch64
+                       Linux, in a container on colima (exit test (f))
+  linux-host           the checks ci --linux runs in its container, on a Linux host";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -50,9 +54,22 @@ fn dispatch(args: &[String]) -> Result {
             n.parse()
                 .map_err(|_| format!("--cases {n}: not a number"))?,
         ),
-        ["ci"] => ci::run(&root, ci::Source::Rev("HEAD".into())),
-        ["ci", "--rev", r] => ci::run(&root, ci::Source::Rev(r.to_string())),
-        ["ci", "--worktree"] => ci::run(&root, ci::Source::Worktree),
+        ["ci", rest @ ..] => {
+            let linux = rest.contains(&"--linux");
+            let rest: Vec<&str> = rest.iter().copied().filter(|a| *a != "--linux").collect();
+            let source = match rest.as_slice() {
+                [] => ci::Source::Rev("HEAD".into()),
+                ["--rev", r] => ci::Source::Rev(r.to_string()),
+                ["--worktree"] => ci::Source::Worktree,
+                _ => return Err(USAGE.into()),
+            };
+            if linux {
+                linux::run(&root, source)
+            } else {
+                ci::run(&root, source)
+            }
+        }
+        ["linux-host"] => linux::host_checks(&root),
         _ => Err(USAGE.into()),
     }
 }
