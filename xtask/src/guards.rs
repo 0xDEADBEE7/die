@@ -1,10 +1,10 @@
 //! `cargo xtask guards`: proves F1's build guards in a throwaway copy of the
 //! working tree. `unsafe` outside die-render's `platform` module fails to build,
-//! and so does `-Cpanic=abort`, with the guard's message. On Linux, the
+//! and so does `-Cpanic=abort`, with the guard's message. For Linux, the
 //! cross-check fails on dead code (its `-D warnings`) and on a build script
-//! that compiles C (its stand-ins); that runs when a Linux std is installed.
+//! that compiles C (its stand-ins).
 
-use crate::util::{Result, TempDir, cargo, copy_worktree, output, read, rustc_for, write};
+use crate::util::{Result, TempDir, cargo, copy_worktree, output, read, write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -58,23 +58,39 @@ pub fn run(root: &Path, work: &Path) -> Result {
     )?;
     println!("guards: -Cpanic=abort fails to build with the guard's message");
 
-    let (target, _) = crate::cross::TARGETS[0];
-    if let Err(e) = rustc_for(target) {
-        println!("guards: skipped the cross-check's plants: {e}");
-        return Ok(());
-    }
-    let cross = work.join("cross");
-
     let path = tree.join("crates/die-render/src/platform/mod.rs");
     let orig = read(&path)?;
     write(&path, &format!("{orig}{LINUX_ONLY}"))?;
-    let res = crate::cross::run(tree, &cross);
+    let res = crate::cross::run(tree, &work.join("cross"));
     write(&path, &orig)?;
-    fails_with(res, &["function `planted_linux_only` is never used"])?;
+    fails_with(
+        "the cross-check",
+        res,
+        &["function `planted_linux_only` is never used"],
+    )?;
     println!("guards: code that is dead on Linux only fails the cross-check");
 
-    // wayland-backend's own `log` feature compiles C. (wayland-client's `log`
-    // doesn't turn it on: it's wayland-client's own optional dependency.)
+    // The `log` plant's stand-in call drops the cross-check's cache, so it
+    // gets a cache of its own.
+    let res = with_log_plant(tree, || crate::cross::run(tree, &work.join("cross-log")));
+    fails_with("the cross-check", res, LOG_PLANT_FAILS)?;
+    println!(
+        "guards: wayland-backend's `log` feature fails the cross-check: its build script calls cc"
+    );
+    Ok(())
+}
+
+/// What a build with the `log` plant must fail with.
+const LOG_PLANT_FAILS: &[&str] = &[
+    "the build script of `wayland-backend",
+    "clean-build: cc was called",
+];
+
+/// Run `check` on `tree` with wayland-backend's own `log` feature turned on in
+/// die-render's Linux table, then put the manifest and lockfile back. That
+/// feature compiles C. (wayland-client's `log` doesn't turn it on: it's
+/// wayland-client's own optional dependency.)
+fn with_log_plant(tree: &Path, check: impl FnOnce() -> Result) -> Result {
     let manifest = tree.join("crates/die-render/Cargo.toml");
     let lock = tree.join("Cargo.lock");
     let (orig, orig_lock) = (read(&manifest)?, read(&lock)?);
@@ -98,33 +114,21 @@ pub fn run(root: &Path, work: &Path) -> Result {
         "--format-version",
         "1",
     ]))
-    .and_then(|_| crate::cross::run(tree, &cross));
+    .and_then(|_| check());
     write(&manifest, &orig)?;
     write(&lock, &orig_lock)?;
-    fails_with(
-        res,
-        &[
-            "the build script of `wayland-backend",
-            "clean-build: cc was called",
-        ],
-    )?;
-    println!(
-        "guards: wayland-backend's `log` feature fails the cross-check: its build script calls cc"
-    );
-    Ok(())
+    res
 }
 
-/// A check that must fail, with each of `texts` in its error.
-fn fails_with(res: Result, texts: &[&str]) -> Result {
+/// A check (`what`) that must fail, with each of `texts` in its error.
+fn fails_with(what: &str, res: Result, texts: &[&str]) -> Result {
     match res {
         Ok(()) => Err(format!(
-            "guards: the cross-check passed with a plant it should fail on ({})",
+            "guards: {what} passed with a plant it should fail on ({})",
             texts.join("; ")
         )),
         Err(e) if texts.iter().all(|t| e.contains(t)) => Ok(()),
-        Err(e) => Err(format!(
-            "guards: the cross-check failed without {texts:?}:\n{e}"
-        )),
+        Err(e) => Err(format!("guards: {what} failed without {texts:?}:\n{e}")),
     }
 }
 

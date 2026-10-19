@@ -1,4 +1,7 @@
 # Pinned so rustfmt (and so `cargo xtask budget`'s counts) can't move under us.
+# The Linux targets are for `cargo xtask ci`'s cross-check and Linux clippy
+# (docs/records/platforms.md §5.6): their std only, nothing that builds C.
 [toolchain]
 channel = "1.96.0"
 components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
