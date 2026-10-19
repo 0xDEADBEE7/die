@@ -100,7 +100,7 @@ fn script(c: char) -> Script {
     }
 }
 
-/// The last line the cursor can be on. A final newline ends the last line; it
+/// The last line motions can reach. A final newline ends the last line; it
 /// doesn't start another (a deliberate deviation from Evil, deviations.json).
 pub fn last_line(t: &TextBuf) -> usize {
     let n = t.line_count();

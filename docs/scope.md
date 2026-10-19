@@ -337,7 +337,7 @@ None of your existing packages need pixel buffers (scope guard 8). Pixel buffers
 **In:**
 
 - Counts; operators `d c y > < g~ gu gU` (shifts of 4 columns, rounded to a multiple of 4, as in Evil); dot-repeat. `J` puts one space after a period.
-- Motions `h j k l w b e W B E 0 ^ $ gg G f F t T ; , % { } H M L gj gk`. `j`/`k` move by logical line and `gj`/`gk` by visual line. `gg`, `G`, `:N`, `>>` and `<<` keep the cursor's column, as in Evil; Vim's `startofline` would move it to the first non-blank. `{` and `}` also stop at lines that hold only spaces. The cursor never rests on the empty line after a file's final newline. Evil's does; die-vim deliberately doesn't.
+- Motions `h j k l w b e W B E 0 ^ $ gg G f F t T ; , % { } H M L gj gk`. `j`/`k` move by logical line and `gj`/`gk` by visual line. `gg`, `G`, `:N`, `>>` and `<<` keep the cursor's column, as in Evil; Vim's `startofline` would move it to the first non-blank. `{` and `}` also stop at lines that hold only spaces. Motions never move the cursor onto the empty line after a file's final newline. Evil's do; die-vim deliberately doesn't. An insert session that ends there leaves the cursor there, as in Evil and Vim, so the next `i` types on that line.
 - Scrolling: `C-d C-f C-b C-e C-y` and `zz zt zb`. `C-u` doesn't scroll, as in your Evil; it's the prefix argument, so `C-u j` moves 4 lines. Window positions follow Evil: `M` takes the lower of two middle lines, a count given to `C-d` doesn't stick, and `G` recenters the window. `3H` goes to the third line; Evil's goes to the fourth, and die-vim deliberately fixes that.
 - Text objects: words, WORDs, paragraphs, quotes and brackets, in both `i` and `a` forms
 - Visual mode: char, line and block
