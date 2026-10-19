@@ -146,6 +146,10 @@ args
 - **States** (scope §5.6): normal, insert, visual, operator-pending, command line, copy and passthrough.
 - **Copy state** is normal and visual running over a read-only snapshot (scope D19). A window enters it when you leave passthrough with the DIE layer's Esc, and when you're in normal state on a surface without a text keymap. die-vim registers its normal and visual grammar as the copy-state keymap for every surface kind. In a terminal, `i` and `a` return to passthrough.
 - **A keymap** maps key sequences to command names, per state. The notation follows Vim: `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`.
+  - Key names match without case. A `<` that doesn't start a key name is a literal `<`. A bracketed word that isn't a key name, or modifiers followed by something that isn't a key, is a startup error. `feed_keys` and macro register text are notation too, so a literal `<` there is written `<lt>`.
+  - Ctrl with a letter ignores the letter's case (`<C-V>` is `<C-v>`); `<C-S-v>` is Ctrl-Shift-V. Key events match the same way, so Caps Lock doesn't change what Ctrl-v matches.
+  - `<A-…>` and `<M-…>` are Alt (Option on macOS). `<D-…>` names the DIE layer, which on macOS is scope D18's Cmd layer: `<D-v>` is Cmd-V there.
+  - `<leader>` is the key your config sets, `\` by default. It applies to every keymap once all extensions have registered.
 - **`<char>` matches any printable character,** including text committed by dead keys. The command reads which character it was from `args.key`. This replaces the loops in scrib's and orchid's search modes that bind every character to a self-insert command.
 - **`<any>` matches any key** a keymap doesn't otherwise bind, printable or not. die-vim uses it to cancel operator-pending on an unbound key.
 - **Specificity applies within one keymap; order applies across keymaps.** An exact key beats `<char>`, which beats `<any>`, inside the same keymap. Across keymaps, lookup order wins, so a seek-style mode's `<char>` beats die-vim's `j`.
@@ -170,9 +174,9 @@ args
   - The rest of the DIE layer is looked up in DIE's keymaps (scope D18).
   - Every other key goes straight to the surface's `event()`.
   - A surface declares which keys it handles there, so `describe-key` can report them.
-- **Press, repeat and release.** Keymaps match press and repeat. Release events reach only surfaces in passthrough. Any key DIE takes in passthrough, the DIE layer's Esc or a DIE-layer binding, swallows its own repeat and release, so a program never sees a release without its press.
+- **Press, repeat and release.** Keymaps match press and repeat. Release events, and modifier keys pressed alone, reach only surfaces in passthrough. Binding a modifier key alone, or making one the leader, is a startup error. Any key DIE takes in passthrough, the DIE layer's Esc or a DIE-layer binding, swallows its own repeat and release, so a program never sees a release without its press.
 - **Initial state.** A surface kind or mode can declare the state a buffer starts in, as `evil-set-initial-state` does. Text buffers start in normal, `die-term` in passthrough, and orchid's conversation mode might choose insert.
-- **Conflicts.** Within a keymap, later registration wins, and `describe-key` lists what was shadowed. Your config is applied last, and your bindings go into the keymap they name (global by default).
+- **Conflicts.** Within a keymap, later registration wins, and `describe-key` lists what was shadowed. Your config is applied last, and your bindings go into the keymap they name (global by default). To free a key an extension bound, your config unbinds it. That removes the binding and every longer one that starts with it, and `describe-key` lists them as shadowed. This is how config binds a key alone where an extension uses it as a prefix, or the reverse.
 
 ## 8. Modes
 

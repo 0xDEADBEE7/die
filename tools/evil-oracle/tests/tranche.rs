@@ -1,9 +1,15 @@
 //! Which die-vim work package a case lands with: the last feature its keys need.
 
-use evil_oracle::{Case, Run, Tranche, parse_keys, parse_pending, tranche};
+use die_core::{key_notation, parse_keys};
+use evil_oracle::{Case, Run, Tranche, parse_pending, tranche};
 
 fn case(keys: &str) -> Case {
-    let tokens = serde_json::to_string(&parse_keys(keys)).unwrap();
+    let tokens: Vec<String> = parse_keys(keys)
+        .unwrap()
+        .iter()
+        .map(|ev| key_notation(std::slice::from_ref(ev)))
+        .collect();
+    let tokens = serde_json::to_string(&tokens).unwrap();
     let json = format!(
         r#"{{"id":"x","source":"oracle","keys":{keys:?},"key_tokens":{tokens},"mode":"fundamental-mode",
           "input":{{"text":"a\n","cursor":{{"line":0,"col":0,"byte":0}}}},

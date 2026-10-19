@@ -17,7 +17,7 @@
 //! What it can't set up or check yet fails the case with a reason, so a case
 //! never passes on something unchecked.
 
-use die_core::{Ctx, Key, KeyEvent, RegKind, Register, State};
+use die_core::{Ctx, RegKind, Register, State, parse_keys};
 use die_vim::Vim;
 use evil_oracle::{
     Case, Deviations, RegisterKind, Run, State as EvilState, Tranche, fixtures_dir, load_fixtures,
@@ -189,8 +189,8 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
         );
     }
     let before = ctx.messages.len();
-    for tok in &case.key_tokens {
-        ctx.input(key_event(tok)?);
+    for ev in parse_keys(&case.keys).map_err(|e| format!("keys {}: {e}", case.keys))? {
+        ctx.input(ev);
     }
     ctx.run_until_idle();
 
@@ -250,20 +250,6 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
         Ok(())
     } else {
         Err(diffs.join("; "))
-    }
-}
-
-/// One oracle key token as a key event. Single characters are typed as they are;
-/// `<Name>` goes through core's notation until K3 shares one parser with the oracle.
-fn key_event(tok: &str) -> Result<KeyEvent, String> {
-    let mut chars = tok.chars();
-    if let (Some(c), None) = (chars.next(), chars.next()) {
-        return Ok(KeyEvent::press(Key::Char(c)));
-    }
-    let evs = die_core::parse_keys(tok).map_err(|e| format!("key {tok}: {e}"))?;
-    match <[KeyEvent; 1]>::try_from(evs) {
-        Ok([ev]) => Ok(ev),
-        Err(_) => Err(format!("key {tok} isn't one key")),
     }
 }
 
