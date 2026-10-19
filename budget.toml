@@ -22,7 +22,7 @@ limit = 5000
 name = "die-vim"
 path = "crates/die-vim"
 limit = 5000
-note = "proposed in docs/m0-plan.md §4, not yet in guard 7"
+note = "guard 7, since 2026-10-19"
 
 [[crate]]
 name = "die"
