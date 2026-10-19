@@ -15,9 +15,10 @@ pub enum State {
     Passthrough,
 }
 
+/// Every node but the root has a binding at or below it.
 #[derive(Default)]
 struct Trie {
-    /// The command bound here, and its index in `Keymap::bindings`.
+    /// The command bound here, and its index in `Keymap::log`.
     cmd: Option<(Rc<str>, usize)>,
     exact: HashMap<Chord, Trie>,
     any_char: Option<Box<Trie>>,
@@ -80,6 +81,31 @@ impl Trie {
         n.children().flat_map(Trie::bound).min()
     }
 
+    /// Remove every binding that starts with `pats`, and the nodes left with nothing bound
+    /// below them, so they aren't prefixes any more. Returns the removed bindings.
+    fn unbind(&mut self, pats: &[Pat]) -> Vec<usize> {
+        let Some((p, rest)) = pats.split_first() else {
+            return std::mem::take(self).bound();
+        };
+        let child = match p {
+            Pat::Chord(c) => self.exact.get_mut(c),
+            Pat::AnyChar => self.any_char.as_deref_mut(),
+            Pat::Any => self.any.as_deref_mut(),
+            Pat::Leader => None,
+        };
+        let Some(child) = child else { return vec![] };
+        let gone = child.unbind(rest);
+        if child.bound().is_empty() {
+            match p {
+                Pat::Chord(c) => drop(self.exact.remove(c)),
+                Pat::AnyChar => self.any_char = None,
+                Pat::Any => self.any = None,
+                Pat::Leader => {}
+            }
+        }
+        gone
+    }
+
     /// Exact beats `<char>`, which beats `<any>`, at every step. No backtracking.
     fn lookup(&self, keys: &[KeyEvent]) -> Lookup {
         let mut n = self;
@@ -103,8 +129,8 @@ impl Trie {
     }
 }
 
-/// A binding hidden by a later one for the same keys and state. Within a keymap, later
-/// registration wins (contract §7); `describe-key` lists what it hid.
+/// A binding hidden by a later one for the same keys and state, or removed by `unbind`.
+/// Within a keymap, later registration wins (contract §7); `describe-key` lists what it hid.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shadowed {
     pub state: State,
@@ -112,14 +138,15 @@ pub struct Shadowed {
     pub keys: String,
     /// The hidden binding's command.
     pub cmd: String,
-    /// The command that hides it.
-    pub by: String,
+    /// The command that hides it, or None if it was unbound.
+    pub by: Option<String>,
 }
 
 /// A keymap: bindings per modal state, from key notation to command names (C8).
 pub struct Keymap {
     tries: HashMap<State, Trie>,
-    bindings: Vec<(State, String, String)>,
+    /// Every bind and unbind (no command), in order, replayed when the leader changes.
+    log: Vec<(State, String, Option<String>)>,
     shadowed: Vec<Shadowed>,
     leader: Chord,
     pub(crate) errors: Vec<String>,
@@ -140,7 +167,7 @@ impl Keymap {
     pub(crate) fn with_leader(leader: Chord) -> Self {
         Keymap {
             tries: HashMap::new(),
-            bindings: vec![],
+            log: vec![],
             shadowed: vec![],
             leader,
             errors: vec![],
@@ -151,8 +178,8 @@ impl Keymap {
     /// replaces an earlier one. Keys that are bound alone and as a prefix of a longer
     /// binding (`g` and `gg`) are an error, reported at startup with the C8 check.
     pub fn bind(&mut self, state: State, keys: &str, cmd: &str) -> &mut Self {
-        let idx = self.bindings.len();
-        self.bindings.push((state, keys.into(), cmd.into()));
+        let idx = self.log.len();
+        self.log.push((state, keys.into(), Some(cmd.into())));
         let pats = match self.pats(state, keys) {
             Ok(p) => p,
             Err(e) => {
@@ -162,23 +189,39 @@ impl Keymap {
         };
         match self.tries.entry(state).or_default().bind(&pats, cmd, idx) {
             Ok(None) => {}
-            Ok(Some(old)) => {
-                let (_, keys, cmd_old) = &self.bindings[old];
-                self.shadowed.push(Shadowed {
-                    state,
-                    keys: keys.clone(),
-                    cmd: cmd_old.clone(),
-                    by: cmd.into(),
-                });
-            }
+            Ok(Some(old)) => self.shadow(old, Some(cmd)),
             Err(other) => {
-                let (_, other_keys, other_cmd) = &self.bindings[other];
+                let (_, other_keys, other_cmd) = &self.log[other];
                 self.errors.push(format!(
-                    "{keys:?} (bound to {cmd}) and {other_keys:?} (bound to {other_cmd}) in \
-                     {state:?}: one is a prefix of the other, which a keymap can't hold \
-                     (contract §7)"
+                    "{keys:?} (bound to {cmd}) and {other_keys:?} (bound to {}) in {state:?}: \
+                     one is a prefix of the other, which a keymap can't hold (contract §7)",
+                    other_cmd.as_deref().unwrap_or_default()
                 ));
             }
+        }
+        self
+    }
+
+    /// Remove the binding for `keys` in `state`, and every longer one that starts with
+    /// `keys`. This is how your config frees a key an extension bound, to bind it alone
+    /// where the extension uses it as a prefix, or the reverse. The removed bindings are
+    /// listed as shadowed. Unbinding keys that start no binding is a startup error.
+    pub fn unbind(&mut self, state: State, keys: &str) -> &mut Self {
+        self.log.push((state, keys.into(), None));
+        let gone = match self.pats(state, keys) {
+            Ok(pats) => self.tries.entry(state).or_default().unbind(&pats),
+            Err(e) => {
+                self.errors.push(format!("{e}, unbound"));
+                return self;
+            }
+        };
+        if gone.is_empty() {
+            self.errors.push(format!(
+                "{keys:?} in {state:?} is unbound, but nothing is bound to it"
+            ));
+        }
+        for i in gone {
+            self.shadow(i, None);
         }
         self
     }
@@ -211,15 +254,29 @@ impl Keymap {
         Ok(pats)
     }
 
+    /// List binding `idx` as shadowed `by` a command, or unbound.
+    fn shadow(&mut self, idx: usize, by: Option<&str>) {
+        let (state, keys, cmd) = &self.log[idx];
+        self.shadowed.push(Shadowed {
+            state: *state,
+            keys: keys.clone(),
+            cmd: cmd.clone().unwrap_or_default(),
+            by: by.map(Into::into),
+        });
+    }
+
     /// Use `leader` for `<leader>`, rebuilding the bindings made so far.
     pub(crate) fn set_leader(&mut self, leader: Chord) {
         if leader == self.leader {
             return;
         }
-        let bindings = std::mem::take(&mut self.bindings);
+        let log = std::mem::take(&mut self.log);
         *self = Keymap::with_leader(leader);
-        for (state, keys, cmd) in bindings {
-            self.bind(state, &keys, &cmd);
+        for (state, keys, cmd) in log {
+            match cmd {
+                Some(cmd) => self.bind(state, &keys, &cmd),
+                None => self.unbind(state, &keys),
+            };
         }
     }
 
@@ -229,12 +286,15 @@ impl Keymap {
             .map_or(Lookup::None, |t| t.lookup(keys))
     }
 
-    /// Every binding, in registration order, including shadowed ones.
-    pub fn bindings(&self) -> impl Iterator<Item = &(State, String, String)> {
-        self.bindings.iter()
+    /// Every binding as (state, keys, command), in registration order, including shadowed
+    /// and unbound ones.
+    pub fn bindings(&self) -> impl Iterator<Item = (State, &str, &str)> {
+        self.log
+            .iter()
+            .filter_map(|(s, k, c)| Some((*s, k.as_str(), c.as_deref()?)))
     }
 
-    /// The bindings hidden by later ones for the same keys, in the order they were hidden.
+    /// The bindings hidden by later ones for the same keys, or unbound, in that order.
     pub fn shadowed(&self) -> &[Shadowed] {
         &self.shadowed
     }
