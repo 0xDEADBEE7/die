@@ -1,5 +1,11 @@
 //! `cargo xtask budget`: guard 7's line budgets and the per-module ratchets
 //! (docs/m0-plan.md §4), with limits in `budget.toml`.
+//!
+//! A crate with per-platform code lists its `builds`, and each of its modules
+//! is neutral (in every build) or tagged with the `platforms` whose builds it's
+//! in. A build's lines are its neutral modules plus its platform's, and
+//! `build_limit` caps each build, as `limit` caps the crate's total
+//! (docs/records/platforms.md §5.7).
 
 use crate::count::count_formatted;
 use crate::util::{Result, read, rust_files};
@@ -20,11 +26,17 @@ pub struct Budget {
 pub struct CrateBudget {
     pub name: String,
     pub path: String,
+    /// The crate's total, across every platform.
     pub limit: Option<usize>,
     /// Dev-only code: counted, not capped, not in the product total.
     #[serde(default)]
     pub dev: bool,
     pub note: Option<String>,
+    /// The platforms the crate builds for, when its modules differ by platform.
+    #[serde(default)]
+    pub builds: Vec<String>,
+    /// The cap on each build: the neutral modules plus one platform's.
+    pub build_limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +48,9 @@ pub struct ModuleBudget {
     pub limit: usize,
     /// Paths under the crate's `src/`; one ending in `/` is a directory.
     pub files: Vec<String>,
+    /// The builds the module is in; none means every build (neutral).
+    #[serde(default)]
+    pub platforms: Vec<String>,
 }
 
 pub struct Counted {
@@ -44,7 +59,16 @@ pub struct Counted {
     pub limit: Option<usize>,
     pub dev: bool,
     pub note: Option<String>,
-    pub modules: Vec<(String, usize, usize)>,
+    pub modules: Vec<CountedModule>,
+    /// Each build: (platform, lines, limit).
+    pub builds: Vec<(String, usize, Option<usize>)>,
+}
+
+pub struct CountedModule {
+    pub name: String,
+    pub lines: usize,
+    pub limit: usize,
+    pub platforms: Vec<String>,
 }
 
 pub fn load(root: &Path) -> Result<Budget> {
@@ -72,6 +96,7 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
             .iter()
             .filter(|m| m.krate == c.name)
             .collect();
+        check_platforms(c, &mods)?;
         let mut total = 0;
         let mut per_mod = vec![0; mods.len()];
         for file in crate_files(&dir) {
@@ -116,28 +141,84 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
                 }
             }
         }
+        let modules: Vec<CountedModule> = mods
+            .iter()
+            .zip(per_mod)
+            .map(|(m, n)| CountedModule {
+                name: m.name.clone(),
+                lines: n,
+                limit: m.limit,
+                platforms: m.platforms.clone(),
+            })
+            .collect();
         out.push(Counted {
             name: c.name.clone(),
             lines: total,
             limit: c.limit,
             dev: c.dev,
             note: c.note.clone(),
-            modules: mods
-                .iter()
-                .zip(per_mod)
-                .map(|(m, n)| (m.name.clone(), n, m.limit))
-                .collect(),
+            builds: builds(c, &modules),
+            modules,
         });
     }
     Ok(out)
 }
 
+/// Platform tags need a crate that lists its builds, and must name one of them.
+fn check_platforms(c: &CrateBudget, mods: &[&ModuleBudget]) -> Result {
+    if c.build_limit.is_some() && c.builds.is_empty() {
+        return Err(format!(
+            "budget.toml: {} has a build_limit but no builds",
+            c.name
+        ));
+    }
+    for m in mods {
+        for p in &m.platforms {
+            if !c.builds.contains(p) {
+                return Err(format!(
+                    "budget.toml: module {:?} is tagged {p:?}, which isn't one of {}'s builds ({:?})",
+                    m.name, c.name, c.builds
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Each of the crate's builds: its neutral modules plus its platform's.
+fn builds(c: &CrateBudget, modules: &[CountedModule]) -> Vec<(String, usize, Option<usize>)> {
+    c.builds
+        .iter()
+        .map(|b| {
+            let n = modules
+                .iter()
+                .filter(|m| m.platforms.is_empty() || m.platforms.contains(b))
+                .map(|m| m.lines)
+                .sum();
+            (b.clone(), n, c.build_limit)
+        })
+        .collect()
+}
+
 pub fn report(counted: &[Counted]) -> (String, Vec<String>) {
     let mut s = String::new();
     let mut over = Vec::new();
+    let module_label = |m: &CountedModule| {
+        if m.platforms.is_empty() {
+            format!("  {}", m.name)
+        } else {
+            format!("  {} [{}]", m.name, m.platforms.join(", "))
+        }
+    };
+    let build_label = |b: &str| format!("  {b} build: neutral + {b}");
     let w = counted
         .iter()
-        .flat_map(|c| c.modules.iter().map(|m| m.0.len() + 2))
+        .flat_map(|c| {
+            c.modules
+                .iter()
+                .map(|m| module_label(m).len())
+                .chain(c.builds.iter().map(|b| build_label(&b.0).len()))
+        })
         .max()
         .unwrap_or(0)
         .max(24);
@@ -158,10 +239,23 @@ pub fn report(counted: &[Counted]) -> (String, Vec<String>) {
         if let Some(l) = c.limit.filter(|&l| c.lines > l) {
             over.push(format!("{} is {} lines, over its {l}", c.name, c.lines));
         }
-        for (name, n, l) in &c.modules {
-            s += &format!("{:<w$} {:>7} {:>7}\n", format!("  {name}"), n, l);
-            if n > l {
-                over.push(format!("{} / {name} is {n} lines, over its {l}", c.name));
+        for m in &c.modules {
+            s += &format!("{:<w$} {:>7} {:>7}\n", module_label(m), m.lines, m.limit);
+            if m.lines > m.limit {
+                over.push(format!(
+                    "{} / {} is {} lines, over its {}",
+                    c.name, m.name, m.lines, m.limit
+                ));
+            }
+        }
+        for (b, n, l) in &c.builds {
+            let limit = l.map_or("-".into(), |l| l.to_string());
+            s += &format!("{:<w$} {:>7} {:>7}\n", build_label(b), n, limit);
+            if let Some(l) = l.filter(|&l| *n > l) {
+                over.push(format!(
+                    "{}'s {b} build (its neutral and {b} modules) is {n} lines, over its {l}",
+                    c.name
+                ));
             }
         }
         if !c.dev {
@@ -183,5 +277,86 @@ pub fn run(root: &Path) -> Result {
             "over budget (the cut lists are in docs/m0-plan.md §4):\n  {}",
             over.join("\n  ")
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render() -> (CrateBudget, Vec<CountedModule>) {
+        let krate = CrateBudget {
+            name: "die-render".into(),
+            path: "crates/die-render".into(),
+            limit: Some(7000),
+            dev: false,
+            note: None,
+            builds: vec!["macos".into(), "linux".into()],
+            build_limit: Some(5000),
+        };
+        let module = |name: &str, lines, platforms: &[&str]| CountedModule {
+            name: name.into(),
+            lines,
+            limit: 3000,
+            platforms: platforms.iter().map(|p| p.to_string()).collect(),
+        };
+        let modules = vec![
+            module("neutral", 2500, &[]),
+            module("platform::macos", 2000, &["macos"]),
+            module("portable", 1600, &["linux"]),
+            module("platform::linux", 900, &["linux"]),
+        ];
+        (krate, modules)
+    }
+
+    #[test]
+    fn a_build_is_its_neutral_modules_plus_its_platforms() {
+        let (krate, modules) = render();
+        assert_eq!(
+            builds(&krate, &modules),
+            [
+                ("macos".to_string(), 4500, Some(5000)),
+                ("linux".to_string(), 5000, Some(5000)),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_build_and_the_total_have_their_limits() {
+        let (krate, mut modules) = render();
+        modules[3].lines = 1000;
+        let counted = Counted {
+            name: krate.name.clone(),
+            lines: modules.iter().map(|m| m.lines).sum(),
+            limit: krate.limit,
+            dev: false,
+            note: None,
+            builds: builds(&krate, &modules),
+            modules,
+        };
+        let (text, over) = report(&[counted]);
+        assert!(text.contains("  platform::macos [macos]"), "{text}");
+        assert!(text.contains("  linux build: neutral + linux"), "{text}");
+        assert_eq!(
+            over,
+            [
+                "die-render is 7100 lines, over its 7000",
+                "die-render's linux build (its neutral and linux modules) is 5100 lines, over its 5000",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tag_must_name_one_of_the_crates_builds() {
+        let (krate, _) = render();
+        let module = ModuleBudget {
+            krate: "die-render".into(),
+            name: "platform::freebsd".into(),
+            limit: 100,
+            files: vec!["platform/freebsd/".into()],
+            platforms: vec!["freebsd".into()],
+        };
+        let err = check_platforms(&krate, &[&module]).unwrap_err();
+        assert!(err.contains("tagged \"freebsd\""), "{err}");
     }
 }
