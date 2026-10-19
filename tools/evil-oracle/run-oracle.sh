@@ -6,7 +6,7 @@
 #   ./run-oracle.sh --reverse --out DIR run cases in reverse order
 #
 # Environment (all optional):
-#   EVIL_ORACLE_EMACS     Emacs binary     (default /opt/homebrew/bin/emacs)
+#   EVIL_ORACLE_EMACS     Emacs binary     (default: emacs on PATH)
 #   EVIL_ORACLE_EVIL_DIR  Evil sources     (default ~/.emacs.d/lisp/evil)
 #   EVIL_ORACLE_HOME      scratch HOME     (default: a temp directory,
 #                                           removed afterwards)
@@ -22,7 +22,11 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 real_home=$HOME
-emacs=${EVIL_ORACLE_EMACS:-/opt/homebrew/bin/emacs}
+emacs=${EVIL_ORACLE_EMACS:-$(command -v emacs || true)}
+if [ -z "$emacs" ]; then
+  echo "run-oracle.sh: no emacs on PATH; set EVIL_ORACLE_EMACS to your Emacs binary" >&2
+  exit 2
+fi
 evil_dir=${EVIL_ORACLE_EVIL_DIR:-$real_home/.emacs.d/lisp/evil}
 if [ -n "${EVIL_ORACLE_HOME:-}" ]; then
   scratch=$EVIL_ORACLE_HOME
