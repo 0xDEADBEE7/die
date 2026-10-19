@@ -141,13 +141,24 @@ pub fn worktree_files(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Copy `root`'s working tree (as `worktree_files` lists it) into `dest`.
+///
+/// Every copy gets the current time as its modification time. macOS copies
+/// keep the original's, and cargo would then trust a build cached from an
+/// earlier copy whose file was newer, such as one of `mutate`'s mutants.
 pub fn copy_worktree(root: &Path, dest: &Path) -> Result {
+    let now = std::time::SystemTime::now();
     for rel in worktree_files(root)? {
         let to = dest.join(&rel);
         if let Some(dir) = to.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        std::fs::copy(root.join(&rel), &to).map_err(|e| format!("{}: {e}", rel.display()))?;
+        let err = |e: std::io::Error| format!("{}: {e}", rel.display());
+        std::fs::copy(root.join(&rel), &to).map_err(err)?;
+        std::fs::File::options()
+            .write(true)
+            .open(&to)
+            .and_then(|f| f.set_modified(now))
+            .map_err(err)?;
     }
     Ok(())
 }
