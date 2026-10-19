@@ -1,7 +1,9 @@
-//! Undo history. Groups span commands (insert sessions, `3dd`) and restore the cursor.
+//! Undo history. Groups span commands (insert sessions, `3dd`) and restore the selection.
 //! Silent edits aren't recorded, but history is rebased over them lazily, so undo still
 //! removes exactly the user's text after an extension appended above it (contract §9).
+//! The history is capped per buffer: the oldest steps go first.
 use crate::error::*;
+use crate::text::Selection;
 
 /// A recorded change: `removed` at `pos` was replaced by `inserted`.
 #[derive(Clone, Debug)]
@@ -46,6 +48,16 @@ impl Shift {
             self.pos + self.ins,
             crate::text::Gravity::Right,
         )
+    }
+}
+
+/// A selection moved through silent changes, in order.
+fn map_sel(sel: Selection, shifts: &[Shift]) -> Selection {
+    let m = |p| shifts.iter().fold(p, |p, s| s.map(p));
+    Selection {
+        anchor: m(sel.anchor),
+        head: m(sel.head),
+        ..sel
     }
 }
 
@@ -99,11 +111,15 @@ fn rebase(ops: &[Op], pending: &[Shift]) -> Option<(Vec<Op>, Vec<Shift>)> {
 
 #[derive(Clone, Debug)]
 struct Group {
-    ops: Vec<Op>,          // forward ops, in application order
-    cursor: Option<usize>, // cursor in the text before this group
-    cmd: u64,              // the top-level command that created it
-    open: bool,            // an explicit group (insert session) still collecting
+    ops: Vec<Op>,           // forward ops, in application order
+    sel: Option<Selection>, // the actor's selection in the text before this group
+    cmd: u64,               // the top-level command that created it
+    open: bool,             // an explicit group (insert session) still collecting
+    bytes: usize,           // text held by its ops, for the cap
 }
+
+/// No command has this number, so a group closed by a boundary takes no more edits.
+const CLOSED: u64 = u64::MAX;
 
 #[derive(Debug)]
 enum Entry {
@@ -113,7 +129,7 @@ enum Entry {
 
 pub(crate) struct Plan {
     pub ops: Vec<Op>,
-    pub cursor: Option<usize>,
+    pub sel: Option<Selection>,
     redo: bool,
     keep: usize,
     pending: Vec<Shift>,
@@ -125,10 +141,15 @@ pub(crate) struct History {
     undo: Vec<Entry>,
     redo: Vec<Entry>,
     depth: u32,
-    pending_open: Option<Option<usize>>,
+    pending_open: Option<Option<Selection>>,
 }
 
-const MAX_ENTRIES: usize = 2000;
+/// How much history a buffer keeps: at most `steps` steps holding at most `bytes` of text.
+#[derive(Clone, Copy)]
+pub(crate) struct Limit {
+    pub steps: usize,
+    pub bytes: usize,
+}
 
 fn push_silent(stack: &mut Vec<Entry>, s: Shift) {
     if stack.is_empty() {
@@ -153,8 +174,9 @@ fn top_group(stack: &[Entry]) -> (Option<usize>, Vec<Shift>) {
 }
 
 impl History {
-    pub fn record(&mut self, op: Op, cursor_before: Option<usize>, cmd: u64) {
+    pub fn record(&mut self, op: Op, sel_before: Option<Selection>, cmd: u64, limit: Limit) {
         self.redo.clear();
+        let bytes = op.removed.len() + op.inserted.len();
         let (gi, pending) = top_group(&self.undo);
         let appendable =
             gi.is_some_and(|i| matches!(&self.undo[i], Entry::Group(g) if g.open || g.cmd == cmd));
@@ -168,7 +190,7 @@ impl History {
                 match rebase(&invert_seq(&g.ops), &pending) {
                     Some((inv, below)) => {
                         g.ops = invert_seq(&inv);
-                        g.cursor = g.cursor.map(|c| below.iter().fold(c, |c, s| s.map(c)));
+                        g.sel = g.sel.map(|s| map_sel(s, &below));
                         self.undo.push(Entry::Silent(below));
                         self.undo.push(Entry::Group(g));
                     }
@@ -177,31 +199,63 @@ impl History {
             }
             if let Some(Entry::Group(g)) = self.undo.last_mut() {
                 g.ops.push(op);
+                g.bytes += bytes;
+                self.trim(limit);
                 return;
             }
         }
-        let cursor = self.pending_open.take().unwrap_or(cursor_before);
+        let sel = self.pending_open.take().unwrap_or(sel_before);
         self.undo.push(Entry::Group(Group {
             ops: vec![op],
-            cursor,
+            sel,
             cmd,
             open: self.depth > 0,
+            bytes,
         }));
-        if self.undo.len() > MAX_ENTRIES {
-            self.undo.remove(0);
+        self.trim(limit);
+    }
+
+    /// Drop the oldest steps until at most `limit.steps` remain and they hold at most
+    /// `limit.bytes`. The newest step stays whatever its size, unless no steps are kept.
+    fn trim(&mut self, limit: Limit) {
+        let (mut steps, mut bytes, mut cut) = (0, 0, 0);
+        for (i, e) in self.undo.iter().enumerate().rev() {
+            let Entry::Group(g) = e else { continue };
+            if steps == limit.steps || (steps > 0 && bytes + g.bytes > limit.bytes) {
+                cut = i + 1;
+                break;
+            }
+            steps += 1;
+            bytes += g.bytes;
         }
+        self.undo.drain(..cut);
+        // Silent shifts below the oldest step no longer matter.
+        let first = self.undo.iter().position(|e| matches!(e, Entry::Group(_)));
+        self.undo.drain(..first.unwrap_or(self.undo.len()));
+    }
+
+    /// End the current step: the next recorded edit starts a new one, even in the same
+    /// command or inside an open group, which stays open.
+    pub fn boundary(&mut self) {
+        if let (Some(i), _) = top_group(&self.undo)
+            && let Entry::Group(g) = &mut self.undo[i]
+        {
+            g.open = false;
+            g.cmd = CLOSED;
+        }
+        self.pending_open = None;
     }
 
     pub fn silent(&mut self, s: Shift) {
         if let Some(Some(c)) = &mut self.pending_open {
-            *c = s.map(*c);
+            *c = map_sel(*c, &[s]);
         }
         push_silent(&mut self.undo, s);
         push_silent(&mut self.redo, s);
     }
 
     /// Open an explicit group. Edits until the matching `end` are one undo step.
-    pub fn begin(&mut self, cursor: Option<usize>, cmd: u64) {
+    pub fn begin(&mut self, sel: Option<Selection>, cmd: u64) {
         self.depth += 1;
         if self.depth > 1 {
             return;
@@ -215,7 +269,7 @@ impl History {
                 }
             }
         }
-        self.pending_open = Some(cursor);
+        self.pending_open = Some(sel);
     }
 
     pub fn end(&mut self) {
@@ -248,33 +302,35 @@ impl History {
             invert_seq(&g.ops)
         };
         let (ops, after) = rebase(&to_apply, &pending).ok_or(Error::UndoConflict)?;
-        let (cursor, other) = if redo {
-            let before = g.cursor.map(|c| pending.iter().fold(c, |c, s| s.map(c)));
-            let cur = ops.first().map(|o| o.pos);
+        let (sel, other) = if redo {
+            let before = g.sel.map(|s| map_sel(s, &pending));
+            let cur = ops.first().map(|o| Selection::cursor(o.pos));
             (
                 cur,
                 Group {
                     ops: ops.clone(),
-                    cursor: before,
+                    sel: before,
                     cmd: 0,
                     open: false,
+                    bytes: g.bytes,
                 },
             )
         } else {
-            let cur = g.cursor.map(|c| after.iter().fold(c, |c, s| s.map(c)));
+            let cur = g.sel.map(|s| map_sel(s, &after));
             (
                 cur,
                 Group {
                     ops: invert_seq(&ops),
-                    cursor: cur,
+                    sel: cur,
                     cmd: 0,
                     open: false,
+                    bytes: g.bytes,
                 },
             )
         };
         Ok(Plan {
             ops,
-            cursor,
+            sel,
             redo,
             keep: i,
             pending: after,

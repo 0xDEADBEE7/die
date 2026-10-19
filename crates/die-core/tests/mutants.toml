@@ -72,3 +72,60 @@ old = '''
         if w > 1 && !self.fits(w) && self.col > 0 {'''
 new = '''
         if false {'''
+
+# K2: the undo cap, selections, changed ranges and boundaries.
+
+[[mutant]]
+name = "M9 undo cap keeps one step too many"
+file = "src/undo.rs"
+old = '''
+if steps == limit.steps || (steps > 0 && bytes + g.bytes > limit.bytes) {'''
+new = '''
+if steps > limit.steps || (steps > 0 && bytes + g.bytes > limit.bytes) {'''
+
+[[mutant]]
+name = "M10 edits added to an open step don't count toward the byte cap"
+file = "src/undo.rs"
+old = '''
+                g.bytes += bytes;
+                self.trim(limit);'''
+new = '''
+                self.trim(limit);'''
+
+[[mutant]]
+name = "M11 undo restores a cursor, not the selection"
+file = "src/text.rs"
+old = '''
+            v.sel = Selection {
+                anchor: s.anchor.min(len),
+                head: s.head.min(len),
+                ..s
+            };'''
+new = '''
+            v.sel = Selection::cursor(s.head.min(len));'''
+
+[[mutant]]
+name = "M12 the changed range isn't moved through the step's later changes"
+file = "src/text.rs"
+old = '''
+                    let start = map_pos(h.start, r.start, r.end, new_end, Gravity::Left);
+                    let end = map_pos(h.end, r.start, r.end, new_end, Gravity::Right);'''
+new = '''
+                    let (start, end) = (h.start, h.end);'''
+
+[[mutant]]
+name = "M13 an undo boundary leaves an open group open"
+file = "src/undo.rs"
+old = '''
+            g.open = false;
+            g.cmd = CLOSED;'''
+new = '''
+            g.cmd = CLOSED;'''
+
+[[mutant]]
+name = "M14 the restored selection isn't moved through silent edits"
+file = "src/undo.rs"
+old = '''
+            let cur = g.sel.map(|s| map_sel(s, &after));'''
+new = '''
+            let cur = g.sel;'''
