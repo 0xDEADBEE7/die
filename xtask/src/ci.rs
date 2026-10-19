@@ -25,8 +25,14 @@ pub fn run(root: &Path, source: Source) -> Result {
                     .args(["clone", "--quiet", "--no-hardlinks", "."])
                     .arg(&tree),
             )?;
-            run_quiet(git(&tree).args(["checkout", "--quiet", "--detach", rev]))?;
-            println!("ci: a fresh clone at {rev}");
+            // Resolved here: the clone has no local branches but its default one.
+            let commit = crate::util::output(git(root).args([
+                "rev-parse",
+                "--verify",
+                &format!("{rev}^{{commit}}"),
+            ]))?;
+            run_quiet(git(&tree).args(["checkout", "--quiet", "--detach", commit.trim()]))?;
+            println!("ci: a fresh clone at {rev} ({})", &commit.trim()[..10]);
         }
         Source::Worktree => {
             copy_worktree(root, &tree)?;
