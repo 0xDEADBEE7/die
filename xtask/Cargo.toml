@@ -14,6 +14,7 @@ syn = { version = "=2.0.117", default-features = false, features = ["full", "par
 quote = "=1.0.45"
 proc-macro2 = "=1.0.106"
 prettyplease = "=0.2.37"
+sha2 = { version = "=0.10.9", default-features = false }
 
 [lints]
 workspace = true

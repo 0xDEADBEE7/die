@@ -1,6 +1,7 @@
 //! `cargo xtask fonts`: Ioskeley Mono Term v2.1.0 into `fonts/` at the workspace
 //! root, checked by SHA-256. Nothing is installed. The zip goes into a fresh
-//! temporary directory, and only the four `.ttf` files come out of it.
+//! temporary directory, and only the four `.ttf` files come out of it. `curl` and
+//! `unzip` are found on PATH.
 
 use crate::util::{Result, TempDir, run, sha256};
 use std::path::{Path, PathBuf};
@@ -62,7 +63,7 @@ pub fn run_fonts(root: &Path) -> Result {
     let tmp = TempDir::new("fonts")?;
     let zip = tmp.path().join("term.zip");
     println!("fonts: downloading {URL}");
-    run(Command::new("/usr/bin/curl")
+    run(Command::new("curl")
         .args(["-fsSL", "-A", "Mozilla/5.0 (generic)", "-o"])
         .arg(&zip)
         .arg(URL))?;
@@ -74,7 +75,7 @@ pub fn run_fonts(root: &Path) -> Result {
     }
     let x = tmp.path().join("x");
     for (name, sum) in FILES {
-        run(Command::new("/usr/bin/unzip")
+        run(Command::new("unzip")
             .args(["-o", "-j", "-q"])
             .arg(&zip)
             .arg(format!("Normal/Hinted/{name}"))
