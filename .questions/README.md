@@ -57,7 +57,7 @@ These were the broad decisions left over from the 2026-10-18 review. **All of th
 
 - The engine is libghostty-vt, using only Ghostty's signed builds. Updates are monthly, or sooner for crash and security fixes, and never more than three months behind.
 - The Rust API is libghostty-rs, pinned and never forked. If it blocks an update for more than a month, DIE writes its own thin layer over the C API instead.
-- Each terminal's engine runs in a small helper process, so an engine crash costs one terminal and scrollback and images survive every rebuild. A spike before M2 checks how fast frames and images cross to DIE. If that's too slow, the engine runs inside DIE and the holder keeps the shells alive. See [06](06-restart-guarantees.md).
+- Each terminal's engine runs in a small helper process, so an engine crash costs one terminal and scrollback and images survive every rebuild. S2 confirmed it's fast enough (within 0.5 ms of a thread inside DIE). See [06](06-restart-guarantees.md).
 
 **Terminal identity**
 
@@ -71,7 +71,7 @@ These were the broad decisions left over from the 2026-10-18 review. **All of th
 - 10,000 lines of scrollback per terminal, as in vterm, capped at 64 MB.
 - Images are capped at 64 MB per screen.
 - bash starts as `bash --rcfile die.bash -i`. `die.bash` reads your usual profile and `~/.bashrc`, then adds prompt marks and directory tracking. This works on macOS's bash 3.2, unlike ghostel's method.
-- After a reattach, die-term redraws by changing the row count by one and back.
+- After a reattach, die-term redraws by shrinking the terminal one row, waiting for the program to repaint (at most 50 ms), then restoring it. S3 found that an immediate change and change back doesn't repaint pico or top.
 - A die-term API lets your config run fzf in a split, and turns termin into a config command.
 
 **Launch and environment**
@@ -83,5 +83,5 @@ These were the broad decisions left over from the 2026-10-18 review. **All of th
 **Testing**
 
 - Your colima VM serves as the Linux SSH host for terminal tests. The only extra tool is kitty's standalone `kitten` binary, which checks key encoding; it lives in a scratch directory, not installed system-wide.
-- Vim keys that depend on window geometry get hand-written fixtures.
+- Vim keys that depend on window geometry come from a tty Emacs the Evil oracle drives (S5 found this works). Hand-written fixtures are only for deliberate deviations from Evil.
 - I hand you DIE's own `unsafe` modules for review, kept small by design.

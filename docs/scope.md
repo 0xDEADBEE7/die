@@ -45,7 +45,7 @@ These rules keep "diminutive" true as the project grows.
 7. **Readable code.** The budgets below are measured as code lines, excluding tests:
    - `die-core` ≤ about 14k
    - `die-render` ≤ about 5k
-   - `die-term` ≤ about 4k of glue, plus up to about 1k for the helper process if spike S2 keeps it, plus its tests and the engine updater
+   - `die-term` ≤ about 4k of glue, plus about 1k for the helper process (S2's prototype: 1.05k), plus its tests and the engine updater
 
    Each module has a ratchet, and an overrun goes through a named cut list. If you can't read core in a weekend, it's too big. *(Decided 2026-10-19. The previous 10k goal for core plus renderer was a goal, not a measurement; two independent estimates put them at about 16k.)*
 8. **Support faithful ports.** The core must let you rebuild your existing packages (seek, scrib, manifold, orchid, termin, delta) later as DIE extensions that work the same way they do in Emacs, using text buffers, modes and keymaps. The graphical features are for new extensions you couldn't build in Emacs. Building either kind isn't part of this project. *(Decided)*
@@ -57,7 +57,7 @@ These rules keep "diminutive" true as the project grows.
 | D1 | Rust only. Extensions and config are crates; changes need a rebuild and restart. | Decided | Smallest core, fully typed. Cargo is the package manager. FFI is confined to two modules: `die-render`'s platform layer (objc2) and `die-term`'s engine boundary (libghostty-vt). |
 | D2 | DIE always runs locally. Remote work is SSH inside a terminal buffer. No TRAMP. | Decided | Your call. Accepted consequence: you edit remote files with whatever editor runs on the remote host, inside the terminal. |
 | D3 | Applications are extensions, never core. | Decided | Matches how your packages relate to Emacs today. |
-| D4 | Vim depth: the core grammar (§10), matching your Evil setup. Where Evil and textbook Vim differ, Evil wins. The one deliberate change is Rust regex syntax instead of Emacs's. | Decided (2026-10-19) | The aim was always to cover a vanilla Evil setup like yours. The previous §10 described textbook Vim in places (visual-line `j`/`k`, a separate clipboard register) and would have caused friction on day one. |
+| D4 | Vim depth: the core grammar (§10), matching your Evil setup. Where Evil and textbook Vim differ, Evil wins. The one deliberate change is Rust regex syntax instead of Emacs's. Exceptions: Evil bugs, gaps and artifacts of Emacs buffers, where die-vim follows Vim. Each is listed in [records/s5-evil-oracle.md](records/s5-evil-oracle.md) §4 and gets a hand-written fixture. | Decided (2026-10-19) | The aim was always to cover a vanilla Evil setup like yours. The previous §10 described textbook Vim in places (visual-line `j`/`k`, a separate clipboard register) and would have caused friction on day one. |
 | D5 | DIE is a native macOS app. There is no TUI frontend. | Decided | With SSH inside DIE, the main reason to run inside a terminal is gone. Running DIE inside another terminal would also force kitty graphics from hosted programs through two layers of terminal, the same problem tmux has. |
 | D6 | Display: a monospace cell grid, plus pixels (image placements and pixel buffers) composited with it (§5.1). | Decided | Same model as kitty. One image path serves both terminal graphics and pixel buffers. |
 | D7 | Editor state is single-threaded. Background work runs on std threads that post messages to the main loop. Pixel buffers can be written from producer threads (§5.2). | Decided | Emacs-like mental model with no locks, while video and plots don't block editing. |
@@ -73,7 +73,7 @@ These rules keep "diminutive" true as the project grows.
 | D17 | No owned forks. Third-party code is a pinned dependency, never vendored or forked into DIE. Two exceptions, both small and verified on every update: the signed engine archive (D16), and `die-term-sys`, which replaces libghostty-rs's sys crate with about 90 adapted lines plus generated bindings. | Decided (2026-10-19) | Your call. The value of DIE is a codebase you can read. |
 | D18 | Terminal input model. ESC goes to the program. Cmd-Esc always leaves the terminal and is never sent to programs. The whole Cmd layer belongs to DIE: Cmd-V pastes, Cmd-C copies, and Cmd-Q quits, confirming if processes are running. Normal state in a terminal is read-only copy state that follows new output while you're at the bottom, and `i`/`a` return to the terminal. A per-buffer toggle gives vterm-style ESC instead. | Decided (2026-10-19) | ESC can't mean both "leave" and "send to the program": Claude Code uses ESC to interrupt and runs on the main screen, so ghostel's alternate-screen trick fails for it. |
 | D19 | Copy state is die-vim's grammar running over a read-only snapshot of the surface (§5.5). Core has no second motion engine. | Decided (2026-10-19) | Keeps Vim in die-vim (D9). The alternative was about 600–900 lines duplicating die-vim inside core. |
-| D20 | Restart: everything survives, crashes included. A holder process keeps PTYs open. Each terminal's engine runs in a small helper process, if spike S2 shows frames and images cross fast enough. The session saves unsaved text, scratch buffers, registers, macros and histories (§5.9). | Decided (2026-10-19) | Rebuild-and-restart is your extension loop. A bad build mustn't cost you live Claude Code or SSH sessions. |
+| D20 | Restart: everything survives, crashes included. A holder process keeps PTYs open. Each terminal's engine runs in a helper process, DIE's own binary in a second mode (`die --term-helper`), which takes its PTY from the holder and outlives DIE. The session saves unsaved text, scratch buffers, registers, macros and histories (§5.9). | Decided (2026-10-19); holder confirmed by S3, helper by S2 | Rebuild-and-restart is your extension loop. A bad build mustn't cost you live Claude Code or SSH sessions. S2 measured the helper within 0.5 ms of a thread inside DIE, with images crossing as shared memory ([records/s2-term-engine.md](records/s2-term-engine.md)). |
 | D21 | v1 is local first. M2 is proven on your real day: Claude Code and codex sessions, and TUIs like btop and ncdu, with one SSH check. | Decided (2026-10-19) | Your recent shell history shows local work, not SSH. |
 | D22 | License: MIT OR Apache-2.0. | Decided (2026-10-19) | Compatible with Ghostty (MIT), matches libghostty-rs (MIT OR Apache-2.0), and doesn't bind anyone building on DIE. ghostel (GPL-3.0) is a behavior reference only; none of its code is copied. |
 | D23 | The milestones are restructured (§12): spikes first, the API before die-vim, restart proven in M0 and M2, and the terminal (M2) before contract completeness (M1). | Decided (2026-10-19) | The original order couldn't be executed: die-vim came before its API, M1's exit test needed M2 and M3, and restart was proven last. |
@@ -169,11 +169,11 @@ Every action is a named command with a docstring, registered in a single registr
 
 ### 5.8 Events, jobs and processes
 
-- **Hooks:** buffer lifecycle, before and after a save, mode on and off, focus, idle. Edits are read with `edits_since` rather than through hooks (contract C15).
+- **Hooks:** buffer lifecycle, after an edit, before and after a save, mode on and off, focus, idle. Hooks are queued (contract C3), so there's no before-edit hook; modes catch up with `edits_since` (contract C15). A save runs its write as a queued step after the before-save hooks.
 - **Timers.**
-- **Process API:** spawn with piped stdio (output can stream into a buffer or surface), or spawn on a PTY.
+- **Process API:** spawn with piped stdio (output can stream into a buffer or surface), or spawn on a PTY. Every child, shells included, is started with `posix_spawn` and close-on-exec by default, so no child can hold another terminal open.
 - Background threads post messages to the main loop (D7).
-- **Terminal output is parsed off the main thread:** in the terminal's helper process, or on a thread per terminal (D20). The main thread never waits on either.
+- **Terminal output is parsed in each terminal's helper process** (D20). DIE's main thread receives finished frames and never waits on a helper.
 - **Environment.** PATH additions and an env file are declared in your config, mirroring `init.el`, so DIE.app started from the Dock finds cargo. Secrets are never logged.
 
 ### 5.9 Persistence and restart
@@ -191,8 +191,17 @@ Rebuild-and-restart is how you extend DIE, so a restart should feel like nothing
   Each buffer's data is stored separately, so one that fails to load drops only that buffer; a terminal with a live PTY is reattached fresh instead. Restore is on by default. Undo history comes later.
 - **Written continuously.** Core writes the session after a short idle period following any change, not only on restart, so a crash loses at most the last few seconds.
 - **Restart.** The `restart` command saves the session, starts the newly built binary, and exits. Quitting (Cmd-Q) is different: after its confirmation, core tells the holder to close the terminals and exit. A script builds DIE.app pointing at the dev build, so restart runs the binary you just built. Your startup hook is told whether this is a cold start or a restore, so a restart doesn't open another terminal.
-- **Terminals survive crashes.** A holder process, which is DIE's own binary in a second mode (`die --fd-store`), keeps every PTY open. PTYs are handed to it over a Unix socket when they're created. This was measured on your machine: shells survived `kill -9` of DIE, including when DIE was launched as a `.app`. A new DIE reattaches, and die-term makes full-screen programs redraw by changing the row count by one and back, since the kernel drops a same-size resize.
-- **The terminal engine runs outside DIE.** Each terminal's engine runs in a small helper process alongside the holder. An engine crash then costs one terminal instead of DIE and your unsaved text, and scrollback and images survive every rebuild. Spike S2 checks that frames and images cross between the processes fast enough. If they don't, the engine runs inside DIE on a thread per terminal. Then a crash in it takes DIE down, the holder still keeps the shells alive, and scrollback survives a restart only when the engine version is unchanged.
+- **Terminals survive crashes.** A holder process, which is DIE's own binary in a second mode (`die --fd-store`), keeps every PTY open. PTYs are handed to it over a Unix socket when they're created. Spike S3 measured it on your machine: shells survived 20 restarts and 5 `kill -9`s of DIE, including DIE launched as a `.app`, with the same PIDs. Nothing was lost but a line or two a killed DIE had already read ([records/s3-fd-store.md](records/s3-fd-store.md)).
+  - A new DIE reattaches in under a millisecond per terminal. die-term then makes full-screen programs redraw: it shrinks the terminal by one row, waits for the program to start repainting (at most 50 ms), and restores it. The kernel drops a same-size resize, and some programs ignore a resize that's immediately undone.
+  - While no DIE is running, each terminal's helper keeps reading, so programs don't pause and their output lands in scrollback.
+  - Exit codes survive a restart. DIE watches each shell with kqueue, which works even though the shell's parent is gone.
+  - The holder never closes a live terminal by itself, so shells left by a crash you never relaunch after live until logout, as with tmux. It exits a few minutes after it holds nothing.
+  - If the holder dies while DIE is down, the helpers' copies of the PTYs keep the shells alive. The holder stays tiny anyway, and a running DIE moves its terminals into a fresh holder if the old one dies.
+- **Each terminal's engine runs in a helper process**, DIE's own binary in another mode (`die --term-helper`), one per terminal. The helper takes the terminal's PTY from the holder, parses its output, and sends DIE finished frames over a Unix socket. Images travel as shared memory, never through the socket.
+  - **DIE crashes or restarts:** helpers keep running. The new DIE reaches each helper through the holder and gets the screen, scrollback and images back as they were, with no snapshot.
+  - **A helper crashes:** that terminal loses its screen and scrollback, nothing else. The holder's copy keeps the shell alive, a new helper takes the PTY, and die-term makes full-screen programs redraw as above.
+  - **Old helpers, new builds:** a helper started by an older build serves every newer DIE with the same protocol major version. An incompatible pair is refused cleanly, and the terminal stays alive and detached until you replace its helper, which you do by hand because it loses scrollback.
+  - Spike S2 measured all of this ([records/s2-term-engine.md](records/s2-term-engine.md)).
 - **Later, maybe:** Rust hot-patching (for example Dioxus's subsecond) would get closer to live eval. Not in scope.
 
 ### 5.10 Extension contract
@@ -294,7 +303,7 @@ Decorations in general are:
 
 - faces over ranges
 - hidden ranges, with replacement text **or a placement** (an image or pixel buffer occupying a rectangle of cells)
-- virtual text before or after a position
+- virtual text before a position
 - read-only ranges, which block your edits but not edits from extension code
 - range keymaps, for buttons and toggles
 - tags, which attach an extension value to a range
@@ -322,17 +331,19 @@ None of your existing packages need pixel buffers (scope guard 8). Pixel buffers
 
 **In:**
 
-- Counts; operators `d c y > < g~ gu gU` (shifts of 4 columns, Evil's default); dot-repeat
-- Motions `h j k l w b e W B E 0 ^ $ gg G f F t T ; , % { } H M L gj gk`. `j`/`k` move by logical line and `gj`/`gk` by visual line.
-- Scrolling: `C-d C-f C-b C-e C-y` and `zz zt zb`. `C-u` doesn't scroll, as in your Evil.
+- Counts; operators `d c y > < g~ gu gU` (shifts of 4 columns, rounded to a multiple of 4, as in Evil); dot-repeat. `J` puts one space after a period.
+- Motions `h j k l w b e W B E 0 ^ $ gg G f F t T ; , % { } H M L gj gk`. `j`/`k` move by logical line and `gj`/`gk` by visual line. `gg`, `G`, `:N`, `>>` and `<<` keep the cursor's column, as in Evil; Vim's `startofline` would move it to the first non-blank. `{` and `}` also stop at lines that hold only spaces. The cursor never rests on the empty line after a file's final newline. Evil's does; die-vim deliberately doesn't.
+- Scrolling: `C-d C-f C-b C-e C-y` and `zz zt zb`. `C-u` doesn't scroll, as in your Evil; it's the prefix argument, so `C-u j` moves 4 lines. Window positions follow Evil: `M` takes the lower of two middle lines, a count given to `C-d` doesn't stick, and `G` recenters the window. `3H` goes to the third line; Evil's goes to the fourth, and die-vim deliberately fixes that.
 - Text objects: words, WORDs, paragraphs, quotes and brackets, in both `i` and `a` forms
 - Visual mode: char, line and block
-- Insert: autoindent, and one undo step per insert session
-- Registers: unnamed, `a`–`z`, `0`, `_` and `+`. The unnamed register syncs with the macOS clipboard both ways, including deletes, so `p` pastes whatever you last copied anywhere. `"_` is the escape.
-- Search with `/ ? n N * #`: incremental, highlights every match, smartcase
-- Macros (`q`, `@`); undo and redo; replace mode (`R`)
+- Insert: autoindent, and one undo step per insert session (arrow keys don't split it). `o`, `O`, `cc`, `S` and Enter indent like the line above, which is what Evil does in text buffers. Indentation that depends on the language (Lisp, Python) belongs to a mode, not to die-vim.
+- Registers: unnamed, `a`–`z`, `0`, `_` and `+`. The unnamed register syncs with the macOS clipboard both ways, including deletes, so `p` pastes whatever you last copied anywhere. `"_` is the escape. `1`–`9` hold the last nine yanks and deletes, newest first (Evil's kill ring), and `-` the last small delete. After `"Ay`, the unnamed register holds only the appended text.
+- Search with `/ ? n N * #`: incremental, highlights every match, smartcase, including for `*` and `#`. A count before `/`, and an empty `/` that repeats the last search, work as in Vim. Evil ignores both; die-vim deliberately differs.
+- Macros (`q`, `@`). `.` inside a macro repeats the macro's own last change; Evil's signals an error, and die-vim deliberately differs.
+- Undo and redo: `u` and `C-r`, a linear history as in Vim. Your Evil has no redo (`evil-undo-system` is unset, so its `u` walks Emacs's undo chain); this is a deliberate change. Setting `(setq evil-undo-system 'undo-redo)` would make your Emacs match while you use both.
+- Replace mode (`R`)
 - Windows: the `C-w` map, and `:sp :vs :only :close`. `:q` closes a split, and quits only from the last window, as in Evil.
-- Ex commands `:w :q :wq :e :b :s` (current line, visual range and `%` only), plus `:N` to jump to a line
+- Ex commands `:w :q :wq :e :b :s` (current line, visual range and `%` only), plus `:N` to jump to a line. `:s` keeps the case of each match, as Emacs does: `:s/foo/bar/` turns `Foo` into `Bar`.
 
 **Later, only if you miss them:** marks, the jumplist (`C-o`/`C-i`), an undo tree.
 
@@ -374,12 +385,12 @@ S0 takes about two weeks. Each spike has pass criteria and a named fallback. Eac
 | Spike | Question | Fallback |
 |---|---|---|
 | **S1 Renderer and platform** (D13) | Can winit, Metal and Core Text meet these on your 120 Hz panel?<br>- typing latency p50 ≤ 12 ms and p99 ≤ 17 ms<br>- a full redraw in ≤ 2 ms of main-thread time<br>- zero frames when idle<br>- a 60 Hz producer with no main-thread pixel copies<br>- a clean keyboard matrix, including key release<br>- correct glyph widths<br>- a rebuild-to-running loop of ≤ 5 s | wgpu with buffer uploads only; AppKit directly instead of winit |
-| **S2 Terminal engine wiring and helper process** (D10, D20) | Does DIE's exact wiring build and pass the engine battery (DIE's own PNG decoder, no default features)? How fast do frames and images cross from a helper process? | Wiring: DIE's own layer over the engine's C API ([record](records/die-term-engine.md) §1). Helper: the engine runs inside DIE on a thread per terminal |
-| **S3 Terminal survival** (D20) | Turn the measured probe into `die --fd-store`. 20 planned restarts and 5 × `kill -9` keep the shells; 100 open and kill cycles leak nothing; a holder from build N serves build N+1. | In-place `execve` (loses shells on a crash) |
+| **S2 Terminal engine wiring and helper process** (D10, D20) | Does DIE's exact wiring build and pass the engine battery (DIE's own PNG decoder, no default features)? How fast do frames and images cross from a helper process? | Not needed: S2 passed on 2026-10-19 ([record](records/s2-term-engine.md)). The named fallbacks were DIE's own layer over the engine's C API, and a thread per terminal inside DIE |
+| **S3 Terminal survival** (D20) | Passed 2026-10-19 ([record](records/s3-fd-store.md)). `die --fd-store` kept every shell through 20 planned restarts and 5 × `kill -9`, also as a `.app`, with no output lost in the kernel. 100 open and kill cycles leaked nothing. A holder from build N served build N+1 and refused an incompatible major. Shell exit is seen in under 1 ms without being the parent. | In-place `execve` (loses shells on a crash) |
 | **S4 Core API and layout** (contract C2–C4, C14–C16) | A headless prototype checks:<br>- the checkout rules<br>- queued calls and subscription handles<br>- edit origins<br>- undo across silent edits<br>- stored versus provided decorations<br>- `edits_since`<br>- the keymap rules<br><br>A property test checks that the cursor is never inside hidden text. | Hidden ranges limited to whole lines, and virtual text to end of line |
-| **S5 Evil oracle** (D4) | Evil running in batch Emacs turns key sequences into JSON fixtures that die-vim's tests consume, with 50 cases in under 10 s. | Hand-written expectations |
+| **S5 Evil oracle** (D4) | Done ([records/s5-evil-oracle.md](records/s5-evil-oracle.md)). 306 cases in about 1.2 s. Window geometry and wrapped lines run in a tty Emacs the oracle starts on its own pty. | Hand-written expectations |
 
-The 2026-10-19 check already covered libghostty-vt from Rust: a clean build with no Zig, and the graphics, mouse, key and protocol battery ([records/die-term-engine.md](records/die-term-engine.md)).
+S2 built DIE's exact wiring (81 of 86 checks, the same 5 known gaps, no Zig) and chose the helper process (D20). S4 passed on 2026-10-19 without its fallback ([records/s4-core-api.md](records/s4-core-api.md)), and you accepted its API recommendations. The 2026-10-19 check already covered libghostty-vt from Rust: a clean build with no Zig, and the graphics, mouse, key and protocol battery ([records/die-term-engine.md](records/die-term-engine.md)).
 
 ### Milestones
 
@@ -387,8 +398,8 @@ Each milestone ends with a test. None of them involves building an extension (D1
 
 | | Milestone | Scope | Exit test |
 |---|---|---|---|
-| M0 | Edits itself | Built API-first. First, the public API die-vim needs and the headless harness:<br>- `Extension`, registry and a `Ctx` subset<br>- commands and keymaps<br>- the text API, with undo groups, selections, layout queries, the prefix argument and `feed_keys`<br><br>Then on top of them:<br>- the native window and renderer<br>- the text surface, files, buffers and splits<br>- die-vim (§10)<br>- command line and prompt, status line, faces<br>- auto-revert, the session and `restart` | (a) You edit DIE's own source in DIE for a full day, with Emacs's vterm in an adjacent tile as the terminal.<br>(b) 20 rebuild-and-restarts restore files, splits, per-window cursors and scroll, unsaved text and registers, within 1 s from `restart` to the first frame.<br>(c) `cargo fmt` on an open file reloads an unmodified buffer, and `:w` refuses on a modified one.<br>(d) At least 300 Evil-oracle cases pass, with any deviations listed by name.<br>(e) The budgets in guard 7 hold. |
-| M2 | Terminal | - the Surface trait<br>- the process and PTY API, and the holder<br>- `die-term` with ghostel's features except graphics (§6), including the mouse<br>- passthrough and the D18 input model, with full key events<br>- copy state<br>- die-term's API<br>- the login environment | (a) A cold start opens `term1` the way your `user/startup` hook does; a restored start doesn't add one.<br>(b) A day of your real local work in die-term. Claude Code and codex sessions survive at least 10 rebuild-and-restarts and a `kill -9` of DIE. btop and ncdu work with the mouse. Output floods don't slow typing.<br>(c) One SSH session to your colima VM, with remote vim using the kitty keyboard flags.<br>(d) The `kitten show-key` matrix passes.<br>(e) cargo resolves in a die-term shell when DIE.app is launched from the Dock. |
+| M0 | Edits itself | Built API-first. First, the public API die-vim needs and the headless harness:<br>- `Extension`, registry and a `Ctx` subset<br>- commands and keymaps<br>- the text API, with undo groups, selections, layout queries, the prefix argument and `feed_keys`<br><br>Then on top of them:<br>- the native window and renderer<br>- the text surface, files, buffers and splits<br>- die-vim (§10)<br>- command line and prompt, status line, faces<br>- auto-revert, the session and `restart` | (a) You edit DIE's own source in DIE for a full day, with Emacs's vterm in an adjacent tile as the terminal.<br>(b) 20 rebuild-and-restarts restore files, splits, per-window cursors and scroll, unsaved text and registers, within 1 s from `restart` to the first frame.<br>(c) `cargo fmt` on an open file reloads an unmodified buffer, and `:w` refuses on a modified one.<br>(d) Every Evil-oracle case passes (306 today), except the deliberate deviations, which are listed by name and have hand-written fixtures.<br>(e) The budgets in guard 7 hold. |
+| M2 | Terminal | - the Surface trait<br>- the process and PTY API, the holder, and the terminal helper<br>- `die-term` with ghostel's features except graphics (§6), including the mouse<br>- passthrough and the D18 input model, with full key events<br>- copy state<br>- die-term's API<br>- the login environment | (a) A cold start opens `term1` the way your `user/startup` hook does; a restored start doesn't add one.<br>(b) A day of your real local work in die-term. Claude Code and codex sessions survive at least 10 rebuild-and-restarts and a `kill -9` of DIE. btop and ncdu work with the mouse. Output floods don't slow typing.<br>(c) One SSH session to your colima VM, with remote vim using the kitty keyboard flags.<br>(d) The `kitten show-key` matrix passes.<br>(e) cargo resolves in a die-term shell when DIE.app is launched from the Dock. |
 | M1 | Contract completeness | - full modes and face providers<br>- every decoration kind except Hide with a placement (M3)<br>- `spawn`, `process`, `watch` and timers<br>- nested prompts<br>- the hooks API | Every row of the requirements check (extension-contract §18), including die-vim and mode save and restore across a harness restart, has a passing contract test that uses only `die`'s public API. The placement and image parts of the die-term and markdown rows are left to M3's inline-image test. The multi-step prompt test settles contract §19 question 1. |
 | M3 | Pixels | - placements, with source rectangle, pixel offset and z<br>- images<br>- pixel buffers through the staging ring<br>- kitty graphics in `die-term`<br>- image placement in text buffers through Hide decorations | `timg` and `kitten icat` (direct placements) and `kitten icat --unicode-placeholder` render, locally and over SSH. yazi previews images. The inline-image contract test passes. A 60 fps pixel-buffer fixture keeps typing latency within 1 ms of S1's. |
 | M4 | Ready for extensions | - rustdoc for core's whole public API<br>- an example config crate | You can start your first extension in its own repository, against `die` as a git dependency, without changing core. |
@@ -399,16 +410,16 @@ Each milestone ends with a test. None of them involves building an extension (D1
 crates/die-core            headless editor; no window or GPU dependencies
 crates/die-render          winit, Metal, Core Text, clipboard; draws die-core's scene
 crates/die-vim             Vim grammar; depends on die-core only (D15)
-crates/die-term            terminal surface; die-core + libghostty-rs; also the helper process if S2 keeps it
+crates/die-term            terminal surface; die-core + libghostty-rs; also the helper process (`die --term-helper`)
 crates/die-term-sys        the signed engine archive, generated bindings, a checksum-checking build.rs (D17)
 crates/die                 facade: die::run(config), always registers die-vim and die-term
 crates/die-contract-tests  test-only fixture extensions for extension-contract §18, using only die's public API
 apps/die-dev               your config while DIE is being built
-tools/evil-oracle          Evil in batch Emacs, producing die-vim fixtures
+tools/evil-oracle          Evil in batch and tty Emacs (dev-only); fixtures are committed, so cargo test needs no Emacs
 xtask                      cargo xtask ghostty bump, budget report, clean-environment build check
 ```
 
-`unsafe` is denied everywhere except `die-render`'s platform module and `die-term`'s engine boundary. You review those two modules by hand.
+`unsafe` is denied everywhere except three small modules: `die-render`'s platform module, `die-term`'s engine boundary, and `die-core`'s `sys` module (about 80 lines of libc calls for processes and PTYs: `posix_spawn`, `getpeereid`, kqueue, `posix_openpt`, which have no safe route on macOS). You review those modules by hand.
 
 ### How the work is split
 
@@ -423,13 +434,13 @@ On that basis M0 is roughly 10–15 weeks, at about 17k lines across crates. Par
 4. Splits and restart.
 
 **Testing.**
-- die-vim is checked against Evil itself (S5). Vim keys that depend on window geometry get hand-written fixtures.
+- die-vim is checked against Evil itself (S5). Keys that depend on window geometry or wrapping come from a tty Emacs the oracle drives. Hand-written fixtures are only for the deliberate deviations from Evil, each with a reason.
 - Terminal tests use your colima VM as the Linux SSH host. kitty's standalone `kitten` binary, kept in a scratch directory rather than installed system-wide, checks key encoding.
 
 ## 13. Open questions
 
-Settled in the 2026-10-19 review: the renderer stack (D13), libghostty-vt from Rust (D10), ratatui (D8), and how terminals survive restarts (D20). Pixel-buffer threading is now one of S1's checks.
+Settled in the 2026-10-19 review: the renderer stack (D13), libghostty-vt from Rust (D10), ratatui (D8), how terminals survive restarts (D20), and where the terminal engine runs (S2). Pixel-buffer threading is now one of S1's checks.
 
-1. **Terminal engine in a helper process (D20).** Spike S2 decides whether each terminal's engine runs in a helper process or inside DIE. It needs answering before M2.
+1. ~~Terminal engine in a helper process (D20).~~ **Settled by S2 (2026-10-19):** each terminal's engine runs in a helper process ([records/s2-term-engine.md](records/s2-term-engine.md)).
 2. **Scaled text runs.** Should the cell renderer support scaled text, so a future markdown extension could show large headings? Or are color and weight enough? Not for terminals: the engine ignores kitty's text-sizing protocol (OSC 66). Deferred until a markdown extension asks for it.
 3. **Undo history across restarts.** The session doesn't save undo history in v1. Revisit if restarts that lose undo bother you.

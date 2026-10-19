@@ -4,7 +4,7 @@
 
 This doc expands §5.4 (surfaces) and §5.10 (extension contract) of [scope.md](scope.md). It describes the shape of the contract and its rules, not the final API. Signatures are outlines, not Rust.
 
-On 2026-10-19 you confirmed C1–C13. C2, C4 and C9 are amended by what the review's Rust prototype found, and C14–C17 are new. Spike S4 (scope §12) checks the details before M0's code is written. Anything it changes comes back to this doc.
+On 2026-10-19 you confirmed C1–C13. C2, C4 and C9 are amended by what the review's Rust prototype found, and C14–C17 are new. Spike S4 checked the details on 2026-10-19 ([records/s4-core-api.md](records/s4-core-api.md)), and you accepted its recommendations. Its clarifications are folded in below.
 
 > **This doc defines what DIE's core has to provide. It doesn't plan any extensions.** seek, scrib, manifold, orchid, termin, delta, `die-seek` and the markdown view appear only as requirements, meaning "the core must make this possible". You'll build them yourself later, separately. The Vim grammar (`die-vim`) and kitty-level terminals (`die-term`) are part of DIE itself and are built here (scope D15). Internally they're crates that use this same contract.
 
@@ -58,9 +58,9 @@ your config crate (main)
 | ID | Decision | Rationale |
 |---|---|---|
 | C1 | One context type, `Ctx`, is passed mutably to every command, callback, event handler and hook. Extension code changes the editor only through it. | One thing to learn. Helix's commands work the same way. |
-| C2 | *(Amended)* Borrowing uses a **checkout** pattern. `with_surface`, `with_mode` and `with_ext` take an object out of the workspace, hand it to a closure along with `Ctx`, then put it back. They return a `Result`:<br>- `Busy` if the object is already checked out<br>- `Gone` if it was killed<br>- `Missing` if it never existed<br><br>Rules:<br>- A panic inside the closure puts the object back before the panic continues.<br>- Killing a buffer while its surface is checked out marks it dead at once, and the object is dropped at check-in.<br>- Core-owned data (text, windows, markers, decorations) is never checked out; it's borrowed by id. | The usual way around Rust's rule that you can't mutably borrow the editor and a part of it at the same time. Zed's GPUI uses the same lease pattern. The prototype passes re-entry, panic and kill-during-checkout tests. `Busy` keeps a re-entrancy bug from looking like a dead buffer. |
-| C3 | Async work uses callbacks, not futures. A callback is a one-shot `'static` closure that captures ids, never references, and runs on the main thread. Calls that receive `Ctx` (hooks, callbacks, `on_resize`) are queued and run from the top of the event loop. They are never nested inside another extension call, except through an explicit `ctx.run`. | Holding `&mut Ctx` across `.await` points is painful in Rust. Callbacks keep the single-threaded model simple. Cost: multi-step prompts nest (§12). A small async layer of about 100 lines can be added later without a redesign. |
-| C4 | *(Amended)* Buffers, windows, markers and decorations are referred to by generational ids. Looking up a dead id returns an error, and the type makes the caller handle it. Async subscriptions return handles. Dropping a handle cancels the subscription, and `.detach()` ties it to the extension instead. A handle stored in a mode is cancelled when its buffer is killed. | Replaces orchid's `buffer-live-p` checks with something you can't forget. Handles also cover mode-owned timers and per-request processes, which an owner argument didn't. |
+| C2 | *(Amended)* Borrowing uses a **checkout** pattern. `with_surface`, `with_mode` and `with_ext` take an object out of the workspace, hand it to a closure along with `Ctx`, then put it back. They return a `Result`:<br>- `Busy` if the object is already checked out<br>- `Gone` if its buffer was killed (never for `with_ext`)<br>- `Missing` if there's no such object: the extension isn't registered, the buffer has no such mode, or its surface is another type<br><br>Rules:<br>- A panic inside the closure puts the object back before the panic continues.<br>- Killing a buffer while its surface or a mode is checked out marks it dead at once, and the object is dropped at check-in. A killed buffer's modes are dropped, not disabled: `on_disable` doesn't run.<br>- Core-owned data (text, windows, markers, decorations) is never checked out; it's borrowed by id. | The usual way around Rust's rule that you can't mutably borrow the editor and a part of it at the same time. Zed's GPUI uses the same lease pattern. Spike S4 passes re-entry and panic tests for all three, and kill-during-checkout tests for surfaces and modes. `Busy` keeps a re-entrancy bug from looking like a dead buffer. |
+| C3 | Async work uses callbacks, not futures. A callback is a one-shot `'static` closure that captures ids, never references, and runs on the main thread. Calls that receive `Ctx` (hooks, callbacks, prompt answers, `on_enable`, `on_disable`, `on_resize`) are queued and run from the top of the event loop. They are never nested inside another extension call, except through an explicit `ctx.run` or `ctx.reveal`. Calls that get no `Ctx` (`render`, `decorate`, key observers) run synchronously. | Holding `&mut Ctx` across `.await` points is painful in Rust. Callbacks keep the single-threaded model simple. Cost: multi-step prompts nest (§12). A small async layer of about 100 lines can be added later without a redesign. |
+| C4 | *(Amended)* Buffers, windows, markers and decorations are referred to by generational ids. Looking up a dead id returns an error, and the type makes the caller handle it. Async subscriptions return handles. Dropping a handle cancels the subscription, and `.detach()` ties it to the extension instead. A handle stored in a mode is cancelled when its buffer is killed. If the mode is checked out at the time, the handle is cancelled when the mode drops at check-in. | Replaces orchid's `buffer-live-p` checks with something you can't forget. Handles also cover mode-owned timers and per-request processes, which an owner argument didn't. |
 | C5 | After each batch of events, core re-renders every visible surface. Extensions never request redraws. Pixel buffers are the exception: they present their own changes (§11). | No forgotten-redraw bugs. Diffing cells keeps it cheap, and surfaces cache expensive layout themselves. |
 | C6 | **Support faithful ports.** The contract has to let you rebuild your existing packages later with the same structure they have in Emacs: text buffers, modes and keymaps. That includes seek-style browsers that redraw a read-only buffer, and orchid's conversation buffer. **Custom surfaces** are for things text can't do: terminals, pixel views, and new graphical extensions. | The graphical work is for things you couldn't build in Emacs. What already works shouldn't be redesigned, and text buffers get Vim motions, search, undo and yank for free. |
 | C7 | Extension options are typed fields on the extension's struct, set in your config. There's no `defcustom`-style registry. | Checked at compile time, with no machinery. Cost: no runtime customize; you change config and rebuild. Core buffer settings (wrap, width, line numbers) stay changeable at runtime. |
@@ -70,9 +70,9 @@ your config crate (main)
 | C11 | A headless test harness is part of core's public API (§16). | Your packages have ERT suites, and extensions need the same. |
 | C12 | No API stability promises. Everything is compiled together, so the compiler is the migration tool. | It's a personal project. Semantic-versioning ceremony would be pure cost. |
 | C13 | No advice. Behavior changes go through explicit hooks, or through editing the crate. | Rust can't patch functions at runtime, and the source is yours anyway (scope guard 2). |
-| C14 | *(New)* Every edit carries an origin, `User` or `Extension`. die-vim's editing commands mark their edits `User`. Read-only ranges block only `User` edits. | Your editing commands are themselves an extension (die-vim), so "read-only blocks the user, not code" needs an explicit marker. |
+| C14 | *(New)* Every edit carries an origin, `User` or `Extension`. die-vim's editing commands mark their edits `User`. Read-only ranges block only `User` edits. Undo and redo are `User` edits too. A `User` insertion is blocked only strictly inside a read-only range. At an edge it's allowed, and the range's stickiness decides whether the new text becomes read-only (§9). | Your editing commands are themselves an extension (die-vim), so "read-only blocks the user, not code" needs an explicit marker. |
 | C15 | *(New)* Modes pull changes with `edits_since(rev)` instead of receiving pushed `on_edit` calls. | A mode that's checked out (C2) can't receive pushed edits, including its own. Pulling also gives providers incremental caching. |
-| C16 | *(New)* In v1, decoration providers return faces only. Hidden ranges, virtual text and placements are stored decorations, so one core layout function serves both rendering and motions. | Motions need layout outside render. If a provider could hide text at render time, commands and the screen would disagree about where lines are. |
+| C16 | *(New)* In v1, decoration providers return faces only. Hidden ranges, virtual text and placements are stored decorations, so one core layout function serves both rendering and motions. | Motions need layout outside render. If a provider could hide text at render time, commands and the screen would disagree about where lines are. Spike S4 confirmed this with mid-line and multi-line Hides, so Hide isn't limited to whole lines. |
 | C17 | *(New)* Modes apply only to text buffers in v1. | Nothing needs a mode on a custom surface yet, and `render` can't see modes anyway. |
 
 ## 4. Lifecycle
@@ -104,12 +104,12 @@ An extension's global state is the extension struct itself. A command reaches it
 |---|---|
 | Buffers | create (name and surface; names made unique as in Emacs, `term<2>`), open file, find by name, list, kill, `with_surface::<S>`. Each buffer has a `directory`, like `default-directory`. |
 | Windows | focused window and buffer; the size in cells of each window showing a buffer (`window-width`, `window-body-height`); `show(buffer, ShowIn)`, where `ShowIn` is the current window, a new split, a window already showing it, or background (not shown); split, close, only, and focus by direction (for `C-w`) |
-| Text | `text(buffer)` returns a handle for reading, editing, markers, decorations, cursors, selections and layout queries (§9) |
-| Commands | `run(name, args)`; `feed_keys(keys)`, which queues keys as if typed; a key observer, so die-vim can record macros |
+| Text | `text(buffer)` and `text_mut(buffer)` borrow a buffer's text for reading, editing, markers, decorations, per-window cursors and selections, and layout queries (§9) |
+| Commands | `run(name, args)`; `feed_keys(keys)`, which queues keys as if typed, ahead of further typed input; a key observer that sees each key before dispatch, marked typed or fed, so die-vim can record macros (`qb@aq` records `@a`, as Vim does) |
 | Modes | enable, disable, `with_mode::<M>` |
 | Modal state | read and set the state; read and set the prefix argument (count and register) |
 | Async | `spawn`, `process`, `pty`, `watch`, `after`, `every`, `idle`, `prompt` (§12) |
-| Hooks | subscribe to buffer lifecycle, saves, modes, focus and idle, returning a handle (C4) |
+| Hooks | subscribe to buffer lifecycle, edits (after the fact), saves, modes, focus and idle, returning a handle (C4). A save runs its write as a queued step after the before-save hooks. |
 | Pixels | create a pixel buffer, create an image (§11) |
 | Registers | read and write typed registers (char, line or block) and the system clipboard |
 | Messages | message and error, shown in the command line and logged to a `*messages*` buffer; a macOS notification |
@@ -130,6 +130,7 @@ args
   key          the key sequence or committed text that invoked the command (Emacs's last-command-event)
   window       the window it was invoked from, so async code doesn't depend on focus
   buffer       the buffer it was invoked on
+  deco         for a Hide's reveal command: the decoration being revealed (§9)
 ```
 
 - **The prefix argument.** Core stores a count and a register, and doesn't parse Vim syntax. die-vim's digit and `"x` commands fill the slot, and `0` is a die-vim command (scope D9).
@@ -148,6 +149,7 @@ args
 - **`<char>` matches any printable character,** including text committed by dead keys. The command reads which character it was from `args.key`. This replaces the loops in scrib's and orchid's search modes that bind every character to a self-insert command.
 - **`<any>` matches any key** a keymap doesn't otherwise bind, printable or not. die-vim uses it to cancel operator-pending on an unbound key.
 - **Specificity applies within one keymap; order applies across keymaps.** An exact key beats `<char>`, which beats `<any>`, inside the same keymap. Across keymaps, lookup order wins, so a seek-style mode's `<char>` beats die-vim's `j`.
+- **A binding can't also be a prefix** of a longer binding in the same keymap and state, such as `g` and `gg`. Registration reports it, along with the C8 check.
 - **Where keymaps attach:**
   - globally
   - to a surface kind (`text`, `term`). This is the equivalent of a major-mode map. `die-vim` registers its grammar as the keymap for the `text` kind.
@@ -168,7 +170,7 @@ args
   - The rest of the Cmd layer is looked up in DIE's keymaps (scope D18).
   - Every other key goes straight to the surface's `event()`.
   - A surface declares which keys it handles there, so `describe-key` can report them.
-- **Press, repeat and release.** Keymaps match press and repeat. Release events reach only surfaces in passthrough. Cmd-Esc swallows its own repeat and release.
+- **Press, repeat and release.** Keymaps match press and repeat. Release events reach only surfaces in passthrough. Any key DIE takes in passthrough, Cmd-Esc or a Cmd-layer binding, swallows its own repeat and release, so a program never sees a release without its press.
 - **Initial state.** A surface kind or mode can declare the state a buffer starts in, as `evil-set-initial-state` does. Text buffers start in normal, `die-term` in passthrough, and orchid's conversation mode might choose insert.
 - **Conflicts.** Within a keymap, later registration wins, and `describe-key` lists what was shadowed. Your config is applied last, and your bindings go into the keymap they name (global by default).
 
@@ -187,8 +189,8 @@ ModeSpec (registered)
   restore(data, buffer, ctx)      optional (§14)
 
 Mode (one instance per buffer)
-  on_enable(buffer, ctx)          optional
-  on_disable(buffer, ctx)         optional
+  on_enable(buffer, ctx)          optional; queued (C3)
+  on_disable(buffer, ctx)         optional; queued (C3)
   on_resize(window, size, ctx)    optional; a window showing the buffer changed size; queued (C3)
   decorate(text, visible range)   optional; a face provider (§9, C16)
   save() -> data                  optional (§14)
@@ -211,10 +213,10 @@ The text surface belongs to core. This section covers what extensions can do wit
 - `edits_since(rev)`: every change since a revision (C15)
 
 **Editing.**
-- Edits happen inside a **transaction**, which carries an **origin**, `User` or `Extension` (C14).
-- **Undo groups** are separate from transactions. An insert session or `3dd` is one undo step spanning several commands, and undoing it restores the cursor.
+- Edits happen inside a **transaction**: a set of changes in the coordinates of the text before it, applied all or none. It carries an **origin**, `User` or `Extension` (C14).
+- **Undo groups** are separate from transactions. Each command or callback is one undo step by default, so `3dd` is one step. An explicit group spans commands, as an insert session does. Undoing a step restores the cursor from before it.
 - **Styled insertion** inserts text together with its faces and tags in one call, the equivalent of inserting a `propertize`d string. Replacing the whole buffer is one call too, which is what seek's "erase and redraw" becomes.
-- A transaction can be **silent**, meaning it isn't recorded in undo. Streaming output, like orchid's assistant text, shouldn't fill your undo history. Undo adjusts for silent edits: if you type, an extension then appends silently above your text, and you press `u`, your text comes back exactly.
+- A transaction can be **silent**, meaning it isn't recorded in undo. Streaming output, like orchid's assistant text, shouldn't fill your undo history. Undo adjusts for silent edits: if you type, an extension then appends silently above your text, and you press `u`, your text comes back exactly. If a silent edit changed the text an undo step needs, undo refuses with an error and drops the older history.
 - **Read-only ranges block `User` edits only.** Edits from extension code always succeed, which replaces orchid's `inhibit-read-only` wrappers.
 - Every edit produces a **change**: the old range, the new text, and byte and line/column positions. Incremental parsers like tree-sitter need exactly this. Modes read changes with `edits_since` (§8).
 
@@ -222,13 +224,13 @@ The text surface belongs to core. This section covers what extensions can do wit
 
 **Cursors and selections.** Each window has its own cursor and selection (C10). A selection has a shape (char, line or block) and a goal column for vertical motion. Extensions can read and set them in a given window, or in the focused one.
 
-**Anchored decorations.** Decorations are added and removed by id, and their ranges move with edits, the way markers do.
+**Anchored decorations.** Decorations are added and removed by id, and their ranges move with edits, the way markers do. Each end has a gravity. By default, text inserted at either edge stays outside the range.
 
 | Kind | Effect | Used by |
 |---|---|---|
 | Face | Styles a range | Search highlights, orchid message styling, delta's diff lines |
 | Hide | Hides a range, showing nothing, replacement text, or a placement (an image or pixel buffer) | manifold folds, orchid collapsibles, markdown markup hiding and inline images |
-| Virtual text | Shows text before or after a position without adding it to the buffer | Inline hints, token counts |
+| Virtual text | Shows text just before a position, without adding it to the buffer. An end-of-line hint anchors at the newline. | Inline hints, token counts |
 | Read-only | Blocks `User` edits in a range | orchid's transcript |
 | Keymap | Keys pressed with the cursor in the range use this keymap first | Buttons, collapsible toggles, markdown links |
 | Tag | Attaches an extension value to a range, which can be looked up by position | "Which session, section or note is under the cursor?" |
@@ -242,6 +244,12 @@ The text surface belongs to core. This section covers what extensions can do wit
 - `move_visual`: move by screen line, for `gj`/`gk`
 - `display_col`: the screen column of a position, for block selections
 - `next_visible`: the next line that isn't hidden
+- `display_line`: the display line holding a position, with its lines, rows and cursor positions
+- `pos_at_vcol`: the position at a display column, for `j`/`k` goals
+- `snap`: the nearest cursor position in a direction, for `h`/`l`
+- `screen_pos`: where a position is drawn in a window
+
+**Cursor positions.** Layout decides where the cursor can be. A Hide with replacement text keeps its start as a cursor position, drawn on the replacement: that's the fold line. A Hide without replacement text has no cursor position inside it. Overlapping Hides merge. After every edit or decoration change, core moves each cursor out of hidden text: to the fold line if there is one, otherwise to the next visible position. A whole-line fold hides from the start of its first line to the newline that ends its last line, so the next line keeps its own row.
 
 **Motions respect hidden ranges.** Line motions skip hidden ranges through `next_visible`, and search can match inside them and reveal them (scope §8). Because core does this, manifold needs no override.
 
@@ -272,7 +280,7 @@ die-vim uses only this public API (scope D15). These are the pieces it needs tha
 3. Typed registers (char, line or block), and the system clipboard
 4. The prefix-argument slot (§6)
 5. `feed_keys` and a key observer, for `q` and `@`
-6. Layout queries: `viewport`, `move_visual`, `display_col`, `next_visible`
+6. Layout queries: `viewport`, `move_visual`, `display_col`, `next_visible`, `display_line`, `pos_at_vcol`, `snap`, `screen_pos`
 7. An `<any>` binding per state (§7)
 8. `edits_since`, so dot-repeat can record text inserted by any binding, including a mode's
 9. Window commands (split, close, only, focus by direction) and a surface's `scroll_to` and `reveal`
@@ -340,18 +348,20 @@ All callbacks run on the main thread, receive `Ctx`, and are queued (C3). Every 
 |---|---|---|
 | `spawn(work, done)` | `work` runs on a thread pool and returns a value; `done(ctx, value)` runs on the main thread | Anything slow, such as scrib's blocking `call-process` or delta's `shell-command-to-string` |
 | `process(cmd)` | A builder for args, environment and working directory, with callbacks for stdout (lines or chunks), stderr and exit. Returns a handle for writing to stdin or killing the process. | `make-process` with a filter and sentinel |
-| `pty(cmd, size)` | The same, on a PTY. Used by `die-term`, which can instead hand the PTY to its parser thread or helper process, so its output never passes through the main thread. | |
+| `pty(cmd, size)` | The same, on a PTY. Used by `die-term`, which hands the PTY to the terminal's helper process, so its output never passes through DIE. | |
 | `watch(path, f)` | File-system events | `file-notify-add-watch` |
 | `after(d, f)`, `every(d, f)`, `idle(d, f)` | Timers | `run-with-timer`, `run-at-time`, `run-with-idle-timer` |
 | `prompt(spec, f)` | A command-line prompt with optional completion candidates. `f(ctx, answer)` runs with the answer on submit, and with nothing on cancel, so a multi-step flow can clean up. | `completing-read`, `read-string` |
 
 **PTYs** need more than pipes do:
-- A PTY is registered with the holder when `pty()` creates it, so it survives restarts and crashes (scope §5.9).
+- A PTY is registered with the holder when `pty()` creates it, so it survives restarts and crashes (scope §5.9). The holder takes labelled fds from any DIE process (`term/<id>/pty`, `term/<id>/engine`), so a terminal's helper process can reach its PTY, and a restarted DIE can reach the helper.
+- After a restart DIE isn't the shell's parent. The exit callback still gets the status: core watches the pid with kqueue (`NOTE_EXIT | NOTE_EXITSTATUS`). The end of output on the PTY marks the final text.
+- Children are started with `posix_spawn` and close-on-exec by default, so no child holds another terminal open after you kill its buffer.
 - Resizes carry pixel sizes as well as cells.
 - The owner can read the terminal mode, to spot password prompts, and the foreground process group, to confirm before killing a running command.
-- A terminal's output is parsed off the main thread, in its helper process or on a thread per terminal, and reaches the main thread as finished frames (scope §5.8). Other PTY users get main-thread callbacks like `process`.
+- A terminal's output is parsed in its helper process and reaches the main thread as finished frames: the changed rows as DIE cells, the placements, and images as shared memory (scope §5.8). Other PTY users get main-thread callbacks like `process`.
 
-There are no blocking calls. A command that waited on a process would freeze everything, including your terminals, so the API doesn't offer one. The main thread never waits on a terminal's thread or helper process either.
+There are no blocking calls. A command that waited on a process would freeze everything, including your terminals, so the API doesn't offer one. The main thread never waits on a terminal's helper either.
 
 C3 costs you something with multi-step prompts, which nest one callback per step. scrib's `scrib-new-filter` and orchid's session creation are the cases to watch.
 
@@ -376,7 +386,7 @@ C3 costs you something with multi-step prompts, which nest one callback per step
 - **Custom surfaces** return data from `save()`, serialized with serde and tagged with the surface kind. The extension registers a **restorer** for that kind, which rebuilds the surface from the data.
 - **Buffers restored by their mode** (orchid's chat). The mode saves what it needs, such as a session id, and repopulates the buffer on restore, for example by re-reading the session log. Core doesn't save their text.
 - **Missing extensions.** If a saved buffer belongs to an extension that's no longer in your config, the buffer is dropped and a message is logged.
-- **Terminals.** A PTY is handed to the holder when it's created (§12), so `save()` returns state only, never file descriptors. A live PTY is never dropped on restore; if its saved state fails to load, it's reattached as a fresh terminal.
+- **Terminals.** A PTY is handed to the holder when it's created (§12), so `save()` returns state only, never file descriptors. A live PTY is never dropped on restore; if its saved state fails to load, it's reattached as a fresh terminal. The holder decides which terminals exist. A saved terminal the holder no longer has ended while DIE was down, and it's restored as exited. A terminal the holder has but the session doesn't (DIE crashed before writing the session) is reattached as a fresh terminal, never dropped.
 
 ## 15. Errors and panics
 
