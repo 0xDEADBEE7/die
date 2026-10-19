@@ -54,7 +54,8 @@ pub struct Case {
     pub reason: Option<String>,
     /// The keys in Vim notation, as written in the case file.
     pub keys: String,
-    /// `keys` split into single keys: a character, or `<Name>`.
+    /// `keys` split into single keys as Evil read them (`evil-oracle--parse-keys`): a
+    /// character, or `<Name>`. `validate` checks that die-core reads them alike.
     pub key_tokens: Vec<String>,
     /// The Emacs major mode the case ran in.
     pub mode: String,
@@ -182,42 +183,25 @@ pub struct ErrorInfo {
     pub after_keys: usize,
 }
 
-/// Vim key names the oracle understands (matched case-insensitively).
-const KEY_NAMES: &[&str] = &[
-    "Esc", "CR", "Enter", "Return", "NL", "BS", "Tab", "Space", "lt", "Bslash", "Bar", "Del", "Up",
-    "Down", "Left", "Right", "Home", "End",
-];
-
-/// Split Vim-notation keys into tokens, the way die-vim will: `<Name>` is
-/// one key when Name is known (or `C-x`), otherwise `<` is a literal.
-pub fn parse_keys(keys: &str) -> Vec<String> {
-    let chars: Vec<char> = keys.chars().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '<'
-            && let Some(len) = chars[i + 1..].iter().position(|&c| c == '>')
-            && let Some(tok) = key_name(&chars[i + 1..i + 1 + len].iter().collect::<String>())
-        {
-            out.push(tok);
-            i += len + 2;
-            continue;
+/// Check that die-core reads `keys` as Evil did: one key per token, through the notation
+/// parser die-vim, the harness and keymaps use. A name Evil's side doesn't know, which
+/// it typed as literal characters, fails here until `evil-oracle.el` learns it.
+fn check_keys(keys: &str, tokens: &[String]) -> Result<(), String> {
+    let ours = die_core::parse_keys(keys)?;
+    let mut evil = Vec::new();
+    for t in tokens {
+        match die_core::parse_keys(t)?.as_slice() {
+            [ev] => evil.push(ev.clone()),
+            evs => return Err(format!("key token {t:?} is {} keys", evs.len())),
         }
-        out.push(chars[i].to_string());
-        i += 1;
     }
-    out
-}
-
-fn key_name(name: &str) -> Option<String> {
-    let n: Vec<char> = name.chars().collect();
-    if n.len() == 3 && (n[0] == 'C' || n[0] == 'c') && n[1] == '-' {
-        return Some(format!("<C-{}>", n[2].to_lowercase()));
+    if ours != evil {
+        return Err(format!(
+            "die-core reads {keys:?} as {} keys, not as key_tokens {tokens:?}",
+            ours.len()
+        ));
     }
-    KEY_NAMES
-        .iter()
-        .find(|k| k.eq_ignore_ascii_case(name))
-        .map(|k| format!("<{k}>"))
+    Ok(())
 }
 
 /// The position of `byte` in `text`, or an error if it isn't on a char
@@ -279,13 +263,7 @@ impl Case {
         if self.source == Source::HandWritten && self.reason.is_none() {
             return Err("hand-written case without a reason".into());
         }
-        let tokens = parse_keys(&self.keys);
-        if tokens != self.key_tokens {
-            return Err(format!(
-                "key_tokens {:?} but parse_keys gives {tokens:?}",
-                self.key_tokens
-            ));
-        }
+        check_keys(&self.keys, &self.key_tokens)?;
         let (i, e) = (&self.input, &self.expected);
         check_pos(&i.text, i.cursor, "input cursor")?;
         check_pos(&e.text, e.cursor, "expected cursor")?;

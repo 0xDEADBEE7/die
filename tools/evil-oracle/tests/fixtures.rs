@@ -1,7 +1,7 @@
 //! Loads every fixture the oracle wrote and checks it parses into the
 //! schema and is self-consistent: the harness die-vim's tests will use.
 
-use evil_oracle::{Fixture, Pos, Run, Source, State, parse_keys, pos_of_byte};
+use evil_oracle::{Case, Fixture, Pos, Run, Source, State, pos_of_byte};
 use std::fs;
 use std::path::Path;
 
@@ -80,11 +80,28 @@ fn some_cases_end_outside_normal_state() {
 }
 
 #[test]
-fn key_parser_examples() {
-    assert_eq!(parse_keys("cwfoo<Esc>"), ["c", "w", "f", "o", "o", "<Esc>"]);
-    assert_eq!(parse_keys("<C-V>j<c-r>"), ["<C-v>", "j", "<C-r>"]);
-    assert_eq!(parse_keys("<<j>>"), ["<", "<", "j", ">", ">"]);
-    assert_eq!(parse_keys("i<lt>x<cr>"), ["i", "<lt>", "x", "<CR>"]);
+fn key_tokens_are_how_die_core_reads_the_keys() {
+    let check = |keys: &str, tokens: &[&str]| {
+        let tokens = serde_json::to_string(tokens).unwrap();
+        let json = format!(
+            r#"{{"id":"x","source":"oracle","keys":{keys:?},"key_tokens":{tokens},"mode":"fundamental-mode",
+              "input":{{"text":"a\n","cursor":{{"line":0,"col":0,"byte":0}}}},
+              "expected":{{"text":"a\n","cursor":{{"line":0,"col":0,"byte":0}},"state":"normal",
+                "registers":{{"\"":null}},"clipboard":{{"text":null,"writes":[]}}}}}}"#
+        );
+        serde_json::from_str::<Case>(&json)
+            .unwrap()
+            .validate(Run::Batch)
+    };
+    check("cwfoo<Esc>", &["c", "w", "f", "o", "o", "<Esc>"]).unwrap();
+    check("<C-V>j<c-r>", &["<C-v>", "j", "<C-r>"]).unwrap();
+    check("<<j>>", &["<", "<", "j", ">", ">"]).unwrap();
+    check("i<lt>x<cr>", &["i", "<lt>", "x", "<CR>"]).unwrap();
+    assert!(check("ab", &["ab"]).is_err());
+    assert!(check("<Esc>", &["<", "E", "s", "c", ">"]).is_err());
+    // Evil's side doesn't know <PageDown>, so it typed ten characters, and die-core reads one key.
+    let literal = ["<", "P", "a", "g", "e", "D", "o", "w", "n", ">"];
+    assert!(check("<PageDown>", &literal).is_err());
 }
 
 #[test]

@@ -146,7 +146,7 @@ fn passthrough_cmd_esc_first_and_other_keys_to_event() {
     let w = ctx.open_window(t, 40, 5).unwrap();
     assert_eq!(ctx.state(), State::Passthrough);
     let cmd = Mods {
-        cmd: true,
+        super_: true,
         ..Default::default()
     };
     let a = KeyEvent::press(Key::Char('a'));
