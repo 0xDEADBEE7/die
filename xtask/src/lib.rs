@@ -6,6 +6,7 @@ pub mod budget;
 pub mod ci;
 pub mod clean;
 pub mod count;
+pub mod cross;
 pub mod fonts;
 pub mod guards;
 pub mod lint;

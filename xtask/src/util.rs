@@ -30,6 +30,52 @@ pub fn rustc() -> PathBuf {
     }
 }
 
+/// A rustc that builds for `target`: the pinned toolchain's when its sysroot has
+/// the target's std, else one from another installed toolchain that is the same
+/// build (an identical `rustc -vV`) and has it. The pinned toolchain lists no
+/// Linux targets until you approve their std downloads
+/// (docs/records/platforms.md §6, item 3).
+pub fn rustc_for(target: &str) -> Result<PathBuf> {
+    let pinned = rustc();
+    let version = output(Command::new(&pinned).arg("-vV"))?;
+    let sysroot = PathBuf::from(output(Command::new(&pinned).args(["--print", "sysroot"]))?.trim());
+    let has_std = |sysroot: &Path| {
+        sysroot
+            .join("lib/rustlib")
+            .join(target)
+            .join("lib")
+            .is_dir()
+    };
+    if has_std(&sysroot) {
+        return Ok(pinned);
+    }
+    // rustup keeps its toolchains side by side.
+    let mut others: Vec<PathBuf> = sysroot
+        .parent()
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| *p != sysroot && has_std(p))
+        .collect();
+    others.sort();
+    for dir in others {
+        let r = dir.join("bin/rustc");
+        if output(Command::new(&r).arg("-vV")).is_ok_and(|v| v == version) {
+            return Ok(r);
+        }
+    }
+    let release = version
+        .lines()
+        .find_map(|l| l.strip_prefix("release: "))
+        .unwrap_or("?");
+    Err(format!(
+        "no installed toolchain has the {target} std for rustc {release}. \
+         `rustup target add {target}` adds it to the pinned toolchain; that's a download, so ask first"
+    ))
+}
+
 /// Run `cmd`, inheriting output. Errors name the command.
 pub fn run(cmd: &mut Command) -> Result {
     let status = cmd.status().map_err(|e| format!("{}: {e}", show(cmd)))?;
