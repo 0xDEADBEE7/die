@@ -60,7 +60,7 @@ fn undo_and_redo_report_the_range_they_changed() {
 
 #[test]
 fn a_step_with_several_changes_reports_their_hull() {
-    let (mut ctx, b, _) = setup("abcdefghij");
+    let (mut ctx, b, w) = setup("abcdefghij");
     step(&mut ctx, b, |t| {
         t.tx(Origin::User)
             .replace(0..1, "XX")
@@ -75,6 +75,11 @@ fn a_step_with_several_changes_reports_their_hull() {
     // The deleted `i` was at 10 in the redone text, so the hull ends there.
     assert_eq!(redo(&mut ctx, b), Ok(0..10));
     assert_eq!(text(&ctx, b), ">XXbcdefghj");
+    assert_eq!(
+        ctx.text(b).unwrap().selection(w),
+        Some(Selection::cursor(0)),
+        "redo's cursor is at the hull's start"
+    );
 }
 
 #[test]
@@ -264,4 +269,24 @@ fn limits_are_buffer_settings() {
     ctx.text_mut(b).unwrap().settings_mut().undo_steps = 0;
     insert(&mut ctx, b, 0, "d");
     assert_eq!(undo(&mut ctx, b), Err(Error::NothingToUndo));
+}
+
+#[test]
+fn redo_puts_a_cursor_at_the_start_of_a_multi_change_step() {
+    // `>j`: one transaction indents two lines. Its changes are recorded last one first.
+    let (mut ctx, b, w) = setup("a\nb\n");
+    step(&mut ctx, b, |t| {
+        t.tx(Origin::User)
+            .insert(0, "\t")
+            .insert(2, "\t")
+            .commit()
+            .unwrap()
+    });
+    assert_eq!(undo(&mut ctx, b), Ok(0..2));
+    assert_eq!(redo(&mut ctx, b), Ok(0..4));
+    assert_eq!(text(&ctx, b), "\ta\n\tb\n");
+    assert_eq!(
+        ctx.text(b).unwrap().selection(w),
+        Some(Selection::cursor(0))
+    );
 }

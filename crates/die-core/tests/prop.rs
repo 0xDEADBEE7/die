@@ -795,6 +795,9 @@ enum H {
     Unit(u16, Vec<char>, u8),
     /// One command: an insert, an undo boundary, another insert right after the first.
     Split(u16, String, String),
+    /// One transaction with two changes, which it records last one first: an insert,
+    /// and a replacement of the character at or after it.
+    Multi(u16, u16, String, String),
     Undo,
     Redo,
     Sel(u16, u16, u8),
@@ -808,6 +811,7 @@ fn h_step() -> impl Strategy<Value = H> {
         2 => (any::<u16>(), 1u8..4).prop_map(|(a, n)| H::Del(a, n)),
         2 => (any::<u16>(), prop::collection::vec(c, 1..5), any::<u8>()).prop_map(|(a, v, k)| H::Unit(a, v, k)),
         1 => (any::<u16>(), s(), s()).prop_map(|(a, x, y)| H::Split(a, x, y)),
+        1 => (any::<u16>(), any::<u16>(), s(), s()).prop_map(|(a, c, x, y)| H::Multi(a, c, x, y)),
         3 => Just(H::Undo),
         2 => Just(H::Redo),
         1 => (any::<u16>(), any::<u16>(), 0u8..3).prop_map(|(a, h, k)| H::Sel(a, h, k)),
@@ -995,6 +999,35 @@ fn run_history(init: String, steps_cap: usize, bytes_cap: usize, hs: Vec<H>) {
                         bytes: ny,
                         undone: q..q,
                         redone: q..q + ny,
+                    },
+                );
+            }
+            H::Multi(a, c, x, y) => {
+                let (p, q) = (at(t, a).min(at(t, c)), at(t, a).max(at(t, c)));
+                let q1 = chars_after(t, q, 1);
+                let mut want = before.clone();
+                want.replace_range(q..q1, &y);
+                want.insert_str(p, &x);
+                let (nx, ny) = (x.len(), y.len());
+                unit(&mut ctx, b, move |t| {
+                    t.tx(Origin::User)
+                        .insert(p, x)
+                        .replace(q..q1, y)
+                        .commit()
+                        .unwrap()
+                });
+                let after = text_of(&ctx, b);
+                assert_eq!(after, want, "the transaction's text");
+                push(
+                    &mut undo,
+                    &mut redo,
+                    MStep {
+                        before,
+                        after,
+                        sel,
+                        bytes: nx + ny + (q1 - q),
+                        undone: p..q1,
+                        redone: p..q + nx + ny,
                     },
                 );
             }

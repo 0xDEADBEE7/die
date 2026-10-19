@@ -129,6 +129,7 @@ enum Entry {
 
 pub(crate) struct Plan {
     pub ops: Vec<Op>,
+    /// The selection an undo restores. Redo leaves it to the caller, which knows the range.
     pub sel: Option<Selection>,
     redo: bool,
     keep: usize,
@@ -304,9 +305,8 @@ impl History {
         let (ops, after) = rebase(&to_apply, &pending).ok_or(Error::UndoConflict)?;
         let (sel, other) = if redo {
             let before = g.sel.map(|s| map_sel(s, &pending));
-            let cur = ops.first().map(|o| Selection::cursor(o.pos));
             (
-                cur,
+                None,
                 Group {
                     ops: ops.clone(),
                     sel: before,

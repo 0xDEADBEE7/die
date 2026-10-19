@@ -482,7 +482,7 @@ impl TextBuf {
         self.history_step(false)
     }
     /// Redo the last undone step and return the range it changed. The acting window gets a
-    /// cursor at the start of the step's first change.
+    /// cursor at the start of that range.
     pub fn redo(&mut self) -> Result<Range<usize>> {
         self.history_step(true)
     }
@@ -529,7 +529,12 @@ impl TextBuf {
             });
             self.apply_one(r, op.inserted.clone(), Origin::User, Rec::History);
         }
-        let sel = plan.sel;
+        let hull = hull.unwrap_or(0..0);
+        let sel = if redo {
+            Some(Selection::cursor(hull.start))
+        } else {
+            plan.sel
+        };
         self.history.commit(plan);
         let len = self.rope.len_bytes();
         if let (Some(w), Some(s)) = (self.actor, sel)
@@ -542,7 +547,7 @@ impl TextBuf {
             };
         }
         self.normalize_views();
-        Ok(hull.unwrap_or(0..0))
+        Ok(hull)
     }
 
     // ---- markers
