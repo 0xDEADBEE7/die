@@ -98,7 +98,9 @@ pub enum CursorShape {
     Hollow,
 }
 
-/// A cursor in the frame.
+/// A cursor in the frame. It can lie past the grid's right edge when a line
+/// runs past an unwrapped window (M0 has no horizontal scrolling); die-render
+/// doesn't draw it then.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Cursor {
     pub row: usize,
@@ -301,7 +303,7 @@ impl Ctx {
                     scene.put(p.row + y, p.col + wc, Cell::new(Glyph::Char('│'), style));
                 }
             }
-            if let Some((r, c)) = cursor.filter(|(r, c)| p.row + r < rows && p.col + c < cols) {
+            if let Some((r, c)) = cursor {
                 let state = self.buffers.get(bid).map_or(State::Normal, |b| b.state);
                 let shape = if focused && !input_in_prompt {
                     shape_for(state)
