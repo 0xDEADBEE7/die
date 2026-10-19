@@ -465,6 +465,11 @@ pub fn screen(ctx: &mut Ctx, w: WindowId) -> Screen {
     );
     Screen {
         rows: (0..rows).map(|r| scene.row_text(r)).collect(),
-        cursor: scene.cursors.first().map(|c| (c.row, c.col)),
+        // The window's own: a prompt's cursor is on the command row, below it.
+        cursor: scene
+            .cursors
+            .iter()
+            .find(|c| c.row < rows)
+            .map(|c| (c.row, c.col)),
     }
 }
