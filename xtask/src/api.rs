@@ -6,7 +6,7 @@
 
 use crate::util::{Result, git, output, read, rust_files};
 use quote::ToTokens;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use syn::{Attribute, ImplItem, Item, TraitItem, Visibility};
 
@@ -35,25 +35,25 @@ pub fn run(root: &Path, base: Option<&str>) -> Result {
         .trim()
         .to_string();
 
-    let mut old = BTreeMap::new();
+    let mut old_src = Vec::new();
     for path in
         output(git(root).args(["ls-tree", "-r", "--name-only", &base, "--", API_SRC]))?.lines()
     {
         if path.ends_with(".rs") {
             let src = output(git(root).args(["show", &format!("{base}:{path}")]))?;
-            collect(&module_of(path), &src, &mut old)
-                .map_err(|e| format!("{path} at {short}: {e}"))?;
+            old_src.push((format!("{path} at {short}"), module_of(path), src));
         }
     }
-    let mut new = BTreeMap::new();
+    let mut new_src = Vec::new();
     for file in rust_files(&root.join(API_SRC)) {
         let rel = file
             .strip_prefix(root)
             .unwrap_or(&file)
             .to_string_lossy()
             .into_owned();
-        collect(&module_of(&rel), &read(&file)?, &mut new).map_err(|e| format!("{rel}: {e}"))?;
+        new_src.push((rel.clone(), module_of(&rel), read(&file)?));
     }
+    let (old, new) = (collect(&old_src)?, collect(&new_src)?);
 
     println!("die-core public API, {short} -> working tree");
     let mut n = 0;
@@ -146,20 +146,62 @@ fn indent(text: &str, by: &str) -> String {
         .join("\n")
 }
 
-fn collect(module: &str, src: &str, out: &mut BTreeMap<String, Entry>) -> Result {
-    let file = syn::parse_file(src).map_err(|e| e.to_string())?;
-    items(module, &file.items, out);
-    Ok(())
+/// Every public item in `files`: (name for errors, module path, source).
+fn collect(files: &[(String, String, String)]) -> Result<BTreeMap<String, Entry>> {
+    let mut parsed = Vec::new();
+    for (name, module, src) in files {
+        let file = syn::parse_file(src).map_err(|e| format!("{name}: {e}"))?;
+        parsed.push((module, file));
+    }
+    // Methods and trait impls count only on types that are themselves `pub`.
+    let mut types = BTreeSet::new();
+    for (_, file) in &parsed {
+        pub_types(&file.items, &mut types);
+    }
+    let mut out = BTreeMap::new();
+    for (module, file) in &parsed {
+        items(module, &file.items, &types, &mut out);
+    }
+    Ok(out)
 }
 
-fn items(module: &str, list: &[Item], out: &mut BTreeMap<String, Entry>) {
+fn pub_types(list: &[Item], out: &mut BTreeSet<String>) {
     for item in list {
         match item {
             Item::Mod(m) => {
                 if let Some((_, inner)) = &m.content {
-                    items(&format!("{module}::{}", m.ident), inner, out);
+                    pub_types(inner, out);
                 }
             }
+            Item::Struct(_) | Item::Enum(_) | Item::Union(_) | Item::Trait(_) | Item::Type(_) => {
+                if let Some((name, vis, _)) = head(item)
+                    && is_pub(vis)
+                {
+                    out.insert(name);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The name of an impl's type: `Tx` for `Tx<'_>`.
+fn self_type(imp: &syn::ItemImpl) -> Option<String> {
+    match &*imp.self_ty {
+        syn::Type::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    }
+}
+
+fn items(module: &str, list: &[Item], types: &BTreeSet<String>, out: &mut BTreeMap<String, Entry>) {
+    for item in list {
+        match item {
+            Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    items(&format!("{module}::{}", m.ident), inner, types, out);
+                }
+            }
+            Item::Impl(imp) if !self_type(imp).is_some_and(|t| types.contains(&t)) => {}
             Item::Impl(imp) => {
                 let mut bare = imp.clone();
                 bare.attrs.clear();
@@ -341,9 +383,17 @@ mod tests {
     use super::*;
 
     fn api(src: &str) -> BTreeMap<String, String> {
-        let mut out = BTreeMap::new();
-        collect("die_core", src, &mut out).unwrap();
+        let out = collect(&[("test".into(), "die_core".into(), src.into())]).unwrap();
         out.into_iter().map(|(k, e)| (k, e.sig)).collect()
+    }
+
+    #[test]
+    fn impls_on_private_types_are_not_api() {
+        let a = api(
+            "pub(crate) struct H;\nimpl H { pub fn x(&self) {} }\nimpl Clone for H { fn clone(&self) -> H { H } }\npub struct P;\nimpl P { pub fn y(&self) {} }",
+        );
+        let keys: Vec<&str> = a.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["die_core::P", "die_core::impl P::y"]);
     }
 
     #[test]
