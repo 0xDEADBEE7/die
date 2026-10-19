@@ -2,7 +2,7 @@
 
 # die-term decision record: prebuilt libghostty-vt (the ghostel model)
 
-Date: 2026-10-19. Status: **accepted 2026-10-19** as scope D10. §9's question 2 became D20 and spike S2.
+Date: 2026-10-19. Status: **accepted 2026-10-19** as scope D10. §9's question 2 became D20 and spike S2. S2 then built the exact configuration that §5 calls "the one gap", and it passed ([s2-term-engine.md](s2-term-engine.md)).
 Engine pin: Ghostty `main` 765ea37ad64f. That is also today's signed `tip`, re-checked with `git ls-remote` on 2026-10-19. Rust wrapper: libghostty-rs `d2036bae`, which is still the head of master today.
 
 ## 1. Recommendation
