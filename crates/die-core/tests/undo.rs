@@ -290,3 +290,51 @@ fn redo_puts_a_cursor_at_the_start_of_a_multi_change_step() {
         Some(Selection::cursor(0))
     );
 }
+
+#[test]
+fn lowering_the_caps_applies_at_the_next_undo() {
+    let (mut ctx, b, _) = setup("");
+    for c in ["a", "b", "c"] {
+        insert(&mut ctx, b, 0, c);
+    }
+    ctx.text_mut(b).unwrap().settings_mut().undo_steps = 1;
+    assert_eq!(undo(&mut ctx, b), Ok(0..0));
+    assert_eq!(undo(&mut ctx, b), Err(Error::NothingToUndo));
+    assert_eq!(text(&ctx, b), "ba");
+    // 0 turns undo off at once.
+    insert(&mut ctx, b, 0, "d");
+    insert(&mut ctx, b, 0, "e");
+    ctx.text_mut(b).unwrap().settings_mut().undo_steps = 0;
+    assert_eq!(undo(&mut ctx, b), Err(Error::NothingToUndo));
+}
+
+#[test]
+fn undo_is_exact_around_streamed_silent_text() {
+    // An extension streams output in chunks, each right after the last, before, after
+    // and touching the user's text.
+    for at in [0, 3, 6, 7] {
+        let (mut ctx, b, _) = setup("abc\nd");
+        insert(&mut ctx, b, 3, "XYZ");
+        let mut p = at;
+        for chunk in ["1", "22", "中"] {
+            step(&mut ctx, b, move |t| {
+                t.tx(Origin::Extension)
+                    .silent()
+                    .insert(p, chunk)
+                    .commit()
+                    .unwrap()
+            });
+            p += chunk.len();
+        }
+        let streamed = "122中";
+        let mut want = "abc\nd".to_string();
+        // Streaming at the end of the user's text lands after it, and stays after undo.
+        want.insert_str(if at <= 3 { at } else { at - 3 }, streamed);
+        let undone = if at <= 3 { 3 + streamed.len() } else { 3 };
+        assert_eq!(undo(&mut ctx, b), Ok(undone..undone), "streamed at {at}");
+        assert_eq!(text(&ctx, b), want, "streamed at {at}");
+        redo(&mut ctx, b).unwrap();
+        undo(&mut ctx, b).unwrap();
+        assert_eq!(text(&ctx, b), want, "streamed at {at}, after a redo");
+    }
+}

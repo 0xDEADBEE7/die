@@ -132,10 +132,12 @@ pub struct Settings {
     pub tab_width: usize,
     pub read_only: bool,
     pub cursor_visible: bool,
-    /// Undo keeps at most this many steps; the oldest go first. 0 turns undo off.
+    /// Undo keeps at most this many steps; the oldest go first. 0 turns undo off. A
+    /// lower limit applies at the next edit, undo or redo.
     pub undo_steps: usize,
-    /// Undo keeps at most this much removed and inserted text, in bytes; the oldest steps
-    /// go first. The newest step stays, whatever its size.
+    /// Undo keeps steps holding at most this much removed and inserted text, in bytes; the
+    /// oldest go first, and the newest stays whatever its size. It bounds the text, not the
+    /// history's memory, which adds about 70 bytes per change.
     pub undo_bytes: usize,
 }
 
@@ -412,14 +414,15 @@ impl TextBuf {
         };
         match rec {
             Rec::Silent => self.history.silent(o.shift()),
-            Rec::Record(sel) => {
-                let limit = Limit {
-                    steps: self.settings.undo_steps,
-                    bytes: self.settings.undo_bytes,
-                };
-                self.history.record(o, sel, self.cmd, limit)
-            }
+            Rec::Record(sel) => self.history.record(o, sel, self.cmd, self.undo_limit()),
             Rec::History => {}
+        }
+    }
+
+    fn undo_limit(&self) -> Limit {
+        Limit {
+            steps: self.settings.undo_steps,
+            bytes: self.settings.undo_bytes,
         }
     }
 
@@ -488,6 +491,7 @@ impl TextBuf {
     }
 
     fn history_step(&mut self, redo: bool) -> Result<Range<usize>> {
+        self.history.trim(self.undo_limit());
         let plan = match self.history.plan(redo) {
             Err(Error::UndoConflict) => {
                 self.history.truncate(redo);
