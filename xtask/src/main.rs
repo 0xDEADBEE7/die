@@ -1,5 +1,5 @@
 use xtask::util::{Result, root};
-use xtask::{api, budget, ci, clean, fonts, guards, lint, mutate};
+use xtask::{api, budget, ci, clean, cross, fonts, guards, lint, mutate};
 
 const USAGE: &str = "usage: cargo xtask <task>
 
@@ -14,6 +14,7 @@ const USAGE: &str = "usage: cargo xtask <task>
   clean-build [--keep] no C builders in each target's build graph but the allowlist's,
                        and a build from an empty environment with no C compiler or
                        pkg-config (D16)
+  cross-check          cargo check of the workspace for Linux, with no C compiler
   mutate [--cases N]   die-core's planted bugs; the property tests must catch each
   ci [--worktree | --rev R]
                        every check in a fresh clone of HEAD (or R), or of the
@@ -39,6 +40,7 @@ fn dispatch(args: &[String]) -> Result {
         ["fonts"] => fonts::run_fonts(&root),
         ["clean-build"] => clean::run(&root, false),
         ["clean-build", "--keep"] => clean::run(&root, true),
+        ["cross-check"] => cross::run(&root, &root.join("target/xtask/cross")),
         ["mutate"] => mutate::run(&root, 2000),
         ["mutate", "--cases", n] => mutate::run(
             &root,
