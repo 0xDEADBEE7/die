@@ -369,7 +369,7 @@ pub struct Ctx {
     pub(crate) files: crate::files::Files,
     pub messages: Vec<String>,
     pub(crate) faces: Faces,
-    pub(crate) search_highlight: Option<String>,
+    pub(crate) search_highlight: Option<Pattern>,
 }
 
 pub(crate) fn panic_msg(p: &(dyn Any + Send)) -> String {

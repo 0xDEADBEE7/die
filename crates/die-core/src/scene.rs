@@ -249,7 +249,7 @@ struct Look<'a> {
     faces: &'a Faces,
     /// `default`, with every attribute set.
     base: Style,
-    search: Option<&'a str>,
+    search: Option<&'a Pattern>,
     /// Draw the selection: visual state, in the focused window.
     visual: bool,
 }
@@ -266,10 +266,10 @@ struct Highlights {
 impl Ctx {
     /// Highlight every match of `pattern` in every window, as `/` does in
     /// die-vim. `None` turns it off. A match that starts at a window's cursor
-    /// uses `search-current`. Interim: the pattern matches literally and
-    /// case-sensitively until K2's regex search and V2's smartcase.
-    pub fn set_search_highlight(&mut self, pattern: Option<String>) {
-        self.search_highlight = pattern.filter(|p| !p.is_empty());
+    /// uses `search-current`. Matches are found as `TextBuf::matches` finds
+    /// them, and the pattern's case rule is the caller's (smartcase is V2's).
+    pub fn set_search_highlight(&mut self, pattern: Option<Pattern>) {
+        self.search_highlight = pattern.filter(|p| !p.as_str().is_empty());
     }
 
     /// Compose a `cols` × `rows` frame: each placed window with its gutter,
@@ -400,7 +400,7 @@ impl Ctx {
                 let look = Look {
                     faces: &self.faces,
                     base,
-                    search: self.search_highlight.as_deref(),
+                    search: self.search_highlight.as_ref(),
                     visual: state == State::Visual && focused,
                 };
                 draw_text(scene, p, (cols, rows), t, modes, &look)
@@ -617,23 +617,12 @@ fn draw_text(
 /// as Vim draws them, and the match that starts at `cursor`, which can overlap them.
 fn matches(
     t: &TextBuf,
-    pat: &str,
+    pat: &Pattern,
     visible: &Range<usize>,
     cursor: Option<usize>,
 ) -> (Vec<Range<usize>>, Option<Range<usize>>) {
-    let rope = t.rope();
-    let floor = |b: usize| rope.char_to_byte(rope.byte_to_char(b.min(rope.len_bytes())));
-    let reach = pat.len().saturating_sub(1);
-    let a = floor(visible.start.saturating_sub(reach));
-    let s = rope.byte_slice(a..floor(visible.end + reach)).to_string();
-    let all = s
-        .match_indices(pat)
-        .map(|(i, _)| a + i..a + i + pat.len())
-        .collect();
-    let current = cursor
-        .filter(|&c| c >= a && s.get(c - a..).is_some_and(|rest| rest.starts_with(pat)))
-        .map(|c| c..c + pat.len());
-    (all, current)
+    let current = cursor.and_then(|c| t.match_at(pat, c));
+    (t.matches(pat, visible.clone()), current)
 }
 
 /// The bracket at `pos` and its partner, when both are in `visible`.

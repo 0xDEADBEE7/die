@@ -31,6 +31,8 @@
 //!   `visual_selection_char_line_and_block`: render-time highlights.
 //! - `search_matches_dont_overlap_and_the_current_one_starts_at_the_cursor`:
 //!   "aa" in "aaaa" with the cursor at 1.
+//! - `the_search_highlight_is_a_regex_with_the_callers_case_rule`: `a+b`,
+//!   ignoring case and not.
 //! - `bracket_match_counts_nested_pairs`: `((a))`.
 //! - `only_the_focused_window_draws_the_selection`
 //! - `providers_are_asked_for_the_drawn_text_only`: an unwrapped line's first
@@ -119,6 +121,11 @@ fn compose_one(ctx: &mut Ctx, w: WindowId) -> Scene {
 
 fn bg(s: &Scene, row: usize, col: usize) -> Rgb {
     s.row(row)[col].bg
+}
+
+/// A case-sensitive search highlight.
+fn search(src: &str) -> Option<Pattern> {
+    Some(Pattern::new(src, false).unwrap())
 }
 
 #[test]
@@ -212,7 +219,7 @@ fn faces_layer_over_default() {
         .decorate(0..4, Deco::Face("t.bg"))
         .unwrap();
     ctx.text_mut(b).unwrap().set_cursor(w, 4);
-    ctx.set_search_highlight(Some("c".into()));
+    ctx.set_search_highlight(search("c"));
     let s = compose_one(&mut ctx, w);
     let c = &s.row(0)[0];
     assert_eq!(
@@ -347,7 +354,7 @@ fn cursor_shape_follows_the_state() {
 #[test]
 fn search_matches_and_the_current_match() {
     let (mut ctx, _, w) = one("ab (ab) ab\n", 20, 1);
-    ctx.set_search_highlight(Some("ab".into()));
+    ctx.set_search_highlight(search("ab"));
     let s = compose_one(&mut ctx, w);
     let bgs: Vec<Rgb> = (0..10).map(|x| bg(&s, 0, x)).collect();
     let (cur, m, d) = (h("#00aaaa"), h("#0000aa"), h("#000000"));
@@ -626,7 +633,7 @@ fn highlights_change_only_what_their_faces_set() {
         .unwrap()
         .decorate(0..7, Deco::Face("t.deco"))
         .unwrap();
-    ctx.set_search_highlight(Some("ab".into()));
+    ctx.set_search_highlight(search("ab"));
     let cell = |s: &Scene, x: usize| {
         let c = &s.row(0)[x];
         (c.fg, c.bg, c.italic, c.bold)
@@ -699,11 +706,24 @@ fn providers_are_asked_for_the_drawn_text_only() {
 fn search_matches_dont_overlap_and_the_current_one_starts_at_the_cursor() {
     let (mut ctx, b, w) = one("aaaa\n", 10, 1);
     ctx.text_mut(b).unwrap().set_cursor(w, 1);
-    ctx.set_search_highlight(Some("aa".into()));
+    ctx.set_search_highlight(search("aa"));
     let s = compose_one(&mut ctx, w);
     let (cur, m) = (h("#00aaaa"), h("#0000aa"));
     let bgs: Vec<Rgb> = (0..4).map(|x| bg(&s, 0, x)).collect();
     assert_eq!(bgs, [m, cur, cur, m]);
+}
+
+#[test]
+fn the_search_highlight_is_a_regex_with_the_callers_case_rule() {
+    let (mut ctx, _, w) = one("Ab (ab) aab\n", 20, 1);
+    let (cur, m, d) = (h("#00aaaa"), h("#0000aa"), h("#000000"));
+    let mut bgs = |ignore_case| {
+        ctx.set_search_highlight(Some(Pattern::new("a+b", ignore_case).unwrap()));
+        let s = compose_one(&mut ctx, w);
+        (0..11).map(|x| bg(&s, 0, x)).collect::<Vec<Rgb>>()
+    };
+    assert_eq!(bgs(true), [cur, cur, d, d, m, m, d, d, m, m, m]);
+    assert_eq!(bgs(false), [d, d, d, d, m, m, d, d, m, m, m]);
 }
 
 #[test]
