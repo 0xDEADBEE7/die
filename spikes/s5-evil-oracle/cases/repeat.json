@@ -1,0 +1,18 @@
+{"topic": "repeat",
+ "cases": [
+  {"id": "dw-dot", "keys": "dw.", "text": ["|a b c d"]},
+  {"id": "dw-3dot-count-replaces", "keys": "dw3.", "text": ["|a b c d e f"]},
+  {"id": "3x-dot", "keys": "3x.", "text": ["|a b c d e f"]},
+  {"id": "ciw-dot", "keys": "ciwX<Esc>w.", "text": ["|foo bar baz"]},
+  {"id": "A-dot", "keys": "A;<Esc>j.", "text": ["|a", "b"]},
+  {"id": "o-dot", "keys": "ofoo<Esc>.", "text": ["|a"]},
+  {"id": "3ia-dot", "keys": "3ia<Esc>.", "text": ["|x"]},
+  {"id": "shift-dot", "vim": "startofline: Vim puts the cursor on the first non-blank", "keys": ">>.", "text": ["|a"]},
+  {"id": "visual-shift-dot", "vim": "startofline: Vim puts the cursor on the first non-blank", "keys": "Vj>.", "text": ["|a", "b", "c"]},
+  {"id": "visual-delete-dot", "keys": "vld.", "text": ["|abcdef"]},
+  {"id": "x-undo-dot", "keys": "xu.", "text": ["|abc"]},
+  {"id": "p-dot", "keys": "yyp.", "text": ["|a", "b"]},
+  {"id": "dd-j-dot", "keys": "ddj.", "text": ["|1", "2", "3", "4"]},
+  {"id": "R-dot", "keys": "Rxy<Esc>ll.", "text": ["|abcdefg"]},
+  {"id": "cw-dot-on-shorter-word", "keys": "cwbar<Esc>w.", "text": ["|foo a"]}
+ ]}

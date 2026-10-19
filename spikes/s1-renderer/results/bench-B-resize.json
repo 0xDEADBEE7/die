@@ -1,0 +1,86 @@
+{
+"label": "B-resize",
+"display_sync": true,
+"drawables": 3,
+"pix_layer": false,
+"pix_full": false,
+"fullscreen_sized": true,
+"presents_with_transaction": false,
+"frame": "None",
+"style": "borderless",
+"font": "Ioskeley Mono Term",
+"drawable_px": "(3024, 1964)",
+"grid": "159x49",
+"cell": "(19, 40)",
+"startup": {
+"metal_device_ms": 0.5771,
+"msl_compile_ms": 1.8231,
+"font_load_ms": 0.6941
+},
+"counters": {
+"reconciled_before_resized": 0,
+"rendered": 1930,
+"skipped_occluded": 1,
+"skipped_inflight": 0,
+"no_drawable": 0
+},
+"load_avg_at_end": "5.66 5.45 4.80",
+"press_and_hold_enabled_after_register": false,
+"resize": {
+"frames": 1160,
+"presented": 10,
+"dropped": 1150,
+"cpu_ms": {
+"n": 1160,
+"p50": 0.2361,
+"p90": 0.3055,
+"p99": 0.5014,
+"max": 0.5774,
+"mean": 0.2537
+},
+"wall_ms": {
+"n": 1160,
+"p50": 1.2315,
+"p90": 2.3337,
+"p99": 4.9084,
+"max": 5.8058,
+"mean": 1.4205
+},
+"acquire_ms": {
+"n": 1160,
+"p50": 0.1926,
+"p90": 1.2704,
+"p99": 3.7889,
+"max": 4.6826,
+"mean": 0.4352
+},
+"gpu_ms": {
+"n": 1160,
+"p50": 0.3550,
+"p90": 2.7340,
+"p99": 4.5061,
+"max": 4.5662,
+"mean": 0.9708
+},
+"quads": {
+"n": 1160,
+"p50": 1533,
+"p90": 1957,
+"p99": 2008,
+"max": 2008,
+"mean": 1501.3017
+},
+"method": "programmatic: NSWindow setFrame every 1/120 s, then a synchronous render with presentsWithTransaction; not a user drag",
+"steps": 1160,
+"steps_without_sync_frame": 0,
+"drawable_size_mismatches": 0,
+"step_ms_setframe_plus_render": {
+"n": 1160,
+"p50": 1.7831,
+"p90": 2.9994,
+"p99": 5.4694,
+"max": 6.3010,
+"mean": 1.9761
+}
+}
+}

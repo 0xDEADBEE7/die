@@ -1,0 +1,37 @@
+{
+"changes": 4,
+"first_frame_correct": 4,
+"events": [{
+"t": 146235.0652,
+"frame": 33,
+"expected": "(744, 933)",
+"drawable": "Some((744, 933))",
+"presented": true,
+"atlas_gen": 2,
+"cell": "(9, 20)"
+},{
+"t": 146235.3683,
+"frame": 52,
+"expected": "(1488, 1866)",
+"drawable": "Some((1488, 1866))",
+"presented": true,
+"atlas_gen": 3,
+"cell": "(19, 40)"
+},{
+"t": 146235.6712,
+"frame": 71,
+"expected": "(744, 933)",
+"drawable": "Some((744, 933))",
+"presented": true,
+"atlas_gen": 4,
+"cell": "(9, 20)"
+},{
+"t": 146235.9741,
+"frame": 90,
+"expected": "(1488, 1866)",
+"drawable": "Some((1488, 1866))",
+"presented": true,
+"atlas_gen": 5,
+"cell": "(19, 40)"
+}]
+}

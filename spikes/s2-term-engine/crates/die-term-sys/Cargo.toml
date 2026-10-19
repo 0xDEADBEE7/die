@@ -1,0 +1,25 @@
+# die-term-sys: DIE's replacement for libghostty-rs's `libghostty-vt-sys`, applied
+# with `[patch]`. It links the vendored, prelinked engine archive. No network,
+# git or Zig at build time.
+[package]
+name = "libghostty-vt-sys"
+version = "0.2.1"
+edition = "2024"
+links = "ghostty-vt"
+build = "build.rs"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+doctest = false
+
+# The wrapper's crate enables these by name, so they must exist. They change nothing here.
+[features]
+default = ["vendored"]
+vendored = []
+pkg-config = []
+link-dynamic = []
+kitty-graphics = []
+
+[build-dependencies]
+sha2 = "=0.10.9"

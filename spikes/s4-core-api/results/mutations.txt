@@ -1,0 +1,16 @@
+caught      M1 layout cache key ignores decorations  <- cursor_never_hidden_and_render_agrees_with_motions coverage_stats 
+              assertion `left == right` failed: step 2: stop set differs at 1 in "ba\t\n \tab\t 中\naa中中aa  aa"
+caught      M2 hide merge ignores the replacement preference  <- coverage_stats cursor_never_hidden_and_render_agrees_with_motions 
+              assertion `left == right` failed: step 29: stop set differs at 31 in "aab\n \t\téa\t\téaab \n\n\nbéa\né  \ta"
+caught      M3 no cursor fix-up after decorate  <- cursor_never_hidden_and_render_agrees_with_motions coverage_stats 
+              step 26: cursor 2 inside a hidden range
+caught      M4 undo transform tie-break  <- undo_is_exact_around_silent_edits 
+              assertion `left == right` failed: undo restored the wrong text
+caught      M5 end-of-line stop on a full row doesn't wrap  <- cursor_never_hidden_and_render_agrees_with_motions coverage_stats 
+              assertion `left == right` failed: step 0: screen_pos(28) in "ba\t\n \tab\t 中\naa中中aa  aa"
+caught      M6 open undo group not rebased over silent edits  <- undo_is_exact_around_silent_edits 
+              assertion `left == right` failed: undo restored the wrong text
+caught      M7 undo drops the pending silent shifts  <- cursor_never_hidden_and_render_agrees_with_motions coverage_stats 
+              undo rebase produced a mismatch at 6
+caught      M8 wide char ignores the row end (no filler)  <- coverage_stats cursor_never_hidden_and_render_agrees_with_motions 
+              assertion `left == right` failed: step 12: screen row 4 of "b\t\t \né\ta\néa\nba b中ab\n\taaéb\n \ta  中中"

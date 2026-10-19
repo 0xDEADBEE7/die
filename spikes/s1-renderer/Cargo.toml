@@ -1,0 +1,35 @@
+[package]
+name = "s1"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "S1 spike: winit + Metal (objc2-metal) + Core Text renderer prototype for DIE. Throwaway."
+
+# Standalone: not part of any DIE workspace.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "s1"
+path = "src/main.rs"
+
+[dependencies]
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
+raw-window-handle = "=0.6.2"
+objc2 = "=0.6.5"
+block2 = "=0.6.2"
+objc2-foundation = "=0.3.2"
+objc2-app-kit = "=0.3.2"
+objc2-metal = "=0.3.2"
+objc2-quartz-core = "=0.3.2"
+objc2-core-text = "=0.3.2"
+objc2-core-graphics = "=0.3.2"
+objc2-core-foundation = "=0.3.2"
+unicode-width = "=0.2.2"
+png = "=0.18.1"
+libc = "=0.2.191"
+
+[profile.release]
+debug = "line-tables-only"

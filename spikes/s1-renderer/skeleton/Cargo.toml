@@ -1,0 +1,24 @@
+# Skeleton of DIE's planned workspace (scope §12 "Crates") with S1's dependency
+# set, used only to time the edit -> linked binary loop (check 11). Throwaway.
+[workspace]
+resolver = "2"
+members = ["crates/die-core", "crates/die-render", "crates/die-vim", "crates/die-term", "crates/die", "apps/die-dev"]
+
+[workspace.dependencies]
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
+raw-window-handle = "=0.6.2"
+objc2 = "=0.6.5"
+block2 = "=0.6.2"
+objc2-foundation = "=0.3.2"
+objc2-app-kit = "=0.3.2"
+objc2-metal = "=0.3.2"
+objc2-quartz-core = "=0.3.2"
+objc2-core-text = "=0.3.2"
+objc2-core-graphics = "=0.3.2"
+objc2-core-foundation = "=0.3.2"
+unicode-width = "=0.2.2"
+png = "=0.18.1"
+libc = "=0.2.191"
+
+[profile.release]
+debug = "line-tables-only"

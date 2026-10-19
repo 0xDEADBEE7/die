@@ -1,0 +1,34 @@
+{
+"label": "K-titlebar",
+"display_sync": true,
+"drawables": 3,
+"pix_layer": false,
+"pix_full": false,
+"fullscreen_sized": true,
+"presents_with_transaction": false,
+"frame": "None",
+"style": "hidden-titlebar",
+"font": "Ioskeley Mono Term",
+"drawable_px": "(1488, 1866)",
+"grid": "78x46",
+"cell": "(19, 40)",
+"startup": {
+"metal_device_ms": 0.5818,
+"msl_compile_ms": 1.9415,
+"font_load_ms": 0.4910
+},
+"counters": {
+"rendered": 2,
+"skipped_occluded": 1,
+"skipped_inflight": 0,
+"no_drawable": 0
+},
+"load_avg_at_end": "3.25 3.96 4.16",
+"press_and_hold_enabled_after_register": false,
+"clicks_hidden-titlebar": {
+"style": "hidden-titlebar",
+"clicks_posted": 3,
+"mouse_events_received": 6,
+"note": "clicks at 6, 22 and 60 pt below the top edge; 2 events (down+up) expected per click that reaches the view"
+}
+}

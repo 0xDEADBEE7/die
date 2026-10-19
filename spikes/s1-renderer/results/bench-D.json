@@ -1,0 +1,153 @@
+{
+"label": "D",
+"display_sync": true,
+"drawables": 3,
+"pix_layer": false,
+"pix_full": false,
+"style": "borderless",
+"font": "Ioskeley Mono Term",
+"drawable_px": "(3024, 1964)",
+"grid": "159x49",
+"cell": "(19, 40)",
+"startup": {
+"metal_device_ms": 0.6111,
+"msl_compile_ms": 1.8633,
+"font_load_ms": 0.5452
+},
+"counters": {
+"rendered": 3617,
+"skipped_occluded": 5640,
+"skipped_inflight": 0,
+"no_drawable": 0
+},
+"load_avg_at_end": "3.84 4.53 4.44",
+"press_and_hold_enabled_after_register": false,
+"occlusion_cover_guarded": {
+"cycles": 20,
+"guard": true,
+"ping_latency_ms": {
+"n": 6542,
+"p50": 0.0173,
+"p90": 0.0310,
+"p99": 0.2170,
+"max": 7.8323,
+"mean": 0.0507
+},
+"frame_acquire_ms": {
+"n": 1559,
+"p50": 0.0354,
+"p90": 0.0455,
+"p99": 6.8132,
+"max": 9.0494,
+"mean": 0.2239
+},
+"frame_wall_ms": {
+"n": 1559,
+"p50": 0.1535,
+"p90": 0.1834,
+"p99": 6.9181,
+"max": 9.0972,
+"mean": 0.3357
+},
+"frames": 1559,
+"occluded_events": 226,
+"skipped_occluded": 3706,
+"no_drawable": 0
+},
+"occlusion_orderout_guarded": {
+"cycles": 10,
+"guard": true,
+"ping_latency_ms": {
+"n": 3285,
+"p50": 0.0248,
+"p90": 0.0406,
+"p99": 0.0943,
+"max": 9.1884,
+"mean": 0.0406
+},
+"frame_acquire_ms": {
+"n": 762,
+"p50": 0.0418,
+"p90": 0.0481,
+"p99": 0.0633,
+"max": 0.0881,
+"mean": 0.0413
+},
+"frame_wall_ms": {
+"n": 762,
+"p50": 0.1731,
+"p90": 0.1920,
+"p99": 0.2235,
+"max": 0.3305,
+"mean": 0.1696
+},
+"frames": 762,
+"occluded_events": 20,
+"skipped_occluded": 1930,
+"no_drawable": 0
+},
+"occlusion_cover_unguarded": {
+"cycles": 5,
+"guard": false,
+"ping_latency_ms": {
+"n": 1635,
+"p50": 0.0195,
+"p90": 0.0335,
+"p99": 0.1825,
+"max": 5.7942,
+"mean": 0.0405
+},
+"frame_acquire_ms": {
+"n": 628,
+"p50": 0.0369,
+"p90": 0.0459,
+"p99": 3.4371,
+"max": 9.0633,
+"mean": 0.1498
+},
+"frame_wall_ms": {
+"n": 628,
+"p50": 0.1558,
+"p90": 0.1847,
+"p99": 3.5783,
+"max": 9.1666,
+"mean": 0.2664
+},
+"frames": 628,
+"occluded_events": 60,
+"skipped_occluded": 0,
+"no_drawable": 0
+},
+"occlusion_orderout_unguarded": {
+"cycles": 5,
+"guard": false,
+"ping_latency_ms": {
+"n": 1639,
+"p50": 0.0236,
+"p90": 0.0396,
+"p99": 0.0918,
+"max": 6.5963,
+"mean": 0.0328
+},
+"frame_acquire_ms": {
+"n": 606,
+"p50": 0.0402,
+"p90": 0.0473,
+"p99": 0.0558,
+"max": 4.7828,
+"mean": 0.0528
+},
+"frame_wall_ms": {
+"n": 606,
+"p50": 0.1639,
+"p90": 0.1897,
+"p99": 0.2175,
+"max": 4.8914,
+"mean": 0.1682
+},
+"frames": 606,
+"occluded_events": 10,
+"skipped_occluded": 0,
+"no_drawable": 0
+}
+}

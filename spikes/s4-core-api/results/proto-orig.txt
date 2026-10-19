@@ -1,0 +1,11 @@
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test keymap_char_wildcard ... ok
+test kill_during_checkout_and_generations ... ok
+test checked_out_mode_gets_its_own_edits_at_checkin ... ok
+test reentrant_checkout_is_busy_not_gone ... ok
+test panic_inside_checkout_restores_object_and_attributes ... ok
+test typed_ext_command_and_downcast ... ok
+test buffer_owned_job_cancelled_on_kill ... ok
+test render_panics_contained ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

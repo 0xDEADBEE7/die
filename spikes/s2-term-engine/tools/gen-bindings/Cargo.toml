@@ -1,0 +1,14 @@
+# Regenerates crates/die-term-sys/src/bindings.rs from the archive's own headers, with the
+# wrapper's own generator settings (its tools/gen_bindings.rs, compiled in via include!).
+# Dev-only tool: `cargo build` of the spike never runs it.
+[package]
+name = "s2-gen-bindings"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+bindgen = "=0.72.1"
+heck = "=0.5.0"

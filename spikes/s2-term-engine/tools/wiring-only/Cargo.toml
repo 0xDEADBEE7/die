@@ -1,0 +1,30 @@
+# The engine wiring alone (no `libc` crate): builds the same battery source as the spike,
+# to check what the wiring itself links. `libc` adds -liconv on Apple targets.
+[package]
+name = "s2-wiring-only"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+name = "s2_term_engine"
+path = "lib.rs"
+
+[[bin]]
+name = "battery"
+path = "../../src/bin/battery.rs"
+
+[dependencies]
+libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", default-features = false, features = ["kitty-graphics"] }
+libghostty-vt-sys = { path = "../../crates/die-term-sys" }
+png = "=0.18.1"
+
+[patch."https://github.com/uzaaft/libghostty-rs"]
+libghostty-vt-sys = { path = "../../crates/die-term-sys" }
+
+[profile.release]
+debug = false
+lto = "fat"
+codegen-units = 1
