@@ -17,7 +17,7 @@
 //! What it can't set up or check yet fails the case with a reason, so a case
 //! never passes on something unchecked.
 
-use die_core::{Ctx, Key, KeyEvent, RegKind, Register, State};
+use die_core::{Ctx, RegKind, Register, State, parse_keys};
 use die_vim::Vim;
 use evil_oracle::{
     Case, Deviations, RegisterKind, Run, State as EvilState, Tranche, fixtures_dir, load_fixtures,
@@ -128,6 +128,30 @@ fn oracle() {
     assert!(problems.is_empty(), "\n{}\n", problems.join("\n"));
 }
 
+/// The oracle and die-core read the same notation: core parses each case's keys
+/// into exactly the keys the oracle's tokens name, one for one (K3).
+#[test]
+fn core_parses_keys_as_the_oracle_does() {
+    let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
+    let mut n = 0;
+    for fx in &fixtures {
+        for c in &fx.cases {
+            let whole = parse_keys(&c.keys).unwrap_or_else(|e| panic!("{}: {e}", c.id));
+            let tokens: Vec<_> = c
+                .key_tokens
+                .iter()
+                .map(|t| match parse_keys(t).as_deref() {
+                    Ok([ev]) => ev.clone(),
+                    other => panic!("{}: token {t:?} is {other:?}", c.id),
+                })
+                .collect();
+            assert_eq!(whole, tokens, "{}/{}: {:?}", fx.topic, c.id, c.keys);
+            n += 1;
+        }
+    }
+    assert!(n >= 306, "{n} cases");
+}
+
 fn pending_file(failing: &BTreeMap<String, Tranche>) -> String {
     let mut s = String::from(
         "# Oracle cases die-vim doesn't pass yet, by the work package they land with\n\
@@ -189,8 +213,8 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
         );
     }
     let before = ctx.messages.len();
-    for tok in &case.key_tokens {
-        ctx.input(key_event(tok)?);
+    for ev in parse_keys(&case.keys).map_err(|e| format!("keys {}: {e}", case.keys))? {
+        ctx.input(ev);
     }
     ctx.run_until_idle();
 
@@ -250,20 +274,6 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
         Ok(())
     } else {
         Err(diffs.join("; "))
-    }
-}
-
-/// One oracle key token as a key event. Single characters are typed as they are;
-/// `<Name>` goes through core's notation until K3 shares one parser with the oracle.
-fn key_event(tok: &str) -> Result<KeyEvent, String> {
-    let mut chars = tok.chars();
-    if let (Some(c), None) = (chars.next(), chars.next()) {
-        return Ok(KeyEvent::press(Key::Char(c)));
-    }
-    let evs = die_core::parse_keys(tok).map_err(|e| format!("key {tok}: {e}"))?;
-    match <[KeyEvent; 1]>::try_from(evs) {
-        Ok([ev]) => Ok(ev),
-        Err(_) => Err(format!("key {tok} isn't one key")),
     }
 }
 
