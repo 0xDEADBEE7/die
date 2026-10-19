@@ -3,8 +3,12 @@
 //!
 //! - `unsafe`: every crate inherits the workspace's `unsafe_code = "forbid"`
 //!   except die-render, which denies it and allows it on `platform::macos` only.
-//! - Neutral code doesn't branch on the platform: no `target_os` and the like,
-//!   and no `std::os` module but Unix's, outside the named platform modules.
+//!   Nothing else lowers that level, and nothing allows `warnings` wholesale.
+//! - Neutral code doesn't branch on the platform: no `target_os` and the like
+//!   (in `cfg`, `cfg_attr` or `cfg_select!`, or anywhere as `target_os = "…"`),
+//!   no `std::os` module but Unix's, no `env::consts::OS`, and no build script
+//!   to set cfgs of its own, outside the named platform modules. A `cfg_attr`
+//!   that only sets lint levels is fine.
 //! - die-core's and die-vim's graphs hold no window, GPU or OS GUI crate, on
 //!   any target.
 //! - Every dependency is pinned to an exact version.
@@ -50,6 +54,12 @@ const PLATFORM_CFGS: &[&str] = &[
 
 /// The `std::os` modules every Unix has.
 const UNIX_OS: &[&str] = &["unix", "fd", "raw"];
+
+/// Lints a platform `cfg_attr` may allow or expect in neutral code. Setting a
+/// lint level changes no code, and neutral code that only `platform::macos`
+/// calls is dead on Linux until `platform::linux` lands, which the
+/// cross-check's `-D warnings` rejects. `unused_*` also matches.
+const LEVEL_ONLY_LINTS: &[&str] = &["dead_code", "unused"];
 
 /// Crates die-core and die-vim may not have in their graph on any target:
 /// window systems, GPU APIs and OS GUI frameworks (platforms.md §5.2). A
@@ -143,6 +153,12 @@ pub fn run(root: &Path) -> Result {
         }
         if man.get("package").and_then(|p| p.get("license")).is_none() {
             errors.push(format!("{name}: no license (use license.workspace = true)"));
+        }
+        if NEUTRAL.iter().any(|(c, _)| c == m) && has_build_script(&man, &root.join(m)) {
+            errors.push(format!(
+                "{name}: a build script. Neutral crates have none: one can read the target and \
+                 set a cfg (`cargo::rustc-cfg`) that the platform rule can't see (platforms.md §5.2)"
+            ));
         }
     }
 
@@ -240,6 +256,16 @@ fn dep_tables(man: &Table) -> Vec<(String, &Table)> {
     out
 }
 
+/// Cargo runs `build.rs` unless `package.build` is `false`, and runs the file
+/// `package.build` names.
+fn has_build_script(man: &Table, dir: &Path) -> bool {
+    match man.get("package").and_then(|p| p.get("build")) {
+        Some(Value::Boolean(false)) => false,
+        Some(Value::Boolean(true)) | None => dir.join("build.rs").exists(),
+        Some(_) => true,
+    }
+}
+
 /// D15: die-vim depends on die-core only, in every dependency table, target
 /// tables included. Its dev-dependencies are its tests' (the oracle).
 fn check_d15(man: &Table, errors: &mut Vec<String>) {
@@ -277,84 +303,198 @@ fn platform_crates(tree: &str) -> Vec<(String, &'static str)> {
     out
 }
 
-/// Neutral code doesn't branch on the platform: no `PLATFORM_CFGS` key in a
-/// `cfg`, `cfg!` or `cfg_attr`, and no `std::os` (or `core::os`) module but
-/// `UNIX_OS`. Strings and comments don't count: this reads tokens.
+/// Neutral code doesn't branch on the platform. This reads tokens, so strings
+/// and comments don't count. It flags:
+/// - a `PLATFORM_CFGS` key in a `cfg`, `cfg!` or `cfg_attr`, or in a
+///   `cfg_select!` arm's predicate, except in a `cfg_attr` that only allows or
+///   expects `LEVEL_ONLY_LINTS`;
+/// - `target_os = "…"` (and the other keys) anywhere else, which catches a
+///   renamed `cfg!` or `cfg_select!`;
+/// - a `std::os` (or `core::os`) module but `UNIX_OS`, `std::os` itself
+///   (`use std::os as host_os`), and `std` renamed;
+/// - `env::consts::OS` and `FAMILY`, the target's OS as a run-time constant.
 pub fn check_platform_code(rel: &str, src: &str, errors: &mut Vec<String>) {
     use crate::count::{Tok, lex, skip_group};
+    use std::collections::BTreeMap;
     let toks = lex(src);
     let ident = |i: usize| match toks.get(i).map(|t| &t.0) {
         Some(Tok::Ident(w)) => Some(w.as_str()),
         _ => None,
     };
     let punct = |i: usize, c: char| toks.get(i).map(|t| &t.0) == Some(&Tok::Punct(c));
+    let lit = |i: usize| toks.get(i).map(|t| &t.0) == Some(&Tok::Lit);
     let path_sep = |i: usize| punct(i, ':') && punct(i + 1, ':');
-    // The first identifier of each item in the `{...}` group opening at `open`.
-    let firsts = |open: usize| -> Vec<usize> {
-        let end = skip_group(&toks, open).unwrap_or(toks.len());
-        let mut depth = 0;
-        let mut out = Vec::new();
-        for (j, t) in toks.iter().enumerate().take(end).skip(open) {
-            match &t.0 {
-                Tok::Punct('{' | '(' | '[') => depth += 1,
-                Tok::Punct('}' | ')' | ']') => depth -= 1,
-                Tok::Ident(_) if depth == 1 && (punct(j - 1, '{') || punct(j - 1, ',')) => {
-                    out.push(j)
+    let opens = |i: usize| punct(i, '(') || punct(i, '[') || punct(i, '{');
+    let end_of = |open: usize| skip_group(&toks, open).unwrap_or(toks.len());
+    // The comma-separated parts of the group opening at `open`: (first, past last).
+    let parts = |open: usize| -> Vec<(usize, usize)> {
+        let close = end_of(open) - 1;
+        let (mut out, mut start, mut j) = (Vec::new(), open + 1, open + 1);
+        while j < close {
+            if opens(j) {
+                j = end_of(j);
+                continue;
+            }
+            if punct(j, ',') {
+                out.push((start, j));
+                start = j + 1;
+            }
+            j += 1;
+        }
+        if start < close {
+            out.push((start, close));
+        }
+        out
+    };
+    // What follows `a::`: the first token of each part of a `{...}`, or the next token.
+    let after_sep = |i: usize| -> Vec<usize> {
+        if punct(i, '{') {
+            parts(i).into_iter().map(|p| p.0).collect()
+        } else {
+            vec![i]
+        }
+    };
+    // `cfg_attr(<predicate>, allow(dead_code), ...)`: the attributes set lint levels only.
+    let levels_only = |open: usize| {
+        let p = parts(open);
+        p.len() > 1
+            && p[1..].iter().all(|&(s, e)| {
+                matches!(ident(s), Some("allow" | "expect"))
+                    && punct(s + 1, '(')
+                    && end_of(s + 1) == e
+                    && parts(s + 1).iter().all(|&(a, b)| match b - a {
+                        1 => ident(a).is_some_and(|l| {
+                            LEVEL_ONLY_LINTS.contains(&l) || l.starts_with("unused_")
+                        }),
+                        3 => ident(a) == Some("reason") && punct(a + 1, '=') && lit(a + 2),
+                        _ => false,
+                    })
+            })
+    };
+    // The predicates of the `cfg_select!` arms in the group opening at `open`.
+    let predicates = |open: usize| -> Vec<(usize, usize)> {
+        let close = end_of(open) - 1;
+        let (mut out, mut j) = (Vec::new(), open + 1);
+        while j < close {
+            let from = j;
+            while j < close && !(punct(j, '=') && punct(j + 1, '>')) {
+                j = if opens(j) { end_of(j) } else { j + 1 };
+            }
+            out.push((from, j));
+            j += 2;
+            // The arm's code: a block, or an expression up to the next comma.
+            if punct(j, '{') {
+                j = end_of(j);
+                if punct(j, ',') {
+                    j += 1;
                 }
-                _ => {}
+            } else {
+                while j < close && !punct(j, ',') {
+                    j = if opens(j) { end_of(j) } else { j + 1 };
+                }
+                j += 1;
             }
         }
         out
     };
-    let mut found: Vec<(usize, String)> = Vec::new();
+    let mut found: BTreeMap<usize, String> = BTreeMap::new();
+    let mut flag = |t: usize, what: String| {
+        found.entry(t).or_insert(what);
+    };
+    let mut skip = 0;
     for i in 0..toks.len() {
-        let word = ident(i);
-        if matches!(word, Some("cfg" | "cfg_attr")) {
-            let open = if punct(i + 1, '!') { i + 2 } else { i + 1 };
-            if !punct(open, '(') {
-                continue;
-            }
-            let end = skip_group(&toks, open).unwrap_or(toks.len());
-            for t in &toks[open..end] {
-                if let Tok::Ident(w) = &t.0
-                    && PLATFORM_CFGS.contains(&w.as_str())
+        if i < skip {
+            continue;
+        }
+        let Some(word) = ident(i) else {
+            continue;
+        };
+        let mut keys = |from: usize, to: usize, how: &str| {
+            for t in from..to {
+                if let Some(w) = ident(t)
+                    && PLATFORM_CFGS.contains(&w)
                 {
-                    found.push((t.1, format!("cfg on `{w}`")));
+                    flag(t, format!("{how} on `{w}`"));
+                }
+            }
+        };
+        match word {
+            "cfg" | "cfg_attr" => {
+                let open = if punct(i + 1, '!') { i + 2 } else { i + 1 };
+                if punct(open, '(') {
+                    if word == "cfg_attr" && levels_only(open) {
+                        skip = end_of(open);
+                    } else {
+                        keys(open, end_of(open), "cfg");
+                    }
+                }
+            }
+            "cfg_select" if punct(i + 1, '!') && opens(i + 2) => {
+                for (from, to) in predicates(i + 2) {
+                    keys(from, to, "cfg_select!");
+                }
+            }
+            _ => {}
+        }
+        if PLATFORM_CFGS.contains(&word) && word != "windows" && punct(i + 1, '=') && lit(i + 2) {
+            flag(i, format!("`{word} = \"…\"`"));
+        }
+        if matches!(word, "cfg" | "cfg_select" | "std" | "core") && ident(i + 1) == Some("as") {
+            flag(i, format!("renaming `{word}`"));
+        }
+        if matches!(word, "std" | "core") && path_sep(i + 1) {
+            for o in after_sep(i + 3) {
+                match ident(o) {
+                    Some("self") if ident(o + 1) == Some("as") => {
+                        flag(o, format!("renaming `{word}`"));
+                    }
+                    Some("os") if !path_sep(o + 1) => flag(o, format!("`{word}::os` itself")),
+                    Some("os") => {
+                        for m in after_sep(o + 3) {
+                            match ident(m) {
+                                Some(w) if UNIX_OS.contains(&w) => {}
+                                Some(w) => flag(m, format!("`{word}::os::{w}`")),
+                                None => flag(m, format!("`{word}::os::*`")),
+                            }
+                        }
+                    }
+                    None if punct(o, '*') => flag(o, format!("`{word}::*`, which brings in `os`,")),
+                    _ => {}
                 }
             }
         }
-        if matches!(word, Some("std" | "core")) && path_sep(i + 1) {
-            // `std::os::...`, or `os::...` inside `std::{...}`.
-            let os_at: Vec<usize> = if punct(i + 3, '{') {
-                firsts(i + 3)
-            } else {
-                vec![i + 3]
-            };
-            for o in os_at {
-                if ident(o) != Some("os") || !path_sep(o + 1) {
-                    continue;
-                }
-                let modules = if punct(o + 3, '{') {
-                    firsts(o + 3)
-                } else {
-                    vec![o + 3]
-                };
-                for m in modules {
-                    if let Some(w) = ident(m)
-                        && !UNIX_OS.contains(&w)
-                    {
-                        found.push((toks[m].1, format!("`std::os::{w}`")));
+        // `env::consts`, by any path; only `f32::consts` and `f64::consts` are other modules.
+        let float = i >= 3 && path_sep(i - 2) && matches!(ident(i - 3), Some("f32" | "f64"));
+        if word == "consts" && !float {
+            if ident(i + 1) == Some("as") {
+                flag(i, "renaming `env::consts`".into());
+            } else if path_sep(i + 1) {
+                for n in after_sep(i + 3) {
+                    match ident(n) {
+                        Some(w @ ("OS" | "FAMILY")) => flag(n, format!("`env::consts::{w}`")),
+                        Some("self") if ident(n + 1) == Some("as") => {
+                            flag(n, "renaming `env::consts`".into());
+                        }
+                        None if punct(n, '*') => flag(n, "`env::consts::*`".into()),
+                        _ => {}
                     }
                 }
             }
         }
     }
-    for (line, what) in found {
+    for (t, what) in found {
+        let levels = if what.starts_with("cfg on") {
+            ". A `cfg_attr` may set lint levels only, as in \
+             `#[cfg_attr(not(target_os = \"macos\"), allow(dead_code))]` on code that only \
+             `platform::macos` calls"
+        } else {
+            ""
+        };
         errors.push(format!(
             "{rel}:{}: {what} branches on the platform. Neutral code may use `cfg(unix)` and \
              `std::os::unix` only; the rest goes in die-core's `sys` or die-render's `platform` \
-             (platforms.md §5.2)",
-            line + 1
+             (platforms.md §5.2){levels}",
+            toks[t].1 + 1
         ));
     }
 }
@@ -385,23 +525,40 @@ fn check_pins(what: &str, deps: &Table, errors: &mut Vec<String>) {
     }
 }
 
-/// `allow(unsafe_code)` (or `expect`) may appear only where `UNSAFE_ALLOWED` says.
-/// Strings and comments don't count: this reads tokens.
+/// `allow(unsafe_code)` (or `expect`, or `warn`, which lowers die-render's
+/// `deny` as well) may appear only where `UNSAFE_ALLOWED` says. `allow(warnings)`
+/// and `expect(warnings)` may appear nowhere: after a `warn(unsafe_code)` they
+/// would hide unsafe from clippy, and they hide what clippy's and the
+/// cross-check's `-D warnings` catch. Strings and comments don't count: this
+/// reads tokens.
 pub fn check_unsafe_allows(rel: &str, src: &str, errors: &mut Vec<String>) {
     use crate::count::{Tok, lex, skip_group};
     let toks = lex(src);
     for i in 0..toks.len() {
-        let is_lint = matches!(&toks[i].0, Tok::Ident(w) if w == "allow" || w == "expect");
-        if !is_lint || toks.get(i + 1).map(|t| &t.0) != Some(&Tok::Punct('(')) {
+        let level = match &toks[i].0 {
+            Tok::Ident(w) if matches!(w.as_str(), "allow" | "expect" | "warn") => w.as_str(),
+            _ => continue,
+        };
+        if toks.get(i + 1).map(|t| &t.0) != Some(&Tok::Punct('(')) {
             continue;
         }
         let Some(end) = skip_group(&toks, i + 1) else {
             continue;
         };
-        if !toks[i + 2..end]
-            .iter()
-            .any(|t| t.0 == Tok::Ident("unsafe_code".into()))
-        {
+        let names = |lint: &str| {
+            toks[i + 2..end]
+                .iter()
+                .any(|t| t.0 == Tok::Ident(lint.into()))
+        };
+        if level != "warn" && names("warnings") {
+            errors.push(format!(
+                "{rel}:{}: {level}(warnings) hides every warning from clippy's and the \
+                 cross-check's -D warnings (and, after a warn(unsafe_code), unsafe code); \
+                 {level} the lints you mean by name",
+                toks[i].1 + 1
+            ));
+        }
+        if !names("unsafe_code") {
             continue;
         }
         // The item the attribute sits on: the tokens after its `]`, up to `;` or `{`.
@@ -425,7 +582,7 @@ pub fn check_unsafe_allows(rel: &str, src: &str, errors: &mut Vec<String>) {
                 .map(|(f, it)| format!("{f}: {it}"))
                 .collect();
             errors.push(format!(
-                "{rel}:{}: allow(unsafe_code) outside the modules scope §12 permits ({})",
+                "{rel}:{}: {level}(unsafe_code) outside the modules scope §12 permits ({})",
                 toks[i].1 + 1,
                 allowed.join("; ")
             ));
@@ -475,6 +632,28 @@ mod tests {
             ),
             1
         );
+        // `warn` lowers die-render's `deny` too, and `allow(warnings)` then hides
+        // the unsafe block from clippy's -D warnings.
+        let lib = "crates/die-render/src/lib.rs";
+        assert_eq!(
+            check(
+                lib,
+                "#[warn(unsafe_code)]\n#[allow(warnings)]\nmod sneaky {\n    pub fn read(p: *const u8) -> u8 {\n        unsafe { *p }\n    }\n}\n"
+            ),
+            2
+        );
+        assert_eq!(
+            check(lib, "#[cfg_attr(all(), warn(unsafe_code))]\nmod m {}\n"),
+            1
+        );
+        assert_eq!(check(lib, "#![allow(warnings)]\n"), 1);
+        assert_eq!(
+            check(lib, "#[cfg_attr(test, expect(warnings))]\nmod m {}\n"),
+            1
+        );
+        assert_eq!(check(render, "#[allow(warnings)]\npub mod macos;\n"), 1);
+        assert_eq!(check(lib, "#![warn(warnings)]\n#![allow(dead_code)]\n"), 0);
+        assert_eq!(check(lib, "fn f() { log::warn!(\"unsafe_code\"); }\n"), 0);
         // Not attributes, or not allows.
         assert_eq!(
             check(
@@ -507,7 +686,7 @@ mod tests {
             "#[cfg(target_os = \"macos\")]\nfn f() {}\n",
             "#[cfg(not(target_os = \"linux\"))]\nmod m;\n",
             "#[cfg(any(unix, windows))]\nfn f() {}\n",
-            "#[cfg_attr(target_vendor = \"apple\", allow(dead_code))]\nfn f() {}\n",
+            "#[cfg_attr(target_vendor = \"apple\", derive(Debug))]\nstruct S;\n",
             "#[cfg(target_family = \"unix\")]\nfn f() {}\n",
             "#[cfg(target_env = \"musl\")]\nfn f() {}\n",
             "fn f() -> bool { cfg!(target_os = \"macos\") }\n",
@@ -515,10 +694,58 @@ mod tests {
             "use std::os::{fd::AsRawFd, linux::fs::MetadataExt};\n",
             "use std::{io, os::freebsd::fs::MetadataExt};\n",
             "fn f() { let _ = core::os::windows::raw::HANDLE::default(); }\n",
+            // cfg_select! (stable since 1.95), on items and in expressions.
+            "cfg_select! {\n    target_os = \"macos\" => { fn f() {} }\n    _ => { fn f() {} }\n}\n",
+            "cfg_select! {\n    unix => { fn f() {} }\n    windows => { fn f() {} }\n}\n",
+            "fn f() -> u8 { cfg_select! { all(unix, not(target_vendor = \"apple\")) => 1, _ => { 2 } } }\n",
+            "core::cfg_select! { not(windows) => { mod m; } }\n",
+            // A renamed cfg macro still names its key.
+            "use core::cfg_select as pick;\n",
+            "pick! { target_os = \"linux\" => { fn f() {} } }\n",
+            "fn f() -> bool { also_cfg!(target_family = \"unix\") }\n",
+            // std::os itself, renamed, or as a glob; std renamed.
+            "use std::os;\n",
+            "use std::os as host_os;\n",
+            "use std::{io, os};\n",
+            "use std::os::{self};\n",
+            "use std::os::*;\n",
+            "use std::*;\n",
+            "use std as s;\n",
+            "extern crate core as c;\n",
+            "use std::{self as s};\n",
+            // The target's OS at run time.
+            "fn f() -> bool { std::env::consts::OS == \"macos\" }\n",
+            "use std::env::consts::FAMILY;\n",
+            "use std::env::{consts::{ARCH, OS}};\n",
+            "use std::env::consts::*;\n",
+            "use std::env::consts as c;\n",
+            "fn f() -> bool { consts::OS == \"linux\" }\n",
+            // A cfg_attr that sets more than lint levels.
+            "#[cfg_attr(target_os = \"macos\", path = \"mac.rs\")]\nmod m;\n",
+            "#[cfg_attr(not(target_os = \"macos\"), allow(dead_code), inline)]\nfn f() {}\n",
+            "#[cfg_attr(not(target_os = \"macos\"), allow(clippy::all))]\nfn f() {}\n",
+            "#[cfg_attr(not(target_os = \"macos\"), allow(unsafe_code))]\nfn f() {}\n",
         ];
         for src in flagged {
             assert_eq!(check(src).len(), 1, "{src}");
         }
+        // The reviewer's plant: two cfg_select arms' code, a renamed std::os, and
+        // the run-time OS.
+        let plant = "cfg_select! {\n    target_os = \"macos\" => {\n        pub fn blocks(m: &Metadata) -> u64 {\n            use std::os as host_os;\n            use host_os::darwin::fs::MetadataExt;\n            m.st_blocks()\n        }\n    }\n    _ => { pub fn blocks(m: &Metadata) -> u64 { m.len() } }\n}\n\npub fn home() -> &'static str {\n    if std::env::consts::OS == \"macos\" { \"Library\" } else { \".local\" }\n}\n";
+        let e = check(plant);
+        assert_eq!(e.len(), 3, "{e:#?}");
+        assert!(
+            e[0].starts_with("crates/die-core/src/x.rs:2: cfg_select! on `target_os`"),
+            "{e:?}"
+        );
+        assert!(
+            e[1].starts_with("crates/die-core/src/x.rs:4: `std::os` itself"),
+            "{e:?}"
+        );
+        assert!(
+            e[2].starts_with("crates/die-core/src/x.rs:13: `env::consts::OS`"),
+            "{e:?}"
+        );
         let e = check("\n#[cfg(target_os = \"macos\")]\nfn f() {}\n");
         assert!(
             e[0].starts_with("crates/die-core/src/x.rs:2: cfg on `target_os`"),
@@ -535,10 +762,33 @@ mod tests {
             "// #[cfg(target_os = \"macos\")]\n",
             "const S: &str = \"cfg(target_os = \\\"macos\\\")\";\n",
             "use my::os::linux;\n",
+            "cfg_select! {\n    unix => { fn f() { let windows = 1; } }\n    _ => { fn f() {} }\n}\n",
+            "fn f() -> u8 { cfg_select! { unix => { let target_os = 1; target_os }, _ => 2 } }\n",
+            "fn f() -> bool { target_os == \"macos\" }\n",
+            "use std::f64::consts::*;\nuse std::f32::consts as fc;\n",
+            "fn f() -> f64 { std::f64::consts::PI }\n",
+            "use std::env::consts::ARCH;\n",
+            "use std::{env, io, os::unix};\n",
+            // Lint levels only: code only platform::macos calls is dead on Linux.
+            "#[cfg_attr(not(target_os = \"macos\"), allow(dead_code))]\nfn f() {}\n",
+            "#[cfg_attr(not(target_os = \"macos\"), expect(dead_code, unused_imports, reason = \"platform::macos only\"))]\nmod m {}\n",
+            "#[cfg_attr(target_os = \"linux\", allow(unused), allow(unused_mut,))]\nfn f() {}\n",
         ];
         for src in fine {
             assert_eq!(check(src), Vec::<String>::new(), "{src}");
         }
+    }
+
+    #[test]
+    fn build_scripts() {
+        let dir = crate::util::TempDir::new("lint-build").unwrap();
+        let man = |s: &str| -> Table { format!("[package]\nname = \"x\"\n{s}").parse().unwrap() };
+        assert!(!has_build_script(&man(""), dir.path()));
+        assert!(has_build_script(&man("build = \"gen.rs\""), dir.path()));
+        crate::util::write(&dir.path().join("build.rs"), "fn main() {}\n").unwrap();
+        assert!(has_build_script(&man(""), dir.path()));
+        assert!(has_build_script(&man("build = true"), dir.path()));
+        assert!(!has_build_script(&man("build = false"), dir.path()));
     }
 
     #[test]
