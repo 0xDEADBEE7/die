@@ -1,9 +1,10 @@
-//! R1's checks on the `platform` wrappers. These need a Mac with Metal, and the
-//! fonts from `cargo xtask fonts`.
+//! R1's checks on the macOS `platform` wrappers. These need a Mac with Metal, and
+//! the fonts from `cargo xtask fonts`.
+#![cfg(target_os = "macos")]
 
 use die_render::font_dir;
-use die_render::platform::metal::Gpu;
-use die_render::platform::text::Face;
+use die_render::platform::macos::metal::Gpu;
+use die_render::platform::macos::text::Face;
 
 fn regular() -> Face {
     let path = font_dir().join("IoskeleyMonoTerm-Regular.ttf");

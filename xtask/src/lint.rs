@@ -2,7 +2,7 @@
 //! (scope §12 and D15-D17).
 //!
 //! - `unsafe`: every crate inherits the workspace's `unsafe_code = "forbid"`
-//!   except die-render, which denies it and allows it on `platform` only.
+//!   except die-render, which denies it and allows it on `platform::macos` only.
 //! - Every dependency is pinned to an exact version.
 //! - die-vim depends on die-core only (D15).
 //! - The lockfile and both license files are there.
@@ -12,8 +12,10 @@ use std::path::Path;
 use toml::{Table, Value};
 
 /// The only places `allow(unsafe_code)` may appear: (file, the item it must sit on).
-/// M2 adds die-term's engine boundary and die-core's `sys` module.
-const UNSAFE_ALLOWED: &[(&str, &str)] = &[("crates/die-render/src/lib.rs", "pub mod platform")];
+/// `platform::linux` joins with the Linux backend; M2 adds die-term's engine
+/// boundary and die-core's `sys` module.
+const UNSAFE_ALLOWED: &[(&str, &str)] =
+    &[("crates/die-render/src/platform/mod.rs", "pub mod macos")];
 
 /// Crates that set their own lints instead of inheriting the workspace's.
 const OWN_LINTS: &[&str] = &["crates/die-render"];
@@ -218,18 +220,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unsafe_allow_only_on_platform() {
+    fn unsafe_allow_only_on_platform_modules() {
         let check = |rel: &str, src: &str| {
             let mut e = Vec::new();
             check_unsafe_allows(rel, src, &mut e);
             e.len()
         };
-        let render = "crates/die-render/src/lib.rs";
+        let render = "crates/die-render/src/platform/mod.rs";
         assert_eq!(
-            check(render, "#[allow(unsafe_code)]\npub mod platform;\n"),
+            check(
+                render,
+                "#[cfg(target_os = \"macos\")]\n#[allow(unsafe_code)]\npub mod macos;\n"
+            ),
             0
         );
         assert_eq!(check(render, "#[allow(unsafe_code)]\nmod gpu;\n"), 1);
+        assert_eq!(
+            check(
+                "crates/die-render/src/lib.rs",
+                "#[allow(unsafe_code)]\npub mod platform;\n"
+            ),
+            1
+        );
         assert_eq!(
             check(render, "#[allow(dead_code, unsafe_code)]\nmod other {}\n"),
             1
