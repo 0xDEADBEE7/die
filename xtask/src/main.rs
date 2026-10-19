@@ -4,7 +4,9 @@ use xtask::{api, budget, ci, clean, fonts, guards, lint, mutate};
 const USAGE: &str = "usage: cargo xtask <task>
 
   budget               line counts against guard 7 and budget.toml
-  lint                 unsafe only in platform, exact pins, D15, lockfile, licenses
+  lint                 unsafe only in platform modules, no target_os in neutral code,
+                       no window or GPU crates under die-core and die-vim, exact pins,
+                       D15, lockfile, licenses
   guards               unsafe outside platform and -Cpanic=abort fail to build
   api-diff [--base R]  die-core's public API and die-vim's grammar, R -> working tree
                        (R defaults to the merge base with main)
