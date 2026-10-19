@@ -195,12 +195,9 @@ pub fn rust_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// SHA-256 of a file, through macOS's `shasum`.
+/// SHA-256 of a file, in lowercase hex.
 pub fn sha256(path: &Path) -> Result<String> {
-    let out = output(
-        Command::new("/usr/bin/shasum")
-            .args(["-a", "256"])
-            .arg(path),
-    )?;
-    Ok(out.split_whitespace().next().unwrap_or("").to_string())
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
