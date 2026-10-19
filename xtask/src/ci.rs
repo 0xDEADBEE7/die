@@ -18,30 +18,7 @@ pub fn run(root: &Path, source: Source) -> Result {
     let work = root.join("target/xtask/ci");
     let tmp = TempDir::at(work.join("tree"))?;
     let tree = tmp.path().to_path_buf();
-    match &source {
-        Source::Rev(rev) => {
-            run_quiet(
-                git(root)
-                    .args(["clone", "--quiet", "--no-hardlinks", "."])
-                    .arg(&tree),
-            )?;
-            // Resolved here: the clone has no local branches but its default one.
-            let commit = crate::util::output(git(root).args([
-                "rev-parse",
-                "--verify",
-                &format!("{rev}^{{commit}}"),
-            ]))?;
-            run_quiet(git(&tree).args(["checkout", "--quiet", "--detach", commit.trim()]))?;
-            println!("ci: a fresh clone at {rev} ({})", &commit.trim()[..10]);
-        }
-        Source::Worktree => {
-            copy_worktree(root, &tree)?;
-            // Staged, not committed: enough for the steps that ask git which files exist.
-            run_quiet(git(&tree).args(["init", "--quiet"]))?;
-            run_quiet(git(&tree).args(["add", "--all"]))?;
-            println!("ci: a fresh copy of the working tree (uncommitted work included)");
-        }
-    }
+    println!("ci: {}", checkout(root, &source, &tree)?);
     fonts::run_fonts(root)?;
     let target = work.join("target");
     let cargo_step = |args: &[&str]| -> Result {
@@ -54,7 +31,6 @@ pub fn run(root: &Path, source: Source) -> Result {
         )
     };
 
-    type Step<'a> = (&'a str, Box<dyn Fn() -> Result + 'a>);
     let steps: Vec<Step> = vec![
         ("fmt", Box::new(|| cargo_step(&["fmt", "--all", "--check"]))),
         ("lint", Box::new(|| lint::run(&tree))),
@@ -89,9 +65,18 @@ pub fn run(root: &Path, source: Source) -> Result {
         ),
         ("clean-build", Box::new(|| clean::run(&tree, false))),
     ];
+    run_steps("ci", &steps)
+}
+
+/// A named check, for `run_steps`.
+pub type Step<'a> = (&'a str, Box<dyn Fn() -> Result + 'a>);
+
+/// Run every step, even after one fails, then print each one's result and
+/// time under `label`. Fails if any step failed.
+pub fn run_steps(label: &str, steps: &[Step]) -> Result {
     let mut results = Vec::new();
-    for (name, step) in &steps {
-        println!("\n==> ci: {name}");
+    for (name, step) in steps {
+        println!("\n==> {label}: {name}");
         let t = Instant::now();
         let r = step();
         if let Err(e) = &r {
@@ -99,10 +84,11 @@ pub fn run(root: &Path, source: Source) -> Result {
         }
         results.push((*name, r.is_ok(), t.elapsed().as_secs_f64()));
     }
-    println!("\nci summary");
+    println!("\n{label} summary");
+    let w = results.iter().map(|r| r.0.len()).max().unwrap_or(0).max(12);
     for (name, ok, secs) in &results {
         println!(
-            "  {:<12} {:<4} {secs:6.1} s",
+            "  {:<w$} {:<4} {secs:6.1} s",
             name,
             if *ok { "ok" } else { "FAIL" }
         );
@@ -111,7 +97,35 @@ pub fn run(root: &Path, source: Source) -> Result {
     if failed.is_empty() {
         Ok(())
     } else {
-        Err(format!("ci: failed: {}", failed.join(", ")))
+        Err(format!("{label}: failed: {}", failed.join(", ")))
+    }
+}
+
+/// Fill `tree`, an empty directory, from `source`. Returns what it holds.
+pub fn checkout(root: &Path, source: &Source, tree: &Path) -> Result<String> {
+    match source {
+        Source::Rev(rev) => {
+            run_quiet(
+                git(root)
+                    .args(["clone", "--quiet", "--no-hardlinks", "."])
+                    .arg(tree),
+            )?;
+            // Resolved here: the clone has no local branches but its default one.
+            let commit = crate::util::output(git(root).args([
+                "rev-parse",
+                "--verify",
+                &format!("{rev}^{{commit}}"),
+            ]))?;
+            run_quiet(git(tree).args(["checkout", "--quiet", "--detach", commit.trim()]))?;
+            Ok(format!("a fresh clone at {rev} ({})", &commit.trim()[..10]))
+        }
+        Source::Worktree => {
+            copy_worktree(root, tree)?;
+            // Staged, not committed: enough for the steps that ask git which files exist.
+            run_quiet(git(tree).args(["init", "--quiet"]))?;
+            run_quiet(git(tree).args(["add", "--all"]))?;
+            Ok("a fresh copy of the working tree (uncommitted work included)".into())
+        }
     }
 }
 

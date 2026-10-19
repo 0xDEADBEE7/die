@@ -4,6 +4,7 @@
 //! cross-check fails on dead code (its `-D warnings`) and on a build script
 //! that compiles C (its stand-ins).
 
+use crate::clean;
 use crate::util::{Result, TempDir, cargo, copy_worktree, output, read, write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -85,6 +86,28 @@ const LOG_PLANT_FAILS: &[&str] = &[
     "the build script of `wayland-backend",
     "clean-build: cc was called",
 ];
+
+/// On a Linux host (docs/records/platforms.md §5.5): clean-build's build of
+/// die-render for the host fails with the `log` plant, whose build script calls
+/// cc, though the host has a real one. `tree` is a copy it may change; it's
+/// restored afterwards.
+pub fn linux_host(tree: &Path) -> Result {
+    let host = clean::host()?;
+    if !host.contains("-linux-") {
+        return Err(format!(
+            "guards: the Linux-host plant runs on Linux, not {host}"
+        ));
+    }
+    let res = with_log_plant(tree, || {
+        let tmp = TempDir::new("log-plant")?;
+        clean::build(tree, tmp.path(), &host, &["-p", "die-render"]).map(|_| ())
+    });
+    fails_with("clean-build", res, LOG_PLANT_FAILS)?;
+    println!(
+        "guards: wayland-backend's `log` feature fails the clean build on {host}: its build script calls cc"
+    );
+    Ok(())
+}
 
 /// Run `check` on `tree` with wayland-backend's own `log` feature turned on in
 /// die-render's Linux table, then put the manifest and lockfile back. That
