@@ -1217,12 +1217,12 @@ impl Ctx {
     }
 
     fn dispatch_passthrough(&mut self, win: WindowId, buf: BufferId, ev: KeyEvent) {
-        if ev.key == Key::Esc && ev.mods.cmd && ev.kind == KeyKind::Press {
+        if ev.key == Key::Esc && ev.mods.super_ && ev.kind == KeyKind::Press {
             self.buffers[buf].state = State::Normal;
             self.swallow.push(Key::Esc);
             return;
         }
-        if ev.mods.cmd && ev.kind != KeyKind::Release {
+        if ev.mods.super_ && ev.kind != KeyKind::Release {
             if let Lookup::Command(name) =
                 self.layers_lookup(buf, State::Passthrough, &[ev.clone()])
             {

@@ -310,8 +310,7 @@ fn bindings_that_could_never_match_are_errors() {
             r.global_keymap().bind(State::Normal, "<Shift>", "a");
         },
         |r| {
-            r.global_keymap()
-                .bind(State::Passthrough, "<D-Command>", "a");
+            r.global_keymap().bind(State::Passthrough, "<D-Super>", "a");
         },
         |r| {
             r.global_keymap().unbind(State::Normal, "zz");
