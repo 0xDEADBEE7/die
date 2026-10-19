@@ -40,3 +40,5 @@ A variant of B: you write die-vim's grammar core yourself, about 500–800 lines
 **And your hours:** roughly how many a week can you give M0? I'll put dates on the plan from that.
 
 ## Your answer
+
+Accepted 2026-10-19: **B**. "go with your recommendations on 09 and 10. In general just continue according to your own recommendations to the best of your ability." No hours a week were given, so the plan keeps its 11–16 week range, which assumes reviews come back within a few days.

@@ -26,3 +26,5 @@
 **C** for M0, then **B** from M2, when the build starts linking the downloaded terminal engine and a separate machine is worth more. A private GitHub repository is the simplest host, but any private git host works.
 
 ## Your answer
+
+Accepted 2026-10-19: **C**, a private remote with the checks run on your machine, and hosted CI from M2. The remote is a private GitHub repository.

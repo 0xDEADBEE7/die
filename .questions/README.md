@@ -88,12 +88,12 @@ These were the broad decisions left over from the 2026-10-18 review. **All of th
 
 ## M0 planning (2026-10-19)
 
-You asked to plan M0 together before work starts. The plan is [docs/m0-plan.md](../docs/m0-plan.md): four dogfood checkpoints, your reviews, the budget, the work packages and the risks. Two questions set its direction. The plan is written for my recommendation on each, and says what changes if you answer differently. Work that's the same under every answer can start now: the workspace, xtask, porting S4, moving the oracle in, and the renderer crate.
+You asked to plan M0 together before work starts. The plan is [docs/m0-plan.md](../docs/m0-plan.md): four dogfood checkpoints, your reviews, the budget, the work packages and the risks. Two questions set its direction, and **both were answered on 2026-10-19 as recommended.** Progress is in [docs/m0-log.md](../docs/m0-log.md).
 
 | # | Question |
 |---|---|
-| [09](09-m0-ownership-and-time.md) | **Open:** in M0, do you write die-core's API and die-vim's grammar, or does an AI draft them, with each change waiting for you or approved at scheduled reviews? And how many hours a week do you have? |
-| [10](10-remote-and-ci.md) | **Open:** should the repository get a private remote, and where should its checks run? |
+| [09](09-m0-ownership-and-time.md) | **Answered:** an AI drafts die-core's API and die-vim's grammar, and each change to either waits for your approval (B). |
+| [10](10-remote-and-ci.md) | **Answered:** a private GitHub repository, with the checks run on your machine; hosted CI from M2 (C). |
 
 ### Calls I'll make within those answers
 
@@ -104,7 +104,7 @@ You can veto any of these. Four change something you accepted earlier, and say s
 - M0 follows §12's four checkpoints as thin slices. S4's API is ported first, then each checkpoint cuts through every crate, and the spike-quality parts are rebuilt under the same tests while you use DIE. Veto if you'd rather nothing is built on a layer until you've reviewed it. Reading in DIE then moves to about weeks 7–9.
 - The port of S4 merges as already accepted (A1–A24). Its tests land before the code under them changes. If one has to change, the next review says why.
 - Four AI sessions work at once, each on its own branch: core's text side, core's runtime side, the renderer with the scene types, and die-vim.
-- `cargo xtask api-diff` finds every public item a branch adds, removes or changes in die-core, by a plain text scan, and every change to die-vim's grammar module. Nothing gets installed. Under 09-B, a branch with a non-empty list waits for you.
+- `cargo xtask api-diff` finds every public item a branch adds, removes or changes in die-core, by parsing its source, and every change to die-vim's grammar module. Nothing gets installed. Under 09-B, a branch with a non-empty list waits for you.
 - The `unsafe` code is reviewed in pieces as it lands, finishing before checkpoint 2.
 - A weekly note in `docs/m0-log.md` says what merged, what waits on you, what changed in the API, and the budget.
 - Every problem you hit while dogfooding becomes a test first: an oracle case for die-vim, a harness test for core.
@@ -164,7 +164,7 @@ You can veto any of these. Four change something you accepted earlier, and say s
 
 **Renderer**
 
-- The fonts aren't committed until their license is checked. `cargo xtask fonts` fetches them by checksum into a cache outside the repository, DIE.app gets a copy, and the build itself never touches the network.
+- The fonts aren't committed until their license is checked. `cargo xtask fonts` fetches them by checksum into `fonts/`, which git ignores, DIE.app gets a copy, and the build itself never touches the network.
 - `die_render::platform` holds only thin wrappers over AppKit, Metal and Core Text. The atlas, the row cache and instance building live outside it, which keeps the `unsafe` review to about 0.6–0.9k lines.
 - The clean-build check looks for `cc` in the macOS build graph, not in the lockfile, where winit lists it for Android.
 

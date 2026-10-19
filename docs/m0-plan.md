@@ -1,6 +1,6 @@
 # M0 plan: Edits itself
 
-**Draft · 2026-10-19 · waits on questions 09 and 10 · no product code yet**
+**Accepted 2026-10-19:** 09 answered B and 10 answered C, both as recommended. Progress is in [m0-log.md](m0-log.md).
 
 This plan breaks scope §12's M0 row into dogfood checkpoints, reviews and work packages. It builds on the S0 spike records in [records/](records/) and on every answer in [.questions/](../.questions/README.md).
 
@@ -259,9 +259,9 @@ Each case's tranche comes from the keys it uses, not its topic file: a case land
   - S1's second-display check, whenever a display is at hand
 - **In M0, after checkpoint 4, not gating it:** `describe-key` and `describe-command`, annotations in the command palette.
 
-## 8. Doc edits I'll propose
+## 8. Doc edits
 
-These touch documents you own, so I'll send them as one diff for you to approve once 09 and 10 are answered.
+Applied on 2026-10-19, after 09 and 10 were answered:
 
 - **Scope §12:** the M0 row links this plan and names the four checkpoints with their week ranges. "How the work is split" follows your answer to 09.
 - **Scope §12, Testing:** window and file commands are tested by core harness tests, since the oracle has no window tree and no files. That's an exception to "hand-written fixtures are only for the deliberate deviations".
