@@ -94,6 +94,7 @@ You asked to plan M0 together before work starts. The plan is [docs/m0-plan.md](
 |---|---|
 | [09](09-m0-ownership-and-time.md) | **Answered:** an AI drafts die-core's API and die-vim's grammar, and each change to either waits for your approval (B). |
 | [10](10-remote-and-ci.md) | **Answered:** a private GitHub repository, with the checks run on your machine; hosted CI from M2 (C). |
+| [11](11-platforms.md) | **Open:** you made macOS and Linux required. When does Linux ship, and do you accept leaving Windows out? The record is [docs/records/platforms.md](../docs/records/platforms.md). |
 
 ### Calls I'll make within those answers
 
