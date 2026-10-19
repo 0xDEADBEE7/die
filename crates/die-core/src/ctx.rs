@@ -360,7 +360,7 @@ pub struct Ctx {
     pub messages: Vec<String>,
 }
 
-fn panic_msg(p: &(dyn Any + Send)) -> String {
+pub(crate) fn panic_msg(p: &(dyn Any + Send)) -> String {
     p.downcast_ref::<&str>()
         .map(|s| s.to_string())
         .or_else(|| p.downcast_ref::<String>().cloned())

@@ -33,7 +33,7 @@ mod undo;
 
 pub use ctx::*;
 pub use error::*;
-pub use files::{FileInfo, Fingerprint, ReadOnly};
+pub use files::{FileInfo, Fingerprint, Uneditable};
 pub use ids::*;
 pub use keymap::*;
 pub use keys::*;
