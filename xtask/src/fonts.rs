@@ -3,7 +3,7 @@
 //! temporary directory, and only the four `.ttf` files come out of it.
 
 use crate::util::{Result, TempDir, run, sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const URL: &str =
@@ -45,8 +45,16 @@ pub fn present(dir: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// `$DIE_FONT_DIR` if it's set, else `fonts/` at the root: where die-render looks.
+pub fn dir(root: &Path) -> PathBuf {
+    std::env::var_os("DIE_FONT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("fonts"))
+}
+
+/// Make sure the fonts are in `dir(root)`, downloading them if they aren't.
 pub fn run_fonts(root: &Path) -> Result {
-    let out = root.join("fonts");
+    let out = dir(root);
     if present(&out)? {
         println!("fonts: ok ({})", out.display());
         return Ok(());
