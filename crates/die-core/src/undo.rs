@@ -153,12 +153,15 @@ pub(crate) struct Limit {
 }
 
 fn push_silent(stack: &mut Vec<Entry>, s: Shift) {
-    if stack.is_empty() {
-        return;
-    }
     match stack.last_mut() {
-        Some(Entry::Silent(v)) => v.push(s),
-        _ => stack.push(Entry::Silent(vec![s])),
+        None => {}
+        // Streamed text: an insertion at the end of the last one extends it, which moves
+        // every position and every change the same way.
+        Some(Entry::Silent(v)) => match v.last_mut() {
+            Some(l) if l.del == 0 && s.del == 0 && s.pos == l.pos + l.ins => l.ins += s.ins,
+            _ => v.push(s),
+        },
+        Some(Entry::Group(_)) => stack.push(Entry::Silent(vec![s])),
     }
 }
 
@@ -218,7 +221,7 @@ impl History {
 
     /// Drop the oldest steps until at most `limit.steps` remain and they hold at most
     /// `limit.bytes`. The newest step stays whatever its size, unless no steps are kept.
-    fn trim(&mut self, limit: Limit) {
+    pub(crate) fn trim(&mut self, limit: Limit) {
         let (mut steps, mut bytes, mut cut) = (0, 0, 0);
         for (i, e) in self.undo.iter().enumerate().rev() {
             let Entry::Group(g) = e else { continue };
@@ -359,5 +362,35 @@ impl History {
         } else {
             self.undo.clear()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streamed_silent_text_is_one_shift() {
+        let mut h = History::default();
+        let typed = Op {
+            pos: 0,
+            removed: String::new(),
+            inserted: "x".into(),
+        };
+        let limit = Limit {
+            steps: 10,
+            bytes: 100,
+        };
+        h.record(typed, None, 1, limit);
+        for i in 0..1000 {
+            h.silent(Shift {
+                pos: 1 + i,
+                del: 0,
+                ins: 1,
+            });
+        }
+        let (_, pending) = top_group(&h.undo);
+        assert_eq!(pending.len(), 1);
+        assert_eq!((pending[0].pos, pending[0].ins), (1, 1000));
     }
 }
