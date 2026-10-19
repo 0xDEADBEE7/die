@@ -1,13 +1,13 @@
-//! die-render: DIE's window and renderer (scope §5.11, D13). It draws die-core's
-//! scene with Metal, shapes text with Core Text, and runs the window through winit.
+//! die-render: DIE's window and renderer (scope §5.11, D13). It runs the window
+//! through winit and, on macOS, draws die-core's scene with Metal and shapes text
+//! with Core Text.
 //!
-//! R1 is the crate and its boundary: `platform` is the only module allowed
-//! `unsafe` (scope §12), and it holds thin wrappers only. The glyph atlas, row
-//! cache and instance building (R2), the window and loop (R3) and input (R4) live
-//! outside it.
+//! R1 is the crate and its boundary: `platform`'s per-platform modules are the
+//! only code allowed `unsafe` (scope §12), and they hold thin wrappers only. The
+//! glyph atlas, row cache and instance building (R2), the window and loop (R3) and
+//! input (R4) live outside them.
 #![deny(unsafe_code)]
 
-#[allow(unsafe_code)]
 pub mod platform;
 
 use std::path::PathBuf;
