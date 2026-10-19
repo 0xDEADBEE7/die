@@ -443,3 +443,33 @@ pub fn lc(ctx: &Ctx, b: BufferId, w: WindowId) -> (usize, usize) {
     let p = ctx.text(b).unwrap().point(cursor(ctx, b, w));
     (p.line, p.col)
 }
+
+/// One window composed alone at the frame's top-left: what S4's
+/// `render_window` returned, ported to `Ctx::compose` (K8).
+pub struct Screen {
+    /// The window's text rows, trailing spaces trimmed.
+    pub rows: Vec<String>,
+    pub cursor: Option<(usize, usize)>,
+}
+
+pub fn screen(ctx: &mut Ctx, w: WindowId) -> Screen {
+    let (cols, rows) = ctx.window_size(w).unwrap();
+    let scene = ctx.compose(
+        cols,
+        rows + 2,
+        &[Placement {
+            window: w,
+            col: 0,
+            row: 0,
+        }],
+    );
+    Screen {
+        rows: (0..rows).map(|r| scene.row_text(r)).collect(),
+        // The window's own: a prompt's cursor is on the command row, below it.
+        cursor: scene
+            .cursors
+            .iter()
+            .find(|c| c.row < rows)
+            .map(|c| (c.row, c.col)),
+    }
+}

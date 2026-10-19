@@ -1,68 +1,6 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
 
-# V1 (60)
-V1 insert/I-first-non-blank
-V1 insert/O-autoindent
-V1 insert/a-at-line-end
-V1 insert/backspace-before-insert-start
-V1 insert/backspace-joins-lines
-V1 insert/count-append
-V1 insert/count-insert
-V1 insert/ctrl-w-deletes-word
-V1 insert/ends-in-insert-state
-V1 insert/enter-autoindent
-V1 insert/esc-moves-back
-V1 insert/i-esc-at-line-start
-V1 insert/o-autoindent
-V1 insert/o-escape-drops-indent
-V1 insert/tab-inserts-spaces
-V1 motions/0
-V1 motions/2G
-V1 motions/2b
-V1 motions/2close-brace
-V1 motions/2dollar
-V1 motions/2f
-V1 motions/3w
-V1 motions/B
-V1 motions/E
-V1 motions/F
-V1 motions/G-no-trailing-newline
-V1 motions/T
-V1 motions/W
-V1 motions/b
-V1 motions/b-previous-line
-V1 motions/caret
-V1 motions/close-brace-paragraph
-V1 motions/close-brace-whitespace-line
-V1 motions/dollar
-V1 motions/dollar-j-sticks-to-eol
-V1 motions/e
-V1 motions/ee
-V1 motions/f
-V1 motions/f-semicolon
-V1 motions/f-semicolon-comma
-V1 motions/gg
-V1 motions/h-at-line-start
-V1 motions/j-goal-column
-V1 motions/k-at-top
-V1 motions/l-at-line-end
-V1 motions/open-brace
-V1 motions/percent
-V1 motions/percent-back
-V1 motions/percent-from-non-bracket
-V1 motions/percent-multiline
-V1 motions/t
-V1 motions/t-semicolon-skips
-V1 motions/w-next-line
-V1 motions/w-punctuation
-V1 operators/ctrl-a-does-not-increment
-V1 undo/count-insert-one-step
-V1 undo/insert-session-is-one-step
-V1 undo/insert-with-arrow-one-step
-V1 undo/multiline-insert-one-step
-V1 undo/o-one-step
-
 # V2 (14)
 V2 ex/goto-line
 V2 search/hash-backward

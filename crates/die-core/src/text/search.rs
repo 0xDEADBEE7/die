@@ -139,16 +139,7 @@ impl TextBuf {
     /// the window's end: a match that starts before `range` on its first line is found, but
     /// not one that starts on an earlier line or ends past the last line's newline.
     pub fn matches(&self, pat: &Pattern, range: Range<usize>) -> Vec<Range<usize>> {
-        let start = self.line_start(self.line_of(range.start));
-        let end = self.line_start(self.line_of(range.end) + 1);
-        // One character more, so look-around at `end` (`$`, `\b`) sees what follows it.
-        let more = self
-            .rope
-            .byte_slice(end..)
-            .chars()
-            .next()
-            .map_or(0, char::len_utf8);
-        let text = String::from(self.rope.byte_slice(start..end + more));
+        let (start, text, end) = self.lines(&range);
         let mut out = vec![];
         for m in pat.re.find_iter(Input::new(&text).range(..end - start)) {
             let m = start + m.start()..start + m.end();
@@ -160,6 +151,38 @@ impl TextBuf {
             }
         }
         out
+    }
+
+    /// The match that starts at `pos`, seeing only its line as `matches` does. The scene
+    /// draws it as the current match.
+    pub(crate) fn match_at(&self, pat: &Pattern, pos: usize) -> Option<Range<usize>> {
+        let pos = pos.min(self.len());
+        let (start, text, end) = self.lines(&(pos..pos));
+        let at = Input::new(&text)
+            .range(pos - start..end - start)
+            .anchored(Anchored::Yes);
+        pat.re
+            .search(&at)
+            .map(|m| start + m.start()..start + m.end())
+    }
+
+    /// The lines `range` touches, for `matches` and `match_at`: where they start, their
+    /// text and where they end. The text has one character more, so look-around at the
+    /// end (`$`, `\b`) sees what follows it.
+    fn lines(&self, range: &Range<usize>) -> (usize, String, usize) {
+        let start = self.line_start(self.line_of(range.start));
+        let end = self.line_start(self.line_of(range.end) + 1);
+        let more = self
+            .rope
+            .byte_slice(end..)
+            .chars()
+            .next()
+            .map_or(0, char::len_utf8);
+        (
+            start,
+            String::from(self.rope.byte_slice(start..end + more)),
+            end,
+        )
     }
 
     /// The text in one piece, copied at the first search after an edit.
