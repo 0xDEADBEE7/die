@@ -1,0 +1,25 @@
+[package]
+name = "s3-fd-store"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone spike: not part of any workspace.
+[workspace]
+
+[[bin]]
+name = "die"
+path = "src/main.rs"
+
+[features]
+# Build N+1: protocol minor 1, and terminals carry an extra `cwd` field.
+proto-n1 = []
+# A build with an incompatible protocol major (2), which a v1 store must refuse.
+proto-major2 = []
+
+[dependencies]
+rustix = { version = "=1.1.5", features = ["pty", "termios", "process", "fs", "net", "event", "stdio"] }
+libc = "=0.2.191"
+
+[profile.release]
+debug = 1

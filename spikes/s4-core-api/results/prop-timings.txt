@@ -1,0 +1,4 @@
+profile=test(opt1) cursor_never_hidden: finished in 8.75s
+profile=test(opt1) undo_is_exact: finished in 0.63s
+profile=--release cursor_never_hidden: finished in 7.97s
+profile=--release undo_is_exact: finished in 0.54s

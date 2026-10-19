@@ -1,0 +1,284 @@
+{
+"label": "B",
+"display_sync": true,
+"drawables": 3,
+"pix_layer": false,
+"style": "borderless",
+"font": "Ioskeley Mono Term",
+"drawable_px": "(3024, 1964)",
+"grid": "159x49",
+"cell": "(19, 40)",
+"startup": {
+"metal_device_ms": 0.6690,
+"msl_compile_ms": 2.2284,
+"font_load_ms": 0.4373
+},
+"counters": {
+"rendered": 6569,
+"skipped_occluded": 1,
+"skipped_inflight": 0,
+"no_drawable": 0
+},
+"load_avg_at_end": "4.25 5.02 4.49",
+"press_and_hold_enabled_after_register": false,
+"redraw": {
+"frames": 600,
+"presented": 600,
+"dropped": 0,
+"cpu_ms": {
+"n": 600,
+"p50": 0.1440,
+"p90": 0.3198,
+"p99": 0.4357,
+"max": 0.4797,
+"mean": 0.1593
+},
+"wall_ms": {
+"n": 600,
+"p50": 0.1440,
+"p90": 0.3207,
+"p99": 0.4364,
+"max": 0.4818,
+"mean": 0.1596
+},
+"acquire_ms": {
+"n": 600,
+"p50": 0.0147,
+"p90": 0.0351,
+"p99": 0.0576,
+"max": 0.0824,
+"mean": 0.0188
+},
+"gpu_ms": {
+"n": 600,
+"p50": 0.3256,
+"p90": 0.3431,
+"p99": 0.3694,
+"max": 0.8065,
+"mean": 0.3187
+},
+"quads": {
+"n": 600,
+"p50": 3525,
+"p90": 7481,
+"p99": 7706,
+"max": 7935,
+"mean": 4631.2300
+},
+"grid": "159x49",
+"cells": 7791,
+"drawable": "Some((3024, 1964))",
+"scene_fill_ms": {
+"n": 630,
+"p50": 0.0626,
+"p90": 0.1328,
+"p99": 0.1605,
+"max": 0.1714,
+"mean": 0.0753
+},
+"skipped_inflight": 0
+},
+"producer": {
+"seconds": 60.0005,
+"produced": 3600,
+"presented": 3600,
+"presented_ratio": 1,
+"superseded": 0,
+"ring_waits": 0,
+"main_thread_pixel_memcpy_bytes": 0,
+"producer_memcpy_bytes": 41574244800,
+"gpu_blit_bytes": 41368091520,
+"pix_size": "(1523, 1880)",
+"producer_copy_ms": {
+"n": 3750,
+"p50": 0.3720,
+"p90": 0.9577,
+"p99": 1.4135,
+"max": 1.8466,
+"mean": 0.5242
+},
+"producer_draw_ms": {
+"n": 3750,
+"p50": 0.3841,
+"p90": 0.7233,
+"p99": 0.7640,
+"max": 1.2025,
+"mean": 0.4709
+},
+"main_frame_cpu_ms": {
+"n": 3612,
+"p50": 0.0905,
+"p90": 0.1730,
+"p99": 0.2456,
+"max": 0.3210,
+"mean": 0.1017
+},
+"main_frame_wall_ms": {
+"n": 3612,
+"p50": 0.0907,
+"p90": 0.1733,
+"p99": 0.2461,
+"max": 0.3220,
+"mean": 0.1019
+},
+"acquire_ms": {
+"n": 3612,
+"p50": 0.0205,
+"p90": 0.0372,
+"p99": 0.0525,
+"max": 0.0757,
+"mean": 0.0225
+},
+"gpu_ms": {
+"n": 3612,
+"p50": 0.4789,
+"p90": 0.4837,
+"p99": 0.5691,
+"max": 1.1486,
+"mean": 0.4842
+}
+},
+"scale": {
+"method": "simulated: our ScaleFactorChanged path called directly; AppKit/winit notification not exercised",
+"changes": 10,
+"first_frame_correct": 10,
+"change_to_present_ms": {
+"n": 10,
+"p50": 21.1853,
+"p90": 27.5376,
+"p99": 31.9850,
+"max": 31.9850,
+"mean": 21.4588
+},
+"pixbuf_width_at_1x": [756,756,756,756,756],
+"pixbuf_width_at_2x": [1523,1523,1523,1523,1523],
+"events": [{
+"frame": 4415,
+"expected": "(1512, 982)",
+"drawable": "Some((1512, 982))",
+"presented": true,
+"atlas_gen": 3,
+"cell": "(9, 20)"
+},{
+"frame": 4440,
+"expected": "(3024, 1964)",
+"drawable": "Some((3024, 1964))",
+"presented": true,
+"atlas_gen": 4,
+"cell": "(19, 40)"
+},{
+"frame": 4465,
+"expected": "(1512, 982)",
+"drawable": "Some((1512, 982))",
+"presented": true,
+"atlas_gen": 5,
+"cell": "(9, 20)"
+},{
+"frame": 4490,
+"expected": "(3024, 1964)",
+"drawable": "Some((3024, 1964))",
+"presented": true,
+"atlas_gen": 6,
+"cell": "(19, 40)"
+},{
+"frame": 4515,
+"expected": "(1512, 982)",
+"drawable": "Some((1512, 982))",
+"presented": true,
+"atlas_gen": 7,
+"cell": "(9, 20)"
+},{
+"frame": 4540,
+"expected": "(3024, 1964)",
+"drawable": "Some((3024, 1964))",
+"presented": true,
+"atlas_gen": 8,
+"cell": "(19, 40)"
+},{
+"frame": 4565,
+"expected": "(1512, 982)",
+"drawable": "Some((1512, 982))",
+"presented": true,
+"atlas_gen": 9,
+"cell": "(9, 20)"
+},{
+"frame": 4590,
+"expected": "(3024, 1964)",
+"drawable": "Some((3024, 1964))",
+"presented": true,
+"atlas_gen": 10,
+"cell": "(19, 40)"
+},{
+"frame": 4615,
+"expected": "(1512, 982)",
+"drawable": "Some((1512, 982))",
+"presented": true,
+"atlas_gen": 11,
+"cell": "(9, 20)"
+},{
+"frame": 4640,
+"expected": "(3024, 1964)",
+"drawable": "Some((3024, 1964))",
+"presented": true,
+"atlas_gen": 12,
+"cell": "(19, 40)"
+}]
+},
+"resize": {
+"frames": 1160,
+"presented": 9,
+"dropped": 1151,
+"cpu_ms": {
+"n": 1160,
+"p50": 0.2489,
+"p90": 0.2990,
+"p99": 0.3464,
+"max": 0.5240,
+"mean": 0.2544
+},
+"wall_ms": {
+"n": 1160,
+"p50": 1.4447,
+"p90": 3.4251,
+"p99": 5.6844,
+"max": 11.3879,
+"mean": 1.8111
+},
+"acquire_ms": {
+"n": 1160,
+"p50": 0.2087,
+"p90": 2.2574,
+"p99": 4.4322,
+"max": 10.1333,
+"mean": 0.7588
+},
+"gpu_ms": {
+"n": 1160,
+"p50": 0.3701,
+"p90": 2.2532,
+"p99": 4.4177,
+"max": 4.8517,
+"mean": 0.9217
+},
+"quads": {
+"n": 1160,
+"p50": 1550,
+"p90": 1974,
+"p99": 2025,
+"max": 2025,
+"mean": 1518.3017
+},
+"method": "programmatic: NSWindow setFrame every 1/120 s, then a synchronous render with presentsWithTransaction; not a user drag",
+"steps": 1160,
+"steps_without_sync_frame": 0,
+"drawable_size_mismatches": 0,
+"step_ms_setframe_plus_render": {
+"n": 1160,
+"p50": 1.8182,
+"p90": 3.7911,
+"p99": 6.0843,
+"max": 11.6430,
+"mean": 2.1688
+}
+}
+}

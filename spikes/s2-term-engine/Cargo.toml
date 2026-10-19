@@ -1,0 +1,40 @@
+# Spike S2: die-term's exact engine wiring, and helper process vs thread per terminal.
+# Throwaway prototype; not part of DIE's workspace.
+[package]
+name = "s2-term-engine"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+default-run = "s2"
+
+[workspace]
+
+[dependencies]
+# DIE's exact wiring: the wrapper at a pinned rev, no default features, kitty graphics on, no "png".
+libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", default-features = false, features = ["kitty-graphics"] }
+# The same package the [patch] below substitutes; used directly for DIE's process-global PNG hook.
+libghostty-vt-sys = { path = "crates/die-term-sys" }
+png = "=0.18.1"
+libc = "=0.2.186"
+
+[patch."https://github.com/uzaaft/libghostty-rs"]
+libghostty-vt-sys = { path = "crates/die-term-sys" }
+
+[features]
+# Links AppKit, Metal, QuartzCore and CoreText, so a helper started from "the same binary
+# as DIE" pays dyld's cost for them. Used only for the RSS measurement.
+link-frameworks = []
+
+[[bin]]
+name = "s2"
+path = "src/main.rs"
+
+[[bin]]
+name = "battery"
+path = "src/bin/battery.rs"
+
+[profile.release]
+debug = false
+lto = "fat"
+codegen-units = 1

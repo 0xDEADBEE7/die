@@ -1,0 +1,21 @@
+[package]
+name = "s4core"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone spike: not part of any workspace.
+[workspace]
+exclude = ["proto-orig"]
+
+[dependencies]
+ropey = { version = "=1.6.1", default-features = false, features = ["simd"] }
+slotmap = { version = "=1.1.1" }
+unicode-width = { version = "=0.2.2", default-features = false }
+unicode-segmentation = { version = "=1.13.3" }
+
+[dev-dependencies]
+proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
+
+[profile.test]
+opt-level = 1

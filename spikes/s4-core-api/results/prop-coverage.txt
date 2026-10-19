@@ -1,0 +1,25 @@
+
+running 1 test
+checks                                   42336
+checks with a live hide                  21650
+cursor on a replacement (fold line)      1786
+cursor right after hidden text           4063
+edit: recorded ok                        3911
+edit: rejected (read-only)               271
+edit: silent ok                          3853
+gj/gk within one wrapped line            351
+hide joining lines                       14764
+redo: none/conflict                      1254
+redo: ok                                 96
+scrolled                                 9563
+undo+redo round trip                     676
+undo: blocked by read-only               29
+undo: conflict (truncated)               31
+undo: nothing                            626
+undo: ok                                 697
+virtual text present                     13712
+wrapped rows on screen                   19095
+test coverage_stats ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.49s
+

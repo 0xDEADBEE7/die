@@ -1,0 +1,142 @@
+{
+"label": "B2",
+"display_sync": true,
+"drawables": 3,
+"pix_layer": false,
+"pix_full": true,
+"style": "borderless",
+"font": "Ioskeley Mono Term",
+"drawable_px": "(3024, 1964)",
+"grid": "159x49",
+"cell": "(19, 40)",
+"startup": {
+"metal_device_ms": 0.6915,
+"msl_compile_ms": 2.7603,
+"font_load_ms": 0.6765
+},
+"counters": {
+"rendered": 4383,
+"skipped_occluded": 1,
+"skipped_inflight": 0,
+"no_drawable": 0
+},
+"load_avg_at_end": "5.51 5.33 4.67",
+"press_and_hold_enabled_after_register": false,
+"redraw": {
+"frames": 600,
+"presented": 600,
+"dropped": 0,
+"cpu_ms": {
+"n": 600,
+"p50": 0.4931,
+"p90": 0.5768,
+"p99": 0.6474,
+"max": 1.0762,
+"mean": 0.4542
+},
+"wall_ms": {
+"n": 600,
+"p50": 0.4937,
+"p90": 0.5773,
+"p99": 0.6480,
+"max": 1.0764,
+"mean": 0.4548
+},
+"acquire_ms": {
+"n": 600,
+"p50": 0.0435,
+"p90": 0.0612,
+"p99": 0.0873,
+"max": 0.0943,
+"mean": 0.0403
+},
+"gpu_ms": {
+"n": 600,
+"p50": 0.6331,
+"p90": 0.6513,
+"p99": 0.7002,
+"max": 1.4358,
+"mean": 0.6314
+},
+"quads": {
+"n": 600,
+"p50": 13506,
+"p90": 13802,
+"p99": 13984,
+"max": 14070,
+"mean": 13309.5000
+},
+"grid": "159x49",
+"cells": 7791,
+"drawable": "Some((3024, 1964))",
+"scene_fill_ms": {
+"n": 630,
+"p50": 0.2611,
+"p90": 0.2825,
+"p99": 0.3160,
+"max": 0.5406,
+"mean": 0.2486
+},
+"skipped_inflight": 0
+},
+"producer": {
+"seconds": 60.0011,
+"produced": 3600,
+"presented": 3600,
+"presented_ratio": 1,
+"superseded": 0,
+"ring_waits": 0,
+"main_thread_pixel_memcpy_bytes": 0,
+"producer_memcpy_bytes": 82570682880,
+"gpu_blit_bytes": 82138613760,
+"pix_size": "(3024, 1880)",
+"producer_copy_ms": {
+"n": 3750,
+"p50": 0.4869,
+"p90": 1.2565,
+"p99": 1.4340,
+"max": 3.2223,
+"mean": 0.6261
+},
+"producer_draw_ms": {
+"n": 3751,
+"p50": 1.0439,
+"p90": 1.4362,
+"p99": 1.5503,
+"max": 4.2249,
+"mean": 1.0550
+},
+"main_frame_cpu_ms": {
+"n": 3612,
+"p50": 0.0720,
+"p90": 0.2390,
+"p99": 0.3191,
+"max": 0.3738,
+"mean": 0.1062
+},
+"main_frame_wall_ms": {
+"n": 3612,
+"p50": 0.0720,
+"p90": 0.2400,
+"p99": 0.3204,
+"max": 0.3742,
+"mean": 0.1064
+},
+"acquire_ms": {
+"n": 3612,
+"p50": 0.0159,
+"p90": 0.0556,
+"p99": 0.0760,
+"max": 0.1062,
+"mean": 0.0244
+},
+"gpu_ms": {
+"n": 3612,
+"p50": 0.7601,
+"p90": 1.1799,
+"p99": 1.2611,
+"max": 1.9842,
+"mean": 0.8428
+}
+}
+}

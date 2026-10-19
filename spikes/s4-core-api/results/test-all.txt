@@ -1,0 +1,113 @@
+   Compiling s4core v0.0.0 (/Users/user/workspace/die/spikes/s4-core-api)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.36s
+     Running unittests src/lib.rs (target/debug/deps/s4core-6c1ae96ac335e30b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/c2_checkout.rs (target/debug/deps/c2_checkout-1a76ab316385beaa)
+
+running 5 tests
+test busy_on_reentry ... ok
+test gone_after_kill ... ok
+test kill_during_checkout_drops_at_checkin ... ok
+test missing_for_unknown ... ok
+test panic_restores_object_and_is_attributed ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/c3_queue.rs (target/debug/deps/c3_queue-f2c8855ad44e1c22)
+
+running 4 tests
+test hooks_are_queued_not_nested ... ok
+test on_resize_and_on_enable_are_queued ... ok
+test prompt_delivers_none_on_cancel ... ok
+test timer_and_job_callbacks_run_from_the_top ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/c4_subs.rs (target/debug/deps/c4_subs-1d7cd08b4e1a6501)
+
+running 4 tests
+test drop_cancels ... ok
+test detach_ties_to_the_extension ... ok
+test handle_in_checked_out_mode_cancelled_at_checkin ... ok
+test handle_in_mode_cancelled_when_buffer_killed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/edits.rs (target/debug/deps/edits-524b0fa04484ffa5)
+
+running 9 tests
+test c14_transaction_is_atomic ... ok
+test insert_session_is_one_step_and_restores_cursor ... ok
+test count_dd_is_one_step_and_restores_cursor ... ok
+test c14_user_dd_fails_in_read_only_but_silent_extension_append_succeeds ... ok
+test silent_edit_mid_session_keeps_one_undo_step ... ok
+test undo_refuses_when_an_extension_rewrote_the_users_text ... ok
+test redo_after_silent_edit ... ok
+test undo_after_silent_edit_above_restores_user_text_exactly ... ok
+test c15_checked_out_mode_sees_own_edits_and_old_rev_is_none ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/keys.rs (target/debug/deps/keys-08214445f72253bf)
+
+running 8 tests
+test passthrough_cmd_esc_first_and_other_keys_to_event ... ok
+test exact_beats_char_beats_any_within_one_keymap ... ok
+test range_keymap_comes_first ... ok
+test a_modes_char_beats_the_kind_keymaps_j ... ok
+test missing_command_names_reported_at_once ... ok
+test release_events_never_reach_keymaps ... ok
+test macro_round_trip_with_feed_keys_and_a_key_observer ... ok
+test prefix_argument_set_by_die_vim_commands_and_read_from_args ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/layout.rs (target/debug/deps/layout-698cca35e4855580)
+
+running 7 tests
+test edits_and_new_hides_move_the_cursor_out ... ok
+test search_into_a_fold_runs_the_owners_reveal_command ... ok
+test reveal_never_and_remove ... ok
+test sub_line_hides_and_virtual_text ... ok
+test tabs_and_wide_characters_have_correct_display_columns ... ok
+test j_k_skip_a_fold_made_with_a_stored_hide ... ok
+test gj_gk_over_soft_wrap_with_centered_max_width_and_gutter ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/prop.rs (target/debug/deps/prop-182543fa3c2b5889)
+
+running 3 tests
+test undo_is_exact_around_silent_edits ... ok
+test coverage_stats ... ok
+test cursor_never_hidden_and_render_agrees_with_motions ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.64s
+
+     Running tests/proto.rs (target/debug/deps/proto-6bd27dbd197ac248)
+
+running 8 tests
+test reentrant_checkout_is_busy_not_gone ... ok
+test keymap_char_wildcard ... ok
+test checked_out_mode_sees_its_own_edits ... ok
+test kill_during_checkout_and_generations ... ok
+test typed_ext_command_and_downcast ... ok
+test panic_inside_checkout_restores_object_and_attributes ... ok
+test render_panics_contained ... ok
+test job_handle_in_mode_cancelled_on_kill ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Doc-tests s4core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+real 12.94
+user 11.92
+sys 1.87

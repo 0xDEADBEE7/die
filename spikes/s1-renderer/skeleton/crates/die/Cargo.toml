@@ -1,0 +1,11 @@
+[package]
+name = "die"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+die-core = { path = "../die-core" }
+die-render = { path = "../die-render" }
+die-vim = { path = "../die-vim" }
+die-term = { path = "../die-term" }

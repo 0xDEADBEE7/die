@@ -1,0 +1,24 @@
+file                        raw   code
+src/ctx.rs                 1281   1151
+src/error.rs                 43     32
+src/ids.rs                   18     14
+src/keymap.rs                97     85
+src/keys.rs                 221    198
+src/layout.rs               643    585
+src/lib.rs                   25     20
+src/render.rs               166    155
+src/text.rs                 615    549
+src/undo.rs                 307    271
+src total                  3416   3060
+
+tests/c2_checkout.rs        232    216
+tests/c3_queue.rs           177    166
+tests/c4_subs.rs            120    109
+tests/edits.rs              241    215
+tests/keys.rs               294    269
+tests/layout.rs             238    221
+tests/prop.rs               758    720
+tests/proto.rs              276    260
+tests/support/mod.rs        443    409
+tests total                2779   2585
+(code = non-blank, non-comment lines; formatted with rustfmt 1.9.0 defaults)

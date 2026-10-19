@@ -1,0 +1,594 @@
+{
+"term_sprites": {
+"png": "/Users/user/workspace/die/spikes/s1-renderer/results/fidelity-term-sprites.png",
+"cell": "19x40",
+"box_hline_min_cov": 1,
+"box_vline_min_cov": 1,
+"box_grid_h_min_cov": 1,
+"box_grid_v_min_cov": 1,
+"box_tiles": true,
+"block_min_cov": 1,
+"block_tiles": true,
+"braille": {
+"dot_rows": 12,
+"pitch_within_cell_px": 9,
+"pitch_across_cells_px": 13,
+"spacing_min_px": 9,
+"spacing_max_px": 13,
+"dot_on_boundary": false,
+"tiles": true,
+"even": false
+},
+"cjk_zhong": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"emoji": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "4..34",
+"ink_w_cells": 1.5789,
+"fits": true
+},
+"hangul": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"em_dash": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "0..20",
+"ink_w_cells": 1.0526,
+"fits": true
+},
+"ellipsis": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "1..18",
+"ink_w_cells": 0.8947,
+"fits": true
+},
+"arrow": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "0..19",
+"ink_w_cells": 1,
+"fits": true
+},
+"circled_1": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "1..18",
+"ink_w_cells": 0.8947,
+"fits": true
+},
+"fallback_faces": ["PingFangSC-Regular","AppleColorEmoji","AppleSDGothicNeo-Regular"]
+},
+"term_advances": {
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cell": "19x40",
+"ascent": 30.8799,
+"descent": 7.0400,
+"leading": 2.0801,
+"single_width_chars_drawn_two_cells": 23,
+"examples": ["U+27DD ⟝","U+27DE ⟞","U+27F5 ⟵","U+27F6 ⟶","U+27F7 ⟷","U+27F8 ⟸","U+27F9 ⟹","U+27FA ⟺","U+27FB ⟻","U+27FC ⟼","U+27FD ⟽","U+27FE ⟾"],
+"chars": [{
+"char": "M",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "—",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "…",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "→",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "←",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "│",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "─",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "█",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "⣿",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "①",
+"face": "Ioskeley-Mono-Term",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "中",
+"face": "PingFangSC-Regular",
+"advance_px": 32,
+"cells": 1.6667,
+"wcwidth": 2
+},{
+"char": "😀",
+"face": "AppleColorEmoji",
+"advance_px": 32,
+"cells": 1.6667,
+"wcwidth": 2
+}]
+},
+"term_font_only": {
+"png": "/Users/user/workspace/die/spikes/s1-renderer/results/fidelity-term-font_only.png",
+"cell": "19x40",
+"box_hline_min_cov": 1,
+"box_vline_min_cov": 1,
+"box_grid_h_min_cov": 1,
+"box_grid_v_min_cov": 1,
+"box_tiles": true,
+"block_min_cov": 1,
+"block_tiles": true,
+"braille": {
+"dot_rows": 12,
+"pitch_within_cell_px": 9,
+"pitch_across_cells_px": 13,
+"spacing_min_px": 9,
+"spacing_max_px": 13,
+"dot_on_boundary": false,
+"tiles": true,
+"even": false
+},
+"cjk_zhong": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"emoji": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "4..34",
+"ink_w_cells": 1.5789,
+"fits": true
+},
+"hangul": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"em_dash": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "0..20",
+"ink_w_cells": 1.0526,
+"fits": true
+},
+"ellipsis": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "1..18",
+"ink_w_cells": 0.8947,
+"fits": true
+},
+"arrow": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "0..19",
+"ink_w_cells": 1,
+"fits": true
+},
+"circled_1": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "1..18",
+"ink_w_cells": 0.8947,
+"fits": true
+},
+"fallback_faces": ["PingFangSC-Regular","AppleColorEmoji","AppleSDGothicNeo-Regular"]
+},
+"term_braille_sprite": {
+"png": "/Users/user/workspace/die/spikes/s1-renderer/results/fidelity-term-braille_sprite.png",
+"cell": "19x40",
+"box_hline_min_cov": 1,
+"box_vline_min_cov": 1,
+"box_grid_h_min_cov": 1,
+"box_grid_v_min_cov": 1,
+"box_tiles": true,
+"block_min_cov": 1,
+"block_tiles": true,
+"braille": {
+"dot_rows": 12,
+"pitch_within_cell_px": 10,
+"pitch_across_cells_px": 10,
+"spacing_min_px": 10,
+"spacing_max_px": 10,
+"dot_on_boundary": false,
+"tiles": true,
+"even": true
+},
+"cjk_zhong": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"emoji": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "4..34",
+"ink_w_cells": 1.5789,
+"fits": true
+},
+"hangul": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"em_dash": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "0..20",
+"ink_w_cells": 1.0526,
+"fits": true
+},
+"ellipsis": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "1..18",
+"ink_w_cells": 0.8947,
+"fits": true
+},
+"arrow": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "0..19",
+"ink_w_cells": 1,
+"fits": true
+},
+"circled_1": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "1..18",
+"ink_w_cells": 0.8947,
+"fits": true
+},
+"fallback_faces": ["PingFangSC-Regular","AppleColorEmoji","AppleSDGothicNeo-Regular"]
+},
+"installed_sprites": {
+"png": "/Users/user/workspace/die/spikes/s1-renderer/results/fidelity-installed-sprites.png",
+"cell": "19x40",
+"box_hline_min_cov": 1,
+"box_vline_min_cov": 1,
+"box_grid_h_min_cov": 1,
+"box_grid_v_min_cov": 1,
+"box_tiles": true,
+"block_min_cov": 1,
+"block_tiles": true,
+"braille": {
+"dot_rows": 12,
+"pitch_within_cell_px": 9,
+"pitch_across_cells_px": 13,
+"spacing_min_px": 9,
+"spacing_max_px": 13,
+"dot_on_boundary": false,
+"tiles": true,
+"even": false
+},
+"cjk_zhong": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"emoji": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "4..34",
+"ink_w_cells": 1.5789,
+"fits": true
+},
+"hangul": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"em_dash": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "0..19",
+"ink_w_cells": 1,
+"fits": true
+},
+"ellipsis": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "2..17",
+"ink_w_cells": 0.7895,
+"fits": true
+},
+"arrow": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "1..18",
+"ink_w_cells": 0.8947,
+"fits": true
+},
+"circled_1": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "2..17",
+"ink_w_cells": 0.7895,
+"fits": true
+},
+"fallback_faces": ["PingFangSC-Regular","AppleColorEmoji","AppleSDGothicNeo-Regular"]
+},
+"installed_advances": {
+"face": "Ioskeley-Mono",
+"advance_px": 19.2000,
+"cell": "19x40",
+"ascent": 30.8799,
+"descent": 7.0400,
+"leading": 2.0801,
+"single_width_chars_drawn_two_cells": 1282,
+"examples": ["U+2001  ","U+2003  ","U+2014 —","U+2015 ―","U+2024 ․","U+2025 ‥","U+2026 …","U+2030 ‰","U+2031 ‱","U+203B ※","U+2042 ⁂","U+2053 ⁓"],
+"chars": [{
+"char": "M",
+"face": "Ioskeley-Mono",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "—",
+"face": "Ioskeley-Mono",
+"advance_px": 38.4000,
+"cells": 2,
+"wcwidth": 1
+},{
+"char": "…",
+"face": "Ioskeley-Mono",
+"advance_px": 38.4000,
+"cells": 2,
+"wcwidth": 1
+},{
+"char": "→",
+"face": "Ioskeley-Mono",
+"advance_px": 38.4000,
+"cells": 2,
+"wcwidth": 1
+},{
+"char": "←",
+"face": "Ioskeley-Mono",
+"advance_px": 38.4000,
+"cells": 2,
+"wcwidth": 1
+},{
+"char": "│",
+"face": "Ioskeley-Mono",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "─",
+"face": "Ioskeley-Mono",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "█",
+"face": "Ioskeley-Mono",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "⣿",
+"face": "Ioskeley-Mono",
+"advance_px": 19.2000,
+"cells": 1,
+"wcwidth": 1
+},{
+"char": "①",
+"face": "Ioskeley-Mono",
+"advance_px": 38.4000,
+"cells": 2,
+"wcwidth": 1
+},{
+"char": "中",
+"face": "PingFangSC-Regular",
+"advance_px": 32,
+"cells": 1.6667,
+"wcwidth": 2
+},{
+"char": "😀",
+"face": "AppleColorEmoji",
+"advance_px": 32,
+"cells": 1.6667,
+"wcwidth": 2
+}]
+},
+"installed_font_only": {
+"png": "/Users/user/workspace/die/spikes/s1-renderer/results/fidelity-installed-font_only.png",
+"cell": "19x40",
+"box_hline_min_cov": 1,
+"box_vline_min_cov": 1,
+"box_grid_h_min_cov": 1,
+"box_grid_v_min_cov": 1,
+"box_tiles": true,
+"block_min_cov": 1,
+"block_tiles": true,
+"braille": {
+"dot_rows": 12,
+"pitch_within_cell_px": 9,
+"pitch_across_cells_px": 13,
+"spacing_min_px": 9,
+"spacing_max_px": 13,
+"dot_on_boundary": false,
+"tiles": true,
+"even": false
+},
+"cjk_zhong": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"emoji": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "4..34",
+"ink_w_cells": 1.5789,
+"fits": true
+},
+"hangul": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"em_dash": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "0..19",
+"ink_w_cells": 1,
+"fits": true
+},
+"ellipsis": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "2..17",
+"ink_w_cells": 0.7895,
+"fits": true
+},
+"arrow": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "1..18",
+"ink_w_cells": 0.8947,
+"fits": true
+},
+"circled_1": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "2..17",
+"ink_w_cells": 0.7895,
+"fits": true
+},
+"fallback_faces": ["PingFangSC-Regular","AppleColorEmoji","AppleSDGothicNeo-Regular"]
+},
+"installed_braille_sprite": {
+"png": "/Users/user/workspace/die/spikes/s1-renderer/results/fidelity-installed-braille_sprite.png",
+"cell": "19x40",
+"box_hline_min_cov": 1,
+"box_vline_min_cov": 1,
+"box_grid_h_min_cov": 1,
+"box_grid_v_min_cov": 1,
+"box_tiles": true,
+"block_min_cov": 1,
+"block_tiles": true,
+"braille": {
+"dot_rows": 12,
+"pitch_within_cell_px": 10,
+"pitch_across_cells_px": 10,
+"spacing_min_px": 10,
+"spacing_max_px": 10,
+"dot_on_boundary": false,
+"tiles": true,
+"even": true
+},
+"cjk_zhong": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"emoji": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "4..34",
+"ink_w_cells": 1.5789,
+"fits": true
+},
+"hangul": {
+"ink": true,
+"span_cells": 2,
+"ink_x": "6..32",
+"ink_w_cells": 1.3684,
+"fits": true
+},
+"em_dash": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "0..19",
+"ink_w_cells": 1,
+"fits": true
+},
+"ellipsis": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "2..17",
+"ink_w_cells": 0.7895,
+"fits": true
+},
+"arrow": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "1..18",
+"ink_w_cells": 0.8947,
+"fits": true
+},
+"circled_1": {
+"ink": true,
+"span_cells": 1,
+"ink_x": "2..17",
+"ink_w_cells": 0.7895,
+"fits": true
+},
+"fallback_faces": ["PingFangSC-Regular","AppleColorEmoji","AppleSDGothicNeo-Regular"]
+}
+}
