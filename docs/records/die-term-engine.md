@@ -272,7 +272,7 @@ libghostty-vt-sys = { path = "crates/die-term-sys" }   # links = "ghostty-vt"
 - `vendor/<target>/libghostty-vt.a.sha256`
 - `src/bindings.rs`: generated from the archive's own headers
 - `src/lib.rs`: about 90 lines from libghostty-rs, MIT/Apache, with attribution
-- `build.rs`: about 15 lines. It picks the archive by `TARGET` and refuses targets it has none for, checks the SHA-256 and emits the link flags. No network, git or Zig.
+- `build.rs`: about 15 lines. It picks the archive by `TARGET`, checks the SHA-256 and emits the link flags. On a target it has no archive for, it links nothing, and the `die` facade leaves die-term out there (scope D10). No network, git or Zig.
 - `ghostty-vt.lock`, with a section per target
 - the `.minisig`
 - `LICENSE-ghostty` and `THIRD_PARTY_NOTICES`
