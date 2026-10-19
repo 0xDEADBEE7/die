@@ -1,4 +1,4 @@
-> **Decision record for scope D13 and spike S1.** Status: **proposed**, waiting on your review and the "needs you" runs in §6. Date: 2026-10-19. Prototype: `spikes/s1-renderer/` (throwaway, standalone cargo project). Machine: Apple M5 Pro, built-in 120 Hz ProMotion panel at 3024×1964, macOS 26.5. Spikes S2–S5 ran at the same time (load average 3–6), so every timing below carries that caveat.
+> **Decision record for scope D13 and spike S1.** Status: **accepted 2026-10-19.** You chose the recommendations on both decisions in §4: accept about 23 ms in a tile as the platform's floor, and keep the borderless window with an AeroSpace rule. The proposed edits are folded into scope.md. The "needs you" runs in §6 are still open. Date: 2026-10-19. Prototype: `spikes/s1-renderer/` (throwaway, standalone cargo project). Machine: Apple M5 Pro, built-in 120 Hz ProMotion panel at 3024×1964, macOS 26.5. Spikes S2–S5 ran at the same time (load average 3–6), so every timing below carries that caveat.
 
 # S1 decision record: renderer and platform (winit + Metal + Core Text)
 

@@ -28,8 +28,8 @@ These were the broad decisions left over from the 2026-10-18 review. **All of th
 - winit (pinned), Metal through objc2, and Core Text, in their own `die-render` crate.
 - No ratatui in core (D8). Its cell type can't hold underline styles, links or wide characters.
 - The renderer draws box-drawing, block, braille and powerline glyphs itself so they join across cells, as kitty and Ghostty do. A per-range override keeps braille in Ioskeley Mono, as your init.el does.
-- The font is Ioskeley Mono **Term**. You'll need to install it, because your current build draws `—`, `…` and arrows two cells wide. Ligatures stay off in v1.
-- The window is borderless, like your Emacs frame. AeroSpace handles placement.
+- The font is Ioskeley Mono **Term**, which fixes `—`, `…` and arrows that your current build draws two cells wide. DIE loads it from the font files (S1), so it doesn't need installing. Ligatures stay off in v1.
+- The window is borderless, like your Emacs frame. AeroSpace leaves borderless windows floating (S1 found), so your `aerospace.toml` gets an `on-window-detected` rule that tiles DIE.
 - Option acts as Alt, and core bindings stay off Alt chords, which AeroSpace takes.
 - No IME work, since your inputs are the Australian layout plus the Character Viewer.
 
