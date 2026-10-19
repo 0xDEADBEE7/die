@@ -1,0 +1,103 @@
+[package]
+name = "die-render"
+description = "DIE's window and renderer: winit, Metal and Core Text, drawing die-core's scene"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Versions are S1's (docs/records/s1-renderer.md). The objc2 framework crates
+# have their default features off: those defaults link every framework class,
+# and AppKit's pull in CloudKit, CoreData and CoreImage, which DIE doesn't use.
+# Add a feature when code needs it. objc-sys (under winit) compiles its one `.m`
+# file only with a feature that stays off (D16).
+[dependencies]
+die-core.workspace = true
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
+objc2 = "=0.6.5"
+block2 = "=0.6.2"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSDictionary",
+    "NSGeometry",
+    "NSObject",
+    "NSProcessInfo",
+    "NSString",
+    "NSUserDefaults",
+    "NSValue",
+] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-core-foundation",
+    "objc2-quartz-core",
+    "NSApplication",
+    "NSEvent",
+    "NSGraphics",
+    "NSPasteboard",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "MTLAllocation",
+    "MTLBuffer",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLDevice",
+    "MTLDrawable",
+    "MTLLibrary",
+    "MTLPixelFormat",
+    "MTLRenderCommandEncoder",
+    "MTLRenderPass",
+    "MTLRenderPipeline",
+    "MTLResource",
+    "MTLTexture",
+    "MTLTypes",
+] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "objc2-metal",
+    "CABase",
+    "CALayer",
+    "CAMetalLayer",
+    "CATransaction",
+] }
+objc2-core-text = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-graphics",
+    "CTFont",
+    "CTFontDescriptor",
+    "CTFontManager",
+    "CTFontTraits",
+] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "CGBitmapContext",
+    "CGColorSpace",
+    "CGContext",
+    "CGImage",
+] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "CFArray",
+    "CFBase",
+    "CFCGTypes",
+    "CFString",
+    "CFURL",
+] }
+unicode-width.workspace = true
+
+# die-render may not inherit the workspace's `unsafe_code = "forbid"`: its
+# `platform` module needs `allow`. Everything else in the crate denies it, and
+# `cargo xtask lint` checks that `platform` is the only allow.
+[lints.rust]
+unsafe_code = "deny"

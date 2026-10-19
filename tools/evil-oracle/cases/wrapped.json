@@ -1,0 +1,16 @@
+{"topic": "wrapped", "run": "tty",
+ "defaults": {"window": {"width": 40, "height": 10}},
+ "cases": [
+  {"id": "gj", "keys": "gj", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm", "next"]},
+  {"id": "gj-keeps-column", "keys": "3lgj", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm", "next"]},
+  {"id": "gk", "keys": "gjgk", "text": ["aaaa |bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm", "next"]},
+  {"id": "2gj-into-next-line", "keys": "2gj", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm", "next"]},
+  {"id": "j-is-logical", "keys": "j", "text": ["aa|aa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm", "next line"]},
+  {"id": "j-keeps-logical-column", "keys": "jj", "text": ["aaaa bbbb cccc dddd eeee ffff gggg hhhh i|iii", "x", "aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj"]},
+  {"id": "k-is-logical", "keys": "k", "text": ["first", "aaaa bbbb cccc dddd eeee ffff gggg hhhh i|iii"]},
+  {"id": "gk-in-tail", "keys": "gk", "text": ["aaaa bbbb cccc dddd eeee ffff gggg hhhh i|iii"]},
+  {"id": "gj-at-last-visual-line", "vim": "end-line: Vim's gj fails on the last screen line; Evil moves past the final newline (not compared by the harness)", "keys": "gj", "text": ["|short"]},
+  {"id": "dgj", "keys": "dgj", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm", "next"]},
+  {"id": "dollar-is-logical", "keys": "$", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm"]},
+  {"id": "zero-is-logical", "keys": "gj0", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm"]}
+ ]}

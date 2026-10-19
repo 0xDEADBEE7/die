@@ -1,0 +1,74 @@
+# die-core's planted bugs, run by `cargo xtask mutate` (from spike S4's mutate.sh).
+# Each replaces `old` (which must occur exactly once in `file`, relative to
+# crates/die-core) with `new`, and the property tests in tests/prop.rs must fail.
+# K2 and K4 add their own: an undo bug, a stale layout cache and a wrap bug.
+
+[[mutant]]
+name = "M1 layout cache key ignores decorations"
+file = "src/layout.rs"
+old = '''
+let key = (self.rev(), self.deco_gen, self.settings.tab_width);'''
+new = '''
+let key = (self.rev(), 0, self.settings.tab_width);'''
+
+[[mutant]]
+name = "M2 hide merge ignores the replacement preference"
+file = "src/layout.rs"
+old = '''
+v.sort_by_key(|s| (s.start, s.repl.is_none(), std::cmp::Reverse(s.end), s.deco));'''
+new = '''
+v.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end), s.deco));'''
+
+[[mutant]]
+name = "M3 no cursor fix-up after decorate"
+file = "src/text.rs"
+old = '''
+        self.deco_gen += 1;
+        self.normalize_views();
+        Ok(id)'''
+new = '''
+        self.deco_gen += 1;
+        Ok(id)'''
+
+[[mutant]]
+name = "M4 undo transform tie-break"
+file = "src/undo.rs"
+old = '''
+if p.pos + p.del <= o.pos {'''
+new = '''
+if p.pos + p.del < o.pos {'''
+
+[[mutant]]
+name = "M5 end-of-line stop on a full row doesn't wrap"
+file = "src/layout.rs"
+old = '''
+    fn stop_here(&mut self, pos: usize) {
+        if !self.fits(1) {
+            self.newrow();
+        }'''
+new = '''
+    fn stop_here(&mut self, pos: usize) {'''
+
+[[mutant]]
+name = "M6 open undo group not rebased over silent edits"
+file = "src/undo.rs"
+old = '''
+            if !pending.is_empty() {'''
+new = '''
+            if false {'''
+
+[[mutant]]
+name = "M7 undo drops the pending silent shifts"
+file = "src/undo.rs"
+old = '''
+        if !p.pending.is_empty() && !from.is_empty() {'''
+new = '''
+        if false {'''
+
+[[mutant]]
+name = "M8 wide char ignores the row end (no filler)"
+file = "src/layout.rs"
+old = '''
+        if w > 1 && !self.fits(w) && self.col > 0 {'''
+new = '''
+        if false {'''

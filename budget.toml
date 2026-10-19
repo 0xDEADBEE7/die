@@ -1,0 +1,106 @@
+# Guard 7's budgets (scope §3), checked by `cargo xtask budget`.
+#
+# Counting rule: code lines after rustfmt, without blank lines, comments (doc
+# comments included), `tests/` directories or `#[cfg(test)]` items, counted by
+# xtask's own counter under the pinned toolchain.
+#
+# Module limits are ratchets (docs/m0-plan.md §4). Each starts at the top of its
+# module's M0 estimate and drops to the measured size after M0. Every file in a
+# crate that has modules must belong to exactly one of them.
+
+[[crate]]
+name = "die-core"
+path = "crates/die-core"
+limit = 14000
+
+[[crate]]
+name = "die-render"
+path = "crates/die-render"
+limit = 5000
+
+[[crate]]
+name = "die-vim"
+path = "crates/die-vim"
+limit = 5000
+note = "proposed in docs/m0-plan.md §4, not yet in guard 7"
+
+[[crate]]
+name = "die"
+path = "crates/die"
+
+[[crate]]
+name = "die-dev"
+path = "apps/die-dev"
+
+[[crate]]
+name = "xtask"
+path = "xtask"
+dev = true
+
+[[crate]]
+name = "evil-oracle"
+path = "tools/evil-oracle"
+dev = true
+
+# die-core's modules at M0. `ctx.rs` holds S4's extension machinery, dispatch,
+# runtime, windows and prompt until K5 and K6 split it.
+
+[[module]]
+crate = "die-core"
+name = "text and undo"
+limit = 1250
+files = ["text.rs", "undo.rs", "text/", "undo/"]
+
+[[module]]
+crate = "die-core"
+name = "layout"
+limit = 950
+files = ["layout.rs", "layout/"]
+
+[[module]]
+crate = "die-core"
+name = "keys, keymaps, describe"
+limit = 650
+files = ["keys.rs", "keymap.rs", "describe.rs"]
+
+[[module]]
+crate = "die-core"
+name = "ext, dispatch, rt"
+limit = 1500
+files = ["ctx.rs", "ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
+
+[[module]]
+crate = "die-core"
+name = "workspace, windows, pointer"
+limit = 1100
+files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
+
+[[module]]
+crate = "die-core"
+name = "files"
+limit = 650
+files = ["files.rs", "files/"]
+
+[[module]]
+crate = "die-core"
+name = "command line, prompt, core commands"
+limit = 1300
+files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "commands/"]
+
+[[module]]
+crate = "die-core"
+name = "faces and scene"
+limit = 950
+files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
+
+[[module]]
+crate = "die-core"
+name = "session"
+limit = 1000
+files = ["session.rs", "session/"]
+
+[[module]]
+crate = "die-core"
+name = "harness, app interface, messages, ids, errors"
+limit = 800
+files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]

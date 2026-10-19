@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/die-core",
+    "crates/die-render",
+    "crates/die-vim",
+    "crates/die",
+    "apps/die-dev",
+    "tools/evil-oracle",
+    "xtask",
+]
+default-members = [
+    "crates/die-core",
+    "crates/die-render",
+    "crates/die-vim",
+    "crates/die",
+    "apps/die-dev",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Every dependency is pinned to an exact version (`cargo xtask lint` checks).
+[workspace.dependencies]
+die-core = { path = "crates/die-core" }
+die-render = { path = "crates/die-render" }
+die-vim = { path = "crates/die-vim" }
+die = { path = "crates/die" }
+evil-oracle = { path = "tools/evil-oracle" }
+
+ropey = { version = "=1.6.1", default-features = false, features = ["simd"] }
+slotmap = "=1.1.1"
+unicode-width = { version = "=0.2.2", default-features = false }
+unicode-segmentation = "=1.13.3"
+proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+
+# unsafe is forbidden everywhere except die-render's platform module, which
+# sets its own lints (scope §12; `cargo xtask lint` checks).
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+debug = "line-tables-only"
+
+# The property tests run thousands of cases; unoptimized ropes make them slow.
+[profile.test]
+opt-level = 1

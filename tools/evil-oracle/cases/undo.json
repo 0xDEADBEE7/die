@@ -1,0 +1,20 @@
+{"topic": "undo",
+ "cases": [
+  {"id": "u-u", "keys": "xxxuu", "text": ["|abcd"]},
+  {"id": "u-after-move-redoes", "vim": "undo: Vim's second u undoes further; in Evil any command between two u's starts a new undo chain, so the second u redoes", "keys": "xxulu", "text": ["|abcd"]},
+  {"id": "ctrl-r-redo", "vim": "undo: Vim redoes; the user's Evil has no redo (evil-undo-system is nil) and C-r signals an error", "keys": "xu<C-r>", "text": ["|abc"]},
+  {"id": "2u", "keys": "xxx2u", "text": ["|abcd"]},
+  {"id": "u-past-oldest", "keys": "xuu", "text": ["|ab"]},
+  {"id": "insert-session-is-one-step", "keys": "ifoo<Esc>abar<Esc>u", "text": ["|x"]},
+  {"id": "multiline-insert-one-step", "keys": "Afoo<CR>bar<Esc>u", "text": ["|x"]},
+  {"id": "insert-with-arrow-one-step", "vim": "undo: in Vim an arrow key splits the insert into two undo steps; Evil keeps one", "keys": "ifoo<Left>X<Esc>u", "text": ["|abc"]},
+  {"id": "count-insert-one-step", "keys": "3ia<Esc>u", "text": ["|x"]},
+  {"id": "cw-one-step", "keys": "cwX<Esc>u", "text": ["|foo bar"]},
+  {"id": "o-one-step", "keys": "ox<Esc>u", "text": ["|a"]},
+  {"id": "dd-u-cursor", "keys": "ddu", "text": ["a", "|b", "c"]},
+  {"id": "dw-u-cursor", "keys": "dwu", "text": ["foo |bar baz"]},
+  {"id": "u-cursor-after-later-move", "keys": "x$u", "text": ["a|bcdef"]},
+  {"id": "R-one-step", "keys": "Rxy<Esc>u", "text": ["|abcd"]},
+  {"id": "block-insert-one-step", "keys": "<C-v>jIX<Esc>u", "text": ["|ab", "cd"]},
+  {"id": "u-then-dot", "keys": "dwu.", "text": ["|foo bar"]}
+ ]}

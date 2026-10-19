@@ -1,0 +1,20 @@
+[package]
+name = "die-core"
+description = "DIE's headless editor: buffers, windows, keys, layout and the extension API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ropey.workspace = true
+slotmap.workspace = true
+unicode-width.workspace = true
+unicode-segmentation.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

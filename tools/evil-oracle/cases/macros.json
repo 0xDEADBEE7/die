@@ -1,0 +1,14 @@
+{"topic": "macros",
+ "cases": [
+  {"id": "record-and-play", "keys": "qaA!<Esc>jq@a", "text": ["|one", "two", "three"]},
+  {"id": "at-at", "keys": "qaxq@a@@", "text": ["|abcd"]},
+  {"id": "count-play", "keys": "qaxjq3@a", "text": ["|a1", "b2", "c3", "d4", "e5"]},
+  {"id": "error-stops-macro", "vim": "end-line: Vim's j fails on the last line and ends the macro there", "keys": "qaxjq5@a", "text": ["|a1", "b2", "c3"]},
+  {"id": "recursive", "vim": "end-line: Vim's j fails on the last line and ends the macro there", "keys": "qaqqaxj@aq@a", "text": ["|a1", "b2", "c3", "d4"]},
+  {"id": "paste-macro-register", "keys": "qaA!<Esc>q\"ap", "text": ["|one"]},
+  {"id": "macro-with-search", "keys": "qa/x<CR>rYq@a", "text": ["|a x b x c x"]},
+  {"id": "macro-with-dot", "vim": "macro, Evil bug: in Vim . repeats the dw inside the macro; Evil runs macros without command hooks, so . errors", "keys": "qadw.q@a", "text": ["|a b c d e f"]},
+  {"id": "macro-records-count", "vim": "end-line: Vim's j fails on the last line", "keys": "qa2xjq@a", "text": ["|abc", "def"]},
+  {"id": "preset-macro-with-dot", "vim": "macro, Evil bug: in Vim . repeats the dw inside the macro; Evil's . errors", "keys": "@a", "text": ["|a b c d e f"], "registers": {"a": {"text": "dw.", "type": "macro"}}},
+  {"id": "preset-macro", "keys": "@a", "text": ["|one", "two"], "registers": {"a": {"text": "A!<Esc>j", "type": "macro"}}}
+ ]}

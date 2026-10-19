@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a669bafeeb647ff50ee73dbdc9741d6d9b6fd806c6f352e990100481234d075b # shrinks to init = "aaaaaaaaaaaaaaaaaaaaaaaaa", ops = [Set { nums: false, maxw: None, center: false, wrap: false, tab: 1 }]
+cc ceff09aee909df37997691323a8829634dc519b715e761385dc8f2947e8437a4 # shrinks to init = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ops = [Ins { at: 0, s: "aaaaa", user: false, silent: false }, Ins { at: 0, s: "aaaa", user: false, silent: false }, Del { at: 0, len: 1, user: false, silent: false }, Hide { at: 41148, len: 7, repl: None }, Hide { at: 43276, len: 1, repl: Some("a") }]
+cc 631c426267dba6e53e3e1e76aa5137cb25df4622d35ae0973821b743c2a66f81 # shrinks to init = "aaaaaaaaaaaaaaaaaaaaa", ops = [Del { at: 46967, len: 2, user: false, silent: false }, Hide { at: 8020, len: 1, repl: None }]
+cc fc52e9820fee7a568aaf1f0afcbbe08798ec4cde30ca52a02f3364008088dd8c # shrinks to init = "aaaaaaaaaaaaaaaaaa", ops = [Ins { at: 0, s: "b", user: false, silent: false }, Ins { at: 38101, s: "aaaa", user: false, silent: false }, Del { at: 22139, len: 5, user: false, silent: true }, Del { at: 10070, len: 1, user: false, silent: true }, Undo, UndoRedo]
