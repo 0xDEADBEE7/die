@@ -148,6 +148,7 @@ args
 - **A keymap** maps key sequences to command names, per state. The notation follows Vim: `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`.
   - Key names match without case. A `<` that doesn't start a key name is a literal `<`. A bracketed word that isn't a key name, or modifiers followed by something that isn't a key, is a startup error. `feed_keys` and macro register text are notation too, so a literal `<` there is written `<lt>`.
   - Ctrl with a letter ignores the letter's case (`<C-V>` is `<C-v>`); `<C-S-v>` is Ctrl-Shift-V. Key events match the same way, so Caps Lock doesn't change what Ctrl-v matches.
+  - `<A-…>` and `<M-…>` are Alt (Option on macOS). `<D-…>` names the DIE layer, which on macOS is scope D18's Cmd layer: `<D-v>` is Cmd-V there.
   - `<leader>` is the key your config sets, `\` by default. It applies to every keymap once all extensions have registered.
 - **`<char>` matches any printable character,** including text committed by dead keys. The command reads which character it was from `args.key`. This replaces the loops in scrib's and orchid's search modes that bind every character to a self-insert command.
 - **`<any>` matches any key** a keymap doesn't otherwise bind, printable or not. die-vim uses it to cancel operator-pending on an unbound key.

@@ -52,6 +52,8 @@ fn vim_names_are_case_insensitive() {
         ("<lt>", Key::Char('<')),
         ("<Bslash>", Key::Char('\\')),
         ("<Bar>", Key::Char('|')),
+        ("<Super>", Key::Modifier(ModifierKey::Super)),
+        ("<Command>", Key::Modifier(ModifierKey::Super)),
     ] {
         assert_eq!(one(s), KeyEvent::press(want), "{s}");
     }
@@ -87,7 +89,11 @@ fn modifiers_fold_as_vim_does() {
     assert_eq!(one("<A-x>"), alt('x'));
     assert_eq!(one("<M-x>"), alt('x'));
     assert_eq!(one("<A-X>"), alt('X'), "only Ctrl folds case");
-    assert_eq!(one("<D-v>"), with(ch('v'), |m| m.cmd = true));
+    assert_eq!(
+        one("<D-v>"),
+        with(ch('v'), |m| m.super_ = true),
+        "D names the DIE layer, Super until config sets it"
+    );
     assert_eq!(one("<C->>"), ctrl('>'));
     assert_eq!(one("<C-->"), ctrl('-'));
     assert_eq!(one("<C-lt>"), ctrl('<'));
@@ -178,7 +184,7 @@ fn key_press() -> impl Strategy<Value = KeyEvent> {
             ctrl: c,
             alt: a,
             shift,
-            cmd: d,
+            super_: d,
         })
     })
 }

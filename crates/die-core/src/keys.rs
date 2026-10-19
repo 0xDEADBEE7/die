@@ -35,8 +35,10 @@ pub enum Key {
 pub enum ModifierKey {
     Shift,
     Control,
+    /// Alt (Option on macOS).
     Alt,
-    Command,
+    /// Super: Cmd on macOS, the logo key on Linux.
+    Super,
     CapsLock,
 }
 
@@ -44,10 +46,12 @@ pub enum ModifierKey {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Mods {
     pub ctrl: bool,
-    /// Option. DIE treats both Option keys as Alt.
+    /// Alt (Option on macOS). DIE treats both Option keys as Alt.
     pub alt: bool,
     pub shift: bool,
-    pub cmd: bool,
+    /// Super: Cmd on macOS, the logo key on Linux. Notation writes it `<D-…>`, which names
+    /// the DIE layer (scope D18); the layer is Super until config sets it, by M2.
+    pub super_: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -141,7 +145,7 @@ impl KeyEvent {
         }
         match self.key {
             Key::Char(c)
-                if !self.mods.ctrl && !self.mods.alt && !self.mods.cmd && !c.is_control() =>
+                if !self.mods.ctrl && !self.mods.alt && !self.mods.super_ && !c.is_control() =>
             {
                 Some(c.to_string())
             }
@@ -191,16 +195,17 @@ const NAMES: &[(&str, Key)] = &[
     ("Shift", Key::Modifier(ModifierKey::Shift)),
     ("Control", Key::Modifier(ModifierKey::Control)),
     ("Alt", Key::Modifier(ModifierKey::Alt)),
-    ("Command", Key::Modifier(ModifierKey::Command)),
+    ("Super", Key::Modifier(ModifierKey::Super)),
+    ("Command", Key::Modifier(ModifierKey::Super)),
     ("CapsLock", Key::Modifier(ModifierKey::CapsLock)),
 ];
 
-/// Parse notation such as `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`, `<D-Esc>` (Cmd), `<char>`,
-/// `<any>`. Names are matched without regard to case. Ctrl with a letter folds its case, as
-/// in Vim (`<C-V>` is `<C-v>`); `<C-S-a>` is Ctrl-Shift-A. A `<` that doesn't start a key is
-/// a literal `<`, but a bracketed word that isn't a key name, or modifiers followed by
-/// something that isn't a key (`<C-X-a>`), is an error, since it's almost always a typo:
-/// write `<lt>` for a literal `<`.
+/// Parse notation such as `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`, `<D-Esc>` (the DIE layer's
+/// Esc), `<char>`, `<any>`. Names are matched without regard to case. Ctrl with a letter folds
+/// its case, as in Vim (`<C-V>` is `<C-v>`); `<C-S-a>` is Ctrl-Shift-A. A `<` that doesn't
+/// start a key is a literal `<`, but a bracketed word that isn't a key name, or modifiers
+/// followed by something that isn't a key (`<C-X-a>`), is an error, since it's almost always
+/// a typo: write `<lt>` for a literal `<`.
 pub fn parse_pats(s: &str) -> Result<Vec<Pat>, String> {
     let c: Vec<char> = s.chars().collect();
     let mut out = vec![];
@@ -234,7 +239,7 @@ fn bracket(c: &[char]) -> Result<Option<(Pat, usize)>, String> {
             'C' => mods.ctrl = true,
             'A' | 'M' => mods.alt = true,
             'S' => mods.shift = true,
-            'D' => mods.cmd = true,
+            'D' => mods.super_ = true,
             _ => break,
         }
         i += 2;
@@ -321,10 +326,10 @@ pub fn key_notation(evs: &[KeyEvent]) -> String {
             ctrl,
             alt,
             shift,
-            cmd,
+            super_,
         } = mods;
         let name = match key {
-            Key::Char(c) if !(ctrl || alt || cmd) => {
+            Key::Char(c) if !(ctrl || alt || super_) => {
                 literal(&mut s, c);
                 continue;
             }
@@ -338,7 +343,7 @@ pub fn key_notation(evs: &[KeyEvent]) -> String {
                 .map_or("?", |(n, _)| n)
                 .to_string(),
         };
-        let pre: String = [(ctrl, "C-"), (alt, "A-"), (shift, "S-"), (cmd, "D-")]
+        let pre: String = [(ctrl, "C-"), (alt, "A-"), (shift, "S-"), (super_, "D-")]
             .iter()
             .filter(|p| p.0)
             .map(|p| p.1)
