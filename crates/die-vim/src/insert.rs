@@ -2,9 +2,12 @@
 //! undo step, it records its edits so a count can replay them, and it indents new
 //! lines the way your Evil does in text buffers (like the line above).
 
-use crate::grammar::target;
+use crate::grammar::buffer_window;
 use crate::motions::word_back;
-use crate::text::{Chars, blank_line, indentation, line_end, next_stop, normal_pos, prev_stop};
+use crate::text::{
+    Chars, blank_line, indent_end, indentation, line_end, next_stop, normal_pos, pos_at_col,
+    prev_stop,
+};
 use die_core::{Args, Ctx, Error, Origin, Result, State, TextBuf, WindowId};
 
 /// How a session started. A count repeats the session, opening a line first
@@ -67,11 +70,10 @@ impl Session {
 
 /// Enter insert state: move to where `entry` inserts, opening a line if it does.
 pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
-    let (b, w) = target(ctx, a)?;
+    let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
     let line = t.line_of(p);
-    t.begin_undo_group();
     match entry {
         Entry::Insert => {}
         Entry::Append if p < line_end(t, line) => {
@@ -80,12 +82,7 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
         }
         Entry::Append => {}
         Entry::InsertLine => {
-            let mut c = Chars::at(t, t.line_start(line));
-            while c.ch().is_some_and(|ch| ch == ' ' || ch == '\t') {
-                c.fwd();
-            }
-            let p = c.pos().min(line_end(t, line));
-            t.set_cursor(w, p);
+            t.set_cursor(w, indent_end(t, line));
         }
         Entry::AppendLine => {
             t.set_cursor(w, line_end(t, line));
@@ -94,10 +91,12 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
         Entry::OpenAbove => {
             let s = t.line_start(line);
             t.tx(Origin::User).insert(s, "\n").commit()?;
-            t.set_cursor(w, s);
             indent_from_above(t, w, line)?;
         }
     }
+    // Only now, so that a failed `o` or `O` leaves no group open. The line it
+    // opened joins the group: core adds an earlier edit by the same command.
+    t.begin_undo_group();
     ctx.set_state(State::Insert);
     Ok(Session {
         entry,
@@ -109,7 +108,7 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
 
 /// Apply one insert-state edit and record it.
 pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
-    let (b, w) = target(ctx, a)?;
+    let (b, w) = buffer_window(ctx, a)?;
     apply(ctx.text_mut(b)?, w, &e)?;
     if e != Edit::Newline {
         s.drop_indent = false;
@@ -120,9 +119,10 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
 
 /// Escape: replay the session count-1 more times, drop a newly opened line's
 /// indentation if nothing was typed on it, close the undo step, and step back off
-/// the end of the insertion, as Evil does.
+/// the end of the insertion, as Evil does. An edit that fails here still ends the
+/// session; the first error is returned.
 pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
-    let (b, w) = target(ctx, a)?;
+    let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let cursor = |t: &TextBuf| t.cursor(w).unwrap_or(0);
     let mut r = Ok(());
@@ -137,7 +137,8 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
         let line = t.line_of(cursor(t));
         let (ls, le) = (t.line_start(line), line_end(t, line));
         if s.drop_indent && le > ls && blank_line(t, line) {
-            t.tx(Origin::User).delete(ls..le).commit()?;
+            let dropped = t.tx(Origin::User).delete(ls..le).commit();
+            r = r.and(dropped.map(drop));
         }
         t.end_undo_group();
     }
@@ -202,14 +203,7 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
             let Some(l) = next.filter(|&l| l < t.line_count()) else {
                 return fail("No line there");
             };
-            let col = t.display_col(p);
-            let (s, end) = (t.line_start(l), line_end(t, l));
-            let stops = t.display_line(s).stops.clone();
-            let st = stops
-                .iter()
-                .filter(|st| st.pos >= s && st.pos <= end)
-                .find(|st| st.vcol >= col);
-            st.map_or(end, |st| st.pos)
+            pos_at_col(t, l, t.display_col(p))
         }
     };
     t.set_cursor(w, pos);
@@ -249,21 +243,18 @@ fn indent_from_above(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
         Some(above) if !blank_line(t, above) => indentation(t, above),
         _ => 0,
     };
-    let s = t.line_start(line);
-    let mut c = Chars::at(t, s);
-    while c.ch().is_some_and(|ch| ch == ' ' || ch == '\t') {
-        c.fwd();
+    let (s, end) = (t.line_start(line), indent_end(t, line));
+    let indent = " ".repeat(col);
+    if t.rope().byte_slice(s..end) != indent.as_str() {
+        t.tx(Origin::User).replace(s..end, indent).commit()?;
     }
-    let end = c.pos();
-    t.tx(Origin::User)
-        .replace(s..end, " ".repeat(col))
-        .commit()?;
     t.set_cursor(w, s + col);
     Ok(())
 }
 
 /// `<Tab>`, as Emacs's `indent-relative` in fundamental-mode: to the next indent
-/// point of the previous non-empty line, else to the next multiple of 8 columns.
+/// point of the previous non-empty line, else to the next tab stop (every
+/// `tab_width` columns).
 fn tab(t: &mut TextBuf, w: WindowId, p: usize) -> Result {
     let line = t.line_of(p);
     let col = t.display_col(p);
@@ -276,7 +267,8 @@ fn tab(t: &mut TextBuf, w: WindowId, p: usize) -> Result {
             while matches!(c.prev_ch(), Some(' ' | '\t')) && c.pos() > t.line_start(line) {
                 c.back();
             }
-            (c.pos(), (col / 8 + 1) * 8)
+            let width = t.settings().tab_width.max(1);
+            (c.pos(), (col / width + 1) * width)
         }
     };
     let from = t.display_col(start);
@@ -289,7 +281,8 @@ fn tab(t: &mut TextBuf, w: WindowId, p: usize) -> Result {
 }
 
 /// The column of the next indent point on `line` after column `col`: past the
-/// rest of the word there, then past the whitespace after it.
+/// rest of the word there, then past the whitespace after it. There's none if
+/// the word runs to the line's end; trailing whitespace still makes one.
 fn indent_point(t: &TextBuf, line: usize, col: usize) -> Option<usize> {
     let (s, e) = (t.line_start(line), line_end(t, line));
     let p = t
@@ -304,9 +297,12 @@ fn indent_point(t: &TextBuf, line: usize, col: usize) -> Option<usize> {
         while c.pos() < e && !ws(c.ch()) {
             c.fwd();
         }
+        if c.pos() == e {
+            return None;
+        }
     }
     while c.pos() < e && ws(c.ch()) {
         c.fwd();
     }
-    (c.pos() < e).then(|| t.display_col(c.pos()))
+    Some(t.display_col(c.pos()))
 }

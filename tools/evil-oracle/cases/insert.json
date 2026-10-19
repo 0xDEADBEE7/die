@@ -35,5 +35,9 @@
   {"id": "a-escape-on-blank-line", "keys": "a<Esc>", "text": ["a", "   |", "b"]},
   {"id": "ctrl-w-at-line-start-joins", "keys": "i<C-w><Esc>", "text": ["foo", "|bar"]},
   {"id": "ctrl-w-punctuation", "keys": "A<C-w><Esc>", "text": ["|foo.bar"]},
-  {"id": "arrows-in-insert", "keys": "ifoo<Left><Left>X<Right>Y<Esc>", "text": ["|z"]}
+  {"id": "arrows-in-insert", "keys": "ifoo<Left><Left>X<Right>Y<Esc>", "text": ["|z"]},
+  {"id": "tab-indent-relative-trailing-space-above", "keys": "i<Tab><Esc>", "text": ["foo   ", "|x"]},
+  {"id": "cr-esc-i-without-final-newline", "description": "Escape on the line a newline at the end of the text made, then insert there", "keys": "ifoo<CR><Esc>ibar<Esc>", "text": "|"},
+  {"id": "o-esc-i-without-final-newline", "keys": "o<Esc>ix<Esc>", "text": "|a"},
+  {"id": "A-cr-esc-without-final-newline", "keys": "A<CR><Esc>", "text": "fo|o"}
  ]}
