@@ -565,8 +565,10 @@ fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
         }
     }
     let cursor = frame.cursors.first().map(|c| (c.row, c.col));
-    assert!(cursor.is_some(), "step {step}: cursor scrolled out of view");
-    assert_eq!(cursor, t.screen_pos(w, cur));
+    let want = t.screen_pos(w, cur);
+    assert!(want.is_some(), "step {step}: cursor scrolled out of view");
+    // M0 has no horizontal scrolling: a cursor past an unwrapped window's edge isn't drawn.
+    assert_eq!(cursor, want.filter(|&(_, c)| c < cols));
 }
 
 fn run(init: String, ops: Vec<Op>) {

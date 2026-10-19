@@ -4,7 +4,14 @@
 //!
 //! Faces layer the way Emacs's do. What a face leaves unset comes from its
 //! parent; what its whole chain leaves unset comes from the face below it on the
-//! cell, and in the end from `default`.
+//! cell, and in the end from `default`. On a text cell, from the bottom up:
+//!
+//! 1. `default`
+//! 2. Stored face decorations. One nested inside another is above it, as Emacs
+//!    draws overlays of equal priority; one that starts later is above one it
+//!    overlaps. Equal ranges stack in no promised order.
+//! 3. Mode providers' faces, in mode order, each in the order it returns them
+//! 4. `search` or `search-current`, then `bracket-match`, then `selection`
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -45,12 +52,18 @@ impl fmt::Display for Rgb {
 /// The underline styles a cell can have (scope §5.1).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Underline {
+    /// No underline.
     #[default]
     None,
+    /// One straight line.
     Single,
+    /// Two straight lines.
     Double,
+    /// A wavy line, as spell checkers draw.
     Curly,
+    /// A dotted line.
     Dotted,
+    /// A dashed line.
     Dashed,
 }
 
@@ -58,11 +71,17 @@ pub enum Underline {
 /// the face below on the cell, then to `default`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Style {
+    /// The foreground color.
     pub fg: Option<Rgb>,
+    /// The background color.
     pub bg: Option<Rgb>,
+    /// Bold text.
     pub bold: Option<bool>,
+    /// Italic text.
     pub italic: Option<bool>,
+    /// Struck-through text.
     pub strike: Option<bool>,
+    /// The underline's style.
     pub underline: Option<Underline>,
     /// The underline's color; unset draws it in the foreground color.
     pub underline_color: Option<Rgb>,
@@ -73,26 +92,32 @@ impl Style {
     pub fn new() -> Style {
         Style::default()
     }
+    /// Set the foreground color.
     pub fn fg(mut self, c: Rgb) -> Style {
         self.fg = Some(c);
         self
     }
+    /// Set the background color.
     pub fn bg(mut self, c: Rgb) -> Style {
         self.bg = Some(c);
         self
     }
+    /// Make text bold.
     pub fn bold(mut self) -> Style {
         self.bold = Some(true);
         self
     }
+    /// Make text italic.
     pub fn italic(mut self) -> Style {
         self.italic = Some(true);
         self
     }
+    /// Strike text through.
     pub fn strike(mut self) -> Style {
         self.strike = Some(true);
         self
     }
+    /// Set the underline's style.
     pub fn underline(mut self, u: Underline) -> Style {
         self.underline = Some(u);
         self
@@ -112,7 +137,7 @@ impl Style {
 }
 
 /// The base faces every theme styles (contract §13), each with its parent.
-pub const BASE_FACES: [(&str, Option<&str>); 14] = [
+pub const BASE_FACES: &[(&str, Option<&str>)] = &[
     ("default", None),
     ("shadow", None),
     ("bold", None),
@@ -132,7 +157,7 @@ pub const BASE_FACES: [(&str, Option<&str>); 14] = [
 /// Faces for core's own screen parts, declared the way an extension declares
 /// its faces. Each inherits from a base face, so a theme that styles only the
 /// base faces still draws them sensibly.
-pub const UI_FACES: [(&str, Option<&str>); 6] = [
+pub const UI_FACES: &[(&str, Option<&str>)] = &[
     ("line-number-current", Some("line-number")),
     ("status-line-inactive", Some("status-line")),
     ("divider", Some("shadow")),
@@ -143,7 +168,7 @@ pub const UI_FACES: [(&str, Option<&str>); 6] = [
 
 /// A theme: styles for faces by name, and the 16 ANSI colors terminals use.
 /// It's data, so a config builds one (contract §13). Faces it doesn't name keep
-/// the style they were declared with; names no one declared are ignored.
+/// the style they were declared with.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Theme {
     pub name: String,
@@ -215,7 +240,7 @@ impl Faces {
     pub(crate) fn new(decls: Vec<(String, Option<String>, Style)>) -> Result<Faces, Vec<String>> {
         let core = BASE_FACES
             .iter()
-            .chain(&UI_FACES)
+            .chain(UI_FACES)
             .map(|(n, p)| (n.to_string(), p.map(String::from), Style::new()));
         let all: Vec<_> = core.chain(decls).collect();
         let mut errors = vec![];
@@ -304,11 +329,26 @@ impl Faces {
 }
 
 impl crate::ctx::Ctx {
-    /// Use `theme` from the next frame on.
+    /// Use `theme` from the next frame on. Faces it styles that no one
+    /// declared, typos most likely, are reported to `*messages*`.
     pub fn set_theme(&mut self, theme: Theme) {
+        let unknown: Vec<&str> = theme
+            .faces
+            .keys()
+            .map(String::as_str)
+            .filter(|n| self.faces.style(n).is_none())
+            .collect();
+        if !unknown.is_empty() {
+            self.messages.push(format!(
+                "theme {} styles faces no one declared: {}",
+                theme.name,
+                unknown.join(", ")
+            ));
+        }
         self.faces.set_theme(theme);
     }
 
+    /// The current theme.
     pub fn theme(&self) -> &Theme {
         self.faces.theme()
     }

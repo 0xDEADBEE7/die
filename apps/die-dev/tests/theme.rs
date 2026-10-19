@@ -6,7 +6,7 @@ use die_dev::theme::mono_dark;
 #[test]
 fn mono_dark_styles_every_core_face() {
     let t = mono_dark();
-    for (name, _) in BASE_FACES.iter().chain(&UI_FACES) {
+    for (name, _) in BASE_FACES.iter().chain(UI_FACES) {
         assert!(
             t.faces.contains_key(*name),
             "mono-dark doesn't style {name}"

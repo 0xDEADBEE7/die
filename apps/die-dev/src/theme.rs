@@ -21,6 +21,7 @@ const ANSI: [&str; 16] = [
     "#444444", "#dd6666", "#77cc77", "#ccaa55", "#7799bb", "#aa88aa", "#66aaaa", "#eeeeee",
 ];
 
+/// mono-dark: every base and UI face, styled as your Emacs draws it.
 pub fn mono_dark() -> Theme {
     let s = Style::new;
     Theme::new("mono-dark", ANSI.map(Rgb::hex))
