@@ -278,7 +278,8 @@ name = "die-core"
 version = "0.0.0"
 dependencies = [
  "proptest",
- "regex",
+ "regex-automata",
+ "regex-syntax",
  "ropey",
  "slotmap",
  "unicode-segmentation",
@@ -1229,18 +1230,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
 dependencies = [
  "bitflags 2.13.2",
-]
-
-[[package]]
-name = "regex"
-version = "1.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1292b7759ae1cb9ec195452d1390a074f0cd8541ab7a5a8c31cd6db45d4a6ba"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
 ]
 
 [[package]]

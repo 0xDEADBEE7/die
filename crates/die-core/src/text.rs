@@ -185,8 +185,8 @@ pub struct TextBuf {
     pub(crate) cmd: u64,
     pub(crate) actor: Option<WindowId>,
     pub(crate) cache: RefCell<LayoutCache>,
-    /// The text in one piece, for regex search, and the revision it was made at.
-    flat: RefCell<(Option<u64>, String)>,
+    /// The text in one piece for regex search, until the next edit.
+    flat: RefCell<Option<String>>,
 }
 
 /// Where a position goes when `[start, old_end)` is replaced by text ending at `new_end`.
@@ -385,6 +385,7 @@ impl TextBuf {
         );
         self.rope.remove(cs..ce);
         self.rope.insert(cs, &s);
+        *self.flat.get_mut() = None;
         let new_end = r.start + s.len();
         self.rev += 1;
         let change = Change {
