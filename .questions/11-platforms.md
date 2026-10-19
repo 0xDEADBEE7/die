@@ -37,3 +37,13 @@ Under any option, three things need your yes:
 
 ## Your answer
 
+Accepted 2026-10-19, through a multiple-choice prompt:
+
+- **When Linux ships: A.** Linux ships as a preview at M2's exit.
+- **Windows: out,** as recommended.
+- **The three yeses:**
+  1. Approved: the Linux std downloads for the pinned toolchain (x86_64 and aarch64 gnu), and starting colima with a pinned `rust:1.96.0` image.
+  2. Declined: asking Ghostty, from your account, to publish signed Linux engine archives.
+  3. Declined: DIE's own CI building the Linux archive from Ghostty's signed source.
+
+So D16 keeps its rule, with only the platform-toolchain wording, and no clause for a DIE-built archive. That leaves open where a signed Linux archive comes from: Ghostty doesn't publish one today. It's revisited before M2, which is when Linux terminals need it. Without one, Linux ships editor-only at M2's exit and gets terminals at the first `ghostty bump` that has an archive.

@@ -21,6 +21,8 @@ So the stack stays, and the latency criteria change to what DIE controls. The sp
 | Render thread behind the scene boundary | Check 3 or 5 fails | **Not triggered.** 100% of producer frames shown; worst main-thread stall 9.2 ms. Not prototyped. |
 | wgpu 30.0.1 with buffer uploads only | Metal bindings too painful | **Not triggered.** The Metal part is about 750 formatted lines and was straightforward. |
 
+The wgpu stall that scope D13 cited (about 5.9 ms p99) didn't come from this spike, which never built wgpu. It came from the 2026-10-18 review probe: `write_texture` holds a queue lock while it copies, and a ring on buffer uploads avoids it. See [platforms.md](platforms.md) §2.1.
+
 ### Edits I propose to docs/scope.md (not made)
 
 **D13 row.** Status becomes "Decided (2026-10-19); confirmed by S1 (2026-10-19)". Append to the rationale:
