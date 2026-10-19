@@ -129,3 +129,11 @@ old = '''
             let cur = g.sel.map(|s| map_sel(s, &after));'''
 new = '''
             let cur = g.sel;'''
+
+[[mutant]]
+name = "M15 redo's cursor isn't moved through the step's later changes"
+file = "src/text.rs"
+old = '''
+            Some(Selection::cursor(hull.start))'''
+new = '''
+            plan.ops.first().map(|o| Selection::cursor(o.pos))'''
