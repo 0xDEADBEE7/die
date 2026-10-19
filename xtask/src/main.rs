@@ -11,7 +11,9 @@ const USAGE: &str = "usage: cargo xtask <task>
   api-diff [--base R]  die-core's public API and die-vim's grammar, R -> working tree
                        (R defaults to the merge base with main)
   fonts                fetch Ioskeley Mono Term into fonts/, checked by SHA-256
-  clean-build [--keep] build from an empty environment with no C compiler (D16)
+  clean-build [--keep] no C builders in each target's build graph but the allowlist's,
+                       and a build from an empty environment with no C compiler or
+                       pkg-config (D16)
   mutate [--cases N]   die-core's planted bugs; the property tests must catch each
   ci [--worktree | --rev R]
                        every check in a fresh clone of HEAD (or R), or of the
