@@ -17,10 +17,15 @@
 //! name fails the build too. That proves the allowlist's "compiles nothing" on
 //! this host.
 //!
-//! On a Linux host, the binaries the build leaves may link glibc, its loader
-//! and the unwinder only (their ELF `NEEDED` entries): X11, Wayland,
-//! xkbcommon, fontconfig and Vulkan load at run time. `cargo xtask ci --linux`
-//! runs this on aarch64 Linux.
+//! On a Linux host, the build needs no `-dev` packages but libc's (D16). The
+//! linker would find a system library through one, so the host may have none
+//! installed, and no pkg-config: clean-build reads dpkg's list and fails
+//! otherwise. Every binary and shared object the build leaves (the workspace's
+//! binaries, tests, examples, build scripts and proc macros) may link glibc,
+//! its loader and the unwinder only (their ELF `NEEDED` entries): X11,
+//! Wayland, xkbcommon, fontconfig and Vulkan load at run time.
+//! `cargo xtask ci --linux` runs this on aarch64 Linux, in a container that
+//! purges the other `-dev` packages first.
 
 use crate::util::{Result, TempDir, cargo, output, rustc, write};
 use std::path::Path;
@@ -103,22 +108,140 @@ pub fn run(root: &Path, keep: bool) -> Result {
         graph(root, target, allowed)?;
     }
     lockfile_only(root)?;
+    let linux = host.contains("-linux-");
+    let dev = if linux {
+        libc_dev_only()?
+    } else {
+        String::new()
+    };
     let mut tmp = TempDir::new("clean-build")?;
     if keep {
         tmp.keep();
     }
     let calls = build(root, tmp.path(), &host, &["--workspace", "--all-targets"])?;
-    let linked = if host.contains("-linux-") {
+    let linked = if linux {
         elf_needed(&tmp.path().join("target/debug"))?
     } else {
         String::new()
     };
     let targets: Vec<&str> = GRAPHS.iter().map(|g| g.0).collect();
     println!(
-        "clean-build: ok (graphs: {}; build on {host}: empty environment, --locked --offline, no C compiler or pkg-config{calls}{linked})",
+        "clean-build: ok (graphs: {}; build on {host}: empty environment, --locked --offline, no C compiler or pkg-config{dev}{calls}{linked})",
         targets.join(", ")
     );
     Ok(())
+}
+
+/// The `-dev` packages a Linux build may find, by Debian name: the libc
+/// development files and the C toolchain's own, which the linker driver needs
+/// (D16). `{n}` stands for a version number. libstdc++'s aren't here: DIE links
+/// no C++.
+pub const LIBC_DEV: &[&str] = &[
+    "libc6-dev",
+    "linux-libc-dev",
+    "libcrypt-dev",
+    "libnsl-dev",
+    "libtirpc-dev",
+    "libgcc-{n}-dev",
+];
+
+/// pkg-config's packages. The stand-in shadows it, but it goes too.
+pub const PKG_CONFIG: &[&str] = &["pkg-config", "pkgconf", "pkgconf-bin"];
+
+/// Whether a Debian package must be absent for the Linux clean build: a
+/// `-dev` package that `LIBC_DEV` doesn't name, or pkg-config.
+pub fn forbidden_package(name: &str) -> bool {
+    (name.ends_with("-dev") || PKG_CONFIG.contains(&name))
+        && !LIBC_DEV.iter().any(|p| version_match(p, name))
+}
+
+/// `name` is `pattern`, with `{n}` matching one or more digits.
+fn version_match(pattern: &str, name: &str) -> bool {
+    match pattern.split_once("{n}") {
+        None => pattern == name,
+        Some((pre, post)) => name
+            .strip_prefix(pre)
+            .and_then(|n| n.strip_suffix(post))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())),
+    }
+}
+
+/// `LIBC_DEV` as an extended regular expression that matches a whole name.
+pub fn libc_dev_ere() -> String {
+    let alts: Vec<String> = LIBC_DEV
+        .iter()
+        .map(|p| {
+            p.split("{n}")
+                .map(|part| {
+                    part.chars()
+                        .map(|c| {
+                            if ".[]()*+?{}|^$\\".contains(c) {
+                                format!("\\{c}")
+                            } else {
+                                c.to_string()
+                            }
+                        })
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("[0-9]+")
+        })
+        .collect();
+    format!("^({})$", alts.join("|"))
+}
+
+/// Fail if this Linux host has a package `forbidden_package` names, from
+/// dpkg's list. Otherwise, a line on the `-dev` packages it has, for the
+/// summary.
+fn libc_dev_only() -> Result<String> {
+    let list = output(Command::new("dpkg-query").args([
+        "--show",
+        "--showformat",
+        "${db:Status-Status} ${Package}\n",
+    ]))
+    .map_err(|e| {
+        format!(
+            "clean-build: on Linux, it checks with dpkg-query that the host has no -dev \
+             packages but libc's (D16), and dpkg-query failed:\n{e}"
+        )
+    })?;
+    let (dev, forbidden) = installed_dev(&list);
+    if !forbidden.is_empty() {
+        return Err(format!(
+            "clean-build: this host has -dev packages beyond libc's: {}. The linker finds \
+             their libraries, so a build here can't show that DIE needs none (D16). Run it \
+             on a host without them: `cargo xtask ci --linux` purges them in its container",
+            forbidden.join(", ")
+        ));
+    }
+    Ok(format!("; -dev packages: {}", dev.join(", ")))
+}
+
+/// From `dpkg-query --showformat '${db:Status-Status} ${Package}\n'`: the
+/// installed `-dev` packages that are allowed, and the packages
+/// `forbidden_package` names. A package counts unless it's `not-installed`
+/// or only `config-files` is left.
+pub fn installed_dev(list: &str) -> (Vec<String>, Vec<String>) {
+    let mut dev = Vec::new();
+    let mut forbidden = Vec::new();
+    for line in list.lines() {
+        let Some((status, name)) = line.split_once(' ') else {
+            continue;
+        };
+        if matches!(status, "not-installed" | "config-files") {
+            continue;
+        }
+        if forbidden_package(name) {
+            forbidden.push(name.to_string());
+        } else if name.ends_with("-dev") {
+            dev.push(name.to_string());
+        }
+    }
+    for v in [&mut dev, &mut forbidden] {
+        v.sort();
+        v.dedup();
+    }
+    (dev, forbidden)
 }
 
 /// The shared libraries a Linux binary may need (platforms.md §5.5): glibc's,
@@ -131,17 +254,11 @@ const ELF_NEEDED: &[&str] = &[
     "ld-linux",
 ];
 
-/// Check the `NEEDED` entries of every executable `cargo build` left in `dir`
-/// (its top level: the workspace's binaries) against `ELF_NEEDED`, with
-/// binutils' `readelf`. A line on what they need, for the summary.
+/// Check the `NEEDED` entries of every ELF executable and shared object under
+/// `dir`, a profile's target directory, against `ELF_NEEDED`, with binutils'
+/// `readelf`. A line on what they need, for the summary.
 fn elf_needed(dir: &Path) -> Result<String> {
-    let mut bins: Vec<_> = std::fs::read_dir(dir)
-        .map_err(|e| format!("{}: {e}", dir.display()))?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| is_elf(p))
-        .collect();
-    bins.sort();
+    let bins = linked_elves(dir)?;
     if bins.is_empty() {
         return Err(format!(
             "clean-build: no binaries in {} for the ELF check",
@@ -177,25 +294,71 @@ fn elf_needed(dir: &Path) -> Result<String> {
         ));
     }
     all.sort();
-    let names: Vec<String> = bins
+    let top: Vec<String> = bins
         .iter()
+        .filter(|b| b.parent() == Some(dir))
         .filter_map(|b| b.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect();
     Ok(format!(
-        "; ELF NEEDED of {}: {}",
-        names.join(", "),
+        "; ELF NEEDED of {} and {} tests, examples, build scripts and proc macros: {}",
+        top.join(", "),
+        bins.len() - top.len(),
         all.join(", ")
     ))
 }
 
-fn is_elf(path: &Path) -> bool {
+/// Every ELF executable and shared object under `dir`, once each (cargo
+/// hard-links a binary into `dir` from `deps/`), shallowest first: the
+/// workspace's binaries, then the tests, examples, build scripts and proc
+/// macros. Object files and the incremental cache are left out.
+pub fn linked_elves(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let entries = std::fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        for e in entries.flatten() {
+            let p = e.path();
+            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
+            if meta.is_dir() {
+                if p.file_name().is_some_and(|n| n != "incremental") {
+                    stack.push(p);
+                }
+            } else if meta.is_file() && is_linked_elf(&p) {
+                found.push((p.components().count(), p, (meta.dev(), meta.ino())));
+            }
+        }
+    }
+    found.sort();
+    let mut seen = std::collections::HashSet::new();
+    Ok(found
+        .into_iter()
+        .filter(|f| seen.insert(f.2))
+        .map(|f| f.1)
+        .collect())
+}
+
+/// An ELF file of type `ET_EXEC` or `ET_DYN`: one the dynamic linker loads.
+fn is_linked_elf(path: &Path) -> bool {
     use std::io::Read;
-    let mut magic = [0; 4];
-    path.is_file()
-        && std::fs::File::open(path)
-            .and_then(|mut f| f.read_exact(&mut magic))
-            .is_ok()
-        && magic == *b"\x7fELF"
+    let mut head = [0; 18];
+    if std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_err()
+        || head[..4] != *b"\x7fELF"
+    {
+        return false;
+    }
+    let ty = [head[16], head[17]];
+    // e_ident[EI_DATA]: 2 is big-endian.
+    let ty = if head[5] == 2 {
+        u16::from_be_bytes(ty)
+    } else {
+        u16::from_le_bytes(ty)
+    };
+    matches!(ty, 2 | 3)
 }
 
 /// The libraries in `readelf --dynamic` output's `NEEDED` entries.
@@ -595,6 +758,103 @@ Dynamic section at offset 0x5c3d8 contains 29 entries:
             ["libgcc_s.so.1", "libc.so.6", "ld-linux-aarch64.so.1"]
         );
         assert!(needed("There is no dynamic section in this file.\n").is_empty());
+    }
+
+    #[test]
+    fn only_libc_dev_packages() {
+        // From the rust:1.96.0 image's list, trimmed.
+        let list = "\
+installed libc6-dev
+installed libcrypt-dev
+installed linux-libc-dev
+installed libgcc-14-dev
+installed libstdc++-14-dev
+installed libx11-dev
+installed libssl-dev
+installed pkgconf
+installed pkgconf-bin
+installed gcc-14
+installed libx11-6
+config-files libfontconfig-dev
+not-installed libz-dev
+half-installed libxcb1-dev
+";
+        let (dev, forbidden) = installed_dev(list);
+        assert_eq!(
+            dev,
+            [
+                "libc6-dev",
+                "libcrypt-dev",
+                "libgcc-14-dev",
+                "linux-libc-dev"
+            ]
+        );
+        assert_eq!(
+            forbidden,
+            [
+                "libssl-dev",
+                "libstdc++-14-dev",
+                "libx11-dev",
+                "libxcb1-dev",
+                "pkgconf",
+                "pkgconf-bin"
+            ]
+        );
+        assert!(forbidden_package("pkg-config"));
+        assert!(forbidden_package("libgcc--dev"));
+        assert!(forbidden_package("libgcc-x-dev"));
+        assert!(!forbidden_package("libgcc-9-dev"));
+        assert_eq!(
+            libc_dev_ere(),
+            "^(libc6-dev|linux-libc-dev|libcrypt-dev|libnsl-dev|libtirpc-dev|libgcc-[0-9]+-dev)$"
+        );
+    }
+
+    #[test]
+    fn every_linked_elf_once() {
+        let tmp = crate::util::TempDir::new("elves").unwrap();
+        let dir = tmp.path();
+        // An ELF header up to e_type: 64-bit, little- or big-endian.
+        let elf = |big: bool, ty: u16| {
+            let mut h = b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0".to_vec();
+            if big {
+                h[5] = 2;
+                h.extend(ty.to_be_bytes());
+            } else {
+                h.extend(ty.to_le_bytes());
+            }
+            h.extend([0; 46]);
+            h
+        };
+        let put = |rel: &str, bytes: &[u8]| {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, bytes).unwrap();
+        };
+        put("deps/die-0a1b", &elf(false, 3));
+        std::fs::hard_link(dir.join("deps/die-0a1b"), dir.join("die")).unwrap();
+        put("deps/plant_x11-2c3d", &elf(false, 3));
+        put("deps/libserde_derive-4e5f.so", &elf(false, 3));
+        put("build/x-1/build_script_build-1", &elf(true, 2));
+        put("deps/die-0a1b.o", &elf(false, 1));
+        put("incremental/die-1/s-2/x", &elf(false, 3));
+        put("deps/libdie_core-6a7b.rlib", b"!<arch>\n");
+        put("deps/short", b"\x7fEL");
+        put("die.d", b"die: src/main.rs\n");
+        let rel: Vec<String> = linked_elves(dir)
+            .unwrap()
+            .iter()
+            .map(|p| p.strip_prefix(dir).unwrap().display().to_string())
+            .collect();
+        assert_eq!(
+            rel,
+            [
+                "die",
+                "deps/libserde_derive-4e5f.so",
+                "deps/plant_x11-2c3d",
+                "build/x-1/build_script_build-1",
+            ]
+        );
     }
 
     #[test]
