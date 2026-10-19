@@ -16,6 +16,11 @@
 //! a machine with a real one it would compile C. A call the allowlist doesn't
 //! name fails the build too. That proves the allowlist's "compiles nothing" on
 //! this host.
+//!
+//! On a Linux host, the binaries the build leaves may link glibc, its loader
+//! and the unwinder only (their ELF `NEEDED` entries): X11, Wayland,
+//! xkbcommon, fontconfig and Vulkan load at run time. `cargo xtask ci --linux`
+//! runs this on aarch64 Linux.
 
 use crate::util::{Result, TempDir, cargo, output, rustc, write};
 use std::path::Path;
@@ -103,12 +108,107 @@ pub fn run(root: &Path, keep: bool) -> Result {
         tmp.keep();
     }
     let calls = build(root, tmp.path(), &host, &["--workspace", "--all-targets"])?;
+    let linked = if host.contains("-linux-") {
+        elf_needed(&tmp.path().join("target/debug"))?
+    } else {
+        String::new()
+    };
     let targets: Vec<&str> = GRAPHS.iter().map(|g| g.0).collect();
     println!(
-        "clean-build: ok (graphs: {}; build on {host}: empty environment, --locked --offline, no C compiler or pkg-config{calls})",
+        "clean-build: ok (graphs: {}; build on {host}: empty environment, --locked --offline, no C compiler or pkg-config{calls}{linked})",
         targets.join(", ")
     );
     Ok(())
+}
+
+/// The shared libraries a Linux binary may need (platforms.md §5.5): glibc's,
+/// its loader, and the unwinder. Matched as name prefixes.
+const ELF_NEEDED: &[&str] = &[
+    "libc.so.",
+    "libm.so.",
+    "libdl.so.",
+    "libgcc_s.so.",
+    "ld-linux",
+];
+
+/// Check the `NEEDED` entries of every executable `cargo build` left in `dir`
+/// (its top level: the workspace's binaries) against `ELF_NEEDED`, with
+/// binutils' `readelf`. A line on what they need, for the summary.
+fn elf_needed(dir: &Path) -> Result<String> {
+    let mut bins: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_elf(p))
+        .collect();
+    bins.sort();
+    if bins.is_empty() {
+        return Err(format!(
+            "clean-build: no binaries in {} for the ELF check",
+            dir.display()
+        ));
+    }
+    let mut all: Vec<String> = Vec::new();
+    let mut errors = Vec::new();
+    for bin in &bins {
+        let out = output(
+            Command::new("readelf")
+                .args(["--dynamic", "--wide"])
+                .arg(bin),
+        )?;
+        for lib in needed(&out) {
+            if !ELF_NEEDED.iter().any(|ok| lib.starts_with(ok)) {
+                errors.push(format!(
+                    "{} needs {lib}, which isn't glibc, its loader or the unwinder. DIE loads \
+                     system libraries at run time (D16); `cargo tree -i` on the crate that \
+                     links it shows where it comes from",
+                    bin.display()
+                ));
+            }
+            if !all.contains(&lib) {
+                all.push(lib);
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!(
+            "clean-build: ELF NEEDED:\n  {}",
+            errors.join("\n  ")
+        ));
+    }
+    all.sort();
+    let names: Vec<String> = bins
+        .iter()
+        .filter_map(|b| b.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    Ok(format!(
+        "; ELF NEEDED of {}: {}",
+        names.join(", "),
+        all.join(", ")
+    ))
+}
+
+fn is_elf(path: &Path) -> bool {
+    use std::io::Read;
+    let mut magic = [0; 4];
+    path.is_file()
+        && std::fs::File::open(path)
+            .and_then(|mut f| f.read_exact(&mut magic))
+            .is_ok()
+        && magic == *b"\x7fELF"
+}
+
+/// The libraries in `readelf --dynamic` output's `NEEDED` entries.
+pub fn needed(readelf: &str) -> Vec<String> {
+    readelf
+        .lines()
+        .filter(|l| l.contains("(NEEDED)"))
+        .filter_map(|l| {
+            let start = l.find('[')? + 1;
+            let end = start + l[start..].find(']')?;
+            Some(l[start..end].to_string())
+        })
+        .collect()
 }
 
 pub fn host() -> Result<String> {
@@ -478,6 +578,23 @@ mod tests {
         // An allowed crate calling a stand-in its entry doesn't name.
         write(&calls_log(tmp.path()), "wayland-backend cc -c log_shim.c\n").unwrap();
         assert!(check_calls(tmp.path(), LINUX).is_err());
+    }
+
+    #[test]
+    fn elf_needed_entries() {
+        let out = "\
+Dynamic section at offset 0x5c3d8 contains 29 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-aarch64.so.1]
+ 0x000000000000000c (INIT)               0x6c80
+";
+        assert_eq!(
+            needed(out),
+            ["libgcc_s.so.1", "libc.so.6", "ld-linux-aarch64.so.1"]
+        );
+        assert!(needed("There is no dynamic section in this file.\n").is_empty());
     }
 
     #[test]
