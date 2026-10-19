@@ -20,6 +20,7 @@ compile_error!("DIE requires panic = \"unwind\" (C9). Set it in the config crate
 #[allow(clippy::cloned_ref_to_slice_refs)]
 mod ctx;
 mod error;
+mod files;
 mod ids;
 mod keymap;
 mod keys;
@@ -32,6 +33,7 @@ mod undo;
 
 pub use ctx::*;
 pub use error::*;
+pub use files::{FileInfo, Fingerprint, ReadOnly};
 pub use ids::*;
 pub use keymap::*;
 pub use keys::*;

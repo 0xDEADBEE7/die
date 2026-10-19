@@ -356,6 +356,7 @@ pub struct Ctx {
     cmd_seq: u64,
     cur_window: Option<WindowId>,
     registers: HashMap<char, Register>,
+    pub(crate) files: crate::files::Files,
     pub messages: Vec<String>,
 }
 
@@ -418,6 +419,7 @@ impl Ctx {
             cmd_seq: 0,
             cur_window: None,
             registers: HashMap::new(),
+            files: Default::default(),
             messages: vec![],
         };
         for (name, c) in reg.commands {
@@ -682,6 +684,7 @@ impl Ctx {
             return false;
         };
         drop(b);
+        self.files.forget(buf);
         let hooks: Vec<_> = self
             .subs
             .iter()
