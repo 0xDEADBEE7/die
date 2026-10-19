@@ -2,6 +2,57 @@
 
 What merged, what waits on you, what changed in die-core's API, and where the budget stands ([m0-plan.md](m0-plan.md) §3). Newest first.
 
+## 2026-10-20: phase 0's first API merged; Linux joins ci
+
+**Merged:** PRs #1–#5, which you approved. `main`'s tree is identical to the reviewed top of the stack. `cargo xtask ci` and `cargo xtask ci --linux` both pass on it.
+
+How they landed:
+- **#1 (K3)** merged into `main`.
+- **#3 (K10a) and #5 (V1)** merged into their stacked bases, because I didn't wait for GitHub to retarget them. I then reopened #2 and #4 against `main`, and they carried #3 and #5 in:
+  - **#2 (K2)** brought K10a;
+  - **#4 (K8)** brought V1.
+
+Nothing was lost, and the PR pages say which merge carried what.
+
+**History rewritten, as you asked.** Every commit message and PR description no longer carries Claude Code attribution.
+- `main` was force-pushed. Every tree is unchanged; only the messages differ.
+- A bundle of every ref from before the rewrite is at `.git/backup-before-attribution-rewrite.bundle`, and git's `refs/original/` holds them too. Both are local only, and you can delete them once you're happy.
+- No commit or PR will carry attribution from now on.
+
+**Platforms (question 11, answered):**
+- **Linux:** ships as a preview at M2's exit (A).
+- **Windows:** out.
+- **Approved:** the Linux std downloads and colima runs.
+- **Declined:** asking Ghostty, and a CI-built engine. Where a signed Linux engine comes from stays open until before M2.
+- The doc edits are on `main` (scope D1, D5, D10, D12, D13, D16, D17, D18 and D20, guard 7, the contract, the M0 plan and the records).
+
+**New in `ci`:**
+- the platform lint and the denylist for neutral crates;
+- clean-build checks each target's graph against an allowlist;
+- a Linux cross-check and clippy, for x86_64 and aarch64 gnu, with the pinned toolchain;
+- guard 7's per-build budget.
+
+`cargo xtask ci --linux` runs exit test (f) in a digest-pinned rust:1.96.0 container on colima:
+- the tests, the oracle, and the Linux clean-build with an ELF NEEDED check;
+- about 45 s warm.
+
+It already caught one test that assumed a non-root user.
+
+**Oracle:** 124 of 346 cases pass on macOS and on aarch64 Linux, and V1's pending list is empty.
+
+**Budget:**
+
+| Crate | Lines |
+|---|---|
+| die-core | 4,406 of 14k |
+| die-render | 118 (macOS build 118, Linux build 12) |
+| die-vim | 1,091 of 5k |
+| product code | 5,662 |
+
+**Waiting on you:** the deviations review (about 1 h) and S1's `interactive keys` check (5 min).
+
+**Next, by the plan:** phase 1. K4 (layout), K5 (the extension machinery), K6 (windows), R2 (the offscreen renderer) and V2 (search), then checkpoint 1.
+
 ## 2026-10-19 (later): phase 0's first API, up for your approval
 
 **Answered:** 09-B and 10-C, as recommended. The plan's doc edits are on `main`, and the private remote is github.com/0xDEADBEE7/die. You opted into workflows; the review below was the first.
