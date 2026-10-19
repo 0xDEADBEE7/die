@@ -1,9 +1,10 @@
 //! Motions (scope §10): plain functions over the text and layout queries. Each
 //! follows your Evil, except where deviations.json says otherwise.
 
-use crate::grammar::{Fail, From, Goal, Kind, Motion, To};
+use crate::grammar::{Fail, Goal, Kind, Motion, Start, Target};
 use crate::text::{
-    Chars, Class, blank_line, class, last_line, line_end, next_stop, normal_pos, prev_stop,
+    Chars, Class, blank_line, class, indent_end, last_line, line_end, next_stop, normal_pos,
+    pos_at_col, prev_stop,
 };
 use die_core::{Dir, TextBuf};
 
@@ -15,21 +16,21 @@ pub const MOTIONS: &[Motion] = &[
     m("vim-forward-char", "l", Kind::Exclusive, "Right, within the line.", forward_char),
     m("vim-next-line", "j", Kind::Linewise, "Down a line, keeping the column.", next_line),
     m("vim-previous-line", "k", Kind::Linewise, "Up a line, keeping the column.", previous_line),
-    m("vim-forward-word-begin", "w", Kind::Exclusive, "To the next word's start.", |f| words(f, Word::Begin, false)),
-    m("vim-forward-WORD-begin", "W", Kind::Exclusive, "To the next WORD's start.", |f| words(f, Word::Begin, true)),
-    m("vim-forward-word-end", "e", Kind::Inclusive, "To the next word's end.", |f| words(f, Word::End, false)),
-    m("vim-forward-WORD-end", "E", Kind::Inclusive, "To the next WORD's end.", |f| words(f, Word::End, true)),
-    m("vim-backward-word-begin", "b", Kind::Exclusive, "To the previous word's start.", |f| words(f, Word::Back, false)),
-    m("vim-backward-WORD-begin", "B", Kind::Exclusive, "To the previous WORD's start.", |f| words(f, Word::Back, true)),
+    m("vim-forward-word-begin", "w", Kind::Exclusive, "To the next word's start.", |s| words(s, Word::Begin, false)),
+    m("vim-forward-WORD-begin", "W", Kind::Exclusive, "To the next WORD's start.", |s| words(s, Word::Begin, true)),
+    m("vim-forward-word-end", "e", Kind::Inclusive, "To the next word's end.", |s| words(s, Word::End, false)),
+    m("vim-forward-WORD-end", "E", Kind::Inclusive, "To the next WORD's end.", |s| words(s, Word::End, true)),
+    m("vim-backward-word-begin", "b", Kind::Exclusive, "To the previous word's start.", |s| words(s, Word::Back, false)),
+    m("vim-backward-WORD-begin", "B", Kind::Exclusive, "To the previous WORD's start.", |s| words(s, Word::Back, true)),
     m("vim-first-non-blank", "^", Kind::Exclusive, "To the line's first non-blank.", first_non_blank),
     m("vim-end-of-line", "$", Kind::Inclusive, "To the end of the line, or of count-1 lines down.", end_of_line),
-    m("vim-goto-first-line", "gg", Kind::Linewise, "To the first line, or line count.", |f| goto_line(f, f.count.unwrap_or(1))),
-    m("vim-goto-line", "G", Kind::Linewise, "To the last line, or line count.", |f| goto_line(f, f.count.unwrap_or(usize::MAX))),
-    m("vim-find-char", "f<char>", Kind::Inclusive, "To the next char on the line.", |f| find(f, Find::new('f', f.char))),
-    m("vim-find-char-backward", "F<char>", Kind::Exclusive, "To the previous char on the line.", |f| find(f, Find::new('F', f.char))),
-    m("vim-find-char-to", "t<char>", Kind::Inclusive, "To just before the next char on the line.", |f| find(f, Find::new('t', f.char))),
-    m("vim-find-char-to-backward", "T<char>", Kind::Exclusive, "To just after the previous char on the line.", |f| find(f, Find::new('T', f.char))),
-    m("vim-jump-item", "%", Kind::Inclusive, "To the bracket matching the next one on the line.", jump_item),
+    m("vim-goto-first-line", "gg", Kind::Linewise, "To the first line, or line count.", |s| goto_line(s, s.count.unwrap_or(1))),
+    m("vim-goto-line", "G", Kind::Linewise, "To the last line, or line count.", |s| goto_line(s, s.count.unwrap_or(usize::MAX))),
+    m("vim-find-char", "f<char>", Kind::Inclusive, "To the next char on the line.", |s| find(s, Find::new('f', s.arg))),
+    m("vim-find-char-backward", "F<char>", Kind::Exclusive, "To the previous char on the line.", |s| find(s, Find::new('F', s.arg))),
+    m("vim-find-char-to", "t<char>", Kind::Inclusive, "To just before the next char on the line.", |s| find(s, Find::new('t', s.arg))),
+    m("vim-find-char-to-backward", "T<char>", Kind::Exclusive, "To just after the previous char on the line.", |s| find(s, Find::new('T', s.arg))),
+    m("vim-jump-item", "%", Kind::Inclusive, "To the bracket matching the next one on the line, or count percent down the text.", jump_item),
     m("vim-forward-paragraph", "}", Kind::Exclusive, "To the next blank line after this paragraph.", forward_paragraph),
     m("vim-backward-paragraph", "{", Kind::Exclusive, "To the previous blank line before this paragraph.", backward_paragraph),
 ];
@@ -39,71 +40,71 @@ const fn m(
     keys: &'static str,
     kind: Kind,
     doc: &'static str,
-    f: fn(&From) -> Result<To, Fail>,
+    run: fn(&Start) -> Result<Target, Fail>,
 ) -> Motion {
     Motion {
         name,
         keys,
         kind,
         doc,
-        f,
+        run,
     }
 }
 
 /// `0`, bound apart because it's also a count digit.
-pub fn beginning_of_line(f: &From) -> Result<To, Fail> {
-    Ok(To::at(f.text.line_start(f.text.line_of(f.pos))))
+pub fn beginning_of_line(s: &Start) -> Result<Target, Fail> {
+    Ok(Target::at(s.text.line_start(s.text.line_of(s.pos))))
 }
 
 // ---------------------------------------------------------------- characters and lines
 
-fn backward_char(f: &From) -> Result<To, Fail> {
-    let start = f.text.line_start(f.text.line_of(f.pos));
-    steps(f, "Beginning of line", |p| {
-        prev_stop(f.text, p).filter(|&q| q >= start)
+fn backward_char(s: &Start) -> Result<Target, Fail> {
+    let start = s.text.line_start(s.text.line_of(s.pos));
+    steps(s, "Beginning of line", |p| {
+        prev_stop(s.text, p).filter(|&q| q >= start)
     })
 }
 
-fn forward_char(f: &From) -> Result<To, Fail> {
-    let end = line_end(f.text, f.text.line_of(f.pos));
-    steps(f, "End of line", |p| {
-        next_stop(f.text, p).filter(|&q| q < end)
+fn forward_char(s: &Start) -> Result<Target, Fail> {
+    let end = line_end(s.text, s.text.line_of(s.pos));
+    steps(s, "End of line", |p| {
+        next_stop(s.text, p).filter(|&q| q < end)
     })
 }
 
 /// Up to `count` steps. Evil moves as far as it can and signals when it fell short.
-fn steps(f: &From, err: Fail, step: impl Fn(usize) -> Option<usize>) -> Result<To, Fail> {
-    let (mut p, mut n) = (f.pos, 0);
-    while n < f.n() {
+fn steps(s: &Start, err: Fail, step: impl Fn(usize) -> Option<usize>) -> Result<Target, Fail> {
+    let (mut p, mut n) = (s.pos, 0);
+    while n < s.n() {
         let Some(q) = step(p) else { break };
         (p, n) = (q, n + 1);
     }
     match n {
         0 => Err(err),
-        n if n < f.n() => Ok(To {
+        n if n < s.n() => Ok(Target {
             short: Some(err),
-            ..To::at(p)
+            ..Target::at(p)
         }),
-        _ => Ok(To::at(p)),
+        _ => Ok(Target::at(p)),
     }
 }
 
-fn next_line(f: &From) -> Result<To, Fail> {
-    vertical(f, Dir::Forward, "End of buffer")
+fn next_line(s: &Start) -> Result<Target, Fail> {
+    vertical(s, Dir::Forward, "End of buffer")
 }
 
-fn previous_line(f: &From) -> Result<To, Fail> {
-    vertical(f, Dir::Backward, "Beginning of buffer")
+fn previous_line(s: &Start) -> Result<Target, Fail> {
+    vertical(s, Dir::Backward, "Beginning of buffer")
 }
 
 /// `j` and `k`: by logical line, skipping hidden lines, keeping the goal column.
 /// They move as far as they can, and fail only when they can't move at all.
-fn vertical(f: &From, dir: Dir, err: Fail) -> Result<To, Fail> {
-    let t = f.text;
-    let goal = f.goal.unwrap_or(Goal::Col(t.display_col(f.pos)));
-    let mut line = t.line_of(f.pos);
+fn vertical(s: &Start, dir: Dir, err: Fail) -> Result<Target, Fail> {
+    let t = s.text;
+    let goal = s.goal.unwrap_or(Goal::Col(t.display_col(s.pos)));
+    let mut line = t.line_of(s.pos);
     let mut moved = false;
-    for _ in 0..f.n() {
+    for _ in 0..s.n() {
         match t.next_visible(line, dir) {
             Some(l) if l <= last_line(t) => (line, moved) = (l, true),
             _ => break,
@@ -112,56 +113,45 @@ fn vertical(f: &From, dir: Dir, err: Fail) -> Result<To, Fail> {
     if !moved {
         return Err(err);
     }
-    Ok(To {
+    Ok(Target {
         goal: Some(goal),
-        ..To::at(at_goal(t, line, goal))
+        ..Target::at(at_goal(t, line, goal))
     })
 }
 
-/// The position on `line` at the goal column. A column inside a tab or a wide
-/// character lands after it, as Emacs's `move-to-column` does.
+/// The position on `line` at the goal column.
 fn at_goal(t: &TextBuf, line: usize, goal: Goal) -> usize {
-    let (s, e) = (t.line_start(line), line_end(t, line));
-    let Goal::Col(col) = goal else {
-        return normal_pos(t, e);
-    };
-    let dl = t.display_line(s);
-    let stop = dl
-        .stops
-        .iter()
-        .filter(|st| st.pos >= s && st.pos <= e)
-        .find(|st| st.vcol >= col);
-    normal_pos(t, stop.map_or(e, |st| st.pos))
+    normal_pos(
+        t,
+        match goal {
+            Goal::Col(col) => pos_at_col(t, line, col),
+            Goal::Eol => line_end(t, line),
+        },
+    )
 }
 
-fn first_non_blank(f: &From) -> Result<To, Fail> {
-    let t = f.text;
-    let line = t.line_of(f.pos);
-    let mut c = Chars::at(t, t.line_start(line));
-    while c.ch().is_some_and(|ch| ch == ' ' || ch == '\t') {
-        c.fwd();
-    }
-    Ok(To::at(c.pos().min(line_end(t, line))))
+fn first_non_blank(s: &Start) -> Result<Target, Fail> {
+    Ok(Target::at(indent_end(s.text, s.text.line_of(s.pos))))
 }
 
-fn end_of_line(f: &From) -> Result<To, Fail> {
-    let t = f.text;
-    let line = (t.line_of(f.pos) + f.n() - 1).min(last_line(t));
-    Ok(To {
+fn end_of_line(s: &Start) -> Result<Target, Fail> {
+    let t = s.text;
+    let line = t.line_of(s.pos).saturating_add(s.n() - 1).min(last_line(t));
+    Ok(Target {
         goal: Some(Goal::Eol),
-        ..To::at(line_end(t, line))
+        ..Target::at(line_end(t, line))
     })
 }
 
 /// `gg` and `G` to a line counted from 1, keeping the goal column, as in your Evil
 /// (no `startofline`).
-fn goto_line(f: &From, n: usize) -> Result<To, Fail> {
-    let t = f.text;
-    let goal = f.goal.unwrap_or(Goal::Col(t.display_col(f.pos)));
+fn goto_line(s: &Start, n: usize) -> Result<Target, Fail> {
+    let t = s.text;
+    let goal = s.goal.unwrap_or(Goal::Col(t.display_col(s.pos)));
     let line = n.saturating_sub(1).min(last_line(t));
-    Ok(To {
+    Ok(Target {
         goal: Some(goal),
-        ..To::at(at_goal(t, line, goal))
+        ..Target::at(at_goal(t, line, goal))
     })
 }
 
@@ -176,10 +166,10 @@ enum Word {
 
 /// `w`, `e`, `b` and their WORD forms. Past the last word, `w` and `e` stop on the
 /// text's last character, as in Vim; Evil goes on to the line after a final newline.
-fn words(f: &From, which: Word, big: bool) -> Result<To, Fail> {
-    let t = f.text;
-    let mut p = f.pos;
-    for _ in 0..f.n() {
+fn words(s: &Start, which: Word, big: bool) -> Result<Target, Fail> {
+    let t = s.text;
+    let mut p = s.pos;
+    for _ in 0..s.n() {
         let next = match which {
             Word::Begin => word_begin(t, p, big),
             Word::End => word_end(t, p, big),
@@ -197,14 +187,14 @@ fn words(f: &From, which: Word, big: bool) -> Result<To, Fail> {
             }
         }
     }
-    if normal_pos(t, p) == normal_pos(t, f.pos) {
+    if normal_pos(t, p) == normal_pos(t, s.pos) {
         return Err(if which == Word::Back {
             "Beginning of buffer"
         } else {
             "End of buffer"
         });
     }
-    Ok(To::at(p))
+    Ok(Target::at(p))
 }
 
 /// An empty line counts as a word: Evil's `w`, `e` and `b` all stop on one.
@@ -287,7 +277,8 @@ pub struct Find {
     pub dir: Dir,
     /// `t` and `T`: stop next to the character.
     pub till: bool,
-    /// Repeating a `t` or `T` skips the character the cursor is already next to.
+    /// `;` or `,`: without a count, a `t` or `T` skips the character the cursor
+    /// is already next to.
     pub repeat: bool,
 }
 
@@ -318,29 +309,32 @@ impl Find {
 
 /// The count-th `ch` on the line in `dir`. Fails without moving if there aren't
 /// that many.
-pub fn find(f: &From, s: Find) -> Result<To, Fail> {
-    let t = f.text;
-    let line = t.line_of(f.pos);
+pub fn find(s: &Start, search: Find) -> Result<Target, Fail> {
+    let t = s.text;
+    let line = t.line_of(s.pos);
     let (start, end) = (t.line_start(line), line_end(t, line));
-    let mut c = Chars::at(t, f.pos);
-    let step = |c: &mut Chars| match s.dir {
+    let step = |c: &mut Chars| match search.dir {
         Dir::Forward => c.fwd() && c.pos() < end,
         Dir::Backward => c.pos() > start && c.back(),
     };
-    if s.till && s.repeat {
-        step(&mut c);
+    let mut n = s.n();
+    if search.till && search.repeat && n == 1 {
+        let mut c = Chars::at(t, s.pos);
+        if step(&mut c) && c.ch() == Some(search.ch) {
+            n = 2;
+        }
     }
-    let mut seen = 0;
+    let (mut c, mut seen) = (Chars::at(t, s.pos), 0);
     while step(&mut c) {
-        if c.ch() == Some(s.ch) {
+        if c.ch() == Some(search.ch) {
             seen += 1;
-            if seen == f.n() {
-                let pos = match (s.till, s.dir) {
+            if seen == n {
+                let pos = match (search.till, search.dir) {
                     (false, _) => c.pos(),
                     (true, Dir::Forward) => prev_stop(t, c.pos()).unwrap_or(c.pos()),
                     (true, Dir::Backward) => next_stop(t, c.pos()).unwrap_or(c.pos()),
                 };
-                return Ok(To::at(pos));
+                return Ok(Target::at(pos));
             }
         }
     }
@@ -352,10 +346,14 @@ pub fn find(f: &From, s: Find) -> Result<To, Fail> {
 const BRACKETS: [(char, char); 3] = [('(', ')'), ('[', ']'), ('{', '}')];
 
 /// `%`: from the first bracket at or after the cursor on its line, to its match.
-fn jump_item(f: &From) -> Result<To, Fail> {
-    let t = f.text;
-    let end = line_end(t, t.line_of(f.pos));
-    let mut c = Chars::at(t, f.pos);
+/// With a count, `N%`.
+fn jump_item(s: &Start) -> Result<Target, Fail> {
+    if let Some(n) = s.count {
+        return percent(s, n);
+    }
+    let t = s.text;
+    let end = line_end(t, t.line_of(s.pos));
+    let mut c = Chars::at(t, s.pos);
     let (open, close, dir) = loop {
         let ch = c
             .ch()
@@ -386,7 +384,7 @@ fn jump_item(f: &From) -> Result<To, Fail> {
             _ => {}
         }
         if depth == 0 {
-            return Ok(To::at(c.pos()));
+            return Ok(Target::at(c.pos()));
         }
         let moved = if dir == Dir::Forward {
             c.fwd()
@@ -399,13 +397,27 @@ fn jump_item(f: &From) -> Result<To, Fail> {
     }
 }
 
+/// `N%`: to the line holding the character N percent of the way through the
+/// text, with Evil's arithmetic, keeping the goal column as `G` does. V3: unlike
+/// `%`, an operator takes it linewise.
+fn percent(s: &Start, n: usize) -> Result<Target, Fail> {
+    let size = s.text.rope().len_chars();
+    let ch = if size > 80_000 {
+        n.saturating_mul(size / 100)
+    } else {
+        n.saturating_mul(size) / 100
+    };
+    let pos = s.text.rope().char_to_byte(ch.min(size));
+    goto_line(s, s.text.line_of(pos) + 1)
+}
+
 /// `}`: past this paragraph to the next blank line (spaces count as blank, as in
 /// Evil). With no blank line after, to the end of the last line, as in Vim.
-fn forward_paragraph(f: &From) -> Result<To, Fail> {
-    let t = f.text;
-    let (last, mut line) = (last_line(t), t.line_of(f.pos));
+fn forward_paragraph(s: &Start) -> Result<Target, Fail> {
+    let t = s.text;
+    let (last, mut line) = (last_line(t), t.line_of(s.pos));
     let mut pos = None;
-    for _ in 0..f.n() {
+    for _ in 0..s.n() {
         while line <= last && blank_line(t, line) {
             line += 1;
         }
@@ -418,17 +430,20 @@ fn forward_paragraph(f: &From) -> Result<To, Fail> {
         }
     }
     let pos = pos.unwrap_or_else(|| t.line_start(line));
-    if pos == f.pos {
+    if pos == s.pos {
         return Err("End of buffer");
     }
-    Ok(To::at(pos))
+    Ok(Target::at(pos))
 }
 
 /// `{`: back past this paragraph to the previous blank line, or the first line.
-fn backward_paragraph(f: &From) -> Result<To, Fail> {
-    let t = f.text;
-    let mut line = t.line_of(f.pos);
-    for _ in 0..f.n() {
+fn backward_paragraph(s: &Start) -> Result<Target, Fail> {
+    let t = s.text;
+    let mut line = t.line_of(s.pos);
+    for _ in 0..s.n() {
+        if line == 0 {
+            break;
+        }
         while line > 0 && blank_line(t, line) {
             line -= 1;
         }
@@ -437,8 +452,41 @@ fn backward_paragraph(f: &From) -> Result<To, Fail> {
         }
     }
     let pos = t.line_start(line);
-    if pos == f.pos {
+    if pos == s.pos {
         return Err("Beginning of buffer");
     }
-    Ok(To::at(pos))
+    Ok(Target::at(pos))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn start(t: &TextBuf, pos: usize, count: usize) -> Start<'_> {
+        Start {
+            text: t,
+            pos,
+            count: Some(count),
+            goal: None,
+            arg: None,
+        }
+    }
+
+    #[test]
+    fn a_huge_count_dollar_stops_on_the_last_line() {
+        let t = TextBuf::new("a\nb\nc\nd\n");
+        assert_eq!(
+            end_of_line(&start(&t, 4, usize::MAX)).map(|to| to.pos),
+            Ok(7)
+        );
+    }
+
+    #[test]
+    fn a_huge_count_brace_stops_at_the_first_line() {
+        let t = TextBuf::new("a\n\nb\n");
+        assert_eq!(
+            backward_paragraph(&start(&t, 3, usize::MAX)).map(|to| to.pos),
+            Ok(0)
+        );
+    }
 }

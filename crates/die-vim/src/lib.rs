@@ -2,23 +2,26 @@
 //! its behaviour is your Evil's, checked case by case by the Evil oracle
 //! (`tests/oracle.rs`), except the deviations named in `tests/oracle/deviations.json`.
 //!
-//! [`grammar`] says how counts, motions, operators and insert sessions fit
+//! `grammar.rs` says how counts, motions, operators and insert sessions fit
 //! together. So far (V1): motions, counts, and insert sessions with their undo.
 
-pub mod grammar;
+mod grammar;
 mod insert;
 mod motions;
 mod text;
 
-use die_core::{Args, Ctx, Error, Extension, Registry, Result, State};
-use grammar::{Kind, count_digit, run_motion, target};
+use die_core::{Args, BufferId, Ctx, Dir, Error, Extension, Registry, Result, State};
+use grammar::{Kind, buffer_window, count_digit, run_motion};
 use insert::{Edit, Entry, Session};
 use motions::{Find, MOTIONS};
+use std::collections::HashMap;
 
 /// The die-vim extension.
 #[derive(Default)]
 pub struct Vim {
-    insert: Option<Session>,
+    /// Each buffer's insert session. Core keeps insert state per buffer, and
+    /// Evil keeps a session's count and keys per buffer too.
+    inserts: HashMap<BufferId, Session>,
     /// The last `f`, `F`, `t` or `T`, which `;` and `,` repeat.
     find: Option<Find>,
 }
@@ -95,11 +98,11 @@ impl Extension for Vim {
                     reg.command(m.name, m.doc, move |ctx, a| {
                         let find = Find::new(key, a.char());
                         ctx.with_ext(|v: &mut Vim, _| v.find = Some(find))?;
-                        run_motion(ctx, a, m.kind, a.char(), m.f)
+                        run_motion(ctx, a, m.kind, a.char(), m.run)
                     });
                 }
                 None => reg.command(m.name, m.doc, move |ctx, a| {
-                    run_motion(ctx, a, m.kind, None, m.f)
+                    run_motion(ctx, a, m.kind, None, m.run)
                 }),
             }
         }
@@ -132,8 +135,15 @@ impl Extension for Vim {
         );
         reg.command(
             "vim-force-normal-state",
-            "Escape in normal state: nothing to cancel yet.",
-            |_, _| Ok(()),
+            "Escape in normal state: forget the goal column, as Evil does.",
+            |ctx, a| {
+                let (b, w) = buffer_window(ctx, a)?;
+                let t = ctx.text_mut(b)?;
+                if let Some(sel) = t.selection(w) {
+                    t.set_selection(w, sel.with_goal(None));
+                }
+                Ok(())
+            },
         );
         reg.command("vim-undo", "u: undo count changes.", |ctx, a| {
             history(ctx, a, false)
@@ -144,8 +154,9 @@ impl Extension for Vim {
 
         for &(_, name, entry, doc) in INSERTS {
             reg.command(name, doc, move |ctx, a| {
+                let (b, _) = buffer_window(ctx, a)?;
                 let s = insert::begin(ctx, a, entry)?;
-                ctx.with_ext(|v: &mut Vim, _| v.insert = Some(s))?;
+                ctx.with_ext(|v: &mut Vim, _| v.inserts.insert(b, s))?;
                 Ok(())
             });
         }
@@ -158,16 +169,24 @@ impl Extension for Vim {
         reg.command(
             "vim-normal-state",
             "Escape: back to normal state.",
-            |ctx, a| ctx.with_ext(|v: &mut Vim, ctx| insert::end(ctx, a, v.insert.take()))?,
+            |ctx, a| {
+                let (b, _) = buffer_window(ctx, a)?;
+                let s = ctx.with_ext(|v: &mut Vim, _| v.inserts.remove(&b))?;
+                insert::end(ctx, a, s)
+            },
         );
     }
 }
 
+/// One insert-state edit. The session is checked out of `Vim` while it's applied
+/// (contract §9: read state, release it, act, write it back).
 fn insert_edit(ctx: &mut Ctx, a: &Args, e: Edit) -> Result {
-    ctx.with_ext(|v: &mut Vim, ctx| {
-        let s = v.insert.get_or_insert_with(Session::bare);
-        insert::edit(ctx, a, s, e)
-    })?
+    let (b, _) = buffer_window(ctx, a)?;
+    let s = ctx.with_ext(|v: &mut Vim, _| v.inserts.remove(&b))?;
+    let mut s = s.unwrap_or_else(Session::bare);
+    let r = insert::edit(ctx, a, &mut s, e);
+    ctx.with_ext(|v: &mut Vim, _| v.inserts.insert(b, s))?;
+    r
 }
 
 fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
@@ -177,14 +196,17 @@ fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
         find = find.reversed();
     }
     find.repeat = true;
-    run_motion(ctx, a, Kind::Inclusive, None, move |f| {
-        motions::find(f, find)
-    })
+    // As in Evil: a repeat forward includes the target, one backward doesn't.
+    let kind = match find.dir {
+        Dir::Forward => Kind::Inclusive,
+        Dir::Backward => Kind::Exclusive,
+    };
+    run_motion(ctx, a, kind, None, move |s| motions::find(s, find))
 }
 
 /// `u` and `C-r`. Like Evil, the cursor goes to where the change it undid starts.
 fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
-    let (b, w) = target(ctx, a)?;
+    let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let rev = t.rev();
     for i in 0..a.count.unwrap_or(1).max(1) {

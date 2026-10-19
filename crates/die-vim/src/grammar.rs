@@ -5,7 +5,7 @@
 //! is a register (`"x`, V3). A command is a motion, an operator or an action:
 //!
 //! - A **motion** ([`Motion`]) is a plain function from where it starts
-//!   ([`From`]) to where it lands ([`To`]). It reads the text, layout queries
+//!   ([`Start`]) to where it lands ([`Target`]). It reads the text, layout queries
 //!   and its count, never other editor state, so M2's copy state can reuse it on
 //!   a terminal's text. Its [`Kind`] says how an operator treats the range.
 //! - An **operator** (V3) waits for a motion or text object: core's state is
@@ -18,7 +18,7 @@
 //!   replay them (`insert.rs`).
 //!
 //! In normal state the cursor rests on a character, never on a line's newline
-//! unless the line is empty, and never past the last line ([`crate::text::normal_pos`]).
+//! unless the line is empty, and never past the last line (`text::normal_pos`).
 
 use crate::text::normal_pos;
 use die_core::{Args, BufferId, Ctx, Error, Prefix, Result, Selection, TextBuf, WindowId};
@@ -40,6 +40,7 @@ impl Goal {
             Goal::Eol => usize::MAX,
         })
     }
+    /// Back from a [`Selection`]'s goal column.
     pub fn decode(c: Option<usize>) -> Option<Goal> {
         c.map(|c| {
             if c == usize::MAX {
@@ -63,18 +64,20 @@ pub enum Kind {
 }
 
 /// Where a motion starts, and what it may read.
-pub struct From<'a> {
+pub struct Start<'a> {
+    /// The text, with its layout queries.
     pub text: &'a TextBuf,
+    /// The cursor.
     pub pos: usize,
     /// The count typed before the motion, if any.
     pub count: Option<usize>,
     /// The goal column a run of vertical motions keeps.
     pub goal: Option<Goal>,
     /// The character argument of `f`, `F`, `t` and `T`.
-    pub char: Option<char>,
+    pub arg: Option<char>,
 }
 
-impl From<'_> {
+impl Start<'_> {
     /// The count, 1 if none was typed.
     pub fn n(&self) -> usize {
         self.count.unwrap_or(1).max(1)
@@ -83,7 +86,8 @@ impl From<'_> {
 
 /// Where a motion lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct To {
+pub struct Target {
+    /// The new cursor. [`run_motion`] moves it to where normal state allows.
     pub pos: usize,
     /// The goal to keep for the next vertical motion; None takes the new column.
     pub goal: Option<Goal>,
@@ -91,9 +95,10 @@ pub struct To {
     pub short: Option<&'static str>,
 }
 
-impl To {
-    pub fn at(pos: usize) -> To {
-        To {
+impl Target {
+    /// `pos`, taking the new column as the goal, with nothing to signal.
+    pub fn at(pos: usize) -> Target {
+        Target {
             pos,
             goal: None,
             short: None,
@@ -104,18 +109,23 @@ impl To {
 /// A motion moved nowhere; the message says why (Evil signals an error).
 pub type Fail = &'static str;
 
-/// A motion: its command name, its keys in normal state, and its function.
+/// A motion as normal state binds it.
 pub struct Motion {
+    /// Its command's name.
     pub name: &'static str,
+    /// Its keys in normal state.
     pub keys: &'static str,
+    /// How an operator takes its range.
     pub kind: Kind,
+    /// Its command's doc string.
     pub doc: &'static str,
-    pub f: fn(&From) -> std::result::Result<To, Fail>,
+    /// Where it lands.
+    pub run: fn(&Start) -> std::result::Result<Target, Fail>,
 }
 
 /// The buffer and window a command acts on: the ones it was invoked in, else the
 /// focused ones.
-pub fn target(ctx: &Ctx, a: &Args) -> Result<(BufferId, WindowId)> {
+pub fn buffer_window(ctx: &Ctx, a: &Args) -> Result<(BufferId, WindowId)> {
     let w = a
         .window
         .or(ctx.focused())
@@ -137,27 +147,27 @@ pub fn count_digit(ctx: &mut Ctx, a: &Args, d: usize) -> Result {
     Ok(())
 }
 
-/// Run a motion from the cursor with the command's count. `char` is the argument
+/// Run a motion from the cursor with the command's count. `arg` is the argument
 /// of `f`, `F`, `t` and `T`. V3: a pending operator takes the range from the
 /// cursor to the target here, treated as `kind` says, instead of the cursor moving.
 pub fn run_motion(
     ctx: &mut Ctx,
     a: &Args,
     _kind: Kind,
-    char: Option<char>,
-    f: impl Fn(&From) -> std::result::Result<To, Fail>,
+    arg: Option<char>,
+    motion: impl Fn(&Start) -> std::result::Result<Target, Fail>,
 ) -> Result {
-    let (b, w) = target(ctx, a)?;
+    let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
-    let from = From {
+    let start = Start {
         text: t,
         pos: sel.head,
         count: a.count,
         goal: Goal::decode(sel.goal),
-        char,
+        arg,
     };
-    let to = f(&from).map_err(|e| Error::Msg(e.into()))?;
+    let to = motion(&start).map_err(|e| Error::Msg(e.into()))?;
     let pos = normal_pos(t, to.pos);
     t.set_selection(w, Selection::cursor(pos).with_goal(Goal::encode(to.goal)));
     match to.short {

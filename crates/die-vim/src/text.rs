@@ -79,9 +79,16 @@ pub fn class(c: char, big: bool) -> Class {
         '\n' => Class::Newline,
         ' ' | '\t' | '\r' | '\u{c}' => Class::Blank,
         _ if big => Class::Punct,
-        _ if c.is_alphanumeric() => Class::Word(script(c)),
+        _ if c.is_alphanumeric() || combining(c) => Class::Word(script(c)),
         _ => Class::Punct,
     }
+}
+
+/// The main blocks of combining marks, which `is_alphanumeric` leaves out. Emacs
+/// gives them word syntax, so "café" spelled with U+0301 is one word.
+fn combining(c: char) -> bool {
+    matches!(c, '\u{300}'..='\u{36f}' | '\u{1ab0}'..='\u{1aff}' | '\u{1dc0}'..='\u{1dff}'
+        | '\u{20d0}'..='\u{20ff}' | '\u{fe20}'..='\u{fe2f}')
 }
 
 fn script(c: char) -> Script {
@@ -122,16 +129,34 @@ pub fn blank_line(t: &TextBuf, line: usize) -> bool {
         .all(|c| c == ' ' || c == '\t')
 }
 
-/// The width of `line`'s leading spaces and tabs, in display columns.
-pub fn indentation(t: &TextBuf, line: usize) -> usize {
+/// Where `line`'s leading spaces and tabs end.
+pub fn indent_end(t: &TextBuf, line: usize) -> usize {
     let s = t.line_start(line);
     let ws = t
         .rope()
         .byte_slice(s..line_end(t, line))
-        .chars()
-        .take_while(|c| *c == ' ' || *c == '\t')
+        .bytes()
+        .take_while(|b| *b == b' ' || *b == b'\t')
         .count();
-    t.display_col(s + ws)
+    s + ws
+}
+
+/// The width of `line`'s leading spaces and tabs, in display columns.
+pub fn indentation(t: &TextBuf, line: usize) -> usize {
+    t.display_col(indent_end(t, line))
+}
+
+/// The first cursor position on `line` at or after display column `col`, else the
+/// line's end. A column inside a tab or a wide character lands after it, as
+/// Emacs's `move-to-column` does.
+pub fn pos_at_col(t: &TextBuf, line: usize, col: usize) -> usize {
+    let (s, e) = (t.line_start(line), line_end(t, line));
+    t.display_line(s)
+        .stops
+        .iter()
+        .filter(|st| st.pos >= s && st.pos <= e)
+        .find(|st| st.vcol >= col)
+        .map_or(e, |st| st.pos)
 }
 
 /// The nearest place the cursor may rest in normal state: on a character of a
@@ -171,6 +196,11 @@ mod tests {
         assert_eq!(class('_', false), Class::Punct);
         assert_eq!(class(':', false), class('>', false));
         assert_eq!(class('a', false), class('é', false));
+        assert_eq!(
+            class('e', false),
+            class('\u{301}', false),
+            "a combining acute"
+        );
         // A change of script ends a word.
         assert_ne!(class('日', false), class('a', false));
         assert_eq!(class('日', false), class('本', false));
