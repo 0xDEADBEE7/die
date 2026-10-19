@@ -204,21 +204,18 @@ fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
     run_motion(ctx, a, kind, None, move |s| motions::find(s, find))
 }
 
-/// `u` and `C-r`. Like Evil, the cursor goes to where the change it undid starts.
+/// `u` and `C-r`. Like Evil, the cursor goes to the start of the last step undone or redone.
 fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
-    let rev = t.rev();
+    let mut start = 0;
     for i in 0..a.count.unwrap_or(1).max(1) {
-        if let Err(e) = if redo { t.redo() } else { t.undo() } {
-            if i == 0 {
-                return Err(e);
-            }
-            break;
+        match if redo { t.redo() } else { t.undo() } {
+            Ok(r) => start = r.start,
+            Err(e) if i == 0 => return Err(e),
+            Err(_) => break,
         }
     }
-    let start = t.edits_since(rev).and_then(|c| c.map(|c| c.start).min());
-    let p = start.or(t.cursor(w)).unwrap_or(0);
-    t.set_cursor(w, text::normal_pos(t, p));
+    t.set_cursor(w, text::normal_pos(t, start));
     Ok(())
 }
