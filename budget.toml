@@ -7,6 +7,11 @@
 # Module limits are ratchets (docs/m0-plan.md §4). Each starts at the top of its
 # module's M0 estimate and drops to the measured size after M0. Every file in a
 # crate that has modules must belong to exactly one of them.
+#
+# A crate whose code differs by platform lists its `builds`. Each of its modules
+# is neutral, in every build, or has `platforms`: the builds it's in. A build is
+# the neutral modules plus its platform's, and `build_limit` caps each one;
+# `limit` caps the crate's total (docs/records/platforms.md §5.7).
 
 [[crate]]
 name = "die-core"
@@ -16,7 +21,10 @@ limit = 14000
 [[crate]]
 name = "die-render"
 path = "crates/die-render"
-limit = 5000
+limit = 7000
+builds = ["macos", "linux"]
+build_limit = 5000
+note = "guard 7: 5k per build, 7k in total"
 
 [[crate]]
 name = "die-vim"
@@ -104,3 +112,21 @@ crate = "die-core"
 name = "harness, app interface, messages, ids, errors"
 limit = 800
 files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
+
+# die-render's modules at M0 (docs/records/platforms.md §5.7). The neutral code
+# (the atlas, row cache, instance building, window, loop and input: R2-R4) goes
+# here as it lands. Linux's modules, `platform::linux` and the portable backend
+# (`backend::wgpu`, `text::fontations`), join with their code.
+
+[[module]]
+crate = "die-render"
+name = "neutral"
+limit = 2300
+files = ["lib.rs", "platform/mod.rs"]
+
+[[module]]
+crate = "die-render"
+name = "platform::macos"
+platforms = ["macos"]
+limit = 1600
+files = ["platform/macos/"]
