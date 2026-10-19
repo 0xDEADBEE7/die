@@ -3,9 +3,10 @@
 //!
 //! A crate with per-platform code lists its `builds`, and each of its modules
 //! is neutral (in every build) or tagged with the `platforms` whose builds it's
-//! in. A build's lines are its neutral modules plus its platform's, and
-//! `build_limit` caps each build, as `limit` caps the crate's total
-//! (docs/records/platforms.md §5.7).
+//! in. A build's lines are the crate's total less the modules tagged only for
+//! other platforms: its neutral modules plus its platform's, or the whole
+//! crate if it has no modules. `build_limit` caps each build, as `limit` caps
+//! the crate's total (docs/records/platforms.md §5.7).
 
 use crate::count::count_formatted;
 use crate::util::{Result, read, rust_files};
@@ -157,7 +158,7 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
             limit: c.limit,
             dev: c.dev,
             note: c.note.clone(),
-            builds: builds(c, &modules),
+            builds: builds(c, total, &modules),
             modules,
         });
     }
@@ -185,17 +186,23 @@ fn check_platforms(c: &CrateBudget, mods: &[&ModuleBudget]) -> Result {
     Ok(())
 }
 
-/// Each of the crate's builds: its neutral modules plus its platform's.
-fn builds(c: &CrateBudget, modules: &[CountedModule]) -> Vec<(String, usize, Option<usize>)> {
+/// Each of the crate's builds: its `total` less the modules tagged only for
+/// other platforms. Lines in no module, as in a crate with none, are in every
+/// build.
+fn builds(
+    c: &CrateBudget,
+    total: usize,
+    modules: &[CountedModule],
+) -> Vec<(String, usize, Option<usize>)> {
     c.builds
         .iter()
         .map(|b| {
-            let n = modules
+            let elsewhere: usize = modules
                 .iter()
-                .filter(|m| m.platforms.is_empty() || m.platforms.contains(b))
+                .filter(|m| !m.platforms.is_empty() && !m.platforms.contains(b))
                 .map(|m| m.lines)
                 .sum();
-            (b.clone(), n, c.build_limit)
+            (b.clone(), total - elsewhere, c.build_limit)
         })
         .collect()
 }
@@ -313,7 +320,7 @@ mod tests {
     fn a_build_is_its_neutral_modules_plus_its_platforms() {
         let (krate, modules) = render();
         assert_eq!(
-            builds(&krate, &modules),
+            builds(&krate, 7000, &modules),
             [
                 ("macos".to_string(), 4500, Some(5000)),
                 ("linux".to_string(), 5000, Some(5000)),
@@ -322,16 +329,40 @@ mod tests {
     }
 
     #[test]
-    fn each_build_and_the_total_have_their_limits() {
-        let (krate, mut modules) = render();
-        modules[3].lines = 1000;
+    fn a_crate_without_modules_is_whole_in_every_build() {
+        let (krate, _) = render();
         let counted = Counted {
             name: krate.name.clone(),
-            lines: modules.iter().map(|m| m.lines).sum(),
+            lines: 5200,
             limit: krate.limit,
             dev: false,
             note: None,
-            builds: builds(&krate, &modules),
+            builds: builds(&krate, 5200, &[]),
+            modules: Vec::new(),
+        };
+        assert_eq!(
+            counted.builds,
+            [
+                ("macos".to_string(), 5200, Some(5000)),
+                ("linux".to_string(), 5200, Some(5000)),
+            ]
+        );
+        let (_, over) = report(&[counted]);
+        assert_eq!(over.len(), 2, "{over:?}");
+    }
+
+    #[test]
+    fn each_build_and_the_total_have_their_limits() {
+        let (krate, mut modules) = render();
+        modules[3].lines = 1000;
+        let total = modules.iter().map(|m| m.lines).sum();
+        let counted = Counted {
+            name: krate.name.clone(),
+            lines: total,
+            limit: krate.limit,
+            dev: false,
+            note: None,
+            builds: builds(&krate, total, &modules),
             modules,
         };
         let (text, over) = report(&[counted]);

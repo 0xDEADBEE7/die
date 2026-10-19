@@ -89,18 +89,27 @@ const LOG_PLANT_FAILS: &[&str] = &[
 
 /// On a Linux host (docs/records/platforms.md §5.5): clean-build's build of
 /// die-render for the host fails with the `log` plant, whose build script calls
-/// cc, though the host has a real one. `tree` is a copy it may change; it's
-/// restored afterwards.
-pub fn linux_host(tree: &Path) -> Result {
+/// cc, though the host has a real one. The plant goes into a throwaway copy of
+/// `root`'s working tree, as `run`'s do, so `root` is never changed, even if
+/// it's interrupted.
+pub fn linux_host(root: &Path) -> Result {
     let host = clean::host()?;
     if !host.contains("-linux-") {
         return Err(format!(
             "guards: the Linux-host plant runs on Linux, not {host}"
         ));
     }
-    let res = with_log_plant(tree, || {
-        let tmp = TempDir::new("log-plant")?;
-        clean::build(tree, tmp.path(), &host, &["-p", "die-render"]).map(|_| ())
+    let tmp = TempDir::new("log-plant")?;
+    let tree = tmp.path().join("tree");
+    copy_worktree(root, &tree)?;
+    let res = with_log_plant(&tree, || {
+        clean::build(
+            &tree,
+            &tmp.path().join("build"),
+            &host,
+            &["-p", "die-render"],
+        )
+        .map(|_| ())
     });
     fails_with("clean-build", res, LOG_PLANT_FAILS)?;
     println!(
