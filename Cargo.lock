@@ -375,6 +375,7 @@ dependencies = [
 name = "evil-oracle"
 version = "0.0.0"
 dependencies = [
+ "die-core",
  "serde",
  "serde_json",
 ]

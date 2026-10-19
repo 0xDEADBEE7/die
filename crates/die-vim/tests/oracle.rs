@@ -128,30 +128,6 @@ fn oracle() {
     assert!(problems.is_empty(), "\n{}\n", problems.join("\n"));
 }
 
-/// The oracle and die-core read the same notation: core parses each case's keys
-/// into exactly the keys the oracle's tokens name, one for one (K3).
-#[test]
-fn core_parses_keys_as_the_oracle_does() {
-    let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
-    let mut n = 0;
-    for fx in &fixtures {
-        for c in &fx.cases {
-            let whole = parse_keys(&c.keys).unwrap_or_else(|e| panic!("{}: {e}", c.id));
-            let tokens: Vec<_> = c
-                .key_tokens
-                .iter()
-                .map(|t| match parse_keys(t).as_deref() {
-                    Ok([ev]) => ev.clone(),
-                    other => panic!("{}: token {t:?} is {other:?}", c.id),
-                })
-                .collect();
-            assert_eq!(whole, tokens, "{}/{}: {:?}", fx.topic, c.id, c.keys);
-            n += 1;
-        }
-    }
-    assert!(n >= 306, "{n} cases");
-}
-
 fn pending_file(failing: &BTreeMap<String, Tranche>) -> String {
     let mut s = String::from(
         "# Oracle cases die-vim doesn't pass yet, by the work package they land with\n\
