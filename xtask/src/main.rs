@@ -7,13 +7,15 @@ const USAGE: &str = "usage: cargo xtask <task>
   lint                 unsafe only in platform modules, no target_os in neutral code,
                        no window or GPU crates under die-core and die-vim, exact pins,
                        D15, lockfile, licenses
-  guards               unsafe outside platform and -Cpanic=abort fail to build
+  guards               unsafe outside platform and -Cpanic=abort fail to build; dead
+                       code on Linux and a build script that calls cc fail the
+                       cross-check
   api-diff [--base R]  die-core's public API and die-vim's grammar, R -> working tree
                        (R defaults to the merge base with main)
   fonts                fetch Ioskeley Mono Term into fonts/, checked by SHA-256
   clean-build [--keep] no C builders in each target's build graph but the allowlist's,
                        and a build from an empty environment with no C compiler or
-                       pkg-config (D16)
+                       pkg-config, which no build script calls unless allowlisted (D16)
   cross-check          cargo check of the workspace for Linux, with no C compiler
   mutate [--cases N]   die-core's planted bugs; the property tests must catch each
   ci [--worktree | --rev R]

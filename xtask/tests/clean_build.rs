@@ -1,12 +1,18 @@
 //! F2: the clean-environment build fails when a build script calls a C compiler
-//! or pkg-config.
+//! or pkg-config, even when the build script carries on without it.
 
 use xtask::clean::{build, host};
 use xtask::util::{TempDir, write};
 
-/// A one-crate project whose build script runs `tool`, or none. A `$NAME` tool
-/// is the program named by that environment variable, as the `cc` crate finds it.
+/// A one-crate project whose build script runs `tool`, or none, and fails when
+/// it fails. A `$NAME` tool is the program named by that environment variable,
+/// as the `cc` crate finds it.
 fn project(tool: Option<&str>) -> TempDir {
+    project_with(tool, "assert!(ok, \"{tool} failed\");")
+}
+
+/// `project`, with `then` run after the tool (`ok` says whether it succeeded).
+fn project_with(tool: Option<&str>, then: &str) -> TempDir {
     let dir = TempDir::new("planted").unwrap();
     let p = dir.path();
     write(
@@ -25,8 +31,9 @@ fn project(tool: Option<&str>) -> TempDir {
             Some(var) => format!("std::env::var({var:?}).expect(\"{var} is set\")"),
             None => format!("{tool:?}"),
         };
+        let then = then.replace("{tool}", tool);
         let script = format!(
-            "fn main() {{\n    let ok = std::process::Command::new({program}).arg(\"--version\").status().is_ok_and(|s| s.success());\n    assert!(ok, \"{tool} failed\");\n}}\n"
+            "fn main() {{\n    let ok = std::process::Command::new({program}).arg(\"--version\").status().is_ok_and(|s| s.success());\n    {then}\n}}\n"
         );
         write(&p.join("build.rs"), &script).unwrap();
     }
@@ -77,6 +84,23 @@ fn a_build_script_using_cc_cxx_or_ar_fails() {
         assert!(
             err.contains(&format!("clean-build: {tool} was called")),
             "{var}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_build_script_that_carries_on_without_a_stand_in_fails() {
+    // As x11-dl does with pkg-config, and as a crate that compiles a C shim only
+    // when `cc` works would: on a machine with a real one, it compiles C.
+    for tool in ["pkg-config", "cc"] {
+        let p = project_with(Some(tool), "let _ = ok;");
+        let tmp = TempDir::new("planted-out").unwrap();
+        let err = build(p.path(), tmp.path(), &host().unwrap(), &[]).unwrap_err();
+        assert!(
+            err.contains(&format!(
+                "clean-build: {tool} was called by planted's build script (once `{tool} --version`), which carried on"
+            )),
+            "{tool}: {err}"
         );
     }
 }
