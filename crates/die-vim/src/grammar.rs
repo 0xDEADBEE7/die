@@ -18,7 +18,9 @@
 //!   replay them (`insert.rs`).
 //!
 //! In normal state the cursor rests on a character, never on a line's newline
-//! unless the line is empty, and never past the last line (`text::normal_pos`).
+//! unless the line is empty, and motions never take it past the last line
+//! (`text::normal_pos`). An insert session that ends on the empty line after a
+//! final newline leaves it there, as Evil does (`insert::end`).
 
 use crate::text::normal_pos;
 use die_core::{Args, BufferId, Ctx, Error, Prefix, Result, Selection, TextBuf, WindowId};

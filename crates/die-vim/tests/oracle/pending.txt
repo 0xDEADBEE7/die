@@ -1,11 +1,6 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
 
-# V1 (3)
-V1 insert/A-cr-esc-without-final-newline
-V1 insert/cr-esc-i-without-final-newline
-V1 insert/o-esc-i-without-final-newline
-
 # V2 (14)
 V2 ex/goto-line
 V2 search/hash-backward
