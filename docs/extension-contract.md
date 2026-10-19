@@ -86,7 +86,7 @@ your config crate (main)
 7. **Run.** The main loop.
 8. **Shutdown or restart.** Core asks every surface and mode to `save()`, writes the session, then calls each extension's `shutdown` in reverse order.
    - On restart, core starts the newly built binary and exits. Terminals stay alive in the holder (scope §5.9).
-   - On quit (Cmd-Q, after confirming if processes are running), core tells the holder to close the terminals and exit.
+   - On quit (the DIE layer's Q, Cmd-Q on macOS, after confirming if processes are running), core tells the holder to close the terminals and exit.
 
 ```
 Extension
@@ -112,7 +112,7 @@ An extension's global state is the extension struct itself. A command reaches it
 | Hooks | subscribe to buffer lifecycle, edits (after the fact), saves, modes, focus and idle, returning a handle (C4). A save runs its write as a queued step after the before-save hooks. |
 | Pixels | create a pixel buffer, create an image (§11) |
 | Registers | read and write typed registers (char, line or block) and the system clipboard |
-| Messages | message and error, shown in the command line and logged to a `*messages*` buffer; a macOS notification |
+| Messages | message and error, shown in the command line and logged to a `*messages*` buffer; a desktop notification |
 | Extensions | `with_ext::<E>` |
 
 ## 6. Commands
@@ -144,7 +144,7 @@ args
 ## 7. Keymaps and modal states
 
 - **States** (scope §5.6): normal, insert, visual, operator-pending, command line, copy and passthrough.
-- **Copy state** is normal and visual running over a read-only snapshot (scope D19). A window enters it when you leave passthrough with Cmd-Esc, and when you're in normal state on a surface without a text keymap. die-vim registers its normal and visual grammar as the copy-state keymap for every surface kind. In a terminal, `i` and `a` return to passthrough.
+- **Copy state** is normal and visual running over a read-only snapshot (scope D19). A window enters it when you leave passthrough with the DIE layer's Esc, and when you're in normal state on a surface without a text keymap. die-vim registers its normal and visual grammar as the copy-state keymap for every surface kind. In a terminal, `i` and `a` return to passthrough.
 - **A keymap** maps key sequences to command names, per state. The notation follows Vim: `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`.
 - **`<char>` matches any printable character,** including text committed by dead keys. The command reads which character it was from `args.key`. This replaces the loops in scrib's and orchid's search modes that bind every character to a self-insert command.
 - **`<any>` matches any key** a keymap doesn't otherwise bind, printable or not. die-vim uses it to cancel operator-pending on an unbound key.
@@ -165,12 +165,12 @@ args
   6. the surface's `event()` (§10)
   7. otherwise, an "unbound" message
 - **Passthrough has its own dispatch rule.**
-  - Cmd-Esc is checked first; it leaves passthrough for copy state and is never sent to the program.
+  - The DIE layer's Esc is checked first; it leaves passthrough for copy state and is never sent to the program.
   - With the buffer's vterm-style toggle on (scope D18), core also treats ESC as leaving passthrough, before `event()` sees it.
-  - The rest of the Cmd layer is looked up in DIE's keymaps (scope D18).
+  - The rest of the DIE layer is looked up in DIE's keymaps (scope D18).
   - Every other key goes straight to the surface's `event()`.
   - A surface declares which keys it handles there, so `describe-key` can report them.
-- **Press, repeat and release.** Keymaps match press and repeat. Release events reach only surfaces in passthrough. Any key DIE takes in passthrough, Cmd-Esc or a Cmd-layer binding, swallows its own repeat and release, so a program never sees a release without its press.
+- **Press, repeat and release.** Keymaps match press and repeat. Release events reach only surfaces in passthrough. Any key DIE takes in passthrough, the DIE layer's Esc or a DIE-layer binding, swallows its own repeat and release, so a program never sees a release without its press.
 - **Initial state.** A surface kind or mode can declare the state a buffer starts in, as `evil-set-initial-state` does. Text buffers start in normal, `die-term` in passthrough, and orchid's conversation mode might choose insert.
 - **Conflicts.** Within a keymap, later registration wins, and `describe-key` lists what was shadowed. Your config is applied last, and your bindings go into the keymap they name (global by default).
 
@@ -357,8 +357,8 @@ All callbacks run on the main thread, receive `Ctx`, and are queued (C3). Every 
 
 **PTYs** need more than pipes do:
 - A PTY is registered with the holder when `pty()` creates it, so it survives restarts and crashes (scope §5.9). The holder takes labelled fds from any DIE process (`term/<id>/pty`, `term/<id>/engine`), so a terminal's helper process can reach its PTY, and a restarted DIE can reach the helper.
-- After a restart DIE isn't the shell's parent. The exit callback still gets the status: core watches the pid with kqueue (`NOTE_EXIT | NOTE_EXITSTATUS`). The end of output on the PTY marks the final text.
-- Children are started with `posix_spawn` and close-on-exec by default, so no child holds another terminal open after you kill its buffer.
+- After a restart DIE isn't the shell's parent. The exit callback still gets the status: core watches the pid with kqueue (macOS, `NOTE_EXIT | NOTE_EXITSTATUS`) or a pidfd held by the holder (Linux); on Linux kernels before 6.15 the status after a restart is unknown. The end of output on the PTY marks the final text.
+- Children are started with `posix_spawn` (on macOS and glibc) and close-on-exec by default, so no child holds another terminal open after you kill its buffer.
 - Resizes carry pixel sizes as well as cells.
 - The owner can read the terminal mode, to spot password prompts, and the foreground process group, to confirm before killing a running command.
 - A terminal's output is parsed in its helper process and reaches the main thread as finished frames: the changed rows as DIE cells, the placements, and images as shared memory (scope §5.8). Other PTY users get main-thread callbacks like `process`.
@@ -458,7 +458,7 @@ main
 
 ## 18. Requirements check: could your packages be rebuilt on this contract?
 
-This is a check on the core, not a plan to build anything. Each row becomes a contract test in M1 (§16). die-vim and die-term are built in this project, so their rows are also exercised for real.
+This is a check on the core, not a plan to build anything. Each row becomes a contract test in M1 (§16), and those tests also run in the Linux CI jobs. die-vim and die-term are built in this project, so their rows are also exercised for real.
 
 | Package | Could be rebuilt as | Uses | Gaps |
 |---|---|---|---|

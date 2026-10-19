@@ -40,6 +40,8 @@ A self-drawing terminal view embedded in DIE was ruled out. Copy state, Vim moti
 - **Binary source to DIE's own CI build.** DIE keeps building from the committed archive and adds a CI job (never on your machine) that builds the archive with Zig from a pinned commit. This happens if:
   - Ghostty stops publishing the xcframework, or renames it
   - a fix DIE needs has no signed build within about 4 weeks
+
+  A third trigger, a target Ghostty doesn't publish (Linux today), was proposed in [platforms.md](platforms.md) §4.3 and declined on 2026-10-19, as was asking Ghostty to publish Linux archives. Where a signed Linux archive comes from is open until before M2 (scope D10).
 - **Engine to alacritty_terminal plus a DIE-written kitty graphics layer.** About 7.5–8.5k lines plus about 2k of tests. This happens if:
   - libghostty-vt's C API is withdrawn or relicensed
   - no published build passes DIE's battery for 3 months
@@ -266,12 +268,12 @@ libghostty-vt-sys = { path = "crates/die-term-sys" }   # links = "ghostty-vt"
 
 `crates/die-term-sys/` contains:
 
-- `vendor/libghostty-vt.a`: thinned to arm64, stripped and prelinked
-- `vendor/libghostty-vt.a.sha256`
+- `vendor/<target>/libghostty-vt.a`: one archive per supported target. Today that's only macOS's, thinned to arm64, stripped and prelinked
+- `vendor/<target>/libghostty-vt.a.sha256`
 - `src/bindings.rs`: generated from the archive's own headers
 - `src/lib.rs`: about 90 lines from libghostty-rs, MIT/Apache, with attribution
-- `build.rs`: about 15 lines. It checks the SHA-256 and emits the link flags. No network, git or Zig.
-- `ghostty-vt.lock`
+- `build.rs`: about 15 lines. It picks the archive by `TARGET` and refuses targets it has none for, checks the SHA-256 and emits the link flags. No network, git or Zig.
+- `ghostty-vt.lock`, with a section per target
 - the `.minisig`
 - `LICENSE-ghostty` and `THIRD_PARTY_NOTICES`
 
