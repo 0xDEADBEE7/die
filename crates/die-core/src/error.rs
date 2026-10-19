@@ -29,6 +29,8 @@ pub enum Error {
         msg: String,
     },
     NothingToUndo,
+    /// A search pattern that isn't valid regex (Rust's syntax, D4).
+    BadPattern(String),
     /// An extension's silent edit overlapped the text this undo step needs. History is truncated.
     UndoConflict,
     Msg(String),
