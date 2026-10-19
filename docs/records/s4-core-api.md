@@ -154,7 +154,7 @@ Bug 4 got past the first property test, so I added the model-based undo test (§
 
 ### Undo
 
-- **A11. Grouping.** Each top-level unit (a key-dispatched command or a queued callback) is one undo step by default, like Emacs's undo boundaries. Explicit `begin_undo_group` and `end_undo_group` calls span commands. An explicit group also takes in an edit made earlier in the same command, as `o` needs; that part is built but not tested. An open group takes in every recorded edit to its buffer until it closes, including recorded Extension edits from callbacks.
+- **A11. Grouping.** Each top-level unit (a key-dispatched command or a queued callback) is one undo step by default, like Emacs's undo boundaries. Explicit `begin_undo_group` and `end_undo_group` calls span commands. An explicit group also takes in an edit made earlier in the same command, as `o` needs; that part is built but not tested. An open group takes in every recorded edit to its buffer until it closes, including recorded Extension edits from callbacks. *(Amended by K2, 2026-10-19: `undo_boundary` ends the current step early, even inside one command or an open group, which stays open as a new step.)*
   - Alternatives: no implicit grouping, so die-vim groups everything; or open groups that take only User edits.
   - Recommendation: keep it. Revisit if an extension makes recorded edits during an insert session. None of your packages does: orchid's streaming is silent.
 - **A12. Overlapping silent edits.** If a silent edit overlapped text an undo step needs, undo refuses with `UndoConflict` and drops the undo history.
@@ -163,7 +163,7 @@ Bug 4 got past the first property test, so I added the model-based undo test (§
 - **A13. Undo is a User edit,** so it's blocked by read-only text, as in Emacs. After orchid moves your submitted input into its read-only transcript, `u` can't take it back.
   - Alternative: undo bypasses read-only.
   - Recommendation: blocked.
-- **A14. Cursor and decorations on undo.** Undo restores the cursor from before the step, moved through any silent edits. Redo puts it at the start of the first change. Undo doesn't restore decorations: after `dd` on a fold and then `u`, the lines come back unfolded (tested), as with Emacs overlays. manifold would re-derive its folds from `edits_since`.
+- **A14. Cursor and decorations on undo.** Undo restores the cursor from before the step, moved through any silent edits. Redo puts it at the start of the first change. *(Amended by K2, 2026-10-19: undo restores the acting window's whole selection from before the step (anchor, head, shape and goal), moved through any silent edits, and returns the range it changed, in the text after it. Redo returns its range too and puts a cursor at that range's start. die-vim collapses a restored visual selection after `u`.)* Undo doesn't restore decorations: after `dd` on a fold and then `u`, the lines come back unfolded (tested), as with Emacs overlays. manifold would re-derive its folds from `edits_since`.
   - Recommendation: keep.
 
 ### Layout and cursor positions
