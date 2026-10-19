@@ -1,0 +1,4 @@
+# Pinned so rustfmt (and so `cargo xtask budget`'s counts) can't move under us.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

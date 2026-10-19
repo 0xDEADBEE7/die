@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "rules": [
+    {
+      "rule": "the last line is the last line",
+      "s5_row": 1,
+      "kind": "emacs-artifact",
+      "evil": "The cursor can rest on the empty line after a file's final newline: G, 5j, w, }, dd, dk, dG, L, C-d and gj all reach it, and j there succeeds.",
+      "die_vim": "As in Vim: motions stop on the last line, j and gj on it signal an error, and a macro ends at that error.",
+      "cases": [
+        { "case": "motions/w-last-word-of-buffer" },
+        { "case": "motions/G-trailing-newline" },
+        { "case": "motions/5j-past-end" },
+        { "case": "motions/close-brace-last-paragraph" },
+        { "case": "operators/dd-last-line" },
+        { "case": "operators/dk", "note": "Vim's line, Evil's column: die-vim keeps the column after dk (S5 row 2)" },
+        { "case": "operators/dG", "note": "Vim's line, Evil's column: die-vim keeps the column after dG (S5 row 2)" },
+        { "case": "geometry/L-short-buffer" },
+        { "case": "geometry/ctrl-d-at-end", "note": "Vim stays on the last line without an error" },
+        { "case": "wrapped/gj-at-last-visual-line" },
+        { "case": "macros/error-stops-macro", "note": "the macro ends one repetition earlier, where j fails on the last line" },
+        { "case": "macros/recursive", "note": "the recursion ends where j fails on the last line" },
+        { "case": "macros/macro-records-count", "note": "the macro ends where j fails on the last line" }
+      ]
+    },
+    {
+      "rule": "a count before / finds the nth match",
+      "s5_row": 11,
+      "kind": "evil-gap",
+      "evil": "2/x ignores the count.",
+      "die_vim": "As in Vim: 2/x goes to the second match.",
+      "cases": [{ "case": "search/count-slash" }]
+    },
+    {
+      "rule": "an empty search repeats the last one",
+      "s5_row": 12,
+      "kind": "evil-gap",
+      "evil": "/<CR> does nothing.",
+      "die_vim": "As in Vim: /<CR> searches for the last pattern again.",
+      "cases": [{ "case": "search/empty-pattern-repeats" }]
+    },
+    {
+      "rule": ". inside a macro repeats the macro's change",
+      "s5_row": 17,
+      "kind": "evil-bug",
+      "evil": ". signals an error inside a macro, since Evil runs macros without command hooks.",
+      "die_vim": "As in Vim: . repeats the last change made inside the macro.",
+      "cases": [{ "case": "macros/macro-with-dot" }, { "case": "macros/preset-macro-with-dot" }]
+    },
+    {
+      "rule": "Vp on the last line replaces the line",
+      "s5_row": 18,
+      "kind": "evil-bug",
+      "evil": "Vp on the last line leaves an empty line and drops the final newline.",
+      "die_vim": "As in Vim: the line is replaced and the final newline stays.",
+      "cases": [{ "case": "visual/V-p-linewise" }]
+    },
+    {
+      "rule": "3H goes to the third line",
+      "s5_row": 20,
+      "kind": "evil-bug",
+      "evil": "3H goes to the fourth line of the window.",
+      "die_vim": "As in Vim: 3H goes to the third line. H, M and L otherwise follow Evil (S5 row 20).",
+      "cases": [{ "case": "geometry/3H" }]
+    },
+    {
+      "rule": "undo is Vim's u and C-r",
+      "s5_row": 5,
+      "kind": "undo-model",
+      "evil": "Your Evil has no redo (evil-undo-system is unset): C-r signals an error, and u after another command redoes, as Emacs's undo chain does.",
+      "die_vim": "Your S5 answer: u steps back and C-r steps forward, as in Vim (scope §10).",
+      "cases": [
+        { "case": "undo/ctrl-r-redo", "note": "S5 row 5" },
+        { "case": "undo/u-after-move-redoes", "note": "S5 row 6" }
+      ]
+    },
+    {
+      "rule": "regular expressions are Rust's",
+      "s5_row": null,
+      "kind": "regex-syntax",
+      "evil": ":s/\\(foo\\) \\(bar\\)/\\2 \\1/ uses Emacs regex groups.",
+      "die_vim": "DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result.",
+      "cases": [{ "case": "ex/s-groups" }]
+    },
+    {
+      "rule": "language indentation waits for modes",
+      "s5_row": 4,
+      "kind": "needs-modes",
+      "evil": "In emacs-lisp-mode and python-mode, a new line is indented by the language.",
+      "die_vim": "Until file-type modes (M1) give die-vim a language's indentation, a new line is indented like the line above, as Evil does in text.",
+      "cases": [{ "case": "insert/o-elisp-mode-indent" }, { "case": "insert/o-python-mode-indent" }]
+    }
+  ]
+}

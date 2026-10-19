@@ -1,0 +1,16 @@
+{"topic": "ex",
+ "cases": [
+  {"id": "s-first", "keys": ":s/foo/bar/<CR>", "text": ["x |foo foo"]},
+  {"id": "s-global-flag", "keys": ":s/foo/bar/g<CR>", "text": ["x |foo foo"]},
+  {"id": "s-percent", "keys": ":%s/a/b/g<CR>", "text": ["a a", "|x", "a"]},
+  {"id": "s-percent-first-per-line", "keys": ":%s/a/b/<CR>", "text": ["a a", "|x", "a a"]},
+  {"id": "s-visual-range", "keys": "Vj:s/a/b/g<CR>", "text": ["a a", "|a a", "a a", "a a"]},
+  {"id": "s-groups", "description": "Emacs/Vim regex groups. With DIE's Rust regex syntax the same command is :s/(foo) (bar)/$2 $1/", "keys": ":s/\\(foo\\) \\(bar\\)/\\2 \\1/<CR>", "text": ["|foo bar"]},
+  {"id": "s-empty-replacement", "keys": ":s/o//g<CR>", "text": ["|foo"]},
+  {"id": "s-no-match", "keys": ":s/z/y/<CR>", "text": ["a|bc"]},
+  {"id": "s-undo-one-step", "keys": ":%s/a/b/g<CR>u", "text": ["|a", "a", "a"]},
+  {"id": "s-smartcase-lower", "vim": "ex: Vim inserts x literally; Evil's :s keeps the case of the match (Emacs case-replace)", "keys": ":s/foo/x/<CR>", "text": ["|Foo foo"]},
+  {"id": "s-smartcase-upper", "keys": ":s/Foo/x/g<CR>", "text": ["|foo Foo"]},
+  {"id": "goto-line", "vim": "startofline: Vim moves to the first non-blank; Evil goes to column 0", "keys": ":3<CR>", "text": ["|one", "two", "  three", "four"]},
+  {"id": "s-cursor-after-percent", "keys": ":%s/a/b/<CR>", "text": ["|a", "x", "  a", "x"]}
+ ]}

@@ -1,0 +1,21 @@
+{"topic": "search",
+ "cases": [
+  {"id": "slash", "keys": "/bar<CR>", "text": ["|foo bar baz bar"]},
+  {"id": "slash-n", "keys": "/bar<CR>n", "text": ["|foo bar baz bar"]},
+  {"id": "slash-N", "keys": "/bar<CR>N", "text": ["|foo bar baz bar"]},
+  {"id": "question", "keys": "?foo<CR>", "text": ["foo x foo y |z"]},
+  {"id": "question-n-continues-backward", "keys": "?foo<CR>n", "text": ["foo x foo y |z"]},
+  {"id": "n-wraps", "keys": "/a<CR>nn", "text": ["a |b a c"]},
+  {"id": "smartcase-lower-matches-upper", "keys": "/foo<CR>", "text": ["|x Foo foo"]},
+  {"id": "smartcase-upper-is-exact", "keys": "/Foo<CR>", "text": ["|x foo Foo"]},
+  {"id": "star-whole-word", "keys": "*", "text": ["|foo foobar foo"]},
+  {"id": "hash-backward", "keys": "#", "text": ["foo foobar |foo"]},
+  {"id": "star-case", "vim": "search: Vim's * ignores smartcase and matches foo; Evil's * applies smartcase", "keys": "*", "text": ["|Foo foo Foo"]},
+  {"id": "star-n", "keys": "*n", "text": ["|ab x ab y ab"]},
+  {"id": "not-found", "keys": "/zzz<CR>x", "text": ["a|bc"]},
+  {"id": "d-slash", "keys": "d/bar<CR>", "text": ["|foo bar"]},
+  {"id": "count-slash", "vim": "search: Vim goes to the 2nd match; Evil ignores the count", "keys": "2/x<CR>", "text": ["|x a x b x"]},
+  {"id": "empty-pattern-repeats", "vim": "search: Vim's empty / repeats the last pattern; Evil's does nothing", "keys": "/b<CR>/<CR>", "text": ["|a b c b"]},
+  {"id": "v-slash-d", "keys": "v/c<CR>d", "text": ["|ab cd"]},
+  {"id": "search-next-line", "keys": "/two<CR>", "text": ["|one", "two"]}
+ ]}

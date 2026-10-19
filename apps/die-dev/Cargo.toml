@@ -1,0 +1,18 @@
+[package]
+name = "die-dev"
+description = "Your DIE config while DIE is being built"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "die"
+path = "src/main.rs"
+
+[dependencies]
+die.workspace = true
+
+[lints]
+workspace = true
