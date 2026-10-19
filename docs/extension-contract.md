@@ -318,7 +318,7 @@ Surface
 ```
 
 **Rendering.**
-- `render` writes into a DIE-owned cell frame clipped to `area` (scope D8). A cell holds a character, colors, attributes, an underline style and color, a link id and wide-character continuation.
+- `render` writes into a DIE-owned cell frame clipped to `area` (scope D8). A cell holds a character, colors, attributes, an underline style and color, and wide-character continuation; the link id arrives with die-term (M2).
 - `render` also places images and pixel buffers on rectangles of cells, each with a source rectangle, a pixel offset and a z-order. A negative z draws below text.
 - `render` can't change the workspace. It gets the surface mutably, so it can update its own caches, but it doesn't get `Ctx`.
 - **Components are plain Rust types that render into part of an area,** so a new graphical extension can be assembled from reusable pieces. The contract needs nothing extra for this. Your existing browsers don't use custom surfaces at all (§9).
@@ -373,7 +373,8 @@ C3 costs you something with multi-step prompts, which nest one callback per step
 
 ## 13. Faces and themes
 
-- **Base faces in core:** `default`, `shadow`, `bold`, `highlight`, `selection`, `search`, `link`, `heading`, `error`, `warning`, `success`, `line-number`, `status-line` and `cursor`. seek uses only base faces (`shadow`, `bold`, `highlight` and `isearch`).
+- **Base faces in core:** `default`, `shadow`, `bold`, `highlight`, `selection`, `search`, `link`, `heading` (inherits from `bold`), `error`, `warning`, `success`, `line-number` (inherits from `shadow`), `status-line` and `cursor`. Core also declares the faces it draws its own screen parts with, each inheriting from a base face: `line-number-current`, `status-line-inactive`, `divider`, `search-current`, `bracket-match` and `prompt`. An extension can't declare those names. seek uses only base faces (`shadow`, `bold`, `highlight` and `search`).
+- **Faces stack** on a text cell from the bottom up: `default`, then stored face decorations (one nested inside another is above it), then mode providers' faces, then search, bracket-match and selection. What a face leaves unset comes from the face below it.
 - **Extension faces** are declared with a default style and an optional parent face. For example, `orchid.user-message` inherits from `default`.
 - **A theme** is data that maps face names to styles, and it can style any extension's faces. It also sets the 16 ANSI colors that terminals use. mono-dark and dark-coffee become theme values in your config.
 
