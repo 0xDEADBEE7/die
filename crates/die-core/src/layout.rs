@@ -77,7 +77,8 @@ pub enum CellKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Cell {
+/// One cell of a laid-out row: what layout and motions agree is on screen.
+pub struct LayoutCell {
     /// The grapheme drawn here; "" for the second cell of a wide character.
     pub text: String,
     /// The buffer position this cell starts, if any.
@@ -103,7 +104,7 @@ pub struct DisplayLine {
     pub first_line: usize,
     pub last_line: usize,
     pub eof: bool,
-    pub rows: Vec<Vec<Cell>>,
+    pub rows: Vec<Vec<LayoutCell>>,
     pub stops: Vec<Stop>,
 }
 
@@ -121,7 +122,7 @@ impl DisplayLine {
 struct Builder {
     width: Option<usize>,
     tab: usize,
-    rows: Vec<Vec<Cell>>,
+    rows: Vec<Vec<LayoutCell>>,
     col: usize,
     vcol: usize,
     stops: Vec<Stop>,
@@ -139,7 +140,7 @@ impl Builder {
         if !self.fits(1) {
             self.newrow();
         }
-        self.rows.last_mut().unwrap().push(Cell {
+        self.rows.last_mut().unwrap().push(LayoutCell {
             text: text.into(),
             pos,
             kind,
@@ -176,7 +177,7 @@ impl Builder {
         let at = (self.rows.len() - 1, self.col);
         self.push(g, pos, kind);
         for _ in 1..w {
-            self.rows.last_mut().unwrap().push(Cell {
+            self.rows.last_mut().unwrap().push(LayoutCell {
                 text: String::new(),
                 pos: None,
                 kind,
@@ -338,7 +339,7 @@ pub struct ViewRow {
     pub dline_start: usize,
     pub row: usize,
     pub first_line: usize,
-    pub cells: Vec<Cell>,
+    pub cells: Vec<LayoutCell>,
 }
 
 #[derive(Clone, Debug)]

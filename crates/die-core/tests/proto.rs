@@ -4,6 +4,7 @@ mod support;
 use die_core::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use support::screen;
 
 struct Orchid {
     opened: u32,
@@ -251,7 +252,7 @@ fn render_panics_contained() {
     ctx.with_surface(b, |s: &mut TermSurface, _| s.lines = 99)
         .unwrap();
     let w = ctx.open_window(b, 20, 2).unwrap();
-    let f = ctx.render_window(w);
+    let f = screen(&mut ctx, w);
     assert!(f.rows[0].contains("render panicked"), "{:?}", f.rows);
 }
 

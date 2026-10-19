@@ -2,6 +2,7 @@
 //! subscription handles (C4), commands, keymap dispatch, the prefix argument, `feed_keys`,
 //! key observers and prompts.
 use crate::error::*;
+use crate::faces::{Faces, Style};
 use crate::ids::*;
 use crate::keymap::*;
 use crate::keys::*;
@@ -136,9 +137,17 @@ pub struct Registry {
     modes: Vec<ModeSpec>,
     named: HashMap<String, Keymap>,
     leader: Option<String>,
+    faces: Vec<(String, Option<String>, Style)>,
 }
 
 impl Registry {
+    /// Declare a face with its default style and an optional parent face
+    /// (contract §13). A theme can restyle it by name.
+    pub fn face(&mut self, name: &str, parent: Option<&str>, style: Style) -> &mut Self {
+        self.faces
+            .push((name.into(), parent.map(String::from), style));
+        self
+    }
     pub fn command(
         &mut self,
         name: &str,
@@ -322,6 +331,7 @@ pub(crate) struct Window {
 }
 
 struct Prompt {
+    label: String,
     text: String,
     ext: ExtIdx,
     prev: State,
@@ -358,6 +368,8 @@ pub struct Ctx {
     registers: HashMap<char, Register>,
     pub(crate) files: crate::files::Files,
     pub messages: Vec<String>,
+    pub(crate) faces: Faces,
+    pub(crate) search_highlight: Option<String>,
 }
 
 pub(crate) fn panic_msg(p: &(dyn Any + Send)) -> String {
@@ -390,6 +402,10 @@ impl Ctx {
                 panics: 0,
             });
         }
+        let faces = Faces::new(std::mem::take(&mut reg.faces)).unwrap_or_else(|e| {
+            errors.extend(e);
+            Faces::new(vec![]).expect("core's own faces are valid")
+        });
         let (jobs_tx, jobs_rx) = mpsc::channel();
         let mut ctx = Ctx {
             exts: slots,
@@ -421,6 +437,8 @@ impl Ctx {
             registers: HashMap::new(),
             files: Default::default(),
             messages: vec![],
+            faces,
+            search_highlight: None,
         };
         for (name, c) in reg.commands {
             if ctx.commands.insert(name.clone(), c).is_some() {
@@ -996,7 +1014,7 @@ impl Ctx {
     /// A command-line prompt. `f` runs from the top of the loop with the answer, or None on cancel.
     pub fn prompt(
         &mut self,
-        _label: &str,
+        label: &str,
         f: impl FnOnce(&mut Ctx, Option<String>) -> Result + 'static,
     ) {
         if self.prompt.is_some() {
@@ -1005,6 +1023,7 @@ impl Ctx {
         let prev = self.state();
         self.set_state(State::CommandLine);
         self.prompt = Some(Prompt {
+            label: label.into(),
             text: String::new(),
             ext: self.cur_ext(),
             prev,
@@ -1013,6 +1032,9 @@ impl Ctx {
     }
     pub fn prompt_text(&self) -> Option<&str> {
         self.prompt.as_ref().map(|p| p.text.as_str())
+    }
+    pub(crate) fn prompt_label(&self) -> Option<&str> {
+        self.prompt.as_ref().map(|p| p.label.as_str())
     }
     fn finish_prompt(&mut self, answer: Option<String>) {
         let Some(p) = self.prompt.take() else { return };
@@ -1304,13 +1326,5 @@ impl Ctx {
                 }
             }
         }
-    }
-
-    // -------------------------------------------------------------- render access
-
-    pub(crate) fn render_parts(&mut self, w: WindowId) -> Option<(&mut Buffer, usize, usize)> {
-        let win = self.windows.get(w)?;
-        let (bid, cols, rows) = (win.buffer, win.cols, win.rows);
-        Some((self.buffers.get_mut(bid)?, cols, rows))
     }
 }
