@@ -40,25 +40,11 @@ pub enum ModifierKey {
     CapsLock,
 }
 
-/// Modifiers in effect for a key event. Keymaps match `ctrl`, `alt`, `shift` and `cmd`
-/// (Shift only on named keys); the rest is for the terminal's key encoding (M2).
+/// Modifiers held for a key event.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Mods {
     pub ctrl: bool,
     /// Option. DIE treats both Option keys as Alt.
-    pub alt: bool,
-    pub shift: bool,
-    pub cmd: bool,
-    /// Caps Lock is on.
-    pub caps_lock: bool,
-    /// Which held modifiers are the right-hand key.
-    pub right: RightMods,
-}
-
-/// The modifiers held on the right-hand side of the keyboard.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub struct RightMods {
-    pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
     pub cmd: bool,
@@ -86,13 +72,33 @@ pub struct KeyEvent {
     pub code: Option<String>,
     /// What the key types with no modifiers held (`4` for `$`), when the OS gave it.
     pub unshifted: Option<char>,
+    /// Which of `mods` are held on the right-hand side, for the terminal's key encoding (M2).
+    pub right_mods: Mods,
+    /// Caps Lock is on. Keymaps ignore it.
+    pub caps_lock: bool,
 }
 
-/// What a keymap matches: a key plus Ctrl, Alt, Cmd, and Shift on named keys only.
+/// What a keymap matches. `KeyEvent::chord` and notation fold keys the same way: Shift is
+/// already in a character (`A`, `$`), so it counts only on named keys (`<S-Tab>`) and with
+/// Ctrl and a letter. That letter is folded to lowercase, so Ctrl-a is `<C-a>` and
+/// Ctrl-Shift-a is `<C-S-a>`, with Caps Lock on or off.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Chord {
     pub key: Key,
     pub mods: Mods,
+}
+
+/// The chord for `key` with `mods` held.
+fn fold(key: Key, mut mods: Mods) -> Chord {
+    let key = match key {
+        Key::Char(c) if mods.ctrl && c.is_ascii_alphabetic() => Key::Char(c.to_ascii_lowercase()),
+        Key::Char(_) => {
+            mods.shift = false;
+            key
+        }
+        k => k,
+    };
+    Chord { key, mods }
 }
 
 impl KeyEvent {
@@ -104,6 +110,8 @@ impl KeyEvent {
             text: None,
             code: None,
             unshifted: None,
+            right_mods: Mods::default(),
+            caps_lock: false,
         }
     }
     /// Committed text, as delivered for dead keys.
@@ -122,19 +130,9 @@ impl KeyEvent {
         self.kind = k;
         self
     }
-    /// The chord a keymap matches: Caps Lock, sides and Shift on characters dropped.
+    /// The chord a keymap matches (see `Chord`).
     pub fn chord(&self) -> Chord {
-        let m = self.mods;
-        Chord {
-            key: self.key,
-            mods: Mods {
-                ctrl: m.ctrl,
-                alt: m.alt,
-                shift: m.shift && !matches!(self.key, Key::Char(_)),
-                cmd: m.cmd,
-                ..Mods::default()
-            },
-        }
+        fold(self.key, self.mods)
     }
     /// The text this key types, if it is printable. `<char>` matches exactly these keys.
     pub fn printable(&self) -> Option<String> {
@@ -199,9 +197,10 @@ const NAMES: &[(&str, Key)] = &[
 
 /// Parse notation such as `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`, `<D-Esc>` (Cmd), `<char>`,
 /// `<any>`. Names are matched without regard to case. Ctrl with a letter folds its case, as
-/// in Vim (`<C-V>` is `<C-v>`); `<C-S-a>` is Ctrl-Shift-A. A `<` that doesn't start a known
-/// name is a literal `<`, but a bracketed word that isn't a key name is an error, since it's
-/// almost always a typo: write `<lt>` for a literal `<`.
+/// in Vim (`<C-V>` is `<C-v>`); `<C-S-a>` is Ctrl-Shift-A. A `<` that doesn't start a key is
+/// a literal `<`, but a bracketed word that isn't a key name, or modifiers followed by
+/// something that isn't a key (`<C-X-a>`), is an error, since it's almost always a typo:
+/// write `<lt>` for a literal `<`.
 pub fn parse_pats(s: &str) -> Result<Vec<Pat>, String> {
     let c: Vec<char> = s.chars().collect();
     let mut out = vec![];
@@ -248,8 +247,9 @@ fn bracket(c: &[char]) -> Result<Option<(Pat, usize)>, String> {
     let Some(end) = close(i) else { return Ok(None) };
     let name: String = c[i..end].iter().collect();
     let word = name.len() >= 2 && name.chars().all(|ch| ch.is_ascii_alphanumeric());
+    let unknown = || Err(format!("unknown key <{}>", String::from_iter(&c[1..end])));
     if !word {
-        return Ok(None);
+        return if has_mods { unknown() } else { Ok(None) };
     }
     let lower = name.to_ascii_lowercase();
     let pat = match lower.as_str() {
@@ -262,12 +262,7 @@ fn bracket(c: &[char]) -> Result<Option<(Pat, usize)>, String> {
         }
         _ => match key_named(&lower) {
             Some(key) => chord(key, mods),
-            None => {
-                return Err(format!(
-                    "unknown key <{}>",
-                    c[1..end].iter().collect::<String>()
-                ));
-            }
+            None => return unknown(),
         },
     };
     Ok(Some((pat, end + 1)))
@@ -281,18 +276,14 @@ fn key_named(lower: &str) -> Option<Key> {
     (1..=24).contains(&n).then_some(Key::F(n))
 }
 
-/// A chord from notation: Shift is folded into a character, and Ctrl folds a letter's case
-/// unless Shift was written.
-fn chord(key: Key, mut mods: Mods) -> Pat {
+/// A chord from notation: a written Shift capitalizes a letter, as the layout would, and then
+/// the key folds as an event's does.
+fn chord(key: Key, mods: Mods) -> Pat {
     let key = match key {
-        Key::Char(c) if c.is_ascii_alphabetic() && mods.shift => Key::Char(c.to_ascii_uppercase()),
-        Key::Char(c) if mods.ctrl => Key::Char(c.to_ascii_lowercase()),
+        Key::Char(c) if mods.shift => Key::Char(c.to_ascii_uppercase()),
         k => k,
     };
-    if let Key::Char(_) = key {
-        mods.shift = false;
-    }
-    Pat::Chord(Chord { key, mods })
+    Pat::Chord(fold(key, mods))
 }
 
 /// Parse notation into concrete key presses, for `feed_keys` and the harness. `<char>`,
@@ -313,21 +304,29 @@ pub(crate) fn typed(s: &str, leader: Option<Chord>) -> Result<Vec<KeyEvent>, Str
 }
 
 /// The inverse of `parse_keys`, so die-vim can store a recorded macro as register text.
+/// Committed text is written as its characters, which parse back as one key each.
 pub fn key_notation(evs: &[KeyEvent]) -> String {
     let mut s = String::new();
+    let literal = |s: &mut String, c| match c {
+        '<' => s.push_str("<lt>"),
+        c => s.push(c),
+    };
     for e in evs {
-        let m = e.chord().mods;
-        let mut shift = m.shift;
-        let name = match e.key {
-            Key::Char('<') if !(m.ctrl || m.alt || m.cmd) => "lt".to_string(),
-            Key::Char(c) if !(m.ctrl || m.alt || m.cmd) => {
-                s.push(c);
+        if let Some(t) = &e.text {
+            t.chars().for_each(|c| literal(&mut s, c));
+            continue;
+        }
+        let Chord { key, mods } = e.chord();
+        let Mods {
+            ctrl,
+            alt,
+            shift,
+            cmd,
+        } = mods;
+        let name = match key {
+            Key::Char(c) if !(ctrl || alt || cmd) => {
+                literal(&mut s, c);
                 continue;
-            }
-            // Ctrl folds a letter's case, so a capital is written with Shift.
-            Key::Char(c) if m.ctrl && c.is_ascii_uppercase() => {
-                shift = true;
-                c.to_ascii_lowercase().to_string()
             }
             Key::Char(' ') => "Space".into(),
             Key::Char('<') => "lt".into(),
@@ -339,7 +338,7 @@ pub fn key_notation(evs: &[KeyEvent]) -> String {
                 .map_or("?", |(n, _)| n)
                 .to_string(),
         };
-        let pre: String = [(m.ctrl, "C-"), (m.alt, "A-"), (shift, "S-"), (m.cmd, "D-")]
+        let pre: String = [(ctrl, "C-"), (alt, "A-"), (shift, "S-"), (cmd, "D-")]
             .iter()
             .filter(|p| p.0)
             .map(|p| p.1)

@@ -411,7 +411,7 @@ impl Ctx {
             fed: VecDeque::new(),
             pending: vec![],
             swallow: vec![],
-            leader: DEFAULT_LEADER,
+            leader: default_leader(),
             prefix: Prefix::default(),
             prompt: None,
             clock: Duration::ZERO,
@@ -427,8 +427,8 @@ impl Ctx {
         }
         if let Some(k) = &reg.leader {
             match typed(k, None).as_deref() {
-                Ok([ev]) => ctx.set_leader(ev.chord()),
-                _ => errors.push(format!("the leader must be one key, not {k:?}")),
+                Ok([ev]) if !matches!(ev.key, Key::Modifier(_)) => ctx.set_leader(ev.chord()),
+                _ => errors.push(format!("the leader must be one key, not a modifier: {k:?}")),
             }
         }
         errors.extend(ctx.check_bindings());
@@ -1024,7 +1024,8 @@ impl Ctx {
 
     // -------------------------------------------------------------- the loop
 
-    /// Queue keys as if typed (contract §6). die-vim's `@a` uses this.
+    /// Queue keys as if typed (contract §6). die-vim's `@a` uses this. `keys` is notation,
+    /// as `key_notation` writes it, so plain text with a `<` in it needs `<lt>`.
     pub fn feed_keys(&mut self, keys: &str) -> Result {
         let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
         self.fed.extend(evs);

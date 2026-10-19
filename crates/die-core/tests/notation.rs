@@ -66,9 +66,12 @@ fn unknown_brackets_are_literal_characters() {
     assert_eq!(keys("a<"), lit("a<"));
     assert_eq!(keys("<lt>x"), lit("<x"));
     assert_eq!(keys("<C-V>j<c-r>"), [ctrl('v'), ch('j'), ctrl('r')]);
+    assert_eq!(keys("<Esc >"), lit("<Esc >"));
     // A bracketed word that isn't a key is a typo, not text: write <lt> for a literal <.
-    assert!(parse_keys("<Esx>").is_err());
-    assert!(parse_keys("<C-bad>").is_err());
+    // So is anything after modifiers that isn't a key.
+    for typo in ["<Esx>", "<C-bad>", "<C-X-a>", "<C-Page-Up>"] {
+        assert!(parse_keys(typo).is_err(), "{typo}");
+    }
 }
 
 #[test]
@@ -77,11 +80,10 @@ fn modifiers_fold_as_vim_does() {
     assert_eq!(one("<C-x>"), ctrl('x'));
     assert_eq!(one("<c-x>"), ctrl('x'));
     assert_eq!(one("<C-X>"), ctrl('x'), "Ctrl folds case, as in Vim");
-    assert_eq!(
-        one("<C-S-a>"),
-        ctrl('A'),
-        "Shift with a letter is the capital"
-    );
+    let ctrl_shift_a = with(ctrl('a'), |m| m.shift = true);
+    assert_eq!(one("<C-S-a>"), ctrl_shift_a, "Shift is kept with Ctrl");
+    assert_eq!(one("<C-S-A>"), ctrl_shift_a);
+    assert_eq!(one("<S-a>"), ch('A'), "Shift with a letter is the capital");
     assert_eq!(one("<A-x>"), alt('x'));
     assert_eq!(one("<M-x>"), alt('x'));
     assert_eq!(one("<A-X>"), alt('X'), "only Ctrl folds case");
@@ -113,7 +115,11 @@ fn leader_and_wildcards_are_patterns_not_keys() {
 fn notation_of_special_keys() {
     let ev = [
         ch('<'),
-        ctrl('A'),
+        ctrl('A'), // Ctrl-a with Caps Lock on
+        with(ch('A'), |m| {
+            m.ctrl = true;
+            m.shift = true;
+        }),
         with(ch('X'), |m| m.alt = true),
         with(KeyEvent::press(Key::Tab), |m| m.shift = true),
         KeyEvent::press(Key::F(3)),
@@ -122,8 +128,10 @@ fn notation_of_special_keys() {
     ];
     assert_eq!(
         key_notation(&ev),
-        "<lt><C-S-a><A-X><S-Tab><F3><C-Space><Del>"
+        "<lt><C-a><C-S-a><A-X><S-Tab><F3><C-Space><Del>"
     );
+    let committed = [KeyEvent::committed("❤️"), KeyEvent::committed("´x<")];
+    assert_eq!(key_notation(&committed), "❤️´x<lt>", "all of the text");
 }
 
 const NAMED: &[Key] = &[
@@ -144,7 +152,7 @@ const NAMED: &[Key] = &[
 ];
 
 /// A key press as notation can write it: no text, no OS fields, and Shift folded into
-/// characters (a Ctrl chord with a capital letter is how Ctrl-Shift is written).
+/// characters, except with Ctrl and a letter, which is lowercase.
 fn key_press() -> impl Strategy<Value = KeyEvent> {
     let chars = prop_oneof![
         prop::char::range('a', 'z'),
@@ -159,15 +167,24 @@ fn key_press() -> impl Strategy<Value = KeyEvent> {
         (1u8..=24).prop_map(Key::F),
     ];
     (key, any::<[bool; 4]>()).prop_map(|(key, [c, a, s, d])| {
-        let shift = s && !matches!(key, Key::Char(_));
+        let (key, shift) = match key {
+            Key::Char(ch) if c && ch.is_ascii_alphabetic() => {
+                (Key::Char(ch.to_ascii_lowercase()), s)
+            }
+            Key::Char(_) => (key, false),
+            _ => (key, s),
+        };
         KeyEvent::press(key).mods(Mods {
             ctrl: c,
             alt: a,
             shift,
             cmd: d,
-            ..Mods::default()
         })
     })
+}
+
+fn typed_text(evs: &[KeyEvent]) -> Option<String> {
+    evs.iter().map(KeyEvent::printable).collect()
 }
 
 proptest! {
@@ -178,5 +195,14 @@ proptest! {
         let s = key_notation(&evs);
         let back = parse_keys(&s).map_err(|e| TestCaseError::fail(format!("{s:?}: {e}")))?;
         prop_assert_eq!(back, evs, "via {:?}", s);
+    }
+
+    /// Committed text comes back as one key per character, typing the same text.
+    #[test]
+    fn committed_text_round_trips(texts in prop::collection::vec("[^\\p{Cc}]{1,4}", 1..4)) {
+        let evs: Vec<_> = texts.iter().map(|t| KeyEvent::committed(t)).collect();
+        let s = key_notation(&evs);
+        let back = parse_keys(&s).map_err(|e| TestCaseError::fail(format!("{s:?}: {e}")))?;
+        prop_assert_eq!(typed_text(&back), typed_text(&evs), "via {:?}", s);
     }
 }
