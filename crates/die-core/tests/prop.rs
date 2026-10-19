@@ -244,7 +244,7 @@ fn apply(ctx: &mut Ctx, b: BufferId, w: WindowId, op: &Op, hides: &mut Vec<Decor
         }
         Op::Undo => {
             bump(match t.undo() {
-                Ok(()) => "undo: ok",
+                Ok(_) => "undo: ok",
                 Err(Error::UndoConflict) => "undo: conflict (truncated)",
                 Err(Error::ReadOnly { .. }) => "undo: blocked by read-only",
                 Err(_) => "undo: nothing",
@@ -644,13 +644,21 @@ fn u_step() -> impl Strategy<Value = U> {
 /// p; silent Extension edits land anywhere that doesn't overlap the user's text (touching is
 /// allowed). Undo must then succeed, remove exactly the user's text (or put back exactly what
 /// was deleted, where it was), restore the cursor, and redo must reverse it.
-fn run_undo(init: String, start: u16, del_len: u8, deletion: bool, steps: Vec<U>) {
+/// K2: undo also reports the range it changed, and restores the selection's shape.
+fn run_undo(init: String, start: u16, del_len: u8, deletion: bool, shape: u8, steps: Vec<U>) {
     let mut ctx = Ctx::new(vec![]).unwrap();
     let b = ctx.create_text("u", &init);
     let w = ctx.open_window(b, 30, 5).unwrap();
     let t = ctx.text_mut(b).unwrap();
     let mut p = at(t, start);
-    t.set_cursor(w, p);
+    let shape = [Shape::Char, Shape::Line, Shape::Block][shape as usize % 3];
+    t.set_selection(
+        w,
+        Selection {
+            shape,
+            ..Selection::cursor(p)
+        },
+    );
     let mut len = 0usize; // the user's text is [p, p + len) (insertion mode)
     let mut deleted = String::new(); // what the user deleted at p (deletion mode)
     let call = |ctx: &mut Ctx, f: Box<dyn FnOnce(&mut TextBuf)>| {
@@ -733,15 +741,25 @@ fn run_undo(init: String, start: u16, del_len: u8, deletion: bool, steps: Vec<U>
     } else {
         want.replace_range(p..p + len, "");
     }
+    let (undone, redone) = if deletion {
+        (p..p + deleted.len(), p..p)
+    } else {
+        (p..p, p..p + len)
+    };
     let t = ctx.text_mut(b).unwrap();
     assert_eq!(
         t.undo(),
-        Ok(()),
-        "undo refused; model says it can't conflict"
+        Ok(undone),
+        "undo refused (the model says it can't conflict), or reported the wrong range"
     );
     assert_eq!(t.rope().to_string(), want, "undo restored the wrong text");
     assert_eq!(t.cursor(w), Some(t.snap(p, None)), "cursor not restored");
-    assert_eq!(t.redo(), Ok(()));
+    assert_eq!(
+        t.selection(w).map(|s| s.shape),
+        Some(shape),
+        "shape not restored"
+    );
+    assert_eq!(t.redo(), Ok(redone));
     assert_eq!(t.rope().to_string(), before, "redo didn't reverse undo");
 }
 
@@ -753,7 +771,316 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
     #[test]
     fn undo_is_exact_around_silent_edits(init in text_s(30), start in any::<u16>(), del_len in 0u8..5, deletion in any::<bool>(),
-                                         steps in prop::collection::vec(u_step(), 1..20)) {
-        run_undo(init, start, del_len, deletion, steps);
+                                         shape in 0u8..3, steps in prop::collection::vec(u_step(), 1..20)) {
+        run_undo(init, start, del_len, deletion, shape, steps);
+    }
+
+    #[test]
+    fn undo_history_matches_a_model(init in text_s(20), steps_cap in 0usize..6, bytes_cap in 1usize..40,
+                                    hs in prop::collection::vec(h_step(), 1..30)) {
+        run_history(init, steps_cap, bytes_cap, hs);
+    }
+}
+
+// ---------------------------------------------------------------- undo history model (K2)
+
+#[derive(Debug, Clone)]
+enum H {
+    /// One command inserting text.
+    Ins(u16, String),
+    /// One command deleting characters.
+    Del(u16, u8),
+    /// An explicit group: characters typed one command each, with an undo boundary
+    /// before the `split`th one when that falls inside.
+    Unit(u16, Vec<char>, u8),
+    /// One command: an insert, an undo boundary, another insert right after the first.
+    Split(u16, String, String),
+    /// One transaction with two changes, which it records last one first: an insert,
+    /// and a replacement of the character at or after it.
+    Multi(u16, u16, String, String),
+    Undo,
+    Redo,
+    Sel(u16, u16, u8),
+}
+
+fn h_step() -> impl Strategy<Value = H> {
+    let s = || text_s(4).prop_filter("an insert inserts something", |s| !s.is_empty());
+    let c = prop_oneof![Just('x'), Just('中'), Just('\n')];
+    prop_oneof![
+        3 => (any::<u16>(), s()).prop_map(|(a, s)| H::Ins(a, s)),
+        2 => (any::<u16>(), 1u8..4).prop_map(|(a, n)| H::Del(a, n)),
+        2 => (any::<u16>(), prop::collection::vec(c, 1..5), any::<u8>()).prop_map(|(a, v, k)| H::Unit(a, v, k)),
+        1 => (any::<u16>(), s(), s()).prop_map(|(a, x, y)| H::Split(a, x, y)),
+        1 => (any::<u16>(), any::<u16>(), s(), s()).prop_map(|(a, c, x, y)| H::Multi(a, c, x, y)),
+        3 => Just(H::Undo),
+        2 => Just(H::Redo),
+        1 => (any::<u16>(), any::<u16>(), 0u8..3).prop_map(|(a, h, k)| H::Sel(a, h, k)),
+    ]
+}
+
+/// One undo step, as the model sees it.
+#[derive(Debug, Clone)]
+struct MStep {
+    before: String,
+    after: String,
+    /// The selection just before the step's first edit: what undo restores.
+    sel: Selection,
+    bytes: usize,
+    undone: std::ops::Range<usize>,
+    redone: std::ops::Range<usize>,
+}
+
+/// Run `f` as one top-level unit (A11), returning its value.
+fn unit<R: 'static>(ctx: &mut Ctx, b: BufferId, f: impl FnOnce(&mut TextBuf) -> R + 'static) -> R {
+    let out = Rc::new(RefCell::new(None));
+    let o = out.clone();
+    ctx.defer(move |ctx| {
+        *o.borrow_mut() = Some(f(ctx.text_mut(b).unwrap()));
+        Ok(())
+    });
+    ctx.run_until_idle();
+    out.borrow_mut().take().expect("the unit ran")
+}
+
+/// Undo history against a model: a stack of whole-text snapshots. Steps are commands,
+/// explicit groups and undo boundaries; the buffer's caps are small and random. Every undo
+/// and redo must give the model's text, report the model's range, and restore the
+/// selection from before the step (undo) or put a cursor at the change's start (redo).
+fn run_history(init: String, steps_cap: usize, bytes_cap: usize, hs: Vec<H>) {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("h", &init);
+    let w = ctx.open_window(b, 30, 5).unwrap();
+    let s = ctx.text_mut(b).unwrap().settings_mut();
+    s.undo_steps = steps_cap;
+    s.undo_bytes = bytes_cap;
+    let (mut undo, mut redo): (Vec<MStep>, Vec<MStep>) = (vec![], vec![]);
+    let push = move |undo: &mut Vec<MStep>, redo: &mut Vec<MStep>, step: MStep| {
+        redo.clear();
+        undo.push(step);
+        while undo.len() > steps_cap
+            || (undo.len() > 1 && undo.iter().map(|s| s.bytes).sum::<usize>() > bytes_cap)
+        {
+            undo.remove(0);
+        }
+    };
+    for h in hs {
+        let before = text_of(&ctx, b);
+        let sel = ctx.text(b).unwrap().selection(w).unwrap();
+        let t = ctx.text(b).unwrap();
+        match h {
+            H::Ins(a, s) => {
+                let p = at(t, a);
+                let n = s.len();
+                unit(&mut ctx, b, move |t| {
+                    t.tx(Origin::User).insert(p, s).commit().unwrap()
+                });
+                let after = text_of(&ctx, b);
+                push(
+                    &mut undo,
+                    &mut redo,
+                    MStep {
+                        before,
+                        after,
+                        sel,
+                        bytes: n,
+                        undone: p..p,
+                        redone: p..p + n,
+                    },
+                );
+            }
+            H::Del(a, k) => {
+                let p = at(t, a);
+                let q = chars_after(t, p, k as usize);
+                if q == p {
+                    continue;
+                }
+                unit(&mut ctx, b, move |t| {
+                    t.tx(Origin::User).delete(p..q).commit().unwrap()
+                });
+                let after = text_of(&ctx, b);
+                push(
+                    &mut undo,
+                    &mut redo,
+                    MStep {
+                        before,
+                        after,
+                        sel,
+                        bytes: q - p,
+                        undone: p..q,
+                        redone: p..p,
+                    },
+                );
+            }
+            H::Unit(a, chars, split) => {
+                let p = at(t, a);
+                let split = split as usize % (chars.len() + 1);
+                unit(&mut ctx, b, |t| t.begin_undo_group());
+                let (mut q, mut start, mut first) = (p, p, (before.clone(), sel));
+                for (i, c) in chars.into_iter().enumerate() {
+                    if i == split && i > 0 {
+                        let after = text_of(&ctx, b);
+                        let (before, sel) = first;
+                        push(
+                            &mut undo,
+                            &mut redo,
+                            MStep {
+                                before,
+                                after: after.clone(),
+                                sel,
+                                bytes: q - start,
+                                undone: start..start,
+                                redone: start..q,
+                            },
+                        );
+                        let sel = unit(&mut ctx, b, move |t| {
+                            t.undo_boundary();
+                            t.selection(w).unwrap()
+                        });
+                        first = (after, sel);
+                        start = q;
+                    }
+                    unit(&mut ctx, b, move |t| {
+                        t.tx(Origin::User)
+                            .insert(q, c.to_string())
+                            .commit()
+                            .unwrap()
+                    });
+                    q += c.len_utf8();
+                }
+                unit(&mut ctx, b, |t| t.end_undo_group());
+                let (before, sel) = first;
+                let after = text_of(&ctx, b);
+                push(
+                    &mut undo,
+                    &mut redo,
+                    MStep {
+                        before,
+                        after,
+                        sel,
+                        bytes: q - start,
+                        undone: start..start,
+                        redone: start..q,
+                    },
+                );
+            }
+            H::Split(a, x, y) => {
+                let p = at(t, a);
+                let (nx, ny) = (x.len(), y.len());
+                let mut mid = before.clone();
+                mid.insert_str(p, &x);
+                let mid_sel = unit(&mut ctx, b, move |t| {
+                    t.tx(Origin::User).insert(p, x).commit().unwrap();
+                    let s = t.selection(w).unwrap();
+                    t.undo_boundary();
+                    t.tx(Origin::User).insert(p + nx, y).commit().unwrap();
+                    s
+                });
+                let after = text_of(&ctx, b);
+                push(
+                    &mut undo,
+                    &mut redo,
+                    MStep {
+                        before,
+                        after: mid.clone(),
+                        sel,
+                        bytes: nx,
+                        undone: p..p,
+                        redone: p..p + nx,
+                    },
+                );
+                let q = p + nx;
+                push(
+                    &mut undo,
+                    &mut redo,
+                    MStep {
+                        before: mid,
+                        after,
+                        sel: mid_sel,
+                        bytes: ny,
+                        undone: q..q,
+                        redone: q..q + ny,
+                    },
+                );
+            }
+            H::Multi(a, c, x, y) => {
+                let (p, q) = (at(t, a).min(at(t, c)), at(t, a).max(at(t, c)));
+                let q1 = chars_after(t, q, 1);
+                let mut want = before.clone();
+                want.replace_range(q..q1, &y);
+                want.insert_str(p, &x);
+                let (nx, ny) = (x.len(), y.len());
+                unit(&mut ctx, b, move |t| {
+                    t.tx(Origin::User)
+                        .insert(p, x)
+                        .replace(q..q1, y)
+                        .commit()
+                        .unwrap()
+                });
+                let after = text_of(&ctx, b);
+                assert_eq!(after, want, "the transaction's text");
+                push(
+                    &mut undo,
+                    &mut redo,
+                    MStep {
+                        before,
+                        after,
+                        sel,
+                        bytes: nx + ny + (q1 - q),
+                        undone: p..q1,
+                        redone: p..q + nx + ny,
+                    },
+                );
+            }
+            H::Undo => {
+                let r = unit(&mut ctx, b, |t| t.undo());
+                match undo.pop() {
+                    None => assert_eq!(
+                        r,
+                        Err(Error::NothingToUndo),
+                        "the model has nothing to undo"
+                    ),
+                    Some(s) => {
+                        assert_eq!(r, Ok(s.undone.clone()), "undo's range");
+                        assert_eq!(text_of(&ctx, b), s.before, "undo's text");
+                        assert_eq!(
+                            ctx.text(b).unwrap().selection(w),
+                            Some(s.sel),
+                            "undo's selection"
+                        );
+                        redo.push(s);
+                    }
+                }
+            }
+            H::Redo => {
+                let r = unit(&mut ctx, b, |t| t.redo());
+                match redo.pop() {
+                    None => assert_eq!(
+                        r,
+                        Err(Error::NothingToUndo),
+                        "the model has nothing to redo"
+                    ),
+                    Some(s) => {
+                        assert_eq!(r, Ok(s.redone.clone()), "redo's range");
+                        assert_eq!(text_of(&ctx, b), s.after, "redo's text");
+                        let cursor = Selection::cursor(s.redone.start);
+                        assert_eq!(
+                            ctx.text(b).unwrap().selection(w),
+                            Some(cursor),
+                            "redo's cursor"
+                        );
+                        undo.push(s);
+                    }
+                }
+            }
+            H::Sel(a, h, k) => {
+                let sel = Selection {
+                    anchor: at(t, a),
+                    head: at(t, h),
+                    shape: [Shape::Char, Shape::Line, Shape::Block][k as usize],
+                    goal: None,
+                };
+                ctx.text_mut(b).unwrap().set_selection(w, sel);
+            }
+        }
     }
 }

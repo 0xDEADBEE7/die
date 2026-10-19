@@ -3,7 +3,7 @@
 use crate::error::*;
 use crate::ids::*;
 use crate::layout::LayoutCache;
-use crate::undo::{History, Op};
+use crate::undo::{History, Limit, Op};
 use ropey::Rope;
 use slotmap::SlotMap;
 use std::any::Any;
@@ -11,6 +11,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::rc::Rc;
+
+mod search;
+pub use search::{Found, Pattern};
 
 /// How many changes `edits_since` can reach back.
 pub const LOG_CAP: usize = 1024;
@@ -129,6 +132,13 @@ pub struct Settings {
     pub tab_width: usize,
     pub read_only: bool,
     pub cursor_visible: bool,
+    /// Undo keeps at most this many steps; the oldest go first. 0 turns undo off. A
+    /// lower limit applies at the next edit, undo or redo.
+    pub undo_steps: usize,
+    /// Undo keeps steps holding at most this much removed and inserted text, in bytes; the
+    /// oldest go first, and the newest stays whatever its size. It bounds the text, not the
+    /// history's memory, which adds about 70 bytes per change.
+    pub undo_bytes: usize,
 }
 
 impl Default for Settings {
@@ -141,6 +151,8 @@ impl Default for Settings {
             tab_width: 8,
             read_only: false,
             cursor_visible: true,
+            undo_steps: 2000,
+            undo_bytes: 16 << 20,
         }
     }
 }
@@ -157,7 +169,7 @@ pub(crate) struct View {
 
 #[derive(Clone, Copy)]
 enum Rec {
-    Record(Option<usize>),
+    Record(Option<Selection>),
     Silent,
     History,
 }
@@ -175,6 +187,8 @@ pub struct TextBuf {
     pub(crate) cmd: u64,
     pub(crate) actor: Option<WindowId>,
     pub(crate) cache: RefCell<LayoutCache>,
+    /// The text in one piece for regex search, until the next edit.
+    flat: RefCell<Option<String>>,
 }
 
 /// Where a position goes when `[start, old_end)` is replaced by text ending at `new_end`.
@@ -246,6 +260,7 @@ impl TextBuf {
             cmd: 0,
             actor: None,
             cache: RefCell::default(),
+            flat: RefCell::default(),
         }
     }
 
@@ -292,18 +307,6 @@ impl TextBuf {
         }
         let skip = (rev + 1 - oldest) as usize;
         Some(self.log.iter().skip(skip))
-    }
-    /// Literal search, wrapping. Production uses regex-cursor over the rope.
-    pub fn find(&self, needle: &str, from: usize) -> Option<usize> {
-        let s = self.rope.to_string();
-        let from = from.min(s.len());
-        let from = (from..=s.len())
-            .find(|i| s.is_char_boundary(*i))
-            .unwrap_or(s.len());
-        s[from..]
-            .find(needle)
-            .map(|i| i + from)
-            .or_else(|| s.find(needle))
     }
     pub fn settings(&self) -> &Settings {
         &self.settings
@@ -362,7 +365,7 @@ impl TextBuf {
         let rec = if silent {
             Rec::Silent
         } else {
-            Rec::Record(self.actor_cursor())
+            Rec::Record(self.actor_selection())
         };
         for (r, s) in ops.into_iter().rev() {
             self.apply_one(r, s, origin, rec);
@@ -371,10 +374,8 @@ impl TextBuf {
         Ok(self.rev)
     }
 
-    fn actor_cursor(&self) -> Option<usize> {
-        self.actor
-            .and_then(|w| self.views.get(&w))
-            .map(|v| v.sel.head)
+    fn actor_selection(&self) -> Option<Selection> {
+        self.actor.and_then(|w| self.views.get(&w)).map(|v| v.sel)
     }
 
     fn apply_one(&mut self, r: Range<usize>, s: String, origin: Origin, rec: Rec) {
@@ -386,6 +387,7 @@ impl TextBuf {
         );
         self.rope.remove(cs..ce);
         self.rope.insert(cs, &s);
+        *self.flat.get_mut() = None;
         let new_end = r.start + s.len();
         self.rev += 1;
         let change = Change {
@@ -412,8 +414,15 @@ impl TextBuf {
         };
         match rec {
             Rec::Silent => self.history.silent(o.shift()),
-            Rec::Record(c) => self.history.record(o, c, self.cmd),
+            Rec::Record(sel) => self.history.record(o, sel, self.cmd, self.undo_limit()),
             Rec::History => {}
+        }
+    }
+
+    fn undo_limit(&self) -> Limit {
+        Limit {
+            steps: self.settings.undo_steps,
+            bytes: self.settings.undo_bytes,
         }
     }
 
@@ -456,20 +465,33 @@ impl TextBuf {
     // ---- undo
     /// Start an undo group that spans commands, such as an insert session.
     pub fn begin_undo_group(&mut self) {
-        let c = self.actor_cursor();
-        self.history.begin(c, self.cmd);
+        let sel = self.actor_selection();
+        self.history.begin(sel, self.cmd);
     }
     pub fn end_undo_group(&mut self) {
         self.history.end();
     }
-    pub fn undo(&mut self) -> Result {
+    /// End the current undo step here: the next edit starts a new step, even in the same
+    /// command or inside an open group (which stays open, as a new step).
+    pub fn undo_boundary(&mut self) {
+        self.history.boundary();
+    }
+    /// Undo the last step and return the range it changed, in the text after the undo:
+    /// every change the step made lies inside it. The acting window's selection goes back
+    /// to what it was before the step, shape and goal included, moved through any silent
+    /// edits since. Errors: `NothingToUndo`, `ReadOnly`, or `UndoConflict`, which drops the
+    /// history (contract §9).
+    pub fn undo(&mut self) -> Result<Range<usize>> {
         self.history_step(false)
     }
-    pub fn redo(&mut self) -> Result {
+    /// Redo the last undone step and return the range it changed. The acting window gets a
+    /// cursor at the start of that range.
+    pub fn redo(&mut self) -> Result<Range<usize>> {
         self.history_step(true)
     }
 
-    fn history_step(&mut self, redo: bool) -> Result {
+    fn history_step(&mut self, redo: bool) -> Result<Range<usize>> {
+        self.history.trim(self.undo_limit());
         let plan = match self.history.plan(redo) {
             Err(Error::UndoConflict) => {
                 self.history.truncate(redo);
@@ -490,6 +512,8 @@ impl TextBuf {
                 x.end = map_pos(x.end, r.start, r.end, new_end, Gravity::Left).max(x.start);
             }
         }
+        // The changed range: the hull of every change, each moved through the later ones.
+        let mut hull: Option<Range<usize>> = None;
         for op in &plan.ops {
             let r = op.pos..op.pos + op.removed.len();
             let ok = r.end <= self.len() && self.rope.byte_slice(r.clone()) == op.removed.as_str();
@@ -498,17 +522,36 @@ impl TextBuf {
                 self.history.truncate(redo);
                 return Err(Error::UndoConflict);
             }
+            let new_end = op.pos + op.inserted.len();
+            hull = Some(match hull {
+                None => op.pos..new_end,
+                Some(h) => {
+                    let start = map_pos(h.start, r.start, r.end, new_end, Gravity::Left);
+                    let end = map_pos(h.end, r.start, r.end, new_end, Gravity::Right);
+                    start.min(op.pos)..end.max(new_end)
+                }
+            });
             self.apply_one(r, op.inserted.clone(), Origin::User, Rec::History);
         }
-        let cursor = plan.cursor;
+        let hull = hull.unwrap_or(0..0);
+        let sel = if redo {
+            Some(Selection::cursor(hull.start))
+        } else {
+            plan.sel
+        };
         self.history.commit(plan);
-        if let (Some(w), Some(c)) = (self.actor, cursor) {
-            if let Some(v) = self.views.get_mut(&w) {
-                v.sel = Selection::cursor(c.min(self.rope.len_bytes()));
-            }
+        let len = self.rope.len_bytes();
+        if let (Some(w), Some(s)) = (self.actor, sel)
+            && let Some(v) = self.views.get_mut(&w)
+        {
+            v.sel = Selection {
+                anchor: s.anchor.min(len),
+                head: s.head.min(len),
+                ..s
+            };
         }
         self.normalize_views();
-        Ok(())
+        Ok(hull)
     }
 
     // ---- markers

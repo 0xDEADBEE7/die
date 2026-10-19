@@ -218,7 +218,7 @@ The text surface belongs to core. This section covers what extensions can do wit
 
 **Editing.**
 - Edits happen inside a **transaction**: a set of changes in the coordinates of the text before it, applied all or none. It carries an **origin**, `User` or `Extension` (C14).
-- **Undo groups** are separate from transactions. Each command or callback is one undo step by default, so `3dd` is one step. An explicit group spans commands, as an insert session does. Undoing a step restores the cursor from before it.
+- **Undo groups** are separate from transactions. Each command or callback is one undo step by default, so `3dd` is one step. An explicit group spans commands, as an insert session does, and `undo_boundary` ends a step early. Undoing a step restores the selection from before it (shape and goal included) and returns the range it changed; redo puts a cursor at the start of that range. Each buffer keeps at most 2,000 steps or 16 MB of undone text, whichever comes first; both limits are buffer settings.
 - **Styled insertion** inserts text together with its faces and tags in one call, the equivalent of inserting a `propertize`d string. Replacing the whole buffer is one call too, which is what seek's "erase and redraw" becomes.
 - A transaction can be **silent**, meaning it isn't recorded in undo. Streaming output, like orchid's assistant text, shouldn't fill your undo history. Undo adjusts for silent edits: if you type, an extension then appends silently above your text, and you press `u`, your text comes back exactly. If a silent edit changed the text an undo step needs, undo refuses with an error and drops the older history.
 - **Read-only ranges block `User` edits only.** Edits from extension code always succeed, which replaces orchid's `inhibit-read-only` wrappers.
@@ -281,7 +281,7 @@ A seek port would stay a library, as seek is today. It would hold no buffer itse
 
 die-vim uses only this public API (scope D15). These are the pieces it needs that a plain text API wouldn't have. Each has a contract test (§18):
 
-1. Undo groups that span commands, with cursor restore
+1. Undo groups that span commands, with selection restore
 2. Per-window selections (char, line or block) with a goal column
 3. Typed registers (char, line or block), and the system clipboard
 4. The prefix-argument slot (§6)
