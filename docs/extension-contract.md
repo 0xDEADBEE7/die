@@ -334,7 +334,7 @@ Surface
 - **Presenting.**
   - The producer owns one persistent CPU buffer and calls `present(damage)` when it has changed something.
   - `present` copies the damaged rectangle into a small ring of shared GPU buffers on the producer's own thread, then wakes the main loop.
-  - The main thread only records a GPU copy. It never copies pixels and never waits on the producer.
+  - The main thread only records a GPU copy. It never copies pixels, never waits on the producer, and never takes a lock the producer can hold; if the hand-off is busy, the frame shows on the next wakeup.
 - **Resizing.** The surface receives a resize event (in physical pixels, with the scale factor) and resizes the pixel buffer. The producer sees the new size on its next frame.
 - **Images.** `ctx.image(bytes)` creates an immutable image from PNG or raw RGBA. Decoding happens off the main thread.
 - **Showing them.** Custom surfaces place them in `render`. Text buffers show them through a Hide decoration.
