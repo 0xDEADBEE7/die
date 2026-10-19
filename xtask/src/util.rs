@@ -21,73 +21,38 @@ pub fn cargo() -> PathBuf {
         .unwrap_or_else(|| "cargo".into())
 }
 
-/// rustc from the same toolchain as `cargo()`.
-pub fn rustc() -> PathBuf {
+/// A program from the same toolchain as `cargo()`, such as `rustc` or
+/// `cargo-clippy`, found beside it so nested runs don't go through rustup.
+pub fn tool(name: &str) -> PathBuf {
     let c = cargo();
     match c.parent() {
-        Some(dir) if dir.join("rustc").exists() => dir.join("rustc"),
-        _ => "rustc".into(),
+        Some(dir) if dir.join(name).exists() => dir.join(name),
+        _ => name.into(),
     }
 }
 
-/// A rustc that builds for `target`: the pinned toolchain's when its sysroot has
-/// the target's std, else one from another installed toolchain that is the same
-/// build (an identical `rustc -vV`) and has it. The pinned toolchain lists no
-/// Linux targets until you approve their std downloads
-/// (docs/records/platforms.md §6, item 3); till then, this borrows `stable`'s
-/// std, and only while `stable` is the pinned build.
-pub fn rustc_for(target: &str) -> Result<PathBuf> {
-    rustc_beside(&rustc(), target)
+/// rustc from the same toolchain as `cargo()`.
+pub fn rustc() -> PathBuf {
+    tool("rustc")
 }
 
-/// `rustc_for`, with `pinned` as the pinned toolchain's rustc.
-pub fn rustc_beside(pinned: &Path, target: &str) -> Result<PathBuf> {
-    let version = output(Command::new(pinned).arg("-vV"))?;
-    let sysroot = PathBuf::from(output(Command::new(pinned).args(["--print", "sysroot"]))?.trim());
-    let has_std = |sysroot: &Path| {
-        sysroot
-            .join("lib/rustlib")
-            .join(target)
-            .join("lib")
-            .is_dir()
-    };
-    if has_std(&sysroot) {
-        return Ok(pinned.to_path_buf());
+/// Fail unless the pinned toolchain has `target`'s std. rust-toolchain.toml
+/// lists the Linux targets, so rustup installs their std with the toolchain
+/// (docs/records/platforms.md §6, item 3).
+pub fn require_std(target: &str) -> Result {
+    let sysroot = output(Command::new(rustc()).args(["--print", "sysroot"]))?;
+    let dir = Path::new(sysroot.trim())
+        .join("lib/rustlib")
+        .join(target)
+        .join("lib");
+    if dir.is_dir() {
+        return Ok(());
     }
-    // rustup keeps its toolchains side by side.
-    let mut others: Vec<PathBuf> = sysroot
-        .parent()
-        .and_then(|d| std::fs::read_dir(d).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| *p != sysroot && has_std(p))
-        .collect();
-    others.sort();
-    let first_line = |v: &str| v.lines().next().unwrap_or("?").to_string();
-    let mut other_builds = Vec::new();
-    for dir in others {
-        let r = dir.join("bin/rustc");
-        match output(Command::new(&r).arg("-vV")) {
-            Ok(v) if v == version => return Ok(r),
-            Ok(v) => other_builds.push(format!(
-                "{} has it, but is {}, not the pinned build, so it can't stand in",
-                dir.file_name().unwrap_or_default().to_string_lossy(),
-                first_line(&v)
-            )),
-            Err(_) => {}
-        }
-    }
-    let others = if other_builds.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", other_builds.join("; "))
-    };
     Err(format!(
-        "no installed toolchain that is the pinned {} has the {target} std{others}. \
-         `rustup target add {target}` adds it to the pinned toolchain; that's a download, so ask first",
-        first_line(&version)
+        "the pinned toolchain has no {target} std ({} is missing). rust-toolchain.toml lists \
+         the target, so rustup adds it the next time cargo runs in the workspace; \
+         `rustup target add {target}` there adds it now",
+        dir.display()
     ))
 }
 
@@ -261,62 +226,4 @@ pub fn sha256(path: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A toolchain directory whose rustc prints `version` and its sysroot,
-    /// with `target`'s std or without.
-    fn toolchain(dir: &Path, version: &str, std_for: Option<&str>) -> PathBuf {
-        let rustc = dir.join("bin/rustc");
-        write(
-            &rustc,
-            &format!(
-                "#!/bin/sh\nif [ \"$1\" = -vV ]; then printf '{version}\\nrelease: x\\n'; else echo '{}'; fi\n",
-                dir.display()
-            ),
-        )
-        .unwrap();
-        let mut perm = std::fs::metadata(&rustc).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o755);
-        std::fs::set_permissions(&rustc, perm).unwrap();
-        if let Some(t) = std_for {
-            std::fs::create_dir_all(dir.join("lib/rustlib").join(t).join("lib")).unwrap();
-        }
-        rustc
-    }
-
-    #[test]
-    fn a_borrowed_std_must_be_the_pinned_build() {
-        let musl = "x86_64-unknown-linux-musl";
-        let tmp = TempDir::new("rustc-for").unwrap();
-        let t = tmp.path();
-        let pinned = toolchain(&t.join("1.96.0"), "rustc 1.96.0 (aaa 2026-05-25)", None);
-        // stable moved on: it has the std, but isn't the pinned build.
-        toolchain(
-            &t.join("stable"),
-            "rustc 1.97.0 (bbb 2026-07-09)",
-            Some(musl),
-        );
-        let err = rustc_beside(&pinned, musl).unwrap_err();
-        assert!(
-            err.contains("pinned rustc 1.96.0 (aaa 2026-05-25)")
-                && err.contains(
-                    "stable has it, but is rustc 1.97.0 (bbb 2026-07-09), not the pinned build"
-                ),
-            "{err}"
-        );
-        // Another toolchain that is the same build stands in.
-        let same = toolchain(&t.join("same"), "rustc 1.96.0 (aaa 2026-05-25)", Some(musl));
-        assert_eq!(rustc_beside(&pinned, musl).unwrap(), same);
-        // The pinned toolchain's own std comes first.
-        toolchain(
-            &t.join("1.96.0"),
-            "rustc 1.96.0 (aaa 2026-05-25)",
-            Some(musl),
-        );
-        assert_eq!(rustc_beside(&pinned, musl).unwrap(), pinned);
-    }
 }

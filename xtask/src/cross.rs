@@ -1,46 +1,59 @@
-//! `cargo xtask cross-check`: `cargo check` of the whole workspace for Linux, from
-//! any host (docs/records/platforms.md §5.6), in clean-build's environment: the C
-//! compilers, `ar` and `pkg-config` are stand-ins that fail, so nothing compiles
-//! C, and a stand-in call the target's allowlist doesn't name fails the check
-//! even when the build script carries on. Warnings fail it, as they fail clippy.
-//! `cargo xtask guards` plants a failure of each kind.
+//! `cargo xtask cross-check`: clippy, which is `cargo check` plus its lints, of
+//! the whole workspace for x86_64 and aarch64 Linux, from any host
+//! (docs/records/platforms.md §5.6). Warnings fail it, as they fail ci's clippy.
+//! It runs in clean-build's environment: the C compilers, `ar` and
+//! `pkg-config` are stand-ins that fail, so nothing compiles C, and a stand-in
+//! call the target's allowlist doesn't name fails the check even when the
+//! build script carries on. `cargo xtask guards` plants a failure of each kind.
+//!
+//! The pinned toolchain builds for each target with its own std, which
+//! rust-toolchain.toml lists, and its own clippy, run directly rather than
+//! through rustup.
 
-use crate::clean::{Allowed, LINUX, STAND_INS, check_calls, clean_cargo, host, run_clean};
-use crate::util::{Result, TempDir, rustc_for, write};
+use crate::clean::{Allowed, LINUX, STAND_INS, check_calls, clean_command, host, run_clean};
+use crate::util::{Result, TempDir, cargo, require_std, rustc, tool, write};
 use std::path::Path;
 
-/// The Linux targets checked, with their allowlists. musl's std is the one
-/// installed today; the glibc targets DIE ships for replace it once the pinned
-/// toolchain lists them (platforms.md §6, item 3).
-pub const TARGETS: &[(&str, &[Allowed])] = &[("x86_64-unknown-linux-musl", LINUX)];
+/// The Linux targets checked, with their allowlists: the glibc targets DIE
+/// ships for (scope D12). musl isn't checked: DIE doesn't support it, and
+/// nothing in the workspace branches on `target_env`.
+pub const TARGETS: &[(&str, &[Allowed])] = &[
+    ("x86_64-unknown-linux-gnu", LINUX),
+    ("aarch64-unknown-linux-gnu", LINUX),
+];
 
 /// `target_dir` holds the build cache between runs.
 pub fn run(root: &Path, target_dir: &Path) -> Result {
     let host = host()?;
+    let (rustc, clippy) = (rustc(), tool("cargo-clippy"));
+    for (target, _) in TARGETS {
+        require_std(target).map_err(|e| format!("cross-check: {e}"))?;
+    }
+    // Cargo doesn't run a build script again once it has passed, so the
+    // stand-ins see its calls only on its first run. A cache built under other
+    // stand-ins or allowlists goes, as does one with a call that fails the
+    // check below.
+    let stamp = target_dir.join("stand-ins");
+    let checked_against = format!(
+        "{}\n{}",
+        STAND_INS.join(" "),
+        TARGETS
+            .iter()
+            .flat_map(|(t, allowed)| allowed.iter().map(move |a| (t, a)))
+            .map(|(t, a)| format!("{t}: {} via {}, calls {:?}\n", a.builder, a.via, a.calls))
+            .collect::<String>()
+    );
+    if std::fs::read_to_string(&stamp).ok().as_ref() != Some(&checked_against) {
+        let _ = std::fs::remove_dir_all(target_dir);
+    }
+    write(&stamp, &checked_against)?;
     let tmp = TempDir::new("cross-check")?;
     for (target, allowed) in TARGETS {
-        let rustc = rustc_for(target).map_err(|e| format!("cross-check: {e}"))?;
-        // Cargo doesn't run a build script again once it has passed, so the
-        // stand-ins see its calls only on its first run. A cache built under
-        // another allowlist or other stand-ins goes, as does one whose calls
-        // fail the check below.
-        let stamp = target_dir.join(format!("stand-ins-{target}"));
-        let checked_against = format!(
-            "{}\n{}",
-            STAND_INS.join(" "),
-            allowed
-                .iter()
-                .map(|a| format!("{} via {}, calls {:?}\n", a.builder, a.via, a.calls))
-                .collect::<String>()
-        );
-        if std::fs::read_to_string(&stamp).ok().as_ref() != Some(&checked_against) {
-            let _ = std::fs::remove_dir_all(target_dir);
-        }
-        write(&stamp, &checked_against)?;
-        let mut cmd = clean_cargo(root, tmp.path(), &host, &rustc)?;
-        cmd.env("RUSTFLAGS", "-D warnings")
+        // cargo-clippy finds cargo through CARGO, and clippy-driver beside itself.
+        let mut cmd = clean_command(&clippy, root, tmp.path(), &host, &rustc)?;
+        cmd.env("CARGO", cargo())
             .args([
-                "check",
+                "clippy",
                 "--workspace",
                 "--all-targets",
                 "--locked",
@@ -50,14 +63,22 @@ pub fn run(root: &Path, target_dir: &Path) -> Result {
                 target,
                 "--target-dir",
             ])
-            .arg(target_dir);
-        run_clean(&mut cmd, &format!("cross-check: cargo check for {target}"))
-            .map_err(|e| with_hint(&e))?;
+            .arg(target_dir)
+            .args(["--", "-D", "warnings"]);
+        let what = format!("cross-check: clippy for {target}");
+        let built = run_clean(&mut cmd, &what).map_err(|e| with_hint(&e));
+        // Checked whether or not the build passed: a build script that called
+        // a stand-in and carried on is cached either way.
         let calls = check_calls(tmp.path(), allowed).map_err(|e| {
             let _ = std::fs::remove_dir_all(target_dir);
-            format!("cross-check: cargo check for {target}:\n  {e}")
-        })?;
-        println!("cross-check: {target} ok ({}{calls})", rustc.display());
+            format!("{what}:\n  {e}")
+        });
+        let calls = match (built, calls) {
+            (Ok(()), Ok(calls)) => calls,
+            (Err(b), Err(c)) => return Err(format!("{c}\n{b}")),
+            (Err(e), _) | (_, Err(e)) => return Err(e),
+        };
+        println!("cross-check: {target} ok (clippy -D warnings{calls})");
     }
     Ok(())
 }

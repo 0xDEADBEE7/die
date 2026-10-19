@@ -237,6 +237,18 @@ fn calls_log(tmp: &Path) -> std::path::PathBuf {
 /// fail, for the C compilers, `ar` and `pkg-config`, on PATH and in `CC`, `CXX`
 /// and `AR`. Check the log with `check_calls` after a build that passes.
 pub fn clean_cargo(dir: &Path, tmp: &Path, host: &str, rustc: &Path) -> Result<Command> {
+    clean_command(&cargo(), dir, tmp, host, rustc)
+}
+
+/// `clean_cargo`'s environment for `program`, a cargo or a cargo subcommand
+/// such as the toolchain's `cargo-clippy`.
+pub fn clean_command(
+    program: &Path,
+    dir: &Path,
+    tmp: &Path,
+    host: &str,
+    rustc: &Path,
+) -> Result<Command> {
     let bin = tmp.join("bin");
     let log = calls_log(tmp);
     let log = log
@@ -266,7 +278,7 @@ pub fn clean_cargo(dir: &Path, tmp: &Path, host: &str, rustc: &Path) -> Result<C
         "CARGO_TARGET_{}_LINKER",
         host.to_uppercase().replace('-', "_")
     );
-    let mut cmd = Command::new(cargo());
+    let mut cmd = Command::new(program);
     cmd.current_dir(dir)
         .env_clear()
         .env(

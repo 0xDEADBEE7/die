@@ -16,7 +16,8 @@ const USAGE: &str = "usage: cargo xtask <task>
   clean-build [--keep] no C builders in each target's build graph but the allowlist's,
                        and a build from an empty environment with no C compiler or
                        pkg-config, which no build script calls unless allowlisted (D16)
-  cross-check          cargo check of the workspace for Linux, with no C compiler
+  cross-check          clippy -D warnings (so cargo check) of the workspace for
+                       x86_64 and aarch64 Linux, with no C compiler or pkg-config
   mutate [--cases N]   die-core's planted bugs; the property tests must catch each
   ci [--worktree | --rev R]
                        every check in a fresh clone of HEAD (or R), or of the
