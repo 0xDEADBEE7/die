@@ -1,4 +1,4 @@
-> **Decision record for scope D5, D12 and D13, with changes to D1, D10, D16, D17, D18 and D20.** Your answer is in [.questions/11](../../.questions/11-platforms.md). §7's edits are folded into the docs, adjusted for the two approvals you declined.
+> **Decision record for scope D5, D12 and D13, with changes to D1, D10, D15, D16, D17, D18 and D20.** Your answer is in [.questions/11](../../.questions/11-platforms.md). §7's edits are folded into the docs, adjusted for the two approvals you declined.
 
 # Platforms: macOS and Linux, and a verdict on Windows
 
@@ -146,7 +146,7 @@ The Unix-only part of the plan is about 1.9–2.1k Rust lines plus about 160 lin
 
 **Total:** about 1.9–2.95k Windows-only lines, 6–10 weeks, two more binary families (the engine and ConPTY), exceptions to D16 and D17, and a reshaped holder.
 
-**A Windows build without terminals** would be cheaper: rendering, the shell and a D16 exception. But D15 says die-term always ships, and an editor without a terminal doesn't replace Emacs. It isn't proposed.
+**A Windows build without terminals** would be cheaper: rendering, the shell and a D16 exception. But D15 says die-term always ships, and an editor without a terminal doesn't replace Emacs. It isn't proposed. *D15 now lets Linux's preview ship without die-term until a signed archive exists (2026-10-19). Windows stays out for the reasons above.*
 
 **Kept for free:**
 - The portable renderer exists for Linux anyway, so the renderer isn't what blocks Windows.
@@ -196,7 +196,7 @@ Every option includes the phase-0 seams and guards in §6, so no macOS assumptio
 
 *2026-10-19: you declined both A and B. Where a signed Linux archive comes from is open until before M2, when Linux terminals need it.*
 
-If neither A nor B has an archive by M2's exit, Linux ships editor-only and gets terminals at the first `ghostty bump` that has one.
+If neither A nor B has an archive by M2's exit, Linux ships editor-only and gets terminals at the first `ghostty bump` that has one. *With both declined, the same holds for whatever source is chosen before M2.*
 
 ### 4.4 Smaller choices
 
@@ -240,7 +240,7 @@ The rule: neutral code is safe Rust and never branches on `target_os`. It may us
 | die-vim | All of it | None. A denylist keeps window and GPU crates out of its graph on every target. |
 | die-render | Scene diff, row cache, instance building (one `#[repr(C)]` layout, asserted in tests), atlas and glyph cache, sprites, the font policy (per-range chain, squeeze-to-fit, last-resort coverage scan), placements, ring accounting, the winit loop and scheduling policy, key mapping (modifier sides tracked from modifier-key events), the latency log | `platform::macos`: today's `platform::{appkit, metal, text}`, renamed and cfg-gated. Portable backend (safe): `backend::wgpu` and `text::fontations`, on Linux, and on macOS behind a `portable` dev feature. `platform::linux`: clipboard, activation token, app_id, frame-callback hooks, about 10–30 unsafe lines. A non-macOS stub until the Linux backend lands. Internal `Gpu` and `Rasterizer` traits arrive with the second implementation, not before. |
 | die-term | The glue. Keys and mouse arrive as core events. The helper's shared memory uses `rustix::shm` on both OSes. | Link flags per target (`-dead_strip_dylibs` on macOS, `--as-needed` on Linux) |
-| die-term-sys | One `bindings.rs` | `vendor/<target>/libghostty-vt.a`, a lock section per target. `build.rs` picks by `TARGET` and refuses other targets. |
+| die-term-sys | One `bindings.rs` | `vendor/<target>/libghostty-vt.a`, a lock section per target. `build.rs` picks by `TARGET`. On other targets it links nothing, and DIE builds there without die-term (scope D10). |
 | die | The facade; `--fd-store` and `--term-helper` on both | Linux: helpers exec `/proc/self/exe`; the holder starts under `systemd-run --user --scope` when systemd is present, if SL-desktop shows it's needed |
 | apps/die-dev | Your config | Per-OS defaults for the DIE layer and the leave chord |
 | xtask | | §5.5 |
@@ -352,11 +352,11 @@ None of these moves a checkpoint. Together they're about 2–3 days of AI work a
 | 5 | **`cargo xtask ci --linux`** in an aarch64 container on colima, with the fonts mounted through `DIE_FONT_DIR`. Records `uname -r` once. | About 30–50 lines | **Starting the VM and pulling `rust:1.96.0` pinned by digest.** Approved 2026-10-19 |
 | 6 | **Seams in test plans, before the code exists:** R2 states the frame-data boundary and asserts the instance layout. R3 and R4 compile on Linux, and modifier sides come from modifier-key events. K6's change count "changes when another app copies". K12 puts the session path behind `sys::paths` and uses `File::lock`. F4a and K12 run the first-frame handshake over a Unix socket, not through LaunchServices. | Notes only | Test-plan approvals, as usual |
 | 7 | **Path A:** open a Ghostty issue, then a PR, for signed Linux lib-vt archives on tip. The lead time is why it starts now. An AI drafts the YAML. | About 60–80 lines of their YAML | **Your OK, from your account.** Declined 2026-10-19 |
-| 8 | **Docs:** §7's edits, after you answer question 11 | | Your answer |
+| 8 | **Docs:** §7's edits, after you answer question 11 | | Your answer. Done 2026-10-19, adjusted for your answers (§7 note) |
 
 ## 7. Proposed doc edits (not made)
 
-*Folded in on 2026-10-19, adjusted for your answers: D10 and D17 say the Linux archive's source is open rather than path A or B, D16 has no path-B clause, die-term-engine.md §1 records the new trigger as declined, and S7 runs once a signed Linux archive exists.*
+*Folded in on 2026-10-19, adjusted for your answers: D10 and D17 say the Linux archive's source is open rather than path A or B, D16 has no path-B clause, die-term-engine.md §1 records the new trigger as declined, and S7 runs once a signed Linux archive exists. Following from that: D12 calls Linux a preview until SL-desktop and SL-hw pass, D15 lets a target with no archive ship without die-term, and S3L/S2L became S3L, since S2's helper needs the archive and is tested with S7.*
 
 ### scope.md
 
@@ -414,8 +414,8 @@ None of these moves a checkpoint. Together they're about 2–3 days of AI work a
 | **S6a** wgpu-Metal | After checkpoint 4, renderer track, your Mac, 4–5 days | Does S1's renderer, ported to wgpu-Metal and presenting to a real surface, meet S1's numbers? It decides whether the portable GPU path is sound, and informs the later Metal question. | Full 159×49 redraw: main-thread CPU p99 ≤ 2 ms, GPU p99 ≤ 1.5 ms. 60 s of a 60 Hz full-window producer: ≥ 99% shown, 0 bytes copied on the main thread, no main-thread block over 1 ms from uploads. Idle: 0 frames. 20 occlusion cycles: no stall over 50 ms and no unbounded `nextDrawable`. Live resize: 0 stretched frames. Exec to first frame: reported. DIE's share of typing p99 ≤ 3 ms. |
 | **S6b** fontations | Same time, your Mac plus Debian 13 and Fedora 43 containers, about 2 days | Does fontations give the same grid and acceptable glyphs? | All four Term faces give 19×40 px with the baseline at 30.88. S1's check 9 passes on the fontations path. CJK, emoji and Nerd private-use icons resolve through the chain plus the coverage scan in both containers, including Fedora's COLRv1 emoji. The collection scan is off the startup path. You look at a side-by-side image (1 minute). |
 | **S6c** Linux shell, headless | Same time, colima, 2–3 days | Do the window, keys, clipboard, build rules and frame pacing work on Linux without a GPU? | wgpu on lavapipe renders the fidelity page within a set tolerance of the Mac's portable render. winit opens, resizes and changes scale under Xvfb and headless sway. The 50-chord matrix through xdotool and wtype gets every `KeyEvent` field right, including modifier sides and inferred Caps Lock. The clipboard round-trips with wl-copy, wl-paste and xclip, including across a restart. 0 frames when idle or hidden. The Linux clean-build passes, and a planted `wayland-client/log` fails it. The leave chord isn't taken by GNOME or KDE defaults (checked against their keybinding lists). |
-| **S3L/S2L** Linux processes | Start of M2, colima and the hosted arm runner, 2–4 days. First `uname -r`. | Do S3's survival guarantees and S2's helper hold on Linux? | Every S3 check at S3's bars: 20 restarts and 5 `kill -9`s with the same PIDs and no SIGHUP; 100 open-and-kill cycles leaking nothing; builds N, N+1 and 2.0; holder crash and lifetime; the shrink-wait-restore redraw with less, vim, pico and top; output with no host. Plus: 0 inherited fds in at least 1,500 spawns during receives; a controlling tty through `posix_spawn` with `SETSID`; exit status through the holder's pidfd as a non-parent (right on 6.15+, "unknown" before, never wrong); a shell that exits with unread output loses 0 lines. |
-| **S7** Linux engine archive | Before M2's exit, once path A or B delivers (both declined 2026-10-19: once a signed Linux archive exists) | Does a Linux archive fit DIE's exact wiring? | It builds with no Zig. 81 of 86 checks, the same 5 gaps. The helper gates hold: typing +≤ 1 ms p99, redraw +≤ 1 ms, flood ≤ 1 ms per vsync, 0 idle wakeups. It links next to `compiler_builtins`, unmodified or with a documented prelink. `NEEDED` is only libc, libm, libgcc_s and ld-linux. Path B only: members byte-identical from two runners. |
+| **S3L** Linux processes | Start of M2, colima and the hosted arm runner, 2–4 days. First `uname -r`. | Do S3's survival guarantees hold on Linux? S2's helper runs the engine, so it's tested with S7. | Every S3 check at S3's bars: 20 restarts and 5 `kill -9`s with the same PIDs and no SIGHUP; 100 open-and-kill cycles leaking nothing; builds N, N+1 and 2.0; holder crash and lifetime; the shrink-wait-restore redraw with less, vim, pico and top; output with no host. Plus: 0 inherited fds in at least 1,500 spawns during receives; a controlling tty through `posix_spawn` with `SETSID`; exit status through the holder's pidfd as a non-parent (right on 6.15+, "unknown" before, never wrong); a shell that exits with unread output loses 0 lines. |
+| **S7** Linux engine archive | Before M2's exit, once path A or B delivers (both declined 2026-10-19: once a signed Linux archive exists) | Does a Linux archive fit DIE's exact wiring, and does S2's helper hold on Linux? | It builds with no Zig. 81 of 86 checks, the same 5 gaps. The helper gates hold: typing +≤ 1 ms p99, redraw +≤ 1 ms, flood ≤ 1 ms per vsync, 0 idle wakeups. It links next to `compiler_builtins`, unmodified or with a documented prelink. `NEEDED` is only libc, libm, libgcc_s and ld-linux. Path B only: members byte-identical from two runners. |
 | **SL-desktop** | Before "supported": a real Linux desktop, or a desktop VM on the Mac (UTM; an install, unverified), half a day | Does a desktop session kill terminals with DIE? | Launched from the GNOME app grid through `die.desktop`, `kill -9` of DIE leaves every shell alive. `systemctl --user kill` of DIE's app scope leaves every shell alive. cargo resolves in a die-term shell. |
 | **SL-hw** | Real hardware with a GPU (Mesa; NVIDIA if one can be borrowed), 1–2 days | Does Linux meet S1's budgets? | Under GNOME Wayland, X11 and sway: DIE's share of typing p99 ≤ 3 ms; full redraw ≤ 2 ms main-thread CPU p99; idle 0 frames; no main-thread stall over 50 ms across 20 hide and minimize cycles; no stretched frames in a live resize; exec to first frame ≤ 150 ms warm median; the real-key matrix. On failure: GL instead of Vulkan, then stricter Fifo gating, then renderer option C. |
 
@@ -425,7 +425,7 @@ No spike for Windows, wasmi or a native GL backend unless a trigger fires.
 
 | Risk | Early warning | Response |
 |---|---|---|
-| **No Linux engine archive.** Upstream declines or is slow, and you don't allow path B. *(2026-10-19: you declined A and B; the source is open until before M2.)* | No answer to the upstream issue within a month | Decide path B before M2 starts. Without it, Linux ships editor-only. |
+| **No Linux engine archive.** Upstream declines or is slow, and you don't allow path B. *(2026-10-19: you declined A and B; the source is open until before M2.)* | No signed Linux archive from Ghostty as M2 approaches | Revisit where the archive comes from before M2 (scope D10). Without one, Linux ships editor-only. |
 | **No Linux hardware,** so "supported" can't be earned. A redraw that costs 0.65 ms on the M5 might cost 2–3 times that on an older laptop. | M2's exit with no hardware lined up | The label stays "preview", and no latency claim is made. |
 | **Driver and compositor stalls:** Mesa's hidden-window FIFO stall, NVIDIA's present waits, Zed's reported wgpu hangs | SL-hw check 5 | Mailbox, frame-callback gating, a texture timeout skips the frame, GL fallback, then option C |
 | **wgpu presenting to a real surface is unmeasured.** The ring probe didn't present. | S6a | Fix in S6a, or reconsider the Linux GPU path before LR work starts |

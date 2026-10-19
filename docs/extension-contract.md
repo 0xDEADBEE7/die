@@ -321,7 +321,7 @@ Surface
 
 **What `event()` receives:**
 - Keys no keymap took (§7), so a surface can implement its own `j`/`k` without registering them.
-- In passthrough, every key except Cmd-Esc and DIE's Cmd layer, including release events.
+- In passthrough, every key outside the DIE layer (scope D18), including release events.
 - Typed text in insert state, for example a search field in a graphical view.
 - Pointer events, with the cell position, the pixel position inside a placement, a click count and precise scroll deltas.
 - Resize (in cells and in physical pixels, with the scale factor), and focus in and out.
@@ -458,7 +458,7 @@ main
 
 ## 18. Requirements check: could your packages be rebuilt on this contract?
 
-This is a check on the core, not a plan to build anything. Each row becomes a contract test in M1 (§16), and those tests also run in the Linux CI jobs. die-vim and die-term are built in this project, so their rows are also exercised for real.
+This is a check on the core, not a plan to build anything. Each row becomes a contract test in M1 (§16), and those tests also run in the Linux CI jobs; die-term's do once a signed Linux archive exists (scope D10). die-vim and die-term are built in this project, so their rows are also exercised for real.
 
 | Package | Could be rebuilt as | Uses | Gaps |
 |---|---|---|---|
