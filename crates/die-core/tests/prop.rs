@@ -440,7 +440,16 @@ fn oracle(
 }
 
 fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
-    let frame = ctx.render_window(w);
+    let (cols, rows) = ctx.window_size(w).unwrap();
+    let frame = ctx.compose(
+        cols,
+        rows + 2,
+        &[Placement {
+            window: w,
+            col: 0,
+            row: 0,
+        }],
+    );
     let t = ctx.text(b).unwrap();
     let s = t.rope().to_string();
     let hides: Vec<HideD> = t
@@ -518,11 +527,12 @@ fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
             .get(top + i)
             .map(|r| r.cells.iter().take(g.text_w).cloned().collect())
             .unwrap_or_default();
-        let have: String = frame.cells[i]
+        let have: String = frame
+            .row(i)
             .iter()
             .skip(g.text_x)
             .take(g.text_w)
-            .map(|c| c.text.as_str())
+            .map(|c| c.glyph.to_string())
             .collect();
         assert_eq!(
             have.trim_end(),
@@ -547,18 +557,16 @@ fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
         );
         if st.has_cell && st.col < g.text_w {
             assert_eq!(
-                frame.cells[want.0][want.1].pos,
+                frame.position(want.0, want.1).map(|(_, p)| p),
                 Some(st.pos),
                 "step {step}: render put {} elsewhere",
                 st.pos
             );
         }
     }
-    assert!(
-        frame.cursor.is_some(),
-        "step {step}: cursor scrolled out of view"
-    );
-    assert_eq!(frame.cursor, t.screen_pos(w, cur));
+    let cursor = frame.cursors.first().map(|c| (c.row, c.col));
+    assert!(cursor.is_some(), "step {step}: cursor scrolled out of view");
+    assert_eq!(cursor, t.screen_pos(w, cur));
 }
 
 fn run(init: String, ops: Vec<Op>) {

@@ -26,7 +26,7 @@ fn j_k_skip_a_fold_made_with_a_stored_hide() {
     assert_eq!(lc(&ctx, b, w), (3, 0));
     ctx.type_keys("k");
     assert_eq!(lc(&ctx, b, w), (2, 1));
-    let f = ctx.render_window(w);
+    let f = screen(&mut ctx, w);
     assert_eq!(&f.rows[..5], ["l0", "l1", "l2", "+-- 3 lines", "l6"]);
     assert_eq!(f.cursor, Some((2, 1)));
     let t = ctx.text(b).unwrap();
@@ -45,7 +45,7 @@ fn j_k_skip_a_fold_made_with_a_stored_hide() {
     // Undo brings the lines back but not the fold: decorations aren't part of undo history.
     ctx.type_keys("u");
     assert_eq!(text(&ctx, b), lines(10));
-    let f = ctx.render_window(w);
+    let f = screen(&mut ctx, w);
     assert_eq!(&f.rows[2..7], ["l2", "l3", "l4", "l5", "l6"]);
 }
 
@@ -62,7 +62,7 @@ fn gj_gk_over_soft_wrap_with_centered_max_width_and_gutter() {
     ctx.type_keys("5l");
     ctx.type_keys("gj");
     assert_eq!(cursor(&ctx, b, w), 85);
-    assert_eq!(ctx.render_window(w).cursor, Some((1, 27)));
+    assert_eq!(screen(&mut ctx, w).cursor, Some((1, 27)));
     ctx.type_keys("gj");
     assert_eq!(cursor(&ctx, b, w), 165);
     ctx.type_keys("gj");
@@ -79,7 +79,7 @@ fn gj_gk_over_soft_wrap_with_centered_max_width_and_gutter() {
         (1, 4),
         "j moves by logical line, not screen row"
     );
-    let f = ctx.render_window(w);
+    let f = screen(&mut ctx, w);
     let pad = " ".repeat(18);
     assert_eq!(f.rows[0], format!("{pad}  1 {}", &long[..80]));
     assert_eq!(f.rows[1], format!("{pad}    {}", &long[80..160]));
@@ -111,7 +111,7 @@ fn tabs_and_wide_characters_have_correct_display_columns() {
         "a column inside a wide char lands on it"
     );
     assert_eq!(t.pos_at_vcol(0, 5), 1, "a column inside a tab lands on it");
-    let f = ctx.render_window(w);
+    let f = screen(&mut ctx, w);
     assert_eq!(
         f.rows[0], "a       b",
         "中 doesn't fit in the last column: filler, then wrap"
@@ -161,7 +161,7 @@ fn sub_line_hides_and_virtual_text() {
     assert_eq!(cursor(&ctx, b, w), 4, "l skips the hidden **");
     ctx.type_keys("l");
     assert_eq!(cursor(&ctx, b, w), 7);
-    let f = ctx.render_window(w);
+    let f = screen(&mut ctx, w);
     assert_eq!(f.rows[0], "a b c [3 tokens]");
     // Typing inside the hidden range from code: the cursor never ends up inside it.
     let t = ctx.text_mut(b).unwrap();
