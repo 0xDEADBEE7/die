@@ -38,7 +38,9 @@ fn forward_wraps_to_the_first_match() {
 fn backward_finds_the_previous_match_and_wraps() {
     let t = buf("foo bar foo baz foo");
     assert_eq!(find(&t, "foo", 16, Dir::Backward), Some((8..11, false)));
-    assert_eq!(find(&t, "foo", 9, Dir::Backward), Some((8..11, false)));
+    assert_eq!(find(&t, "foo", 11, Dir::Backward), Some((8..11, false)));
+    // The match at 8 runs past 9, so it doesn't count.
+    assert_eq!(find(&t, "foo", 9, Dir::Backward), Some((0..3, false)));
     assert_eq!(find(&t, "foo", 8, Dir::Backward), Some((0..3, false)));
     assert_eq!(find(&t, "foo", 0, Dir::Backward), Some((16..19, true)));
     // Every start position counts, not only non-overlapping matches.
@@ -99,6 +101,29 @@ fn matches_cover_a_range() {
 }
 
 #[test]
+fn matches_see_only_the_lines_the_range_touches() {
+    let none = Vec::<std::ops::Range<usize>>::new();
+    let t = buf("ab\ncd\n");
+    // A match must end by the last line's newline, as Emacs's lazy highlighting stops at
+    // the window's end.
+    assert_eq!(t.matches(&pat(r"b\nc"), 1..2), none);
+    assert_eq!(t.matches(&pat(r"b\nc"), 1..4), vec![1..4]);
+    assert_eq!(t.matches(&pat(r"b\n"), 1..2), vec![1..3]);
+    // Look-around at the end still sees the next line: `$` after a newline needs an empty line.
+    assert_eq!(t.matches(&pat(r"b\n$"), 1..2), none);
+    assert_eq!(buf("ab\n\n").matches(&pat(r"b\n$"), 1..2), vec![1..3]);
+}
+
+#[test]
+fn escape_makes_a_literal_pattern() {
+    // `*` on `a.b`: the word, escaped, between word boundaries.
+    let t = buf("axb a.b a.bc");
+    let p = Pattern::new(&format!(r"\b{}\b", Pattern::escape("a.b")), false).unwrap();
+    assert_eq!(t.search(&p, 0, Dir::Forward).map(|f| f.range), Some(4..7));
+    assert_eq!(t.matches(&p, 0..t.len()), vec![4..7]);
+}
+
+#[test]
 fn search_sees_hidden_text() {
     let mut t = buf("one two three");
     t.decorate(
@@ -142,5 +167,62 @@ fn offsets_are_bytes_on_char_boundaries() {
     assert_eq!(find(&t, "中", 6, Dir::Backward), Some((2..5, false)));
     // `from` inside a character rounds the way the search goes.
     assert_eq!(find(&t, "中", 3, Dir::Forward), Some((6..9, false)));
-    assert_eq!(find(&t, ".", 4, Dir::Backward), Some((2..5, false)));
+    assert_eq!(find(&t, ".", 4, Dir::Backward), Some((0..2, false)));
+}
+
+#[test]
+fn backward_takes_only_matches_that_end_by_from() {
+    // Emacs's `re-search-backward`, under Evil's `? N #` (D4): a match must end at or
+    // before `from`, and `from` bounds the match itself. Each case was checked in the oracle.
+    // `?ab` on `aba|b`: the match at 2 runs past the cursor.
+    assert_eq!(
+        find(&buf("abab"), "ab", 3, Dir::Backward),
+        Some((0..2, false))
+    );
+    // `a+` stops at `from`.
+    assert_eq!(
+        find(&buf("aaa"), "a+", 2, Dir::Backward),
+        Some((1..2, false))
+    );
+    // `#` on `foo foobar f|oo`: the word under the cursor doesn't count.
+    let t = buf("foo foobar foo");
+    assert_eq!(find(&t, r"\bfoo\b", 12, Dir::Backward), Some((0..3, false)));
+    // `/ab` then `0fbN` on `xx abab`: nothing ends by the cursor, so it wraps to the last match.
+    assert_eq!(
+        find(&buf("xx abab"), "ab", 4, Dir::Backward),
+        Some((5..7, true))
+    );
+    // Look-around still sees past `from`: `foo$` doesn't match `foo|bar`, and `?o$` from
+    // `fo|obar` goes to the line above.
+    let t = buf("xo\nfoobar\n");
+    assert_eq!(find(&t, "o$", 5, Dir::Backward), Some((1..2, false)));
+    assert_eq!(find(&buf("foobar"), "foo$", 3, Dir::Backward), None);
+    assert_eq!(find(&buf("foobar"), r"foo\b", 3, Dir::Backward), None);
+}
+
+#[test]
+fn backward_on_a_long_run_is_fast() {
+    // Each start position matches to the end of the run: trying them all from the
+    // buffer's start is quadratic (seconds here), from `from` it's immediate.
+    let t = buf(&"x".repeat(32 << 10));
+    let start = std::time::Instant::now();
+    assert_eq!(
+        find(&t, r"\S+", t.len(), Dir::Backward),
+        Some((t.len() - 1..t.len(), false))
+    );
+    assert!(
+        start.elapsed().as_millis() < 100,
+        "took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn line_ends_match_before_crlf() {
+    // CRLF files open read-only (M0), but can be searched.
+    let t = buf("a;\r\nb;\r\n");
+    assert_eq!(find(&t, ";$", 0, Dir::Forward), Some((1..2, false)));
+    assert_eq!(find(&t, ";$", 1, Dir::Forward), Some((5..6, false)));
+    assert_eq!(find(&t, ";$", 5, Dir::Forward), Some((1..2, true)));
+    assert_eq!(find(&t, "^b", 0, Dir::Forward), Some((4..5, false)));
 }
