@@ -85,3 +85,90 @@ These were the broad decisions left over from the 2026-10-18 review. **All of th
 - Your colima VM serves as the Linux SSH host for terminal tests. The only extra tool is kitty's standalone `kitten` binary, which checks key encoding; it lives in a scratch directory, not installed system-wide.
 - Vim keys that depend on window geometry come from a tty Emacs the Evil oracle drives (S5 found this works). Hand-written fixtures are only for deliberate deviations from Evil.
 - I hand you DIE's own `unsafe` modules for review, kept small by design.
+
+## M0 planning (2026-10-19)
+
+You asked to plan M0 together before work starts. The plan is [docs/m0-plan.md](../docs/m0-plan.md): four dogfood checkpoints, your reviews, the budget, the work packages and the risks. Two questions set its direction. The plan is written for my recommendation on each, and says what changes if you answer differently. Work that's the same under every answer can start now: the workspace, xtask, porting S4, moving the oracle in, and the renderer crate.
+
+| # | Question |
+|---|---|
+| [09](09-m0-ownership-and-time.md) | **Open:** in M0, do you write die-core's API and die-vim's grammar, or does an AI draft them, with each change waiting for you or approved at scheduled reviews? And how many hours a week do you have? |
+| [10](10-remote-and-ci.md) | **Open:** should the repository get a private remote, and where should its checks run? |
+
+### Calls I'll make within those answers
+
+You can veto any of these. Four change something you accepted earlier, and say so.
+
+**Process**
+
+- M0 follows §12's four checkpoints as thin slices. S4's API is ported first, then each checkpoint cuts through every crate, and the spike-quality parts are rebuilt under the same tests while you use DIE. Veto if you'd rather nothing is built on a layer until you've reviewed it. Reading in DIE then moves to about weeks 7–9.
+- The port of S4 merges as already accepted (A1–A24). Its tests land before the code under them changes. If one has to change, the next review says why.
+- Four AI sessions work at once, each on its own branch: core's text side, core's runtime side, the renderer with the scene types, and die-vim.
+- `cargo xtask api-diff` finds every public item a branch adds, removes or changes in die-core, by a plain text scan, and every change to die-vim's grammar module. Nothing gets installed. Under 09-B, a branch with a non-empty list waits for you.
+- The `unsafe` code is reviewed in pieces as it lands, finishing before checkpoint 2.
+- A weekly note in `docs/m0-log.md` says what merged, what waits on you, what changed in the API, and the budget.
+- Every problem you hit while dogfooding becomes a test first: an oracle case for die-vim, a harness test for core.
+
+**Exit tests**
+
+- (a) is judged as written: a day with no switch to Emacs to edit. More than 3 switches in a day is only an early warning.
+- `restart-loop` checks state as well as time. After each restore, DIE writes a digest of its session state, and the driver checks that all 20 match. That covers macros and histories too.
+- (b)'s second runs from `restart` to the new window's first frame. The build comes before it.
+
+**Budget**
+
+- Code lines are counted after rustfmt, excluding blank lines, comments, `tests/` and `#[cfg(test)]` modules, by a small counter in xtask, so nothing gets installed. rustc is pinned to 1.96 so the counts don't drift.
+- die-vim gets a line in guard 7: about 5k (estimate 3.6–4.6k). It has no cut list, since §10 is its scope; an overrun means simplifying at the next review. *(Amends guard 7.)*
+- Each module's limit starts at the top of its estimate and drops to the measured size after M0.
+- On an overrun, the cuts come in this order. In core: candidate annotations in prompts, history search, per-pattern settings. In die-render: renderer-drawn braille, dashed and diagonal box glyphs, the latency log (it moves into test code).
+
+**Core**
+
+- Search matches, the visual selection and bracket highlights are computed at render time, so M0 needs no decoration index. The index moves to M1.
+- Undo keeps up to 2,000 steps or 16 MB of text per buffer, whichever comes first.
+- After `u`, die-vim puts the cursor where the undone change starts, as your Evil does (`ifoo<Esc>abar<Esc>u` on `x` ends on the `x`). Core's undo still restores the cursor from before the step (A14) and reports the range it changed, so the contract doesn't change.
+- No horizontal scrolling in M0.
+- Wrap, 80 columns centered, and line numbers are set per file pattern in die-dev until modes arrive in M1.
+- Code files get visual line numbers, `.rs` included. Your Emacs shows none in `.rs` files only because it has no Rust mode.
+- die-dev binds `\f \] \/ \x` as your init.el does, and `\z` toggles the 80-column width, as `visual-fill-column-mode` does. `\\` (your fzf from home) has no M0 equivalent; `\f` covers DIE's own tree.
+- Pointer basics: a click focuses a window and places the cursor, a drag selects in visual state, and the trackpad scrolls.
+- The status line shows the buffer's directory, like your mode line, plus a mark when the buffer is modified or its file changed on disk.
+- `describe-key` and `describe-command` are in M0, after checkpoint 4.
+
+**Files**
+
+- Only UTF-8 files are editable. Other encodings, files with NUL bytes, and CRLF files open read-only with a message. A BOM and a missing final newline survive a save byte for byte.
+- A save resolves symlinks, writes a temporary file beside the target, flushes it to disk, copies the permissions, and renames it into place. A hard-linked file is written in place instead.
+- `:w` refuses if the file's modification time, size or inode changed since DIE last read or wrote it. `:w!` writes anyway, `:e!` reloads, and `:q!` quits without saving. *(Adds the three `!` forms to §10's ex commands.)*
+- Auto-revert checks open files once a second and whenever DIE gains focus, with no file-watching dependency.
+- An unmodified buffer reloads as one undoable edit that replaces only the span between the first and last changed lines, as Emacs's revert does, so cursors elsewhere stay put. A modified buffer is flagged "changed on disk". A deleted file is flagged, never closed.
+
+**Session and restart**
+
+- The session lives in `~/Library/Application Support/DIE/`. It's written about 1 s after the last change, and on restart and quit, through a temporary file and a rename. The previous copy is kept.
+- It's never written before a restore finishes, so a new build that panics can't overwrite it.
+- Unsaved text is stored only for modified or fileless buffers, with the file's fingerprint, so a restore notices a file that changed while DIE was down.
+- Crash safety (files, cursors, unsaved text) arrives with checkpoint 3, and the full session (splits, registers, macros, histories) with checkpoint 4.
+- `restart` copies the fresh build into `~/Applications/DIE.app`, renames it into place and launches it. *(Changes an earlier call, "A script builds DIE.app pointing at the dev build". S3 advised copying and renaming, so a build that's still being written is never launched.)*
+- The old instance writes the session and releases its lock before launching the new one, then waits for the new window's first frame. If none comes within 2 s, the old one takes the lock back and keeps running, with an error message. A build that panics at startup costs you nothing.
+- DIE.app runs a dev build with dependencies optimized, which keeps rebuilds short (S1 measured about 0.5 s after an edit to the renderer).
+
+**die-vim**
+
+- A pending list holds the cases still expected to fail. It must be empty at M0's exit.
+- 24 cases are excluded by name, each with a hand-written fixture: 21 from the six Evil bugs and artifacts and the Vim-style undo you accepted in S5, 1 rewritten in Rust regex syntax, and 2 language indents (Python, Emacs Lisp) that wait for modes. That's exit test (d)'s list.
+- Cases are grouped into tranches by the keys they use, not by topic file.
+- Errors are checked by the key that raised them, not by Emacs's message text.
+- Window and file commands get core harness tests, since the oracle has no window tree and no files. *(An exception to §12's "hand-written fixtures are only for the deliberate deviations".)*
+- New cases with `_`, `::`, `->`, tabs and wide characters run in fundamental-mode, which is what your Emacs uses for `.rs` files, and die-vim follows what Evil does there. So `w` stops at the `_` in `snake_case`, as it does for you today. Veto if you'd rather `w` treat `_` as part of a word, as Vim does.
+
+**Renderer**
+
+- The fonts aren't committed until their license is checked. `cargo xtask fonts` fetches them by checksum into a cache outside the repository, DIE.app gets a copy, and the build itself never touches the network.
+- `die_render::platform` holds only thin wrappers over AppKit, Metal and Core Text. The atlas, the row cache and instance building live outside it, which keeps the `unsafe` review to about 0.6–0.9k lines.
+- The clean-build check looks for `cc` in the macOS build graph, not in the lockfile, where winit lists it for Android.
+
+**Deferred** (the full list is in the plan's §7)
+
+- The environment from config (PATH and the env file) and the startup hook's cold-or-restored flag move to M2. Nothing in M0 runs a shell or a terminal.
+- No file-system watcher in M0, dark-coffee later, and no way yet to open a file in a running DIE from a vterm.

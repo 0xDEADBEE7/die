@@ -1,4 +1,4 @@
-> **Decision record for spike S2 (scope D10 and D20), 2026-10-19.** Status: **proposed.** The doc edits in §1.3 are proposals; nothing outside the spike directory and this record was changed. Evidence paths under `/private/tmp` are scratch files and may not last.
+> **Decision record for spike S2 (scope D10 and D20), 2026-10-19.** Status: **accepted 2026-10-19** (see below). Evidence paths under `/private/tmp` are scratch files and may not last.
 
 # S2: terminal engine wiring and helper process
 

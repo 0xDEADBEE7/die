@@ -1,4 +1,4 @@
-> **Decision record for spike S5 (scope D4, §10, §12).** Written 2026-10-19. Status: **proposed**. The verdict and the measurements are final. The §10 and §12 edits in §1 are proposals, and §5 has two questions for you. Evidence paths under `/private/tmp` are scratch files and may disappear; everything that matters is in `spikes/s5-evil-oracle/`.
+> **Decision record for spike S5 (scope D4, §10, §12).** Written 2026-10-19. Status: **accepted 2026-10-19** (see below). Evidence paths under `/private/tmp` are scratch files and may disappear; everything that matters is in `spikes/s5-evil-oracle/`.
 
 # S5 decision record: the Evil oracle
 
