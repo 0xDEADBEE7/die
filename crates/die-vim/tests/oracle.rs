@@ -6,7 +6,8 @@
 //! registers and errors compared with what your Evil did.
 //!
 //! - `oracle/deviations.json` names the cases die-vim deliberately doesn't match.
-//!   They're left out here and get hand-written fixtures.
+//!   They're left out here. Each gets a hand-written fixture in
+//!   `oracle/hand-written/`, which runs here like an oracle case once it's written.
 //! - `oracle/pending.txt` names the cases die-vim doesn't pass yet, by the work
 //!   package they land with. A pending case that passes fails this test, and so
 //!   does a failing case that isn't pending.
@@ -58,6 +59,28 @@ fn oracle() {
     }
     let excluded: BTreeSet<&str> = deviations.cases().map(|d| d.case.as_str()).collect();
     let mut problems = Vec::new();
+
+    // A hand-written fixture replaces a deviation's oracle case, under the same name.
+    let hand =
+        load_fixtures(&data("hand-written")).expect("the hand-written fixtures load and validate");
+    for fx in &hand {
+        for c in &fx.cases {
+            let name = format!("{}/{}", fx.topic, c.id);
+            let file = format!("hand-written/{}.json", fx.topic);
+            let dev = deviations.cases().find(|d| d.case == name);
+            if dev.is_none_or(|d| d.fixture.as_deref() != Some(file.as_str())) {
+                problems.push(format!(
+                    "{file}: {name} isn't a deviation that names this file"
+                ));
+            }
+            all.insert(format!("hand-written/{name}"), (c, fx.run));
+        }
+    }
+    for d in deviations.cases().filter(|d| d.fixture.is_some()) {
+        if !all.contains_key(&format!("hand-written/{}", d.case)) {
+            problems.push(format!("{}: its hand-written fixture isn't there", d.case));
+        }
+    }
     for name in excluded.iter().chain(
         pending
             .keys()
@@ -163,7 +186,7 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
         return Err("can't set a window's top line yet (the harness, K7)".into());
     }
 
-    let mut ctx = Ctx::new(vec![Box::new(Vim)]).map_err(|e| e.join("; "))?;
+    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).map_err(|e| e.join("; "))?;
     let buf = ctx.create_text("case", &input.text);
     let w = ctx
         .open_window(buf, COLS, ROWS)
