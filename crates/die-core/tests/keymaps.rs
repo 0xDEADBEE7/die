@@ -146,9 +146,9 @@ fn a_later_binding_for_the_same_keys_shadows_the_earlier() {
             s[0].state,
             s[0].keys.as_str(),
             s[0].cmd.as_str(),
-            s[0].by.as_str()
+            s[0].by.as_deref()
         ),
-        (State::Normal, "x", "first", "second")
+        (State::Normal, "x", "first", Some("second"))
     );
     assert_eq!(
         (s[1].keys.as_str(), s[1].cmd.as_str()),
@@ -313,6 +313,9 @@ fn bindings_that_could_never_match_are_errors() {
             r.global_keymap()
                 .bind(State::Passthrough, "<D-Command>", "a");
         },
+        |r| {
+            r.global_keymap().unbind(State::Normal, "zz");
+        },
     ] {
         let errs = errors(vec![ext(&log, &["a"], bind)]);
         assert_eq!(errs.len(), 1, "{errs:?}");
@@ -324,6 +327,77 @@ fn bindings_that_could_never_match_are_errors() {
     })]);
     assert_eq!(errs.len(), 1, "an empty binding isn't a prefix: {errs:?}");
     assert!(errs[0].contains("no keys"), "{errs:?}");
+}
+
+#[test]
+fn your_config_unbinds_a_key_to_free_it() {
+    let log = Log::default();
+    // die-vim binds `\` alone and `g` as a prefix; your config wants `\f` and `g` alone.
+    let vim = || {
+        ext(
+            &log,
+            &["emacs-state", "top", "end", "find-file", "g"],
+            |r| {
+                r.kind_keymap("text")
+                    .bind(State::Normal, "\\", "emacs-state")
+                    .bind(State::Normal, "gg", "top")
+                    .bind(State::Normal, "ge", "end");
+            },
+        )
+    };
+    let errs = errors(vec![
+        vim(),
+        Box::new(Config(|r| {
+            r.kind_keymap("text")
+                .bind(State::Normal, "<leader>f", "find-file")
+                .bind(State::Normal, "g", "g");
+        })),
+    ]);
+    assert_eq!(errs.len(), 2, "{errs:?}");
+    let config = Config(|r| {
+        r.kind_keymap("text")
+            .unbind(State::Normal, "\\")
+            .bind(State::Normal, "<leader>f", "find-file")
+            .unbind(State::Normal, "g")
+            .bind(State::Normal, "g", "g");
+    });
+    typing(vec![vim(), Box::new(config)], "\\fg");
+    assert_eq!(*log.borrow(), ["find-file", "g"]);
+}
+
+/// Your config, registered last.
+struct Config(fn(&mut Registry));
+impl Extension for Config {
+    fn name(&self) -> &'static str {
+        "config"
+    }
+    fn register(&mut self, reg: &mut Registry) {
+        (self.0)(reg);
+    }
+}
+
+#[test]
+fn unbinding_removes_longer_bindings_and_lists_them() {
+    let mut km = Keymap::default();
+    km.bind(State::Normal, "gg", "top")
+        .bind(State::Normal, "ge", "end")
+        .bind(State::Normal, "<any>", "cancel")
+        .unbind(State::Normal, "gg");
+    let g = parse_keys("g").unwrap();
+    assert_eq!(km.lookup(State::Normal, &g), Lookup::Prefix, "ge is left");
+    km.unbind(State::Normal, "g");
+    assert_eq!(
+        km.lookup(State::Normal, &g),
+        Lookup::Command("cancel".into()),
+        "g isn't a prefix any more"
+    );
+    let gone: Vec<_> = km
+        .shadowed()
+        .iter()
+        .map(|s| (s.keys.as_str(), s.cmd.as_str(), s.by.clone()))
+        .collect();
+    assert_eq!(gone, [("gg", "top", None), ("ge", "end", None)]);
+    assert_eq!(km.bindings().count(), 3, "unbinding keeps the record");
 }
 
 #[test]
