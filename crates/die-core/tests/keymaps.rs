@@ -1,8 +1,10 @@
 //! K3: keymap registration. A binding that is also a prefix is an error, a later binding
 //! for the same keys shadows the earlier one, and the leader comes from config.
+mod support;
 use die_core::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+use support::TermSurface;
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
 
@@ -57,28 +59,44 @@ fn typing(exts: Vec<Box<dyn Extension>>, keys: &str) -> Ctx {
 #[test]
 fn a_binding_that_is_also_a_prefix_is_an_error() {
     let log = Log::default();
-    for bind in [
-        (|r: &mut Registry| {
-            r.kind_keymap("text")
-                .bind(State::Normal, "g", "a")
-                .bind(State::Normal, "gg", "b");
-        }) as fn(&mut Registry),
-        |r| {
-            r.kind_keymap("text")
-                .bind(State::Normal, "gg", "b")
-                .bind(State::Normal, "g", "a");
-        },
-        |r| {
-            r.global_keymap().bind(State::Normal, "<char>", "a").bind(
-                State::Normal,
-                "<char>x",
-                "b",
-            );
-        },
+    for (bind, a, b) in [
+        (
+            (|r: &mut Registry| {
+                r.kind_keymap("text")
+                    .bind(State::Normal, "g", "a")
+                    .bind(State::Normal, "gg", "b");
+            }) as fn(&mut Registry),
+            "g",
+            "gg",
+        ),
+        (
+            |r| {
+                r.kind_keymap("text")
+                    .bind(State::Normal, "gg", "b")
+                    .bind(State::Normal, "ge", "c")
+                    .bind(State::Normal, "g", "a");
+            },
+            "g",
+            "gg",
+        ),
+        (
+            |r| {
+                r.global_keymap().bind(State::Normal, "<char>", "a").bind(
+                    State::Normal,
+                    "<char>x",
+                    "b",
+                );
+            },
+            "<char>",
+            "<char>x",
+        ),
     ] {
-        let errs = errors(vec![ext(&log, &["a", "b"], bind)]);
+        let errs = errors(vec![ext(&log, &["a", "b", "c"], bind)]);
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert!(errs[0].contains("prefix"), "{errs:?}");
+        for named in [format!("{a:?} (bound to a)"), format!("{b:?} (bound to b)")] {
+            assert!(errs[0].contains(&named), "names both bindings: {errs:?}");
+        }
     }
     // Different states, different keymaps, and different edges don't conflict.
     for bind in [
@@ -164,6 +182,34 @@ fn the_leader_comes_from_config_registered_last() {
 }
 
 #[test]
+fn the_leader_applies_to_every_keymap_and_the_last_one_set_wins() {
+    let log = Log::default();
+    let tool = ext(&log, &["global", "kind", "mode", "range"], |r| {
+        r.set_leader(",");
+        r.global_keymap().bind(State::Normal, "<leader>a", "global");
+        r.kind_keymap("text")
+            .bind(State::Normal, "<leader>b", "kind");
+        r.mode::<Plain>("plain", || Plain)
+            .bind(State::Normal, "<leader>c", "mode");
+        r.keymap("button").bind(State::Normal, "<leader>d", "range");
+    });
+    let mut ctx = Ctx::new(vec![tool, Box::new(LeaderIs("<Space>"))]).unwrap();
+    let b = ctx.create_text("t", "abc\n");
+    ctx.open_window(b, 40, 5).unwrap();
+    ctx.enable_mode::<Plain>(b).unwrap();
+    ctx.text_mut(b)
+        .unwrap()
+        .decorate(0..2, Deco::Keymap("button".into()))
+        .unwrap();
+    ctx.type_keys(" a b c d,a");
+    assert_eq!(*log.borrow(), ["global", "kind", "mode", "range"]);
+    assert_eq!(ctx.leader(), parse_keys(" ").unwrap()[0].chord());
+}
+
+struct Plain;
+impl Mode for Plain {}
+
+#[test]
 fn prefix_conflicts_are_checked_with_the_configured_leader() {
     let log = Log::default();
     let tool = ext(&log, &["a", "b"], |r| {
@@ -188,7 +234,7 @@ fn prefix_conflicts_are_checked_with_the_configured_leader() {
 
 #[test]
 fn a_leader_must_be_one_key() {
-    for bad in ["ab", "", "<char>", "<leader>"] {
+    for bad in ["ab", "", "<char>", "<leader>", "<Shift>"] {
         let errs = errors(vec![Box::new(LeaderIs(bad))]);
         assert_eq!(errs.len(), 1, "{bad:?}: {errs:?}");
         assert!(errs[0].contains("leader"), "{errs:?}");
@@ -207,41 +253,107 @@ impl Extension for LeaderIs {
 }
 
 #[test]
-fn modifier_keys_alone_never_reach_keymaps() {
+fn modifier_keys_alone_reach_only_passthrough() {
     let log = Log::default();
     let any = ext(&log, &["cancel"], |r| {
         r.kind_keymap("text").bind(State::Normal, "<any>", "cancel");
     });
     let mut ctx = typing(vec![any], "");
-    for m in [
-        ModifierKey::Shift,
-        ModifierKey::Control,
-        ModifierKey::CapsLock,
-    ] {
+    let observed = Rc::new(RefCell::new(vec![]));
+    let o = observed.clone();
+    let _sub = ctx.observe_keys(move |ev, _| o.borrow_mut().push(ev.clone()));
+    let shift = KeyEvent::press(Key::Modifier(ModifierKey::Shift));
+    for m in [ModifierKey::Control, ModifierKey::CapsLock] {
         ctx.input(KeyEvent::press(Key::Modifier(m)));
     }
+    ctx.input(shift.clone());
     ctx.run_until_idle();
     assert!(
         log.borrow().is_empty(),
         "Shift on its way to `$` doesn't cancel `d`"
     );
+    assert!(
+        observed.borrow().is_empty(),
+        "nor is it recorded in a macro"
+    );
     assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+
+    let events = Rc::new(RefCell::new(vec![]));
+    let t = ctx.create_surface(
+        "term",
+        TermSurface {
+            events: events.clone(),
+        },
+    );
+    ctx.open_window(t, 40, 5).unwrap();
+    ctx.input(shift.clone());
+    ctx.input(shift.clone().kind(KeyKind::Release));
+    ctx.run_until_idle();
+    assert_eq!(
+        *events.borrow(),
+        [
+            Event::Key(shift.clone()),
+            Event::Key(shift.kind(KeyKind::Release))
+        ],
+        "the terminal reports them"
+    );
+}
+
+#[test]
+fn bindings_that_could_never_match_are_errors() {
+    let log = Log::default();
+    for bind in [
+        (|r: &mut Registry| {
+            r.global_keymap().bind(State::Normal, "", "a");
+        }) as fn(&mut Registry),
+        |r| {
+            r.global_keymap().bind(State::Normal, "<Shift>", "a");
+        },
+        |r| {
+            r.global_keymap()
+                .bind(State::Passthrough, "<D-Command>", "a");
+        },
+    ] {
+        let errs = errors(vec![ext(&log, &["a"], bind)]);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+    }
+    let errs = errors(vec![ext(&log, &["a", "b"], |r| {
+        r.global_keymap()
+            .bind(State::Normal, "", "a")
+            .bind(State::Normal, "x", "b");
+    })]);
+    assert_eq!(errs.len(), 1, "an empty binding isn't a prefix: {errs:?}");
+    assert!(errs[0].contains("no keys"), "{errs:?}");
 }
 
 #[test]
 fn os_fields_dont_change_what_a_key_matches() {
     let log = Log::default();
-    let e = ext(&log, &["c-a"], |r| {
-        r.kind_keymap("text").bind(State::Normal, "<C-a>", "c-a");
+    let e = ext(&log, &["c-a", "c-s-a"], |r| {
+        r.kind_keymap("text")
+            .bind(State::Normal, "<C-a>", "c-a")
+            .bind(State::Normal, "<C-S-a>", "c-s-a");
     });
     let mut ctx = typing(vec![e], "");
-    let mut ev = KeyEvent::press(Key::Char('a'));
-    ev.mods.ctrl = true;
-    ev.mods.right.ctrl = true;
-    ev.mods.caps_lock = true;
+    let ctrl = |c, shift| {
+        KeyEvent::press(Key::Char(c)).mods(Mods {
+            ctrl: true,
+            shift,
+            ..Mods::default()
+        })
+    };
+    let mut ev = ctrl('a', false);
+    ev.right_mods.ctrl = true;
     ev.code = Some("KeyA".into());
     ev.unshifted = Some('a');
     ctx.input(ev);
+    // Caps Lock gives a capital, but Ctrl-a is still `<C-a>`.
+    let mut caps = ctrl('A', false);
+    caps.caps_lock = true;
+    ctx.input(caps);
+    // Ctrl-Shift-a is `<C-S-a>`, whether or not the OS applied Shift to the letter.
+    ctx.input(ctrl('A', true));
+    ctx.input(ctrl('a', true));
     ctx.run_until_idle();
-    assert_eq!(*log.borrow(), ["c-a"]);
+    assert_eq!(*log.borrow(), ["c-a", "c-a", "c-s-a", "c-s-a"]);
 }

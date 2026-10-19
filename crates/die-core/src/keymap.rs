@@ -33,11 +33,23 @@ pub enum Lookup {
 }
 
 impl Trie {
-    /// Bind `pats` to binding `idx`. Ok(the binding it replaced), or Err if the keys
-    /// would be bound alone and as a prefix, in which case nothing is bound.
-    fn bind(&mut self, pats: &[Pat], cmd: &str, idx: usize) -> Result<Option<usize>, ()> {
-        if self.has_prefix_conflict(pats) {
-            return Err(());
+    fn children(&self) -> impl Iterator<Item = &Trie> {
+        let wild = self.any_char.iter().chain(&self.any).map(|t| &**t);
+        self.exact.values().chain(wild)
+    }
+
+    /// The bindings at or below this node.
+    fn bound(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = self.cmd.iter().map(|(_, i)| *i).collect();
+        out.extend(self.children().flat_map(Trie::bound));
+        out
+    }
+
+    /// Bind `pats` to binding `idx`. Ok(the binding it replaced), or Err(a binding that
+    /// is a prefix of `pats`, or that `pats` is a prefix of), in which case nothing is bound.
+    fn bind(&mut self, pats: &[Pat], cmd: &str, idx: usize) -> Result<Option<usize>, usize> {
+        if let Some(other) = self.prefix_conflict(pats) {
+            return Err(other);
         }
         let mut n = self;
         for p in pats {
@@ -51,25 +63,21 @@ impl Trie {
         Ok(n.cmd.replace((cmd.into(), idx)).map(|(_, old)| old))
     }
 
-    /// Whether `pats` passes through a bound node, or ends on one that has children.
-    fn has_prefix_conflict(&self, pats: &[Pat]) -> bool {
+    /// The binding `pats` passes through, or else the earliest one that starts with `pats`.
+    fn prefix_conflict(&self, pats: &[Pat]) -> Option<usize> {
         let mut n = self;
         for p in pats {
-            if n.cmd.is_some() {
-                return true;
+            if let Some((_, i)) = &n.cmd {
+                return Some(*i);
             }
-            let next = match p {
+            n = match p {
                 Pat::Chord(c) => n.exact.get(c),
                 Pat::AnyChar => n.any_char.as_deref(),
                 Pat::Any => n.any.as_deref(),
                 Pat::Leader => None,
-            };
-            match next {
-                Some(x) => n = x,
-                None => return false,
-            }
+            }?;
         }
-        !(n.exact.is_empty() && n.any_char.is_none() && n.any.is_none())
+        n.children().flat_map(Trie::bound).min()
     }
 
     /// Exact beats `<char>`, which beats `<any>`, at every step. No backtracking.
@@ -89,7 +97,7 @@ impl Trie {
         // Registration refuses a binding that is also a prefix, so a node has one or the other.
         match &n.cmd {
             Some((c, _)) => Lookup::Command(c.clone()),
-            None if n.exact.is_empty() && n.any_char.is_none() && n.any.is_none() => Lookup::None,
+            None if n.children().next().is_none() => Lookup::None,
             None => Lookup::Prefix,
         }
     }
@@ -119,27 +127,14 @@ pub struct Keymap {
 
 impl Default for Keymap {
     fn default() -> Self {
-        Keymap::with_leader(DEFAULT_LEADER)
+        Keymap::with_leader(default_leader())
     }
 }
 
 /// The leader until config sets one: `\`.
-pub(crate) const DEFAULT_LEADER: Chord = Chord {
-    key: Key::Char('\\'),
-    mods: Mods {
-        ctrl: false,
-        alt: false,
-        shift: false,
-        cmd: false,
-        caps_lock: false,
-        right: RightMods {
-            ctrl: false,
-            alt: false,
-            shift: false,
-            cmd: false,
-        },
-    },
-};
+pub(crate) fn default_leader() -> Chord {
+    KeyEvent::press(Key::Char('\\')).chord()
+}
 
 impl Keymap {
     pub(crate) fn with_leader(leader: Chord) -> Self {
@@ -158,18 +153,13 @@ impl Keymap {
     pub fn bind(&mut self, state: State, keys: &str, cmd: &str) -> &mut Self {
         let idx = self.bindings.len();
         self.bindings.push((state, keys.into(), cmd.into()));
-        let pats = match parse_pats(keys) {
+        let pats = match self.pats(state, keys) {
             Ok(p) => p,
             Err(e) => {
-                self.errors.push(e);
+                self.errors.push(format!("{e}, bound to {cmd}"));
                 return self;
             }
         };
-        let leader = Pat::Chord(self.leader);
-        let pats: Vec<Pat> = pats
-            .into_iter()
-            .map(|p| if p == Pat::Leader { leader.clone() } else { p })
-            .collect();
         match self.tries.entry(state).or_default().bind(&pats, cmd, idx) {
             Ok(None) => {}
             Ok(Some(old)) => {
@@ -181,12 +171,44 @@ impl Keymap {
                     by: cmd.into(),
                 });
             }
-            Err(()) => self.errors.push(format!(
-                "{keys:?} in {state:?} is bound to {cmd}, but it is also a prefix of another \
-                 binding, or another binding is a prefix of it (contract §7)"
-            )),
+            Err(other) => {
+                let (_, other_keys, other_cmd) = &self.bindings[other];
+                self.errors.push(format!(
+                    "{keys:?} (bound to {cmd}) and {other_keys:?} (bound to {other_cmd}) in \
+                     {state:?}: one is a prefix of the other, which a keymap can't hold \
+                     (contract §7)"
+                ));
+            }
         }
         self
+    }
+
+    /// `keys` as patterns, with the leader resolved.
+    fn pats(&self, state: State, keys: &str) -> Result<Vec<Pat>, String> {
+        let mut pats = parse_pats(keys)?;
+        if pats.is_empty() {
+            return Err(format!("no keys in {state:?}"));
+        }
+        let modifier = |p: &Pat| {
+            matches!(
+                p,
+                Pat::Chord(Chord {
+                    key: Key::Modifier(_),
+                    ..
+                })
+            )
+        };
+        if pats.iter().any(modifier) {
+            return Err(format!(
+                "{keys:?} in {state:?} has a modifier key alone, which never reaches a keymap"
+            ));
+        }
+        for p in &mut pats {
+            if *p == Pat::Leader {
+                *p = Pat::Chord(self.leader);
+            }
+        }
+        Ok(pats)
     }
 
     /// Use `leader` for `<leader>`, rebuilding the bindings made so far.
