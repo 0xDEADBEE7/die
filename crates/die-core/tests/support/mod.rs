@@ -163,7 +163,7 @@ impl Extension for Vim {
         });
         reg.command("vim-redo", "", |ctx, a| {
             let (b, _) = target(ctx, a);
-            ctx.text_mut(b)?.redo()
+            ctx.text_mut(b)?.redo().map(|_| ())
         });
         reg.command("vim-digit", "count prefix", |ctx, a| {
             let d = a.char().and_then(|c| c.to_digit(10)).unwrap() as usize;
@@ -257,10 +257,12 @@ impl Extension for Vim {
             let (b, w) = target(ctx, a);
             ctx.prompt("/", move |ctx, answer| {
                 let Some(pat) = answer else { return Ok(()) };
-                let from = ctx.text(b)?.cursor(w).unwrap() + 1;
-                let Some(p) = ctx.text(b)?.find(&pat, from) else {
+                let from = ctx.text(b)?.cursor(w).unwrap();
+                let pat = Pattern::new(&pat, false)?;
+                let Some(found) = ctx.text(b)?.search(&pat, from, Dir::Forward) else {
                     return Err(Error::Msg("not found".into()));
                 };
+                let p = found.range.start;
                 if !ctx.text(b)?.is_stop(p) {
                     ctx.reveal(b, p)?; // the Hide's owner runs its reveal command
                 }

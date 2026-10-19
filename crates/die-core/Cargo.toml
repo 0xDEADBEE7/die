@@ -12,6 +12,8 @@ ropey.workspace = true
 slotmap.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
+regex-automata.workspace = true
+regex-syntax.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
