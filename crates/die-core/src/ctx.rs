@@ -135,6 +135,7 @@ pub struct Registry {
     kinds: HashMap<&'static str, Keymap>,
     modes: Vec<ModeSpec>,
     named: HashMap<String, Keymap>,
+    leader: Option<String>,
 }
 
 impl Registry {
@@ -189,6 +190,12 @@ impl Registry {
     /// A named keymap, for keymap decorations on ranges.
     pub fn keymap(&mut self, name: &str) -> &mut Keymap {
         self.named.entry(name.into()).or_default()
+    }
+    /// Set the key `<leader>` stands for, in notation (`\`, `<Space>`, `,`). It applies to
+    /// every keymap once all extensions have registered, so your config, registered last,
+    /// decides it. The default is `\`. Anything but one key is a startup error.
+    pub fn set_leader(&mut self, key: &str) {
+        self.leader = Some(key.into());
     }
 }
 
@@ -342,6 +349,7 @@ pub struct Ctx {
     fed: VecDeque<KeyEvent>,
     pending: Vec<KeyEvent>,
     swallow: Vec<Key>,
+    leader: Chord,
     prefix: Prefix,
     prompt: Option<Prompt>,
     clock: Duration,
@@ -403,6 +411,7 @@ impl Ctx {
             fed: VecDeque::new(),
             pending: vec![],
             swallow: vec![],
+            leader: DEFAULT_LEADER,
             prefix: Prefix::default(),
             prompt: None,
             clock: Duration::ZERO,
@@ -416,6 +425,12 @@ impl Ctx {
                 errors.push(format!("command {name} registered twice"));
             }
         }
+        if let Some(k) = &reg.leader {
+            match typed(k, None).as_deref() {
+                Ok([ev]) => ctx.set_leader(ev.chord()),
+                _ => errors.push(format!("the leader must be one key, not {k:?}")),
+            }
+        }
         errors.extend(ctx.check_bindings());
         if !errors.is_empty() {
             return Err(errors);
@@ -425,6 +440,22 @@ impl Ctx {
             ctx.report(r);
         }
         Ok(ctx)
+    }
+
+    fn set_leader(&mut self, leader: Chord) {
+        self.leader = leader;
+        let maps = std::iter::once(&mut self.global)
+            .chain(self.kinds.values_mut())
+            .chain(self.modes.iter_mut().map(|m| &mut m.keymap))
+            .chain(self.named.values_mut());
+        for m in maps {
+            m.set_leader(leader);
+        }
+    }
+
+    /// The key `<leader>` stands for (`Registry::set_leader`).
+    pub fn leader(&self) -> Chord {
+        self.leader
     }
 
     fn check_bindings(&self) -> Vec<String> {
@@ -611,7 +642,7 @@ impl Ctx {
             name,
             content: Content::Text(TextBuf::new(text)),
             modes: vec![],
-            local: Keymap::default(),
+            local: Keymap::with_leader(self.leader),
             state: State::Normal,
         };
         self.buffers.insert(b)
@@ -628,7 +659,7 @@ impl Ctx {
             name,
             content,
             modes: vec![],
-            local: Keymap::default(),
+            local: Keymap::with_leader(self.leader),
             state,
         })
     }
@@ -995,7 +1026,7 @@ impl Ctx {
 
     /// Queue keys as if typed (contract §6). die-vim's `@a` uses this.
     pub fn feed_keys(&mut self, keys: &str) -> Result {
-        let evs = parse_keys(keys).map_err(Error::Msg)?;
+        let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
         self.fed.extend(evs);
         Ok(())
     }
@@ -1005,7 +1036,7 @@ impl Ctx {
     }
     /// Harness: type keys in notation, then run until idle.
     pub fn type_keys(&mut self, keys: &str) {
-        for ev in parse_keys(keys).expect("bad key notation") {
+        for ev in typed(keys, Some(self.leader)).expect("bad key notation") {
             self.typed.push_back(ev);
         }
         self.run_until_idle();
@@ -1150,8 +1181,8 @@ impl Ctx {
         if state == State::Passthrough {
             return self.dispatch_passthrough(win, buf, ev);
         }
-        if ev.kind == KeyKind::Release {
-            return; // release events never reach keymaps
+        if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_)) {
+            return; // release events and lone modifier keys never reach keymaps
         }
         for e in &self.subs {
             if let SubKind::Keys(f) = &e.kind {
