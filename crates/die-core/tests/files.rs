@@ -196,7 +196,11 @@ fn paths_that_arent_readable_regular_files_are_errors() {
     assert!(c.open_file(&d.0).is_err(), "a directory");
     let p = d.file("secret.txt", b"x\n");
     fs::set_permissions(&p, fs::Permissions::from_mode(0o000)).unwrap();
-    assert!(c.open_file(&p).is_err(), "a file you can't read");
+    // Root reads any file, so this only means something when the read really fails
+    // (`cargo xtask ci --linux` runs its tests as root).
+    if fs::read(&p).is_err() {
+        assert!(c.open_file(&p).is_err(), "a file you can't read");
+    }
     // Opening a FIFO to read waits for a writer, so a regression hangs: allow 2 s.
     let fifo = d.0.join("fifo");
     let made = std::process::Command::new("mkfifo").arg(&fifo).status();
