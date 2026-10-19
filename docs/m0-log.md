@@ -2,6 +2,60 @@
 
 What merged, what waits on you, what changed in die-core's API, and where the budget stands ([m0-plan.md](m0-plan.md) §3). Newest first.
 
+## 2026-10-19 (later): phase 0's first API, up for your approval
+
+**Answered:** 09-B and 10-C, as recommended. The plan's doc edits are on `main`, and the private remote is github.com/0xDEADBEE7/die. You opted into workflows; the review below was the first.
+
+**Waits on you: five stacked PRs.** Merge them in order. Each holds the contract edits that go with its code, so approving one approves those too.
+
+| PR | Package | What it is |
+|---|---|---|
+| #1 | K3 | `KeyEvent` with S1's fields, one notation parser shared with the oracle, the prefix error, `unbind`, shadow lists, the leader from config. Contract §7 |
+| #2 | K2 | Regex search, undo caps, selection restored on undo, `undo_boundary`, undo and redo return their range. Contract §9 and the A11/A14 notes |
+| #3 | K10a | `open_file`: UTF-8 check, read-only reasons, BOM, fingerprint, per-path settings |
+| #4 | K8 | Faces, themes (mono-dark in die-dev), the composed `Scene`, render-time highlights. Contract §10 and §13 |
+| #5 | V1 | die-vim's grammar core, motions, counts, insert sessions, 44 new oracle cases. Scope §10 |
+
+**How they were checked.**
+- Four parallel agents built K2, K3, K8 and V1, and I built K10a.
+- A review workflow then gave each branch an independent reviewer, and a second agent tried to refute each finding before fixing it with a test. The result: 59 findings, 13 of them major. 52 were confirmed and fixed, and 7 were deferred.
+- Where the deferred findings went:
+  - three contract wordings: into the PRs;
+  - two xtask bugs: fixed on `main`;
+  - K3-12, where the leader is set: to F3;
+  - K10a-8, where per-path settings attach: to K5;
+  - K8-7, pointer mapping: to K9;
+  - V1-1: decided below.
+- `cargo xtask ci` passes on every branch of the stack, and `mutate` catches 15 of 15 from K2 up.
+
+**Calls I made under your standing instruction (veto any):**
+- **V1-1:** Escape on the new line after a final newline leaves the cursor there, as Evil and Vim do. Scope §10's deviation now covers motions only.
+- **K2:** search runs over a copied string, freed at the next edit. `regex-cursor`, a new crate, wasn't added.
+- **K3:** `unbind` is a separate commit, so it can be dropped on its own.
+
+**Oracle at the top of the stack:** 124 of 346 cases pass, and V1's pending list is empty.
+
+**Budget at the top of the stack:**
+
+| Crate or module | Lines |
+|---|---|
+| die-core | 4,405 of 14k |
+| text and undo | 1,035 of 1,250 |
+| keys | 524 of 650 |
+| files | 168 of 650 |
+| faces and scene | 820 of 950 |
+| die-vim | 1,091 of 5k |
+| product code | 5,659 |
+
+**Platforms.** You reversed D12:
+- macOS and Linux are required;
+- other Unixes are welcome where they're cheap;
+- Windows is in only if it isn't a considerable deviation.
+
+A research workflow is drafting `docs/records/platforms.md` and question 11, on when Linux ships. Phase 0's code is platform-neutral except K10a's inode-based fingerprint, which is fine on Unix.
+
+**Also waiting on you:** the deviations review (about 1 h; it now includes V1's six hand-written fixtures), and S1's `interactive keys` check (5 min).
+
 ## 2026-10-19: phase 0 starts
 
 **Done, uncommitted:** the five packages the plan says can start under any answer to 09 and 10. `cargo xtask ci --worktree` passes every step: fmt, lint, budget, clippy, test, guards and clean-build. It takes about 40 s cold and 16 s warm.
