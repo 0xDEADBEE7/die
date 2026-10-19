@@ -249,6 +249,8 @@ The text surface belongs to core. This section covers what extensions can do wit
 - `snap`: the nearest cursor position in a direction, for `h`/`l`
 - `screen_pos`: where a position is drawn in a window
 
+**Where soft wrap breaks.** At word boundaries, as Emacs's `visual-line-mode` does. A row ends after the last space or tab that fits on it, the breaking space included, and the next row starts with the next word. A word longer than a row breaks between characters. A wide character that doesn't fit moves to the next row whole, and the cell it leaves is a filler. Rows are as wide as the window's text area; the Evil oracle's tty Emacs keeps one column for its continuation glyph, so its wrapped cases are checked at their own break positions.
+
 **Cursor positions.** Layout decides where the cursor can be. A Hide with replacement text keeps its start as a cursor position, drawn on the replacement: that's the fold line. A Hide without replacement text has no cursor position inside it. Overlapping Hides merge. After every edit or decoration change, core moves each cursor out of hidden text: to the fold line if there is one, otherwise to the next visible position. A whole-line fold hides from the start of its first line to the newline that ends its last line, so the next line keeps its own row.
 
 **Motions respect hidden ranges.** Line motions skip hidden ranges through `next_visible`, and search can match inside them and reveal them (scope §8). Because core does this, manifold needs no override.
