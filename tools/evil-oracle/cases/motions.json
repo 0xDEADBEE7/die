@@ -153,11 +153,11 @@
   {"id": "script-w-latin-fwdigits", "keys": "w", "text": ["|abc１２ def"]},
   {"id": "script-w-han-fullwidth", "keys": "w", "text": ["|日本ＡＢ def"]},
   {"id": "script-w-greek-fullwidth", "keys": "w", "text": ["|αβＡＢ def"]},
-  {"id": "w-dollar-is-a-word-character", "keys": "w", "text": ["|foo$bar baz"]},
-  {"id": "w-percent-is-a-word-character", "keys": "w", "text": ["|50% off"]},
+  {"id": "w-dollar-is-a-word-character", "vim": "word: Vim's $ is punctuation; in fundamental-mode Evil's is a word character", "keys": "w", "text": ["|foo$bar baz"]},
+  {"id": "w-percent-is-a-word-character", "vim": "word: Vim's % is punctuation; in fundamental-mode Evil's is a word character", "keys": "w", "text": ["|50% off"]},
   {"id": "script-w-kana-dakuten", "keys": "w", "text": ["|か\u3099か def"]},
-  {"id": "script-b-latin-cyrillic", "keys": "b", "text": ["abcабв| def"]},
-  {"id": "script-e-latin-cyrillic", "keys": "e", "text": ["|abcабв def"]},
-  {"id": "script-e-hiragana-katakana", "keys": "e", "text": ["|ですテスト def"]},
-  {"id": "script-b-hiragana-katakana", "keys": "b", "text": ["ですテスト| def"]}
+  {"id": "script-b-latin-cyrillic", "vim": "word: Vim's word doesn't end at a change of script; Evil's ends where Emacs's forward-word does", "keys": "b", "text": ["abcабв| def"]},
+  {"id": "script-e-latin-cyrillic", "vim": "word: Vim's word doesn't end at a change of script; Evil's ends where Emacs's forward-word does", "keys": "e", "text": ["|abcабв def"]},
+  {"id": "script-e-hiragana-katakana", "vim": "word: Vim's word doesn't end at a change of script; Evil's ends where Emacs's forward-word does", "keys": "e", "text": ["|ですテスト def"]},
+  {"id": "script-b-hiragana-katakana", "vim": "word: Vim's word doesn't end at a change of script; Evil's ends where Emacs's forward-word does", "keys": "b", "text": ["ですテスト| def"]}
  ]}

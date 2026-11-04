@@ -70,6 +70,7 @@ impl Extension for Vim {
         for m in MOTIONS {
             k.bind(Normal, m.keys, m.name);
         }
+        // Escape while a key waits for another. V3 binds it in OperatorPending too.
         for key in ["f", "F", "t", "T"] {
             k.bind(Normal, &format!("{key}<Esc>"), "vim-cancel");
         }
