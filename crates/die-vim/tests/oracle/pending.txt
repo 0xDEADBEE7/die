@@ -1,17 +1,11 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
 
-# V1 (47)
+# V1 (41)
 V1 hand-written/motions/combining-mark-e
 V1 hand-written/motions/combining-mark-e-line-end
 V1 motions/count-ctrl-a
 V1 motions/count-ctrl-a-past-end
-V1 motions/last-empty-line-0
-V1 motions/last-empty-line-2dollar
-V1 motions/last-empty-line-caret
-V1 motions/last-empty-line-close-brace
-V1 motions/last-empty-line-dollar
-V1 motions/o-esc-0-no-final-newline
 V1 motions/script-w-arabic-latin
 V1 motions/script-w-armenian-latin
 V1 motions/script-w-cyr-digit

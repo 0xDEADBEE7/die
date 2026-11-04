@@ -5,8 +5,8 @@
 use crate::grammar::buffer_window;
 use crate::motions::word_back;
 use crate::text::{
-    Chars, blank_line, indent_end, indentation, line_end, next_stop, normal_pos, pos_at_col,
-    prev_stop,
+    Chars, blank_line, indent_end, indentation, line_end, next_stop, pos_at_col, prev_stop,
+    rest_pos,
 };
 use die_core::{Args, Ctx, Error, Origin, Result, State, TextBuf, WindowId};
 
@@ -151,15 +151,7 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
     // A session that ends on the empty line after a final newline leaves the
     // cursor there, as Evil and Vim do, so the next `i` types on that line. Only
     // motions keep off it (scope §10).
-    let after_final_newline = back == t.len() && t.line_start(t.line_of(back)) == back;
-    t.set_cursor(
-        w,
-        if after_final_newline {
-            back
-        } else {
-            normal_pos(t, back)
-        },
-    );
+    t.set_cursor(w, rest_pos(t, back));
     ctx.set_state(State::Normal);
     r
 }

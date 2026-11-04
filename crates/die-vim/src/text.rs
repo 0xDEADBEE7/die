@@ -172,6 +172,23 @@ pub fn normal_pos(t: &TextBuf, pos: usize) -> usize {
     }
 }
 
+/// Whether `pos` is on the empty line after a final newline, or in an empty text.
+/// Motions never take the cursor there, but an insert session or an undo can leave
+/// it there, and motions along that line keep it.
+pub fn on_last_empty_line(t: &TextBuf, pos: usize) -> bool {
+    pos == t.len() && t.line_start(t.line_of(pos)) == pos
+}
+
+/// Where the cursor rests after an insert session or an undo: `normal_pos`, except
+/// on the empty line after a final newline, which it keeps.
+pub fn rest_pos(t: &TextBuf, pos: usize) -> usize {
+    if on_last_empty_line(t, pos) {
+        pos
+    } else {
+        normal_pos(t, pos)
+    }
+}
+
 /// The next cursor position after `pos`, if it isn't past the end of the text.
 pub fn next_stop(t: &TextBuf, pos: usize) -> Option<usize> {
     let mut c = Chars::at(t, pos);
@@ -222,6 +239,17 @@ mod tests {
         );
         assert_eq!(normal_pos(&TextBuf::new(""), 0), 0);
         assert_eq!(normal_pos(&TextBuf::new("x"), 1), 0);
+    }
+
+    #[test]
+    fn the_empty_line_after_a_final_newline_keeps_a_resting_cursor() {
+        let t = TextBuf::new("ab\n");
+        assert!(on_last_empty_line(&t, 3));
+        assert_eq!(rest_pos(&t, 3), 3, "unlike normal_pos");
+        assert_eq!(normal_pos(&t, 3), 1);
+        assert_eq!(rest_pos(&t, 2), 1, "a non-empty line's newline isn't kept");
+        assert!(on_last_empty_line(&TextBuf::new(""), 0));
+        assert!(!on_last_empty_line(&TextBuf::new("ab"), 2));
     }
 
     #[test]
