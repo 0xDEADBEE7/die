@@ -101,14 +101,11 @@ fn steps(s: &Start, err: Fail, step: impl Fn(usize) -> Option<usize>) -> Result<
         let Some(q) = step(p) else { break };
         (p, n) = (q, n + 1);
     }
-    match n {
-        0 => Err(err),
-        n if n < s.n() => Ok(Target {
-            short: Some(err),
-            ..Target::at(p)
-        }),
-        _ => Ok(Target::at(p)),
-    }
+    Ok(if n < s.n() {
+        Target::short(p, err)
+    } else {
+        Target::at(p)
+    })
 }
 
 fn next_line(s: &Start) -> Result<Target, Fail> {
@@ -120,7 +117,9 @@ fn previous_line(s: &Start) -> Result<Target, Fail> {
 }
 
 /// `j` and `k`: by logical line, skipping hidden lines, keeping the goal column.
-/// They move as far as they can, and fail only when they can't move at all.
+/// They move as far as they can. With no line to go to, Evil's try the goal column on
+/// this line and signal only if that doesn't move the cursor. A goal past the line's end
+/// does move it, onto the newline, and normal state puts it back.
 fn vertical(s: &Start, dir: Dir, err: Fail) -> Result<Target, Fail> {
     let t = s.text;
     let goal = s.goal.unwrap_or(Goal::Col(t.display_col(s.pos)));
@@ -132,24 +131,22 @@ fn vertical(s: &Start, dir: Dir, err: Fail) -> Result<Target, Fail> {
             _ => break,
         }
     }
-    if !moved {
-        return Err(err);
+    let at = goal_pos(t, line, goal);
+    if !moved && at == s.pos {
+        return Ok(Target::short(s.pos, err));
     }
     Ok(Target {
         goal: Some(goal),
-        ..Target::at(at_goal(t, line, goal))
+        ..Target::at(normal_pos(t, at))
     })
 }
 
-/// The position on `line` at the goal column.
-fn at_goal(t: &TextBuf, line: usize, goal: Goal) -> usize {
-    normal_pos(
-        t,
-        match goal {
-            Goal::Col(col) => pos_at_col(t, line, col),
-            Goal::Eol => line_end(t, line),
-        },
-    )
+/// The position on `line` at the goal column, which may be its newline.
+fn goal_pos(t: &TextBuf, line: usize, goal: Goal) -> usize {
+    match goal {
+        Goal::Col(col) => pos_at_col(t, line, col),
+        Goal::Eol => line_end(t, line),
+    }
 }
 
 fn first_non_blank(s: &Start) -> Result<Target, Fail> {
@@ -174,7 +171,7 @@ fn goto_line(s: &Start, n: usize) -> Result<Target, Fail> {
     let line = n.saturating_sub(1).min(last_line(t));
     Ok(Target {
         goal: Some(goal),
-        ..Target::at(at_goal(t, line, goal))
+        ..Target::at(normal_pos(t, goal_pos(t, line, goal)))
     })
 }
 
@@ -334,7 +331,8 @@ impl Find {
 }
 
 /// The count-th `ch` on the line in `dir`. Fails without moving if there aren't
-/// that many.
+/// that many. Evil's forward search first steps off the cursor with its `l`, so from a
+/// line's last character it fails as `l` does, and the goal column stays.
 pub fn find(s: &Start, search: Find) -> Result<Target, Fail> {
     let t = s.text;
     let line = t.line_of(s.pos);
@@ -363,6 +361,9 @@ pub fn find(s: &Start, search: Find) -> Result<Target, Fail> {
                 return Ok(Target::at(pos));
             }
         }
+    }
+    if search.dir == Dir::Forward && next_stop(t, s.pos).is_none_or(|q| q >= end) {
+        return Ok(Target::short(s.pos, "End of line"));
     }
     Err("Can't find the character")
 }

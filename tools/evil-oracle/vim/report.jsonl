@@ -195,6 +195,38 @@
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":6,"line":0},"state":"normal","text":"ab x c x d x\n","error":""},"id":"t-count-semicolon","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"esc-resets-goal-column","topic":"motions","differs":["cursor","errors 0 vs 1"]}
 {"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-l-keeps-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\n\nabcdef\n","error":""},"id":"failed-h-keeps-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":0},"state":"normal","text":"abcdef\n日本語x\n","error":""},"id":"failed-j-keeps-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-k-keeps-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":0},"state":"normal","text":"abcdef\nab\n","error":""},"id":"j-goal-past-the-last-line","topic":"motions","differs":["errors 0 vs 1"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":1},"state":"normal","text":"ab\nabcdef\n","error":""},"id":"k-goal-past-the-first-line","topic":"motions","differs":["errors 0 vs 1"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":2,"line":0},"state":"normal","text":"abc\n","error":""},"id":"dollar-j-on-the-last-line","topic":"motions","differs":["errors 0 vs 1"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":2,"line":0},"state":"normal","text":"abc\n","error":""},"id":"dollar-k-on-the-first-line","topic":"motions","differs":["errors 0 vs 1"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":2,"line":0},"state":"normal","text":"abc\n","error":""},"id":"k-at-its-goal-fails","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":2,"line":0},"state":"normal","text":"abc\n","error":""},"id":"j-at-its-goal-fails","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":0},"state":"normal","text":"\nabcdef\n","error":""},"id":"k-on-an-empty-first-line-fails","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":1},"state":"normal","text":"日本語x\nabcdef\n","error":""},"id":"k-into-a-wide-char-fails","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":7,"line":1},"state":"normal","text":"abcdefgh\nabcdefgh\n","error":""},"id":"j-goes-to-its-goal-after-a-short-l","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-f-on-last-char-keeps-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-t-on-last-char-keeps-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-2f-on-last-char-keeps-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\n\nabcdef\n","error":""},"id":"failed-f-on-empty-line-keeps-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":2,"line":2},"state":"normal","text":"abzcdef\nxy\nabzcdef\n","error":""},"id":"failed-semicolon-on-last-char-keeps-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":2},"state":"normal","text":"abcdef\n日本語x\nabcdef\n","error":""},"id":"failed-f-mid-line-forgets-goal-column","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":2},"state":"normal","text":"abcdef\n日本語x\nabcdef\n","error":""},"id":"failed-t-mid-line-forgets-goal-column","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-F-forgets-goal-column","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-T-forgets-goal-column","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":5,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-F-forgets-the-end-of-line-goal","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":2,"line":2},"state":"normal","text":"abzcdef\nxy\nabzcdef\n","error":""},"id":"failed-comma-forgets-goal-column","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"no-previous-semicolon-forgets-goal-column","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"no-previous-comma-forgets-goal-column","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-percent-forgets-goal-column","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":1},"state":"normal","text":"\nabcdef\n","error":""},"id":"failed-b-forgets-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":1},"state":"normal","text":"\nabcdef\n","error":""},"id":"failed-B-forgets-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"\nabcdef\n","error":""},"id":"failed-open-brace-forgets-goal-column","topic":"motions","differs":["errors 1 vs 0"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":1,"line":0},"state":"normal","text":"abcdef\nab\n","error":""},"id":"failed-w-forgets-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":1,"line":0},"state":"normal","text":"abcdef\nab\n","error":""},"id":"failed-e-forgets-goal-column","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":1,"line":0},"state":"normal","text":"abcdef\nab\n","error":""},"id":"failed-close-brace-forgets-goal-column","topic":"motions","differs":["errors 1 vs 0"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":2},"state":"normal","text":"a\nb\nc\nd\n(e)\n","error":""},"id":"count-percent","topic":"motions","differs":["cursor"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"abcd\nx\nabcd\ny\n","error":""},"id":"count-percent-keeps-column","topic":"motions","differs":["cursor"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":1,"line":3},"state":"normal","text":"a\n\nb\ncd\n","error":""},"id":"close-brace-last-paragraph-long-line","topic":"motions","differs":["cursor"]}
