@@ -2,7 +2,7 @@
 //! what an undefined key does to a count (DR-03), and insert state for a window that
 //! isn't focused (DR-04). The oracle checks the cursor cases too, in `undo-cursor.json`.
 
-use die_core::{Args, Ctx, Key, KeyEvent, Mods, State};
+use die_core::{Args, Ctx, Deco, Key, KeyEvent, Mods, Origin, State};
 use die_vim::Vim;
 
 fn editor() -> Ctx {
@@ -186,4 +186,58 @@ fn u_returns_to_where_o_was_run_for_a_window_that_isnt_focused() {
     let t = ctx.text(b).unwrap();
     assert_eq!(t.rope().to_string(), "abc\n");
     assert_eq!(t.cursor(wb), Some(1), "where o was typed");
+}
+
+/// A silent edit inside the last session drops the older history, and the undo that reaches
+/// the gap says why, once. A count mustn't swallow that: it's the only report there is.
+#[test]
+fn u_with_a_count_reports_the_conflict_it_reaches() {
+    let mut ctx = editor();
+    let b = ctx.create_text("t", "");
+    ctx.open_window(b, 80, 24).unwrap();
+    ctx.type_keys("iolder <Esc>aab");
+    ctx.defer(move |c| {
+        let t = c.text_mut(b)?;
+        t.tx(Origin::Extension)
+            .silent()
+            .replace(7..8, "B")
+            .commit()?;
+        Ok(())
+    });
+    ctx.run_until_idle();
+    ctx.type_keys("c<Esc>3u");
+    assert_eq!(ctx.messages, ["UndoConflict"]);
+    assert_eq!(ctx.text(b).unwrap().rope().to_string(), "older aB");
+}
+
+/// The steps before the read-only one are undone, and `u` says what stopped it.
+#[test]
+fn u_with_a_count_reports_a_read_only_step() {
+    let mut ctx = editor();
+    let b = ctx.create_text("t", "xyz\n");
+    ctx.open_window(b, 80, 24).unwrap();
+    ctx.type_keys("ia<Esc>Ab<Esc>");
+    let t = ctx.text_mut(b).unwrap();
+    t.decorate(0..1, Deco::ReadOnly).unwrap();
+    ctx.type_keys("3u");
+    assert_eq!(ctx.text(b).unwrap().rope().to_string(), "axyz\n");
+    assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
+    assert!(
+        ctx.messages[0].starts_with("ReadOnly"),
+        "{:?}",
+        ctx.messages
+    );
+}
+
+/// Running out of history partway through a count isn't an error, in either direction.
+#[test]
+fn a_count_past_the_end_of_history_is_quiet() {
+    let (_, messages) = run("abc\n", 0, "ix<Esc>3u3<C-r>");
+    assert!(messages.is_empty(), "{messages:?}");
+    let (_, messages) = run("abc\n", 0, "u");
+    assert_eq!(
+        messages,
+        ["NothingToUndo"],
+        "with nothing at all to do, it says so"
+    );
 }
