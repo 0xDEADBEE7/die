@@ -454,3 +454,88 @@ fn an_undefined_key_clears_the_prefix_argument() {
     ctx.type_keys("g");
     assert_eq!(ctx.prefix().count, Some(3));
 }
+
+fn plain_command(ctx: &mut Ctx, keys: &[KeyEvent]) {
+    for k in keys {
+        ctx.input(k.clone());
+    }
+    ctx.run_until_idle();
+}
+
+/// A key whose OS text is a control character doesn't match `<char>`, or type it.
+#[test]
+fn a_ctrl_chord_with_os_text_doesnt_match_char() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text").bind(State::Normal, "<char>", "a");
+    };
+    let mut ctx = typing(vec![ext(&log, &["a"], bind)], "");
+    let ctrl_a = KeyEvent {
+        text: Some("\u{1}".into()),
+        ..KeyEvent::press(Key::Char('a')).mods(Mods {
+            ctrl: true,
+            ..Mods::default()
+        })
+    };
+    plain_command(&mut ctx, &[ctrl_a]);
+    assert!(log.borrow().is_empty());
+    assert_eq!(ctx.messages, ["<C-a> is undefined"]);
+}
+
+#[test]
+fn ctrl_bracket_runs_what_escape_is_bound_to() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text")
+            .bind(State::Normal, "<Esc>", "a")
+            .bind(State::Normal, "<C-i>", "b")
+            .bind(State::Normal, "<C-m>", "c");
+    };
+    let ctx = typing(
+        vec![ext(&log, &["a", "b", "c"], bind)],
+        "<C-[><Tab><CR><Esc><C-i><C-m>",
+    );
+    assert_eq!(*log.borrow(), ["a", "b", "c", "a", "b", "c"]);
+    assert_eq!(ctx.messages, Vec::<String>::new());
+}
+
+#[test]
+fn ctrl_bracket_and_ctrl_m_answer_a_prompt() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "");
+    ctx.open_window(b, 40, 5).unwrap();
+    let answers = Rc::new(RefCell::new(vec![]));
+    for keys in ["ab<C-m>", "ab<C-[>"] {
+        let a = answers.clone();
+        ctx.prompt("?", move |_, answer| {
+            a.borrow_mut().push(answer);
+            Ok(())
+        });
+        ctx.type_keys(keys);
+    }
+    assert_eq!(*answers.borrow(), [Some("ab".to_string()), None]);
+}
+
+/// Keymaps never see a key with no name, not even through `<any>`. Passthrough forwards it.
+#[test]
+fn an_unnamed_key_never_reaches_a_keymap() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text").bind(State::Normal, "<any>", "a");
+    };
+    let mut ctx = typing(vec![ext(&log, &["a"], bind)], "");
+    plain_command(&mut ctx, &[KeyEvent::press(Key::Unidentified)]);
+    assert!(log.borrow().is_empty());
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let events = Rc::new(RefCell::new(vec![]));
+    let s = TermSurface {
+        events: events.clone(),
+    };
+    let b = ctx.create_surface("term", s);
+    ctx.open_window(b, 40, 5).unwrap();
+    assert_eq!(ctx.state(), State::Passthrough);
+    plain_command(&mut ctx, &[KeyEvent::press(Key::Unidentified)]);
+    assert_eq!(events.borrow().len(), 1, "passthrough forwards it");
+}

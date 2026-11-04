@@ -1223,8 +1223,8 @@ impl Ctx {
         if state == State::Passthrough {
             return self.dispatch_passthrough(win, buf, ev);
         }
-        if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_)) {
-            return; // release events and lone modifier keys never reach keymaps
+        if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_) | Key::Unidentified) {
+            return; // release events, lone modifier keys and unnamed keys never reach keymaps
         }
         for e in &self.subs {
             if let SubKind::Keys(f) = &e.kind {
@@ -1329,7 +1329,7 @@ impl Ctx {
     }
 
     fn prompt_key(&mut self, ev: KeyEvent) {
-        match ev.key {
+        match ev.chord().key {
             Key::Enter => {
                 let t = self.prompt.as_ref().map(|p| p.text.clone());
                 self.finish_prompt(t);
