@@ -2,7 +2,7 @@
 //! what an undefined key does to a count (DR-03), and insert state for a window that
 //! isn't focused (DR-04). The oracle checks the cursor cases too, in `undo-cursor.json`.
 
-use die_core::{Args, Ctx, State};
+use die_core::{Args, Ctx, Key, KeyEvent, Mods, State};
 use die_vim::Vim;
 
 fn editor() -> Ctx {
@@ -121,4 +121,23 @@ fn escape_ends_the_undo_group_for_a_window_that_isnt_focused() {
     ctx.type_keys("x<Esc>iy<Esc>u");
     let text = ctx.text(b).unwrap().rope().to_string();
     assert_eq!(text, "xbbb\n", "u undoes only the last session");
+}
+
+/// In your GUI Emacs and in Vim, Ctrl-[ is Escape. The OS sends `[` with Ctrl held.
+#[test]
+fn ctrl_bracket_leaves_insert_state() {
+    let mut ctx = editor();
+    let b = ctx.create_text("t", "abc\n");
+    ctx.open_window(b, 80, 24).unwrap();
+    ctx.type_keys("ix");
+    assert_eq!(ctx.state(), State::Insert);
+    let held = Mods {
+        ctrl: true,
+        ..Mods::default()
+    };
+    ctx.input(KeyEvent::press(Key::Char('[')).mods(held));
+    ctx.run_until_idle();
+    assert_eq!(ctx.state(), State::Normal);
+    assert_eq!(ctx.text(b).unwrap().rope().to_string(), "xabc\n");
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
 }
