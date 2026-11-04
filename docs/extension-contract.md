@@ -212,7 +212,7 @@ The text surface belongs to core. This section covers what extensions can do wit
 **Reading.**
 - Rope and line access. Reads go through a snapshot that exposes ropey's `RopeSlice` directly, so motions and text objects are plain functions over it.
 - Conversions between char offset, byte offset and line/column. Byte offsets are the canonical position type.
-- Regex search over a range
+- Regex search over a range, and a word pattern for `*` and `#`: a literal that matches only where the characters on either side aren't word characters, by the caller's definition. Rust's `\b` can't say this, since its word characters include `_`.
 - A **revision** number that increases with every change. manifold's caches use Emacs's modification tick for the same purpose.
 - `edits_since(rev)`: every change since a revision (C15)
 

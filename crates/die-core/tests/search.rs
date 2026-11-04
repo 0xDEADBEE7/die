@@ -226,3 +226,116 @@ fn line_ends_match_before_crlf() {
     assert_eq!(find(&t, ";$", 5, Dir::Forward), Some((1..2, true)));
     assert_eq!(find(&t, "^b", 0, Dir::Forward), Some((4..5, false)));
 }
+
+// ---------------------------------------------------------------- `*` and `#` (SEARCH-1)
+
+/// Evil's word characters in fundamental-mode: `_` isn't one.
+fn evil_word(c: char) -> bool {
+    c.is_alphanumeric()
+}
+
+fn word(p: &str) -> Pattern {
+    Pattern::word(p, false, evil_word).unwrap()
+}
+
+fn find_word(
+    t: &TextBuf,
+    p: &str,
+    from: usize,
+    dir: Dir,
+) -> Option<(std::ops::Range<usize>, bool)> {
+    t.search(&word(p), from, dir).map(|f| (f.range, f.wrapped))
+}
+
+/// Your Evil, in fundamental-mode (evil/star.el): `*` from the last foo of `x foo_bar foo`
+/// lands at 2, and from 0 in `foo foobar foo_bar` it lands at 11.
+#[test]
+fn a_word_pattern_matches_as_evils_star_does() {
+    let t = buf("x foo_bar foo");
+    assert_eq!(find_word(&t, "foo", 10, Dir::Forward), Some((2..5, true)));
+    let t = buf("foo foobar foo_bar");
+    assert_eq!(find_word(&t, "foo", 0, Dir::Forward), Some((11..14, false)));
+}
+
+#[test]
+fn a_word_pattern_skips_matches_going_backward_too() {
+    let t = buf("foo foobar barfoo foo_bar foo");
+    assert_eq!(
+        find_word(&t, "foo", 26, Dir::Backward),
+        Some((18..21, false))
+    );
+    assert_eq!(find_word(&t, "foo", 18, Dir::Backward), Some((0..3, false)));
+    assert_eq!(find_word(&t, "foo", 0, Dir::Backward), Some((26..29, true)));
+    assert_eq!(find_word(&buf("foobar"), "foo", 6, Dir::Backward), None);
+    assert_eq!(find_word(&buf("foobar"), "foo", 0, Dir::Forward), None);
+}
+
+#[test]
+fn a_rejected_match_moves_on_a_character_not_a_byte() {
+    // `é` is a word character of two bytes, and the search goes on from just after it.
+    let t = buf("éaa aa");
+    assert_eq!(find_word(&t, "aa", 0, Dir::Forward), Some((5..7, false)));
+    let t = buf("ééé é");
+    assert_eq!(find_word(&t, "é", 0, Dir::Forward), Some((7..9, false)));
+    assert_eq!(find_word(&t, "é", 9, Dir::Backward), Some((7..9, false)));
+}
+
+/// A match that doesn't count can overlap one that does, when `text` isn't all word characters.
+#[test]
+fn a_rejected_match_doesnt_hide_one_it_overlaps() {
+    let t = buf("x---");
+    assert_eq!(find_word(&t, "--", 0, Dir::Forward), Some((2..4, false)));
+    assert_eq!(t.matches(&word("--"), 0..4), vec![2..4]);
+    let t = buf("---x");
+    assert_eq!(find_word(&t, "--", 4, Dir::Backward), Some((0..2, false)));
+    assert_eq!(t.matches(&word("--"), 0..4), vec![0..2]);
+}
+
+#[test]
+fn a_word_pattern_is_literal_and_can_ignore_case() {
+    let p = Pattern::word("a.c", false, evil_word).unwrap();
+    assert_eq!(
+        buf("abc a.c").search(&p, 0, Dir::Forward).unwrap().range,
+        4..7
+    );
+    assert_eq!(p.as_str(), "a\\.c");
+    let p = Pattern::word("foo", true, evil_word).unwrap();
+    assert_eq!(
+        buf("x FOO").search(&p, 0, Dir::Forward).unwrap().range,
+        2..5
+    );
+}
+
+/// Highlighting takes the same pattern, so every highlight is a match `n` can land on.
+#[test]
+fn matches_and_match_at_use_the_same_rule() {
+    let t = buf("foo foobar barfoo foo_bar\nfoo\n");
+    assert_eq!(t.matches(&word("foo"), 0..t.len()), [0..3, 18..21, 26..29]);
+    // Past the range's last line, the next character still counts as a neighbour.
+    let t = buf("foo\nfoobar");
+    assert_eq!(
+        t.matches(&word("foo"), 4..7),
+        Vec::<std::ops::Range<usize>>::new()
+    );
+    assert_eq!(t.matches(&word("foo"), 0..3), vec![0..3]);
+    // What a plain pattern finds is unchanged.
+    assert_eq!(t.matches(&pat("foo"), 0..t.len()), [0..3, 4..7]);
+}
+
+#[test]
+fn a_plain_pattern_is_not_filtered() {
+    let t = buf("foobar");
+    assert_eq!(find(&t, "foo", 6, Dir::Backward), Some((0..3, false)));
+    assert_eq!(find(&t, "foo", 6, Dir::Forward), Some((0..3, true)));
+}
+
+#[test]
+fn an_empty_word_pattern_terminates() {
+    let t = buf("ab");
+    assert_eq!(t.search(&word(""), 0, Dir::Forward), None);
+    assert_eq!(t.search(&word(""), 2, Dir::Backward), None);
+    let t = buf("a  b");
+    let hit = t.search(&word(""), 0, Dir::Forward).unwrap();
+    assert_eq!(hit.range, 2..2);
+    assert_eq!(t.matches(&word(""), 0..4), vec![2..2]);
+}
