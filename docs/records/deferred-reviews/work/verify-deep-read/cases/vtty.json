@@ -1,0 +1,14 @@
+{"topic": "vtty", "run": "tty",
+ "cases": [
+  {"id": "insert-down-down-goal", "keys": "i<Down><Down>X<Esc>", "text": ["abcd|ef", "ab", "abcdef"]},
+  {"id": "insert-up-up-goal", "keys": "i<Up><Up>X<Esc>", "text": ["abcdef", "ab", "abcd|ef"]},
+  {"id": "ctrl-a-wrapped", "keys": "$<C-a>", "text": ["|word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23", "next"]},
+  {"id": "insert-down-wrapped", "keys": "i<Down>X<Esc>", "text": ["|word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23", "next"]},
+  {"id": "tty-j-after-cr", "keys": "j", "text": ["a\rb|c", "xyzwv"]},
+  {"id": "tty-e-comb-eol", "keys": "e", "text": ["|café"]},
+  {"id": "tty-dollar-comb-eol", "keys": "$", "text": ["|café"]},
+  {"id": "tty-count-ctrl-a", "keys": "3<C-a>", "text": ["ab|c", "def", "ghi", "jkl"]},
+  {"id": "tty-o-u-col0", "keys": "ox<Esc>u", "text": ["|abc"]},
+  {"id": "tty-iRightx-u", "keys": "i<Right>x<Esc>u", "text": ["|abc"]},
+  {"id": "tty-undef-count", "keys": "3gzl", "text": ["|abcdef"]}
+ ]}

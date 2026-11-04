@@ -1,0 +1,520 @@
+[
+ {
+  "id": "TEXT-1",
+  "severity": "major",
+  "area": "transactions and undo",
+  "file": "crates/die-core/src/text.rs",
+  "line": 336,
+  "claim": "A change that changes nothing still bumps the revision, logs a Change, records an undo step that does nothing, and clears redo.",
+  "evidence": "text.rs:336-375: apply() records every op. undo.rs:182: record() runs `self.redo.clear()`.\n\nScratch crate, on \"abc\": insert(1,\"x\"), then insert(2,\"\"), then replace(0..1,\"a\").\n- rev goes from 0 to 3, with 3 log entries.\n- undo 0 = Ok(0..1) and undo 1 = Ok(2..2) leave the text \"axbc\".\n- Only undo 2 removes x.\n\nThen insert(3,\"d\"), undo, delete(0..0) and redo gives Err(NothingToUndo): redo is lost.\n\nEmacs records nothing for an empty deletion, and Vim's u after a no-op undoes the previous change. V3 produces such changes: `d0` at column 0, `~` on a digit, `gU` on uppercase, and `r` with the same character.",
+  "proposed_fix": "In TextBuf::apply, after the range checks and before the read-only check:\n```rust\n// A change that changes nothing makes no revision, no log entry and no undo step.\nops.retain(|(r, s)| self.rope.byte_slice(r.clone()) != s.as_str());\nif ops.is_empty() {\n    return Ok(self.rev);\n}\n```\nRustdoc for Tx::commit:\n/// Apply every change or none, and return the revision after them. A change that changes nothing (an empty range with empty text, or text replaced by itself) is dropped: it makes no revision, no logged change and no undo step, and redo stays available. Errors: `BadRange` if a range is reversed, past the end, off a character boundary, or overlaps another change in the transaction; `ReadOnly` if a `User` change touches read-only text.\n\nAdd H::Noop to the model test (TEST-1).",
+  "needs_decision": false,
+  "recommendation": "Fix now. It's two lines, and V3 will hit it.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "TEXT-1",
+   "verdict": "confirmed",
+   "reasoning": "Partly confirmed. The mechanics reproduce in my scratch crate:\n- insert(1,\"x\"), insert(2,\"\") and replace(0..1,\"a\") take the revision to 3 with 3 log entries;\n- undo 0 = Ok(0..1) and undo 1 = Ok(2..2) both leave \"axbc\", and undo 2 removes the x;\n- after insert, undo, then delete(0..0), redo gives Err(NothingToUndo).\n\nBut the \"text replaced by itself\" half is wrong against the oracle. I ran the user's own Evil in batch (verify-text-and-keys/evil/noop.el), doing x first, then the no-op, then u:\n- `d0` at column 0 and `i<Esc>` record nothing: u undoes the x.\n- `ra` on an a, `~` on 1, `gUiw` on FOO and `sa` on an a each record a step: u undoes the no-op and the x stays.\n\nEmacs records casify-region and delete+insert pairs even when the text doesn't change, and Vim's `r` saves undo too. The proposed `retain(byte_slice != s)` would make `u` after `ra` undo the previous change, a deviation from Evil.\n\nOnly empty changes (empty range and empty text) are a defect: `d0` at column 0, an empty `c` motion, `p` with an empty register. That is narrower than the claimed major, and contained.\n\nK10b's \"a rewrite with the same bytes leaves no undo step\" must then compare the bytes itself, which revert already has to do.",
+   "fix_ok": false,
+   "better_fix": "In TextBuf::apply, after the range checks and before the read-only check:\n```rust\n// An empty change makes no revision, no log entry and no undo step, as Emacs records\n// nothing for an empty insertion or deletion. Text replaced by itself is still a change.\nops.retain(|(r, s)| !(r.is_empty() && s.is_empty()));\nif ops.is_empty() {\n    return Ok(self.rev);\n}\n```\nRustdoc for Tx::commit:\n/// Apply every change or none, and return the revision after them. A change with an empty range and empty text is dropped: it makes no revision, no logged change and no undo step, and redo stays available. Text replaced by itself is still a change and an undo step, as `ra` on an `a` is in Evil and Vim. Errors: `BadRange` if a range is reversed, past the end, off a character boundary, or overlaps another change in the transaction; `ReadOnly` if a `User` change touches read-only text.\n\nModel test (TEST-1, H::Noop):\n- insert(p, \"\") or delete(p..p): pushes nothing and keeps redo;\n- replace(p..q, the same text): pushes a step whose undo leaves the text unchanged and returns p..q, and clears redo."
+  }
+ },
+ {
+  "id": "TEXT-2",
+  "severity": "minor",
+  "area": "edits_since and Change",
+  "file": "crates/die-core/src/text.rs",
+  "line": 300,
+  "claim": "The change log's order within a transaction, and the presence of undo and redo changes in it, are undocumented. A dot-repeat recorder that concatenates inserted text gets two inserts at one position reversed.",
+  "evidence": "text.rs:370 applies a transaction's changes from the last position to the first. Scratch: tx.insert(2,\"A\").insert(8,\"B\") logs rev 1 at 8, then rev 2 at 2.\n\nWith `insert(p,\"(\").insert(p,\")\")` (an auto-pair), the log holds \")\" and then \"(\", although the text reads \"()\".\n\nContract \u00a79, die-vim primitive 8, makes dot-repeat read edits_since. Undo and redo changes are logged with origin User and silent false (text.rs:393-404), and no test reads them (TEST-1, mutants E and F).\n\nLOG_CAP is a const (text.rs:19), though A8 recommended a configurable cap.",
+  "proposed_fix": "Rustdoc for edits_since:\n/// Every change since `rev`, oldest first, or None if `rev` is newer than `rev()` or the log (LOG_CAP changes) no longer reaches back that far (C15). Changes are listed as they were applied, each in the coordinates of the text after the one before it: a transaction applies its changes from the last position to the first, so two inserts at one position are listed last one first. Undo and redo log their changes too, with origin `User` and not silent. A reader that needs every change catches up at least every LOG_CAP changes.\n\nRustdoc for Change:\n/// One change: bytes `start..old_end` were replaced by `text`, which now ends at `new_end`; the points give the same positions as lines and byte columns. `rev` is the revision it made.",
+  "needs_decision": false,
+  "recommendation": "Doc now; die-vim's V4 recorder relies on it.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "TEXT-2",
+   "verdict": "confirmed",
+   "reasoning": "Scratch results:\n- tx.insert(2,\"A\").insert(8,\"B\") logs rev 1 at 8, then rev 2 at 2.\n- On \"xy\", insert(1,\"(\").insert(1,\")\") gives \"x()y\", but logs \")\" (rev 1) and then \"(\" (rev 2). Concatenating the logged text gives \")(\".\n- Replaying the log in order, each change in the coordinates left by the one before, does reproduce the text. That is exactly the fact the rustdoc must state.\n\nOther evidence:\n- text.rs:370 applies ops in reverse sorted order.\n- text.rs:393-404 logs undo and redo changes with Origin::User and silent false.\n- Mutants E and F survive every test (my run).\n- A8 (s4-core-api.md:146-148) recommended \"per change, with the cap configurable\", but LOG_CAP is a const (text.rs:19).\n\nThe proposed rustdoc matches the code: None when rev > rev(), or when the oldest logged revision is past rev + 1.",
+   "fix_ok": true
+  }
+ },
+ {
+  "id": "TEXT-4",
+  "severity": "minor",
+  "area": "positions and dead ids",
+  "file": "crates/die-core/src/text.rs",
+  "line": 558,
+  "claim": "add_marker accepts a position inside a character, where decorate refuses one. set_sticky ignores a dead id. point() panics past the end, where line_of clamps.",
+  "evidence": "Scratch: TextBuf::new(\"\u4e2dx\").add_marker(1, Left) gives a marker at 1, with is_boundary false. decorate returns BadRange for the same position (text.rs:569-576).\n\nset_sticky (text.rs:602-606) returns () for a dead id, though C4 says a dead id is an error the type makes the caller handle.\n\npoint(3) on a 2-byte text panics with \"Byte index out of bounds\" (text.rs:289-295), while line_of (text.rs:280) clamps.",
+  "proposed_fix": "- `pub fn add_marker(&mut self, pos: usize, g: Gravity) -> Result<MarkerId>`: BadRange off a character boundary; still clamps to len().\n- `pub fn set_sticky(&mut self, id: DecorationId, start: Gravity, end: Gravity) -> Option<()>`.\n- point clamps like line_of, with rustdoc \"/// The line and byte column of `b`, clamped to the end.\"",
+  "needs_decision": false,
+  "recommendation": "Change the return types before extensions use markers.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "TEXT-4",
+   "verdict": "confirmed",
+   "reasoning": "Scratch results:\n- TextBuf::new(\"\u4e2dx\").add_marker(1, Left) gives a marker at 1 while is_boundary(1) is false;\n- decorate(1..1) on the same text returns BadRange;\n- point(3) on \"ab\" panics with \"Byte index out of bounds\", while line_of(3) returns 0.\n\nset_sticky (text.rs:602-606) returns () for a dead id. C4 (extension-contract.md:63) says \"Looking up a dead id returns an error, and the type makes the caller handle it.\"\n\nThe reviewer missed one: remove_marker (text.rs:564-566) also returns () for a dead id.",
+   "fix_ok": false,
+   "better_fix": "The reviewer's three changes, plus:\n```rust\n/// Remove a marker; its last position, or None if `id` was already dead.\npub fn remove_marker(&mut self, id: MarkerId) -> Option<usize>\n```\nIn the Gravity docs (DOCS-1), say \"strictly inside replaced text\": a position at the replaced range's start stays at the start, and one at its old end goes to the replacement's end, whatever its gravity (map_pos, text.rs:195-207)."
+  }
+ },
+ {
+  "id": "TEXT-5",
+  "severity": "minor",
+  "area": "cursors in other windows",
+  "file": "crates/die-core/src/text.rs",
+  "line": 439,
+  "claim": "Text inserted at a cursor pushes that cursor forward in every window. Emacs leaves other windows' points before the new text.",
+  "evidence": "text.rs:438-442 maps every window's anchor and head with Gravity::Right.\n\nScratch: two windows with cursors at 1 in \"abc\", then a silent Extension insert of \"XYZ\" at 1, moves both cursors to 4.\n\nEmacs's window points are markers that stay before insertions; comint follows output only via insert-before-markers. Vim's other windows keep their line and column.",
+  "proposed_fix": "Map the acting window's head with Right, and every other head and every anchor with Left. Contract \u00a79 Cursors sentence: \"Text inserted at a cursor goes after the acting window's cursor and before every other window's, as Emacs's window points do.\"",
+  "needs_decision": true,
+  "recommendation": "Adopt. The focused window still follows text streamed at its cursor.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "TEXT-5",
+   "verdict": "confirmed",
+   "reasoning": "- Scratch: two windows with cursors at 1 in \"abc\", then a silent Extension insert of \"XYZ\" at 1, moves both cursors to 4.\n- map_all maps every window's anchor and head with Gravity::Right (text.rs:438-442).\n- Emacs's non-selected window points are markers that stay before an insertion.\n- For callbacks, actor = cur_window = focused (ctx.rs:1130). Under the proposal, the focused window follows a stream at its cursor and others don't.\n\nThe proposed \"every anchor with Left\" breaks the acting window's collapsed cursor. After typing at a cursor (anchor == head), the anchor stays and the head moves, so Selection::cursor becomes a selection over the inserted text.",
+   "fix_ok": false,
+   "better_fix": "Give each window one gravity for both ends:\n```rust\nlet actor = self.actor;\nfor (w, v) in self.views.iter_mut() {\n    let g = if Some(*w) == actor { Gravity::Right } else { Gravity::Left };\n    v.sel.anchor = m(v.sel.anchor, g);\n    v.sel.head = m(v.sel.head, g);\n    v.top = m(v.top, Gravity::Left);\n}\n```\nContract \u00a79, Cursors: \"Text inserted at a window's cursor goes after it in the acting window (the one running the command, or the focused one for a callback) and before it in every other window, as Emacs's window points do.\"",
+   "decision_view": "Adopt, with the acting window keeping Right for both ends. Another window's cursor stays where you left it, as in Emacs and Vim. An extension that wants a window to follow its output can set that window's cursor, as comint does."
+  }
+ },
+ {
+  "id": "TEXT-6",
+  "severity": "nit",
+  "area": "styled insertion",
+  "file": "docs/extension-contract.md",
+  "line": 222,
+  "claim": "Styled insertion has no work package, and its likely shape would change Tx::commit's return type.",
+  "evidence": "Contract \u00a79:222: \"Styled insertion inserts text together with its faces and tags in one call\".\n\n`styled` appears nowhere in m0-plan.md, m0-log.md or scope.md. TextBuf has no such call, and Tx::commit returns only a revision (text.rs:243).",
+  "proposed_fix": "Plan it for M1's contract tests with a shape that leaves commit alone:\n- `Tx::insert_styled(self, at: usize, spans: Vec<(String, Option<&'static str>)>) -> Self`;\n- `Tx::commit_decorated(self) -> Result<(u64, Vec<DecorationId>)>`, beside commit.",
+  "needs_decision": false,
+  "recommendation": "Note in the M0 plan's deferred list.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "TEXT-6",
+   "verdict": "confirmed",
+   "reasoning": "- Contract \u00a79:222 promises styled insertion of text \"together with its faces and tags in one call\".\n- `styled` appears nowhere in m0-plan.md, m0-log.md or scope.md, and m0-plan \u00a77's \"To M1\" list (line 249) doesn't name it.\n- Tx::commit returns only u64 (text.rs:242-245).\n\nThe proposed span type `(String, Option<&'static str>)` carries a face only, so it can't carry the tags the contract promises (Deco::Tag holds an Rc<dyn Any>).",
+   "fix_ok": false,
+   "better_fix": "Add to m0-plan \u00a77's \"To M1\" list: \"styled insertion (contract \u00a79): `Tx::insert_styled(self, at: usize, spans: Vec<(String, Vec<Deco>)>) -> Self`, whose decorations (faces, tags, read-only, keymaps) are anchored to each span's inserted range, and `Tx::commit_decorated(self) -> Result<(u64, Vec<DecorationId>)>` beside `commit`.\""
+  }
+ },
+ {
+  "id": "UNDO-2",
+  "severity": "minor",
+  "area": "undo groups",
+  "file": "crates/die-core/src/text.rs",
+  "line": 467,
+  "claim": "Two group behaviours are undocumented and untested: an explicit undo group that's never ended swallows every later command into one step, and undo or redo silently ends an open group.",
+  "evidence": "Scratch: begin_undo_group, then three commands each inserting a character, with no end. One undo removes all three (\"abc\" becomes \"\").\n\nundo.rs:355: commit() sets depth to 0, so `u` inside an insert session ends it, and die-vim's later end_undo_group does nothing. Mutant C survives every test.\n\ntext.rs:466-473 rustdoc says neither.",
+  "proposed_fix": "Rustdoc for begin_undo_group:\n/// Start an undo group spanning commands, such as an insert session. Every recorded edit to this buffer until the matching `end_undo_group` is one step, including edits from other commands and callbacks. An edit made earlier in the same command joins it. Groups nest; only the outermost end closes it. A group left open swallows every later edit, so end it on every way out (Escape, a click elsewhere, a buffer switch). `undo` and `redo` end any open group.\n\nAdd a die-vim test: each way out of insert state ends the group.",
+  "needs_decision": false,
+  "recommendation": "Doc now.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "UNDO-2",
+   "verdict": "confirmed",
+   "reasoning": "Scratch results:\n- begin_undo_group, then three commands each inserting a character, with no end: one undo empties the buffer (\"abc\" becomes \"\").\n- begin, a, b, then undo, gives \"\". Then c, d and end_undo_group: undo gives \"c\", and undo again gives \"\". So undo ended the group, and the later end did nothing.\n\nThe code agrees: History::commit sets depth = 0 (undo.rs:355), and end() returns early at depth 0 (undo.rs:279-282). The rustdoc at text.rs:466-473 says neither. Mutant C survives both suites (my run).\n\nThe proposed rustdoc matches the code:\n- begin joins a group from the same command (undo.rs:267-275);\n- groups nest by depth;\n- undo and redo end the group.\nIt omits that undo_boundary still splits an open group into new steps (text.rs:474-476).",
+   "fix_ok": true,
+   "better_fix": "Use the reviewer's rustdoc, adding after its second sentence: \"`undo_boundary` still ends the current step early; the group stays open, as a new step.\""
+  }
+ },
+ {
+  "id": "KEYS-1",
+  "severity": "minor",
+  "area": "KeyEvent.text and printable()",
+  "file": "crates/die-core/src/keys.rs",
+  "line": 142,
+  "claim": "printable() returns the OS text even with Ctrl held, and winit's text for Ctrl chords is a control character. If R4 copies it, `<char>` matches Ctrl chords and insert state or the prompt types control characters. The `text` rustdoc's example also contradicts Option-as-Alt.",
+  "evidence": "S1 real run (spikes/s1-renderer/results/interactive-keys.json, 2026-11-03): winit's text is \"\\u0001\" for C-a, \"\\u001b\" for C-[, \"\\u0007\" for C-g, \"\\u0000\" for C-Space and \"\\r\" for C-Return.\n\nkeys.rs:143 returns `text` before checking mods. Scratch: KeyEvent{key: Char('a'), ctrl, text: Some(\"\\u{1}\")}.printable() == Some(\"\\u{1}\").\n\nGhostty's ghostty_key_event_set_utf8 doc (die-term-sys bindings.rs:4893): \"Do not pass C0 control characters ... pass NULL instead\".\n\nkeys.rs:72 gives the example \"\u00e9\" from Option-e e, but keys.rs:49 says \"DIE treats both Option keys as Alt\", and S1's matrix tests \"M-e (dead key on US/AU)\" as Alt-e.\n\ncommitted(\"\") gives key Char(' ') with printable Some(\"\").",
+  "proposed_fix": "Replace printable():\n```rust\npub fn printable(&self) -> Option<String> {\n    if self.mods.ctrl || self.mods.alt || self.mods.super_ {\n        return None;\n    }\n    match (&self.text, self.key) {\n        (Some(t), _) => (!t.is_empty() && !t.chars().any(char::is_control)).then(|| t.clone()),\n        (None, Key::Char(c)) if !c.is_control() => Some(c.to_string()),\n        _ => None,\n    }\n}\n```\nRustdoc for `text`:\n/// Text committed outside an ordinary key press: the Character Viewer or the emoji picker (Option is Alt, so Option dead keys don't occur). None for ordinary keys. R4 doesn't copy the OS's per-key text here: for Ctrl chords it's a C0 control character.",
+  "needs_decision": false,
+  "recommendation": "Fix before R4 maps events.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "KEYS-1",
+   "verdict": "confirmed",
+   "reasoning": "S1's interactive-keys.json gives winit text:\n- \"\\u0001\" for C-a and C-S-a;\n- \"\\u001b\" for C-[;\n- \"\\u0000\" for C-Space;\n- \"\\u0007\" for C-g;\n- \"\\r\" for C-Return and \"\\t\" for C-Tab;\n- \"/\" for C-/, and \"x\" for M-x with either Option key.\n\nThe last two are not control characters, so the mods check in the proposed printable() is essential. Filtering control characters alone wouldn't stop M-x from matching `<char>`.\n\nScratch results:\n- KeyEvent{Char('a'), ctrl, text \"\\u{1}\"}.printable() == Some(\"\\u{1}\");\n- committed(\"\") gives key Char(' ') with printable Some(\"\").\n\nThe Ghostty doc quote is verified at spikes/s2-term-engine/crates/die-term-sys/src/bindings.rs:4892. keys.rs:72 does give the Option-e e example, against keys.rs:49.\n\nThe printable() code is right. The proposed `text` rustdoc is wrong: it drops dead keys entirely. Option dead keys don't occur, but dead keys without Option do: US International, most European layouts, and Linux. Contract \u00a77 says `<char>` includes text committed by dead keys, and input-method commits use this field too.",
+   "fix_ok": false,
+   "better_fix": "Keep the reviewer's printable() code. Rustdoc for printable():\n/// The text this key types, or None: with Ctrl, Alt or Super held, for empty text, and for text containing a control character. `<char>` matches exactly the keys where this is Some.\n\nRustdoc for `text`:\n/// Text the OS committed beyond what `key` names: a dead-key composition on layouts that have dead keys (\u00b4 then e gives \u00e9; Option's dead keys don't occur, since Option is Alt), an input method's commit, the Character Viewer or the emoji picker. None for ordinary keys, and None whenever Ctrl, Alt or Super is held: R4 doesn't copy the OS's per-key text, which is a C0 control character for Ctrl chords (\\u{1} for C-a) and the plain letter for Alt (x for M-x)."
+  }
+ },
+ {
+  "id": "KEYS-3",
+  "severity": "minor",
+  "area": "key_notation round trip",
+  "file": "crates/die-core/src/keys.rs",
+  "line": 321,
+  "claim": "Committed text of more than one code point comes back from notation as several keys. A recorded `r\u2764\ufe0f`, `f\ud83d\udc4d\ud83c\udffd` or `f\ud83c\udde6\ud83c\uddfa` replays as the first code point, followed by stray keys.",
+  "evidence": "keys.rs:321 writes committed text one character at a time. Scratch: committed(\"\ud83d\udc4d\ud83c\udffd\") gives notation \"\ud83d\udc4d\ud83c\udffd\", and parse_keys gives 2 keys.\n\ntests/notation.rs:206-213 asserts only the concatenated text: \"Committed text comes back as one key per character\". In normal state, the trailing U+FE0F or U+1F1FA is an unbound key.",
+  "proposed_fix": "In keys.rs typed(), merge runs of unmodified literal characters by grapheme cluster (unicode-segmentation, already a dependency). A cluster of more than one char becomes one `KeyEvent::committed(cluster)`.\n\nIn committed_text_round_trips, generate single-cluster texts (emoji with modifiers, flags, ZWJ sequences) and assert that `back.len()` is the number of clusters and each key's printable() is its cluster.",
+  "needs_decision": false,
+  "recommendation": "Fix with V4.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "KEYS-3",
+   "verdict": "confirmed",
+   "reasoning": "Scratch, committed text through key_notation and parse_keys:\n- \"\ud83d\udc4d\ud83c\udffd\", \"\ud83c\udde6\ud83c\uddfa\" and \"\u2764\\u{fe0f}\" each come back as 2 keys, for example [Char('\ud83d\udc4d'), Char('\ud83c\udffd')];\n- \"e\\u{301}\" comes back as 2 keys;\n- \"\u00e9\" comes back as 1 key.\n\nkeys.rs:321 writes committed text one character at a time. tests/notation.rs:205-213 compares only the concatenated text.\n\nMerging grapheme clusters in typed() is the right fix, but two details are missing:\n- CR LF is a single extended grapheme cluster, so control characters must be excluded from the merge.\n- notation_round_trips (notation.rs:198-203) asserts `back == evs` for random key presses. A generator that can produce two adjacent plain characters forming one cluster (a letter then a combining mark, or two regional indicators) would then fail.",
+   "fix_ok": false,
+   "better_fix": "In typed(): merge runs of unmodified `Key::Char` chords that come from literal characters (not `<lt>`, `<Space>`, `<Bar>` or `<Bslash>`) by extended grapheme cluster. Turn each cluster of more than one char that contains no control character into one `KeyEvent::committed(cluster)`.\n\nIn notation_round_trips, keep key_press from emitting combining marks, ZWJ, variation selectors or regional indicators.\n\nIn committed_text_round_trips, add single-cluster texts (skin-tone emoji, flags, ZWJ families, e plus U+0301). Assert that back.len() equals the cluster count and that each key's printable() is its cluster."
+  }
+ },
+ {
+  "id": "KEYS-5",
+  "severity": "minor",
+  "area": "Ctrl aliases",
+  "file": "crates/die-core/src/keys.rs",
+  "line": 96,
+  "claim": "In your GUI Emacs and in Vim, C-[ is Escape, C-i is Tab and C-m is Enter. In DIE they're separate keys, so C-[ doesn't leave insert state.",
+  "evidence": "Scratch: parse_pats(\"<C-[>\") != parse_pats(\"<Esc>\"), and parse_pats(\"<C-i>\") != parse_pats(\"<Tab>\").\n\nS1's run: C-[ arrives as logical \"[\" with Ctrl.\n\ndispatch (ctx.rs) would report \"<C-[> is undefined\" in insert state.\n\nKitty's protocol tells these keys apart, so the raw event must stay distinct for passthrough.",
+  "proposed_fix": "Fold only in keymap matching. In keys.rs fold(), before the Char arms, when only Ctrl (and Shift for i) is held:\n```rust\nKey::Char('[') if mods.ctrl && !mods.alt && !mods.super_ => { mods.ctrl = false; Key::Esc }\nKey::Char('i') if mods.ctrl && !mods.alt && !mods.super_ => { mods.ctrl = false; Key::Tab }\nKey::Char('m') if mods.ctrl && !mods.alt && !mods.super_ => { mods.ctrl = false; Key::Enter }\n```\nKeyEvent itself stays raw for passthrough. Update notation_round_trips' generator.\n\nThe alternative is for die-vim to bind `<C-[>` wherever it binds `<Esc>`.",
+  "needs_decision": true,
+  "recommendation": "Fold in chord(), which matches both references.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "KEYS-5",
+   "verdict": "confirmed",
+   "reasoning": "Scratch: parse_pats(\"<C-[>\"), (\"<C-i>\") and (\"<C-m>\") each differ from <Esc>, <Tab> and <CR>.\n\ndie-vim's Insert keymap binds only `<char>` and `<Esc>` (die-vim/src/lib.rs:87-88), so C-[ is unbound there. With winit's text copied in, C-[ would even match `<char>` and type ESC (KEYS-1). S1 records C-[ as logical \"[\" with Ctrl and text \\u001b.\n\nGUI Emacs turns C-[, C-i and C-m into ESC, TAB and RET, and Vim does the same, so folding matches both references.\n\nThe proposed fold() arms don't check Shift. Ctrl-Shift-I would fold to Key::Tab with shift still set, which is `<S-Tab>`.",
+   "fix_ok": false,
+   "better_fix": "In fold(), before the Char arms:\n```rust\nlet bare_ctrl = mods.ctrl && !mods.alt && !mods.super_ && !mods.shift;\nlet key = match key {\n    Key::Char('[') if bare_ctrl => { mods.ctrl = false; Key::Esc }\n    Key::Char('i') if bare_ctrl => { mods.ctrl = false; Key::Tab }\n    Key::Char('m') if bare_ctrl => { mods.ctrl = false; Key::Enter }\n    k => k,\n};\n```\nThen the existing arms run. KeyEvent stays raw for passthrough. key_notation will write a raw C-[ event as `<Esc>`, so notation_round_trips' generator must not emit Ctrl with [, i or m. Document the three aliases in contract \u00a77.",
+   "decision_view": "Fold in chord(). It matches both of the user's references, and the raw event stays distinct for kitty passthrough. The cost is that `<C-i>` can't be bound apart from Tab, which neither Vim nor GUI Emacs allows either."
+  }
+ },
+ {
+  "id": "KEYS-6",
+  "severity": "minor",
+  "area": "notation parsing",
+  "file": "crates/die-core/src/keys.rs",
+  "line": 286,
+  "claim": "Notation accepts three spellings that can't mean what they say: `<C-S-2>` binds a chord no key produces, `<S-Space>` is plain Space, and an unclosed `<C-a` binds four keys silently.",
+  "evidence": "Scratch: parse_pats(\"<C-S-2>\") = Chord{Char('2'), ctrl}. keys.rs:286-292 uppercases only letters, then fold() drops Shift. The OS sends Ctrl-Shift-2 as Char('@'), since Shift is already applied (keys.rs:9), so the binding never fires; it should be written `<C-@>`.\n\nparse_pats(\"<S-Space>\") == parse_pats(\"<Space>\").\n\nparse_keys(\"<C-a\") gives 4 keys. Contract \u00a77:149 calls \"modifiers followed by something that isn't a key\" a startup error.",
+  "proposed_fix": "In bracket(): when has_mods and there's no closing `>`, return Err(format!(\"unclosed <{}\", String::from_iter(&c[1..]))).\n\nIn chord(): return Result, with Err(\"write the shifted character, as in <C-@>, not <C-S-2>\") when Shift is held with a Char that isn't an ASCII letter or a space.\n\nIn fold(): keep Shift on Key::Char(' ').",
+  "needs_decision": false,
+  "recommendation": "Fix in K5's dispatch work.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "KEYS-6",
+   "verdict": "confirmed",
+   "reasoning": "Scratch results:\n- parse_pats(\"<C-S-2>\") = Chord{Char('2'), ctrl}, with Shift dropped, while the OS sends Ctrl-Shift-2 as '@'. S1 shows that logical keys come with Shift applied (C-S-a gives 'A').\n- parse_pats(\"<S-Space>\") == parse_pats(\"<Space>\"); <S-1> gives plain '1'.\n- parse_keys(\"<C-a\") gives 4 keys, and \"<C-x\" gives '<','C','-','x'. Meanwhile <C-X-a> is an error.\n\nThe proposed fix is wrong in one part: keeping Shift on Space in fold(). Shift-Space typed while Shift is still held would then stop matching a `<Space>` binding, such as a Space leader, and DIE has no Emacs-style fallback that retries without Shift.\n\nThe unclosed-bracket error is fine: \"<C-\" stays literal (bracket() needs i + 2 < len), and no fixture uses an unclosed modifier.",
+   "fix_ok": false,
+   "better_fix": "In bracket(): when has_mods and there's no closing `>`, return `Err(format!(\"unclosed <{}\", String::from_iter(&c[1..])))`.\n\nIn chord(): return Result. When Shift is written with any Key::Char that isn't an ASCII letter, Space included, return Err: \"write the shifted character, as in <C-@>, not <C-S-2>\", or for Space, \"Shift doesn't change Space: write <Space>\". Leave fold() as it is."
+  }
+ },
+ {
+  "id": "KEYS-7",
+  "severity": "minor",
+  "area": "KeyEvent for kitty and Ghostty",
+  "file": "crates/die-core/src/keys.rs",
+  "line": 67,
+  "claim": "KeyEvent can't carry Num Lock or keys that Key has no name for, which Ghostty's encoder accepts. Since KeyEvent is built with struct literals, adding fields later breaks every constructor.",
+  "evidence": "die-term-sys bindings.rs:69 has MODS_NUM_LOCK. Its physical Key enum covers PRINT_SCREEN, SCROLL_LOCK, PAUSE, CONTEXT_MENU, HELP, F25 and media keys.\n\nKeyEvent (keys.rs:67-83) has caps_lock but no num_lock. Key (keys.rs:8-31) has no catch-all variant, so R4 must drop those keys before passthrough.\n\nconsumed_mods (bindings.rs:4877) isn't carried, and nothing says how to derive it.",
+  "proposed_fix": "```rust\n/// Num Lock is on, where the platform has it (not macOS). Keymaps ignore it.\npub num_lock: bool,\n```\n```rust\n/// A key with no name here; its physical key is in `KeyEvent::code`. Keymaps never match it; passthrough forwards it.\nUnidentified,\n```\nDoc on `unshifted`: \"With `key`, this gives the terminal's consumed modifiers: Shift is consumed when `key`'s character differs from this one; Alt never is, since Option is Alt.\"",
+  "needs_decision": false,
+  "recommendation": "Add before R4.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "KEYS-7",
+   "verdict": "confirmed",
+   "reasoning": "- die-term-sys (spikes/s2-term-engine/crates/die-term-sys/src/bindings.rs) has MODS_NUM_LOCK = 32 at line 69.\n- Its physical key type covers CONTEXT_MENU (4719), NUM_LOCK (4743) and PRINT_SCREEN (4812).\n- It has ghostty_key_event_set_consumed_mods (4877).\n- KeyEvent (keys.rs:67-83) has caps_lock but no num_lock.\n- Key (keys.rs:8-31) has no catch-all variant.\n- KeyEvent has all-pub fields and is built with struct literals, so adding fields after R4 and die-term exist breaks their constructors.\n- Kitty's protocol reports Num Lock, which matters for M2's Linux preview.",
+   "fix_ok": true
+  }
+ },
+ {
+  "id": "KEYMAP-1",
+  "severity": "nit",
+  "area": "<any> and prefixes",
+  "file": "docs/extension-contract.md",
+  "line": 154,
+  "claim": "`<any>` doesn't catch a key that fails under a prefix, but the contract reads as if it does.",
+  "evidence": "keymap.rs:109-129: no backtracking.\n\nScratch: with `iw` and `<any>` bound in OperatorPending, `ix` gives Lookup::None and `x` gives the cancel command.\n\nContract \u00a77:154: \"<any> matches any key a keymap doesn't otherwise bind\".",
+  "proposed_fix": "Contract \u00a77 sentence: \"`<char>` and `<any>` match one key where they're bound: a key that fails under a prefix isn't tried against the root's, so die-vim also binds `i<any>` and `a<any>` to cancel `di` followed by an unbound key.\"",
+  "needs_decision": false,
+  "recommendation": "Doc.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "KEYMAP-1",
+   "verdict": "confirmed",
+   "reasoning": "Scratch, with `iw` and `<any>` bound in OperatorPending:\n- `i` gives Prefix;\n- `ix` gives Lookup::None;\n- `x` gives Command(\"cancel\").\n\nTrie::lookup doesn't backtrack (keymap.rs:109-129), and A18 says so. Contract \u00a77:154 (\"`<any>` matches any key a keymap doesn't otherwise bind\") reads as if `ix` were caught.\n\n`i<any>` can coexist with `iw`: neither is a prefix of the other, and exact matches beat `<any>`. die-vim doesn't bind `<any>` yet.",
+   "fix_ok": true
+  }
+ },
+ {
+  "id": "TEST-1",
+  "severity": "minor",
+  "area": "undo property test",
+  "file": "crates/die-core/tests/prop.rs",
+  "line": 789,
+  "claim": "undo_history_matches_a_model lets six plausible undo bugs pass the whole die-core suite, and three more are caught only by unit tests.",
+  "evidence": "Mutants applied one at a time to a scratch copy, full die-core suite at DIE_PROP_CASES=3000 (run_mutants.py, mutants.out).\n\nPassed everything:\n- (A) undo.rs:211: a group's selection is taken at its first edit, not at begin_undo_group.\n- (C) undo.rs:355: undo doesn't end an open group.\n- (E) undo and redo changes are logged as silent.\n- (F) undo and redo changes aren't logged at all (text.rs:405).\n- (G) text.rs:378: the restored selection is the first window's, not the actor's.\n- (I) map_sel drops `goal` when there are silent shifts.\n\nPassed the model, caught only elsewhere:\n- (B) begin doesn't join an edit made earlier in the same command;\n- (D) silent edits aren't pushed on the redo stack;\n- (H) a group rebased mid-session keeps a stale selection.\n\nWhy, in the model (prop.rs:855-1096):\n- one window;\n- no silent edits;\n- goal always None (prop.rs:1090);\n- the cursor never moves between begin and the first edit;\n- no undo inside a group;\n- begin is never called in the same unit as an edit;\n- it never reads edits_since.",
+  "proposed_fix": "Extend h_step and run_history:\n1. In H::Unit, add a cursor move in its own unit after begin and before the first char. The model's step.sel is the selection at begin. Catches A.\n2. Add H::UnitUndo(a, chars, k): begin, type chars[..k], undo, type chars[k..], end. Model: chars[..k] is one step, popped to redo; each later char is its own step. Document \"undo or redo ends an open group\" (UNDO-2). Catches C.\n3. After every step, replay the log. Record `r0 = rev()` before the step, then:\n```rust\nlet mut s = before.clone();\nfor c in t.edits_since(r0).unwrap() {\n    s.replace_range(c.start..c.old_end, &c.text);\n    assert_eq!(c.origin, Origin::User);\n    assert!(!c.silent);\n}\nassert_eq!(s, after);\n```\nCatches E and F.\n4. Open a second window. Add H::Focus(bool), which calls ctx.focus. Keep the model's selection per window and compare the actor's. Catches G.\n5. Give H::Sel random goals. Add H::Stream(String): a silent Extension append at the buffer's end, which the model appends to every snapshot's before and after text. Catches I and D.\n6. H::Noop(a): insert(p, \"\") and replace(p..q, same). The model pushes nothing (TEXT-1).\n7. H::Two(a, x, y): two transactions in one unit, one step.\n8. H::Caps(steps, bytes) mid-run. The model trims at the next edit, undo or redo.\n9. Plant A, C, F and G in tests/mutants.toml.",
+  "needs_decision": false,
+  "recommendation": "Land with K4, since the extra mutants run in `cargo xtask mutate`.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "TEST-1",
+   "verdict": "confirmed",
+   "reasoning": "I applied mutants A, C, E, F, G and I myself, one at a time, to a copy of the tree (verify-text-and-keys/mut.py).\n- With DIE_PROP_CASES=2000, `cargo test -p die-core` passes in full (exit 0) for every one.\n- For A, C, G and I, die-vim's tests (sessions and oracle) pass too.\n- Why, in the model test: prop.rs:1090 sets `goal: None`; run_history opens one window; H has no silent steps.\n\nThe proposed generator changes target the right gaps, but two items are wrong:\n- Item 5 streams at the buffer's end and appends the text to every snapshot. If the step is undone, text is streamed, and then the step is redone, the redone text lands after the streamed text. undo.rs's transform() moves an op past a silent insertion at its own position (`p.pos + p.del <= o.pos`). So correct code would fail that model.\n- Item 6 (H::Noop pushes nothing) would encode TEXT-1's refuted half.",
+   "fix_ok": false,
+   "better_fix": "Keep items 1-4 and 7-9 as written. Change two:\n- Item 5: H::Stream(String) prepends silently at offset 0, as an Extension edit \"above your text\" (the contract's own example), rather than appending at the end. The model then:\n  - prepends S to every snapshot's before and after text;\n  - adds len(S) to every stored selection's anchor and head, keeping shape and goal;\n  - adds len(S) to every expected undo and redo range.\n  The other generator change in item 5 (H::Sel with random goals) stays as written. Together they catch I and D.\n- Item 6: H::Noop(a, kind):\n  - insert(p, \"\") or delete(p..p): the model pushes nothing and keeps redo;\n  - replace(p..q, the same text): the model pushes a step whose undo gives identical text and range p..q, and clears redo (TEXT-1)."
+  }
+ },
+ {
+  "id": "DOCS-1",
+  "severity": "minor",
+  "area": "rustdoc",
+  "file": "crates/die-core/src/text.rs",
+  "line": 30,
+  "claim": "175 public items in scope have no rustdoc, including the units that matter most. K15 adds docs only after phase 1 has built on them.",
+  "evidence": "`cargo rustdoc -p die-core -- -W missing_docs` reports: text.rs 80, layout.rs 37, keys.rs 31, error.rs 14, keymap.rs 13.\n\nUndocumented:\n- Point.col (a `// bytes` comment, text.rs:32);\n- Change's fields;\n- Gravity's meaning;\n- Selection's anchor and head;\n- Settings' units;\n- Stop's row and col;\n- line_count counting the empty last line (\"a\\n\" gives 2);\n- redo returning NothingToUndo.\n\nci's clippy runs with -D warnings (xtask/src/ci.rs:49). xtask's lint restricts only warn(unsafe_code) and allow(warnings) (lint.rs:527).",
+  "proposed_fix": "Add `#![warn(missing_docs)]` to text.rs, text/search.rs, keys.rs, keymap.rs and layout.rs now. Key texts:\n- Point: /// A position as a line and a column, both from 0. `col` counts bytes from the line's start (tree-sitter's convention).\n- Gravity: /// Where a position goes when text is inserted exactly at it: `Left` stays before the new text, `Right` moves after it. Inside replaced text, `Left` goes to the replacement's start and `Right` to its end.\n- Selection: /// A window's selection. `anchor` and `head` are byte offsets on cursor positions; `head` is the cursor. `Line` covers the lines from anchor's to head's; `Block`, the display columns between theirs on those lines.\n- line_count: /// Lines as ropey counts them: text ending in a newline has an empty last line, so \"a\\n\" has 2.\n- Settings.max_width: /// The text area's width in cells; the gutter is outside it.\n- Settings.tab_width: /// Cells per tab stop, counted from the display line's start; 0 counts as 1.\n- Stop: /// `vcol` counts cells from the display line's start; `row` and `col` place it for the width the line was laid out at.",
+  "needs_decision": false,
+  "recommendation": "Turn the lint on now, not at K15.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "DOCS-1",
+   "verdict": "confirmed",
+   "reasoning": "`cargo rustdoc -p die-core -- -W missing_docs` on a copy of the tree reports:\n- text.rs 80, layout.rs 37, keys.rs 31, error.rs 14, keymap.rs 13: 175 in scope;\n- ctx.rs 78, out of scope.\n\nThe named gaps are real:\n- Point.col has only `// bytes` (text.rs:32);\n- Change's fields, Gravity, Selection's anchor and head, Settings' units and Stop's row and col are undocumented;\n- the review was scheduled to read \"the rustdoc for text, undo, keys and keymaps\".\n\nci runs clippy with `-D warnings` (xtask/src/ci.rs:45-51), so a module-level `#![warn(missing_docs)]` becomes a gate. All 175 items must be documented in the same change.\n\nThe proposed texts match the code. Gravity is the one exception: say \"strictly inside\" (see TEXT-4).",
+   "fix_ok": true
+  }
+ },
+ {
+  "id": "SEARCH-1",
+  "severity": "minor",
+  "area": "search for * and #",
+  "file": "crates/die-core/src/text/search.rs",
+  "line": 25,
+  "claim": "In your fundamental-mode, Evil's * and # treat `_` as a non-word character, so `*` on foo matches inside foo_bar. Rust's `\\<`, `\\>` and `\\b` count `_` as a word character, and Pattern has no way to say otherwise.",
+  "evidence": "Evil probe (probe/star.el, your ~/.emacs.d/lisp/evil, fundamental-mode as your .rs files open):\n- `*` on the last foo of `x foo_bar foo` lands at 2, inside foo_bar;\n- `*` from 0 in `foo foobar foo_bar` lands at 11, skipping foobar.\n\nEvil's pattern is `\\<foo\\>` (evil-search.el:296-299).\n\nPattern::new takes only ignore_case (search.rs:25). Rust regex has no look-around. K8's search highlight takes the same Pattern, so filtering in die-vim alone would leave highlights and `n` disagreeing.",
+  "proposed_fix": "```rust\n/// A literal pattern for `*` and `#`: `text` matches only where the characters on either side aren't word characters by `is_word` (Evil's in fundamental-mode: alphanumerics, not `_`). Rust's `\\b` can't say this, since its word characters include `_`.\npub fn word(text: &str, ignore_case: bool, is_word: fn(char) -> bool) -> Result<Pattern>\n```\nIt compiles the escaped literal. search, matches and match_at skip a match whose neighbouring characters pass `is_word`; search goes on from the rejected match's start + 1.\n\nThe alternative is a deviations.json entry with a fixture.",
+  "needs_decision": true,
+  "recommendation": "Follow Evil (D4) with Pattern::word, since V1's `w` already stops at `_`.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "SEARCH-1",
+   "verdict": "confirmed",
+   "reasoning": "The user's Evil (verify-text-and-keys/evil/star.el, fundamental-mode):\n- `*` from the last foo of `x foo_bar foo` lands at 2, inside foo_bar;\n- `*` from 0 in `foo foobar foo_bar` lands at 11, skipping foobar and landing in foo_bar;\n- `w` from 0 in `foo_bar baz` lands at 3, on the `_`.\n\nEvil's word search builds `\\<%s\\>` from the word under point (evil-search.el:1062-1065 for the evil-search module; the isearch module is the same). That word is always made of word characters.\n\nThe core side:\n- Pattern::new takes only ignore_case (search.rs:25), and the Regex is private.\n- Rust's `\\b`, `\\<` and `\\>`, Unicode or ASCII, all count `_` as a word character, and there's no look-around.\n- Because die-vim's word under the cursor follows Evil (foo, inside foo_bar), a `\\bfoo\\b` pattern wouldn't even match the foo the cursor is on.\n\nA filter in core is the only way to keep the search highlight and `n` agreeing.",
+   "fix_ok": true,
+   "better_fix": "As proposed, with two precise points:\n- After rejecting a match, resume at the next character boundary after its start, not start + 1 byte.\n- last_before (backward search, used by `#` and N) must also skip rejected matches and keep looking further left.",
+   "decision_view": "Follow Evil, with Pattern::word.\n- V1's `w` already follows Evil (it stops at `_`), so `*` picks foo in foo_bar.\n- Rust's boundaries would then fail to match the word the cursor is on, which is worse than either reference.\n- A deviation would also need a fixture and would contradict D4's goal of finding what Evil's searches find."
+  }
+ },
+ {
+  "id": "WRAP-1",
+  "severity": "major",
+  "area": "contract \u00a79 soft wrap",
+  "file": "docs/extension-contract.md",
+  "line": 256,
+  "claim": "The wrap rule as written contradicts Emacs's visual-line-mode on whitespace at the row's end, and says nothing about several cases that two independent implementations would resolve differently.",
+  "evidence": "Contract line 256 says: \"A row ends after the last space or tab that fits on it, the breaking space included, and the next row starts with the next word.\"\n\nThe evidence is tty Emacs 30.2 on a pty (probe/probe.el, out.json, out2.json). A tty window W+1 wide breaks as GUI Emacs does at W: tty Emacs keeps its last column for the continuation glyph, and the probe gives the gj fixture's starts [0,35,65] at 40. At W=10:\n- (a) `aaaa bbbb  cccc` gives Emacs rows `aaaa ` and `bbbb  cccc`. The sentence breaks after the first space after bbbb, which fits.\n- (b) `aaaa` plus 8 spaces plus `bbbb` gives `aaaa` and 6 spaces, then `  bbbb`. The sentence drops or leads those 2 spaces, unstated.\n- (c) `aaaaaaaaaa bbbb` gives `aaaaaaaaaa`, then ` bbbb`. The sentence is undefined: no space fits, and the word isn't longer than a row.\n- (d) `aa bbbbbbbbbbbb` gives `aa `, then `bbbbbbbbbb`, then `bb`. Whether a long word starts its own row is unstated.\n- (e) 9 a's, a tab and `bb`: the tab is split, 1 cell on row 0 and 6 on row 1. `cc\\tdd` on a second row puts dd at row col 6, so tab stops count from the line's start.\n- (f) Hidden text without replacement joins words: `aaaa bb[hidden space]cccccc` breaks before bb. Emacs breaks inside display strings and before-strings at their spaces (EOB at col 7).\n- (g) NBSP, U+200B, U+3000 and `-` never break. U+200B takes 1 column. Cluster width is unstated: unicode-width 0.2.2 gives 2 for \ud83d\udc4d\ud83c\udffd, \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67 and \ud83c\udde6\ud83c\uddfa, and tty Emacs 4.\n\nIn code, layout.rs:398 sorts virtual text by DecorationId, which is the slot index and reused after removal, not the order added.",
+  "proposed_fix": "Replace contract line 256 with:\n\n**Where soft wrap breaks.** As Emacs's `visual-line-mode` (`word-wrap` t) does. Layout places a display line's items left to right on rows `text_w` cells wide.\n- *Items*, in display order: each grapheme cluster of visible buffer text, each grapheme of a Hide's replacement, and each grapheme of virtual text. Clusters (extended, unicode-segmentation) are segmented within each run of visible text between Hide boundaries and line ends, so a Hide boundary inside a cluster splits it. Hidden text without a replacement adds no items, so the text on each side joins into one word. Virtual text comes just before the item at its position, in the order it was added. Virtual text inside hidden text or inside a cluster isn't shown.\n- *Widths*: a tab reaches the next multiple of `tab_width`, counted in cells from the display line's start, not the row's. A control character other than tab and newline is one cell, drawn as `?`. Any other item is `unicode-width` 0.2's width of the whole cluster (no `cjk`), and at least one cell.\n- *Whitespace* is U+0020 and U+0009 only.\n- *Break points*: before an item that isn't whitespace and directly follows a whitespace item, unless it's the first item on its row.\n- *When an item doesn't fit* (its last cell would be past the row's last cell): if the row has a break point at or before it, the row ends just before the last one, and the next row starts there; the whitespace before it stays at this row's end. Otherwise the row ends before the item: a tab is split, its cells that fit ending this row and the rest starting the next; a wide character moves to the next row whole, leaving filler cells; anything else starts the next row.\n- *Line ends*: the newline and the end of the buffer take no cell and never start a row (see WRAP-2).\n- *Cursor positions*: each is drawn on its item's first cell. A row break adds none.\n- With soft wrap off, a display line is one row.\n\nExamples at 10 cells: `aaaa bbbb cccc` gives `aaaa bbbb |cccc`; `aaaa bbbbb cccc` gives `aaaa |bbbbb cccc`; `aaaa bbbb  cccc` gives `aaaa |bbbb  cccc`; `aaaaaaaaaa bbbb` gives `aaaaaaaaaa| bbbb`; `aa bbbbbbbbbbbb` gives `aa |bbbbbbbbbb|bb`.\n\nThe Evil oracle's tty Emacs keeps its last column for the continuation glyph and otherwise breaks this way, so a fixture W columns wide is checked at W \u2212 1 text columns.\n\nIn code: give Decoration a creation sequence from a counter on TextBuf, and sort virtual text by (pos, seq) in layout.rs:398.",
+  "needs_decision": false,
+  "recommendation": "Adopt before K4 starts; give the naive-layout session this text and the probe.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "WRAP-1",
+   "verdict": "confirmed",
+   "reasoning": "I re-ran tty Emacs 30.2 on a pty with the reviewer's probe.el driver, which I read and which is sound, on my own cases: verify-text-and-keys/probe/cases{,2,3}.json, results in out{,2,3}.json.\n- gj fixture: [0,35,65] at tty 40 and [0,40,65] at tty 41. So a tty window W wide breaks like W-1 text columns.\n- (a) `aaaa bbbb  cccc` at tty 11 gives [0,5], rows `aaaa ` and `bbbb  cccc`. The contract sentence ends row 0 at 10, since the space at col 9 fits. That contradicts Emacs.\n- (b) `aaaa` + 8 spaces + `bbbb` gives [0,10].\n- (c) `aaaaaaaaaa bbbb` gives [0,10].\n- (d) `aa bbbbbbbbbbbb` gives [0,3,13].\n- (e) 9 a's, a tab and `bb`: the tab sits at row 0 col 9 and bb at row 1 col 6, so the tab is split.\n- (g) Cases built so a breaking character would give [0,9] (`aaa?bbbb?ccccc`, with ? an NBSP, U+200B or `-`) all char-wrap at [0,10]. U+3000 doesn't break either.\n- (f) A hidden space joins words: [0,5], the same as with no space.\n- `cc\\tdd` on a second row puts dd at row col 6, so tab stops count from the line's start.\n- Extra cases also match the proposed rule exactly:\n  - a tab that overflows after a break point: `aa bbbbbb\\tcc` gives [0,3,9] with cc at row 2 col 3; `aaaa bbbb\\tcc` gives [0,5,9] with cc at row 2 col 1;\n  - spaces that start a row after a character wrap.\n- The code today is S4's character wrap (layout.rs:131-205), so the contract text is the only spec the K4 naive-layout session will have.\n- Virtual-text order: slotmap 1.1.1's KeyData docs say \"the order of keys is unspecified\", and freed slots are reused, so layout.rs:398's sort is not insertion order.\n- I could not confirm the display-string sub-claim: my `display \"  \"` probe gave row starts inconsistent with posn-at-point. Treating replacement graphemes as items is a fine DIE rule anyway.\n- Drawing control characters as one-cell `?` is DIE's own choice (Emacs draws ^A in 2 cells). Stating it is what the naive layout needs.",
+   "fix_ok": true,
+   "better_fix": "Adopt the reviewer's text as written. If LAYOUT-5 is adopted, add one line: \"With `Wrap::Char` the same rule applies with no break points.\" That makes character wrap a single condition in both K4 and the naive layout."
+  }
+ },
+ {
+  "id": "WRAP-2",
+  "severity": "major",
+  "area": "layout: end of line on a full row",
+  "file": "crates/die-core/src/layout.rs",
+  "line": 199,
+  "claim": "An end-of-line or end-of-buffer position on a full row starts an extra blank row. Emacs draws no such row, so the screen, H/M/L and gj all differ from Evil's. The contract doesn't say which is intended.",
+  "evidence": "layout.rs:199-205: stop_here calls newrow() when the row is full.\n\nScratch crate, `aaaaaaaaaa\\nb\\n` in a 10-column window:\n- rows are [\"aaaaaaaaaa\", \"\", \"b\", \"\"];\n- screen_pos(w, 10) = (1, 0);\n- move_visual(w, 0, 1, None) = Some((10, 0)), so `gj` stops on the blank row instead of `b`.\n\ntty Emacs probe (line-exactly-W-newline, line-exactly-W-eob, words-exactly-W-newline): one row, the newline or EOB at column 10 of row 0, and the next line on row 1. GUI Emacs draws that cursor in the fringe (overflow-newline-into-fringe, default t).\n\nPlanted mutant M5 (tests/mutants.toml) currently enforces S4's extra row.",
+  "proposed_fix": "Decide for Emacs's behaviour. Add to WRAP-1's *Line ends* bullet: \"on a full row, their cursor position is drawn just past its last cell: `screen_pos` gives column `text_x + text_w`, and the scene draws the cursor there if the window has a cell there (the right padding), else over the row's last cell.\"\n\nCode: in Builder::stop_here, remove `if !self.fits(1) { self.newrow(); }`, so the stop's col may equal the width.\n\nReplace mutant M5 with one that plants the extra row:\n- old: `fn stop_here(&mut self, pos: usize) {`\n- new: `fn stop_here(&mut self, pos: usize) { if self.width.is_some_and(|w| self.col >= w) { self.newrow(); }`",
+  "needs_decision": true,
+  "recommendation": "Emacs's behaviour: no blank row per exactly-full line, and the oracle's gj and window cases agree. If the extra row is kept instead, write it into \u00a79 so the naive layout matches.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "WRAP-2",
+   "verdict": "confirmed",
+   "reasoning": "Reproduced in my scratch crate (verify-text-and-keys/vc): `aaaaaaaaaa\\nb\\n` in a 10-column window.\n- rows are [\"aaaaaaaaaa\",\"\",\"b\",\"\"];\n- screen_pos(10) = (1,0);\n- move_visual(0,+1) = (10,0) and move_visual(5,+1) = (10,5), so gj lands on the blank row;\n- with EOB instead of a newline, rows are [\"aaaaaaaaaa\",\"\"].\n\ntty Emacs at tty 11 (10 text columns):\n- `aaaaaaaaaa\\nb\\n` gives starts [0,11], with the newline at col 10 of row 0;\n- the EOB case is one row, with EOB at col 10;\n- `aaaa bbbbb\\nc` gives [0,11].\n\nS4 planted the opposite as a bug (M5, \"an end-of-line position on a full row that doesn't wrap\", s4-core-api.md:109). The naive oracle in tests/prop.rs enforces it in its line-end branch (`if full(col) { cur.push(vec![]); col = 0; }`). It was never one of the decisions A1-A24.\n\nWhy the proposed fix is incomplete: removing the newrow in stop_here also fails the property test unless prop.rs's oracle changes too. The scene's cursor filter (scene.rs, `.filter(|&(r, c)| r < wr && c < wc)`) and prop.rs's `want.filter(|&(_, c)| c < cols)` would also hide the cursor whenever the row has no right padding.",
+   "fix_ok": false,
+   "better_fix": "Change these together:\n1. layout.rs Builder::stop_here: delete `if !self.fits(1) { self.newrow(); }`. An end-of-line or end-of-buffer stop on a full row then has col == width.\n2. tests/prop.rs oracle(), line-end branch: delete the `if full(col) { cur.push(vec![]); col = 0; }` before the stop is pushed.\n3. scene.rs compose: for a wrapped window, clamp the cursor column to the window instead of dropping it. Map `(r, c)` to `(r, c.min(wc - 1))` before the `c < wc` filter, and keep \"not drawn\" for unwrapped windows only. Mark a clamped cursor `past_end` (a new bool on Cursor) so die-render draws a bar at the cell's right edge; otherwise insert state's bar reads as before the last character. Apply the same clamp in prop.rs's final assertion when wrap is on.\n4. Contract \u00a79, in WRAP-1's *Line ends* bullet: \"The newline and the end of the buffer take no cell and never start a row. On a full row their cursor position is just past the row's last cell: `screen_pos` gives column `text_x + text_w`, and the scene draws the cursor in the right padding when there is one, otherwise at the right edge of the row's last cell.\"\n5. Replace mutant M5 with the reviewer's planted-extra-row mutant.\n6. K14 note: a click in the padding right of a full row maps to that row's end-of-line position.",
+   "decision_view": "Adopt Emacs's behaviour: no blank row.\n- What it costs: Evil's normal-state cursor never rests on a non-empty line's newline, so the only visible change is insert state's bar at a full row's right edge.\n- What it gains: the row count, H/M/L, gj/gk, scrolling and the oracle's window cases all match Evil.\n- Keeping the blank row instead would mean writing a deviation into \u00a79 and accepting gj and screen layouts that differ from the user's Emacs."
+  }
+ },
+ {
+  "id": "LAYOUT-3",
+  "severity": "minor",
+  "area": "gutter and line numbers",
+  "file": "crates/die-core/src/text.rs",
+  "line": 120,
+  "claim": "The gutter rules that K4 and the naive layout need are unwritten. The visual style you use is missing. The empty last row is numbered, unlike Emacs. Relative numbers count folded lines, which j doesn't. max_width excludes the gutter, while visual-fill-column includes it.",
+  "evidence": "Your setting:\n- init.el:345-348 sets 'relative with setq, then 'visual with setq-default; visual wins.\n- m0-plan.md:83 (checkpoint 2) says \"with visual line numbers\".\n- text.rs:120-124: LineNumbers has Off, Absolute and Relative only.\n\ntty Emacs screens (probe/screen.el), for `one`, a line that wraps, `three` and `four\\n`, with the cursor on line 3:\n- t: 1, 2, blank, 3, 4, then the empty last row blank;\n- relative: 2, 1, blank, 3, 1, blank;\n- visual: 3, 2, 1, 3, 1, blank.\n\nDIE today with Relative (scene.rs:577-582): 2, 1, blank, 3, 1, and 2 on the empty last row. Relative uses `cl.abs_diff(vr.first_line)` (scene.rs:579), counting logical lines across folds.\n\nvisual-fill-column.el:356-386 sizes the 80 columns including line numbers (Emacs puts them inside the text area; the probe's lnum cases wrap at 15 of 20). DIE (layout.rs:311-327) keeps 80 text cells.",
+  "proposed_fix": "Add LineNumbers::Visual, and add to contract \u00a79 after the wrap rule:\n\n**Gutter and width.** `max_width` counts text cells only. The gutter, `max(3, digits(line_count())) + 1` cells, sits immediately left of the text area, which is `min(max_width, cols \u2212 gutter)` cells wide, and at least 2. With centering, gutter and text are centered together, the left padding rounded down.\n\n**Line numbers.**\n- Absolute: a display line's first row shows its first line's number.\n- Relative: the cursor's display line shows its number, and every other display line's first row shows its distance from it in display lines, so a fold counts once, as `j` does.\n- Visual: every row shows its distance in rows from the cursor's row, which shows its line's number.\n- Other rows show nothing. In every style, the empty row after a final newline has no number, as in Emacs.",
+  "needs_decision": true,
+  "recommendation": "Keep max_width as text cells only (80 columns of code, deviating from visual-fill-column) and adopt the rest as written.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "LAYOUT-3",
+   "verdict": "confirmed",
+   "reasoning": "- **Your setting:** init.el:345-348 sets `(setq display-line-numbers-type 'relative)` and then `(setq-default ... 'visual)`. It's a plain defcustom, so visual wins.\n- **The enum:** LineNumbers has three variants (text.rs:119-124). m0-plan's K4 row already plans visual numbers, so the real gap is the unwritten rules.\n- **DIE today:** my scratch crate, with Relative and the cursor on \"three\", gives 2, 1, blank, 3, 1, then \"2\" on the empty last row.\n- **tty Emacs:** my term.el capture (the reviewer's screen.el) gives:\n  - relative: 2, 1, blank, 3, 1, blank;\n  - visual: 3, 2, 1, 3, 1, blank;\n  - t: 1, 2, blank, 3, 4, blank.\n  So Emacs doesn't number the empty last row.\n- **Folds:**\n  - DIE's Relative labels the line after a 3-line fold 4.\n  - tty Emacs's 'relative, with b to d made invisible (my screen2.el), also labels e 4. Its 'visual labels e 2.\n  - So DIE's Relative across folds already matches Emacs. The proposal follows Vim, which counts a closed fold as one line, as `j` does.\n- **max_width:** visual-fill-column (lines 356-386) sizes the text area to 80, and Emacs draws line numbers inside it. But your init.el turns line numbers on only for python, c, c++, elisp, js, html and css, not for .rs files.",
+   "fix_ok": true,
+   "decision_view": "Adopt the text as written, with LineNumbers::Visual, and keep max_width as text cells only.\n- Your .rs files show no line numbers in Emacs, so keeping max_width as text cells gives 80 text columns, and DIE then breaks rows where your Emacs does.\n- For Relative, take the proposal (count display lines, as `j` does), but list it in scope as a deliberate deviation: Emacs's 'relative counts hidden lines, and I verified that.\n- Visual, the style you use, matches Emacs exactly under the proposal."
+  }
+ },
+ {
+  "id": "dev-4",
+  "severity": "major",
+  "area": "K4 layout / rule 1",
+  "file": "crates/die-core/src/text.rs",
+  "line": 286,
+  "claim": "Nothing decides whether the empty line after a final newline takes a screen row (S5 \u00a74 leaves it open: 'Row 1 is also a question for core'). The V6 window values depend on it, and K4 is about to be built.",
+  "evidence": "geometry/ctrl-d-near-end: Evil's top_line is 31 with the final newline and 30 without it (sweep); the cursor is (39,0) both times. So Evil's window positions count a row for that line. TextBuf::line_count is rope.len_lines() (text.rs:286-287), which already counts it. Scope \u00a710 (scope.md:340, the V1-1 call) leaves the cursor there after an insert session, so it needs a row then in any case.",
+  "proposed_fix": "Recommended: keep the row, as Emacs does. Window positions stay Evil's, ctrl-d-near-end stays an oracle case, and V1-1's cursor has somewhere to be drawn. Append to rule 1's die_vim: \"That empty line still takes a screen row, as in Emacs, so window positions are Evil's.\" Add to contract \u00a79 before K4: \"A final newline ends the last line. The empty line after it is laid out as a row of its own, as Emacs does, and the cursor reaches it only when an insert session ends there.\" Alternative (Vim, no row): add geometry/ctrl-d-near-end to rule 1 with a hand-written top_line 30, and have K4 special-case V1-1.",
+  "needs_decision": true,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-4",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "Reproduced in Evil. ctrl-d-near-end gives top 31 with the final newline and 30 without, with the cursor at (39,0) both times. Gzb shows the same split: top 31 against 30 (eout2/vg2.json). Vim gives 30 for both. TextBuf::line_count is rope.len_lines() (die-core/src/text.rs:286-287), which counts the line. S4's layout already gives the position after a final newline a display line of its own: layout.rs breaks after '\\n' and then emits an eof line at len. The V1-1 call (scope.md:340, insert::end) leaves the cursor at len, so a row must exist then anyway. layout.rs:314 also sizes the gutter from line_count(), so a 999-line file with a final newline gets a 4-digit gutter. Nothing in contract \u00a79 or K4's row in the plan decides any of this. One problem with the proposed contract sentence: 'the cursor reaches it only when an insert session ends there' puts die-vim policy in core's contract, which other keymaps and extensions can't be held to. It's also not true within die-vim, since K2's undo restores the pre-edit selection, which can be len.",
+   "decision_view": "Keep the row (Emacs), as recommended. It's already what S4's layout does. It keeps every Evil window position an oracle case (ctrl-d-near-end, Gzb-like scrolling). D4 and scope \u00a710 say window positions follow Evil. And V1-1's cursor needs a row in any case. Vim's no-row model would need a phantom row that appears only when the cursor is there.",
+   "better_fix": "Add to contract \u00a79, under **Cursor positions**: \"A final newline ends the last line. The position after it is laid out as a row of its own, as in Emacs: it's where a cursor at the end of the text is drawn, and scrolling and window positions count it. Which commands may move a cursor there is the keymap's business; die-vim's motions never do (scope \u00a710).\" K4 also decides whether that row gets a line number, and whether geometry() sizes the gutter from line_count() or from the last numbered line. Recommendation: no number, and size the gutter from the numbered lines. Append to rule 1's die_vim: \"That empty line still takes a screen row, as in Emacs, so window positions are Evil's.\""
+  }
+ },
+ {
+  "id": "DR-01",
+  "severity": "major",
+  "area": "die-vim u / core undo selection",
+  "file": "crates/die-vim/src/lib.rs",
+  "line": 207,
+  "claim": "After `u`, die-vim puts the cursor at the start of the undone range (`history()` uses `r.start`). The owner's Evil restores the point from before the command that made the step's first change. So `ox<Esc>u`, `Ox<Esc>u` and `3ox<Esc>u` from mid-line, and any session whose later edits are left of its first one, end in the wrong place. Fixing it in die-vim alone, by using core's restored selection, breaks `i<Right>x<Esc>u`. That's because core captures the group's selection at `begin_undo_group` (`pending_open`), not just before the group's first edit.",
+  "evidence": "lib.rs:207-221: `Ok(r) => start = r.start` then `t.set_cursor(w, text::normal_pos(t, start))`. undo.rs:211: `let sel = self.pending_open.take().unwrap_or(sel_before);` (selection taken at begin, text.rs:467-470). Evil oracle, scratch out2/deepread2.json and out/deepread.json:\n- \"abc\\n\"@0 `ox<Esc>u` \u2192 0 (die-vim 2)\n- \"abc\\ndef\\n\"@1 `ox<Esc>u` \u2192 1 (die-vim 2)\n- \"abc\\ndef\\n\"@5 `Ox<Esc>u` \u2192 5 (die-vim 4)\n- \"abc\\n\"@1 `3ox<Esc>u` \u2192 1 (die-vim 2)\n- \"ab\\ncd\\n\"@0 `jAx<Up>y<Esc>u` \u2192 4 (die-vim 1)\n- \"abcd\\nef\\n\" same keys \u2192 6 (die-vim 3)\n- \"abc\\n\"@0 `i<Right>x<Esc>u` \u2192 1 (die-vim 1 today, 0 if die-vim used core's current selection)\nThe existing fixture undo/o-one-step passes only because \"a\" is one character.",
+  "proposed_fix": "Core, undo.rs `History::record`: replace `let sel = self.pending_open.take().unwrap_or(sel_before);` with `self.pending_open = None; let sel = sel_before;`. Then delete `pending_open`, `begin`'s `sel` parameter and its mapping in `silent()`. Change the rustdoc on `TextBuf::undo` (text.rs:479) to: \"The acting window's selection goes back to what it was just before the step's first change, shape and goal included, moved through any silent edits since.\" Contract \u00a79: change \"Undoing a step restores the selection from before it\" to \"Undoing a step restores the selection from just before its first change\".\n\ndie-vim, lib.rs `history()`: drop `start`, and after the loop do `let p = t.cursor(w).unwrap_or(0); t.set_cursor(w, text::rest_pos(t, p));`, where `rest_pos` is from DR-02. Update the doc comment: \"`u` leaves the cursor where it was before the last step undone (core restores it); `C-r` puts it at the start of the last step redone, as Vim does.\"\n\nAdd the seven oracle cases above to tools/evil-oracle/cases/undo.json and regenerate the fixtures. This is all in fixes.patch.",
+  "needs_decision": true,
+  "recommendation": "Adopt both halves. It changes the wording of A14 and contract \u00a79 (the selection is taken just before the step's first edit, not at begin), which under 09-B is the owner's API. With the patch, all of die-core's undo, edits and prop tests and the oracle still pass. V3 note: commands that move the cursor and then edit in one command (Evil's `p`, `J`) should not move before their transaction, or `u` will restore the moved cursor.",
+  "failing_test": "crates/die-vim/tests/deep_read.rs. Helpers (used by every die-vim test here):\n```rust\nfn run(text: &str, cursor: usize, keys: &str) -> (String, usize, State, Vec<String>) {\n    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect(\"die-vim registers\");\n    let b = ctx.create_text(\"t\", text);\n    let w = ctx.open_window(b, 80, 24).expect(\"a window\");\n    ctx.focus(w);\n    assert_eq!(ctx.text_mut(b).unwrap().set_cursor(w, cursor), Some(cursor));\n    ctx.type_keys(keys);\n    let t = ctx.text(b).unwrap();\n    (t.rope().to_string(), t.cursor(w).unwrap(), ctx.state(), ctx.messages.clone())\n}\nfn cursor_after(text: &str, cursor: usize, keys: &str) -> usize { run(text, cursor, keys).1 }\n\n#[test]\nfn u_returns_to_where_the_steps_first_change_was_made() {\n    assert_eq!(cursor_after(\"abc\\n\", 0, \"ox<Esc>u\"), 0, \"ox<Esc>u from col 0\");\n    assert_eq!(cursor_after(\"abc\\ndef\\n\", 1, \"ox<Esc>u\"), 1, \"ox<Esc>u from col 1\");\n    assert_eq!(cursor_after(\"abc\\ndef\\n\", 5, \"Ox<Esc>u\"), 5, \"Ox<Esc>u from col 1\");\n    assert_eq!(cursor_after(\"abc\\n\", 1, \"3ox<Esc>u\"), 1, \"3ox<Esc>u\");\n    assert_eq!(cursor_after(\"ab\\ncd\\n\", 0, \"jAx<Up>y<Esc>u\"), 4, \"a session's later change to the left\");\n}\n// guard (passes on main, must keep passing):\n#[test]\nfn u_cursor_cases_that_already_agree() {\n    assert_eq!(cursor_after(\"abc\\n\", 0, \"i<Right>x<Esc>u\"), 1);\n    assert_eq!(cursor_after(\"abc\\n\", 1, \"Ax<Esc>u\"), 2);\n    assert_eq!(cursor_after(\"  abc\\n\", 3, \"Ix<Esc>u\"), 2);\n}\n```\nFailure on main:\n```\n---- u_returns_to_where_the_steps_first_change_was_made stdout ----\nthread 'u_returns_to_where_the_steps_first_change_was_made' panicked at crates/die-vim/tests/deep_read.rs:40:5:\nassertion `left == right` failed: ox<Esc>u from col 0\n  left: 2\n right: 0\n```\nCore half, crates/die-core/tests/deep_read.rs:\n```rust\n#[test]\nfn undo_restores_the_selection_from_before_the_groups_first_edit() {\n    let (mut ctx, b, w) = setup(\"abc\\n\");\n    step(&mut ctx, b, |t| t.begin_undo_group()); // `i`, cursor at 0\n    step(&mut ctx, b, move |t| t.set_cursor(w, 1)); // <Right>\n    insert(&mut ctx, b, 1, \"x\"); // x\n    step(&mut ctx, b, |t| t.end_undo_group()); // <Esc>\n    step(&mut ctx, b, |t| t.undo()).unwrap();\n    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(1));\n}\n```\n```\nthread 'undo_restores_the_selection_from_before_the_groups_first_edit' panicked at crates/die-core/tests/deep_read.rs:91:5:\nassertion `left == right` failed\n  left: Some(0)\n right: Some(1)\n```\n(setup, step and insert are copies of the helpers in crates/die-core/tests/undo.rs.)",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-01",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "I re-derived the Evil behaviour with my own oracle run (local Emacs 30.2 and Evil 1.15.0 through run-oracle.sh; cases in scratchpad/verify-deep-read/cases/vbatch.json, output in out/vbatch.json). Evil's results, with die-vim on main in brackets: \"abc\\n\"@0 `ox<Esc>u` gives 0 [2]; \"abcdef\\n\"@2 `ox<Esc>u` gives 2 [5]; `Ox<Esc>u`@5 gives 5 [4]; `3ox<Esc>u`@1 gives 1 [2]; `jAx<Up>y<Esc>u` gives 4 [1]; `i<Right><Right>x<Left><Left>y<Esc>u` gives 2 [1]; `ox<CR>y<Esc>u`@1 gives 1 [2]; `A<BS><BS>x<Esc>u` gives 5 [4]. tty gives the same. The cause is in lib.rs:207-220: history() overrides core's restored selection with normal_pos(r.start). The core half is real too. The reviewer's core test fails on main with Some(0), because undo.rs:211 takes pending_open, captured at begin_undo_group. The mechanism holds: Emacs records point_before_last_command_or_undo at the first change after a boundary. Every V1 command edits before it moves the cursor, so that point equals \"the selection just before the step's first change\". With only the DR-01 halves of fixes.patch applied, all 11 of my undo cases match Evil, the guards still pass, and die-core's undo, edits and prop suites pass (prop at 10,000 cases). The oracle is unchanged. Caution: don't apply fixes.patch wholesale. Its DR-09 and DR-11 parts carry regressions (see those findings).",
+   "decision_view": "Adopt both halves now. Also amend the A14 note in docs/records/s4-core-api.md:166, which the proposed fix doesn't name (it names only contract \u00a79 and the rustdoc). For example: \"undo restores the acting window's whole selection from just before the step's first change\". Keep the V3 caveat as a written rule for die-vim: a command that moves and then edits in one command (Evil's `p`, `J`, linewise `dd` from mid-line) must make its edit before it moves the cursor, or `u` will restore the moved cursor. Don't try the Emacs-exact alternative now (snapshotting the selection at the first text_mut of each command). It needs mapping through silent edits and misbehaves after an `undo_boundary` in mid-command."
+  }
+ },
+ {
+  "id": "DR-03",
+  "severity": "major",
+  "area": "core key dispatch / counts",
+  "file": "crates/die-core/src/ctx.rs",
+  "line": 1230,
+  "claim": "An undefined key sequence doesn't clear the prefix argument. A count, or a register, typed before it stays armed for whatever command comes next. `3gzl` moves 3 instead of 1, and from V3 a typo like `5<unbound>x` will delete 5 characters. Emacs's `undefined` resets prefix-arg.",
+  "evidence": "ctx.rs:1230-1241: the `Lookup::None` branch takes `self.pending`, tries the surface, and logs \"\u2026 is undefined\", but never touches `self.prefix`. Only `run_key` (ctx.rs:1262, `std::mem::take(&mut self.prefix)`) clears it. Evil oracle (scratch out/deepread.json): \"abcdef\\n\"@0 `3gzl` \u2192 cursor 1, errors [] (Emacs logged \"g z is undefined\" as a message). die-vim: cursor 3.",
+  "proposed_fix": "In the `Lookup::None` arm, first line: `// An undefined key ends the command it began, count and register too.\\nself.prefix = Prefix::default();`. Add to the A20 note: \"An undefined key clears it too.\" This is in fixes.patch.",
+  "needs_decision": false,
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn an_undefined_key_drops_the_count() {\n    let (_, cur, _, msgs) = run(\"abcdef\\n\", 0, \"3gzl\");\n    assert_eq!(cur, 1, \"l after an undefined key moves once: {msgs:?}\");\n}\n```\n```\nthread 'an_undefined_key_drops_the_count' panicked at crates/die-vim/tests/deep_read.rs:154:5:\nassertion `left == right` failed: l after an undefined key moves once: [\"gz is undefined\"]\n  left: 3\n right: 1\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-03",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "better_fix": "Same code. Also pin it in die-core, because the oracle can't pin it (DR-18). Add to crates/die-core/tests/keymaps.rs: a test that binds nothing to `g z`, calls `ctx.set_prefix(Prefix { count: Some(3), register: None })`, runs `ctx.type_keys(\"gz\")`, and asserts `ctx.prefix() == Prefix::default()` and `ctx.messages == [\"gz is undefined\"]`.",
+   "reasoning": "ctx.rs:1237-1246, the `Lookup::None` arm, never touches self.prefix. Only run_key (ctx.rs:1264, mem::take) clears it. Emacs clears it: the command loop calls `undefined`, which sets prefix-arg to nil. My oracle run: \"abcdef\\n\" `3gzl` gives 1 (batch and tty), and \"a b c d\" `2gzw` gives 2. die-vim on main gives 3 and 4. With the one-line fix, both give 1 and 2, and the oracle runner and every die-core test still pass. Severity major is fair: once V3 adds `x` and `d`, a mistyped key before a counted edit applies the count to the next one."
+  }
+ },
+ {
+  "id": "DR-04",
+  "severity": "minor",
+  "area": "core API: modal state per buffer",
+  "file": "crates/die-core/src/ctx.rs",
+  "line": 874,
+  "claim": "State is per buffer, but `Ctx::set_state` and `Ctx::state` always act on the focused buffer, while die-vim's commands act on `Args::window`/`Args::buffer`. Running die-vim's `i` for a window that isn't focused (an extension, a macro runner, later `:windo`) does three things:\n- puts the focused buffer into insert state;\n- opens the session and its undo group on the other buffer;\n- leaves that group open for good, because the other buffer's Escape is never typed. All its later edits then join one undo step.",
+  "evidence": "ctx.rs:869-878: `state()` and `set_state()` use `self.focused_buffer()`. insert.rs:72-100: `begin` uses `buffer_window(ctx, a)` for the edits and `begin_undo_group`, then calls `ctx.set_state(State::Insert)`. insert.rs:163 is the same for Normal.",
+  "proposed_fix": "Add, without breaking anything: `pub fn state_of(&self, buf: BufferId) -> State` and `pub fn set_state_of(&mut self, buf: BufferId, s: State)` in ctx.rs, next to `state`/`set_state`, which stay as focused-buffer sugar. Rustdoc: \"Modal state is per buffer; `set_state` sets the focused buffer's.\" In die-vim, insert::begin uses `ctx.set_state_of(b, State::Insert)` and insert::end uses `ctx.set_state_of(b, State::Normal)`, with `b` from `buffer_window`.",
+  "needs_decision": true,
+  "recommendation": "Add the `_of` pair before K5 splits ctx.rs. It is additive, so it doesn't count as a breaking change, but under 09-B it's still an API diff for the owner.",
+  "failing_test": "crates/die-vim/tests/deep_read.rs:\n```rust\n#[test]\nfn insert_entered_for_another_window_puts_that_buffer_in_insert_state() {\n    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).unwrap();\n    let a = ctx.create_text(\"a\", \"aaa\\n\");\n    let wa = ctx.open_window(a, 80, 24).unwrap();\n    let b = ctx.create_text(\"b\", \"bbb\\n\");\n    let wb = ctx.open_window(b, 80, 24).unwrap();\n    ctx.focus(wa);\n    let args = die_core::Args { window: Some(wb), buffer: Some(b), ..Default::default() };\n    ctx.run(\"vim-insert\", &args).unwrap();\n    assert_eq!(ctx.state(), State::Normal, \"A, focused, wasn't asked to insert\");\n    ctx.focus(wb);\n    assert_eq!(ctx.state(), State::Insert, \"B is the buffer in insert state\");\n}\n```\n```\nthread 'insert_entered_for_another_window_puts_that_buffer_in_insert_state' panicked at crates/die-vim/tests/deep_read.rs:242:5:\nassertion `left == right` failed: A, focused, wasn't asked to insert\n  left: Insert\n right: Normal\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-04",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "The reviewer's test fails on main as described: after `ctx.run(\"vim-insert\", Args{window: Some(wb), buffer: Some(b)})` with wa focused, ctx.state() is Insert. ctx.rs:869-878 shows state() and set_state() go through focused_buffer(), while insert::begin and insert::end act on buffer_window(ctx, a) (insert.rs:73 and 125) and then call ctx.set_state (insert.rs:100 and 163). B stays Normal, so B's <Esc> runs vim-force-normal-state, not vim-normal-state. B's session and its undo group (depth 1) therefore never close. The bug is latent: run_key always passes the focused window, so only an extension that runs die-vim commands for another window hits it today. But buffer_window explicitly supports that case.",
+   "decision_view": "Add the pair now, before K5 and K6, as `pub fn state_of(&self, buf: BufferId) -> State` and `pub fn set_state_of(&mut self, buf: BufferId, s: State)`, and keep state/set_state as sugar for the focused buffer. The change is additive and about 10 lines. Core already keeps state per buffer (dispatch reads buffers[buf].state). K6 brings real multiple windows, and die-vim's buffer_window already promises to act on Args.window. Land it before or with DR-14: once undo stops resetting depth, a leaked group like this one no longer heals itself. The alternative of rejecting a non-focused window in die-vim's state-changing commands costs no API, but it would break the Args contract."
+  }
+ },
+ {
+  "id": "DR-13",
+  "severity": "minor",
+  "area": "core undo attribution",
+  "file": "crates/die-core/src/ctx.rs",
+  "line": 731,
+  "claim": "An edit made by host code between commands (the harness, an embedder, a file revert run outside a queued callback) joins the previous command's undo step, so one `u` takes back both. `text_mut` stamps the buffer with `cmd_seq`, and only `step` and `dispatch` advance it, both at the start of a unit.",
+  "evidence": "ctx.rs:731-745 sets `t.cmd = cmd` (= `self.cmd_seq`). cmd_seq is advanced only at ctx.rs:1129 (queued call) and 1188 (dispatch). undo.rs:186: `g.cmd == cmd` makes the edit appendable.",
+  "proposed_fix": "ctx.rs `step()`: add `self.cmd_seq += 1;` after `self.report(r);` for queued calls, and after each `self.dispatch(ev, \u2026)`, with the comment \"Code that runs between units (the host, a harness) gets a number of its own.\" Or rustdoc on `text_mut`: \"Edits made outside a command or callback join the last command's undo step; call `undo_boundary` first.\" I prefer the code fix; it's in fixes.patch and every existing test passes with it.",
+  "needs_decision": false,
+  "failing_test": "crates/die-core/tests/deep_read.rs:\n```rust\n#[test]\nfn an_edit_made_outside_any_command_is_its_own_undo_step() {\n    let (mut ctx, b, _) = setup(\"\");\n    insert(&mut ctx, b, 0, \"a\"); // a command\n    ctx.text_mut(b).unwrap().tx(Origin::User).insert(1, \"b\").commit().unwrap(); // host code, between commands\n    assert_eq!(text(&ctx, b), \"ab\");\n    step(&mut ctx, b, |t| t.undo()).unwrap();\n    assert_eq!(text(&ctx, b), \"a\", \"u took back the command's edit too\");\n}\n```\n```\nthread 'an_edit_made_outside_any_command_is_its_own_undo_step' panicked at crates/die-core/tests/deep_read.rs:52:5:\nassertion `left == right` failed: u took back the command's edit too\n  left: \"\"\n right: \"a\"\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-13",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "The reviewer's core test fails on main: an edit made through text_mut between two units gets the previous unit's cmd_seq, and one `u` takes back both edits (\"\" instead of \"a\"). Only ctx.rs:1129 (queued call) and 1186 (dispatch) advance cmd_seq, and undo.rs:186 appends when g.cmd == cmd. With the patch's increments after each unit in step(), the test passes, and so do every die-core test (including an_edit_before_the_group_in_the_same_command_joins_it) and the die-vim oracle. Consecutive host edits between the same two units still share one step, which is reasonable."
+  }
+ },
+ {
+  "id": "DR-14",
+  "severity": "minor",
+  "area": "core undo groups",
+  "file": "crates/die-core/src/undo.rs",
+  "line": 355,
+  "claim": "An undo inside an open group resets `depth` to 0. From then on, every edit in the rest of the session (Vim's `<C-o>u`, or any extension calling undo) is a separate step, one per key, and the session's `end_undo_group` does nothing. Contract \u00a79 says an explicit group spans commands until it ends.",
+  "evidence": "undo.rs:355: `History::commit` does `self.depth = 0;`.",
+  "proposed_fix": "Remove `self.depth = 0;` from `commit` and keep `self.pending_open = None;`, with the comment \"An open group stays open: the next edit starts a new step inside it.\" The next edit then opens a new group with `open: self.depth > 0`. This is in fixes.patch; prop.rs, which mixes random begin/end with undo, still passes at 10,000 cases.",
+  "needs_decision": false,
+  "failing_test": "crates/die-core/tests/deep_read.rs:\n```rust\n#[test]\nfn an_undo_inside_an_open_group_leaves_the_group_open() {\n    let (mut ctx, b, _) = setup(\"\");\n    step(&mut ctx, b, |t| t.begin_undo_group());\n    insert(&mut ctx, b, 0, \"x\");\n    step(&mut ctx, b, |t| t.undo()).unwrap();\n    assert_eq!(text(&ctx, b), \"\");\n    insert(&mut ctx, b, 0, \"y\");\n    insert(&mut ctx, b, 1, \"z\");\n    step(&mut ctx, b, |t| t.end_undo_group());\n    step(&mut ctx, b, |t| t.undo()).unwrap();\n    assert_eq!(text(&ctx, b), \"\", \"the rest of the group (yz) should be one step\");\n}\n```\n```\nthread 'an_undo_inside_an_open_group_leaves_the_group_open' panicked at crates/die-core/tests/deep_read.rs:70:5:\nassertion `left == right` failed: the rest of the group (yz) should be one step\n  left: \"y\"\n right: \"\"\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-14",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "The core test fails on main: after begin, an edit and an undo, depth is 0 (undo.rs:355), so \"y\" and \"z\" become separate steps and end_undo_group does nothing. With `self.depth = 0` removed, the test passes and prop.rs passes at 10,000 cases. I traced the follow-on cases: the next edit opens a new group with open = depth > 0; an undo before any edit in the session, or a redo inside the group, behaves correctly. One consequence to record: today an undo resets a leaked group (one never ended, as in DR-04, or by an extension that panics between begin and end). After this fix nothing resets one, so land DR-04 with it."
+  }
+ },
+ {
+  "id": "DR-15",
+  "severity": "minor",
+  "area": "core undo conflicts (A12)",
+  "file": "crates/die-core/src/undo.rs",
+  "line": 201,
+  "claim": "If a silent edit lands inside a group that's still collecting (an extension rewriting what you're typing), `record` drops the whole history at your next keystroke without saying so. The undo that reaches the dropped part then returns `NothingToUndo`, not the `UndoConflict` the contract promises (\"undo refuses with an error and drops the older history\"), so nothing ever tells you why your history is gone.",
+  "evidence": "undo.rs:194-202: `match rebase(...) { Some(..) => ..., None => self.undo.clear() }`, with no flag and no error. plan() (undo.rs:297-299) then returns `NothingToUndo` on the empty stack.",
+  "proposed_fix": "Add `dropped: bool` to `History`, set it in the `None =>` arm (`self.undo.clear(); self.dropped = true;`), and in `plan()`: `let (Some(i), pending) = top_group(stack) else { return Err(if !redo && self.dropped { Error::UndoConflict } else { Error::NothingToUndo }); };`. Have `truncate(false)`, which history_step calls on UndoConflict, set `self.dropped = false`, so the conflict is reported once. Rustdoc on `TextBuf::undo`: \"`UndoConflict` also reports, once, history dropped earlier because a silent edit changed text a step being collected needed.\"",
+  "needs_decision": false,
+  "failing_test": "crates/die-core/tests/deep_read.rs:\n```rust\n#[test]\nfn history_dropped_by_a_conflict_while_typing_is_reported_as_a_conflict() {\n    let (mut ctx, b, _) = setup(\"\");\n    insert(&mut ctx, b, 0, \"older \");\n    step(&mut ctx, b, |t| t.begin_undo_group());\n    insert(&mut ctx, b, 6, \"ab\");\n    step(&mut ctx, b, |t| t.tx(Origin::Extension).silent().replace(7..8, \"B\").commit().unwrap());\n    insert(&mut ctx, b, 8, \"c\");\n    step(&mut ctx, b, |t| t.end_undo_group());\n    assert_eq!(text(&ctx, b), \"older aBc\");\n    step(&mut ctx, b, |t| t.undo()).unwrap();\n    assert_eq!(text(&ctx, b), \"older aB\");\n    assert_eq!(step(&mut ctx, b, |t| t.undo()), Err(Error::UndoConflict), \"the older steps were dropped by a conflict\");\n}\n```\n```\nthread 'history_dropped_by_a_conflict_while_typing_is_reported_as_a_conflict' panicked at crates/die-core/tests/deep_read.rs:118:5:\nassertion `left == right` failed: the older steps were dropped by a conflict\n  left: Err(NothingToUndo)\n right: Err(UndoConflict)\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-15",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "The core test fails on main with Err(NothingToUndo). The code shows why: undo.rs:201's `None => self.undo.clear()` drops the history at record time without a flag, and plan() then reports NothingToUndo on the empty stack, contrary to contract \u00a79 (\"undo refuses with an error and drops the older history\"). I implemented the proposed `dropped` flag: set in the None arm, reported as UndoConflict on undo (not redo) in plan(), and cleared in truncate(false). The test passes, and every die-core test passes, including prop at 10,000 cases."
+  }
+ },
+ {
+  "id": "DR-19",
+  "severity": "minor",
+  "area": "core undo memory",
+  "file": "crates/die-core/src/undo.rs",
+  "line": 155,
+  "claim": "Suspicion, no failing test: silent shifts pile up with no bound. `push_silent` merges only an insertion that continues the previous one. Every other silent edit, such as a status line or spinner rewritten in place, adds a 24-byte Shift, both above the history and, when there is one, on the redo stack. They stay until the group below them is trimmed (2,000 user steps), and every undo or record across them rebases over all of them. The `undo_bytes` rustdoc mentions about 70 bytes per change, but says nothing about silent edits.",
+  "evidence": "undo.rs:155-166: the only merge is `l.del == 0 && s.del == 0 && s.pos == l.pos + l.ins`; anything else is `v.push(s)`. text.rs:138-141 is the rustdoc that leaves this out.",
+  "proposed_fix": "Also merge a shift that only touches the previous one's inserted text: `Some(l) if s.pos > l.pos && s.pos + s.del < l.pos + l.ins => l.ins = l.ins - s.del + s.ins,`. This is exact for positions and for rebasing, because history ops can't lie strictly inside silent text. Add a property case for it to prop.rs. Extend the `undo_bytes` rustdoc: \"Silent edits that don't continue the previous one add about 24 bytes each until the step below them is dropped.\"",
+  "needs_decision": false,
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-19",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "better_fix": "Widen the merge to include the edges of the previous shift's inserted text, excluding only a pure insertion at its start:\n```rust\n// A rewrite of text the last shift inserted (a spinner, a status line redrawn in place)\n// folds into it. Exact for positions and for rebasing any history op, since those\n// can't lie inside silent text. A pure insertion at its start is left alone:\n// gravity differs there.\nSome(l) if s.pos >= l.pos && s.pos + s.del <= l.pos + l.ins && (s.del > 0 || s.pos > l.pos) => l.ins = l.ins - s.del + s.ins,\n```\nKeep the existing streaming arm before it. I checked this exhaustively in undo.rs's test module: every l and s with pos < 7, del < 3 or 4 and ins < 4, against every op with pos < 10. Position mapping, the rebased op's position, the rebased shifts and the conflict outcome are identical to applying l then s. Extend the undo_bytes rustdoc as proposed. Interleaved patterns, such as streaming at the end plus a spinner at the top, still add a shift per edit. If orchid needs that, keep each Silent run as a sorted set of disjoint replacements (bounded by the number of regions touched) instead of a log.",
+   "reasoning": "The accumulation is real: push_silent (undo.rs:155-166) merges only end-insertions, on both stacks. The proposed strict condition misses the case it is meant for. I tested it in undo.rs: after one silent 10-byte insertion, 1,000 rewrites of one character inside it collapse to 1 shift, but 1,000 rewrites of the whole status line (the same range each time, {pos 1, del 10, ins 10}) leave 1,001 shifts. So does every spinner whose first tick follows a user step, because s.pos == l.pos fails the strict `s.pos > l.pos`. With the widened condition, both cases collapse to 1 shift, the brute-force exactness check passes, and every die-core test passes, including prop at 10,000 cases."
+  }
+ }
+]

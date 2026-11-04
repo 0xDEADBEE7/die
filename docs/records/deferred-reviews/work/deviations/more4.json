@@ -1,0 +1,5 @@
+[
+{"name":"cj-last","text":"a\nb\n","line":1,"col":0,"keys":"cjx<Esc>"},
+{"name":"yj-last","text":"a\nb\n","line":1,"col":0,"keys":"yj"},
+{"name":"T2 2brace-past-end","text":"a\n\nb\ncd\n","line":2,"col":0,"keys":"2}"}
+]

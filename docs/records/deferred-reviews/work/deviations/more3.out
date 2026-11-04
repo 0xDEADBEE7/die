@@ -1,0 +1,5 @@
+{"errmsg":"","col":0,"beeps":0,"name":"count-question","topline":0,"line":0,"mode":"n","text":"x a x b x\n","regs":{}}
+{"errmsg":"","col":12,"beeps":0,"name":"count-n","topline":0,"line":0,"mode":"n","text":"x a x b x c x\n","regs":{}}
+{"errmsg":"","col":10,"beeps":0,"name":"empty-question","topline":0,"line":0,"mode":"n","text":"a b c b d b\n","regs":{}}
+{"errmsg":"","col":12,"beeps":0,"name":"count-slash-then-n","topline":0,"line":0,"mode":"n","text":"x a x b x c x\n","regs":{}}
+{"errmsg":"","col":8,"beeps":0,"name":"count-star","topline":0,"line":0,"mode":"n","text":"x a x b x c x\n","regs":{}}

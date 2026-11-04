@@ -1,0 +1,194 @@
+{
+ "topic": "deepread",
+ "cases": [
+  {
+   "id": "undo-cursor-oldest-change",
+   "keys": "jAx<Up>y<Esc>u",
+   "text": [
+    "|ab",
+    "cd"
+   ]
+  },
+  {
+   "id": "insert-down-keeps-goal",
+   "keys": "i<Down><Down>X<Esc>",
+   "text": [
+    "abcd|ef",
+    "ab",
+    "abcdef"
+   ]
+  },
+  {
+   "id": "short-h-keeps-goal",
+   "keys": "j5hj",
+   "text": [
+    "abcdef|gh",
+    "abc",
+    "abcdefgh"
+   ]
+  },
+  {
+   "id": "phantom-0",
+   "keys": "ifoo<CR><Esc>0",
+   "text": "|"
+  },
+  {
+   "id": "phantom-dollar",
+   "keys": "ifoo<CR><Esc>$",
+   "text": "|"
+  },
+  {
+   "id": "phantom-caret",
+   "keys": "ifoo<CR><Esc>^",
+   "text": "|"
+  },
+  {
+   "id": "phantom-u",
+   "keys": "ifoo<CR><Esc>ibar<Esc>u",
+   "text": "|"
+  },
+  {
+   "id": "phantom-brace",
+   "keys": "ifoo<CR><Esc>}",
+   "text": "|"
+  },
+  {
+   "id": "3o-esc",
+   "keys": "3o<Esc>",
+   "text": [
+    "  |a"
+   ]
+  },
+  {
+   "id": "2o-esc",
+   "keys": "2o<Esc>",
+   "text": [
+    "  |a"
+   ]
+  },
+  {
+   "id": "count-insert-arrow",
+   "keys": "3ifoo<Left>X<Esc>",
+   "text": [
+    "|z"
+   ]
+  },
+  {
+   "id": "count-A-newline",
+   "keys": "2Afoo<CR>bar<Esc>",
+   "text": [
+    "|x"
+   ]
+  },
+  {
+   "id": "2O-u",
+   "keys": "2Ox<Esc>u",
+   "text": [
+    "a",
+    "|b"
+   ]
+  },
+  {
+   "id": "e-trailing-space",
+   "keys": "e",
+   "text": [
+    "ab|c  "
+   ]
+  },
+  {
+   "id": "3u-one-step",
+   "keys": "ix<Esc>3u",
+   "text": [
+    "|abc"
+   ]
+  },
+  {
+   "id": "bs-at-bob",
+   "keys": "i<BS><Esc>",
+   "text": [
+    "|abc"
+   ]
+  },
+  {
+   "id": "dollar-combining",
+   "keys": "$",
+   "text": [
+    "|café"
+   ]
+  },
+  {
+   "id": "l-combining",
+   "keys": "l",
+   "text": [
+    "|éx"
+   ]
+  },
+  {
+   "id": "a-combining",
+   "keys": "aY<Esc>",
+   "text": [
+    "|éx"
+   ]
+  },
+  {
+   "id": "3A-CR",
+   "keys": "3A<CR><Esc>",
+   "text": [
+    "  |a"
+   ]
+  },
+  {
+   "id": "undefined-key-clears-count",
+   "keys": "3gzl",
+   "text": [
+    "|abcdef"
+   ]
+  },
+  {
+   "id": "tab-past-above-eol",
+   "keys": "a<Tab>X<Esc>",
+   "text": [
+    "abc",
+    "abcde|f"
+   ]
+  },
+  {
+   "id": "cr-w",
+   "keys": "w",
+   "text": [
+    "|foo\r",
+    "bar"
+   ]
+  },
+  {
+   "id": "cr-dollar",
+   "keys": "$",
+   "text": [
+    "|foo\r",
+    "bar"
+   ]
+  },
+  {
+   "id": "t-semicolon-comma",
+   "keys": "t,;,",
+   "text": [
+    "|a,b,c,d"
+   ]
+  },
+  {
+   "id": "undo-arrow-session-cursor",
+   "keys": "Ax<Left><Left>y<Esc>u",
+   "text": [
+    "|abc"
+   ]
+  },
+  {
+   "id": "undo-up-session-cursor-2",
+   "keys": "jAx<Up>y<Esc>u",
+   "text": [
+    "|abcd",
+    "ef"
+   ]
+  }
+ ]
+}

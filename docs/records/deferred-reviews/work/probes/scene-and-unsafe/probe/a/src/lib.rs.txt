@@ -1,0 +1,7 @@
+// Under the workspace's unsafe_code = "forbid": a naked function is arbitrary
+// machine code, and needs no `unsafe` block to call.
+#[unsafe(naked)]
+pub extern "C" fn read_x0_plus_one(_x: u64) -> u64 {
+    core::arch::naked_asm!("add x0, x0, #1", "ret")
+}
+pub fn call() -> i32 { read_x0_plus_one(41) as i32 }

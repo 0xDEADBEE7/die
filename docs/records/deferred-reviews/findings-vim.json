@@ -1,0 +1,467 @@
+[
+ {
+  "id": "dev-1",
+  "severity": "major",
+  "area": "deviations.json rule 1",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 19,
+  "claim": "Rule 1 misses two cases whose Evil result comes from the empty line after the final newline: geometry/M-short-buffer and geometry/H-at-end. Both are plain V6 oracle cases that die-vim can't match under rule 1.",
+  "evidence": "M-short-buffer: Evil's M on 'a\\nb\\nc\\nd\\n' gives (4,0) byte 8, the empty line (fixtures/geometry.json). H-at-end: Evil's GH gives (35,0) with top_line 35 because G landed on line 40, 0-based (ctrl-d-at-end shows G there). Rerunning every oracle case without its final newline changes H-at-end to (34,0)/top 34 and M-short-buffer to (3,0). Vim gives M (1,0) and GH (30,0)/top 30; those are row 20 differences, which stay Evil. Both sit on pending.txt as V6. S5 counted M-short-buffer under row 20 only.",
+  "proposed_fix": "In rule 1's cases, after {\"case\": \"geometry/ctrl-d-at-end\", ...}, insert:\n{ \"case\": \"geometry/M-short-buffer\", \"note\": \"M takes the window's lower middle line, as Evil's does (S5 row 20), clamped to the last line\" },\n{ \"case\": \"geometry/H-at-end\", \"note\": \"G stops on line 40 and recentres there, as Evil's G recentres (S5 row 20), so H lands on line 35, one above Evil's\" }\nRemove both from pending.txt. Hand-written expected values (drafted in draft-hand-written/geometry.json): M-short-buffer cursor {\"line\":3,\"col\":0,\"byte\":6}, top_line 0; H-at-end cursor {\"line\":34,\"col\":0,\"byte\":272}, top_line 34; no errors for either. In tools/evil-oracle/cases/geometry.json:34, prefix the vim text with \"end-line, \". Change '24' to '26' in docs/m0-plan.md lines 36, 112, 216 and 223.",
+  "needs_decision": false,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-1",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "I re-derived both cases with my own Evil runs (run-oracle.sh --out to scratch, ~/.emacs.d guard passed) and Vim 9.1.1752. Evil with the final newline: M on 'a\\nb\\nc\\nd\\n' gives (4,0) byte 8 (fixtures/geometry.json M-short-buffer), which is the empty line. G alone gives (40,0) with top 35, and GH gives (35,0) with top 35. Evil without the newline: M (3,0,6) top 0, G (39,0) top 34, GH (34,0,272) top 34 (scratch eout/vgeo.json). Vim gives M (1,0) and GH (30,0) with top 30 (c1.out). Under rule 1, die-vim can't reach (4,0), and its G must land on line 39. Recentring there gives top 34 whichever way dev-4 goes, so neither case can pass as a plain oracle case. Both are on pending.txt under V6. A scan of every fixture for an expected cursor on the empty line finds M-short-buffer as the only unlisted case apart from insert/A-cr-esc-without-final-newline, which V1-1 covers. The proposed hand-written values match Evil without the newline. Line refs are right: cases/geometry.json:34 is M-short-buffer, and m0-plan.md:36, 112, 216 and 223 carry the 24.",
+   "better_fix": "Apply as proposed, with three additions. (1) Also prefix H-at-end's vim text (cases/geometry.json:32) with \"end-line, \": its Evil result depends on G landing past the final newline. (2) Don't hard-code 26. Set the count in m0-plan.md:36/112/216/223 once every accepted finding has added its cases (dev-3, dev-6, dev-7, dev-8, dev-9, dev-10 and dev-13 may add more). (3) Editing cases/*.json vim text means rerunning tools/evil-oracle/run-oracle.sh, because fixtures copy the vim field and no test ties cases to fixtures. The fixture diff should show only vim-text changes and new cases."
+  }
+ },
+ {
+  "id": "dev-2",
+  "severity": "major",
+  "area": "deviations.json rule 1 / vim/compare.vim",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 19,
+  "claim": "The ctrl-d-at-end note says 'Vim stays on the last line without an error'. Vim 9.1 does fail there, and so does Evil, so a fixture written from the note would wrongly expect no error. The note comes from compare.vim, which can't see beeps.",
+  "evidence": "Vim with `set debug=beep`: G<C-d> gives cursor (39,0), top 30, 1 beep (dev.out). <C-d> on line 40 with top 34 also gives 1 beep (more.out N3). Evil errors too ('End of buffer' after 2 keys), and Evil without the final newline gives (39,0), top 34, 1 error. compare.vim:132-147 records only v:errmsg, which a beep never sets, so every S5 report row has \"error\":\"\". Rerunning compare with beeps counted shows 13 cases whose error counts differ (cmp/all.jsonl); macros/macro-records-count (Evil 0, Vim 1) is one of them.",
+  "proposed_fix": "Note: \"C-d on the last line fails in Vim and in Evil; the cursor stays on line 40 and the window keeps the top line G's recentring gave it\". tools/evil-oracle/cases/geometry.json:9 vim text: \"end-line: Vim's G lands on the last line and C-d there fails; Evil's G lands past the final newline, where C-d fails too\". Hand-written expected: cursor {\"line\":39,\"col\":0,\"byte\":312}, window top_line 34, errors [{\"symbol\":\"end-of-buffer\",\"message\":\"End of buffer\",\"after_keys\":2}]. In vim/compare.vim:\n- after `set laststatus=0 noruler noshowcmd` add `set debug=beep`;\n- before the feedkeys try, add `messages clear`;\n- after `let res.error = v:errmsg` add `let res.beeps = len(filter(split(execute('messages'), \"\\n\"), 'v:val =~# \"Beep!\"'))`;\n- in s:Diff add `let ee = get(a:e, 'errors', v:null) | let ne = type(ee) == v:t_list ? len(ee) : 0 | if ne != a:r.beeps + (a:r.error !=# '' ? 1 : 0) | call add(d, 'errors') | endif`.\nThe tested patch is cmp/compare-beeps.vim.",
+  "needs_decision": false,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-2",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "Vim's own docs settle it. scroll.txt:45-46 says 'When the cursor is on the last line of the buffer nothing happens and a beep is produced.' With set debug=beep, my driver gets these results. G<C-d> gives (39,0), top 30, 1 beep. <C-d> on line 40 (1-based) with top 34 gives 1 beep and keeps top 34. Evil errors too: 'End of buffer' after 2 keys, with the cursor on (40,0) and top 35. Evil without the newline gives (39,0), top 34, the same error (eout/vgeo.json). So the note 'Vim stays on the last line without an error' is wrong. compare.vim records only v:errmsg (its 'let res.error = v:errmsg' line), and s:Diff never compares errors at all, so beeps are invisible. I applied the proposed patch in scratch (cmpb.vim). It leaves every other field's diff identical to the stock run, and the stock run reproduces the committed report.jsonl exactly (0 mismatches). It finds 13 cases whose error counts differ, macro-records-count among them (Vim 1 beep, Evil 0). Two small inaccuracies in the evidence, neither affecting the finding: S5 report rows aren't all \"error\":\"\" (4 rows carry E486 or E353), and ctrl-d-at-end isn't among the 13, because both sides fail once.",
+   "better_fix": "As proposed. Also rerun run-oracle.sh after editing cases/geometry.json:9, so the fixture's vim text changes too. Add one sentence to compare.vim's header comment: \"Errors are compared by count: Vim's v:errmsg (at most one per case) plus its beeps (debug=beep), against the length of Evil's errors.\""
+  }
+ },
+ {
+  "id": "dev-3",
+  "severity": "major",
+  "area": "deviations.json rule 1",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 9,
+  "claim": "Rule 1's die_vim text ('As in Vim: motions stop on the last line, j and gj on it signal an error...') doesn't decide the shapes where Vim and Evil-without-a-final-newline disagree. die-vim already follows the latter for `}`, and `dj`/`cj`/`yj` on the last line change text differently in the two.",
+  "evidence": "`}` at the end of the last line: Vim gives no beep; Evil without the newline gives 'End of buffer'; die-vim errors (motions.rs:434, probe). `2}` from the last paragraph: Vim beeps and stays at (2,0); Evil without the newline moves to (3,1) with no error; die-vim does the same (probe). dj on 'a\\n|b\\n': Vim beeps and deletes nothing; Evil deletes the line, with and without the newline. cj: Vim beeps twice and changes nothing; Evil changes the line to 'x'. yj: Vim beeps; Evil yanks 'b\\n'. For all 13 listed cases, Vim and Evil-without-newline agree (sweep), so the fixtures can't tell the two readings apart. Evil without a newline has text bugs of its own (repeat/cw-dot-on-shorter-word gives 'bar bara'), so only the cursor and failures should be taken from it.",
+  "proposed_fix": "Recommended: define rule 1 as Evil without a final newline, for the cursor and for failures. Set die_vim to: \"What your Evil does when the text has no final newline, with the newline kept: the cursor never rests on the empty line after it. Motions stop on the last line. j, gj, + and C-d on the last line fail, and so do w and e on its last character and } at its end; a macro ends at the first failure. dj, cj and yj on the last line act on that line, as Evil's do (Vim's fail). After dd, dk or dG removes the last lines, the cursor goes to the new last line, in the column the delete started in (S5 row 2). G recentres on the last line, and H, M and L clamp to it.\" Pin the dj choice: add {\"id\": \"dj-last-line\", \"vim\": \"end-line: Vim's dj fails on the last line and deletes nothing; Evil deletes the line and leaves the cursor past the final newline\", \"keys\": \"dj\", \"text\": [\"a\", \"|b\"]} to cases/operators.json (Evil gives 'a\\n' at (1,0)), add it to rule 1, and hand-write 'a\\n' at {line 0, col 0, byte 0} with Evil's registers. Alternative: keep 'As in Vim', in which case die-vim's forward_paragraph must change (no error for } at the end, an error for 2} past it) and dj/cj/yj on the last line fail.",
+  "needs_decision": true,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-3",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "Each behaviour was reproduced. A die-vim probe in a scratch copy (copy/crates/die-vim/tests/probe.rs) gives these. } at the end of 'a\\n\\nb\\ncd\\n' from (3,1): die-vim errors 'End of buffer' (motions.rs forward_paragraph's pos == s.pos branch); Vim moves nowhere with 0 beeps; Evil without the newline errors. 2} from (2,0): die-vim (3,1) with no error, the same as Evil without the newline; Vim beeps and stays at (2,0). dj on 'a\\n|b\\n': Vim 1 beep with the text unchanged; Evil 'a\\n' at (1,0), or 'a' at (0,0) without the newline. yj: Vim beeps; Evil yanks 'b\\n'. cj: Vim's cj fails, while Evil changes the line to 'x'. The reviewer's 'Vim changes nothing' is loose, since in my cjx<Esc> run the following x deleted 'b', but the conclusion holds. For the listed cases I checked (w-last-word, G-trailing, 5j, close-brace, dd-last-line, dk, dG, L-short, the 3 macros, gj), Vim and Evil without the newline agree on cursor and failure count, so the fixtures can't tell the two readings apart. I also checked every clause of the proposed die_vim text against Evil without the newline: j, gj, +, C-d, w and e on the last char, and } at the end all error. dd from col 2 lands at (1,2); dk (0,3); dG (0,1); M and L clamp to (3,0). One caveat: that run also leaves a spurious '-' register and its own text bugs (cw. gives 'bar bara'), so take registers and text from the with-newline run.",
+   "decision_view": "Agree: define rule 1 as Evil without the final newline, for cursor and failures. That's the narrowest reading of D4: only the Emacs artifact is removed, and everything else (dj acting on the last line, 2} reaching the end) stays Evil's deliberate behaviour. It's what die-vim's } already does, so nothing merged changes. It also gives a reproducible recipe for every rule-1 fixture: run the oracle on the text without its final newline, then put the newline back. Keeping 'As in Vim' would import Vim behaviours that aren't artifacts (dj failing on the last line) and would force a change to merged code.",
+   "better_fix": "As proposed. Add one sentence to rule 1's die_vim, or to the hand-written reason text: \"Expected cursor and errors come from your Evil run on the same text without its final newline; text and registers come from the run with it (that run adds a '-' register and has text bugs of its own).\" For dj-last-line, use the with-newline registers {\"\\\"\": \"b\\n\" (line), \"1\": \"b\\n\" (line)}, with no '-'."
+  }
+ },
+ {
+  "id": "dev-5",
+  "severity": "minor",
+  "area": "deviations.json rule 1",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 8,
+  "claim": "Rule 1's evil text misdescribes the fixtures. C-d doesn't reach the empty line in ctrl-d-at-end (G does, and C-d then fails), and j *on* that line fails rather than succeeding. M is also missing from the list.",
+  "evidence": "ctrl-d-at-end: errors [{end-of-buffer, after_keys 2}] with the cursor already on line 40 after G. error-stops-macro and recursive: 'End of buffer' when j runs on the empty line. M-short-buffer: (4,0).",
+  "proposed_fix": "\"evil\": \"The cursor can rest on the empty line after a file's final newline: G, 5j, w, }, dd, dk, dG, L and gj go there, and so does M in a short buffer. j from the last line goes there without an error; only j, gj and C-d on that empty line fail.\"",
+  "needs_decision": false,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-5",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "Checked against the fixtures. ctrl-d-at-end: G puts Evil's cursor on (40,0), and C-d then errors 'End of buffer' after key 2, so C-d doesn't reach the empty line; G does. error-stops-macro and recursive: Evil's j from the last line reaches the empty line without an error, and the error comes from j on the empty line itself ('a1\\nb2\\nc3\\n' ends at (3,0) with 'End of buffer' after 8 keys). My scratch case jj on 'a\\n' errors on the second j. So 'j there succeeds' is wrong if 'there' means the empty line. M-short-buffer (4,0) is missing from the list. The proposed text is right except for 'only': other keys on the empty line fail too (Evil's + on it errors, for one), so 'only' overstates.",
+   "better_fix": "\"evil\": \"The cursor can rest on the empty line after a file's final newline: G, 5j, w, }, dd, dk, dG, L and gj go there, and so does M in a short buffer. j from the last line goes there without an error; j, gj and C-d on the empty line itself fail.\""
+  }
+ },
+ {
+  "id": "dev-6",
+  "severity": "minor",
+  "area": "deviations.json rule 1 notes, dk/dG",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 16,
+  "claim": "Keep 'Vim's line, Evil's column', but no fixture shows it. dk and dG start at col 0 with no indentation, so every model gives (0,0), and no oracle case pins the column after any linewise d. 'Evil's column' also differs from Vim's nostartofline after a j onto a shorter line.",
+  "evidence": "Vim (sol, the default): dk from (2,3) on '  one\\n  two\\nthree\\n' gives (0,2); dG from (1,1) on '  one\\ntwo\\nthree\\n' gives (0,2). Vim nosol: (0,3) and (0,1). Evil without the newline: (0,3) and (0,1). Evil with it: (1,0) for both (past the end). Mid-buffer Evil: dk gives (1,3) and dd from col 3 gives (0,3), as in Evil's source (evil-commands.el:1513-1524: first non-blank, then move-to-column evil-operator-start-col). After jdd from col 4 over 'ab': Evil (1,1), Vim nosol (1,4). After $jdd both give (1,3). All 7 linewise-d fixtures start at col 0. Scope \u00a710 (scope.md:340) lists only gg, G, :N, >> and << as keeping the column.",
+  "proposed_fix": "Notes:\n- dd-last-line: \"Vim's line; the column is the one dd started in, as for every linewise d in Evil (S5 row 2)\".\n- dk and dG: \"Vim's line; the column is the one dk|dG started in, as for every linewise d in Evil (S5 row 2) and in Vim with nostartofline\".\nAdd oracle cases to cases/operators.json (Evil wins; Evil results in brackets):\n- {\"id\":\"dd-keeps-column\",\"keys\":\"dd\",\"text\":[\"  a|bc\",\"  defgh\",\"x\"]} [(0,3)]\n- {\"id\":\"dk-keeps-column\",\"keys\":\"dk\",\"text\":[\"one\",\"  two\",\"thr|ee\",\"fourth\"]} [(1,3)]\n- {\"id\":\"dd-after-j-to-short-line\",\"keys\":\"jdd\",\"text\":[\"abcd|ef\",\"ab\",\"abcdef\",\"q\"]} [(1,1)]\nAdd rule-1 deviations:\n- {\"id\":\"dk-last-lines-column\",\"keys\":\"dk\",\"text\":[\"  one\",\"  two\",\"thr|ee\"]}, hand-written cursor {0,3,3}\n- {\"id\":\"dG-column\",\"keys\":\"dG\",\"text\":[\"  one\",\"t|wo\",\"three\"]}, hand-written cursor {0,1,1}\nscope.md:340: \"`gg`, `G`, `:N`, `N%`, `>>`, `<<` and linewise `d` keep the cursor's column, as in Evil; Vim's `startofline` would move it to the first non-blank.\"",
+  "needs_decision": false,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-6",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "Every number reproduced except one. Vim sol: dk from (2,3) on '  one\\n  two\\nthree\\n' gives (0,2), and dG from (1,1) gives (0,2). Vim nosol gives (0,3) and (0,1). Evil without the newline gives (0,3) and (0,1); with it, (1,0) for both. Mid-buffer Evil: dd-keeps-column (0,3), dk-keeps-column (1,3), jdd onto 'ab' from col 4 (1,1) where Vim nosol gives (1,4). Evil's source (evil-commands.el, evil-delete's linewise tail) does evil-first-non-blank and then move-to-column evil-operator-start-col. But it uses temporary-goal-column instead when that is most-positive-fixnum after next-line/previous-line, which is the $ case. My $jdd run gives (1,5) in both Evil and Vim nosol, not the (1,3) the evidence claims, so the reviewer probably used other text. Every linewise-d fixture (dd, 2dd, dj, dk, dG, dgg, dL, dd-last-line-no-final-newline, ddj., dip, dap) starts at col 0, so nothing pins the column. The proposed scope wording 'linewise d keep the cursor's column' misses the $ exception, which a die-vim implementation could get wrong unpinned.",
+   "better_fix": "As proposed, plus one oracle case in cases/operators.json: {\"id\":\"dd-after-dollar-j\",\"keys\":\"$jdd\",\"text\":[\"abcd|ef\",\"ab\",\"abcdef\",\"q\"]} [Evil (1,5)]. Scope.md:340 wording: \"`gg`, `G`, `:N`, `N%`, `>>`, `<<` and linewise `d` keep the cursor's column, as in Evil: a linewise `d` puts the cursor in the column it started in, or at the end of the line after `$`. Vim's `startofline` would move it to the first non-blank.\""
+  }
+ },
+ {
+  "id": "dev-7",
+  "severity": "minor",
+  "area": "hand-written fixture",
+  "file": "crates/die-vim/tests/oracle/hand-written/motions.json",
+  "line": 5,
+  "claim": "close-brace-last-paragraph's reason says '} stops at the end of the last line', but the last line is 'c', where the end and the start are the same column, so the fixture can't catch a die-vim that goes to col 0.",
+  "evidence": "Vim on 'a\\n\\nb\\ncd\\n' from (2,0): } gives (3,1). Evil gives (4,0), or (3,1) without the newline. die-vim already gives (3,1) (probe K, forward_paragraph motions.rs:416-436).",
+  "proposed_fix": "Add {\"id\": \"close-brace-last-paragraph-long-line\", \"vim\": \"end-line: Vim's } stops on the last character of the last line; Evil goes past it\", \"keys\": \"}\", \"text\": [\"a\", \"\", \"|b\", \"cd\"]} to cases/motions.json, add it to rule 1, and hand-write the expected cursor {\"line\":3,\"col\":1,\"byte\":6} with no errors.",
+  "needs_decision": false,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-7",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "The hand-written close-brace-last-paragraph uses 'a\\n\\nb\\nc\\n' from (2,0) and expects (3,0). The last line is one character wide, so 'end of the last line' and 'start of the last line' are the same column, and a die-vim that went to line_start(last) would pass. Vim on 'a\\n\\nb\\ncd\\n' from (2,0) gives (3,1). Evil gives (4,0) with the newline and (3,1) without it. die-vim already gives (3,1) (my probe). The proposed case, rule-1 entry and expected byte 6 are right.",
+   "better_fix": "As proposed. Give the rule-1 entry \"fixture\": \"hand-written/motions.json\", so the runner insists the fixture exists, and put its reason in the same form as the other four in that file."
+  }
+ },
+ {
+  "id": "dev-8",
+  "severity": "minor",
+  "area": "deviations.json rule 17",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 47,
+  "claim": "'. repeats the last change made inside the macro' is too narrow: a . in a macro before any change repeats the earlier change, in both Vim and Evil. The rule also doesn't decide what . does after @a, where Evil deliberately replays the macro and errors when the macro made a change.",
+  "evidence": "x@a with a='w.': Vim and Evil both give 'bc ef' (0,3). Evil's evil-execute-macro has `:repeat evil-repeat-execute-macro` (evil-commands.el:2548). x@a. with a='w': Evil gives ' b c d e f' (0,3), replaying w; Vim gives '  c d e f' (0,1), repeating x. @a. with a='dw': Evil gives 'b c d e f' plus 'No previous macro'; Vim gives 'c d e f'. qadwq@a.: Evil gives 'c d e f' plus the same error; Vim gives 'd e f'.",
+  "proposed_fix": "Recommended: keep Vim's behaviour inside a macro (accepted) and Evil's replay after @a (D4), without Evil's error. die_vim: \"As in Vim: a change made inside a macro becomes the last change, so a later . in the same macro repeats it. After the macro, . replays the macro, as Evil's does, without Evil's 'No previous macro' error.\" Add cases/macros.json {\"id\":\"dot-after-motion-macro\",\"keys\":\"x@a.\",\"text\":[\"|a b c d e f\"],\"registers\":{\"a\":{\"text\":\"w\",\"type\":\"macro\"}}} (oracle, Evil wins), and {\"id\":\"dot-after-macro\",\"keys\":\"@a.\",\"text\":[\"|a b c d e f\"],\"registers\":{\"a\":{\"text\":\"dw\",\"type\":\"macro\"}}} under rule 17, hand-written 'c d e f\\n' at (0,0) with no errors.",
+  "needs_decision": true,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-8",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "Mostly reproduced, but one generalisation is wrong. x@a with a='w.': Vim and Evil both repeat the earlier x ('  c d e f' at (0,1) on my text; Vim gives 'bc ef' (0,3) on the reviewer's 'abc def'). So rule 17's 'repeats the last change made inside the macro' is too narrow. Rule 17's evil text is too broad too: Evil's . inside a macro errors only when nothing was recorded before the macro. Evil's evil-execute-macro has ':repeat evil-repeat-execute-macro' (evil-commands.el:2548). x@a. with a='w' gives ' b c d e f' (0,3) in Evil, the same as Vim's x@a@@; Vim's . gives '  c d e f' (0,1). @a. with a='dw', and qadwq@a., both give 'No previous macro' in Evil, as claimed. But 'errors when the macro made a change' is wrong: with a='wx', Evil's @a. replays the whole macro with no error ('a   d e f' at (0,3), identical to @a@@), while Vim gives 'a c d e f' (0,2) (eout3/vb3.json, c4.out). So Evil's replay works, and the 'dw' error is a narrower bug. The proposed hand-written dot-after-macro (a='dw', expecting 'c d e f') can't tell the two models apart, because Vim's . (repeat dw) and replay (@a = dw) give the same text.",
+   "decision_view": "Agree: replay after @a, as Evil does, and keep Vim's behaviour inside the macro. The a='wx' run shows replay is Evil's working, deliberate design (D4: Evil wins), and the 'No previous macro' with operator macros is the bug being fixed. Pin the choice with an oracle case that separates the models, rather than relying on a hand-written one that doesn't.",
+   "better_fix": "die_vim: \"As in Vim inside a macro: a change made there becomes the last change, so a later . in the same macro repeats it (before any change, . repeats the change made before the macro). After the macro, . replays the macro, as Evil's does, without Evil's 'No previous macro' error when the macro used an operator.\" evil: \". inside a macro repeats the last change made before the macro ran, since Evil runs macros without command hooks, so it errors when there is none. After @a, . replays the macro, but errors 'No previous macro' when the macro used an operator such as dw.\" Add two plain oracle cases (Evil wins) to cases/macros.json: {\"id\":\"dot-replays-macro\",\"vim\":\"macro: Vim's . repeats the macro's last change (x); Evil's replays the whole macro\",\"keys\":\"@a.\",\"text\":[\"|a b c d e f\"],\"registers\":{\"a\":{\"text\":\"wx\",\"type\":\"macro\"}}} [Evil 'a   d e f' (0,3)], and the proposed dot-after-motion-macro (x@a., a='w') [Evil ' b c d e f' (0,3)]. Keep dot-after-macro (a='dw') under rule 17, hand-written 'c d e f\\n' at (0,0) with no errors."
+  }
+ },
+ {
+  "id": "dev-9",
+  "severity": "minor",
+  "area": "deviations.json rule 18",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 51,
+  "claim": "The Vp bug isn't limited to Vp: VP, and Vjp over the last two lines, break the same way in Evil, so the rule should cover any linewise visual put over the buffer's last line(s).",
+  "evidence": "Evil: yyjVP on 'one\\ntwo\\n' gives 'one\\n\\none'; yyjVjp on 'one\\ntwo\\nthree\\n' gives 'one\\n\\none' at (2,0). Vim gives 'one\\none\\n' at (1,0) for both. Evil without the newline is correct (V-p-linewise gives 'one\\none' at (1,0)), so this is rule 1's artifact.",
+  "proposed_fix": "\"rule\": \"a linewise put over the last line keeps the final newline\", \"evil\": \"Vp (and VP, and Vjp over the last two lines) on the buffer's last line leaves an empty line and drops the final newline.\", \"die_vim\": \"As in Vim: the lines are replaced and the final newline stays.\" Optional cases: {\"id\":\"V-P-last-line\",\"keys\":\"yyjVP\",\"text\":[\"|one\",\"two\"]} and {\"id\":\"V-j-p-last-two-lines\",\"keys\":\"yyjVjp\",\"text\":[\"|one\",\"two\",\"three\"]}, both hand-written 'one\\none\\n' at (1,0) with Evil's registers. The reason text in already-written fixtures that quotes the old rule name needs updating.",
+  "needs_decision": false,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-9",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "Evil: yyjVP on 'one\\ntwo\\n' gives 'one\\n\\none' (2,0); yyjVjp on 'one\\ntwo\\nthree\\n' gives 'one\\n\\none' (2,0). Vim gives 'one\\none\\n' (1,0) for both, and for Vp. Evil without the newline gets Vp right ('one\\none' at (1,0)), so this is rule 1's artifact surfacing in put, and the renamed rule covers it. No committed hand-written fixture quotes the old rule name yet; only the reviewer's drafts do.",
+   "better_fix": "As proposed. Add the two optional cases: VP and Vjp go through different code in Evil (evil-paste-before, and a two-line range), so one Vp fixture doesn't cover them."
+  }
+ },
+ {
+  "id": "dev-10",
+  "severity": "minor",
+  "area": "oracle cases added after S5",
+  "file": "tools/evil-oracle/cases/motions.json",
+  "line": 76,
+  "claim": "58 cases added after S5's Vim comparison were never compared with Vim. 21 of them differ, none carries a vim note, and some are Evil bugs by S5 Q1's own rule. V1 implemented Evil's behaviour for all of them without listing them.",
+  "evidence": "compare.vim on the 58 (newfx/*.out) finds 21 differences. motions/count-percent: Evil (3,0), Vim (2,0). Evil computes N% over characters (evil-commands.el:458-462) although its own comment at :454 says 'COUNT% jumps to a line COUNT percentage down the file'; Vim uses lines, '({count} * number-of-lines + 99) / 100' (motion.txt:371). Dropping the final newline alone moves Evil's count-percent-keeps-column from (2,3) to (1,0). die-vim ports Evil's character formula. motions/e-stops-on-empty-line: Evil (1,0), Vim (2,2); Vim's docs say 'Does not stop in an empty line' (motion.txt:408). motions/esc-resets-goal-column: Evil (2,1), Vim (2,4); this is Emacs's goal column.",
+  "proposed_fix": "Add vim notes to all 21 case lines (rerun compare with dev-2's patch). Recommended new rules:\n- {\"rule\": \"N% goes to the line N percent down\", \"s5_row\": null, \"kind\": \"evil-bug\", \"evil\": \"N% goes N percent through the buffer's characters, though Evil's own comment says lines.\", \"die_vim\": \"As in Vim: N% goes to line (N \u00d7 lines + 99) / 100, keeping the column (S5 row 2).\", \"cases\": [{\"case\": \"motions/count-percent\"}, {\"case\": \"motions/count-percent-keeps-column\"}]}, hand-written (2,0) and (1,0).\n- {\"rule\": \"e doesn't stop on an empty line\", \"s5_row\": null, \"kind\": \"evil-bug\", \"evil\": \"e stops on an empty line, because Evil treats empty lines as words.\", \"die_vim\": \"As in Vim: e skips empty lines; w and b still stop on them.\", \"cases\": [{\"case\": \"motions/e-stops-on-empty-line\"}]}, hand-written (2,2).\nKeep Evil's behaviour for esc-resets-goal-column and the rest. List all three choices for veto in m0-log.",
+  "needs_decision": true,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-10",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "The facts reproduce. fixtures/ now hold 364 cases, and 58 are absent from S5's vim/report.jsonl (motions 37, insert 18, undo 3), none with a vim note. Stock compare.vim finds 21 of them differing in text, cursor or state, and 23 with beep-aware error counts. count-percent: Evil (3,0), Vim (2,0). count-percent-keeps-column: Evil (2,3), and (1,0) without the newline because the character count shifts by one; Vim (1,0). e-stops-on-empty-line: Evil (1,0), Vim (2,2). esc-resets-goal-column: Evil (2,1), Vim (2,4). die-vim matches Evil on all of these, and none is pending. The citations check out: evil-commands.el:454 and 458-462, motion.txt:371 and 408. I disagree that these are 'Evil bugs by S5 Q1's own rule'. N%'s arithmetic, including the 80000 overflow guard, is copied from Emacs's beginning-of-buffer percent formula, so it's deliberate even though the comment says 'line'. Evil's word thing is documented to include 'an empty line matching ^$' (evil-common.el forward-evil-word docstring), so e stopping there follows from its design. Evil's own test only covers e starting from an empty line. Also, D4 says each exception 'is listed in records/s5-evil-oracle.md \u00a74', and the proposed new rules don't update that list.",
+   "decision_view": "Keep Evil for all three (N%, e on empty lines, Esc resetting the goal column), and add only the vim notes. They're consequences of Evil and Emacs design, not artifacts or clear bugs. V1 already implements and passes them, and moving them to Vim adds deviations, hand-written fixtures and changes to merged code for rarely noticed behaviour. List the three for veto in m0-log. If the lead does take Vim for any of them, it must also go into S5 \u00a74's table, or D4 must be amended to point at deviations.json instead.",
+   "better_fix": "Rerun compare with dev-2's patch over the 58 new cases, add vim notes to the 21 differing case lines (and to the 2 that differ only in error count, if they're kept as oracle cases), then rerun run-oracle.sh to regenerate the fixtures. Don't add the N% or e rules. Add to m0-log's calls for veto: \"N%, e across empty lines and Esc's goal column follow Evil (Emacs's percent arithmetic, empty lines as words, Emacs's goal column); Vim differs in each.\""
+  }
+ },
+ {
+  "id": "dev-11",
+  "severity": "minor",
+  "area": "tests/oracle.rs runner",
+  "file": "crates/die-vim/tests/oracle.rs",
+  "line": 63,
+  "claim": "The runner checks that a hand-written case is a deviation naming its file, but not that it keeps the oracle case's keys, mode and input. A fixture can therefore silently state a result for a different input.",
+  "evidence": "oracle.rs:63-77. In a scratch copy, a hand-written w-last-word-of-buffer with its input cursor changed to col 0 still validated and ran. With the guard below it failed with 'must keep its oracle case's keys, mode and input'. The real fixtures, including s-groups with its new keys, pass the guard.",
+  "proposed_fix": "Import DeviationKind from evil_oracle. After the 'isn't a deviation that names this file' check, add:\n```rust\nif let Some((oracle, _)) = all.get(&name) {\n    let rule = deviations.rules.iter().find(|r| r.cases.iter().any(|d| d.case == name));\n    let keys_may_differ = rule.is_some_and(|r| r.kind == DeviationKind::RegexSyntax);\n    if format!(\"{:?}\", oracle.input) != format!(\"{:?}\", c.input)\n        || oracle.mode != c.mode\n        || (!keys_may_differ && oracle.keys != c.keys)\n    {\n        problems.push(format!(\"{file}: {name} must keep its oracle case's keys, mode and input\"));\n    }\n}\n```\nAlternatively, derive PartialEq on Input, Selection and Window and compare those directly.",
+  "needs_decision": false,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-11",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "oracle.rs:63-77 checks only that a hand-written case is a deviation naming its file, then inserts it under 'hand-written/<name>'. Nothing compares its keys, mode or input with the oracle case of the same name. I added the proposed guard, plus a run check, to a scratch copy. The real fixtures pass (test oracle ... ok). Changing w-last-word-of-buffer's hand-written input cursor to col 0 then fails with 'must keep its oracle case's keys, mode, run and input'. It compiles as written: DeviationKind is exported from evil_oracle, Input derives Debug, and BTreeMap's Debug output is ordered, so string comparison is deterministic. All 6 committed hand-written fixtures keep input, keys, key_tokens and mode identical to their oracle cases.",
+   "better_fix": "As proposed, and also compare the fixture header's run with the oracle's, since a batch hand-written fixture for a tty case would skip the window checks: `if let Some((oracle, orun)) = all.get(&name) { ... || *orun != fx.run || ... }`, with the message \"must keep its oracle case's keys, mode, run and input\"."
+  }
+ },
+ {
+  "id": "dev-12",
+  "severity": "minor",
+  "area": "process: the remaining hand-written fixtures",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 14,
+  "claim": "The 18 deviations without fixtures are excluded and untested until each tranche writes its own expected values, so those values could end up fitted to the implementation. They can all be written now and put on pending.",
+  "evidence": "oracle.rs skips excluded cases, and pending.txt accepts hand-written names: with DIE_ORACLE_BLESS the scratch copy wrote 'V4 hand-written/macros/...' lines and then passed. 20 drafted fixtures (the 18 plus dev-1's two) pass load_fixtures and the dev-11 guard. They split by tranche as V2 2, V3 5, V4 6, V5 1, V6 6. Their values match Vim's and Evil-without-newline's cursor and error results, with Evil's kill-ring registers. One nit: BLESS asserts on 'both a deviation and pending' after writing, so moving a case into deviations takes two runs.",
+  "proposed_fix": "Copy the files from draft-hand-written into crates/die-vim/tests/oracle/hand-written/, use proposed-deviations-with-fixtures.json (fixture set on all 26 cases), and run DIE_ORACLE_BLESS=1 cargo test -p die-vim --test oracle twice (the result equals proposed-pending.txt). Each tranche then lands against expectations written before its code.",
+  "needs_decision": true,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-12",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "24 cases are listed and 6 carry fixtures, so 18 are excluded and never run. oracle.rs skips excluded names before run_case. parse_pending accepts any 'TRANCHE name', and the existence check uses `all`, which holds 'hand-written/topic/id' keys, so hand-written cases can sit on pending and are reported when they start passing. In BLESS mode, 'both a deviation and pending' is pushed into problems before the file is written, and the assert runs after, so moving a case into deviations takes two runs (nit confirmed). I didn't re-check the reviewer's 20 drafted values one by one. The ones I re-derived (M-short-buffer, H-at-end, ctrl-d-at-end, dk/dG columns, dj-last-line) match Vim and my Evil-without-newline runs.",
+   "decision_view": "Agree, with an order: settle the rule texts first (dev-3, dev-4, dev-8, dev-13, dev-14), then write every hand-written fixture in one commit, put them on pending, and have a second agent check each value against Vim and the Evil-without-newline run. Writing expectations before the code is what keeps them from being fitted to it, and the runner already supports it. Cases the runner can't check yet (window top line, visual) just stay pending under V6 or K7.",
+   "better_fix": "As proposed. Generate the rule-1 values mechanically with the dev-3 recipe, rather than copying the drafts by hand, and record the recipe in each fixture's reason, for example \"Your Evil on the same text without its final newline (deviations.json rule 1)\"."
+  }
+ },
+ {
+  "id": "dev-13",
+  "severity": "minor",
+  "area": "deviations.json regex rule",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 82,
+  "claim": "The rule fixes the keys as :s/(foo) (bar)/$2 $1/ but doesn't state the replacement-template rules. Under the regex crate's expansion, $1x names a group called '1x' and expands to nothing, where Evil's \\1x gives the group followed by x.",
+  "evidence": "D4 (scope.md:61) covers regex syntax. The S5 \u00a75 specific chose `$2 $1`. The regex crate's Captures::expand takes the longest name after $, so ${1}x is needed. No case covers it before V5.",
+  "proposed_fix": "Recommended: keep Rust's template and state it. die_vim: \"DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result. The replacement expands $N and ${N} as the regex crate does, so a group followed by a letter or digit needs braces: ${1}x.\" Add an oracle case {\"id\":\"s-group-before-letter\",\"keys\":\":s/\\\\(foo\\\\)/\\\\1x/<CR>\",\"text\":[\"|foo\"]} (Evil gives 'foox') to this rule, with hand-written keys ':s/(foo)/${1}x/<CR>'. Alternative: accept \\N in replacements as well.",
+  "needs_decision": true,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-13",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "The rule fixes only the S5 example. Evil's :s/\\(foo\\)/\\1x/ on 'foo' gives 'foox' (my run; Vim agrees). Under Rust-style templates, $1x names a group called '1x' and expands to nothing. One factual slip: die-core doesn't depend on the regex crate. It uses regex-automata =0.4.18 (Cargo.toml:41, text/search.rs), whose util::interpolate documents the same rule: 'ref is always the longest possible parse... $1a corresponds to the capture group named 1a'. The rule text should name what DIE actually uses. It should also say what else the template does: $$ for a literal $, and $0 for the whole match where Vim uses & or \\0.",
+   "decision_view": "Agree: keep Rust's template ($N, ${N}, $name, $$). It's what S5's accepted specific already shows, it matches D4's Rust regex syntax, and mixing \\N into a Rust pattern language would be a second, DIE-only dialect.",
+   "better_fix": "die_vim: \"DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result. Replacements expand $N, ${N} and $name as regex-automata's interpolation does (the regex crate's rule): the longest name wins, so a group followed by a letter, digit or _ needs braces, ${1}x. $0 is the whole match and $$ a literal $; & and \\N are literal.\" Add the proposed s-group-before-letter case (Evil 'foox'), hand-written with keys ':s/(foo)/${1}x/<CR>'. Its kind is regex-syntax, so the dev-11 guard allows the different keys."
+  }
+ },
+ {
+  "id": "dev-14",
+  "severity": "nit",
+  "area": "deviations.json rules 11, 12, 20, undo",
+  "file": "crates/die-vim/tests/oracle/deviations.json",
+  "line": 27,
+  "claim": "Wording gaps that V2 and V6 would otherwise decide on their own: Evil also ignores a count on ?; an empty search with no previous pattern; nH for any n; C-r with nothing to redo.",
+  "evidence": "Evil 2?x from col 8 gives (0,4); Vim gives (0,0). Vim's /<CR> with no previous pattern gives E35; Evil is silent. After 2/x, n moves one match in Vim (0,12). Evil's H calls move-to-window-line with count, 0-based (evil-commands.el:898-899), so 1H goes to the second line. Vim beeps on C-r at the newest change, and Evil's u past the oldest gives 'No further undo information'.",
+  "proposed_fix": "Rule 11: rename to \"a count before / or ? finds the nth match\", evil \"2/x and 2?x ignore the count.\", die_vim \"As in Vim: 2/x goes to the second match after the cursor, wrapping past the end as one search does. A later n moves one match.\" Rule 12 die_vim: \"As in Vim: / or ? with an empty pattern searches for the last pattern again, in its own direction. With no last pattern it's an error.\" Rule 20: rename to \"a count before H counts from 1\", evil \"nH goes to line n+1 of the window: 3H goes to the fourth line.\", die_vim \"As in Vim: nH goes to line n of the window, so 3H goes to the third. H, M and L otherwise follow Evil (S5 row 20).\" Undo: append \"C-r with nothing to redo fails, as u with nothing to undo does.\" All of these are in proposed-deviations.json.",
+  "needs_decision": false,
+  "review": "deviations",
+  "verifier": {
+   "id": "dev-14",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "Each item reproduced. Evil 2?x from col 8 on 'x a x b x' gives (0,4); Vim gives (0,0). Vim /<CR> with no previous pattern gives E35; Evil is silent at (0,0). Vim 2/x then n on 'x a x b x c x' gives (0,12), so n moves one match. Evil's 1H gives line 1 and 2H line 2 (0-based); evil-window-top calls move-to-window-line with count. Vim's 1H gives line 0 and 3H line 2. Vim beeps on C-r at the newest change and on u at the oldest. Evil's u at the oldest gives 'No further undo information'. The proposed texts describe these correctly."
+  }
+ },
+ {
+  "id": "DR-02",
+  "severity": "major",
+  "area": "die-vim motions at the buffer edge",
+  "file": "crates/die-vim/src/text.rs",
+  "line": 164,
+  "claim": "V1-1 leaves the cursor on the empty line after a final newline. That happens after `o<Esc>` on a last line with no final newline, `A<CR><Esc>`, or typing lines into a new buffer. From there:\n- `0`, `^` and `$` move the cursor to the last character of the line above;\n- `}` moves up instead of signalling;\n- `u` of a session typed on that line also leaves it.\nEvil and Vim stay on the line. This is outside the \"last line\" deviation, which only stops motions from reaching that line.",
+  "evidence": "text.rs:164-173: `normal_pos` clamps to `last_line` and snaps to the end of the line above. grammar.rs:173 runs every target through it. motions.rs:139 clamps `$`'s line to `last_line`. motions.rs:416-437 `}` returns `normal_pos(t, t.len())`. lib.rs:219 `history()` uses `normal_pos`. insert.rs:154-162 is the only place the exception is honoured. Evil oracle (scratch out/deepread.json), \"\"@0:\n- `ifoo<CR><Esc>0`, `^` and `$` \u2192 4 (line 1, col 0); die-vim 2\n- `ifoo<CR><Esc>}` \u2192 4 with \"End of buffer\"; die-vim 2, no error\n- `ifoo<CR><Esc>ibar<Esc>u` \u2192 4; die-vim 2",
+  "proposed_fix": "text.rs: add the two helpers below. Then:\n- grammar.rs `run_motion`: `let stays = on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head); let pos = if stays { to.pos } else { normal_pos(t, to.pos) };`\n- motions.rs `end_of_line`: `let here = t.line_of(s.pos); let line = here.saturating_add(s.n() - 1).min(last_line(t).max(here));`\n- motions.rs `forward_paragraph`: start with `if s.pos == t.len() { return Err(\"End of buffer\"); }`\n- insert::end: `t.set_cursor(w, rest_pos(t, back))` instead of its inline copy.\n- `history()`: as in DR-01.\n\nThe helpers:\n```rust\n/// Whether `pos` is on the empty line after a final newline (or in an empty text). Motions never take the cursor there, but an insert session or an undo can leave it there (V1-1), and motions along that line keep it.\npub fn on_last_empty_line(t: &TextBuf, pos: usize) -> bool { pos == t.len() && t.line_start(t.line_of(pos)) == pos }\n/// Where the cursor rests after an insert session or an undo: `normal_pos`, except on the empty line after a final newline, which it keeps.\npub fn rest_pos(t: &TextBuf, pos: usize) -> usize { if on_last_empty_line(t, pos) { pos } else { normal_pos(t, pos) } }\n```\nAdd the five oracle cases to cases/motions.json and cases/undo.json. This is in fixes.patch.",
+  "needs_decision": false,
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn motions_on_the_line_after_a_final_newline_stay_on_it() {\n    for k in [\"0\", \"^\", \"$\"] {\n        let (text, cur, _, msgs) = run(\"\", 0, &format!(\"ifoo<CR><Esc>{k}\"));\n        assert_eq!(text, \"foo\\n\");\n        assert_eq!((cur, msgs.len()), (4, 0), \"{k} from the empty last line\");\n    }\n    let (_, cur, _, msgs) = run(\"\", 0, \"ifoo<CR><Esc>}\");\n    assert_eq!((cur, msgs.len()), (4, 1), \"}} from the empty last line: {msgs:?}\");\n    let (text, cur, _, _) = run(\"\", 0, \"ifoo<CR><Esc>ibar<Esc>u\");\n    assert_eq!((text.as_str(), cur), (\"foo\\n\", 4), \"u back to the empty last line\");\n}\n```\n```\nthread 'motions_on_the_line_after_a_final_newline_stay_on_it' panicked at crates/die-vim/tests/deep_read.rs:85:9:\nassertion `left == right` failed: 0 from the empty last line\n  left: (2, 0)\n right: (4, 0)\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-02",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "better_fix": "The code is right; add the docs. grammar.rs module doc, lines 20-23: \"...motions never take it past the last line (`text::normal_pos`). An insert session or an undo can leave it on the empty line after a final newline, as in Evil and Vim; motions along that line (0, ^, $, C-a) keep it there, and } from it signals.\" In scope \u00a710, after \"An insert session that ends there leaves the cursor there\", add: \"and motions along that line keep it there.\" In deviations.json, rule \"the last line is the last line\", die_vim field, add: \"Motions from that line along it (0, ^, $) stay on it.\"",
+   "reasoning": "Reproduced with my own oracle cases. \"\" `ifoo<CR><Esc>` followed by `0`, `^`, `$` or `2$` gives 4 in Evil and 2 in die-vim on main. `}` gives 4 with an end-of-buffer error after key 7; die-vim gives 2 with no error. `ibar<Esc>u` gives 4 in Evil, 2 in die-vim. \"abc\" (no final newline) `o<Esc>0` gives 4 in Evil, 2 in die-vim. `k` already agrees at 0. The code shows the cause: normal_pos (text.rs:164-173) clamps to last_line, and run_motion (grammar.rs:173) applies it to every target. With the patch's DR-02 hunks, all eight cases match Evil. I also checked that h, l, w, j and e from that line still fail without moving, and that b and k leave it as Evil does. scope \u00a710 states the deviation for motions that reach the line, not for motions made from it, so this is a defect, not a deviation."
+  }
+ },
+ {
+  "id": "DR-05",
+  "severity": "minor",
+  "area": "die-vim goal column",
+  "file": "crates/die-vim/src/grammar.rs",
+  "line": 174,
+  "claim": "A motion that moves fewer times than its count (`5h` near the line start) signals an error, yet die-vim drops the goal column. Evil keeps it, because Emacs doesn't update last-command when a command signals. That's the same rule as the fixture motions/failed-l-keeps-goal-column, which die-vim already follows for motions that fail outright.",
+  "evidence": "grammar.rs:173-178 always sets `with_goal(Goal::encode(to.goal))`, and `steps()` (motions.rs:76-90) returns a short target with goal None. Evil oracle (scratch out/deepread.json): \"abcdefgh\\nabc\\nabcdefgh\\n\"@6 `j5hj` \u2192 19 (line 2, col 6), one \"Beginning of line\" error. die-vim: 13.",
+  "proposed_fix": "run_motion: `let goal = match to.short { Some(_) => sel.goal, None => Goal::encode(to.goal) }; t.set_selection(w, Selection::cursor(pos).with_goal(goal));`, with the comment \"A motion that falls short signals an error, which leaves Emacs's last-command alone, so the goal column survives it as it survives a motion that fails.\" In fixes.patch. Add the case to cases/motions.json.",
+  "needs_decision": false,
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn a_motion_that_falls_short_keeps_the_goal_column() {\n    let (_, cur, _, msgs) = run(\"abcdefgh\\nabc\\nabcdefgh\\n\", 6, \"j5hj\");\n    assert_eq!(msgs.len(), 1, \"{msgs:?}\");\n    assert_eq!(cur, 19);\n}\n```\n```\nthread 'a_motion_that_falls_short_keeps_the_goal_column' panicked at crates/die-vim/tests/deep_read.rs:113:5:\nassertion `left == right` failed\n  left: 13\n right: 19\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-05",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "better_fix": "The code is right; the comment's mechanism is wrong. Emacs's command_loop_1 does set last-command after a command that signalled. What keeps the goal is Evil itself: evil-backward-char and evil-forward-char catch their error and run `(setq this-command last-command)`, with the comment \"Restore the previous command (this one never happened)\" (evil-commands.el:72 and 100-103). Use this comment: \"Like Evil's h and l, a motion that falls short signals and counts as never having happened (Evil sets this-command back to last-command), so the goal column survives it, as it survives a motion that fails outright.\" Add both short-h and short-l cases to cases/motions.json.",
+   "reasoning": "Reproduced: the oracle gives 19 for \"abcdefgh\\nabc\\nabcdefgh\\n\"@6 `j5hj`, with a beginning-of-line error after key 3, and die-vim gives 13. My extra case, \"abcdefgh\\nabcde\\nabcdefgh\\n\"@2 `j5lj`, gives 17 in Evil and 19 in die-vim. With the fix, both match. Only motions::steps (used by h and l) sets Target.short, so the fix is scoped exactly to the two motions where Evil restores this-command."
+  }
+ },
+ {
+  "id": "DR-06",
+  "severity": "minor",
+  "area": "die-vim insert state",
+  "file": "crates/die-vim/src/insert.rs",
+  "line": 208,
+  "claim": "In insert state, `<Up>`/`<Down>` take the current column each time, so a run of them through a short line loses the column. Emacs's next-line keeps a goal column. No oracle fixture covers insert-state `<Up>`/`<Down>`. Batch Emacs can't cover them: with line-move-visual, batch lands at column 0 (batch put X at col 0, tty at col 4), so they need tty cases.",
+  "evidence": "insert.rs:208-218: `pos_at_col(t, l, t.display_col(p))`, with no goal. Evil oracle, tty run (scratch out3/deepread3.json): \"abcdef\\nab\\nabcdef\\n\"@4 `i<Down><Down>X<Esc>` \u2192 \"abcdef\\nab\\nabcdXef\\n\", cursor 14. The batch run of the same case gave \"Xabcdef\" (out/deepread.json), an artifact. die-vim gives \"abXcdef\".",
+  "proposed_fix": "insert.rs `apply`, Up/Down arm: `let goal = t.selection(w).and_then(|s| s.goal).unwrap_or_else(|| t.display_col(p)); let q = pos_at_col(t, l, goal); t.set_selection(w, Selection::cursor(q).with_goal(Some(goal))); return Ok(());` Every other edit uses `set_cursor`, which clears the goal. insert::begin clears a goal carried over from normal state, before `begin_undo_group`: `if let Some(sel) = t.selection(w) { t.set_selection(w, sel.with_goal(None)); }`. In fixes.patch. Add the case to cases/insert.json in a file with \"run\": \"tty\".",
+  "needs_decision": false,
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn insert_state_down_keeps_the_goal_column() {\n    let (text, cur, _, _) = run(\"abcdef\\nab\\nabcdef\\n\", 4, \"i<Down><Down>X<Esc>\");\n    assert_eq!(text, \"abcdef\\nab\\nabcdXef\\n\");\n    assert_eq!(cur, 14);\n}\n```\n```\nthread 'insert_state_down_keeps_the_goal_column' panicked at crates/die-vim/tests/deep_read.rs:123:5:\nassertion `left == right` failed\n  left: \"abcdef\\nab\\nabXcdef\\n\"\n right: \"abcdef\\nab\\nabcdXef\\n\"\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-06",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "My tty oracle run (out-tty/vtty.json) gives: \"abcdef\\nab\\nabcdef\\n\"@4 `i<Down><Down>X<Esc>` produces \"abcdef\\nab\\nabcdXef\\n\" with cursor 14, and @14 `i<Up><Up>X<Esc>` produces \"abcdXef\\n\u2026\" with cursor 4. die-vim on main produces \"abXcdef\". insert.rs:217 uses the current display_col on every move. With the patch's DR-06 hunks, both cases match, single <Down> still matches (9), and `ji<Down>X<Esc>` recomputes the goal from column 1, as Emacs does after evil-insert. The batch run's \"Xabcdef\" is an artifact, as the reviewer says. One practical note: the tty case file needs \"defaults\": {\"window\": \u2026}. My tty fixture without it fails evil_oracle::load_fixtures with \"window must be given exactly for tty cases\"."
+  }
+ },
+ {
+  "id": "DR-07",
+  "severity": "minor",
+  "area": "die-vim wrapped lines (C-a, insert arrows)",
+  "file": "crates/die-vim/src/lib.rs",
+  "line": 121,
+  "claim": "The owner's Emacs runs global-visual-line-mode with line-move-visual. There, C-a is remapped to beginning-of-visual-line, and insert-state `<Down>`/`<Up>` move by screen row. die-vim moves by logical line for both. On a wrapped line, `$<C-a>` goes to column 0 instead of the start of the last screen row, and `<Down>` jumps to the next logical line.",
+  "evidence": "lib.rs:121-125: C-a is `motions::beginning_of_line` (logical). insert.rs:208-218 uses logical `line + 1`. Evil oracle, tty with 80 columns (scratch out8/deepread8.json), on a 167-character line of \"wordNN\" words:\n- `$<C-a>` \u2192 154 (die-vim 0)\n- `i<Down>X<Esc>` puts X at 77 (die-vim 168)\nDIE's own 80-column window wraps that line at the same points (77, 154).",
+  "proposed_fix": "Under the V6 work package:\n- Bind C-a to a motion that goes to the start of the cursor's display row: `display_line(pos)`'s row holding the cursor, with that row's first stop.\n- Make insert-state `<Up>`/`<Down>` use layout's `move_visual` with the goal from DR-06.\n- Add both cases to a tty case file.\nUntil then, add a pending entry for each case, or document it.",
+  "needs_decision": false,
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn insert_down_and_ctrl_a_follow_screen_rows_on_a_wrapped_line() {\n    let long: Vec<String> = (0..24).map(|i| format!(\"word{i:02}\")).collect();\n    let text = format!(\"{}\\nnext\\n\", long.join(\" \"));\n    let ctrl_a = cursor_after(&text, 0, \"$<C-a>\");\n    let down = run(&text, 0, \"i<Down>X<Esc>\").0.find('X');\n    assert_eq!((ctrl_a, down), (154, Some(77)), \"(C-a's cursor, where insert-state <Down> typed X)\");\n}\n```\n```\nthread 'insert_down_and_ctrl_a_follow_screen_rows_on_a_wrapped_line' panicked at crates/die-vim/tests/deep_read.rs:138:5:\nassertion `left == right` failed: (C-a's cursor, where insert-state <Down> typed X)\n  left: (0, Some(168))\n right: (154, Some(77))\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-07",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "My tty oracle run (80 columns) on the 167-character line gives `$<C-a>` \u2192 154 and `i<Down>X<Esc>` \u2192 X at 77. die-vim gives 0 and 168. lib.rs:121-125 and insert.rs:208-218 are logical. Parking this under V6 with pending entries is right. Add one note to V6: under visual-line-mode, C-a is beginning-of-visual-line, so its count (DR-08) moves count-1 visual lines, not logical ones."
+  }
+ },
+ {
+  "id": "DR-08",
+  "severity": "minor",
+  "area": "die-vim counts",
+  "file": "crates/die-vim/src/lib.rs",
+  "line": 121,
+  "claim": "`C-a` with a count ignores the count. It is Emacs's move-beginning-of-line, which with argument N moves N-1 lines down first.",
+  "evidence": "lib.rs:121-125: `run_motion(ctx, a, Kind::Exclusive, None, motions::beginning_of_line)`, and the count is unused. Evil oracle (scratch out4/deepread4.json): \"abc\\ndef\\nghi\\njkl\\n\"@2 `3<C-a>` \u2192 8 (line 2, col 0). die-vim: 0.",
+  "proposed_fix": "motions.rs: add\n```rust\n/// `C-a`, Emacs's move-beginning-of-line: a count moves count-1 lines down first.\npub fn line_beginning(s: &Start) -> Result<Target, Fail> {\n    let t = s.text;\n    let here = t.line_of(s.pos);\n    let line = here.saturating_add(s.n() - 1).min(last_line(t).max(here));\n    Ok(Target::at(t.line_start(line)))\n}\n```\nand bind vim-line-beginning to it. In fixes.patch. Add the case to cases/motions.json.",
+  "needs_decision": false,
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn count_ctrl_a_moves_down_count_minus_one_lines() {\n    assert_eq!(cursor_after(\"abc\\ndef\\nghi\\njkl\\n\", 2, \"3<C-a>\"), 8);\n}\n```\n```\nthread 'count_ctrl_a_moves_down_count_minus_one_lines' panicked at crates/die-vim/tests/deep_read.rs:162:5:\nassertion `left == right` failed\n  left: 0\n right: 8\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-08",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "The oracle gives 8 for \"abc\\ndef\\nghi\\njkl\\n\"@2 `3<C-a>` in both batch and tty; die-vim on main gives 0. With the patch's line_beginning, it gives 8. The `last_line(t).max(here)` clamp also keeps C-a on the empty last line (DR-02). The fix is right for unwrapped lines. On wrapped lines the count counts screen rows (DR-07, V6), so the rustdoc should say \"count-1 lines down (logical until V6)\"."
+  }
+ },
+ {
+  "id": "DR-09",
+  "severity": "minor",
+  "area": "die-vim counts / performance",
+  "file": "crates/die-vim/src/insert.rs",
+  "line": 130,
+  "claim": "Replaying a session for its count takes time quadratic in the count, and nothing can interrupt it. Each replayed key is its own transaction, and core lays the whole growing line out again on every edit (`normalize_views` \u2192 `snap` \u2192 `dl`). Measured: `8000ix<Esc>` takes 0.73 s in release and 1.0 s in debug, quadrupling each time the count doubles. A mistyped count of tens of thousands freezes the editor for minutes, and `99999999999999999999ix<Esc>` (which saturates to usize::MAX) never finishes.",
+  "evidence": "insert.rs:130-136: `(1..s.count).try_for_each(|_| ... s.edits.iter().try_for_each(|e| apply(t, w, e)))`. Each `apply` commits a transaction, which calls `normalize_views` (text.rs:445-463). Timings from a scratch bench, `{n}ix<Esc>`:\n- release: 1000 \u2192 28 ms, 2000 \u2192 60 ms, 4000 \u2192 190 ms, 8000 \u2192 732 ms\n- debug: 35 ms, 76 ms, 263 ms, 1.01 s",
+  "proposed_fix": "insert::end: when the session is typed text only and didn't open a line, insert the copies in one transaction, with a cap:\n```rust\nconst MAX_REPEAT: usize = 64 << 20; // The most text a count may replay at once; more is an error, not a hang.\nlet text: Option<String> = s.edits.iter().map(|e| match e { Edit::Text(x) => Some(x.as_str()), _ => None }).collect();\nr = match text {\n    Some(one) if !opens && s.count > 1 => one.len().checked_mul(s.count - 1).filter(|&n| n <= MAX_REPEAT)\n        .ok_or(Error::Msg(\"Count too large\".into()))\n        .and_then(|n| { let p = cursor(t); t.tx(Origin::User).insert(p, one.repeat(s.count - 1)).commit()?; t.set_cursor(w, p + n); Ok(()) }),\n    _ => /* the existing per-key replay */,\n};\n```\nThis is in fixes.patch, and the 50000 case then finishes well inside 2 s. Also cap other replays at the same size estimate (count \u00d7 session length). Note for K4: per-edit relayout of the whole line is the root cause, and it's what the 1 MB-line budget will hit.",
+  "needs_decision": false,
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn a_large_count_insert_finishes_quickly() {\n    let (tx, rx) = std::sync::mpsc::channel();\n    std::thread::spawn(move || {\n        let r = run(\"\\n\", 0, \"50000ix<Esc>\");\n        let _ = tx.send(r.0.len());\n    });\n    match rx.recv_timeout(std::time::Duration::from_secs(2)) {\n        Ok(len) => assert_eq!(len, 50001),\n        Err(_) => panic!(\"50000ix<Esc> took more than 2 s\"),\n    }\n}\n```\n```\nthread 'a_large_count_insert_finishes_quickly' panicked at crates/die-vim/tests/deep_read.rs:178:19:\n50000ix<Esc> took more than 2 s\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-09",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "better_fix": "insert::end, with three changes to the patch:\n(1) Guard the fast path against empty sessions: `Some(one) if !one.is_empty() && !opens && s.count > 1 => \u2026`. Without the guard, `3i<Esc>` inserts \"\", which core records as an empty undo step. With fixes.patch, `ifoo<Esc>3i<Esc>u` leaves \"fooabc\\n\"; main gives \"abc\\n\".\n(2) Lower the cap to K4's long-line budget: `const MAX_REPEAT: usize = 1 << 20; // K4's budget is a 1 MB line; until K4's compact cells, a longer line costs ~160 bytes of layout per character.`\n(3) Bound the per-key path by edit count, not size: `const MAX_REPLAY: usize = 10_000; // Each replayed edit lays the line out again until K4.` and `_ => s.edits.len().checked_mul(s.count - 1).filter(|&n| n <= MAX_REPLAY).ok_or(Error::Msg(\"Count too large\".into())).and_then(|_| (1..s.count).try_for_each(|_| { \u2026 }))`.\nFor K4, record the root cause: normalize_views \u2192 snap \u2192 dl(pos) lays out the whole logical line on every commit, and set_selection lays it out twice more, so snap must cost the same whatever the line's length. Separately, core records a no-op edit (`insert(p, \"\")`) as an undo step. History::record should skip ops whose removed and inserted text are equal.",
+   "reasoning": "The quadratic cost reproduces on main (test profile): `{n}ix<Esc>` takes 25 ms at 1000, 79 ms at 2000, 302 ms at 4000 and 1.13 s at 8000, and the reviewer's 2 s test with 50000 times out. The patch fixes the text-only path (4,000,000 copies in 0.14 s), but the proposed fix has three problems. (a) The empty-session regression above, which I reproduced. (b) MAX_REPEAT = 64 MiB is far too high: `4000000ix<Esc>` already peaks at 650 MB RSS (measured with /usr/bin/time -l), because the whole line is laid out, so 64 MiB would need about 10 GB. (c) The per-key path stays quadratic: `4000ixy<Left><Esc>` takes 0.95 s with the patch. \"Cap other replays at the same size estimate\" doesn't bound time, since the cost grows with the square of the line's length, not with the bytes inserted."
+  }
+ },
+ {
+  "id": "DR-10",
+  "severity": "minor",
+  "area": "die-vim word classes",
+  "file": "crates/die-vim/src/text.rs",
+  "line": 69,
+  "claim": "die-vim's word scripts are only Han, Kana, Hangul and Other, so Latin followed by Cyrillic, Armenian, Hebrew, Arabic, Devanagari, Thai, Georgian or IPA reads as one word. The owner's Evil ends a word at each of those changes. It does not end one at Latin\u2194Greek or Latin\u2194fullwidth Latin, because of Evil's CJK word categories; plain `emacs -Q` does split Greek.",
+  "evidence": "text.rs:67-101 (`enum Script`, `fn script`). Evil oracle (scratch out5/deepread5.json), `w` from 0 on \"abcXXX def\" and \"XXXabc def\": 16 of 28 cases differ. Examples:\n- \"abc\u0430\u0431\u0432 def\" `w` \u2192 3 (die-vim 10); `e` \u2192 2 (die-vim 7); `b`@7 \u2192 3 (die-vim 0)\n- Thai, Devanagari and Georgian: \u2192 3 (die-vim 13)\n- Greek, Latin Extended, Han, Hangul and fullwidth Latin all agree.",
+  "proposed_fix": "Add `Script::Separate(u32)` covering U+0400\u2013052F, 0530\u2013058F, 0590\u201305FF, 0600\u201306FF/0750\u2013077F/08A0\u201308FF, each 0x80 block of 0900\u20130FFF, 10A0\u201310FF, and 0250\u201302AF/1D00\u20131DBF. Greek stays Other. This is in fixes.patch, where the Cyrillic test then passes. Add the 28 scratch cases (cases5/deepread5.json) to tools/evil-oracle/cases/motions.json, so the table is pinned by Evil and not by this guess.",
+  "needs_decision": false,
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn a_word_ends_where_latin_meets_cyrillic() {\n    let t = \"abc\\u{430}\\u{431}\\u{432} def\\n\";\n    assert_eq!(cursor_after(t, 0, \"w\"), 3, \"w\");\n    assert_eq!(cursor_after(t, 0, \"e\"), 2, \"e\");\n    assert_eq!(cursor_after(t, 7, \"b\"), 3, \"b\");\n}\n```\n```\nthread 'a_word_ends_where_latin_meets_cyrillic' panicked at crates/die-vim/tests/deep_read.rs:191:5:\nassertion `left == right` failed: w\n  left: 10\n right: 3\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-10",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "better_fix": "Model Emacs's actual rule instead of a block guess. Emacs's word_boundary_p puts a boundary between two word characters whose char-script-table scripts differ. Evil binds word-combining-categories to evil-cjk-word-combining-categories (evil-vars.el:1183-1194, applied at evil-common.el:1551), which joins any two characters from category r (ASCII letters and digits), A (full-width alphanumerics U+FF10\u2013FF5A), G (JIS Greek, U+0391\u201303A9 and U+03B1\u201303C9) and k (half-width katakana U+FF61\u2013FF9F). evil-cjk-word-separating-categories (evil-vars.el:1161-1173) splits Kanji, Hiragana, Katakana and half-width Katakana from each other. So:\n(1) Replace `Script` with Emacs's script names: a range table generated once from char-script-table, with the generator kept next to the oracle.\n(2) Split Kana into Hiragana (3040\u2013309F), Katakana (30A0\u201330FF, 31F0\u201331FF) and HalfKatakana (FF61\u2013FF9F).\n(3) Treat boundaries as a relation between adjacent characters, `boundary(a, b) = script(a) != script(b) && !(roman_group(a) && roman_group(b))`, not as equality with the word's first character. word_begin, word_end and word_back currently compare each character to the first (`class(ch) == k`), which can't express \"a\u2013\u03b1 join, \u03b1\u2013\u1f00 join, a\u2013\u1f00 split\".\n(4) Pin all of it with the 51 scratch cases: the reviewer's 28, plus my 23 in verify-deep-read/cases2/vscripts.json and cases3/vcjk.json.",
+   "reasoning": "The reported mismatches reproduce: \"abc\u0430\u0431\u0432 def\" gives w \u2192 3, e \u2192 2 and b \u2192 3 in Evil, and 10, 7 and 0 in die-vim; Thai gives 3 in Evil and 13 in die-vim. The patch fixes those, but my extra oracle cases, replayed through die-vim with fixes.patch applied, show 13 more mismatches that it doesn't fix (Evil, then die-vim with the patch):\n- Latin then half-width katakana: 13, 3\n- half-width katakana then Latin: 13, 9\n- Hiragana then Katakana: 6, 16\n- Katakana then half-width katakana: 6, 13\n- Latin-1 \u00e9 then Greek: 6, 13\n- Latin Extended \u015d then Greek: 6, 13\n- Latin then Greek Extended U+1F00: 3, 13\n- Latin then Coptic U+03E2: 3, 10\n- Latin then Runic, Ethiopic, Myanmar, Khmer or Cherokee: 3, 13\nThe Kana mismatches exist on main too. The table is a guess that matches only the 28 probed pairs, so the fix is incomplete."
+  }
+ },
+ {
+  "id": "DR-11",
+  "severity": "minor",
+  "area": "die-vim normal-state invariant / combining marks",
+  "file": "crates/die-vim/src/text.rs",
+  "line": 168,
+  "claim": "grammar.rs promises that the cursor never rests on a non-empty line's newline, but `e` onto a word that ends in a combining mark at the end of a line lands on the newline. `normal_pos` snaps the mark forward past its grapheme. The owner's Evil does the same (an Emacs artifact: the command loop pushes point out of a composition), and the fixture motions/combining-mark-e (\"caf\u00e9 bar\" `e` \u2192 6, the space) passes only because of that forward snap. For V3, an inclusive `de` or `ce` that took the snapped position would also delete the newline or the space.",
+  "evidence": "grammar.rs:20-21 states the invariant. text.rs:164-173: `else { t.snap(p, None) }` returns `e` when `p` is inside the line's last grapheme. Evil oracle (scratch out2/deepread2.json): \"caf\u00e9\\n\" (with U+0301) `e` \u2192 6, the newline; \"a caf\u00e9\\n\" `we` \u2192 8; out/deepread.json `$` \u2192 6. die-vim: `e` \u2192 6, `$` \u2192 3. So die-vim's `e` and `$` disagree on the same grapheme.",
+  "proposed_fix": "text.rs `normal_pos`:\n```rust\nlet p = pos.clamp(s, e);\n// Inside the line's last grapheme (`e` onto a combining mark), snapping forward would land on the newline: go back to the grapheme's start.\nlet q = if p == e { e } else { t.snap(p, None) };\nif q == e && e > s { t.snap(e - 1, Some(Dir::Backward)) } else { q }\n```\nThis is in fixes.patch, and the oracle is unchanged with it. Add a deviation rule \"the cursor never rests inside a grapheme or on a non-empty line's newline\" (kind emacs-artifact), with hand-written fixtures for `e` on \"caf\u00e9\\n\" \u2192 3 and `$` \u2192 3. V3 note: operators must take the raw motion target and extend inclusive ranges to the grapheme's end, not the normalized cursor.",
+  "needs_decision": true,
+  "recommendation": "Deviate. Evil's position here is Emacs redisplay behaviour, not Evil's grammar; Vim gives 3. Also consider whether `e` mid-line should land on \"\u00e9\" (3) rather than the following space (6). That would change the owner's fixture combining-mark-e, which needs the owner's sign-off, so I left it alone.",
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn e_never_rests_on_a_non_empty_lines_newline() {\n    let t = \"cafe\\u{301}\\n\";\n    let (_, cur, state, _) = run(t, 0, \"e\");\n    assert_eq!(state, State::Normal);\n    assert_ne!(cur, 6, \"the cursor is on the newline of \\\"caf\u00e9\\\"\");\n}\n```\n```\nthread 'e_never_rests_on_a_non_empty_lines_newline' panicked at crates/die-vim/tests/deep_read.rs:208:5:\nassertion `left != right` failed: the cursor is on the newline of \"caf\u00e9\"\n  left: 6\n right: 6\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-11",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "better_fix": "Don't change normal_pos. Fix the motion so that it steps over and lands on whole graphemes, in motions.rs word_end:\n```rust\nfn word_end(t: &TextBuf, p: usize, big: bool) -> Option<usize> {\n    // Past the whole grapheme under the cursor, which may carry combining marks.\n    let mut c = Chars::at(t, next_stop(t, p)?);\n    loop {\n        match class(c.ch()?, big) {\n            Class::Blank => {}\n            Class::Newline if empty_line(&c) => return Some(c.pos()),\n            Class::Newline => {}\n            k => loop {\n                let here = c.pos();\n                c.fwd();\n                if c.ch().map(|ch| class(ch, big)) != Some(k) {\n                    // On the grapheme holding the word's last character, as in Vim.\n                    return Some(t.snap(here, Some(Dir::Backward)));\n                }\n            },\n        }\n        c.fwd();\n    }\n}\n```\nTested on main: `e` gives 3 both at line end and mid-line; `$` gives 3; `ee` on \"caf\u00e9\\nbar\\n\" gives 9, as in Evil. The only oracle change is motions/combining-mark-e (6 \u2192 3), which becomes a deviation (rule \"the cursor rests on a grapheme's start\", kind emacs-artifact) with hand-written fixtures for `e` mid-line, `e` at line end and `$`. V3: inclusive operators extend the target to the grapheme's end.",
+   "decision_view": "Deviate, toward Vim, and do it uniformly: `e` lands on \"\u00e9\" (3) both mid-line and at the end of a line. Evil's 6 comes from Emacs's command loop pushing point out of a composition; it isn't Evil's grammar, and it is also what puts `e` on the space mid-line. The reviewer's version (snap forward mid-line, back at line end) is asymmetric and, as written, breaks repeated `e`. The deviation needs the owner's fixture combining-mark-e to change from 6 to 3. Decomposed \u00e9 is rare, and the deviations review is still pending with the owner, so this is a cheap call to make now and list for veto.",
+   "reasoning": "The finding itself holds. Evil gives 6 (the newline) for `e` and `$` on decomposed \"caf\u00e9\\n\", in batch and tty. die-vim on main gives `e` 6 and `$` 3, so it breaks its own invariant at grammar.rs:20-21, and `e` and `$` disagree on the same grapheme. But the proposed normal_pos change is a regression. With fixes.patch applied, \"caf\u00e9\\nbar\\n\" `ee` sticks at 3 with \"End of buffer\". On main, `ee` reaches 9, and so does Evil (my oracle case cases4/vcomb.json gives 9). The cause: word_end steps one char from 3 onto the combining mark, returns 4, and normal_pos snaps that back to 3, the start, so words() reports \"End of buffer\". The oracle didn't catch it because no fixture runs `e` twice over a line-final combining mark."
+  }
+ },
+ {
+  "id": "DR-16",
+  "severity": "minor",
+  "area": "die-vim partial key sequences",
+  "file": "crates/die-vim/src/lib.rs",
+  "line": 59,
+  "claim": "Escape after `f`, `F`, `t` or `T` should cancel quietly, as in Vim and in Evil, where the read quits silently. die-vim reports \"f<Esc> is undefined\" as an error, and, through DR-03, keeps the count for the next command.",
+  "evidence": "lib.rs:59-61 binds only `f<char>` and the like. `<Esc>` isn't committed text, so the lookup falls to `Lookup::None` (ctx.rs:1230-1241). Batch Evil can't record this case: `3f<Esc>l` quit the oracle run (\"After 0 kbd macro iterations: Quit\"), so the test cites Vim and Evil behaviour, not a fixture.",
+  "proposed_fix": "In `register`: `for key in [\"f\", \"F\", \"t\", \"T\"] { k.bind(Normal, &format!(\"{key}<Esc>\"), \"vim-cancel\"); }` and `reg.command(\"vim-cancel\", \"Escape after a key that waits for another: nothing.\", |_, _| Ok(()));`. Because it's a command, `run_key` takes the count even without DR-03. A18 is fine: `f` isn't bound alone. When V3 adds operators, bind `<Esc>` in OperatorPending the same way.",
+  "needs_decision": false,
+  "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn escape_cancels_a_pending_f_quietly() {\n    let (_, cur, _, msgs) = run(\"abcdef\\n\", 0, \"3f<Esc>l\");\n    assert!(msgs.is_empty(), \"{msgs:?}\");\n    assert_eq!(cur, 1);\n}\n```\n```\nthread 'escape_cancels_a_pending_f_quietly' panicked at crates/die-vim/tests/deep_read.rs:264:5:\n[\"f<Esc> is undefined\"]\n```",
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-16",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "On main, \"abcdef\\n\" `3f<Esc>l` logs \"f<Esc> is undefined\" and leaves the cursor at 3, because the count survives (DR-03). In Evil, f reads its character with evil-read-key, and evil-read-key-map binds ESC to keyboard-quit (evil-maps.el:672). That signals quit: Emacs echoes \"Quit\" and clears the prefix argument, so Evil isn't fully silent, but it reports no \"undefined\" error. I implemented the proposed f/F/t/T<Esc> bindings to a no-op vim-cancel command; the keymap accepts them next to f<char>, and the test passes (no messages, cursor 1). The batch oracle can't record this case (quit ends the macro), as the reviewer says. `g<Esc>` stays \"undefined\", which matches GUI Evil, where `g <escape>` is undefined too."
+  }
+ },
+ {
+  "id": "DR-17",
+  "severity": "minor",
+  "area": "oracle runner",
+  "file": "crates/die-vim/tests/oracle.rs",
+  "line": 259,
+  "claim": "Suspicion, a latent gap with no current miss: the runner compares only how many errors there are. It ignores the key each one came after (`after_keys`, which the fixtures record) and its message, so a case could pass with an error on the wrong key. I replayed the 118 passing non-deviation cases one key at a time, and every error came after the same key as Evil's, so nothing is hidden today.",
+  "evidence": "oracle.rs:259-271: `let errors = messages.len(); \u2026 if errors != want_errors`. ErrorInfo.after_keys is in tools/evil-oracle/src/lib.rs:179-184. Scratch replay output: \"ERRPOS checked 118 passing cases\", with no mismatch lines.",
+  "proposed_fix": "In `run_case`, replace the type-all-then-run loop with:\n```rust\nlet mut errs_at = Vec::new();\nfor (i, ev) in parse_keys(&case.keys).map_err(|e| format!(\"keys {}: {e}\", case.keys))?.into_iter().enumerate() {\n    let n = ctx.messages.len();\n    ctx.input(ev);\n    ctx.run_until_idle();\n    errs_at.extend(std::iter::repeat_n(i + 1, ctx.messages.len() - n));\n}\nlet want_at: Vec<usize> = want.errors.iter().flatten().map(|e| e.after_keys).collect();\nif errs_at != want_at { diffs.push(format!(\"errors after keys {errs_at:?}, want {want_at:?}\")); }\n```\nDrop the count comparison and update the module doc's \"Errors are counted until the harness logs them per key (K7)\". Check the hand-written fixtures' after_keys too; I didn't replay those.",
+  "needs_decision": false,
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-17",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "The code is as described: oracle.rs:259-271 compares only the number of errors, and the module doc already marks this as interim (K7). I applied the proposed per-key runner, which records the key after which each message appears and compares that with the fixture's after_keys. The oracle test passes on main and with the fixes, hand-written fixtures included, so no case passes today with an error on the wrong key. One semantic note: run_until_idle after each key also waits for outstanding jobs before the next key. No V1 case uses jobs, but K7's harness should state the rule explicitly. My change is left in the worktree's crates/die-vim/tests/oracle.rs."
+  }
+ },
+ {
+  "id": "DR-20",
+  "severity": "nit",
+  "area": "die-vim insert sessions",
+  "file": "crates/die-vim/src/lib.rs",
+  "line": 24,
+  "claim": "Suspicion, no failing test: `Vim::inserts` is never cleaned up when a buffer is killed in insert state, so one Session (with its edit list) leaks per such buffer. BufferId is a versioned slotmap key, so a leaked session can't be picked up by another buffer; the leak is only memory.",
+  "evidence": "lib.rs:24 `inserts: HashMap<BufferId, Session>`. Sessions are removed only at Escape (lib.rs:174) and in `insert_edit` (lib.rs:185-188). die-vim subscribes to no kill hook.",
+  "proposed_fix": "In `init`, subscribe to `on_buffer_killed` and `ctx.with_ext(|v: &mut Vim, _| v.inserts.remove(&buf))`, detached. Or do it when K5 lands the hook API.",
+  "needs_decision": false,
+  "review": "deep-read",
+  "verifier": {
+   "id": "DR-20",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "`Vim::inserts` (lib.rs:24) loses entries only at Escape (lib.rs:174) and in insert_edit (lib.rs:185-188), and die-vim subscribes to no kill hook. BufferId is a versioned slotmap key, so a stale entry can't be reused, and the leak is memory only, as stated. The hook doesn't have to wait for K5: `Ctx::on_buffer_killed(impl FnMut(&mut Ctx, BufferId) -> Result)` already exists (ctx.rs:983). Call it in Vim::init and `.detach()` the returned Sub; dropping the Sub cancels it (ctx.rs:232-236)."
+  }
+ }
+]
