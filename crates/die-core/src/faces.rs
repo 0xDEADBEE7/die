@@ -13,7 +13,8 @@
 //! 3. Mode providers' faces, in mode order, each in the order it returns them
 //! 4. `search` or `search-current`, then `bracket-match`, then `selection`
 
-use std::collections::{BTreeMap, HashMap};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 /// A 24-bit sRGB color.
@@ -122,6 +123,27 @@ impl Style {
         self.underline = Some(u);
         self
     }
+    /// Set the underline's color.
+    pub fn underline_color(mut self, c: Rgb) -> Style {
+        self.underline_color = Some(c);
+        self
+    }
+    /// Set bold on or off; off overrides a parent's or a lower face's bold, as
+    /// Emacs's `:weight normal` does.
+    pub fn bold_is(mut self, on: bool) -> Style {
+        self.bold = Some(on);
+        self
+    }
+    /// Set italic on or off; off overrides a parent's or a lower face's italic.
+    pub fn italic_is(mut self, on: bool) -> Style {
+        self.italic = Some(on);
+        self
+    }
+    /// Set strike-through on or off; off overrides a parent's or a lower face's.
+    pub fn strike_is(mut self, on: bool) -> Style {
+        self.strike = Some(on);
+        self
+    }
     /// `self`, with what it leaves unset taken from `below`.
     pub fn over(self, below: Style) -> Style {
         Style {
@@ -171,7 +193,9 @@ pub const UI_FACES: &[(&str, Option<&str>)] = &[
 /// the style they were declared with.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Theme {
+    /// The theme's name, used in messages.
     pub name: String,
+    /// Styles by face name; a face it doesn't name keeps its declared style.
     pub faces: BTreeMap<String, Style>,
     /// Black, red, green, yellow, blue, magenta, cyan and white, then their bright forms.
     pub ansi: [Rgb; 16],
@@ -233,6 +257,8 @@ pub(crate) struct Faces {
     theme: Theme,
     /// Each face's style with its parent chain applied.
     resolved: Vec<Style>,
+    /// Names a decoration or provider used that no one declared, reported once each.
+    undeclared: RefCell<HashSet<&'static str>>,
 }
 
 impl Faces {
@@ -283,6 +309,7 @@ impl Faces {
             ids,
             theme: Theme::default(),
             resolved: vec![],
+            undeclared: RefCell::default(),
         };
         faces.resolve();
         Ok(faces)
@@ -325,6 +352,19 @@ impl Faces {
     /// Like `style`, but an unknown name sets nothing.
     pub(crate) fn get(&self, name: &str) -> Style {
         self.style(name).unwrap_or_default()
+    }
+
+    /// Like `get`, for a name from a decoration or a mode's provider, which no
+    /// check has seen. The first time a name no one declared is drawn, it says so
+    /// in `messages`, as Emacs logs an invalid face during redisplay.
+    pub(crate) fn of_decoration(&self, name: &'static str, messages: &mut Vec<String>) -> Style {
+        let style = self.style(name);
+        if style.is_none() && self.undeclared.borrow_mut().insert(name) {
+            messages.push(format!(
+                "face {name} isn't declared (a decoration or a mode's provider uses it)"
+            ));
+        }
+        style.unwrap_or_default()
     }
 }
 
