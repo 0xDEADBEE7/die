@@ -106,7 +106,12 @@ impl Pattern {
             if self.stands_alone(text, &m) {
                 return Some(m);
             }
-            hi = m.end.checked_sub(1)?;
+            // The next match must start before `hi`, so an empty one looks from where it is.
+            hi = if m.is_empty() {
+                m.start
+            } else {
+                m.end.checked_sub(1)?
+            };
         }
     }
 }

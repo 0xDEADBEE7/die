@@ -339,3 +339,50 @@ fn an_empty_word_pattern_terminates() {
     assert_eq!(hit.range, 2..2);
     assert_eq!(t.matches(&word(""), 0..4), vec![2..2]);
 }
+
+/// An empty word pattern stands at each position with no word character beside it. Every
+/// small text, from every position, going both ways: a rejected match mustn't skip one.
+#[test]
+fn an_empty_word_pattern_finds_every_position_it_stands_at() {
+    assert_eq!(
+        buf("\n\n\n\na").search(&word(""), 5, Dir::Backward),
+        Some(Found {
+            range: 3..3,
+            wrapped: false
+        })
+    );
+    let mut texts = vec![String::new()];
+    for _ in 0..4 {
+        let longer = texts.iter().flat_map(|t| {
+            ['a', '\u{4e2d}', '\n'].map(|c| {
+                let mut t = t.clone();
+                t.push(c);
+                t
+            })
+        });
+        texts = longer.chain(texts.iter().cloned()).collect();
+        texts.sort();
+        texts.dedup();
+    }
+    let empty = word("");
+    for text in &texts {
+        let stands: Vec<usize> = (0..=text.len())
+            .filter(|&p| {
+                text.is_char_boundary(p)
+                    && !text[..p].chars().next_back().is_some_and(evil_word)
+                    && !text[p..].chars().next().is_some_and(evil_word)
+            })
+            .collect();
+        let t = buf(text);
+        for from in 0..=text.len() {
+            let forward = stands.iter().find(|&&p| p > from && from < text.len());
+            let found = t.search(&empty, from, Dir::Forward).map(|f| f.range.start);
+            let want = forward.or(stands.first()).copied();
+            assert_eq!(found, want, "{text:?} forward from {from}");
+            let backward = stands.iter().rev().find(|&&p| p < from);
+            let found = t.search(&empty, from, Dir::Backward).map(|f| f.range.start);
+            let want = backward.or(stands.last()).copied();
+            assert_eq!(found, want, "{text:?} backward from {from}");
+        }
+    }
+}
