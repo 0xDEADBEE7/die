@@ -1,0 +1,18 @@
+{"vim":{"registers":{"\"":null},"cursor":{"col":7,"line":1},"state":"normal","text":"    foo bar\n        x\n","error":""},"id":"tab-indent-relative","topic":"insert","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":8,"line":1},"state":"normal","text":"foo bar baz\nab      X\n","error":""},"id":"tab-indent-relative-next-word","topic":"insert","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":7,"line":0},"state":"normal","text":"a       b\n","error":""},"id":"tab-after-text-no-previous-line","topic":"insert","differs":[]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":0,"line":1},"state":"normal","text":"foo  \nx\n","error":""},"id":"enter-drops-trailing-space","topic":"insert","differs":["text"]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":3,"line":1},"state":"normal","text":"    foo \n    bar\n","error":""},"id":"enter-mid-line","topic":"insert","differs":["text"]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":4,"line":2},"state":"normal","text":"    foo\n\n    x\n","error":""},"id":"enter-on-blank-line","topic":"insert","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":4,"line":1},"state":"normal","text":"\n    x\n    foo\n","error":""},"id":"O-below-blank-line","topic":"insert","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":3,"line":1},"state":"normal","text":"    foo\n   x\n","error":""},"id":"backspace-over-autoindent","topic":"insert","differs":[]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":2,"line":2},"state":"normal","text":"  a\n  x\n  x\n","error":""},"id":"count-o","topic":"insert","differs":[]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":0,"line":1},"state":"normal","text":"x\nx\na\n","error":""},"id":"count-O","topic":"insert","differs":[]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":2,"line":1},"state":"normal","text":"a\n   \nb\n","error":""},"id":"a-escape-on-blank-line","topic":"insert","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":2,"line":0},"state":"normal","text":"foobar\n","error":""},"id":"ctrl-w-at-line-start-joins","topic":"insert","differs":[]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":3,"line":0},"state":"normal","text":"foo.\n","error":""},"id":"ctrl-w-punctuation","topic":"insert","differs":[]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":3,"line":0},"state":"normal","text":"fXoYoz\n","error":""},"id":"arrows-in-insert","topic":"insert","differs":[]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":7,"line":1},"state":"normal","text":"foo   \n        x\n","error":""},"id":"tab-indent-relative-trailing-space-above","topic":"insert","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":2,"line":1},"state":"normal","text":"foo\nbar\n","error":""},"id":"cr-esc-i-without-final-newline","topic":"insert","differs":[]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":0,"line":1},"state":"normal","text":"a\nx\n","error":""},"id":"o-esc-i-without-final-newline","topic":"insert","differs":[]}
+{"vim":{"registers":{"\"":null},"cursor":{"col":0,"line":1},"state":"normal","text":"foo\n\n","error":""},"id":"A-cr-esc-without-final-newline","topic":"insert","differs":["text"]}

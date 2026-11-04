@@ -1,0 +1,132 @@
+{
+ "topic": "deepread2",
+ "cases": [
+  {
+   "id": "o-u-cursor-mid-line",
+   "keys": "ox<Esc>u",
+   "text": [
+    "|abc"
+   ]
+  },
+  {
+   "id": "o-u-cursor-col1",
+   "keys": "ox<Esc>u",
+   "text": [
+    "a|bc",
+    "def"
+   ]
+  },
+  {
+   "id": "O-u-cursor-col1",
+   "keys": "Ox<Esc>u",
+   "text": [
+    "abc",
+    "d|ef"
+   ]
+  },
+  {
+   "id": "A-u-cursor",
+   "keys": "Ax<Esc>u",
+   "text": [
+    "a|bc"
+   ]
+  },
+  {
+   "id": "arrow-before-typing-u",
+   "keys": "jA<Up>x<Esc>u",
+   "text": [
+    "|ab",
+    "cd"
+   ]
+  },
+  {
+   "id": "i-arrow-before-typing-u",
+   "keys": "i<Right>x<Esc>u",
+   "text": [
+    "|abc"
+   ]
+  },
+  {
+   "id": "e-combining-eol",
+   "keys": "e",
+   "text": [
+    "|café"
+   ]
+  },
+  {
+   "id": "e-combining-eol-2",
+   "keys": "e",
+   "text": [
+    "|café",
+    "x"
+   ]
+  },
+  {
+   "id": "w-then-e-combining",
+   "keys": "we",
+   "text": [
+    "|a café"
+   ]
+  },
+  {
+   "id": "o-u-from-col2-then-esc",
+   "keys": "ofoo<CR>bar<Esc>u",
+   "text": [
+    "ab|c"
+   ]
+  },
+  {
+   "id": "ix-cr-u",
+   "keys": "ix<CR>y<Esc>u",
+   "text": [
+    "ab|c"
+   ]
+  },
+  {
+   "id": "I-u-cursor",
+   "keys": "Ix<Esc>u",
+   "text": [
+    "  a|bc"
+   ]
+  },
+  {
+   "id": "a-u-cursor",
+   "keys": "ax<Esc>u",
+   "text": [
+    "a|bc"
+   ]
+  },
+  {
+   "id": "count-i-u-cursor",
+   "keys": "3ix<Esc>u",
+   "text": [
+    "a|bc"
+   ]
+  },
+  {
+   "id": "count-o-u-cursor",
+   "keys": "3ox<Esc>u",
+   "text": [
+    "a|bc"
+   ]
+  },
+  {
+   "id": "short-l-keeps-goal",
+   "keys": "j5lj",
+   "text": [
+    "ab|cdefgh",
+    "abc",
+    "abcdefgh"
+   ]
+  },
+  {
+   "id": "short-dollar-count",
+   "keys": "j9$j",
+   "text": [
+    "abcdef|gh",
+    "abc",
+    "abcdefgh"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,754 @@
+{
+"pass": 6,
+"total": 13,
+"skipped": 0,
+"would_beep": 0,
+"beep_heard": null,
+"popup_seen": null,
+"chords": [{
+"chord": "a",
+"pass": true,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": true,
+"would_beep": 0,
+"press": {
+"t": 1271611.2688,
+"action": "Press",
+"code": "KeyA",
+"logical": "a",
+"unshifted": "a",
+"mods": 0,
+"text": "a",
+"source": "winit"
+},
+"monitor_saw": 1,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "S-a",
+"pass": true,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": true,
+"would_beep": 0,
+"press": {
+"t": 1271612.7669,
+"action": "Press",
+"code": "KeyA",
+"logical": "A",
+"unshifted": "a",
+"mods": 1,
+"text": "A",
+"source": "winit"
+},
+"monitor_saw": 2,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "RS-a",
+"pass": true,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": true,
+"would_beep": 0,
+"press": {
+"t": 1271614.6185,
+"action": "Press",
+"code": "KeyA",
+"logical": "A",
+"unshifted": "a",
+"mods": 2,
+"text": "A",
+"source": "winit"
+},
+"monitor_saw": 2,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "C-a",
+"pass": true,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": true,
+"would_beep": 0,
+"press": {
+"t": 1271616.6166,
+"action": "Press",
+"code": "KeyA",
+"logical": "a",
+"unshifted": "a",
+"mods": 4,
+"text": "\u0001",
+"source": "winit"
+},
+"monitor_saw": 2,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "C-[",
+"pass": false,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": false,
+"would_beep": 0,
+"press": {
+"t": 1271617.6847,
+"action": "Press",
+"code": "BracketLeft",
+"logical": "[",
+"unshifted": "[",
+"mods": 4,
+"text": "\u001b",
+"source": "winit"
+},
+"monitor_saw": 1,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "C-/",
+"pass": false,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": false,
+"would_beep": 0,
+"press": {
+"t": 1271618.6167,
+"action": "Press",
+"code": "Slash",
+"logical": "/",
+"unshifted": "/",
+"mods": 4,
+"text": "/",
+"source": "winit"
+},
+"monitor_saw": 1,
+"rerouted": true,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "C-Return",
+"pass": false,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": false,
+"would_beep": 0,
+"press": {
+"t": 1271619.4127,
+"action": "Press",
+"code": "Enter",
+"logical": "Enter",
+"unshifted": null,
+"mods": 4,
+"text": "\u000d",
+"source": "winit"
+},
+"monitor_saw": 1,
+"rerouted": true,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "C-Tab",
+"pass": false,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": false,
+"would_beep": 0,
+"press": {
+"t": 1271620.8607,
+"action": "Press",
+"code": "Tab",
+"logical": "Tab",
+"unshifted": null,
+"mods": 4,
+"text": "\u0009",
+"source": "winit"
+},
+"monitor_saw": 1,
+"rerouted": true,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "C-Space",
+"pass": false,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": false,
+"would_beep": 0,
+"press": {
+"t": 1271621.7521,
+"action": "Press",
+"code": "Space",
+"logical": "Space",
+"unshifted": " ",
+"mods": 4,
+"text": "\u0000",
+"source": "winit"
+},
+"monitor_saw": 1,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "C-g",
+"pass": false,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": false,
+"would_beep": 0,
+"press": {
+"t": 1271622.8807,
+"action": "Press",
+"code": "KeyG",
+"logical": "g",
+"unshifted": "g",
+"mods": 4,
+"text": "\u0007",
+"source": "winit"
+},
+"monitor_saw": 1,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "C-S-a",
+"pass": false,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": false,
+"would_beep": 0,
+"press": {
+"t": 1271624.3884,
+"action": "Press",
+"code": "KeyA",
+"logical": "A",
+"unshifted": "a",
+"mods": 5,
+"text": "\u0001",
+"source": "winit"
+},
+"monitor_saw": 1,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "M-x (LOpt)",
+"pass": true,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": true,
+"would_beep": 0,
+"press": {
+"t": 1271628.1374,
+"action": "Press",
+"code": "KeyX",
+"logical": "x",
+"unshifted": "x",
+"mods": 16,
+"text": "x",
+"source": "winit"
+},
+"monitor_saw": 1,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+},{
+"chord": "M-x (ROpt)",
+"pass": true,
+"actions": "[Press, Release]",
+"order_ok": true,
+"mods_ok": true,
+"fields_ok": true,
+"option_as_alt_ok": true,
+"text_ok": true,
+"modifier_key_events_ok": true,
+"would_beep": 0,
+"press": {
+"t": 1271630.2254,
+"action": "Press",
+"code": "KeyX",
+"logical": "x",
+"unshifted": "x",
+"mods": 32,
+"text": "x",
+"source": "winit"
+},
+"monitor_saw": 2,
+"rerouted": false,
+"sources": "[\"winit\", \"winit\"]"
+}],
+"events": [{
+"t": 1271611.2688,
+"action": "Press",
+"code": "KeyA",
+"logical": "a",
+"unshifted": "a",
+"mods": 0,
+"text": "a",
+"source": "winit"
+},{
+"t": 1271611.3310,
+"action": "Release",
+"code": "KeyA",
+"logical": "a",
+"unshifted": "a",
+"mods": 0,
+"text": "a",
+"source": "winit"
+},{
+"t": 1271611.2688,
+"action": "Press",
+"code": "ShiftLeft",
+"logical": "Shift",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1271612.7669,
+"action": "Press",
+"code": "KeyA",
+"logical": "A",
+"unshifted": "a",
+"mods": 1,
+"text": "A",
+"source": "winit"
+},{
+"t": 1271612.8561,
+"action": "Release",
+"code": "KeyA",
+"logical": "A",
+"unshifted": "a",
+"mods": 1,
+"text": "A",
+"source": "winit"
+},{
+"t": 1271613.7645,
+"action": "Release",
+"code": "ShiftLeft",
+"logical": "Shift",
+"unshifted": null,
+"mods": 1,
+"text": null,
+"source": "winit"
+},{
+"t": 1271612.7669,
+"action": "Press",
+"code": "ShiftRight",
+"logical": "Shift",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1271614.6185,
+"action": "Press",
+"code": "KeyA",
+"logical": "A",
+"unshifted": "a",
+"mods": 2,
+"text": "A",
+"source": "winit"
+},{
+"t": 1271614.6915,
+"action": "Release",
+"code": "KeyA",
+"logical": "A",
+"unshifted": "a",
+"mods": 2,
+"text": "A",
+"source": "winit"
+},{
+"t": 1271615.1320,
+"action": "Release",
+"code": "ShiftRight",
+"logical": "Shift",
+"unshifted": null,
+"mods": 2,
+"text": null,
+"source": "winit"
+},{
+"t": 1271614.6185,
+"action": "Press",
+"code": "ControlLeft",
+"logical": "Control",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1271616.6166,
+"action": "Press",
+"code": "KeyA",
+"logical": "a",
+"unshifted": "a",
+"mods": 4,
+"text": "\u0001",
+"source": "winit"
+},{
+"t": 1271616.6811,
+"action": "Release",
+"code": "KeyA",
+"logical": "a",
+"unshifted": "a",
+"mods": 4,
+"text": "\u0001",
+"source": "winit"
+},{
+"t": 1271617.6847,
+"action": "Press",
+"code": "BracketLeft",
+"logical": "[",
+"unshifted": "[",
+"mods": 4,
+"text": "\u001b",
+"source": "winit"
+},{
+"t": 1271617.7490,
+"action": "Release",
+"code": "BracketLeft",
+"logical": "[",
+"unshifted": "[",
+"mods": 4,
+"text": "\u001b",
+"source": "winit"
+},{
+"t": 1271618.6167,
+"action": "Press",
+"code": "Slash",
+"logical": "/",
+"unshifted": "/",
+"mods": 4,
+"text": "/",
+"source": "winit"
+},{
+"t": 1271618.6854,
+"action": "Release",
+"code": "Slash",
+"logical": "/",
+"unshifted": "/",
+"mods": 4,
+"text": "/",
+"source": "winit"
+},{
+"t": 1271619.4127,
+"action": "Press",
+"code": "Enter",
+"logical": "Enter",
+"unshifted": null,
+"mods": 4,
+"text": "\u000d",
+"source": "winit"
+},{
+"t": 1271619.5009,
+"action": "Release",
+"code": "Enter",
+"logical": "Enter",
+"unshifted": null,
+"mods": 4,
+"text": "\u000d",
+"source": "winit"
+},{
+"t": 1271620.8607,
+"action": "Press",
+"code": "Tab",
+"logical": "Tab",
+"unshifted": null,
+"mods": 4,
+"text": "\u0009",
+"source": "winit"
+},{
+"t": 1271620.9248,
+"action": "Release",
+"code": "Tab",
+"logical": "Tab",
+"unshifted": null,
+"mods": 4,
+"text": "\u0009",
+"source": "winit"
+},{
+"t": 1271621.7521,
+"action": "Press",
+"code": "Space",
+"logical": "Space",
+"unshifted": " ",
+"mods": 4,
+"text": "\u0000",
+"source": "winit"
+},{
+"t": 1271621.8289,
+"action": "Release",
+"code": "Space",
+"logical": "Space",
+"unshifted": " ",
+"mods": 4,
+"text": "\u0000",
+"source": "winit"
+},{
+"t": 1271622.8807,
+"action": "Press",
+"code": "KeyG",
+"logical": "g",
+"unshifted": "g",
+"mods": 4,
+"text": "\u0007",
+"source": "winit"
+},{
+"t": 1271622.9574,
+"action": "Release",
+"code": "KeyG",
+"logical": "g",
+"unshifted": "g",
+"mods": 4,
+"text": "\u0007",
+"source": "winit"
+},{
+"t": 1271622.8807,
+"action": "Press",
+"code": "ShiftLeft",
+"logical": "Shift",
+"unshifted": null,
+"mods": 4,
+"text": null,
+"source": "winit"
+},{
+"t": 1271624.3884,
+"action": "Press",
+"code": "KeyA",
+"logical": "A",
+"unshifted": "a",
+"mods": 5,
+"text": "\u0001",
+"source": "winit"
+},{
+"t": 1271624.4607,
+"action": "Release",
+"code": "KeyA",
+"logical": "A",
+"unshifted": "a",
+"mods": 5,
+"text": "\u0001",
+"source": "winit"
+},{
+"t": 1271625.7674,
+"action": "Release",
+"code": "ShiftLeft",
+"logical": "Shift",
+"unshifted": null,
+"mods": 5,
+"text": null,
+"source": "winit"
+},{
+"t": 1271625.8373,
+"action": "Release",
+"code": "ControlLeft",
+"logical": "Control",
+"unshifted": null,
+"mods": 4,
+"text": null,
+"source": "winit"
+},{
+"t": 1271624.3884,
+"action": "Press",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1271628.1374,
+"action": "Press",
+"code": "KeyX",
+"logical": "x",
+"unshifted": "x",
+"mods": 16,
+"text": "x",
+"source": "winit"
+},{
+"t": 1271628.2395,
+"action": "Release",
+"code": "KeyX",
+"logical": "x",
+"unshifted": "x",
+"mods": 16,
+"text": "x",
+"source": "winit"
+},{
+"t": 1271629.1680,
+"action": "Release",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 16,
+"text": null,
+"source": "winit"
+},{
+"t": 1271628.1374,
+"action": "Press",
+"code": "AltRight",
+"logical": "Alt",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1271630.2254,
+"action": "Press",
+"code": "KeyX",
+"logical": "x",
+"unshifted": "x",
+"mods": 32,
+"text": "x",
+"source": "winit"
+},{
+"t": 1271630.2777,
+"action": "Release",
+"code": "KeyX",
+"logical": "x",
+"unshifted": "x",
+"mods": 32,
+"text": "x",
+"source": "winit"
+},{
+"t": 1271630.6786,
+"action": "Release",
+"code": "AltRight",
+"logical": "Alt",
+"unshifted": null,
+"mods": 32,
+"text": null,
+"source": "winit"
+},{
+"t": 1271630.2254,
+"action": "Press",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1271633.2316,
+"action": "Release",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 16,
+"text": null,
+"source": "winit"
+},{
+"t": 1271630.2254,
+"action": "Press",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1271630.2254,
+"action": "Press",
+"code": "ShiftLeft",
+"logical": "Shift",
+"unshifted": null,
+"mods": 16,
+"text": null,
+"source": "winit"
+},{
+"t": 1271630.2254,
+"action": "Press",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1271986.9164,
+"action": "Release",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 16,
+"text": null,
+"source": "winit"
+},{
+"t": 1271630.2254,
+"action": "Press",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1271989.4997,
+"action": "Release",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 16,
+"text": null,
+"source": "winit"
+},{
+"t": 1271630.2254,
+"action": "Press",
+"code": "AltLeft",
+"logical": "Alt",
+"unshifted": null,
+"mods": 0,
+"text": null,
+"source": "winit"
+},{
+"t": 1272176.1592,
+"action": "Press",
+"code": "KeyQ",
+"logical": "q",
+"unshifted": "q",
+"mods": 64,
+"text": "q",
+"source": "winit"
+}]
+}

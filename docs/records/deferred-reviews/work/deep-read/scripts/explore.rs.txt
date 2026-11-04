@@ -1,0 +1,142 @@
+//! Temporary exploration runner for the deep-read review (not for commit).
+use die_core::{Ctx, RegKind, Register, State, parse_keys};
+use die_vim::Vim;
+use evil_oracle::{Case, RegisterKind, Run, State as EvilState, load_fixtures};
+use std::path::Path;
+
+const COLS: usize = 80;
+const ROWS: usize = 24;
+
+#[test]
+fn explore() {
+    let Some(dir) = std::env::var_os("DEEPREAD_DIR") else { return };
+    let fixtures = load_fixtures(Path::new(&dir)).expect("load");
+    for fx in &fixtures {
+        for c in &fx.cases {
+            match run_case(c, fx.run) {
+                Ok(()) => eprintln!("PASS {}", c.id),
+                Err(e) => eprintln!("FAIL {} ({}): {}", c.id, c.keys, e),
+            }
+        }
+    }
+}
+
+/// Run one case; Err says every way it differs from Evil, or what can't be checked yet.
+fn run_case(case: &Case, run: Run) -> Result<(), String> {
+    let (input, want) = (&case.input, &case.expected);
+    if input.visual.is_some() {
+        return Err("can't start a case in visual state yet (the harness, K7)".into());
+    }
+    if input.clipboard.is_some() {
+        return Err("no clipboard yet (K6)".into());
+    }
+    if run == Run::Tty || input.window.is_some() {
+        return Err("can't set a window's top line yet (the harness, K7)".into());
+    }
+
+    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).map_err(|e| e.join("; "))?;
+    let buf = ctx.create_text("case", &input.text);
+    let w = ctx
+        .open_window(buf, COLS, ROWS)
+        .map_err(|e| format!("{e:?}"))?;
+    ctx.focus(w);
+    let set = ctx
+        .text_mut(buf)
+        .map_err(|e| format!("{e:?}"))?
+        .set_cursor(w, input.cursor.byte);
+    if set != Some(input.cursor.byte) {
+        return Err(format!(
+            "the cursor can't start at byte {}: core put it at {set:?}",
+            input.cursor.byte
+        ));
+    }
+    for (name, r) in input.registers.iter().flatten() {
+        ctx.set_register(
+            reg_char(name)?,
+            Register {
+                kind: reg_kind(r.kind),
+                text: r.text.clone(),
+            },
+        );
+    }
+    let before = ctx.messages.len();
+    for ev in parse_keys(&case.keys).map_err(|e| format!("keys {}: {e}", case.keys))? {
+        ctx.input(ev);
+    }
+    ctx.run_until_idle();
+
+    let mut diffs = Vec::new();
+    let text = ctx.text(buf).map_err(|e| format!("{e:?}"))?;
+    let got_text = text.rope().to_string();
+    if got_text != want.text {
+        diffs.push(format!("text {got_text:?}, want {:?}", want.text));
+    }
+    let cursor = text.cursor(w);
+    if cursor != Some(want.cursor.byte) {
+        diffs.push(format!(
+            "cursor at byte {cursor:?}, want {} (line {}, col {})",
+            want.cursor.byte, want.cursor.line, want.cursor.col
+        ));
+    }
+    match (want.state, ctx.state()) {
+        (EvilState::Normal, State::Normal)
+        | (EvilState::Insert, State::Insert)
+        | (EvilState::Visual, State::Visual)
+        | (EvilState::Operator, State::OperatorPending) => {}
+        (EvilState::Replace, s) => diffs.push(format!(
+            "state {s:?}, want replace, which core has no state for yet (K3)"
+        )),
+        (want, got) => diffs.push(format!("state {got:?}, want {want:?}")),
+    }
+    if want.visual.is_some() {
+        diffs.push("can't compare a visual selection yet (V4 defines the mapping)".into());
+    }
+    for (name, r) in &want.registers {
+        let got = ctx.register(reg_char(name)?);
+        let want = r.as_ref().map(|r| Register {
+            kind: reg_kind(r.kind),
+            text: r.text.clone(),
+        });
+        if got != want.as_ref() {
+            diffs.push(format!("register {name} is {got:?}, want {want:?}"));
+        }
+    }
+    if want.clipboard.text.is_some() || !want.clipboard.writes.is_empty() {
+        diffs.push("can't check the clipboard yet (K6)".into());
+    }
+    // Errors are counted until the harness logs them per key (K7). A key die-vim
+    // doesn't bind is never the error Evil signalled, even when the counts agree.
+    let messages = &ctx.messages[before..];
+    if let Some(m) = messages.iter().find(|m| m.ends_with(" is undefined")) {
+        diffs.push(format!("die-vim doesn't bind a key: {m}"));
+    }
+    let errors = messages.len();
+    let want_errors = want.errors.as_ref().map_or(0, Vec::len);
+    if errors != want_errors {
+        diffs.push(format!(
+            "{errors} errors ({messages:?}), want {want_errors}"
+        ));
+    }
+    if diffs.is_empty() {
+        Ok(())
+    } else {
+        Err(diffs.join("; "))
+    }
+}
+
+fn reg_char(name: &str) -> Result<char, String> {
+    let mut c = name.chars();
+    match (c.next(), c.next()) {
+        (Some(ch), None) => Ok(ch),
+        _ => Err(format!("register name {name:?}")),
+    }
+}
+
+/// A recorded macro is held as its keys in notation, so it's charwise text.
+fn reg_kind(k: RegisterKind) -> RegKind {
+    match k {
+        RegisterKind::Char | RegisterKind::Macro => RegKind::Char,
+        RegisterKind::Line => RegKind::Line,
+        RegisterKind::Block => RegKind::Block,
+    }
+}

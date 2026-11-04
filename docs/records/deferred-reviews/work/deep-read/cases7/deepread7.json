@@ -1,0 +1,29 @@
+{
+ "topic": "deepread7",
+ "cases": [
+  {
+   "id": "j-after-carriage-return",
+   "keys": "j",
+   "text": [
+    "a\rb|c",
+    "xyzwv"
+   ]
+  },
+  {
+   "id": "j-after-control-a",
+   "keys": "j",
+   "text": [
+    "a\u0001b|c",
+    "xyzwv"
+   ]
+  },
+  {
+   "id": "k-into-carriage-return",
+   "keys": "k",
+   "text": [
+    "a\rbc",
+    "x|yzwv"
+   ]
+  }
+ ]
+}

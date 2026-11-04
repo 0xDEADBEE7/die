@@ -1,0 +1,8 @@
+{"topic": "colcheck4",
+ "cases": [
+  {"id": "count-question", "keys": "2?x<CR>", "text": ["x a x b |x"]},
+  {"id": "count-n", "keys": "/x<CR>2n", "text": ["|x a x b x c x"]},
+  {"id": "empty-question", "keys": "/b<CR>?<CR>", "text": ["a b c b d |b"]},
+  {"id": "count-slash-then-n", "keys": "2/x<CR>n", "text": ["|x a x b x c x"]},
+  {"id": "count-star", "keys": "2*", "text": ["|x a x b x c x"]}
+ ]}

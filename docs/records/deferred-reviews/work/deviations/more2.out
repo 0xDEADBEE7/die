@@ -1,0 +1,6 @@
+{"errmsg":"","col":0,"beeps":0,"name":"at-then-dot","topline":0,"line":0,"mode":"n","text":"c d e f\n","regs":{"a":{"type":"char","text":"dw"},"\"":{"type":"char","text":"b "},"-":{"type":"char","text":"b "}}}
+{"errmsg":"","col":0,"beeps":0,"name":"recorded-then-dot","topline":0,"line":0,"mode":"n","text":"d e f\n","regs":{"a":{"type":"char","text":"dw"},"\"":{"type":"char","text":"c "},"-":{"type":"char","text":"c "}}}
+{"errmsg":"","col":1,"beeps":0,"name":"x-then-at-then-dot","topline":0,"line":0,"mode":"n","text":"  c d e f\n","regs":{"a":{"type":"char","text":"w"},"\"":{"type":"char","text":"b"},"-":{"type":"char","text":"b"}}}
+{"errmsg":"","col":0,"beeps":1,"name":"u-past-oldest","topline":0,"line":0,"mode":"n","text":"ab\n","regs":{"\"":{"type":"char","text":"a"},"-":{"type":"char","text":"a"}}}
+{"errmsg":"","col":0,"beeps":1,"name":"u-ctrl-r-ctrl-r","topline":0,"line":0,"mode":"n","text":"b\n","regs":{"\"":{"type":"char","text":"a"},"-":{"type":"char","text":"a"}}}
+{"errmsg":"","col":2,"beeps":0,"name":"ctrl-r-redo-cursor-mid","topline":0,"line":0,"mode":"n","text":"abd\n","regs":{"\"":{"type":"char","text":"c"},"-":{"type":"char","text":"c"}}}

@@ -1,0 +1,3 @@
+{"errmsg":"","col":0,"beeps":2,"name":"cj-last","topline":0,"line":1,"mode":"n","text":"a\n\n","regs":{"\"":{"type":"char","text":"b"},"-":{"type":"char","text":"b"}}}
+{"errmsg":"","col":0,"beeps":1,"name":"yj-last","topline":0,"line":1,"mode":"n","text":"a\nb\n","regs":{}}
+{"errmsg":"","col":0,"beeps":1,"name":"T2 2brace-past-end","topline":0,"line":2,"mode":"n","text":"a\n\nb\ncd\n","regs":{}}

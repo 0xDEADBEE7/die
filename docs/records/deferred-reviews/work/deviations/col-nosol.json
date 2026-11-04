@@ -1,0 +1,122 @@
+[
+  {
+    "name": "A dk-col-last [set nosol]",
+    "text": "  one\n  two\nthree\n",
+    "line": 2,
+    "col": 3,
+    "keys": "dk",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "B dk-col-mid [set nosol]",
+    "text": "one\n  two\nthree\nfourth\n",
+    "line": 2,
+    "col": 4,
+    "keys": "dk",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "C dG-col [set nosol]",
+    "text": "  one\ntwo\nthree\n",
+    "line": 1,
+    "col": 1,
+    "keys": "dG",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "D dG-col-clamp [set nosol]",
+    "text": "  one long\ntwo\nthree\n",
+    "line": 2,
+    "col": 4,
+    "keys": "dG",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "E dd-col [set nosol]",
+    "text": "  abc\n  defgh\n",
+    "line": 0,
+    "col": 4,
+    "keys": "dd",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "F dollar-j-dd [set nosol]",
+    "text": "abcdefgh\nab\nxyzw\n",
+    "line": 0,
+    "col": 0,
+    "keys": "$jdd",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "G j-goal-dd [set nosol]",
+    "text": "abcdef\nab\nabcdef\n",
+    "line": 0,
+    "col": 4,
+    "keys": "jdd",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "H dk-fixture [set nosol]",
+    "text": "one\ntwo\nthree\n",
+    "line": 2,
+    "col": 0,
+    "keys": "dk",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "I dG-fixture [set nosol]",
+    "text": "one\ntwo\nthree\n",
+    "line": 1,
+    "col": 0,
+    "keys": "dG",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "J dd-last-col [set nosol]",
+    "text": "one\n  two\nthree\n",
+    "line": 2,
+    "col": 4,
+    "keys": "dd",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "J2 dgg-col [set nosol]",
+    "text": "  one\ntwo\n  three\nfourth\n",
+    "line": 2,
+    "col": 3,
+    "keys": "dgg",
+    "opts": [
+      "set nosol"
+    ]
+  },
+  {
+    "name": "J3 dj-col [set nosol]",
+    "text": "  one\n  two\nthree\nfourth\n",
+    "line": 0,
+    "col": 3,
+    "keys": "dj",
+    "opts": [
+      "set nosol"
+    ]
+  }
+]

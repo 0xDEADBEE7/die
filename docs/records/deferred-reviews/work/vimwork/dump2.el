@@ -1,0 +1,16 @@
+;; Count the ranges of (script, category mask) over word-syntax characters.
+(defconst cats '(?r ?A ?G ?k ?K ?H ?C ?^))
+(defun mask (c)
+  (let ((set (char-category-set c)) (m 0) (i 0))
+    (dolist (k cats) (when (aref set k) (setq m (logior m (ash 1 i)))) (setq i (1+ i)))
+    m))
+(let ((prev nil) (n 0) (nw 0) (prevw nil) (dc 0) (start 0))
+  (dotimes (c #x110000)
+    (let* ((word (eq (char-syntax c) ?w))
+           (v (if (or word (memq (get-char-code-property c 'general-category) '(Mn Mc Me)))
+                  (cons (aref char-script-table c) (mask c))
+                'dc)))
+      (unless (equal v prev) (setq n (1+ n)) (setq prev v))
+      ;; with don't-care merging: a dc char continues the previous range
+      (unless (or (eq v 'dc) (equal v prevw)) (setq nw (1+ nw)) (setq prevw v))))
+  (princ (format "ranges %d, with dont-care merged %d\n" n nw)))

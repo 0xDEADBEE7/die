@@ -1,0 +1,16 @@
+[
+ {"id":"K-brace-last-long","text":"a\n\nb\ncd\n","at":[2,0],"keys":"}","want":[3,1]},
+ {"id":"T-brace-at-end","text":"a\n\nb\ncd\n","at":[3,1],"keys":"}","want":[3,1]},
+ {"id":"T2-2brace-past-end","text":"a\n\nb\ncd\n","at":[2,0],"keys":"2}","want":[2,0],"errors":1},
+ {"id":"R-3w-past-end","text":"foo bar\n","at":[0,0],"keys":"3w","want":[0,6]},
+ {"id":"S-w-on-last-char","text":"foo bar\n","at":[0,6],"keys":"w","want":[0,6],"errors":1},
+ {"id":"P-e-last-char","text":"foo bar\n","at":[0,6],"keys":"e","want":[0,6],"errors":1},
+ {"id":"P2-ee","text":"foo bar\n","at":[0,0],"keys":"ee","want":[0,6]},
+ {"id":"Z-5j-from-last","text":"a\nb\n","at":[1,0],"keys":"5j","want":[1,0],"errors":1},
+ {"id":"Z2-j-last","text":"a\nb\n","at":[1,0],"keys":"j","want":[1,0],"errors":1},
+ {"id":"Q3-Gk","text":"a\nb\nc\n","at":[0,0],"keys":"Gk","want":[1,0]},
+ {"id":"G9","text":"a\nb\n","at":[0,0],"keys":"9G","want":[1,0]},
+ {"id":"G-no-final-newline","text":"a\nb","at":[0,0],"keys":"G","want":[1,0]},
+ {"id":"gg-col-sol-off","text":"  one\nthree\n","at":[1,4],"keys":"gg","want":[0,4]},
+ {"id":"G-col","text":"three\n  one\n","at":[0,4],"keys":"G","want":[1,4]}
+]

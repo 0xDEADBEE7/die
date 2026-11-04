@@ -1,0 +1,150 @@
+{
+ "topic": "deepread4",
+ "cases": [
+  {
+   "id": "w-latin-cyrillic",
+   "keys": "w",
+   "text": [
+    "|abcабв def"
+   ]
+  },
+  {
+   "id": "w-latin-greek",
+   "keys": "w",
+   "text": [
+    "|abcαβγ def"
+   ]
+  },
+  {
+   "id": "w-han-hiragana",
+   "keys": "w",
+   "text": [
+    "|日本語です abc"
+   ]
+  },
+  {
+   "id": "w-hiragana-han",
+   "keys": "w",
+   "text": [
+    "|です日本 abc"
+   ]
+  },
+  {
+   "id": "w-han-katakana",
+   "keys": "w",
+   "text": [
+    "|日本テスト abc"
+   ]
+  },
+  {
+   "id": "w-nbsp",
+   "keys": "w",
+   "text": [
+    "|a b c"
+   ]
+  },
+  {
+   "id": "w-ideographic-space",
+   "keys": "w",
+   "text": [
+    "|a　b c"
+   ]
+  },
+  {
+   "id": "w-emoji",
+   "keys": "w",
+   "text": [
+    "|a😀b c"
+   ]
+  },
+  {
+   "id": "w-em-dash",
+   "keys": "w",
+   "text": [
+    "|a—b c"
+   ]
+  },
+  {
+   "id": "w-arabic-digits",
+   "keys": "w",
+   "text": [
+    "|١٢ abc"
+   ]
+  },
+  {
+   "id": "w-latin-digits",
+   "keys": "w",
+   "text": [
+    "|abc123 def"
+   ]
+  },
+  {
+   "id": "b-latin-cyrillic",
+   "keys": "b",
+   "text": [
+    "abcаб|в def"
+   ]
+  },
+  {
+   "id": "e-latin-cyrillic",
+   "keys": "e",
+   "text": [
+    "|abcабв def"
+   ]
+  },
+  {
+   "id": "count-ctrl-a",
+   "keys": "3<C-a>",
+   "text": [
+    "ab|c",
+    "def",
+    "ghi",
+    "jkl"
+   ]
+  },
+  {
+   "id": "count-5-close-brace",
+   "keys": "5}",
+   "text": [
+    "|a",
+    "",
+    "b"
+   ]
+  },
+  {
+   "id": "count-5-open-brace",
+   "keys": "5{",
+   "text": [
+    "a",
+    "",
+    "|b"
+   ]
+  },
+  {
+   "id": "count-5w",
+   "keys": "5w",
+   "text": [
+    "|foo bar"
+   ]
+  },
+  {
+   "id": "count-5b",
+   "keys": "5b",
+   "text": [
+    "foo |bar"
+   ]
+  },
+  {
+   "id": "count-5e",
+   "keys": "5e",
+   "text": [
+    "|foo bar"
+   ]
+  },
+  {
+   "id": "count-dollar-past-end-no-final-newline",
+   "keys": "5$",
+   "text": "|abc\ndef"
+  }
+ ]
+}

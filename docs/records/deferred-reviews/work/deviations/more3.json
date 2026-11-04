@@ -1,0 +1,7 @@
+[
+{"name":"count-question","text":"x a x b x\n","line":0,"col":8,"keys":"2?x<CR>"},
+{"name":"count-n","text":"x a x b x c x\n","line":0,"col":0,"keys":"/x<CR>2n"},
+{"name":"empty-question","text":"a b c b d b\n","line":0,"col":10,"keys":"/b<CR>?<CR>"},
+{"name":"count-slash-then-n","text":"x a x b x c x\n","line":0,"col":0,"keys":"2/x<CR>n"},
+{"name":"count-star","text":"x a x b x c x\n","line":0,"col":0,"keys":"2*"}
+]

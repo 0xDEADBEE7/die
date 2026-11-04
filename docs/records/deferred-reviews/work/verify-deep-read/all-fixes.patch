@@ -1,0 +1,519 @@
+diff --git a/crates/die-core/src/ctx.rs b/crates/die-core/src/ctx.rs
+index 58c27c8..7bf9e8d 100644
+--- a/crates/die-core/src/ctx.rs
++++ b/crates/die-core/src/ctx.rs
+@@ -1130,15 +1130,19 @@ impl Ctx {
+                 self.cur_window = self.focused;
+                 let r = self.guarded(q.ext, q.f);
+                 self.report(r);
++                // Code that runs between units (the host, a harness) gets a number of its own.
++                self.cmd_seq += 1;
+             }
+             return true;
+         }
+         if let Some(ev) = self.fed.pop_front() {
+             self.dispatch(ev, KeySource::Fed);
++            self.cmd_seq += 1;
+             return true;
+         }
+         if let Some(ev) = self.typed.pop_front() {
+             self.dispatch(ev, KeySource::Typed);
++            self.cmd_seq += 1;
+             return true;
+         }
+         false
+@@ -1228,6 +1232,8 @@ impl Ctx {
+                 self.run_key(&name, keys, win, buf);
+             }
+             Lookup::None => {
++                // An undefined key ends the command it began, count and register too.
++                self.prefix = Prefix::default();
+                 let keys = std::mem::take(&mut self.pending);
+                 let last = keys.last().cloned().unwrap();
+                 let handled = self
+diff --git a/crates/die-core/src/undo.rs b/crates/die-core/src/undo.rs
+index 4b6a9ee..d1c6ea2 100644
+--- a/crates/die-core/src/undo.rs
++++ b/crates/die-core/src/undo.rs
+@@ -143,6 +143,7 @@ pub(crate) struct History {
+     redo: Vec<Entry>,
+     depth: u32,
+     pending_open: Option<Option<Selection>>,
++    dropped: bool,
+ }
+ 
+ /// How much history a buffer keeps: at most `steps` steps holding at most `bytes` of text.
+@@ -159,6 +160,15 @@ fn push_silent(stack: &mut Vec<Entry>, s: Shift) {
+         // every position and every change the same way.
+         Some(Entry::Silent(v)) => match v.last_mut() {
+             Some(l) if l.del == 0 && s.del == 0 && s.pos == l.pos + l.ins => l.ins += s.ins,
++            // DR-19, widened: s rewrites only text l inserted, edges included,
++            // except a pure insertion at l's start (gravity would differ there).
++            Some(l)
++                if s.pos >= l.pos
++                    && s.pos + s.del <= l.pos + l.ins
++                    && (s.del > 0 || s.pos > l.pos) =>
++            {
++                l.ins = l.ins - s.del + s.ins
++            }
+             _ => v.push(s),
+         },
+         Some(Entry::Group(_)) => stack.push(Entry::Silent(vec![s])),
+@@ -198,7 +208,10 @@ impl History {
+                         self.undo.push(Entry::Silent(below));
+                         self.undo.push(Entry::Group(g));
+                     }
+-                    None => self.undo.clear(),
++                    None => {
++                        self.undo.clear();
++                        self.dropped = true;
++                    }
+                 }
+             }
+             if let Some(Entry::Group(g)) = self.undo.last_mut() {
+@@ -208,7 +221,10 @@ impl History {
+                 return;
+             }
+         }
+-        let sel = self.pending_open.take().unwrap_or(sel_before);
++        // The selection from just before the step's first edit, as Emacs's undo restores
++        // the point from before the command that made the first change.
++        self.pending_open = None;
++        let sel = sel_before;
+         self.undo.push(Entry::Group(Group {
+             ops: vec![op],
+             sel,
+@@ -295,7 +311,11 @@ impl History {
+     pub fn plan(&self, redo: bool) -> Result<Plan> {
+         let stack = if redo { &self.redo } else { &self.undo };
+         let (Some(i), pending) = top_group(stack) else {
+-            return Err(Error::NothingToUndo);
++            return Err(if !redo && self.dropped {
++                Error::UndoConflict
++            } else {
++                Error::NothingToUndo
++            });
+         };
+         let Entry::Group(g) = &stack[i] else {
+             unreachable!()
+@@ -352,7 +372,7 @@ impl History {
+             from.push(Entry::Silent(p.pending));
+         }
+         to.push(Entry::Group(p.other));
+-        self.depth = 0;
++        // An open group stays open: the next edit starts a new step inside it.
+         self.pending_open = None;
+     }
+ 
+@@ -360,7 +380,8 @@ impl History {
+         if redo {
+             self.redo.clear()
+         } else {
+-            self.undo.clear()
++            self.undo.clear();
++            self.dropped = false;
+         }
+     }
+ }
+@@ -393,4 +414,98 @@ mod tests {
+         assert_eq!(pending.len(), 1);
+         assert_eq!((pending[0].pos, pending[0].ins), (1, 1000));
+     }
++
++    /// Brute force: merging s into l under the widened rule is exact for position
++    /// mapping and for rebasing any op that lies outside l's inserted text.
++    #[test]
++    fn dr19_merge_is_exact() {
++        let n = 7;
++        let mut checked = 0;
++        for lp in 0..n {
++            for ld in 0..3 {
++                for li in 0..4 {
++                    let l = Shift { pos: lp, del: ld, ins: li };
++                    for sp in 0..n + 4 {
++                        for sd in 0..4 {
++                            for si in 0..3 {
++                                let s = Shift { pos: sp, del: sd, ins: si };
++                                let merge = s.pos >= l.pos
++                                    && s.pos + s.del <= l.pos + l.ins
++                                    && (s.del > 0 || s.pos > l.pos);
++                                if !merge {
++                                    continue;
++                                }
++                                let m = Shift { ins: l.ins - s.del + s.ins, ..l };
++                                for p in 0..n + 4 {
++                                    assert_eq!(s.map(l.map(p)), m.map(p), "{l:?} {s:?} p={p}");
++                                }
++                                // ops in the text before l (the undo/record frame)
++                                for op in 0..n + 3 {
++                                    for od in 0..3 {
++                                        for oi in 0..2 {
++                                            let o = Op {
++                                                pos: op,
++                                                removed: "r".repeat(od),
++                                                inserted: "i".repeat(oi),
++                                            };
++                                            let a = rebase(&[o.clone()], &[l, s]);
++                                            let b = rebase(&[o.clone()], &[m]);
++                                            match (a, b) {
++                                                (None, None) => {}
++                                                (Some((ao, ash)), Some((bo, bsh))) => {
++                                                    assert_eq!(ao[0].pos, bo[0].pos, "{o:?} {l:?} {s:?}");
++                                                    for p in 0..n + 6 {
++                                                        let ma = ash.iter().fold(p, |p, x| x.map(p));
++                                                        let mb = bsh.iter().fold(p, |p, x| x.map(p));
++                                                        assert_eq!(ma, mb, "after {o:?} {l:?} {s:?} p={p}");
++                                                    }
++                                                }
++                                                (a, b) => panic!(
++                                                    "conflict differs: {o:?} {l:?} {s:?} seq={} merged={}",
++                                                    a.is_some(),
++                                                    b.is_some()
++                                                ),
++                                            }
++                                            checked += 1;
++                                        }
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++        }
++        assert!(checked > 1000, "{checked}");
++    }
++
++    #[test]
++    fn dr19_spinner_and_status_line() {
++        let limit = Limit {
++            steps: 10,
++            bytes: 100,
++        };
++        let typed = || Op {
++            pos: 0,
++            removed: String::new(),
++            inserted: "x".into(),
++        };
++        // A spinner: one character at 5 rewritten in place.
++        let mut h = History::default();
++        h.record(typed(), None, 1, limit);
++        h.silent(Shift { pos: 1, del: 0, ins: 10 });
++        for _ in 0..1000 {
++            h.silent(Shift { pos: 5, del: 1, ins: 1 });
++        }
++        let spinner = top_group(&h.undo).1.len();
++        // A status line: the whole silent text rewritten each time.
++        let mut h = History::default();
++        h.record(typed(), None, 1, limit);
++        h.silent(Shift { pos: 1, del: 0, ins: 10 });
++        for _ in 0..1000 {
++            h.silent(Shift { pos: 1, del: 10, ins: 10 });
++        }
++        let status = top_group(&h.undo).1.len();
++        panic!("spinner shifts {spinner}, status-line shifts {status}");
++    }
+ }
+diff --git a/crates/die-vim/src/grammar.rs b/crates/die-vim/src/grammar.rs
+index 6beede9..bc1fce6 100644
+--- a/crates/die-vim/src/grammar.rs
++++ b/crates/die-vim/src/grammar.rs
+@@ -22,7 +22,7 @@
+ //! (`text::normal_pos`). An insert session that ends on the empty line after a
+ //! final newline leaves it there, as Evil does (`insert::end`).
+ 
+-use crate::text::normal_pos;
++use crate::text::{normal_pos, on_last_empty_line};
+ use die_core::{Args, BufferId, Ctx, Error, Prefix, Result, Selection, TextBuf, WindowId};
+ 
+ /// The column vertical motions aim for, kept across a run of them.
+@@ -170,8 +170,16 @@ pub fn run_motion(
+         arg,
+     };
+     let to = motion(&start).map_err(|e| Error::Msg(e.into()))?;
+-    let pos = normal_pos(t, to.pos);
+-    t.set_selection(w, Selection::cursor(pos).with_goal(Goal::encode(to.goal)));
++    // From the empty line after a final newline, a motion along that line stays on it.
++    let stays = on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head);
++    let pos = if stays { to.pos } else { normal_pos(t, to.pos) };
++    // A motion that falls short signals an error, which leaves Emacs's last-command
++    // alone, so the goal column survives it as it survives a motion that fails.
++    let goal = match to.short {
++        Some(_) => sel.goal,
++        None => Goal::encode(to.goal),
++    };
++    t.set_selection(w, Selection::cursor(pos).with_goal(goal));
+     match to.short {
+         Some(e) => Err(Error::Msg(e.into())),
+         None => Ok(()),
+diff --git a/crates/die-vim/src/insert.rs b/crates/die-vim/src/insert.rs
+index f34ac69..2d4da5b 100644
+--- a/crates/die-vim/src/insert.rs
++++ b/crates/die-vim/src/insert.rs
+@@ -5,10 +5,13 @@
+ use crate::grammar::buffer_window;
+ use crate::motions::word_back;
+ use crate::text::{
+-    Chars, blank_line, indent_end, indentation, line_end, next_stop, normal_pos, pos_at_col,
+-    prev_stop,
++    Chars, blank_line, indent_end, indentation, line_end, next_stop, pos_at_col, prev_stop,
++    rest_pos,
+ };
+-use die_core::{Args, Ctx, Error, Origin, Result, State, TextBuf, WindowId};
++use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, WindowId};
++
++/// The most text a count may replay at once (64 MiB); more is an error, not a hang.
++const MAX_REPEAT: usize = 64 << 20;
+ 
+ /// How a session started. A count repeats the session, opening a line first
+ /// when it opened one.
+@@ -94,6 +97,10 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
+             indent_from_above(t, w, line)?;
+         }
+     }
++    // A goal column from normal state doesn't carry into insert state's <Up>.
++    if let Some(sel) = t.selection(w) {
++        t.set_selection(w, sel.with_goal(None));
++    }
+     // Only now, so that a failed `o` or `O` leaves no group open. The line it
+     // opened joins the group: core adds an earlier edit by the same command.
+     t.begin_undo_group();
+@@ -127,13 +134,38 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
+     let cursor = |t: &TextBuf| t.cursor(w).unwrap_or(0);
+     let mut r = Ok(());
+     if let Some(s) = s {
+-        r = (1..s.count).try_for_each(|_| {
+-            if matches!(s.entry, Entry::OpenBelow | Entry::OpenAbove) {
+-                let line = t.line_of(cursor(t));
+-                open_below(t, w, line)?;
+-            }
+-            s.edits.iter().try_for_each(|e| apply(t, w, e))
+-        });
++        let opens = matches!(s.entry, Entry::OpenBelow | Entry::OpenAbove);
++        let text: Option<String> = s
++            .edits
++            .iter()
++            .map(|e| match e {
++                Edit::Text(x) => Some(x.as_str()),
++                _ => None,
++            })
++            .collect();
++        r = match text {
++            // Typed text only: the copies go in at once, not key by key.
++            Some(one) if !opens && s.count > 1 => one
++                .len()
++                .checked_mul(s.count - 1)
++                .filter(|&n| n <= MAX_REPEAT)
++                .ok_or(Error::Msg("Count too large".into()))
++                .and_then(|n| {
++                    let p = cursor(t);
++                    t.tx(Origin::User)
++                        .insert(p, one.repeat(s.count - 1))
++                        .commit()?;
++                    t.set_cursor(w, p + n);
++                    Ok(())
++                }),
++            _ => (1..s.count).try_for_each(|_| {
++                if opens {
++                    let line = t.line_of(cursor(t));
++                    open_below(t, w, line)?;
++                }
++                s.edits.iter().try_for_each(|e| apply(t, w, e))
++            }),
++        };
+         let line = t.line_of(cursor(t));
+         let (ls, le) = (t.line_start(line), line_end(t, line));
+         if s.drop_indent && le > ls && blank_line(t, line) {
+@@ -151,15 +183,7 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
+     // A session that ends on the empty line after a final newline leaves the
+     // cursor there, as Evil and Vim do, so the next `i` types on that line. Only
+     // motions keep off it (scope §10).
+-    let after_final_newline = back == t.len() && t.line_start(t.line_of(back)) == back;
+-    t.set_cursor(
+-        w,
+-        if after_final_newline {
+-            back
+-        } else {
+-            normal_pos(t, back)
+-        },
+-    );
++    t.set_cursor(w, rest_pos(t, back));
+     ctx.set_state(State::Normal);
+     r
+ }
+@@ -214,7 +238,14 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
+             let Some(l) = next.filter(|&l| l < t.line_count()) else {
+                 return fail("No line there");
+             };
+-            pos_at_col(t, l, t.display_col(p))
++            // Like next-line: a run of vertical moves keeps the column it started at.
++            let goal = t
++                .selection(w)
++                .and_then(|s| s.goal)
++                .unwrap_or_else(|| t.display_col(p));
++            let q = pos_at_col(t, l, goal);
++            t.set_selection(w, Selection::cursor(q).with_goal(Some(goal)));
++            return Ok(());
+         }
+     };
+     t.set_cursor(w, pos);
+diff --git a/crates/die-vim/src/lib.rs b/crates/die-vim/src/lib.rs
+index c8e5023..c0837fd 100644
+--- a/crates/die-vim/src/lib.rs
++++ b/crates/die-vim/src/lib.rs
+@@ -84,6 +84,9 @@ impl Extension for Vim {
+         for (keys, name, ..) in INSERTS {
+             k.bind(Normal, keys, name);
+         }
++        for key in ["f", "F", "t", "T"] {
++            k.bind(Normal, &format!("{key}<Esc>"), "vim-cancel");
++        }
+         k.bind(Insert, "<char>", "vim-insert-char")
+             .bind(Insert, "<Esc>", "vim-normal-state");
+         for (keys, name, ..) in EDITS {
+@@ -121,7 +124,7 @@ impl Extension for Vim {
+         reg.command(
+             "vim-line-beginning",
+             "C-a: to the start of the line, as Emacs's global C-a does under your Evil.",
+-            |ctx, a| run_motion(ctx, a, Kind::Exclusive, None, motions::beginning_of_line),
++            |ctx, a| run_motion(ctx, a, Kind::Exclusive, None, motions::line_beginning),
+         );
+         reg.command(
+             "vim-repeat-find-char",
+@@ -145,6 +148,11 @@ impl Extension for Vim {
+                 Ok(())
+             },
+         );
++        reg.command(
++            "vim-cancel",
++            "Escape after a key that waits for another: nothing.",
++            |_, _| Ok(()),
++        );
+         reg.command("vim-undo", "u: undo count changes.", |ctx, a| {
+             history(ctx, a, false)
+         });
+@@ -204,18 +212,20 @@ fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
+     run_motion(ctx, a, kind, None, move |s| motions::find(s, find))
+ }
+ 
+-/// `u` and `C-r`. Like Evil, the cursor goes to the start of the last step undone or redone.
++/// `u` and `C-r`. Like Evil, `u` leaves the cursor where it was before the
++/// last step undone (core restores it); `C-r` puts it at the start of the
++/// last step redone, as Vim does.
+ fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
+     let (b, w) = buffer_window(ctx, a)?;
+     let t = ctx.text_mut(b)?;
+-    let mut start = 0;
+     for i in 0..a.count.unwrap_or(1).max(1) {
+         match if redo { t.redo() } else { t.undo() } {
+-            Ok(r) => start = r.start,
++            Ok(_) => {}
+             Err(e) if i == 0 => return Err(e),
+             Err(_) => break,
+         }
+     }
+-    t.set_cursor(w, text::normal_pos(t, start));
++    let p = t.cursor(w).unwrap_or(0);
++    t.set_cursor(w, text::rest_pos(t, p));
+     Ok(())
+ }
+diff --git a/crates/die-vim/src/motions.rs b/crates/die-vim/src/motions.rs
+index 768cc6a..bff1871 100644
+--- a/crates/die-vim/src/motions.rs
++++ b/crates/die-vim/src/motions.rs
+@@ -56,6 +56,14 @@ pub fn beginning_of_line(s: &Start) -> Result<Target, Fail> {
+     Ok(Target::at(s.text.line_start(s.text.line_of(s.pos))))
+ }
+ 
++/// `C-a`, Emacs's move-beginning-of-line: a count moves count-1 lines down first.
++pub fn line_beginning(s: &Start) -> Result<Target, Fail> {
++    let t = s.text;
++    let here = t.line_of(s.pos);
++    let line = here.saturating_add(s.n() - 1).min(last_line(t).max(here));
++    Ok(Target::at(t.line_start(line)))
++}
++
+ // ---------------------------------------------------------------- characters and lines
+ 
+ fn backward_char(s: &Start) -> Result<Target, Fail> {
+@@ -136,7 +144,8 @@ fn first_non_blank(s: &Start) -> Result<Target, Fail> {
+ 
+ fn end_of_line(s: &Start) -> Result<Target, Fail> {
+     let t = s.text;
+-    let line = t.line_of(s.pos).saturating_add(s.n() - 1).min(last_line(t));
++    let here = t.line_of(s.pos);
++    let line = here.saturating_add(s.n() - 1).min(last_line(t).max(here));
+     Ok(Target {
+         goal: Some(Goal::Eol),
+         ..Target::at(line_end(t, line))
+@@ -415,6 +424,9 @@ fn percent(s: &Start, n: usize) -> Result<Target, Fail> {
+ /// Evil). With no blank line after, to the end of the last line, as in Vim.
+ fn forward_paragraph(s: &Start) -> Result<Target, Fail> {
+     let t = s.text;
++    if s.pos == t.len() {
++        return Err("End of buffer");
++    }
+     let (last, mut line) = (last_line(t), t.line_of(s.pos));
+     let mut pos = None;
+     for _ in 0..s.n() {
+diff --git a/crates/die-vim/src/text.rs b/crates/die-vim/src/text.rs
+index 1a79b23..6d00b93 100644
+--- a/crates/die-vim/src/text.rs
++++ b/crates/die-vim/src/text.rs
+@@ -70,6 +70,9 @@ pub enum Script {
+     Han,
+     Kana,
+     Hangul,
++    /// Scripts your Evil separates from Latin (oracle, 2026-11-03), by block.
++    Separate(u32),
++    /// Latin, Greek and everything else.
+     Other,
+ }
+ 
+@@ -96,6 +99,13 @@ fn script(c: char) -> Script {
+         0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x3ffff => Script::Han,
+         0x3040..=0x30ff | 0x31f0..=0x31ff | 0xff66..=0xff9f => Script::Kana,
+         0x1100..=0x11ff | 0x3130..=0x318f | 0xac00..=0xd7af => Script::Hangul,
++        0x0400..=0x052f => Script::Separate(0x0400), // Cyrillic
++        0x0530..=0x058f => Script::Separate(0x0530), // Armenian
++        0x0590..=0x05ff => Script::Separate(0x0590), // Hebrew
++        0x0600..=0x06ff | 0x0750..=0x077f | 0x08a0..=0x08ff => Script::Separate(0x0600), // Arabic
++        u @ 0x0900..=0x0fff => Script::Separate(u & !0x7f), // Indic, Thai, Lao, Tibetan
++        0x10a0..=0x10ff => Script::Separate(0x10a0), // Georgian
++        0x0250..=0x02af | 0x1d00..=0x1dbf => Script::Separate(0x0250), // IPA
+         _ => Script::Other,
+     }
+ }
+@@ -165,10 +175,30 @@ pub fn normal_pos(t: &TextBuf, pos: usize) -> usize {
+     let line = t.line_of(pos).min(last_line(t));
+     let (s, e) = (t.line_start(line), line_end(t, line));
+     let p = pos.clamp(s, e);
+-    if p == e && e > s {
++    // Inside the line's last grapheme (`e` onto a combining mark), snapping
++    // forward would land on the newline: go back to the grapheme's start.
++    let q = if p == e { e } else { t.snap(p, None) };
++    if q == e && e > s {
+         t.snap(e - 1, Some(Dir::Backward))
+     } else {
+-        t.snap(p, None)
++        q
++    }
++}
++
++/// Whether `pos` is on the empty line after a final newline (or in an empty
++/// text). Motions never take the cursor there, but an insert session or an
++/// undo can leave it there (V1-1), and motions along that line keep it.
++pub fn on_last_empty_line(t: &TextBuf, pos: usize) -> bool {
++    pos == t.len() && t.line_start(t.line_of(pos)) == pos
++}
++
++/// Where the cursor rests after an insert session or an undo: `normal_pos`,
++/// except on the empty line after a final newline, which it keeps.
++pub fn rest_pos(t: &TextBuf, pos: usize) -> usize {
++    if on_last_empty_line(t, pos) {
++        pos
++    } else {
++        normal_pos(t, pos)
+     }
+ }
+ 
