@@ -8,20 +8,27 @@ use crate::text::Selection;
 /// A recorded change: `removed` at `pos` was replaced by `inserted`.
 #[derive(Clone, Debug)]
 pub(crate) struct Op {
+    /// Where it happened, in bytes, in the text just before it.
     pub pos: usize,
+    /// The text it took out.
     pub removed: String,
+    /// The text it put in.
     pub inserted: String,
 }
 
 /// A change reduced to positions, used for silent edits.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Shift {
+    /// Where it happened, in bytes, in the text just before it.
     pub pos: usize,
+    /// How many bytes it took out.
     pub del: usize,
+    /// How many bytes it put in.
     pub ins: usize,
 }
 
 impl Op {
+    /// This change, reduced to positions.
     pub fn shift(&self) -> Shift {
         Shift {
             pos: self.pos,
@@ -127,7 +134,9 @@ enum Entry {
     Silent(Vec<Shift>),
 }
 
+/// An undo or redo worked out but not yet done, so a read-only check can refuse it first.
 pub(crate) struct Plan {
+    /// The changes to apply, in order, in the coordinates of the text as it is now.
     pub ops: Vec<Op>,
     /// The selection an undo restores. Redo leaves it to the caller, which knows the range.
     pub sel: Option<Selection>,
@@ -137,6 +146,7 @@ pub(crate) struct Plan {
     other: Group,
 }
 
+/// A buffer's undo and redo stacks, and how deep the explicit groups are nested.
 #[derive(Default)]
 pub(crate) struct History {
     undo: Vec<Entry>,
@@ -149,7 +159,9 @@ pub(crate) struct History {
 /// How much history a buffer keeps: at most `steps` steps holding at most `bytes` of text.
 #[derive(Clone, Copy)]
 pub(crate) struct Limit {
+    /// The most steps to keep.
     pub steps: usize,
+    /// The most removed and inserted text to keep, in bytes, unless it's all one step.
     pub bytes: usize,
 }
 
@@ -160,6 +172,17 @@ fn push_silent(stack: &mut Vec<Entry>, s: Shift) {
         // every position and every change the same way.
         Some(Entry::Silent(v)) => match v.last_mut() {
             Some(l) if l.del == 0 && s.del == 0 && s.pos == l.pos + l.ins => l.ins += s.ins,
+            // A rewrite of text the last shift inserted (a spinner, a status line redrawn in
+            // place) folds into it. That's exact for positions and for rebasing any history
+            // op, since those can't lie inside silent text. A pure insertion at its start is
+            // left alone: gravity differs there.
+            Some(l)
+                if s.pos >= l.pos
+                    && s.pos + s.del <= l.pos + l.ins
+                    && (s.del > 0 || s.pos > l.pos) =>
+            {
+                l.ins = l.ins - s.del + s.ins
+            }
             _ => v.push(s),
         },
         Some(Entry::Group(_)) => stack.push(Entry::Silent(vec![s])),
@@ -179,6 +202,8 @@ fn top_group(stack: &[Entry]) -> (Option<usize>, Vec<Shift>) {
 }
 
 impl History {
+    /// Record a change. `sel_before` is the acting window's selection just before it, which
+    /// undo restores if this is the step's first change.
     pub fn record(&mut self, op: Op, sel_before: Option<Selection>, cmd: u64, limit: Limit) {
         self.redo.clear();
         let bytes = op.removed.len() + op.inserted.len();
@@ -252,12 +277,14 @@ impl History {
         }
     }
 
+    /// Note a silent edit, which later undos and redos rebase over.
     pub fn silent(&mut self, s: Shift) {
         push_silent(&mut self.undo, s);
         push_silent(&mut self.redo, s);
     }
 
-    /// Open an explicit group. Edits until the matching `end` are one undo step.
+    /// Open an explicit group. Edits until the matching `end` are one undo step. A step made
+    /// earlier in the same command joins it.
     pub fn begin(&mut self, cmd: u64) {
         self.depth += 1;
         if self.depth > 1 {
@@ -273,6 +300,7 @@ impl History {
         }
     }
 
+    /// Close an explicit group. Only the outermost `end` closes it.
     pub fn end(&mut self) {
         if self.depth == 0 {
             return;
@@ -341,6 +369,7 @@ impl History {
         })
     }
 
+    /// Do what `plan` worked out, once its changes are made.
     pub fn commit(&mut self, p: Plan) {
         let (from, to) = if p.redo {
             (&mut self.redo, &mut self.undo)
@@ -355,6 +384,7 @@ impl History {
         // An open group stays open: the next edit starts a new step inside it.
     }
 
+    /// Drop the undo stack, or the redo stack, after a conflict. Reports any earlier drop.
     pub fn truncate(&mut self, redo: bool) {
         if redo {
             self.redo.clear()
@@ -368,6 +398,98 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shift(pos: usize, del: usize, ins: usize) -> Shift {
+        Shift { pos, del, ins }
+    }
+
+    /// `l` then `s`, against the one shift `push_silent` folds them into, for every small
+    /// case: where each position goes, how each op rebases, and whether it conflicts.
+    #[test]
+    fn a_folded_rewrite_is_exact() {
+        let mut folded = 0;
+        for (lp, ld, li) in
+            (0..7).flat_map(|p| (0..3).flat_map(move |d| (0..4).map(move |i| (p, d, i))))
+        {
+            for (sp, sd, si) in
+                (0..7).flat_map(|p| (0..4).flat_map(move |d| (0..4).map(move |i| (p, d, i))))
+            {
+                let group = || {
+                    Entry::Group(Group {
+                        ops: vec![],
+                        sel: None,
+                        cmd: 0,
+                        open: false,
+                        bytes: 0,
+                    })
+                };
+                let mut stack = vec![group()];
+                push_silent(&mut stack, shift(lp, ld, li));
+                push_silent(&mut stack, shift(sp, sd, si));
+                let (_, pending) = top_group(&stack);
+                if pending.len() != 1 {
+                    continue;
+                }
+                folded += 1;
+                let (l, s, f) = (shift(lp, ld, li), shift(sp, sd, si), pending[0]);
+                for p in 0..16 {
+                    assert_eq!(f.map(p), s.map(l.map(p)), "{l:?} {s:?} at {p}");
+                }
+                for (op, del, ins) in
+                    (0..10).flat_map(|p| (0..4).flat_map(move |d| (0..3).map(move |i| (p, d, i))))
+                {
+                    let o = Op {
+                        pos: op,
+                        removed: "x".repeat(del),
+                        inserted: "y".repeat(ins),
+                    };
+                    let by_two = rebase(std::slice::from_ref(&o), &[l, s]);
+                    let by_one = rebase(std::slice::from_ref(&o), &[f]);
+                    let key = |r: &Option<(Vec<Op>, Vec<Shift>)>| {
+                        r.as_ref().map(|(ops, after)| {
+                            let m = |p| after.iter().fold(p, |p, s| s.map(p));
+                            let moved: Vec<usize> = (0..20).map(m).collect();
+                            (ops[0].pos, moved)
+                        })
+                    };
+                    assert_eq!(key(&by_one), key(&by_two), "{l:?} {s:?} over {o:?}");
+                }
+            }
+        }
+        assert!(folded > 1000, "only {folded} cases folded");
+    }
+
+    #[test]
+    fn a_status_line_rewritten_in_place_stays_one_shift() {
+        let limit = Limit {
+            steps: 10,
+            bytes: 100,
+        };
+        let typed = Op {
+            pos: 0,
+            removed: String::new(),
+            inserted: "x".into(),
+        };
+        for rewrite in [shift(1, 10, 10), shift(4, 1, 1), shift(1, 1, 1)] {
+            let mut h = History::default();
+            h.record(typed.clone(), None, 1, limit);
+            h.silent(shift(1, 0, 10));
+            for _ in 0..1000 {
+                h.silent(rewrite);
+            }
+            let (_, pending) = top_group(&h.undo);
+            assert_eq!(pending.len(), 1, "{rewrite:?}");
+            assert_eq!((pending[0].pos, pending[0].del, pending[0].ins), (1, 0, 10));
+        }
+    }
+
+    #[test]
+    fn a_pure_insertion_at_the_last_shifts_start_stays_apart() {
+        let mut stack = vec![Entry::Silent(vec![shift(5, 0, 3)])];
+        push_silent(&mut stack, shift(5, 0, 2));
+        let (_, pending) = top_group(&stack);
+        assert_eq!(pending.len(), 2);
+    }
 
     #[test]
     fn streamed_silent_text_is_one_shift() {
