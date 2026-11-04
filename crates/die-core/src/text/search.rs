@@ -80,22 +80,23 @@ impl Pattern {
         None
     }
 
-    /// Every match that counts, starting in `..end`, left to right and without overlaps.
-    fn all(&self, text: &str, end: usize) -> Vec<Range<usize>> {
+    /// Every match that counts, starting in `..end`, left to right and without overlaps. It
+    /// finds them as they're asked for, so stopping early doesn't scan a long line to its end.
+    fn all<'a>(&'a self, text: &'a str, end: usize) -> Box<dyn Iterator<Item = Range<usize>> + 'a> {
         if self.is_word.is_none() {
             let input = Input::new(text).range(..end);
-            return self.re.find_iter(input).map(|m| m.range()).collect();
+            return Box::new(self.re.find_iter(input).map(|m| m.range()));
         }
-        let (mut out, mut at) = (vec![], 0);
-        while let Some(m) = self.first_from(text, at, end) {
+        let mut at = 0;
+        Box::new(std::iter::from_fn(move || {
+            let m = self.first_from(text, at, end)?;
             at = if m.is_empty() {
                 after_start(text, &m)
             } else {
                 m.end
             };
-            out.push(m);
-        }
-        out
+            Some(m)
+        }))
     }
 
     /// `last_before`, skipping matches that don't count and looking further left for one.
