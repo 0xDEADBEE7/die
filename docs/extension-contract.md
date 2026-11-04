@@ -271,21 +271,21 @@ Newlines and the end of the text aren't items (Line ends, below). Hidden text wi
 Where virtual text shows, by its position:
 - before the cluster, newline or end of the text there;
 - at a hidden range's start, before the replacement if there is one, and not at all if there isn't;
-- at a hidden range's end, as at any visible position;
+- at a hidden range's end, as at any visible position, unless another hidden range starts there, when the start rule applies;
 - strictly inside a hidden range or strictly inside a cluster, not at all.
 
 **Widths.** Every item takes whole cells:
-- A tab in the text reaches the next multiple of `tab_width`, where 0 counts as 1. The count is in *display columns*: the cells of every item before it on the display line, whichever rows they're on. Filler cells (below) don't count, so a display line's columns don't change with the width. A display column is what `display_col` returns. A tab's cells are blank. Replacements and virtual text hold no tabs: `decorate` turns their tabs and newlines into spaces.
+- A tab in the text reaches the next multiple of `tab_width`, where 0 counts as 1. The count is in *display columns*: the cells of every item before it on the display line, whichever rows they're on. Filler cells (below) don't count, so a display line's columns don't change with the width. A display column is what `display_col` returns. A tab's cells are blank. Replacements and virtual text hold no tabs: `decorate` turns their tabs and newlines into spaces, and an empty replacement is no replacement.
 - A control character (`char::is_control`, other than a tab in the text) is drawn as Emacs draws it, a cell per character. U+0000 to U+001F are `^` and the character U+0040 above them, `^@` to `^_`, two cells, so `\r` is `^M`. U+007F is `^?`, two cells. U+0080 to U+009F are `\` and three octal digits, `\200` to `\237`, four cells.
 - Any other item is `unicode-width` 0.2's `width()` of the whole cluster, and at least one cell. So `👍🏽` is 2 cells (tty Emacs draws 4), and U+200B and a lone combining mark are 1. It's drawn in its first cell, and its other cells continue it.
 
 **Where soft wrap breaks.** Rows are `text_w` cells wide (Gutter and width, below). Layout places each item at its row's next column.
-- *Whitespace* is U+0020 and U+0009 only. A no-break space, U+200B, U+3000 and `-` aren't whitespace, and nothing breaks at them.
+- *Whitespace* is an item whose cluster starts with U+0020 or U+0009, so a space with a combining mark on it still counts, as in tty Emacs. A no-break space, U+200B, U+3000 and `-` aren't whitespace, and nothing breaks at them.
 - A *break point* is the place before an item that isn't whitespace and directly follows a whitespace item, unless that item is the first thing on its row. The rest of a split tab or control character counts as being on the row, so the item after it can be a break point. Hidden text in between doesn't stop it: items are what count.
 - An item *doesn't fit* if its last cell would be past the row's last cell. Then:
   1. If the row has a break point, at this item or before it, the row ends just before the last one. The whitespace before it stays at this row's end. The next row starts with the item after the break point, and the items after that are placed again.
   2. Otherwise the row ends here. A tab or control character is split: the cells that fit, which may be none, end this row, and the rest start the next, over several rows if it's wider than a row. Any other item moves to the next row whole, and the cells it leaves on this row are *filler*: blank, with no position. Only an item wider than a cell leaves any.
-  3. A cluster wider than a whole row, once at a row's start, stays there, since moving it wouldn't help. Its cells past the row's end aren't drawn.
+  3. A cluster wider than a whole row, once at a row's start, stays there, since moving it wouldn't help. Its cells past the row's end aren't drawn. The row then counts as full: the next item starts a new row, and a line end there is at column `text_w`.
 - With `Wrap::Char` the same rule applies with no break points.
 - With `Wrap::Off` no item fails to fit, so a display line is one row, however long. M0 has no horizontal scrolling: cells and cursors past the window's edge aren't drawn.
 
@@ -319,6 +319,7 @@ aaaaaaaa ^Ab                aaaaaaaa·|^Ab               unless it's a break poi
 aaaaaaa[ ]bbbb              aaaaaaabbb|b                hidden text joins the words
 aaaaaaaa b, with xxxx       aaaaaaaaxx|xx·b             virtual text before the space at 8
 aaaa bbbb, with xx yy       aaaa·xx·|yy·bbbb            virtual text "xx yy " at 5 breaks like text
+aaaa + space+mark + bbbbbbb aaaa·|bbbbbbb               a space with a combining mark on it is whitespace
 aaaa bbbbb cccc, Char       aaaa·bbbbb|·cccc            Wrap::Char: no break points
 ```
 
@@ -340,9 +341,9 @@ The Evil oracle's tty Emacs keeps its last column for the continuation glyph and
 - each newline that isn't hidden, and the end of the text, drawn as Line ends says;
 - the start of a hidden range with a replacement, drawn on the replacement's first cell: that's the fold line.
 
-Nothing else is. A hidden range with no replacement has no cursor position at its start or inside it, and virtual text and a replacement's later clusters have none. A row break adds none, so a row can have none: a tab's rest, or the end of a long replacement. After every edit or decoration change, core moves each cursor out of hidden text: to the fold line if there is one, otherwise to the next visible position. A whole-line fold hides from the start of its first line up to the newline that ends its last line, and not that newline, so the next line keeps its own row.
+Nothing else is. A hidden range with no replacement has no cursor position at its start or inside it, and virtual text and a replacement's later clusters have none. A row break adds none, so a row can have none: a tab's rest, or the end of a long replacement. After every edit or decoration change, core moves each cursor out of hidden text: to the fold line if there is one, otherwise to the next visible position. A cursor left inside a cluster goes to the next cursor position. A whole-line fold hides from the start of its first line up to the newline that ends its last line, and not that newline, so the next line keeps its own row.
 
-`move_visual` counts only rows with a cursor position. Its goal is the column it's given, or else the starting position's column on its row. On the row it lands on, it takes the last cursor position at or left of the goal, or else the row's first.
+`move_visual` counts only rows with a cursor position. Its goal is the column it's given, or else the starting position's column on its row. On the row it lands on, it takes the last cursor position at or left of the goal, or else the row's first. With fewer such rows than asked, it goes as far as there are. With none, it stays where it is. It returns the position and the goal it used.
 
 **Gutter and width.** `max_width` counts text cells only, so you get 80 columns of code. `visual-fill-column` includes the gutter, so this deviates from it (scope §8). In a window `cols` cells wide:
 - `gutter` is 0 with line numbers off. Otherwise it's `max(3, digits(n)) + 1`, where `n` is the number of lines, not counting an empty last line. A text of 999 lines with a final newline has `n` = 999, so a gutter of 4.
@@ -351,7 +352,7 @@ Nothing else is. A hidden range with no replacement has no cursor position at it
 - `pad` is `(avail − text_w) / 2`, rounded down, when the buffer is centered, and otherwise 0. Gutter and text are centered together.
 - A row runs `pad` blank cells, the gutter, then the text, from `text_x = pad + gutter`. The rest of the window is the right padding. For example, `cols` 120 with numbers on, under 1,000 lines, `max_width` 80 and centered gives a gutter of 4, `text_w` 80, `pad` 18 and `text_x` 22.
 - The gutter draws a number right-aligned in its first `gutter − 1` cells, and its last cell is blank. In a window narrower than `text_x + text_w`, the text simply runs past the window's edge.
-- `screen_pos` gives a position's row counted from the window's top row, and `text_x` plus its column on that row.
+- `screen_pos` gives a position's row counted from the window's top row, and `text_x` plus its column on that row. For a position that isn't a cursor position, `screen_pos` and `display_col` answer for the last cursor position at or before it on its display line, or else that line's first. `screen_pos` gives nothing if the row is scrolled out of view.
 
 **Line numbers.** A row shows at most one number:
 - *Absolute:* a display line's first row shows its first line's number, from 1.
