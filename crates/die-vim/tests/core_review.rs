@@ -141,3 +141,49 @@ fn ctrl_bracket_leaves_insert_state() {
     assert_eq!(ctx.text(b).unwrap().rope().to_string(), "xabc\n");
     assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
 }
+
+/// `u` run for one of two windows on a buffer moves that window's cursor, wherever the focus is.
+#[test]
+fn u_run_for_a_window_that_isnt_focused_moves_that_windows_cursor() {
+    let mut ctx = editor();
+    let b = ctx.create_text("b", "abcdef\n");
+    let wb = ctx.open_window(b, 80, 24).unwrap();
+    let wa = ctx.open_window(b, 80, 24).unwrap();
+    ctx.focus(wa);
+    ctx.text_mut(b).unwrap().set_cursor(wa, 3);
+    ctx.type_keys("ix<Esc>$");
+    ctx.text_mut(b).unwrap().set_cursor(wb, 0);
+    let args = Args {
+        window: Some(wb),
+        buffer: Some(b),
+        ..Default::default()
+    };
+    ctx.run("vim-undo", &args).unwrap();
+    let t = ctx.text(b).unwrap();
+    assert_eq!(t.cursor(wb), Some(3), "the window u ran for goes back");
+    assert_eq!(t.cursor(wa), Some(5), "the other one only follows its text");
+}
+
+/// The step keeps the selection of the window `o` ran for, though another window has the focus.
+#[test]
+fn u_returns_to_where_o_was_run_for_a_window_that_isnt_focused() {
+    let mut ctx = editor();
+    let a = ctx.create_text("a", "aaa\n");
+    let wa = ctx.open_window(a, 80, 24).unwrap();
+    let b = ctx.create_text("b", "abc\n");
+    let wb = ctx.open_window(b, 80, 24).unwrap();
+    ctx.text_mut(b).unwrap().set_cursor(wb, 1);
+    ctx.focus(wa);
+    let args = Args {
+        window: Some(wb),
+        buffer: Some(b),
+        ..Default::default()
+    };
+    ctx.defer(move |c| c.run("vim-open-below", &args));
+    ctx.run_until_idle();
+    ctx.focus(wb);
+    ctx.type_keys("x<Esc>u");
+    let t = ctx.text(b).unwrap();
+    assert_eq!(t.rope().to_string(), "abc\n");
+    assert_eq!(t.cursor(wb), Some(1), "where o was typed");
+}
