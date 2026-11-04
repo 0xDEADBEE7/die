@@ -136,7 +136,8 @@ fn first_non_blank(s: &Start) -> Result<Target, Fail> {
 
 fn end_of_line(s: &Start) -> Result<Target, Fail> {
     let t = s.text;
-    let line = t.line_of(s.pos).saturating_add(s.n() - 1).min(last_line(t));
+    let here = t.line_of(s.pos);
+    let line = here.saturating_add(s.n() - 1).min(last_line(t).max(here));
     Ok(Target {
         goal: Some(Goal::Eol),
         ..Target::at(line_end(t, line))
@@ -415,6 +416,9 @@ fn percent(s: &Start, n: usize) -> Result<Target, Fail> {
 /// Evil). With no blank line after, to the end of the last line, as in Vim.
 fn forward_paragraph(s: &Start) -> Result<Target, Fail> {
     let t = s.text;
+    if s.pos == t.len() {
+        return Err("End of buffer");
+    }
     let (last, mut line) = (last_line(t), t.line_of(s.pos));
     let mut pos = None;
     for _ in 0..s.n() {

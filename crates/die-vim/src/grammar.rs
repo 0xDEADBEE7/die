@@ -19,10 +19,11 @@
 //!
 //! In normal state the cursor rests on a character, never on a line's newline
 //! unless the line is empty, and motions never take it past the last line
-//! (`text::normal_pos`). An insert session that ends on the empty line after a
-//! final newline leaves it there, as Evil does (`insert::end`).
+//! (`text::normal_pos`). An insert session or an undo can leave it on the empty
+//! line after a final newline, as in Evil and Vim (`text::rest_pos`). Motions along
+//! that line (`0`, `^`, `$`, `C-a`) keep it there, and `}` from it fails.
 
-use crate::text::normal_pos;
+use crate::text::{normal_pos, on_last_empty_line};
 use die_core::{Args, BufferId, Ctx, Error, Prefix, Result, Selection, TextBuf, WindowId};
 
 /// The column vertical motions aim for, kept across a run of them.
@@ -170,7 +171,9 @@ pub fn run_motion(
         arg,
     };
     let to = motion(&start).map_err(|e| Error::Msg(e.into()))?;
-    let pos = normal_pos(t, to.pos);
+    // From the empty line after a final newline, a motion along that line stays on it.
+    let stays = on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head);
+    let pos = if stays { to.pos } else { normal_pos(t, to.pos) };
     t.set_selection(w, Selection::cursor(pos).with_goal(Goal::encode(to.goal)));
     match to.short {
         Some(e) => Err(Error::Msg(e.into())),
