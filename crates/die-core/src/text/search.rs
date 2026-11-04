@@ -263,3 +263,20 @@ impl TextBuf {
         Ref::map(self.flat.borrow(), |f| f.as_deref().unwrap_or_default())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The scene draws this as the current match, so it's one `n` can land on.
+    #[test]
+    fn the_match_at_a_position_follows_a_word_patterns_rule() {
+        let t = TextBuf::new("foo foobar\nfoo_bar\n");
+        let word = Pattern::word("foo", false, char::is_alphanumeric).unwrap();
+        assert_eq!(t.match_at(&word, 0), Some(0..3));
+        assert_eq!(t.match_at(&word, 4), None, "inside foobar");
+        assert_eq!(t.match_at(&word, 11), Some(11..14), "before the _");
+        let plain = Pattern::new("foo", false).unwrap();
+        assert_eq!(t.match_at(&plain, 4), Some(4..7));
+    }
+}

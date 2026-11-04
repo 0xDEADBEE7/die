@@ -499,19 +499,25 @@ fn ctrl_bracket_runs_what_escape_is_bound_to() {
     assert_eq!(ctx.messages, Vec::<String>::new());
 }
 
+/// As the OS sends them: `[` and `m` with Ctrl held. Notation has already folded them.
 #[test]
 fn ctrl_bracket_and_ctrl_m_answer_a_prompt() {
     let mut ctx = Ctx::new(vec![]).unwrap();
     let b = ctx.create_text("t", "");
     ctx.open_window(b, 40, 5).unwrap();
+    let held = Mods {
+        ctrl: true,
+        ..Mods::default()
+    };
     let answers = Rc::new(RefCell::new(vec![]));
-    for keys in ["ab<C-m>", "ab<C-[>"] {
+    for key in ['m', '['] {
         let a = answers.clone();
         ctx.prompt("?", move |_, answer| {
             a.borrow_mut().push(answer);
             Ok(())
         });
-        ctx.type_keys(keys);
+        ctx.type_keys("ab");
+        plain_command(&mut ctx, &[KeyEvent::press(Key::Char(key)).mods(held)]);
     }
     assert_eq!(*answers.borrow(), [Some("ab".to_string()), None]);
 }
