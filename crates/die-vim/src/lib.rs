@@ -53,11 +53,24 @@ impl Extension for Vim {
         "die-vim"
     }
 
+    fn init(&mut self, ctx: &mut Ctx) -> Result {
+        // A buffer killed in insert state never gets its Escape.
+        ctx.on_buffer_killed(|ctx, b| {
+            ctx.with_ext(|v: &mut Vim, _| v.inserts.remove(&b))?;
+            Ok(())
+        })
+        .detach();
+        Ok(())
+    }
+
     fn register(&mut self, reg: &mut Registry) {
         use State::{Insert, Normal};
         let k = reg.kind_keymap("text");
         for m in MOTIONS {
             k.bind(Normal, m.keys, m.name);
+        }
+        for key in ["f", "F", "t", "T"] {
+            k.bind(Normal, &format!("{key}<Esc>"), "vim-cancel");
         }
         for (keys, cmd) in [
             ("<Left>", "h"),
@@ -106,6 +119,11 @@ impl Extension for Vim {
                 }),
             }
         }
+        reg.command(
+            "vim-cancel",
+            "Escape after a key that waits for another: nothing, and the count goes.",
+            |_, _| Ok(()),
+        );
         reg.command("vim-digit-argument", "A count digit.", |ctx, a| {
             let d = a.char().and_then(|c| c.to_digit(10)).unwrap_or(0) as usize;
             count_digit(ctx, a, d)
@@ -223,4 +241,23 @@ fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
     }
     t.set_cursor(w, text::normal_pos(t, start));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn killing_a_buffer_in_insert_state_drops_its_session() {
+        let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers");
+        let b = ctx.create_text("t", "a\n");
+        let w = ctx.open_window(b, 80, 24).expect("a window");
+        ctx.focus(w);
+        ctx.type_keys("ifoo");
+        let sessions = |ctx: &mut Ctx| ctx.with_ext(|v: &mut Vim, _| v.inserts.len()).unwrap();
+        assert_eq!(sessions(&mut ctx), 1);
+        assert!(ctx.kill(b));
+        ctx.run_until_idle();
+        assert_eq!(sessions(&mut ctx), 0);
+    }
 }
