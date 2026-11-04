@@ -292,8 +292,8 @@ Rebuild-and-restart is how you extend DIE, so a restart should feel like nothing
 | Your Emacs setup | DIE requirement |
 |---|---|
 | `global-visual-line-mode`; `line-move-visual t`, which Evil overrides for `j`/`k` | Soft wrap on by default. `j`/`k` move by logical line and `gj`/`gk` by visual line, as in your Evil today (§10) |
-| `visual-fill-column`, centered at 80 columns | Optional maximum text width, centered in the window |
-| Relative/visual line numbers in programming modes | Line-number gutter (absolute, relative or visual), set per mode |
+| `visual-fill-column`, centered at 80 columns | Optional maximum text width, centered in the window. It counts text cells only, so you get 80 columns of code with or without line numbers. `visual-fill-column` counts the gutter too, and this deliberately differs. Your `.rs` files show no line numbers in Emacs, so rows still break where Emacs breaks them |
+| Relative/visual line numbers in programming modes | Line-number gutter (absolute, relative or visual), set per mode. Relative counts display lines, as `j` does, so a fold counts once. Emacs's counts hidden lines, and this deliberately differs. Visual matches Emacs. The rules are in [extension-contract.md](extension-contract.md) §9 |
 | manifold: `{{{ }}}` folds, a `▼` marker, `j`/`k` skip folded text | Decorations can hide a range and show replacement text; motions skip hidden ranges |
 | `search-invisible t` | Search matches inside hidden ranges and reveals them |
 | Two custom themes | Named faces; a theme maps faces to styles |
