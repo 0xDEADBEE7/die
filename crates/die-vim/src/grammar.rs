@@ -95,7 +95,7 @@ pub struct Target {
     pub pos: usize,
     /// The goal to keep for the next vertical motion; None takes the new column.
     pub goal: Option<Goal>,
-    /// The motion moved, but fewer times than its count: like Evil, it signals this.
+    /// Signal this, as Evil does, and keep the goal column ([`Target::short`]).
     pub short: Option<&'static str>,
 }
 
@@ -108,9 +108,20 @@ impl Target {
             short: None,
         }
     }
+    /// `pos`, signalling `err` but keeping the goal column. For a motion that fell short
+    /// of its count, or one that can't move at all but keeps the column in Evil: `h`, `l`,
+    /// `j`, `k`, and `f` or `t` going forward from a line's last character, which fail
+    /// inside Evil's `l`.
+    pub fn short(pos: usize, err: Fail) -> Target {
+        Target {
+            short: Some(err),
+            ..Target::at(pos)
+        }
+    }
 }
 
-/// A motion moved nowhere; the message says why (Evil signals an error).
+/// A motion failed; the message says why (Evil signals an error). The goal column goes,
+/// as in Emacs after any command that isn't a vertical motion. [`Target::short`] keeps it.
 pub type Fail = &'static str;
 
 /// A motion as normal state binds it.
@@ -178,13 +189,19 @@ pub fn run_motion(
         goal: Goal::decode(sel.goal),
         arg,
     };
-    let to = motion(&start).map_err(|e| Error::Msg(e.into()))?;
+    let to = match motion(&start) {
+        Ok(to) => to,
+        Err(e) => {
+            forget_goal(t, w);
+            return Err(Error::Msg(e.into()));
+        }
+    };
     // From the empty line after a final newline, a motion along that line stays on it.
     let stays = on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head);
     let pos = if stays { to.pos } else { normal_pos(t, to.pos) };
-    // Like Evil's h and l, a motion that falls short signals and counts as never
-    // having happened (Evil sets this-command back to last-command), so the goal
-    // column survives it, as it survives a motion that fails outright.
+    // Evil's h and l signal and count as never having happened (Evil sets this-command
+    // back to last-command), and its j and k are still next-line and previous-line when
+    // they signal. So the goal column survives a short target, unlike any other failure.
     let goal = match to.short {
         Some(_) => sel.goal,
         None => Goal::encode(to.goal),

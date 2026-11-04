@@ -123,8 +123,12 @@ impl Extension for Vim {
         }
         reg.command(
             "vim-cancel",
-            "Escape after a key that waits for another: nothing, and the count goes.",
-            |_, _| Ok(()),
+            "Escape after a key that waits for another: only the count and the goal column go.",
+            |ctx, a| {
+                let (b, w) = buffer_window(ctx, a)?;
+                forget_goal(ctx.text_mut(b)?, w);
+                Ok(())
+            },
         );
         reg.command("vim-digit-argument", "A count digit.", |ctx, a| {
             let d = a.char().and_then(|c| c.to_digit(10)).unwrap_or(0) as usize;
@@ -213,7 +217,11 @@ fn insert_edit(ctx: &mut Ctx, a: &Args, e: Edit) -> Result {
 
 fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
     let last = ctx.with_ext(|v: &mut Vim, _| v.find)?;
-    let mut find = last.ok_or(Error::Msg("No previous f, F, t or T".into()))?;
+    let Some(mut find) = last else {
+        let (b, w) = buffer_window(ctx, a)?;
+        forget_goal(ctx.text_mut(b)?, w);
+        return Err(Error::Msg("No previous f, F, t or T".into()));
+    };
     if reverse {
         find = find.reversed();
     }
