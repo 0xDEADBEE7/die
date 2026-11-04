@@ -137,3 +137,100 @@ old = '''
             Some(Selection::cursor(hull.start))'''
 new = '''
             plan.ops.first().map(|o| Selection::cursor(o.pos))'''
+
+# The review of text and keys: bugs the model used to let through (TEST-1).
+
+[[mutant]]
+name = "M16 the step's selection comes from begin_undo_group, not its first edit"
+file = "src/text.rs"
+old = '''
+        self.history.begin(self.cmd);'''
+new = '''
+        self.history.begin(self.cmd);
+        let s = self.actor_selection();
+        let op = Op { pos: 0, removed: String::new(), inserted: String::new() };
+        self.history.record(op, s, self.cmd, self.undo_limit());'''
+
+[[mutant]]
+name = "M17 an undo ends an open group"
+file = "src/undo.rs"
+old = '''
+        // An open group stays open: the next edit starts a new step inside it.'''
+new = '''
+        self.depth = 0;'''
+
+[[mutant]]
+name = "M18 undo and redo changes aren't logged"
+file = "src/text.rs"
+old = '''
+        self.log.push_back(change);'''
+new = '''
+        if !matches!(rec, Rec::History) {
+            self.log.push_back(change);
+        }'''
+
+[[mutant]]
+name = "M19 undo and redo changes are logged as silent"
+file = "src/text.rs"
+old = '''
+            silent: matches!(rec, Rec::Silent),'''
+new = '''
+            silent: !matches!(rec, Rec::Record(_)),'''
+
+[[mutant]]
+name = "M20 the restored selection goes to some window, not the acting one"
+file = "src/text.rs"
+old = '''
+        if let (Some(w), Some(s)) = (self.actor, sel)'''
+new = '''
+        if let (Some(w), Some(s)) = (self.views.keys().next().copied(), sel)'''
+
+[[mutant]]
+name = "M21 moving a selection through silent edits drops its goal"
+file = "src/undo.rs"
+old = '''
+        head: m(sel.head),
+        ..sel'''
+new = '''
+        head: m(sel.head),
+        goal: sel.goal.filter(|_| shifts.is_empty()),
+        ..sel'''
+
+[[mutant]]
+name = "M22 silent edits don't reach the redo stack"
+file = "src/undo.rs"
+old = '''
+        push_silent(&mut self.redo, s);'''
+new = ''
+
+[[mutant]]
+name = "M23 an empty change is recorded"
+file = "src/text.rs"
+old = '''
+        ops.retain(|(r, s)| !(r.is_empty() && s.is_empty()));'''
+new = ''
+
+[[mutant]]
+name = "M24 text replaced by itself is dropped"
+file = "src/text.rs"
+old = '''
+        ops.retain(|(r, s)| !(r.is_empty() && s.is_empty()));'''
+new = '''
+        ops.retain(|(r, s)| self.rope.byte_slice(r.clone()) != s.as_str());'''
+
+[[mutant]]
+name = "M25 begin doesn't join an edit made earlier in the same command"
+file = "src/undo.rs"
+old = '''
+                if g.cmd == cmd {
+                    g.open = true;
+                }'''
+new = ''
+
+[[mutant]]
+name = "M26 a folded silent rewrite gets the wrong length"
+file = "src/undo.rs"
+old = '''
+                l.ins = l.ins - s.del + s.ins'''
+new = '''
+                l.ins = s.ins'''
