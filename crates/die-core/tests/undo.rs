@@ -457,9 +457,17 @@ fn a_redo_inside_an_open_group_leaves_the_group_open() {
     step(&mut ctx, b, |t| t.end_undo_group());
     insert(&mut ctx, b, 3, "!");
     undo(&mut ctx, b).unwrap();
-    assert_eq!(text(&ctx, b), "xyz", "the group ended, so ! is its own step");
+    assert_eq!(
+        text(&ctx, b),
+        "xyz",
+        "the group ended, so ! is its own step"
+    );
     undo(&mut ctx, b).unwrap();
-    assert_eq!(text(&ctx, b), "x", "yz is one step, apart from the redone x");
+    assert_eq!(
+        text(&ctx, b),
+        "x",
+        "yz is one step, apart from the redone x"
+    );
 }
 
 #[test]

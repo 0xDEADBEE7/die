@@ -239,3 +239,235 @@ fn c15_checked_out_mode_sees_own_edits_and_old_rev_is_none() {
     assert_eq!(t.edits_since(now).unwrap().count(), 0);
     assert_eq!(t.edits_since(now - 3).unwrap().count(), 3);
 }
+
+// ---------------------------------------------------------------- what the text review found
+
+fn in_unit<R: 'static>(
+    ctx: &mut Ctx,
+    b: BufferId,
+    f: impl FnOnce(&mut TextBuf) -> R + 'static,
+) -> R {
+    let out = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let o = out.clone();
+    ctx.defer(move |ctx| {
+        *o.borrow_mut() = Some(f(ctx.text_mut(b)?));
+        Ok(())
+    });
+    ctx.run_until_idle();
+    out.borrow_mut().take().expect("the unit ran")
+}
+
+/// `d0` at column 0, an empty `c` motion, `p` with an empty register.
+#[test]
+fn an_empty_change_makes_no_revision_no_log_entry_and_no_undo_step() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "abc");
+    ctx.open_window(b, 40, 5).unwrap();
+    in_unit(&mut ctx, b, |t| {
+        t.tx(Origin::User).insert(1, "x").commit().unwrap()
+    });
+    let rev = ctx.text(b).unwrap().rev();
+    for f in [
+        (|t| t.tx(Origin::User).insert(2, "").commit()) as fn(&mut TextBuf) -> Result<u64>,
+        |t| t.tx(Origin::User).delete(2..2).commit(),
+        |t| t.tx(Origin::Extension).silent().replace(0..0, "").commit(),
+    ] {
+        assert_eq!(in_unit(&mut ctx, b, f), Ok(rev));
+    }
+    let t = ctx.text(b).unwrap();
+    assert_eq!(t.rev(), rev);
+    assert_eq!(t.edits_since(rev).unwrap().count(), 0);
+    in_unit(&mut ctx, b, |t| t.undo()).unwrap();
+    assert_eq!(
+        text(&ctx, b),
+        "abc",
+        "u undoes the x, not the empty changes"
+    );
+
+    // Redo survives one, and a transaction with a real change drops only the empty one.
+    in_unit(&mut ctx, b, |t| t.tx(Origin::User).delete(0..0).commit()).unwrap();
+    in_unit(&mut ctx, b, |t| t.redo()).unwrap();
+    assert_eq!(text(&ctx, b), "axbc");
+    let rev = ctx.text(b).unwrap().rev();
+    in_unit(&mut ctx, b, |t| {
+        t.tx(Origin::User).insert(0, "").insert(4, "!").commit()
+    })
+    .unwrap();
+    assert_eq!(ctx.text(b).unwrap().rev(), rev + 1);
+    assert_eq!(text(&ctx, b), "axbc!");
+}
+
+#[test]
+fn an_empty_change_is_still_checked_for_range_but_not_read_only() {
+    let mut t = TextBuf::new("中x");
+    assert_eq!(
+        t.tx(Origin::User).insert(1, "").commit(),
+        Err(Error::BadRange { start: 1, end: 1 })
+    );
+    t.settings_mut().read_only = true;
+    assert_eq!(t.tx(Origin::User).insert(0, "").commit(), Ok(0));
+    assert_eq!(
+        t.tx(Origin::User).insert(0, "y").commit(),
+        Err(Error::ReadOnly { at: 0 })
+    );
+}
+
+/// `ra` on an `a` makes a step in Evil and Vim, so `u` after it doesn't undo the change before.
+#[test]
+fn text_replaced_by_itself_is_still_a_change() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "abc");
+    ctx.open_window(b, 40, 5).unwrap();
+    in_unit(&mut ctx, b, |t| {
+        t.tx(Origin::User).delete(2..3).commit().unwrap()
+    });
+    in_unit(&mut ctx, b, |t| t.undo()).unwrap();
+    assert_eq!(text(&ctx, b), "abc");
+    let rev = ctx.text(b).unwrap().rev();
+    in_unit(&mut ctx, b, |t| {
+        t.tx(Origin::User).replace(0..1, "a").commit().unwrap()
+    });
+    assert_eq!(ctx.text(b).unwrap().rev(), rev + 1);
+    assert_eq!(
+        in_unit(&mut ctx, b, |t| t.redo()),
+        Err(Error::NothingToUndo),
+        "it cleared redo"
+    );
+    assert_eq!(in_unit(&mut ctx, b, |t| t.undo()), Ok(0..1));
+    assert_eq!(text(&ctx, b), "abc", "u undid only that");
+}
+
+#[test]
+fn a_marker_can_only_sit_on_a_character_boundary() {
+    let mut t = TextBuf::new("中x");
+    assert_eq!(
+        t.add_marker(1, Gravity::Left),
+        Err(Error::BadRange { start: 1, end: 1 })
+    );
+    let m = t.add_marker(99, Gravity::Left).unwrap();
+    assert_eq!(t.marker(m), Some(4), "still clamps to the end");
+    assert_eq!(t.remove_marker(m), Some(4));
+    assert_eq!(t.remove_marker(m), None, "a dead id says so");
+    assert_eq!(t.marker(m), None);
+}
+
+#[test]
+fn setting_stickiness_on_a_dead_decoration_says_so() {
+    let mut t = TextBuf::new("abc");
+    let d = t.decorate(0..1, Deco::Face("bold")).unwrap();
+    assert_eq!(t.set_sticky(d, Gravity::Left, Gravity::Right), Some(()));
+    assert_eq!(
+        t.undecorate(d).map(|d| d.sticky),
+        Some((Gravity::Left, Gravity::Right))
+    );
+    assert_eq!(t.set_sticky(d, Gravity::Left, Gravity::Right), None);
+}
+
+#[test]
+fn point_clamps_like_line_of() {
+    let t = TextBuf::new("ab\ncd");
+    assert_eq!(t.point(4), Point { line: 1, col: 1 });
+    assert_eq!(t.point(99), Point { line: 1, col: 2 });
+    assert_eq!(t.line_of(99), 1);
+}
+
+#[test]
+fn text_inserted_at_a_cursor_pushes_only_the_acting_windows_cursor() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "abc");
+    let other = ctx.open_window(b, 40, 5).unwrap();
+    let acting = ctx.open_window(b, 40, 5).unwrap();
+    ctx.focus(acting);
+    let t = ctx.text_mut(b).unwrap();
+    t.set_cursor(other, 1);
+    t.set_cursor(acting, 1);
+    in_unit(&mut ctx, b, |t| {
+        t.tx(Origin::Extension)
+            .silent()
+            .insert(1, "XYZ")
+            .commit()
+            .unwrap()
+    });
+    let t = ctx.text(b).unwrap();
+    assert_eq!(
+        t.selection(acting),
+        Some(Selection::cursor(4)),
+        "it stays collapsed"
+    );
+    assert_eq!(
+        t.selection(other),
+        Some(Selection::cursor(1)),
+        "as Emacs's window points do"
+    );
+
+    // Text inserted before a cursor moves it, in every window.
+    in_unit(&mut ctx, b, |t| {
+        t.tx(Origin::User).insert(0, ">").commit().unwrap()
+    });
+    let t = ctx.text(b).unwrap();
+    assert_eq!((t.cursor(acting), t.cursor(other)), (Some(5), Some(2)));
+}
+
+/// An insertion at either end of a selection follows the same rule: one gravity per window.
+#[test]
+fn a_selection_in_another_window_stays_before_inserted_text() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "abcdef");
+    let other = ctx.open_window(b, 40, 5).unwrap();
+    let acting = ctx.open_window(b, 40, 5).unwrap();
+    ctx.focus(acting);
+    let sel = Selection {
+        anchor: 2,
+        head: 4,
+        shape: Shape::Char,
+        goal: Some(7),
+    };
+    let t = ctx.text_mut(b).unwrap();
+    t.set_selection(other, sel);
+    t.set_selection(acting, sel);
+    in_unit(&mut ctx, b, |t| {
+        t.tx(Origin::Extension).insert(4, "XY").commit().unwrap()
+    });
+    let t = ctx.text(b).unwrap();
+    assert_eq!(t.selection(other), Some(sel));
+    assert_eq!(t.selection(acting), Some(Selection { head: 6, ..sel }));
+    // At the anchor, the acting window's anchor follows too.
+    in_unit(&mut ctx, b, |t| {
+        t.tx(Origin::Extension).insert(2, "--").commit().unwrap()
+    });
+    let t = ctx.text(b).unwrap();
+    assert_eq!(
+        t.selection(acting),
+        Some(Selection {
+            anchor: 4,
+            head: 8,
+            ..sel
+        })
+    );
+    assert_eq!(
+        t.selection(other),
+        Some(Selection {
+            anchor: 2,
+            head: 6,
+            ..sel
+        })
+    );
+}
+
+/// `TextBuf::map_all` runs for undo's changes too; the acting window's selection is then set
+/// by undo, and the other window's stays put before reinserted text.
+#[test]
+fn undo_moves_another_windows_cursor_like_any_other_edit() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "abcd");
+    let other = ctx.open_window(b, 40, 5).unwrap();
+    let acting = ctx.open_window(b, 40, 5).unwrap();
+    ctx.focus(acting);
+    in_unit(&mut ctx, b, |t| {
+        t.tx(Origin::User).delete(1..3).commit().unwrap()
+    });
+    ctx.text_mut(b).unwrap().set_cursor(other, 1);
+    in_unit(&mut ctx, b, |t| t.undo()).unwrap();
+    assert_eq!(text(&ctx, b), "abcd");
+    assert_eq!(ctx.text(b).unwrap().cursor(other), Some(1));
+}

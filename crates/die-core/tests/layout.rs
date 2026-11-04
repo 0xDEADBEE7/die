@@ -236,3 +236,35 @@ fn reveal_never_and_remove() {
     assert!(ctx.text(b).unwrap().decoration(rm).is_none());
     assert_eq!(lc(&ctx, b, w), (1, 2));
 }
+
+fn row_text(t: &TextBuf) -> String {
+    let d = t.display_line(0);
+    d.rows[0].iter().map(|c| c.text.as_str()).collect()
+}
+
+/// A freed slot is reused, so a decoration's id doesn't say when it was added.
+#[test]
+fn virtual_text_at_one_position_shows_in_the_order_added() {
+    let virt = |s: &str| Deco::Virtual(s.into());
+    let mut t = TextBuf::new("abc");
+    let first = t.decorate(1..1, virt("1")).unwrap();
+    t.decorate(1..1, virt("2")).unwrap();
+    t.undecorate(first).unwrap();
+    t.decorate(1..1, virt("3")).unwrap();
+    assert_eq!(row_text(&t), "a23bc");
+}
+
+/// Overlapping Hides merge, and among equals the one added first gives the replacement.
+#[test]
+fn among_equal_hides_the_first_added_gives_the_replacement() {
+    let hide = |s: &str| Deco::Hide {
+        replacement: Some(s.into()),
+        reveal: Reveal::Never,
+    };
+    let mut t = TextBuf::new("abcd");
+    let gone = t.decorate(1..3, hide("x")).unwrap();
+    t.decorate(1..3, hide("y")).unwrap();
+    t.undecorate(gone).unwrap();
+    t.decorate(1..3, hide("z")).unwrap();
+    assert_eq!(row_text(&t), "ayd");
+}

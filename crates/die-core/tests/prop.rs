@@ -281,7 +281,7 @@ fn apply(ctx: &mut Ctx, b: BufferId, w: WindowId, op: &Op, hides: &mut Vec<Decor
 
 // ---------------------------------------------------------------- the naive definitions
 
-type HideD = (usize, usize, Option<String>, DecorationId);
+type HideD = (usize, usize, Option<String>, u64);
 
 fn naive_inside(hides: &[HideD], p: usize) -> bool {
     let strict = hides.iter().any(|h| h.0 < p && p < h.1);
@@ -306,7 +306,7 @@ struct OStop {
 fn oracle(
     s: &str,
     hides: &[HideD],
-    virt: &[(usize, String, DecorationId)],
+    virt: &[(usize, String, u64)],
     width: Option<usize>,
     tab: usize,
 ) -> (Vec<ORow>, Vec<OStop>) {
@@ -454,17 +454,17 @@ fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
     let s = t.rope().to_string();
     let hides: Vec<HideD> = t
         .decorations()
-        .filter_map(|(id, d)| match &d.deco {
+        .filter_map(|(_, d)| match &d.deco {
             Deco::Hide { replacement, .. } => {
-                Some((d.range.start, d.range.end, replacement.clone(), id))
+                Some((d.range.start, d.range.end, replacement.clone(), d.seq))
             }
             _ => None,
         })
         .collect();
-    let virt: Vec<(usize, String, DecorationId)> = t
+    let virt: Vec<(usize, String, u64)> = t
         .decorations()
-        .filter_map(|(id, d)| match &d.deco {
-            Deco::Virtual(v) => Some((d.range.start, v.clone(), id)),
+        .filter_map(|(_, d)| match &d.deco {
+            Deco::Virtual(v) => Some((d.range.start, v.clone(), d.seq)),
             _ => None,
         })
         .collect();
@@ -681,6 +681,10 @@ fn run_undo(init: String, start: u16, del_len: u8, deletion: bool, shape: u8, st
     if deletion {
         let t = ctx.text_mut(b).unwrap();
         let q = chars_after(t, p, del_len as usize + 1);
+        // An empty deletion, at the end of the text, is no change and no undo step.
+        if q == p {
+            return;
+        }
         deleted = t.rope().byte_slice(p..q).to_string();
         call(
             &mut ctx,
