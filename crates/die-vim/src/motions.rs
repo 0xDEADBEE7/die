@@ -4,7 +4,7 @@
 use crate::grammar::{Fail, Goal, Kind, Motion, Start, Target};
 use crate::text::{
     Chars, Class, blank_line, class, indent_end, last_line, line_end, next_stop, normal_pos,
-    pos_at_col, prev_stop,
+    pos_at_col, prev_stop, same_word,
 };
 use die_core::{Dir, TextBuf, WindowId};
 
@@ -227,12 +227,11 @@ fn empty_line(c: &Chars) -> bool {
 
 fn word_begin(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
     let mut c = Chars::at(t, p);
-    let k = class(c.ch()?, big);
-    if matches!(k, Class::Word(_) | Class::Punct) {
-        while c.ch().map(|ch| class(ch, big)) == Some(k) {
-            c.fwd();
-        }
-    } else {
+    let mut a = c.ch()?;
+    let in_word = matches!(class(a, big), Class::Word | Class::Punct);
+    c.fwd();
+    while let Some(b) = c.ch().filter(|&b| in_word && same_word(a, b, big)) {
+        a = b;
         c.fwd();
     }
     loop {
@@ -251,15 +250,17 @@ fn word_end(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
     c.ch()?;
     c.fwd();
     loop {
-        match class(c.ch()?, big) {
+        let mut a = c.ch()?;
+        match class(a, big) {
             Class::Blank => {}
             Class::Newline if empty_line(&c) => return Some(c.pos()),
             Class::Newline => {}
-            k => loop {
+            _ => loop {
                 let here = c.pos();
                 c.fwd();
-                if c.ch().map(|ch| class(ch, big)) != Some(k) {
-                    return Some(here);
+                match c.ch() {
+                    Some(b) if same_word(a, b, big) => a = b,
+                    _ => return Some(here),
                 }
             },
         }
@@ -274,12 +275,14 @@ pub(crate) fn word_back(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
         return None;
     }
     loop {
-        match class(c.ch()?, big) {
+        let mut b = c.ch()?;
+        match class(b, big) {
             Class::Blank => {}
             Class::Newline if empty_line(&c) => return Some(c.pos()),
             Class::Newline => {}
-            k => {
-                while c.prev_ch().map(|ch| class(ch, big)) == Some(k) {
+            _ => {
+                while let Some(a) = c.prev_ch().filter(|&a| same_word(a, b, big)) {
+                    b = a;
                     c.back();
                 }
                 return Some(c.pos());

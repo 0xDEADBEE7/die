@@ -1,6 +1,7 @@
 //! Reading text the way die-vim's motions need: characters and their classes,
 //! lines, and where the cursor may rest in normal state.
 
+use crate::scripts::{FULL_GREEK, FULL_WIDTH, HALF_KANA, HIRAGANA, KANJI, KATAKANA, RANGES, ROMAN};
 use die_core::{Dir, TextBuf};
 
 /// A character's position in the text, stepping by characters.
@@ -57,20 +58,11 @@ impl<'a> Chars<'a> {
 pub enum Class {
     Blank,
     Newline,
-    /// A run of these is a word; a change of script ends it, as in Emacs.
-    Word(Script),
+    /// A run of these is a word, unless [`word_boundary`] splits it.
+    Word,
     /// Anything else that isn't blank: `_`, `::`, `->` and `.` are each a word of
     /// their own, as in Evil in fundamental-mode.
     Punct,
-}
-
-/// The scripts Emacs separates words between. Everything else is `Other`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Script {
-    Han,
-    Kana,
-    Hangul,
-    Other,
 }
 
 /// A character's class. With `big` (WORD motions), every non-blank is one class.
@@ -79,24 +71,70 @@ pub fn class(c: char, big: bool) -> Class {
         '\n' => Class::Newline,
         ' ' | '\t' | '\r' | '\u{c}' => Class::Blank,
         _ if big => Class::Punct,
-        _ if c.is_alphanumeric() || combining(c) => Class::Word(script(c)),
+        // Emacs's standard syntax table makes these two word characters.
+        '$' | '%' => Class::Word,
+        _ if c.is_alphanumeric() || combining(c) => Class::Word,
         _ => Class::Punct,
     }
+}
+
+/// Whether `b`, just after `a`, carries on the word or run of punctuation `a` is in.
+pub fn same_word(a: char, b: char, big: bool) -> bool {
+    let k = class(a, big);
+    k == class(b, big) && (k != Class::Word || !word_boundary(a, b))
 }
 
 /// The main blocks of combining marks, which `is_alphanumeric` leaves out. Emacs
 /// gives them word syntax, so "café" spelled with U+0301 is one word.
 fn combining(c: char) -> bool {
     matches!(c, '\u{300}'..='\u{36f}' | '\u{1ab0}'..='\u{1aff}' | '\u{1dc0}'..='\u{1dff}'
-        | '\u{20d0}'..='\u{20ff}' | '\u{fe20}'..='\u{fe2f}')
+        | '\u{20d0}'..='\u{20ff}' | '\u{3099}'..='\u{309a}' | '\u{fe20}'..='\u{fe2f}')
 }
 
-fn script(c: char) -> Script {
-    match c as u32 {
-        0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x3ffff => Script::Han,
-        0x3040..=0x30ff | 0x31f0..=0x31ff | 0xff66..=0xff9f => Script::Kana,
-        0x1100..=0x11ff | 0x3130..=0x318f | 0xac00..=0xd7af => Script::Hangul,
-        _ => Script::Other,
+/// Your Evil's `evil-cjk-word-separating-categories`: pairs that split a word within
+/// one script.
+#[rustfmt::skip]
+const SEPARATING: [(u8, u8); 24] = [
+    (KANJI, HIRAGANA), (KANJI, KATAKANA), (KANJI, HALF_KANA), (KANJI, FULL_WIDTH), (KANJI, FULL_GREEK),
+    (HIRAGANA, KANJI), (HIRAGANA, KATAKANA), (HIRAGANA, HALF_KANA), (HIRAGANA, FULL_WIDTH), (HIRAGANA, FULL_GREEK),
+    (KATAKANA, KANJI), (KATAKANA, HIRAGANA), (KATAKANA, HALF_KANA), (KATAKANA, FULL_WIDTH), (KATAKANA, FULL_GREEK),
+    (HALF_KANA, KANJI), (HALF_KANA, HIRAGANA), (HALF_KANA, KATAKANA),
+    (FULL_WIDTH, KANJI), (FULL_WIDTH, HIRAGANA), (FULL_WIDTH, KATAKANA),
+    (FULL_GREEK, KANJI), (FULL_GREEK, HIRAGANA), (FULL_GREEK, KATAKANA),
+];
+
+/// Your Evil's `evil-cjk-word-combining-categories`, marks aside: pairs that join a
+/// word across two scripts.
+#[rustfmt::skip]
+const COMBINING: [(u8, u8); 12] = [
+    (ROMAN, HALF_KANA), (ROMAN, FULL_WIDTH), (ROMAN, FULL_GREEK),
+    (HALF_KANA, ROMAN), (HALF_KANA, FULL_WIDTH), (HALF_KANA, FULL_GREEK),
+    (FULL_WIDTH, ROMAN), (FULL_WIDTH, HALF_KANA), (FULL_WIDTH, FULL_GREEK),
+    (FULL_GREEK, ROMAN), (FULL_GREEK, HALF_KANA), (FULL_GREEK, FULL_WIDTH),
+];
+
+/// A word character's script and categories, from Emacs's tables (`scripts.rs`).
+fn script(c: char) -> (u8, u8) {
+    let i = RANGES.partition_point(|r| r.0 <= c as u32);
+    i.checked_sub(1)
+        .map_or((0, 0), |i| (RANGES[i].1, RANGES[i].2))
+}
+
+/// Whether a word ends between two word characters next to each other, by Emacs's
+/// `word_boundary_p` with your Evil's lists. Characters of one script join unless
+/// `SEPARATING` splits them, and of two scripts split unless `COMBINING` joins them.
+/// Either way a combining mark joins what it's next to; only the main blocks of marks
+/// are known here, and a script's own marks take the script around them.
+fn word_boundary(a: char, b: char) -> bool {
+    if combining(a) || combining(b) {
+        return false;
+    }
+    let ((sa, ca), (sb, cb)) = (script(a), script(b));
+    let pair = |&(x, y): &(u8, u8)| ca & x != 0 && cb & x == 0 && ca & y == 0 && cb & y != 0;
+    if sa == sb {
+        SEPARATING.iter().any(pair)
+    } else {
+        !COMBINING.iter().any(pair)
     }
 }
 
@@ -218,12 +256,48 @@ mod tests {
             class('\u{301}', false),
             "a combining acute"
         );
-        // A change of script ends a word.
-        assert_ne!(class('日', false), class('a', false));
-        assert_eq!(class('日', false), class('本', false));
+        // Emacs's standard syntax table makes these word characters.
+        assert_eq!(class('$', false), Class::Word);
+        assert_eq!(class('%', false), Class::Word);
         // WORD motions see every non-blank alike.
         assert_eq!(class('_', true), class('a', true));
         assert_eq!(class('\t', true), Class::Blank);
+    }
+
+    /// `word_boundary_p` isn't a partition into classes: `a` joins `α` and `α` joins
+    /// `ἀ`, but `a` and `ἀ` split. The oracle's script cases pin it against your Evil.
+    #[test]
+    fn word_boundaries_are_between_neighbours() {
+        for (a, b, ends) in [
+            ('a', 'b', false),
+            ('a', '1', false),
+            ('a', 'а', true),
+            ('а', 'б', false),
+            ('a', 'α', false),
+            ('α', 'ἀ', false),
+            ('a', 'ἀ', true),
+            ('é', 'α', true),
+            ('日', '本', false),
+            ('日', 'a', true),
+            ('で', 'テ', true),
+            ('テ', 'ｱ', true),
+            ('a', 'ｱ', false),
+            ('a', 'Ａ', false),
+            ('日', 'Ａ', true),
+            ('а', '\u{301}', false),
+            ('か', '\u{3099}', false),
+        ] {
+            assert_eq!(word_boundary(a, b), ends, "{a} {b}");
+            assert_eq!(same_word(a, b, false), !ends, "{a} {b}");
+            assert!(same_word(a, b, true), "WORD: {a} {b}");
+        }
+        assert!(!same_word('a', '_', false));
+        assert!(same_word(':', '>', false));
+    }
+
+    #[test]
+    fn the_script_table_is_sorted() {
+        assert!(RANGES.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
     #[test]
