@@ -1,6 +1,7 @@
 //! The one layout function (C16). Render and motions both call `layout`, through one cache.
 //! It handles soft wrap, centered maximum width, the gutter, tabs, wide characters,
 //! stored Hide decorations (with or without replacement text) and virtual text.
+#![warn(missing_docs)]
 use crate::ids::*;
 use crate::text::*;
 use ropey::Rope;
@@ -9,9 +10,12 @@ use std::rc::Rc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+/// A direction along the text.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Dir {
+    /// Toward the end of the text.
     Forward,
+    /// Toward the start of the text.
     Backward,
 }
 
@@ -66,11 +70,16 @@ impl Hidden {
     }
 }
 
+/// What a laid-out cell shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CellKind {
+    /// A cell of the buffer's text.
     Text,
+    /// A cell of a tab.
     Tab,
+    /// A cell of a Hide's replacement.
     Replacement,
+    /// A cell of virtual text.
     Virtual,
     /// Padding where a wide character didn't fit at the end of a row.
     Filler,
@@ -83,28 +92,40 @@ pub struct LayoutCell {
     pub text: String,
     /// The buffer position this cell starts, if any.
     pub pos: Option<usize>,
+    /// What the cell shows.
     pub kind: CellKind,
 }
 
-/// A position the cursor can occupy, and where it is drawn.
+/// A position the cursor can occupy, and where it is drawn. `vcol` counts cells from the
+/// display line's start; `row` and `col` place it for the width the line was laid out at.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Stop {
+    /// The buffer position, in bytes.
     pub pos: usize,
     /// Display column within the unwrapped display line (tabs, wide chars, replacements).
     pub vcol: usize,
+    /// The row, counted from the display line's first.
     pub row: usize,
+    /// The column on that row, counted from the text area's left edge.
     pub col: usize,
 }
 
 /// One display line: a logical line, joined with the lines after it when a Hide covers its newline.
 #[derive(Clone, Debug)]
 pub struct DisplayLine {
+    /// Where it starts in the buffer, in bytes.
     pub start: usize,
+    /// Where the next display line starts, or the end of the text for the last one.
     pub end: usize,
+    /// The first logical line it holds, from 0.
     pub first_line: usize,
+    /// The last logical line it holds, from 0.
     pub last_line: usize,
+    /// Whether this is the last display line of the text.
     pub eof: bool,
+    /// Its rows, for the width it was laid out at. Without wrapping, one row.
     pub rows: Vec<Vec<LayoutCell>>,
+    /// Its cursor positions, in order. There's always at least one.
     pub stops: Vec<Stop>,
 }
 
@@ -114,6 +135,7 @@ impl DisplayLine {
         let i = self.stops.partition_point(|s| s.pos <= pos);
         self.stops[i.saturating_sub(1)]
     }
+    /// Whether `pos` is a cursor position on this line.
     pub fn is_stop(&self, pos: usize) -> bool {
         self.stops.binary_search_by_key(&pos, |s| s.pos).is_ok()
     }
@@ -300,11 +322,17 @@ pub(crate) fn layout(
 /// Where a window's text goes: centered maximum width, gutter, text area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Geometry {
+    /// The window's width in cells.
     pub cols: usize,
+    /// The window's height in rows.
     pub rows: usize,
+    /// Blank cells to the left of the gutter, when the buffer is centered.
     pub pad: usize,
+    /// The gutter's width in cells, its blank last cell included. 0 with line numbers off.
     pub gutter: usize,
+    /// The column the text starts at: `pad + gutter`.
     pub text_x: usize,
+    /// The text area's width in cells.
     pub text_w: usize,
 }
 
@@ -334,19 +362,29 @@ pub(crate) struct LayoutCache {
     lines: HashMap<(Option<usize>, usize), Rc<DisplayLine>>,
 }
 
+/// One row a window shows.
 #[derive(Clone, Debug)]
 pub struct ViewRow {
+    /// Where its display line starts in the buffer, in bytes.
     pub dline_start: usize,
+    /// Which row of that display line it is, from 0.
     pub row: usize,
+    /// That display line's first logical line, from 0.
     pub first_line: usize,
+    /// The row's cells, left to right.
     pub cells: Vec<LayoutCell>,
 }
 
+/// What a window shows: what render draws, and what `H`, `M`, `L` and scrolling read.
 #[derive(Clone, Debug)]
 pub struct Viewport {
+    /// Where the window's text goes.
     pub geometry: Geometry,
+    /// Where the display line at the window's top starts in the buffer, in bytes.
     pub top: usize,
+    /// Which row of that display line is the window's top row, from 0.
     pub top_row: usize,
+    /// The rows shown, top to bottom. It can be fewer than the window's height.
     pub rows: Vec<ViewRow>,
 }
 
@@ -478,6 +516,7 @@ impl TextBuf {
         dl.stops[i.saturating_sub(1)].pos
     }
 
+    /// Where window `w`'s text goes, or None if `w` doesn't show this buffer.
     pub fn geometry(&self, w: WindowId) -> Option<Geometry> {
         let v = self.views.get(&w)?;
         Some(geometry(&self.settings, self.line_count(), v.cols, v.rows))
