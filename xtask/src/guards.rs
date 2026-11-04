@@ -93,7 +93,7 @@ const LINT_PLANTS: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// What `sources` fails with for a file, and for a crate.
-const NOT_READ: &str = "which `cargo xtask lint` doesn't read";
+const NOT_READ: &str = "compiled docs/planted.rs, which `cargo xtask lint` doesn't read";
 const NOT_A_MEMBER: &str = "isn't in the workspace's `members`";
 
 /// Bypasses no token rule can see: what each is, the file it's appended to, the code,

@@ -82,7 +82,8 @@ pub fn run(root: &Path, target_dir: &Path) -> Result {
             (Err(b), Err(c)) => return Err(format!("{c}\n{b}")),
             (Err(e), _) | (_, Err(e)) => return Err(e),
         };
-        sources::check(root, &messages).map_err(|e| format!("{what}:\n{e}"))?;
+        sources::check(root, &messages, sources::CLIPPY_READS)
+            .map_err(|e| format!("{what}:\n{e}"))?;
         println!("cross-check: {target} ok (clippy -D warnings{calls})");
     }
     Ok(())
