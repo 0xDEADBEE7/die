@@ -222,7 +222,7 @@ V5 ex/s-visual-range
 V5 hand-written/ex/s-group-before-letter
 V5 hand-written/ex/s-groups
 
-# V6 (58)
+# V6 (65)
 V6 geometry/3L
 V6 geometry/H
 V6 geometry/H-after-jump
@@ -262,6 +262,13 @@ V6 insert-tty/down-into-a-wide-char
 V6 insert-tty/down-once
 V6 insert-tty/down-onto-the-last-empty-line
 V6 insert-tty/down-past-the-end-fails
+V6 insert-tty/down-past-the-last-row
+V6 insert-tty/down-past-the-last-row-keeps-column
+V6 insert-tty/down-without-a-final-newline
+V6 insert-tty/failed-backspace-clears-the-column
+V6 insert-tty/failed-ctrl-w-clears-the-column
+V6 insert-tty/failed-left-clears-the-column
+V6 insert-tty/failed-right-clears-the-column
 V6 insert-tty/goal-starts-at-the-session
 V6 insert-tty/typing-resets-the-goal
 V6 insert-tty/up-past-the-start-fails

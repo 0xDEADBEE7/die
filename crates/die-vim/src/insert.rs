@@ -2,7 +2,7 @@
 //! undo step, it records its edits so a count can replay them, and it indents new
 //! lines the way your Evil does in text buffers (like the line above).
 
-use crate::grammar::buffer_window;
+use crate::grammar::{buffer_window, forget_goal};
 use crate::motions::word_back;
 use crate::text::{
     Chars, blank_line, indent_end, indentation, line_end, next_stop, prev_stop, rest_pos,
@@ -101,9 +101,7 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
         }
     }
     // A goal column from normal state doesn't carry into insert state's <Up>.
-    if let Some(sel) = t.selection(w) {
-        t.set_selection(w, sel.with_goal(None));
-    }
+    forget_goal(t, w);
     // Only now, so that a failed `o` or `O` leaves no group open. The line it
     // opened joins the group: core adds an earlier edit by the same command.
     t.begin_undo_group();
@@ -207,6 +205,10 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
     let line = t.line_of(p);
     let ls = t.line_start(line);
     let fail = |m: &str| Err(Error::Msg(m.into()));
+    // Only a run of Up and Down keeps a goal. Any other edit clears it, even one that fails.
+    if !matches!(e, Edit::Up | Edit::Down) {
+        forget_goal(t, w);
+    }
     let pos = match e {
         Edit::Text(s) => {
             t.tx(Origin::User).insert(p, s.as_str()).commit()?;
@@ -244,7 +246,8 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
             None => return fail("End of buffer"),
         },
         // By screen row, as next-line does under your line-move-visual, and a run of
-        // them keeps the column it started at. Every other edit clears the goal.
+        // them keeps the column it started at. Down on the last row goes to the end of
+        // the text before it fails, as next-line does, and the column stays for an Up.
         Edit::Up | Edit::Down => {
             let (dy, none) = if *e == Edit::Up {
                 (-1, "Beginning of buffer")
@@ -256,6 +259,10 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
                 Some((q, goal)) if q != p => {
                     t.set_selection(w, Selection::cursor(q).with_goal(Some(goal)));
                     Ok(())
+                }
+                Some((_, goal)) if dy > 0 => {
+                    t.set_selection(w, Selection::cursor(t.len()).with_goal(Some(goal)));
+                    fail(none)
                 }
                 _ => fail(none),
             };

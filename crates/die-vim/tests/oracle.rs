@@ -380,7 +380,7 @@ fn a_hand_written_fixture_must_keep_its_oracle_cases_input() {
 fn insert_state_arrows_match_the_tty_run() {
     let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
     let fx = fixtures.iter().find(|f| f.topic == "insert-tty").unwrap();
-    assert_eq!(fx.cases.len(), 10);
+    assert_eq!(fx.cases.len(), 17);
     for c in &fx.cases {
         let size = c.input.window.as_ref().expect("a tty case's window");
         run_in_window(c, size.width, size.height)

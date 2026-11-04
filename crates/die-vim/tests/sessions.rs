@@ -131,6 +131,20 @@ fn insert_state_arrows_go_by_screen_row() {
     }
 }
 
+/// The last row of a wrapped last line ends at the text's end, and Down goes there
+/// before it fails. The column stays for an Up, and it's still the first row's column.
+#[test]
+fn down_from_a_wrapped_last_row_goes_to_the_end_and_keeps_the_column() {
+    let mut ctx = editor();
+    let (b, w) = open(&mut ctx, &"x".repeat(100));
+    ctx.type_keys("10li<Down><Down>");
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(100));
+    assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
+    assert!(ctx.messages[0].contains("End of buffer"));
+    ctx.type_keys("<Up>X<Esc>");
+    assert_eq!(text(&ctx, b).find('X'), Some(10));
+}
+
 /// Run `f` on another thread and fail if it takes more than 10 s, so that a count
 /// that hangs fails the test and doesn't hang it. Key by key, `50000ix` took 40 s.
 fn quickly<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
