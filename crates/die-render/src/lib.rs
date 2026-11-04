@@ -8,9 +8,10 @@
 //! input (R4) live outside them.
 //!
 //! That code is neutral: it doesn't branch on the platform (`cargo xtask lint`).
-//! Until `platform::linux` lands, neutral code that only `platform::macos` calls
-//! is dead on Linux, which the Linux cross-check's `-D warnings` rejects. Mark it
-//! `#[cfg_attr(not(target_os = "macos"), allow(dead_code))]`: a `cfg_attr` that
+//! It calls the platform through `platform::backend` (see `platform`). Until
+//! `platform::linux` lands, neutral code that only the macOS backend calls back
+//! into is dead on Linux, which the Linux cross-check's `-D warnings` rejects. Mark
+//! it `#[cfg_attr(not(target_os = "macos"), allow(dead_code))]`: a `cfg_attr` that
 //! only sets a lint level is the one platform cfg neutral code may carry.
 #![deny(unsafe_code)]
 

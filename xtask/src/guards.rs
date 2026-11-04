@@ -1,15 +1,69 @@
 //! `cargo xtask guards`: proves F1's build guards in a throwaway copy of the
 //! working tree. `unsafe` outside die-render's `platform` module fails to build,
-//! and so does `-Cpanic=abort`, with the guard's message. For Linux, the
-//! cross-check fails on dead code (its `-D warnings`) and on a build script
-//! that compiles C (its stand-ins).
+//! and so does `-Cpanic=abort`, with the guard's message. The `unsafe` rustc lets
+//! through builds, and fails `cargo xtask lint`. For Linux, the cross-check fails
+//! on dead code (its `-D warnings`) and on a build script that compiles C (its
+//! stand-ins).
 
-use crate::clean;
 use crate::util::{Result, TempDir, cargo, copy_worktree, output, read, write};
+use crate::{clean, lint};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 const PLANT: &str = "\n#[allow(dead_code)]\nfn planted() {\n    unsafe {}\n}\n";
+
+/// Unsafe code in a file that nothing but a `path` attribute or `include!` reaches.
+const OUTSIDE: (&str, &str) = (
+    "docs/planted.rs",
+    "#[allow(unsafe_code)]\npub mod outside {\n    pub fn ok() -> &'static str {\n        unsafe { std::str::from_utf8_unchecked(b\"ok\") }\n    }\n}\n",
+);
+
+/// The bypasses of the `unsafe` confinement that rustc accepts: what each is, the
+/// crate it goes in, the code, and the lint's error for it.
+const LINT_PLANTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a naked function, which even `forbid` doesn't see,",
+        "die-core",
+        "\n#[unsafe(naked)]\npub extern \"C\" fn planted() {\n    core::arch::naked_asm!(\"ret\")\n}\n",
+        "`unsafe` outside",
+    ),
+    (
+        "a lint level a macro builds",
+        "die-render",
+        "\nmacro_rules! level {\n    ($lint:ident, $($i:item)*) => { #[allow($lint)] pub mod planted { $($i)* } };\n}\nlevel!(unsafe_code, pub fn ok() -> &'static str { unsafe { std::str::from_utf8_unchecked(b\"ok\") } });\n",
+        "`unsafe` outside",
+    ),
+    (
+        "that lint level around `global_asm!`, which has no `unsafe`,",
+        "die-render",
+        "\nmacro_rules! level {\n    ($lint:ident, $($i:item)*) => { #[allow($lint)] pub mod planted { $($i)* } };\n}\nlevel!(unsafe_code, core::arch::global_asm!(\"\"););\n",
+        "`global_asm` outside",
+    ),
+    (
+        "a `path` attribute to a file outside every crate",
+        "die-render",
+        "\n#[path = \"../../../docs/planted.rs\"]\npub mod planted;\n",
+        "`path` attribute",
+    ),
+    (
+        "the same in a `cfg_attr`",
+        "die-render",
+        "\n#[cfg_attr(all(), path = \"../../../docs/planted.rs\")]\npub mod planted;\n",
+        "`path` attribute",
+    ),
+    (
+        "the same from a macro",
+        "die-render",
+        "\nmacro_rules! planted {\n    ($k:ident, $f:literal) => { #[$k = $f] pub mod planted; };\n}\nplanted!(path, \"../../../docs/planted.rs\");\n",
+        "an attribute built from a macro fragment",
+    ),
+    (
+        "`include!` renamed",
+        "die-render",
+        "\nuse core::include as planted;\nplanted!(\"../../../docs/planted.rs\");\n",
+        "`include!`",
+    ),
+];
 
 /// Dead on Linux only: the cross-check's `-D warnings` must catch it.
 const LINUX_ONLY: &str = "\n#[cfg(not(target_os = \"macos\"))]\nfn planted_linux_only() {}\n";
@@ -49,6 +103,19 @@ pub fn run(root: &Path, work: &Path) -> Result {
         res?;
         println!("guards: an unsafe block in {lib} fails to build");
     }
+
+    write(&tree.join(OUTSIDE.0), OUTSIDE.1)?;
+    for (what, krate, plant, error) in LINT_PLANTS {
+        let path = tree.join(format!("crates/{krate}/src/lib.rs"));
+        let orig = read(&path)?;
+        write(&path, &format!("{orig}{plant}"))?;
+        let res = expect(tree, &target, &["-p", krate], None, None)
+            .and_then(|()| fails_with("the lint", lint::run(tree), &[*error]));
+        write(&path, &orig)?;
+        res?;
+        println!("guards: {what} builds, and fails the lint");
+    }
+    std::fs::remove_file(tree.join(OUTSIDE.0)).map_err(|e| e.to_string())?;
 
     expect(
         tree,

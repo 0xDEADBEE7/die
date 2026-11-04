@@ -4,6 +4,11 @@
 //! - `unsafe`: every crate inherits the workspace's `unsafe_code = "forbid"`
 //!   except die-render, which denies it and allows it on `platform::macos` only.
 //!   Nothing else lowers that level, and nothing allows `warnings` wholesale.
+//! - The `unsafe` keyword itself appears only in those modules, since rustc's lint
+//!   misses some of it, and no file gets compiled that this lint might not read.
+//! - die-render's `unsafe` blocks each say why they're sound and do one unsafe
+//!   thing, and their pointers to C buffers cover the whole buffer. Nothing outside
+//!   `platform` names `platform::macos`: neutral code names `platform::backend`.
 //! - Neutral code doesn't branch on the platform: no `target_os` and the like
 //!   (in `cfg`, `cfg_attr` or `cfg_select!`, or anywhere as `target_os = "…"`),
 //!   no `std::os` module but Unix's, no `env::consts::OS`, and no build script
@@ -25,6 +30,20 @@ use toml::{Table, Value};
 /// boundary and die-core's `sys` module.
 const UNSAFE_ALLOWED: &[(&str, &str)] =
     &[("crates/die-render/src/platform/mod.rs", "pub mod macos")];
+
+/// Where the `unsafe` keyword may appear (scope §12). M2 adds die-core's `sys/` and
+/// die-term's engine boundary; `platform/linux/` joins with its code.
+const UNSAFE_DIRS: &[&str] = &["crates/die-render/src/platform/macos/"];
+
+/// The clippy lints a crate that allows `unsafe` must deny, so that each block says
+/// why it's sound and its SAFETY comment covers all of it.
+const UNSAFE_BLOCK_LINTS: &[&str] = &[
+    "undocumented_unsafe_blocks",
+    "multiple_unsafe_ops_per_block",
+];
+
+/// The module that alone may name `platform::macos`.
+const PLATFORM_DIR: &str = "crates/die-render/src/platform/";
 
 /// Crates whose code is platform-neutral, and the paths in each that may branch
 /// on the platform (platforms.md §5.2): die-core's `sys` module (M2) and
@@ -56,8 +75,8 @@ const PLATFORM_CFGS: &[&str] = &[
 const UNIX_OS: &[&str] = &["unix", "fd", "raw"];
 
 /// Lints a platform `cfg_attr` may allow or expect in neutral code. Setting a
-/// lint level changes no code, and neutral code that only `platform::macos`
-/// calls is dead on Linux until `platform::linux` lands, which the
+/// lint level changes no code, and neutral code that only the macOS backend
+/// calls back into is dead on Linux until `platform::linux` lands, which the
 /// cross-check's `-D warnings` rejects. `unused_*` also matches.
 const LEVEL_ONLY_LINTS: &[&str] = &["dead_code", "unused"];
 
@@ -135,15 +154,7 @@ pub fn run(root: &Path) -> Result {
         }
         let lints = man.get("lints");
         if OWN_LINTS.contains(&m.as_str()) {
-            let level = lints
-                .and_then(|l| l.get("rust"))
-                .and_then(|r| r.get("unsafe_code"))
-                .and_then(Value::as_str);
-            if level != Some("deny") && level != Some("forbid") {
-                errors.push(format!(
-                    "{name}: must set [lints.rust] unsafe_code = \"deny\""
-                ));
-            }
+            check_own_lints(&name, lints, &mut errors);
         } else if lints
             .and_then(|l| l.get("workspace"))
             .and_then(Value::as_bool)
@@ -180,6 +191,9 @@ pub fn run(root: &Path) -> Result {
             }
             let src = read(&file)?;
             check_unsafe_allows(&rel, &src, &mut errors);
+            check_unsafe_tokens(&rel, &src, &mut errors);
+            check_backend_name(&rel, &src, &mut errors);
+            check_element_pointers(&rel, &src, &mut errors);
             if let Some((_, allowed)) = neutral
                 && !allowed.iter().any(|a| rel.starts_with(a))
             {
@@ -254,6 +268,25 @@ fn dep_tables(man: &Table) -> Vec<(String, &Table)> {
         }
     }
     out
+}
+
+/// A crate in `OWN_LINTS` denies `unsafe_code` and `UNSAFE_BLOCK_LINTS` itself.
+fn check_own_lints(name: &str, lints: Option<&Value>, errors: &mut Vec<String>) {
+    let denied = |table: &str, lint: &str| {
+        let level = lints
+            .and_then(|l| l.get(table))
+            .and_then(|t| t.get(lint))
+            .and_then(Value::as_str);
+        matches!(level, Some("deny" | "forbid"))
+    };
+    if !denied("rust", "unsafe_code") {
+        errors.push(format!(
+            "{name}: must set [lints.rust] unsafe_code = \"deny\""
+        ));
+    }
+    for lint in UNSAFE_BLOCK_LINTS.iter().filter(|l| !denied("clippy", l)) {
+        errors.push(format!("{name}: must set [lints.clippy] {lint} = \"deny\""));
+    }
 }
 
 /// Cargo runs `build.rs` unless `package.build` is `false`, and runs the file
@@ -486,7 +519,7 @@ pub fn check_platform_code(rel: &str, src: &str, errors: &mut Vec<String>) {
         let levels = if what.starts_with("cfg on") {
             ". A `cfg_attr` may set lint levels only, as in \
              `#[cfg_attr(not(target_os = \"macos\"), allow(dead_code))]` on code that only \
-             `platform::macos` calls"
+             the macOS backend calls back into"
         } else {
             ""
         };
@@ -590,6 +623,112 @@ pub fn check_unsafe_allows(rel: &str, src: &str, errors: &mut Vec<String>) {
     }
 }
 
+/// What rustc's `unsafe_code` lint can't confine, read from tokens, so strings and
+/// comments don't count.
+///
+/// Outside `UNSAFE_DIRS`: the `unsafe` keyword in any form (a block, an `unsafe` fn,
+/// impl, trait or extern block, and attributes such as `#[unsafe(naked)]`, which the
+/// lint misses even under `forbid`), and `global_asm!`, which is unsafe code with no
+/// keyword. Reading these also catches a lint level a macro builds
+/// (`#[allow($lint)]`), which neither the lint nor `check_unsafe_allows` sees.
+///
+/// Everywhere: `include!` by any name, the `path` attribute and an attribute a macro
+/// builds, which can be `path`. Each can compile a file this lint never reads.
+pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
+    use crate::count::{Tok, lex, skip_group};
+    let toks = lex(src);
+    let p = |i: usize, c: char| toks.get(i).map(|x| &x.0) == Some(&Tok::Punct(c));
+    let unsafe_ok = UNSAFE_DIRS.iter().any(|d| rel.starts_with(d));
+    // Tokens inside a `cfg_attr(...)`, where a macro fragment can be an attribute too.
+    let mut in_cfg_attr = 0;
+    for (i, (t, line, _)) in toks.iter().enumerate() {
+        // `#[$...` or `#![$...`.
+        let starts_attr = i >= 2 && p(i - 1, '[') && (p(i - 2, '#') || p(i - 2, '!'));
+        let what = match t {
+            Tok::Ident(w) if (w == "unsafe" || w == "global_asm") && !unsafe_ok => {
+                format!("`{w}` outside {}", UNSAFE_DIRS.join(", "))
+            }
+            // Any use, so `use core::include as inc;` is caught too.
+            Tok::Ident(w) if w == "include" => {
+                "`include!` (it compiles a file this lint may not read)".into()
+            }
+            // `#[path = "..."]` and `#[cfg_attr(..., path = "...")]`.
+            Tok::Ident(w)
+                if w == "path" && i > 0 && (p(i - 1, '[') || p(i - 1, ',')) && p(i + 1, '=') =>
+            {
+                "`path` attribute (it compiles a file this lint may not read)".into()
+            }
+            Tok::Ident(w) if w == "cfg_attr" && p(i + 1, '(') => {
+                in_cfg_attr = skip_group(&toks, i + 1).unwrap_or(i);
+                continue;
+            }
+            Tok::Punct('$') if starts_attr || i < in_cfg_attr => {
+                "an attribute built from a macro fragment (it can be `path`)".into()
+            }
+            _ => continue,
+        };
+        errors.push(format!("{rel}:{}: {what} (scope §12)", line + 1));
+    }
+}
+
+/// Neutral code names `platform::backend` (see `die_render::platform`), since
+/// `platform::macos` doesn't exist on other targets.
+pub fn check_backend_name(rel: &str, src: &str, errors: &mut Vec<String>) {
+    use crate::count::{Tok, lex, skip_group};
+    if rel.starts_with(PLATFORM_DIR) {
+        return;
+    }
+    let toks = lex(src);
+    let p = |i: usize, c: char| toks.get(i).map(|x| &x.0) == Some(&Tok::Punct(c));
+    let macos = |t: &(Tok, usize, usize)| t.0 == Tok::Ident("macos".into());
+    for (i, (t, line, _)) in toks.iter().enumerate() {
+        if *t != Tok::Ident("platform".into()) || !p(i + 1, ':') || !p(i + 2, ':') {
+            continue;
+        }
+        let names = match toks.get(i + 3) {
+            Some((Tok::Punct('{'), ..)) => {
+                let end = skip_group(&toks, i + 3).unwrap_or(toks.len());
+                toks[i + 4..end].iter().any(macos)
+            }
+            Some(next) => macos(next),
+            None => false,
+        };
+        if names {
+            errors.push(format!(
+                "{rel}:{}: names `platform::macos`; outside `platform`, name \
+                 `platform::backend`, which every target has",
+                line + 1
+            ));
+        }
+    }
+}
+
+/// A pointer made from a reference to one element (`NonNull::from(&mut a[0])`) can't
+/// legally reach the others, and C reads them through it. In `UNSAFE_DIRS`, a pointer
+/// to a buffer covers the buffer: `NonNull::from(&mut *a).cast()`.
+pub fn check_element_pointers(rel: &str, src: &str, errors: &mut Vec<String>) {
+    use crate::count::{Tok, lex};
+    if !UNSAFE_DIRS.iter().any(|d| rel.starts_with(d)) {
+        return;
+    }
+    let toks = lex(src);
+    let p = |i: usize, c: char| toks.get(i).map(|x| &x.0) == Some(&Tok::Punct(c));
+    let w = |i: usize, s: &str| toks.get(i).map(|x| &x.0) == Some(&Tok::Ident(s.into()));
+    for (i, (_, line, _)) in toks.iter().enumerate() {
+        let from = w(i, "NonNull") && p(i + 1, ':') && p(i + 2, ':') && w(i + 3, "from");
+        if from && p(i + 4, '(') && p(i + 5, '&') {
+            let at = if w(i + 6, "mut") { i + 7 } else { i + 6 };
+            if matches!(toks.get(at), Some((Tok::Ident(_), ..))) && p(at + 1, '[') {
+                errors.push(format!(
+                    "{rel}:{}: a pointer from a reference to one element can't legally reach \
+                     the rest of its buffer; use `NonNull::from(&mut *buffer).cast()`",
+                    line + 1
+                ));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,6 +812,161 @@ mod tests {
             check("crates/die-core/src/lib.rs", "#![forbid(unsafe_code)]\n"),
             0
         );
+    }
+
+    #[test]
+    fn unsafe_tokens() {
+        let core = "crates/die-core/src/x.rs";
+        let check = |rel: &str, src: &str| {
+            let mut e = Vec::new();
+            check_unsafe_tokens(rel, src, &mut e);
+            e
+        };
+        // Each is one error at die-core, and the first three pass rustc and every
+        // other check: `cargo xtask guards` plants them end to end.
+        let flagged = [
+            // A naked function is machine code with no `unsafe` block.
+            "#[unsafe(naked)]\npub extern \"C\" fn f() { core::arch::naked_asm!(\"ret\") }\n",
+            // A lint level a macro builds: `allow(unsafe_code)` never appears.
+            "macro_rules! level { ($lint:ident, $($i:item)*) => { #[allow($lint)] pub mod planted { $($i)* } }; }\n\
+             level!(unsafe_code, pub fn ok() -> &'static str { unsafe { std::str::from_utf8_unchecked(b\"ok\") } });\n",
+            "#[path = \"../../docs/x.rs\"]\nmod x;\n",
+            // Other spellings of the same three.
+            "unsafe extern \"C\" { safe fn abs(x: i32) -> i32; }\n",
+            "unsafe impl Send for S {}\n",
+            "core::arch::global_asm!(\"nop\");\n",
+            "use core::arch::global_asm as g;\n",
+            "include!(\"x.rs\");\n",
+            "use core::include as inc;\n",
+            "#[cfg_attr(test, path = \"x.rs\")]\nmod x;\n",
+            "macro_rules! m { ($k:ident) => { #[$k = \"x.rs\"] mod x; } }\n",
+            "macro_rules! m { ($a:meta) => { #[$a] mod x; } }\n",
+            "macro_rules! m { ($a:meta) => { #[cfg_attr(all(), $a)] mod x; } }\n",
+            "macro_rules! m { ($($t:tt)*) => { #![$($t)*] } }\n",
+        ];
+        for src in flagged {
+            assert_eq!(check(core, src).len(), 1, "{src}");
+        }
+        let e = check(core, flagged[0]);
+        assert_eq!(
+            e,
+            [format!(
+                "{core}:1: `unsafe` outside crates/die-render/src/platform/macos/ (scope §12)"
+            )]
+        );
+        let macos = "crates/die-render/src/platform/macos/text.rs";
+        let e = check("crates/die-render/src/platform/mod.rs", "unsafe {}\n");
+        assert_eq!(e.len(), 1, "platform's neutral part: {e:?}");
+        let fine = [
+            (macos, "unsafe {}\n"),
+            (macos, "unsafe extern \"C\" { fn abs(x: i32) -> i32; }\n"),
+            (core, "const S: &str = \"unsafe {}\";\n"),
+            (
+                core,
+                "// unsafe, global_asm!, include!(\"x\"), #[path = \"x\"]\n",
+            ),
+            (core, "#![forbid(unsafe_code)]\n"),
+            (core, "include_str!(\"x\");\ninclude_bytes!(\"x\");\n"),
+            (core, "fn f() { let path = \"x\"; g(path); }\n"),
+            (core, "fn f(path: &str) -> bool { path == \"x\" }\n"),
+            (
+                core,
+                "macro_rules! m { ($a:expr, $b:expr) => { f($a, $b) } }\n",
+            ),
+            (core, "#[cfg_attr(test, derive(Debug))]\nstruct S;\n$;\n"),
+        ];
+        for (rel, src) in fine {
+            assert_eq!(check(rel, src), Vec::<String>::new(), "{src}");
+        }
+        // The `path` and `include` rules hold in the unsafe modules too.
+        assert_eq!(check(macos, "#[path = \"x.rs\"]\nmod x;\n").len(), 1);
+        assert_eq!(check(macos, "include!(\"x.rs\");\n").len(), 1);
+    }
+
+    #[test]
+    fn neutral_code_names_the_backend() {
+        let check = |rel: &str, src: &str| {
+            let mut e = Vec::new();
+            check_backend_name(rel, src, &mut e);
+            e.len()
+        };
+        let neutral = "crates/die-render/src/atlas.rs";
+        for src in [
+            "use crate::platform::macos::text::Face;\n",
+            "use die_render::platform::macos;\n",
+            "fn f() { crate::platform::macos::ready(); }\n",
+            "use crate::platform::{backend, macos::text};\n",
+        ] {
+            assert_eq!(check(neutral, src), 1, "{src}");
+            assert_eq!(check("crates/die-render/tests/x.rs", src), 1, "{src}");
+            assert_eq!(check("apps/die-dev/src/x.rs", src), 1, "{src}");
+            assert_eq!(
+                check("crates/die-render/src/platform/x.rs", src),
+                0,
+                "{src}"
+            );
+        }
+        for src in [
+            "use crate::platform::backend::text::Face;\n",
+            "use crate::platform::{backend};\n",
+            "// platform::macos\n",
+            "const S: &str = \"platform::macos\";\n",
+            "use std::os::macos;\n",
+            "#[cfg_attr(not(target_os = \"macos\"), allow(dead_code))]\nfn f() {}\n",
+        ] {
+            assert_eq!(check(neutral, src), 0, "{src}");
+        }
+    }
+
+    #[test]
+    fn pointers_to_a_buffer_cover_it() {
+        let check = |rel: &str, src: &str| {
+            let mut e = Vec::new();
+            check_element_pointers(rel, src, &mut e);
+            e.len()
+        };
+        let text = "crates/die-render/src/platform/macos/text.rs";
+        let old = "f(NonNull::from(&mut chars[0]), NonNull::from(&glyphs[0]), 2);\n";
+        assert_eq!(check(text, old), 2);
+        assert_eq!(check("crates/die-core/src/x.rs", old), 0, "no unsafe there");
+        for src in [
+            "f(NonNull::from(&mut *chars).cast(), NonNull::from(&mut glyphs).cast(), 2);\n",
+            "f(NonNull::from(&mut g), &mut adv, 1);\n",
+            "let a = NonNull::from(x);\n",
+        ] {
+            assert_eq!(check(text, src), 0, "{src}");
+        }
+    }
+
+    #[test]
+    fn a_crate_with_its_own_lints_denies_unsafe_and_the_block_lints() {
+        let check = |toml: &str| {
+            let man: Table = toml.parse().unwrap();
+            let mut e = Vec::new();
+            check_own_lints("m", man.get("lints"), &mut e);
+            e
+        };
+        let full = "[lints.rust]\nunsafe_code = \"deny\"\n[lints.clippy]\n\
+                    undocumented_unsafe_blocks = \"deny\"\n\
+                    multiple_unsafe_ops_per_block = \"deny\"\n";
+        assert_eq!(check(full), Vec::<String>::new());
+        assert_eq!(
+            check("[lints.rust]\nunsafe_code = \"deny\"\n"),
+            [
+                "m: must set [lints.clippy] undocumented_unsafe_blocks = \"deny\"",
+                "m: must set [lints.clippy] multiple_unsafe_ops_per_block = \"deny\"",
+            ]
+        );
+        assert_eq!(check(&full.replacen("deny", "warn", 1)).len(), 1);
+        assert_eq!(
+            check(&full.replace(
+                "undocumented_unsafe_blocks = \"deny\"",
+                "undocumented_unsafe_blocks = \"warn\""
+            ))
+            .len(),
+            1
+        );
+        assert_eq!(check("").len(), 3);
     }
 
     #[test]

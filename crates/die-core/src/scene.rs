@@ -130,7 +130,8 @@ pub enum CursorShape {
     /// hiding the glyph there, as Evil's half cursor does.
     HalfBlock,
     /// A cursor that doesn't take input: another window's, or the focused
-    /// window's while the command line has a prompt. A 1 px outline of the
+    /// window's while the command line has a prompt, and from K9 every cursor
+    /// while DIE's window doesn't have the keyboard focus. A 1 px outline of the
     /// cell, with the glyph drawn as it is, as Emacs draws the cursor of a
     /// window that isn't selected.
     Hollow,
@@ -178,8 +179,8 @@ pub struct Scene {
     /// it, and a line's newline has a cell of its own. Cells past the end of a
     /// row map to its last position, and past the end of a line's last row, to
     /// its newline (on the last line, to the end of the buffer), so a click
-    /// there lands at the line's end, as in Emacs. Other cells, such as
-    /// gutters and status lines, map to None.
+    /// there lands at the line's end, as in Emacs. Other cells, such as gutters,
+    /// status lines and the rows below the buffer's last line, map to None.
     pub positions: Vec<Option<(WindowId, usize)>>,
     /// Every cursor drawn. The one that takes input (the command line's while
     /// a prompt is open, otherwise the focused window's) comes first, and it's
@@ -562,7 +563,10 @@ fn draw_text(
         .search
         .map_or((vec![], None), |pat| matches(t, pat, &visible, cursor));
     let bracket = cursor.and_then(|c| bracket_pair(t, c, &visible));
-    let selection = selected(t, look.visual.then(|| t.selection(p.window)).flatten());
+    let selection = t
+        .selection(p.window)
+        .filter(|_| look.visual)
+        .map(|s| selected(t, s));
 
     // Each face once, and a sweep over the cells, so a frame costs one step per
     // cell and per face, not their product. `deco`'s order is the stacking order.
@@ -676,31 +680,21 @@ fn draw_text(
 }
 
 /// A selection's bytes, and for a block its display columns on those lines. A
-/// charwise selection covers both of its ends, as Vim's does; a linewise one
-/// reaches past the buffer's end on its last line, whose end has a cell.
-fn selected(
-    t: &TextBuf,
-    sel: Option<Selection>,
-) -> Option<(Range<usize>, Option<RangeInclusive<usize>>)> {
-    let sel = sel?;
+/// charwise selection covers both of its ends, as Vim's does. A linewise one takes
+/// in the buffer's end on the last line, which has a cell too.
+fn selected(t: &TextBuf, sel: Selection) -> (Range<usize>, Option<RangeInclusive<usize>>) {
     let (lo, hi) = (sel.anchor.min(sel.head), sel.anchor.max(sel.head));
-    let lines = || {
-        let past = t.line_of(hi) + 1;
-        let end = if past < t.line_count() {
-            t.line_start(past)
-        } else {
-            t.len() + 1
-        };
-        t.line_start(t.line_of(lo))..end
-    };
-    Some(match sel.shape {
+    let past = t.line_of(hi) + 1;
+    let end = t.line_start(past) + usize::from(past == t.line_count());
+    let lines = t.line_start(t.line_of(lo))..end;
+    match sel.shape {
         Shape::Char => (lo..hi + 1, None),
-        Shape::Line => (lines(), None),
+        Shape::Line => (lines, None),
         Shape::Block => {
             let (a, h) = (t.display_col(sel.anchor), t.display_col(sel.head));
-            (lines(), Some(a.min(h)..=a.max(h)))
+            (lines, Some(a.min(h)..=a.max(h)))
         }
-    })
+    }
 }
 
 /// The matches of `pat` that touch `visible`, left to right without overlaps
