@@ -245,10 +245,10 @@ fn word_begin(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
     }
 }
 
+/// The end of the word after `p` (`e`). It steps over whole graphemes and lands on one,
+/// so on "café" with a combining mark it lands on the é, as in Vim (deviations.json).
 fn word_end(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
-    let mut c = Chars::at(t, p);
-    c.ch()?;
-    c.fwd();
+    let mut c = Chars::at(t, next_stop(t, p)?);
     loop {
         let mut a = c.ch()?;
         match class(a, big) {
@@ -260,7 +260,7 @@ fn word_end(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
                 c.fwd();
                 match c.ch() {
                     Some(b) if same_word(a, b, big) => a = b,
-                    _ => return Some(here),
+                    _ => return Some(t.snap(here, Some(Dir::Backward))),
                 }
             },
         }

@@ -60,7 +60,8 @@ impl Goal {
 pub enum Kind {
     /// The range stops before the target (`w`, `b`, `h`).
     Exclusive,
-    /// The range includes the target (`e`, `f`, `$`).
+    /// The range includes the target (`e`, `f`, `$`). The target is a grapheme's start,
+    /// so V3 extends the range to the grapheme's end.
     Inclusive,
     /// Whole lines, from the start's line to the target's (`j`, `k`, `G`).
     Linewise,
