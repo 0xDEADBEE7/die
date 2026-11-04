@@ -26,7 +26,7 @@
 //! - `the_prompt_takes_the_command_row_and_the_cursor`
 //! - `the_input_cursor_comes_first_and_is_the_only_one_not_hollow`: with and
 //!   without a prompt, and with the focused window's cursor hidden.
-//! - `cursor_shape_follows_the_state`: block, bar, half block.
+//! - `cursor_shape_follows_the_state`: block, bar, underline, half block.
 //! - `search_matches_and_the_current_match`, `bracket_match`,
 //!   `visual_selection_char_line_and_block`: render-time highlights.
 //! - `search_matches_dont_overlap_and_the_current_one_starts_at_the_cursor`:
@@ -44,9 +44,28 @@
 //! - `placements_past_the_frame_are_clipped`
 //! - `positions_map_cells_to_buffer_positions`
 //! - `every_cell_of_a_tab_or_wide_character_maps_to_its_position`
+//! - `a_tab_and_a_wide_character_take_one_style_across_their_cells`
+//! - `linewise_selection_shows_empty_lines`,
+//!   `charwise_selection_across_a_newline_shows_it`: a newline has a cell.
+//! - `a_highlighted_newline_shows_only_its_own_cell`
+//! - `cells_past_the_end_of_a_line_map_to_its_newline`,
+//!   `cells_past_a_wrapped_row_map_to_its_last_position`: where a click lands.
+//! - `cells_are_built_with_new_and_field_writes`: from outside die-core, a
+//!   struct literal doesn't compile.
+//! - `a_snapshot_shows_every_style_it_has_a_letter_for`,
+//!   `a_snapshot_with_more_styles_than_letters_panics`
+//! - `an_undeclared_decoration_face_is_reported_once`: to `*messages*`, the
+//!   first time it's drawn.
+//! - `style_setters_set_the_underline_color_and_turn_attributes_off`
+//! - `style_sweep_matches_the_naive_scan`: a property. Every cell of random
+//!   stored and provider faces, search matches and selections matches a scan of
+//!   every face and match, per cell, as compose once did.
+//! - `an_80_column_window_with_4000_faces_and_a_one_letter_search_composes_within_1ms`
+//!   and `faces_and_search_cost_at_most_twice_a_plain_frame`: K15's speed.
 //! - `rgb_hex_and_display`
 
 use die_core::*;
+use proptest::prelude::*;
 use std::ops::Range;
 
 mod support;
@@ -111,7 +130,7 @@ fn compose_one(ctx: &mut Ctx, w: WindowId) -> Scene {
     ctx.compose(
         cols,
         rows + 2,
-        &[Placement {
+        &[WindowPlacement {
             window: w,
             col: 0,
             row: 0,
@@ -281,12 +300,12 @@ fn two_windows_divider_status_lines_and_hollow_cursor() {
         21,
         4,
         &[
-            Placement {
+            WindowPlacement {
                 window: wa,
                 col: 0,
                 row: 0,
             },
-            Placement {
+            WindowPlacement {
                 window: wb,
                 col: 11,
                 row: 0,
@@ -339,6 +358,7 @@ fn cursor_shape_follows_the_state() {
     for (state, shape) in [
         (State::Normal, CursorShape::Block),
         (State::Insert, CursorShape::Bar),
+        (State::Replace, CursorShape::Underline),
         (State::OperatorPending, CursorShape::HalfBlock),
         (State::Visual, CursorShape::Block),
     ] {
@@ -447,7 +467,7 @@ fn placements_past_the_frame_are_clipped() {
     let s = ctx.compose(
         14,
         2,
-        &[Placement {
+        &[WindowPlacement {
             window: w,
             col: 9,
             row: 0,
@@ -464,7 +484,7 @@ fn positions_map_cells_to_buffer_positions() {
     let s = ctx.compose(
         12,
         5,
-        &[Placement {
+        &[WindowPlacement {
             window: w,
             col: 2,
             row: 0,
@@ -529,8 +549,8 @@ impl Surface for Lines {
     }
 }
 
-fn at(window: WindowId, col: usize) -> Placement {
-    Placement {
+fn at(window: WindowId, col: usize) -> WindowPlacement {
+    WindowPlacement {
         window,
         col,
         row: 0,
@@ -697,6 +717,9 @@ fn providers_are_asked_for_the_drawn_text_only() {
         .commit()
         .unwrap();
     assert_eq!(asked(&mut ctx), 0..5, "to the end of the last character");
+    let t = ctx.text_mut(b).unwrap();
+    t.tx(Origin::User).replace(0..5, "ab\n").commit().unwrap();
+    assert_eq!(asked(&mut ctx), 0..3, "a newline's cell is drawn too");
     ctx.resize(w, 3, 1).unwrap();
     ctx.text_mut(b).unwrap().settings_mut().line_numbers = LineNumbers::Absolute;
     assert_eq!(asked(&mut ctx), 0..0, "no text fits beside the gutter");
@@ -760,7 +783,150 @@ fn every_cell_of_a_tab_or_wide_character_maps_to_its_position() {
     let pos: Vec<Option<usize>> = (0..13).map(|x| s.position(0, x).map(|(_, p)| p)).collect();
     let tab = [Some(0); 8];
     assert_eq!(pos[..8], tab);
-    assert_eq!(pos[8..], [Some(1), Some(2), Some(2), Some(5), None]);
+    assert_eq!(pos[8..], [Some(1), Some(2), Some(2), Some(5), Some(6)]);
+}
+
+#[test]
+fn a_tab_and_a_wide_character_take_one_style_across_their_cells() {
+    let (mut ctx, _, w) = one("\t中\n", 20, 1);
+    ctx.set_search_highlight(search("\t|中"));
+    let s = compose_one(&mut ctx, w);
+    let (cur, m, d) = (h("#00aaaa"), h("#0000aa"), h("#000000"));
+    let bgs: Vec<Rgb> = (0..12).map(|x| bg(&s, 0, x)).collect();
+    assert_eq!(bgs[..8], [cur; 8], "the tab, where the cursor is");
+    assert_eq!(bgs[8..], [m, m, d, d], "the wide character's two cells");
+}
+
+/// A `#` for each of the first `cols` cells of `rows` rows in the test theme's
+/// selection color.
+fn selected_cells(s: &Scene, rows: usize, cols: usize) -> Vec<String> {
+    let red = h("#aa0000");
+    (0..rows)
+        .map(|r| {
+            let on = |x| if bg(s, r, x) == red { '#' } else { '.' };
+            (0..cols).map(on).collect()
+        })
+        .collect()
+}
+
+/// `text` in a 10 × `rows` window, in visual state with this selection.
+fn with_selection(text: &str, rows: usize, anchor: usize, head: usize, shape: Shape) -> Scene {
+    let (mut ctx, b, w) = one(text, 10, rows);
+    ctx.set_state(State::Visual);
+    ctx.text_mut(b).unwrap().set_selection(
+        w,
+        Selection {
+            anchor,
+            head,
+            shape,
+            goal: None,
+        },
+    );
+    compose_one(&mut ctx, w)
+}
+
+#[test]
+fn linewise_selection_shows_empty_lines() {
+    let s = with_selection("ab\n\ncd\n", 4, 0, 4, Shape::Line);
+    assert_eq!(
+        selected_cells(&s, 4, 4),
+        ["###.", "#...", "###.", "...."],
+        "each newline's cell, as Vim and mono-dark's region show one"
+    );
+    let s = with_selection("ab\n\ncd\n", 4, 7, 7, Shape::Line);
+    assert_eq!(
+        selected_cells(&s, 4, 4),
+        ["....", "....", "....", "#..."],
+        "the empty line after a final newline has a cell too"
+    );
+}
+
+#[test]
+fn charwise_selection_across_a_newline_shows_it() {
+    let s = with_selection("ab\n\ncd\n", 4, 1, 3, Shape::Char);
+    assert_eq!(
+        selected_cells(&s, 3, 4),
+        [".##.", "#...", "...."],
+        "b and both newlines, and nothing past them"
+    );
+    let s = with_selection("ab", 2, 2, 2, Shape::Char);
+    assert_eq!(selected_cells(&s, 1, 4), ["..#."], "the buffer's end");
+}
+
+#[test]
+fn a_highlighted_newline_shows_only_its_own_cell() {
+    let mut ctx = ctx_with(vec![("t.bg", None, Style::new().bg(h("#123456")))]);
+    let b = ctx.create_text("t", "ab\ncd\n");
+    let w = ctx.open_window(b, 10, 2).unwrap();
+    ctx.focus(w);
+    ctx.text_mut(b)
+        .unwrap()
+        .decorate(1..4, Deco::Face("t.bg"))
+        .unwrap();
+    let s = compose_one(&mut ctx, w);
+    let (face, d) = (h("#123456"), h("#000000"));
+    let row = |r: usize| (0..4).map(|x| bg(&s, r, x)).collect::<Vec<Rgb>>();
+    assert_eq!(row(0), [d, face, face, d], "b and the newline, no further");
+    assert_eq!(row(1), [face, d, d, d]);
+    assert_eq!(s.row_text(0), "ab", "a newline draws no glyph");
+}
+
+#[test]
+fn cells_past_the_end_of_a_line_map_to_its_newline() {
+    let (mut ctx, b, w) = one("ab\n\ncd\n", 8, 5);
+    ctx.text_mut(b).unwrap().settings_mut().line_numbers = LineNumbers::Absolute;
+    let s = compose_one(&mut ctx, w);
+    let row = |r: usize| {
+        (0..8)
+            .map(|x| s.position(r, x).map(|(_, p)| p))
+            .collect::<Vec<Option<usize>>>()
+    };
+    let text = |cells: [usize; 4]| [[None; 4], cells.map(Some)].concat();
+    assert_eq!(row(0), text([0, 1, 2, 2]), "the gutter maps to nothing");
+    assert_eq!(row(1), text([3, 3, 3, 3]), "an empty line");
+    assert_eq!(row(2), text([4, 5, 6, 6]));
+    assert_eq!(row(3), text([7, 7, 7, 7]), "the buffer's end");
+    assert_eq!(row(4), [None; 8], "below the buffer's last line");
+
+    let (mut ctx, _, w) = one("ab\ncd", 10, 2);
+    let s = compose_one(&mut ctx, w);
+    for x in 2..10 {
+        assert_eq!(s.position(0, x), Some((w, 2)), "the newline, column {x}");
+        assert_eq!(
+            s.position(1, x),
+            Some((w, 5)),
+            "no final newline, column {x}"
+        );
+    }
+    assert_eq!(s.position(2, 5), None, "the status line");
+}
+
+#[test]
+fn cells_past_a_wrapped_row_map_to_its_last_position() {
+    let (mut ctx, b, w) = one("abcdef\n", 10, 2);
+    ctx.text_mut(b).unwrap().settings_mut().max_width = Some(4);
+    let s = compose_one(&mut ctx, w);
+    let row = |r: usize| {
+        (0..10)
+            .map(|x| s.position(r, x).map(|(_, p)| p))
+            .collect::<Vec<Option<usize>>>()
+    };
+    let (a, b_, c, d) = (Some(0), Some(1), Some(2), Some(3));
+    let (e, f, nl) = (Some(4), Some(5), Some(6));
+    assert_eq!(
+        row(0),
+        [a, b_, c, d, d, d, d, d, d, d],
+        "where the row breaks"
+    );
+    assert_eq!(row(1), [e, f, nl, nl, nl, nl, nl, nl, nl, nl]);
+
+    // The padding where a wide character didn't fit is past its row's end.
+    let (mut ctx, _, w) = one("abc中\n", 4, 2);
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(s.row_text(0), "abc");
+    assert_eq!(s.position(0, 3), Some((w, 2)));
+    assert_eq!(s.position(1, 0), Some((w, 3)));
+    assert_eq!(s.row(0)[3].bg, h("#000000"), "padding takes no highlight");
 }
 
 #[test]
@@ -860,4 +1026,473 @@ fn a_theme_that_styles_an_undeclared_face_is_reported() {
         ctx.messages,
         ["theme test styles faces no one declared: line-numbers"]
     );
+}
+
+// ---------------------------------------------------------------- cells and snapshots
+
+/// One row of these cells.
+fn row_of(cells: Vec<Cell>) -> Scene {
+    Scene {
+        cols: cells.len(),
+        rows: 1,
+        positions: vec![None; cells.len()],
+        cells,
+        cursors: vec![],
+        background: h("#000000"),
+    }
+}
+
+/// `n` cells, each in a foreground of its own.
+fn distinct_styles(n: u8) -> Scene {
+    let cell = |i| Cell::new(Glyph::Char('x'), Rgb(i, 0, 0), h("#000000"));
+    row_of((0..n).map(cell).collect())
+}
+
+#[test]
+fn cells_are_built_with_new_and_field_writes() {
+    let mut c = Cell::new(Glyph::Char('x'), h("#010101"), h("#020202"));
+    assert_eq!(
+        (c.bold, c.italic, c.strike, c.underline, c.underline_color),
+        (false, false, false, Underline::None, h("#010101")),
+        "no attributes, and the underline in the foreground color"
+    );
+    c.bold = true;
+    c.underline = Underline::Curly;
+    c.underline_color = h("#030303");
+    let snap = row_of(vec![c]).snapshot();
+    assert!(
+        snap.contains("a #010101 on #020202 bold underline Curly #030303\n"),
+        "{snap}"
+    );
+}
+
+#[test]
+fn a_snapshot_shows_every_style_it_has_a_letter_for() {
+    let snap = distinct_styles(62).snapshot();
+    assert!(snap.contains("|abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789|"));
+    assert!(snap.contains("9 #3d0000 on #000000"), "{snap}");
+}
+
+#[test]
+fn a_snapshot_with_more_styles_than_letters_panics() {
+    // Past the letters, two different frames could give the same text.
+    let s = distinct_styles(63);
+    let e = std::panic::catch_unwind(|| s.snapshot()).expect_err("it panics");
+    let e = e.downcast_ref::<String>().expect("a formatted message");
+    assert_eq!(e, "a snapshot shows at most 62 styles");
+}
+
+// ---------------------------------------------------------------- faces
+
+#[test]
+fn an_undeclared_decoration_face_is_reported_once() {
+    let mut ctx = Ctx::new(vec![
+        Box::new(Faces(vec![(
+            "t.known",
+            None,
+            Style::new().fg(h("#123456")),
+        )])),
+        Box::new(PaintExt),
+    ])
+    .unwrap();
+    ctx.set_theme(test_theme());
+    let b = ctx.create_text("t", "abcd\nefgh\nijkl\n");
+    let w = ctx.open_window(b, 10, 1).unwrap();
+    ctx.focus(w);
+    let t = ctx.text_mut(b).unwrap();
+    t.decorate(0..1, Deco::Face("t.typo")).unwrap();
+    t.decorate(1..2, Deco::Face("t.typo")).unwrap();
+    t.decorate(2..3, Deco::Face("t.known")).unwrap();
+    t.decorate(10..11, Deco::Face("t.below")).unwrap();
+    ctx.enable_mode::<Paint>(b).unwrap();
+    ctx.with_mode(b, |p: &mut Paint, _| p.faces = vec![(3..4, "t.painted")])
+        .unwrap();
+    let reported = [
+        "face t.typo isn't declared (a decoration or a mode's provider uses it)",
+        "face t.painted isn't declared (a decoration or a mode's provider uses it)",
+    ];
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(ctx.messages, reported, "t.below isn't drawn yet");
+    let d = (h("#aaaaaa"), h("#000000"));
+    assert_eq!((s.row(0)[0].fg, s.row(0)[0].bg), d, "it draws as nothing");
+    assert_eq!(s.row(0)[2].fg, h("#123456"), "and the others still draw");
+    compose_one(&mut ctx, w);
+    assert_eq!(ctx.messages, reported, "once for each name");
+    ctx.text_mut(b).unwrap().set_cursor(w, 10);
+    compose_one(&mut ctx, w);
+    assert_eq!(
+        ctx.messages.last().unwrap(),
+        "face t.below isn't declared (a decoration or a mode's provider uses it)",
+        "when it's first drawn"
+    );
+    assert_eq!(ctx.messages.len(), 3);
+}
+
+#[test]
+fn style_setters_set_the_underline_color_and_turn_attributes_off() {
+    let below = Style::new().bold().italic().strike();
+    let off = Style::new()
+        .underline(Underline::Dashed)
+        .underline_color(h("#123456"))
+        .bold_is(false)
+        .italic_is(false)
+        .strike_is(false)
+        .over(below);
+    assert_eq!(off.bold, Some(false), "it overrides the bold below");
+    assert_eq!(off.italic, Some(false));
+    assert_eq!(off.strike, Some(false));
+    assert_eq!(off.underline, Some(Underline::Dashed));
+    assert_eq!(off.underline_color, Some(h("#123456")));
+    let on = Style::new().bold_is(true).italic_is(true).strike_is(true);
+    assert_eq!(on, below);
+    // In a frame: a face that turns an inherited attribute off.
+    let mut ctx = ctx_with(vec![
+        ("t.bold", None, Style::new().bold()),
+        ("t.plain", Some("t.bold"), Style::new().bold_is(false)),
+    ]);
+    let b = ctx.create_text("t", "ab\n");
+    let w = ctx.open_window(b, 10, 1).unwrap();
+    let t = ctx.text_mut(b).unwrap();
+    t.decorate(0..2, Deco::Face("t.bold")).unwrap();
+    t.decorate(1..2, Deco::Face("t.plain")).unwrap();
+    let s = compose_one(&mut ctx, w);
+    assert!(s.row(0)[0].bold);
+    assert!(!s.row(0)[1].bold, "off beats the parent and the face below");
+}
+
+// ---------------------------------------------------------------- the sweep and a naive scan
+
+const SWEEP_FACES: [&str; 6] = ["t.f0", "t.f1", "t.f2", "t.f3", "t.f4", "t.f5"];
+
+/// What compose once did for one cell: every face and every match, each time.
+struct Scan {
+    base: Style,
+    faces: Vec<(Range<usize>, Style)>,
+    search: Vec<Range<usize>>,
+    current: Option<Range<usize>>,
+    selection: Option<Selection>,
+    search_face: Style,
+    current_face: Style,
+    selection_face: Style,
+}
+
+impl Scan {
+    fn style(&self, t: &TextBuf, q: usize) -> Style {
+        let mut s = self.base;
+        for (_, f) in self.faces.iter().filter(|(r, _)| r.contains(&q)) {
+            s = f.over(s);
+        }
+        let current = self.current.as_ref().is_some_and(|m| m.contains(&q));
+        if current {
+            s = self.current_face.over(s);
+        } else if self.search.iter().any(|m| m.contains(&q)) {
+            s = self.search_face.over(s);
+        }
+        if let Some(sel) = self.selection {
+            let (a, h) = (t.line_of(sel.anchor), t.line_of(sel.head));
+            let lines = (a.min(h)..=a.max(h)).contains(&t.line_of(q));
+            let on = match sel.shape {
+                Shape::Char => (sel.anchor.min(sel.head)..=sel.anchor.max(sel.head)).contains(&q),
+                Shape::Line => lines,
+                Shape::Block => {
+                    let (a, h) = (t.display_col(sel.anchor), t.display_col(sel.head));
+                    lines && (a.min(h)..=a.max(h)).contains(&t.display_col(q))
+                }
+            };
+            if on {
+                s = self.selection_face.over(s);
+            }
+        }
+        s
+    }
+}
+
+/// `(fg, bg, bold, italic, strike, underline, underline color)` of a style or cell.
+type Look = (Rgb, Rgb, bool, bool, bool, Underline, Rgb);
+
+fn look_of_style(s: Style) -> Look {
+    let fg = s.fg.unwrap();
+    (
+        fg,
+        s.bg.unwrap(),
+        s.bold.unwrap_or(false),
+        s.italic.unwrap_or(false),
+        s.strike.unwrap_or(false),
+        s.underline.unwrap_or_default(),
+        s.underline_color.unwrap_or(fg),
+    )
+}
+
+fn look_of_cell(c: &Cell) -> Look {
+    (
+        c.fg,
+        c.bg,
+        c.bold,
+        c.italic,
+        c.strike,
+        c.underline,
+        c.underline_color,
+    )
+}
+
+/// One case of the property: the text, stored and provider faces as (bytes a and
+/// b, face), a literal search, the cursor or selection, and the window's settings.
+struct SweepCase {
+    text: String,
+    stored: Vec<(usize, usize, usize)>,
+    provided: Vec<(usize, usize, usize)>,
+    pattern: Option<&'static str>,
+    selection: Option<(usize, usize, Shape)>,
+    cursor: usize,
+    wrap: bool,
+    gutter: bool,
+}
+
+fn check_sweep(case: SweepCase) -> std::result::Result<(), TestCaseError> {
+    let names = SWEEP_FACES
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let v = 0x10 * (i as u8 + 1);
+            let s = match i {
+                0 => Style::new().fg(Rgb(v, 0, 0)),
+                1 => Style::new().bg(Rgb(0, v, 0)),
+                2 => Style::new().fg(Rgb(v, v, 0)).bold(),
+                3 => Style::new().italic().underline(Underline::Curly),
+                4 => Style::new().bold_is(false).strike(),
+                _ => Style::new()
+                    .bg(Rgb(0, 0, v))
+                    .underline(Underline::Single)
+                    .underline_color(Rgb(v, 0, v)),
+            };
+            (*n, None, s)
+        })
+        .collect();
+    let mut ctx = Ctx::new(vec![Box::new(Faces(names)), Box::new(PaintExt)]).unwrap();
+    ctx.set_theme(test_theme());
+    let b = ctx.create_text("t", &case.text);
+    let (cols, rows) = (14, 6);
+    let w = ctx.open_window(b, cols, rows).unwrap();
+    ctx.focus(w);
+    let len = case.text.len();
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().wrap = case.wrap;
+    if case.gutter {
+        t.settings_mut().line_numbers = LineNumbers::Absolute;
+    }
+    for &(x, y, f) in &case.stored {
+        let (x, y) = (x % (len + 1), y % (len + 1));
+        t.decorate(x.min(y)..x.max(y), Deco::Face(SWEEP_FACES[f]))
+            .unwrap();
+    }
+    let cursor = case.cursor % (len + 1);
+    t.set_cursor(w, cursor);
+    let (mut anchor_head, mut cursor) = (None, cursor);
+    if let Some((a, h, shape)) = case.selection {
+        let (a, h) = (a % (len + 1), h % (len + 1));
+        t.set_selection(
+            w,
+            Selection {
+                anchor: a,
+                head: h,
+                shape,
+                goal: None,
+            },
+        );
+        anchor_head = t.selection(w);
+        cursor = h;
+    }
+    ctx.enable_mode::<Paint>(b).unwrap();
+    // A provider may return anything: ranges past the text, empty or backward.
+    let provided: Vec<(Range<usize>, &'static str)> = case
+        .provided
+        .iter()
+        .map(|&(x, y, f)| (x..y, SWEEP_FACES[f]))
+        .collect();
+    let given = provided.clone();
+    ctx.with_mode(b, move |p: &mut Paint, _| p.faces = given)
+        .unwrap();
+    if case.selection.is_some() {
+        ctx.set_state(State::Visual);
+    }
+    let pat = case.pattern.map(|p| Pattern::new(p, false).unwrap());
+    ctx.set_search_highlight(pat.clone());
+
+    let scene = compose_one(&mut ctx, w);
+    let visible = ctx
+        .with_mode(b, |p: &mut Paint, _| p.asked.pop())
+        .unwrap()
+        .expect("compose asks the provider");
+
+    let style = |n: &str| ctx.face_style(n).unwrap();
+    let t = ctx.text(b).unwrap();
+    let mut stored: Vec<(Range<usize>, &'static str)> = t
+        .decorations()
+        .filter_map(|(_, d)| match d.deco {
+            Deco::Face(f) => Some((d.range.clone(), f)),
+            _ => None,
+        })
+        .collect();
+    stored.sort_by_key(|(r, _)| (r.start, std::cmp::Reverse(r.end)));
+    let at_cursor = |lit: &str| {
+        case.text[cursor..]
+            .starts_with(lit)
+            .then(|| cursor..cursor + lit.len())
+    };
+    let scan = Scan {
+        base: style("default"),
+        faces: stored
+            .iter()
+            .chain(&provided)
+            .map(|(r, f)| (r.clone(), style(f)))
+            .collect(),
+        search: pat
+            .as_ref()
+            .map_or(vec![], |p| t.matches(p, visible.clone())),
+        current: case.pattern.and_then(at_cursor),
+        selection: anchor_head,
+        search_face: style("search"),
+        current_face: style("search-current"),
+        selection_face: style("selection"),
+    };
+    // Every buffer position's cell, then every cell of the text area: a position's
+    // own has its faces, and the rest are `default`.
+    let g = t.geometry(w).unwrap();
+    let mut own = std::collections::HashMap::new();
+    for q in 0..=len {
+        if let Some((row, col)) = t.screen_pos(w, q).filter(|&(_, col)| col < cols) {
+            prop_assert_eq!(scene.position(row, col), Some((w, q)), "position {}", q);
+            own.insert((row, col), q);
+        }
+    }
+    for row in 0..rows {
+        for col in g.text_x..cols {
+            let want = own
+                .get(&(row, col))
+                .map_or(scan.base, |&q| scan.style(t, q));
+            prop_assert_eq!(
+                look_of_cell(&scene.row(row)[col]),
+                look_of_style(want),
+                "row {}, column {}, position {:?}, in {:?}",
+                row,
+                col,
+                own.get(&(row, col)),
+                case.text
+            );
+        }
+    }
+    Ok(())
+}
+
+fn a_shape() -> impl Strategy<Value = Shape> {
+    prop_oneof![Just(Shape::Char), Just(Shape::Line), Just(Shape::Block)]
+}
+
+proptest! {
+    #[test]
+    fn style_sweep_matches_the_naive_scan(
+        text in "[ab \n]{0,120}",
+        stored in prop::collection::vec((0..130usize, 0..130usize, 0..6usize), 0..16),
+        provided in prop::collection::vec((0..140usize, 0..140usize, 0..6usize), 0..8),
+        pattern in prop::option::of(prop_oneof![Just("a"), Just("ab"), Just("b b"), Just("  ")]),
+        selection in prop::option::of((0..130usize, 0..130usize, a_shape())),
+        cursor in 0..130usize,
+        wrap in any::<bool>(),
+        gutter in any::<bool>(),
+    ) {
+        check_sweep(SweepCase { text, stored, provided, pattern, selection, cursor, wrap, gutter })?;
+    }
+}
+
+// ---------------------------------------------------------------- speed (K15)
+
+/// Dense prose: `lines` lines of about `width` columns, with plenty of e's.
+fn prose(lines: usize, width: usize) -> String {
+    let words = [
+        "the", "editor", "sees", "every", "level", "here", "code", "deep", "tree", "never",
+        "remember", "release",
+    ];
+    let (mut s, mut k) = (String::new(), 0);
+    for _ in 0..lines {
+        let mut line = String::new();
+        while line.len() + 10 < width {
+            line.push_str(words[k % words.len()]);
+            line.push(' ');
+            k += 1;
+        }
+        s.push_str(line.trim_end());
+        s.push('\n');
+    }
+    s
+}
+
+/// A buffer of 400 dense lines shown in a `cols` × 98 window, with 4000 stored
+/// faces if `faces`: a token every 14 bytes from the top, so about half are
+/// off-screen in a 300-column window and more in a narrow one.
+fn dense(ctx: &mut Ctx, cols: usize, faces: bool) -> WindowId {
+    let b = ctx.create_text("t", &prose(400, 280));
+    let w = ctx.open_window(b, cols, 98).unwrap();
+    ctx.focus(w);
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().line_numbers = LineNumbers::Absolute;
+    let names = ["t.k0", "t.k1", "t.k2", "t.k3"];
+    for i in 0..4000 * faces as usize {
+        t.decorate(i * 14..i * 14 + 5, Deco::Face(names[i % 4]))
+            .unwrap();
+    }
+    w
+}
+
+fn speed_ctx() -> Ctx {
+    ctx_with(vec![
+        ("t.k0", None, Style::new().fg(h("#ff0000"))),
+        ("t.k1", None, Style::new().fg(h("#00ff00")).bold()),
+        ("t.k2", None, Style::new().fg(h("#0000ff")).italic()),
+        ("t.k3", None, Style::new().underline(Underline::Single)),
+    ])
+}
+
+/// The median of 21 composes of a `cols` × 100 frame showing `w`, in ms.
+fn p50_ms(ctx: &mut Ctx, w: WindowId, cols: usize) -> f64 {
+    compose_one(ctx, w);
+    let mut ms: Vec<f64> = (0..21)
+        .map(|_| {
+            let t = std::time::Instant::now();
+            std::hint::black_box(ctx.compose(cols, 100, &[at(w, 0)]));
+            t.elapsed().as_secs_f64() * 1e3
+        })
+        .collect();
+    ms.sort_by(f64::total_cmp);
+    ms[10]
+}
+
+/// Three tries at a speed limit, so a busy machine doesn't fail it: the per-cell
+/// scan this guards against misses them by far more than a machine's load.
+fn within_three_tries(limit: f64, mut measure: impl FnMut() -> f64) {
+    let tries: Vec<f64> = (0..3).map(|_| measure()).collect();
+    assert!(
+        tries.iter().any(|&m| m <= limit),
+        "{tries:.2?} are all over {limit}"
+    );
+}
+
+#[test]
+fn an_80_column_window_with_4000_faces_and_a_one_letter_search_composes_within_1ms() {
+    let mut ctx = speed_ctx();
+    let w = dense(&mut ctx, 84, true);
+    ctx.set_search_highlight(search("e"));
+    within_three_tries(1.0, || p50_ms(&mut ctx, w, 84));
+}
+
+#[test]
+fn faces_and_search_cost_at_most_twice_a_plain_frame() {
+    let mut ctx = speed_ctx();
+    let plain = dense(&mut ctx, 300, false);
+    let decorated = dense(&mut ctx, 300, true);
+    within_three_tries(2.0, || {
+        ctx.set_search_highlight(None);
+        let p = p50_ms(&mut ctx, plain, 300);
+        ctx.set_search_highlight(search("e"));
+        p50_ms(&mut ctx, decorated, 300) / p
+    });
 }

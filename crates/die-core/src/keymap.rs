@@ -8,6 +8,8 @@ use std::rc::Rc;
 pub enum State {
     Normal,
     Insert,
+    /// Replace (`R`): typed text overwrites. Its cursor is `CursorShape::Underline`.
+    Replace,
     Visual,
     OperatorPending,
     CommandLine,

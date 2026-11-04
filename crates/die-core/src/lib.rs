@@ -40,5 +40,5 @@ pub use ids::*;
 pub use keymap::*;
 pub use keys::*;
 pub use layout::{CellKind, Dir, DisplayLine, Geometry, LayoutCell, Stop, ViewRow, Viewport};
-pub use scene::{Cell, Cursor, CursorShape, Glyph, Placement, Scene};
+pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
 pub use text::*;
