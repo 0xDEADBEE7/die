@@ -131,6 +131,77 @@ fn insert_state_arrows_go_by_screen_row() {
     }
 }
 
+/// Run `f` on another thread and fail if it takes more than 10 s, so that a count
+/// that hangs fails the test and doesn't hang it. Key by key, `50000ix` took 40 s.
+fn quickly<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("done within 10 s")
+}
+
+/// `keys` on "\n": the text's length, and what die-vim said.
+fn counted(keys: &'static str) -> (usize, Vec<String>) {
+    quickly(move || {
+        let mut ctx = editor();
+        let (b, _) = open(&mut ctx, "\n");
+        ctx.type_keys(keys);
+        assert_eq!(ctx.state(), State::Normal, "{keys}");
+        (text(&ctx, b).len(), ctx.messages.clone())
+    })
+}
+
+#[test]
+fn a_large_count_on_typed_text_goes_in_at_once() {
+    let (len, messages) = counted("50000ix<Esc>");
+    assert_eq!(len, 50_001);
+    assert!(messages.is_empty(), "{messages:?}");
+    let (len, _) = counted("1048577ix<Esc>");
+    assert_eq!(len, (1 << 20) + 2, "the most a count may replay");
+}
+
+#[test]
+fn a_count_past_the_caps_fails_and_keeps_the_first_copy() {
+    for keys in [
+        "1048578ix<Esc>",
+        "99999999999999999999ix<Esc>",
+        "10002ix<Left><Esc>",
+    ] {
+        let (len, messages) = counted(keys);
+        assert_eq!(len, 2, "{keys}");
+        assert_eq!(messages.len(), 1, "{keys}: {messages:?}");
+        assert!(messages[0].contains("Count too large"), "{messages:?}");
+    }
+    let (len, messages) = counted("99999o<Esc>");
+    assert_eq!(len, 2, "o's line");
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("Count too large"), "{messages:?}");
+}
+
+#[test]
+fn an_empty_session_replays_nothing_at_any_count() {
+    let (len, messages) = counted("99999999999999999999i<Esc>");
+    assert_eq!(len, 1);
+    assert!(messages.is_empty(), "{messages:?}");
+}
+
+#[test]
+fn a_replay_inside_the_caps_still_goes_key_by_key() {
+    let (len, messages) = counted("5000ix<Left><Esc>");
+    assert_eq!(len, 5001);
+    assert!(messages.is_empty(), "{messages:?}");
+}
+
+#[test]
+fn a_counted_session_with_nothing_typed_leaves_no_undo_step() {
+    let mut ctx = editor();
+    let (b, _) = open(&mut ctx, "abc\n");
+    ctx.type_keys("ifoo<Esc>3i<Esc>u");
+    assert_eq!(text(&ctx, b), "abc\n", "u undoes ifoo; 3i<Esc> did nothing");
+}
+
 #[test]
 fn opening_an_unindented_line_makes_one_change() {
     let mut ctx = editor();

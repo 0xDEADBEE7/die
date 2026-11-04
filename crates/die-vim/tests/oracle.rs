@@ -200,7 +200,7 @@ fn pending_file(failing: &BTreeMap<String, Tranche>) -> String {
 
 /// Run one case; Err says every way it differs from Evil, or what can't be checked yet.
 fn run_case(case: &Case, run: Run) -> Result<(), String> {
-    let (input, want) = (&case.input, &case.expected);
+    let input = &case.input;
     if input.visual.is_some() {
         return Err("can't start a case in visual state yet (the harness, K7)".into());
     }

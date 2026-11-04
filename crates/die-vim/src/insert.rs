@@ -9,6 +9,13 @@ use crate::text::{
 };
 use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, WindowId};
 
+/// The most typed text a count may replay at once, K4's budget for one line. Until
+/// K4's compact cells, a longer line costs about 160 bytes of layout per character.
+const MAX_REPEAT: usize = 1 << 20;
+/// The most edits a count may replay one by one. Until K4, each lays the whole line
+/// out again, so a mistyped count would freeze the editor.
+const MAX_REPLAY: usize = 10_000;
+
 /// How a session started. A count repeats the session, opening a line first
 /// when it opened one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,13 +137,7 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
     let cursor = |t: &TextBuf| t.cursor(w).unwrap_or(0);
     let mut r = Ok(());
     if let Some(s) = s {
-        r = (1..s.count).try_for_each(|_| {
-            if matches!(s.entry, Entry::OpenBelow | Entry::OpenAbove) {
-                let line = t.line_of(cursor(t));
-                open_below(t, w, line)?;
-            }
-            s.edits.iter().try_for_each(|e| apply(t, w, e))
-        });
+        r = replay(t, w, &s);
         let line = t.line_of(cursor(t));
         let (ls, le) = (t.line_start(line), line_end(t, line));
         if s.drop_indent && le > ls && blank_line(t, line) {
@@ -157,6 +158,48 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
     t.set_cursor(w, rest_pos(t, back));
     ctx.set_state(State::Normal);
     r
+}
+
+/// Replay the session count-1 more times. Typed text alone goes in at once; anything
+/// else goes key by key. A count too large to do either fails, with the session's
+/// first copy kept: more is an error, not a hang.
+fn replay(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
+    let more = s.count - 1;
+    let opens = matches!(s.entry, Entry::OpenBelow | Entry::OpenAbove);
+    let too_large = || Error::Msg("Count too large".into());
+    let text: Option<String> = s
+        .edits
+        .iter()
+        .map(|e| match e {
+            Edit::Text(x) => Some(x.as_str()),
+            _ => None,
+        })
+        .collect();
+    if let (Some(one), false) = (text, opens) {
+        if more == 0 || one.is_empty() {
+            return Ok(());
+        }
+        let n = one
+            .len()
+            .checked_mul(more)
+            .filter(|&n| n <= MAX_REPEAT)
+            .ok_or_else(too_large)?;
+        let p = t.cursor(w).unwrap_or(0);
+        t.tx(Origin::User).insert(p, one.repeat(more)).commit()?;
+        t.set_cursor(w, p + n);
+        return Ok(());
+    }
+    (s.edits.len() + usize::from(opens))
+        .checked_mul(more)
+        .filter(|&n| n <= MAX_REPLAY)
+        .ok_or_else(too_large)?;
+    (0..more).try_for_each(|_| {
+        if opens {
+            let line = t.line_of(t.cursor(w).unwrap_or(0));
+            open_below(t, w, line)?;
+        }
+        s.edits.iter().try_for_each(|e| apply(t, w, e))
+    })
 }
 
 fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
