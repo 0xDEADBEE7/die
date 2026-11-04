@@ -1,12 +1,13 @@
 //! `cargo xtask guards`: proves F1's build guards in a throwaway copy of the
 //! working tree. `unsafe` outside die-render's `platform` module fails to build,
 //! and so does `-Cpanic=abort`, with the guard's message. The `unsafe` rustc lets
-//! through builds, and fails `cargo xtask lint`. For Linux, the cross-check fails
-//! on dead code (its `-D warnings`) and on a build script that compiles C (its
-//! stand-ins).
+//! through builds, and fails `cargo xtask lint`. A file or crate the lint wouldn't
+//! read fails `cargo xtask sources`. For Linux, the cross-check fails on dead code
+//! (its `-D warnings`), on a build script that compiles C (its stand-ins) and on a
+//! Linux-only file the lint wouldn't read.
 
 use crate::util::{Result, TempDir, cargo, copy_worktree, output, read, write};
-use crate::{clean, lint};
+use crate::{clean, lint, sources};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -15,7 +16,27 @@ const PLANT: &str = "\n#[allow(dead_code)]\nfn planted() {\n    unsafe {}\n}\n";
 /// Unsafe code in a file that nothing but a `path` attribute or `include!` reaches.
 const OUTSIDE: (&str, &str) = (
     "docs/planted.rs",
-    "#[allow(unsafe_code)]\npub mod outside {\n    pub fn ok() -> &'static str {\n        unsafe { std::str::from_utf8_unchecked(b\"ok\") }\n    }\n}\n",
+    "#[allow(unsafe_code)]\npub mod outside {\n    pub fn ok() -> &'static str {\n        // SAFETY: these bytes are UTF-8.\n        unsafe { std::str::from_utf8_unchecked(b\"ok\") }\n    }\n}\n",
+);
+
+/// A crate outside the workspace's `members`, with a bare `unsafe` block, since nothing
+/// sets its lints.
+const OUTSIDE_CRATE: &[(&str, &str)] = &[
+    (
+        "docs/plantedcrate/Cargo.toml",
+        "[package]\nname = \"plantedcrate\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+    ),
+    (
+        "docs/plantedcrate/src/lib.rs",
+        "pub fn ok() -> &'static str {\n    unsafe { std::str::from_utf8_unchecked(b\"ok\") }\n}\n",
+    ),
+];
+
+/// A module named `target`, which the lint must read. `.gitignore`'s `target/` keeps it
+/// out of this copy, so it's written in directly; `git add -f` gets it into a clone.
+const TARGET_MODULE: (&str, &str) = (
+    "crates/die-render/src/target/mod.rs",
+    "#![allow(unsafe_code)]\npub fn ok() -> &'static str {\n    unsafe { std::str::from_utf8_unchecked(b\"ok\") }\n}\n",
 );
 
 /// The bypasses of the `unsafe` confinement that rustc accepts: what each is, the
@@ -52,10 +73,16 @@ const LINT_PLANTS: &[(&str, &str, &str, &str)] = &[
         "`path` attribute",
     ),
     (
-        "the same from a macro",
+        "the same as a raw identifier",
         "die-render",
-        "\nmacro_rules! planted {\n    ($k:ident, $f:literal) => { #[$k = $f] pub mod planted; };\n}\nplanted!(path, \"../../../docs/planted.rs\");\n",
-        "an attribute built from a macro fragment",
+        "\n#[r#path = \"../../../docs/planted.rs\"]\npub mod planted;\n",
+        "`path` attribute",
+    ),
+    (
+        "the same in a `cfg_attr`, as a raw identifier",
+        "die-render",
+        "\n#[cfg_attr(all(), r#path = \"../../../docs/planted.rs\")]\npub mod planted;\n",
+        "`path` attribute",
     ),
     (
         "`include!` renamed",
@@ -64,6 +91,50 @@ const LINT_PLANTS: &[(&str, &str, &str, &str)] = &[
         "`include!`",
     ),
 ];
+
+/// What `sources` fails with for a file, and for a crate.
+const NOT_READ: &str = "which `cargo xtask lint` doesn't read";
+const NOT_A_MEMBER: &str = "isn't in the workspace's `members`";
+
+/// Bypasses no token rule can see: what each is, the file it's appended to, the code,
+/// and `sources`' error for it. rustc accepts them all, or `sources` fails with
+/// cargo's error and without this text.
+const SOURCE_PLANTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "a `path` attribute a macro builds",
+        "crates/die-render/src/lib.rs",
+        "\nmacro_rules! planted {\n    ($k:ident, $f:literal) => { #[$k = $f] pub mod planted; };\n}\nplanted!(path, \"../../../docs/planted.rs\");\n",
+        NOT_READ,
+    ),
+    (
+        "the same with the `#` passed in",
+        "crates/die-render/src/lib.rs",
+        "\nmacro_rules! planted {\n    ($h:tt $a:meta) => { $h [$a] pub mod planted; };\n}\nplanted!(# path = \"../../../docs/planted.rs\");\n",
+        NOT_READ,
+    ),
+    (
+        "the same with the brackets passed in",
+        "crates/die-render/src/lib.rs",
+        "\nmacro_rules! planted {\n    ($a:tt) => { #$a pub mod planted; };\n}\nmacro_rules! name {\n    ($k:ident, $f:literal) => { planted!([$k = $f]); };\n}\nname!(path, \"../../../docs/planted.rs\");\n",
+        NOT_READ,
+    ),
+    (
+        "a test target outside the crate",
+        "crates/die-render/Cargo.toml",
+        "\n[[test]]\nname = \"planted\"\npath = \"../../docs/planted.rs\"\n",
+        NOT_READ,
+    ),
+    (
+        "a path dependency that isn't a listed member",
+        "crates/die-render/Cargo.toml",
+        "\n[dependencies.plantedcrate]\npath = \"../../docs/plantedcrate\"\n",
+        NOT_A_MEMBER,
+    ),
+];
+
+/// A `path` attribute a macro builds, on Linux only, so only the cross-check's build
+/// compiles it. `platform` may name `target_os`.
+const LINUX_SOURCE: &str = "\n#[cfg(target_os = \"linux\")]\nmacro_rules! planted {\n    ($k:ident, $f:literal) => { #[$k = $f] pub mod planted; };\n}\n#[cfg(target_os = \"linux\")]\nplanted!(path, \"../../../../docs/planted.rs\");\n";
 
 /// `unsafe` blocks in `platform::macos` with no SAFETY comment, and what turns off
 /// the lints that require one. clippy passes each, so only the lint can catch it.
@@ -99,6 +170,8 @@ pub fn run(root: &Path, work: &Path) -> Result {
         None,
     )?;
     println!("guards: the unplanted tree builds");
+    sources::run(tree, &target)?;
+    println!("guards: the unplanted tree passes `sources`");
 
     for lib in ["crates/die-core/src/lib.rs", "crates/die-render/src/lib.rs"] {
         let path = tree.join(lib);
@@ -126,7 +199,33 @@ pub fn run(root: &Path, work: &Path) -> Result {
         })?;
         println!("guards: {what} builds, and fails the lint");
     }
-    std::fs::remove_file(tree.join(OUTSIDE.0)).map_err(|e| e.to_string())?;
+
+    let module = tree.join(TARGET_MODULE.0);
+    write(&module, TARGET_MODULE.1)?;
+    let render = tree.join("crates/die-render/src/lib.rs");
+    let res = with_plant(&render, "\npub mod target;\n", || {
+        expect(tree, &target, &["-p", "die-render"], None, None)?;
+        fails_with("the lint", lint::run(tree), &["`unsafe` outside"])
+    });
+    std::fs::remove_file(&module).map_err(|e| e.to_string())?;
+    res?;
+    println!("guards: a module named `target` builds, and fails the lint");
+
+    for (file, text) in OUTSIDE_CRATE {
+        write(&tree.join(file), text)?;
+    }
+    let lock = tree.join("Cargo.lock");
+    let orig_lock = read(&lock)?;
+    for (what, file, plant, error) in SOURCE_PLANTS {
+        let res = with_plant(&tree.join(file), plant, || {
+            update_lockfile(tree)?;
+            fails_with("sources", sources::run(tree, &target), &[*error])
+        });
+        write(&lock, &orig_lock)?;
+        res?;
+        println!("guards: {what} fails `sources`");
+    }
+    std::fs::remove_dir_all(tree.join("docs/plantedcrate")).map_err(|e| e.to_string())?;
 
     let text = tree.join("crates/die-render/src/platform/macos/text.rs");
     for (what, plant) in BLOCK_LINT_PLANTS {
@@ -157,6 +256,13 @@ pub fn run(root: &Path, work: &Path) -> Result {
         &["function `planted_linux_only` is never used"],
     )?;
     println!("guards: code that is dead on Linux only fails the cross-check");
+
+    let res = with_plant(&path, LINUX_SOURCE, || {
+        crate::cross::run(tree, &work.join("cross"))
+    });
+    fails_with("the cross-check", res, &[NOT_READ])?;
+    std::fs::remove_file(tree.join(OUTSIDE.0)).map_err(|e| e.to_string())?;
+    println!("guards: a file only Linux's build compiles fails the cross-check");
 
     // The `log` plant's stand-in call drops the cross-check's cache, so it
     // gets a cache of its own.
@@ -226,17 +332,22 @@ fn with_log_plant(tree: &Path, check: impl FnOnce() -> Result) -> Result {
         "{LINUX_TABLE}wayland-backend = {{ version = \"={version}\", features = [\"log\"] }}\n"
     );
     write(&manifest, &orig.replacen(LINUX_TABLE, &planted, 1))?;
-    // The lockfile gains the new edges only; every version stays.
-    let res = output(Command::new(cargo()).current_dir(tree).args([
+    let res = update_lockfile(tree).and_then(|()| check());
+    write(&manifest, &orig)?;
+    write(&lock, &orig_lock)?;
+    res
+}
+
+/// Bring the lockfile up to date with a planted manifest, for the checks that build
+/// `--locked`. It gains the new edges only; every version stays.
+fn update_lockfile(tree: &Path) -> Result {
+    output(Command::new(cargo()).current_dir(tree).args([
         "metadata",
         "--offline",
         "--format-version",
         "1",
     ]))
-    .and_then(|_| check());
-    write(&manifest, &orig)?;
-    write(&lock, &orig_lock)?;
-    res
+    .map(|_| ())
 }
 
 /// Run `check` with `plant` appended to `file`, then put the file back.

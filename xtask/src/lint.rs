@@ -5,7 +5,10 @@
 //!   except die-render, which denies it and allows it on `platform::macos` only.
 //!   Nothing else lowers that level, and nothing allows `warnings` wholesale.
 //! - The `unsafe` keyword itself appears only in those modules, since rustc's lint
-//!   misses some of it, and no file gets compiled that this lint might not read.
+//!   misses some of it. `include!` and the `path` attribute appear nowhere, since each
+//!   can compile a file this lint doesn't read. A macro can build that attribute in
+//!   ways no token rule sees, and a manifest can point anywhere, so `cargo xtask
+//!   sources` checks what actually got compiled.
 //! - die-render's `unsafe` blocks each say why they're sound and do one unsafe
 //!   thing, and no code changes the level of the lints that hold them to it. No
 //!   pointer is made from a reference to one element of a buffer by `NonNull::from`,
@@ -124,15 +127,31 @@ const PLATFORM_CRATES: &[(&str, &str)] = &[
 /// Crates that set their own lints instead of inheriting the workspace's.
 const OWN_LINTS: &[&str] = &["crates/die-render"];
 
-pub fn run(root: &Path) -> Result {
-    let mut errors = Vec::new();
-    let ws: Table = parse(&root.join("Cargo.toml"))?;
-    let members: Vec<String> = ws["workspace"]["members"]
+/// The directories of the crates this lint reads: the workspace's `members`. A path
+/// dependency inside the workspace is a member too, for cargo, but isn't listed, and
+/// `cargo xtask sources` fails it.
+pub fn members(root: &Path) -> Result<Vec<String>> {
+    let ws = parse(&root.join("Cargo.toml"))?;
+    Ok(ws["workspace"]["members"]
         .as_array()
         .ok_or("workspace.members isn't a list")?
         .iter()
         .filter_map(|v| v.as_str().map(String::from))
-        .collect();
+        .collect())
+}
+
+/// Whether this lint reads `rel`, a path from the workspace's root, as part of
+/// `member`. A member's own `target/` is build output, and a module named `target` isn't.
+pub fn reads(member: &str, rel: &str) -> bool {
+    rel.strip_prefix(member)
+        .and_then(|r| r.strip_prefix('/'))
+        .is_some_and(|r| r.ends_with(".rs") && !r.starts_with("target/"))
+}
+
+pub fn run(root: &Path) -> Result {
+    let mut errors = Vec::new();
+    let ws: Table = parse(&root.join("Cargo.toml"))?;
+    let members = members(root)?;
 
     if let Some(deps) = ws["workspace"]
         .get("dependencies")
@@ -191,7 +210,7 @@ pub fn run(root: &Path) -> Result {
                 .unwrap_or(&file)
                 .to_string_lossy()
                 .into_owned();
-            if rel.contains("/target/") {
+            if !reads(m, &rel) {
                 continue;
             }
             let src = read(&file)?;
@@ -637,27 +656,22 @@ pub fn check_unsafe_allows(rel: &str, src: &str, errors: &mut Vec<String>) {
 /// keyword. Reading these also catches a lint level a macro builds
 /// (`#[allow($lint)]`), which neither the lint nor `check_unsafe_allows` sees.
 ///
-/// Everywhere: `include!` by any name, the `path` attribute and an attribute a macro
-/// builds, which can be `path`. Each can compile a file this lint never reads. A
-/// format argument named `path` trips it (`format!("{path}", path = p)`), and `{}`
-/// avoids that.
+/// Everywhere: `include!` by any name and the `path` attribute, since each can compile
+/// a file this lint never reads. These two give the clear message before a build. A
+/// macro can build a `path` attribute this can't see, and `cargo xtask sources`
+/// catches that. A format argument named `path` trips this
+/// (`format!("{path}", path = p)`), and `{}` avoids that.
 ///
 /// Everywhere: `UNSAFE_BLOCK_LINTS` and `UNSAFE_BLOCK_GROUP` as identifiers. The
 /// manifest denies those lints, and an `allow` in the code would turn them off, even
 /// one a macro builds, which still has to name them in its call. So a variable
 /// named `restriction` trips this too, and another name avoids that.
 pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
-    use crate::count::{Tok, lex, skip_group};
+    use crate::count::{Tok, lex};
     let toks = lex(src);
     let p = |i: usize, c: char| toks.get(i).map(|x| &x.0) == Some(&Tok::Punct(c));
     let unsafe_ok = UNSAFE_DIRS.iter().any(|d| rel.starts_with(d));
-    // Tokens inside a `cfg_attr(...)`, where a macro fragment can be an attribute too.
-    let mut in_cfg_attr = 0;
     for (i, (t, line, _)) in toks.iter().enumerate() {
-        // `#[$...` or `#![$...`, but not `vec![$...`.
-        let starts_attr = i >= 2
-            && p(i - 1, '[')
-            && (p(i - 2, '#') || (i >= 3 && p(i - 2, '!') && p(i - 3, '#')));
         let what = match t {
             Tok::Ident(w) if (w == "unsafe" || w == "global_asm") && !unsafe_ok => {
                 format!("`{w}` outside {}", UNSAFE_DIRS.join(", "))
@@ -679,13 +693,6 @@ pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
                     "`{w}`: die-render's manifest denies the unsafe-block lints, and code \
                      may not change their level"
                 )
-            }
-            Tok::Ident(w) if w == "cfg_attr" && p(i + 1, '(') => {
-                in_cfg_attr = skip_group(&toks, i + 1).unwrap_or(i);
-                continue;
-            }
-            Tok::Punct('$') if starts_attr || i < in_cfg_attr => {
-                "an attribute built from a macro fragment (it can be `path`)".into()
             }
             _ => continue,
         };
@@ -832,6 +839,8 @@ mod tests {
         );
         assert_eq!(check(render, "#[allow(warnings)]\npub mod macos;\n"), 1);
         assert_eq!(check(lib, "#![warn(warnings)]\n#![allow(dead_code)]\n"), 0);
+        // Raw identifiers are the same names.
+        assert_eq!(check(lib, "#[r#allow(r#unsafe_code)]\nmod m {}\n"), 1);
         assert_eq!(check(lib, "fn f() { log::warn!(\"unsafe_code\"); }\n"), 0);
         // Not attributes, or not allows.
         assert_eq!(
@@ -879,10 +888,11 @@ mod tests {
             "include!(\"x.rs\");\n",
             "use core::include as inc;\n",
             "#[cfg_attr(test, path = \"x.rs\")]\nmod x;\n",
-            "macro_rules! m { ($k:ident) => { #[$k = \"x.rs\"] mod x; } }\n",
-            "macro_rules! m { ($a:meta) => { #[$a] mod x; } }\n",
-            "macro_rules! m { ($a:meta) => { #[cfg_attr(all(), $a)] mod x; } }\n",
-            "macro_rules! m { ($($t:tt)*) => { #![$($t)*] } }\n",
+            // Raw identifiers are the same names.
+            "#[r#path = \"x.rs\"]\nmod x;\n",
+            "#[cfg_attr(test, r#path = \"x.rs\")]\nmod x;\n",
+            "r#include!(\"x.rs\");\n",
+            "core::arch::r#global_asm!(\"nop\");\n",
         ];
         for src in flagged {
             assert_eq!(check(core, src).len(), 1, "{src}");
@@ -914,7 +924,12 @@ mod tests {
                 "macro_rules! m { ($a:expr, $b:expr) => { f($a, $b) } }\n",
             ),
             (core, "macro_rules! m { ($a:expr) => { vec![$a] } }\n"),
-            (core, "#[cfg_attr(test, derive(Debug))]\nstruct S;\n$;\n"),
+            // A macro passing attributes through: `cargo xtask sources` holds the `path`
+            // one can build.
+            (
+                core,
+                "macro_rules! m { ($(#[$m:meta])*) => { $(#[$m])* struct S; } }\n",
+            ),
         ];
         for (rel, src) in fine {
             assert_eq!(check(rel, src), Vec::<String>::new(), "{src}");
@@ -954,6 +969,26 @@ mod tests {
             "#[allow(clippy::needless_return)]\nfn f() {}\n",
         ] {
             assert_eq!(check(macos, src), 0, "{src}");
+        }
+    }
+
+    #[test]
+    fn the_lint_reads_what_is_in_a_member_but_its_target() {
+        for (rel, read) in [
+            ("crates/die-render/src/lib.rs", true),
+            ("crates/die-render/tests/x.rs", true),
+            // A module named `target` is code.
+            ("crates/die-render/src/target/mod.rs", true),
+            ("crates/die-render/src/a/target/b.rs", true),
+            // The member's own `target` is build output.
+            ("crates/die-render/target/x.rs", false),
+            // Not Rust, or not this member.
+            ("crates/die-render/src/x.txt", false),
+            ("crates/die-render2/src/x.rs", false),
+            ("crates/die-core/src/x.rs", false),
+            ("docs/x.rs", false),
+        ] {
+            assert_eq!(reads("crates/die-render", rel), read, "{rel}");
         }
     }
 
