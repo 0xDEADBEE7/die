@@ -1,0 +1,14 @@
+{"topic": "insert-tty", "run": "tty",
+ "defaults": {"window": {"width": 40, "height": 10}},
+ "cases": [
+  {"id": "down-down-keeps-column", "keys": "i<Down><Down>X<Esc>", "text": ["abcd|ef", "ab", "abcdef"]},
+  {"id": "up-up-keeps-column", "keys": "i<Up><Up>X<Esc>", "text": ["abcdef", "ab", "abcd|ef"]},
+  {"id": "down-once", "keys": "i<Down>X<Esc>", "text": ["abcd|ef", "ab", "abcdef"]},
+  {"id": "goal-starts-at-the-session", "description": "The goal j kept in normal state doesn't carry into insert state", "keys": "ji<Down>X<Esc>", "text": ["abcd|ef", "ab", "abcdef"]},
+  {"id": "typing-resets-the-goal", "keys": "i<Down>Y<Down>X<Esc>", "text": ["abcd|ef", "ab", "abcdef"]},
+  {"id": "down-onto-the-last-empty-line", "vim": "end-line: Vim's second Down fails on the last line; Evil's moves past the final newline", "keys": "i<Down><Down>X<Esc>", "text": ["a|b", "cd"]},
+  {"id": "down-past-the-end-fails", "vim": "end-line: Vim's second Down fails on the last line; Evil's moves past the final newline, and its third fails", "keys": "i<Down><Down><Down>X<Esc>", "text": ["a|b", "cd"]},
+  {"id": "up-past-the-start-fails", "keys": "i<Up>X<Esc>", "text": ["a|b", "cd"]},
+  {"id": "down-into-a-tab", "keys": "i<Down>X<Esc>", "text": ["abc|defgh", "\tij"]},
+  {"id": "down-into-a-wide-char", "keys": "i<Down>X<Esc>", "text": ["a|bcdefgh", "日本語"]}
+ ]}

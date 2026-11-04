@@ -6,7 +6,7 @@
   {"id": "ctrl-d-count", "keys": "3<C-d>"},
   {"id": "ctrl-d-count-sticks", "vim": "scroll: in Vim a count to C-d sets the scroll amount for later C-d; in Evil the next C-d scrolls half a window", "keys": "3<C-d><C-d>"},
   {"id": "ctrl-d-near-end", "vim": "scroll: near the end Vim moves the cursor to line 38; Evil to the last line", "keys": "35G<C-d>"},
-  {"id": "ctrl-d-at-end", "vim": "end-line: Vim stays on the last line without an error", "keys": "G<C-d>"},
+  {"id": "ctrl-d-at-end", "vim": "end-line: Vim's G lands on the last line and C-d there fails; Evil's G lands past the final newline, where C-d fails too", "keys": "G<C-d>"},
   {"id": "ctrl-u-is-prefix-arg", "vim": "scroll: Vim's C-u scrolls up; in Evil C-u is the prefix argument (4j)", "keys": "<C-u>j"},
   {"id": "ctrl-u-does-not-scroll", "vim": "scroll: Vim's C-u scrolls up half a window; Evil's doesn't scroll", "keys": "20G<C-u>"},
   {"id": "ctrl-f", "keys": "<C-f>"},
@@ -17,7 +17,7 @@
   {"id": "ctrl-e", "keys": "<C-e>"},
   {"id": "ctrl-e-ctrl-y", "keys": "<C-e><C-e><C-y>"},
   {"id": "ctrl-e-pushes-cursor", "keys": "5<C-e>"},
-  {"id": "ctrl-y-at-top", "keys": "<C-y>"},
+  {"id": "ctrl-y-at-top", "vim": "errors: at the top Vim's C-y does nothing, silently; Evil's fails", "keys": "<C-y>"},
   {"id": "zz", "keys": "20Gzz"},
   {"id": "zz-near-top", "keys": "3Gzz"},
   {"id": "zt", "keys": "20Gzt"},
@@ -29,8 +29,8 @@
   {"id": "3L", "keys": "3L"},
   {"id": "H-after-jump", "keys": "20GH"},
   {"id": "M-after-jump", "vim": "window: Vim's M picks the upper middle line; Evil the lower", "keys": "20GM"},
-  {"id": "H-at-end", "vim": "window: after G Vim shows the last line at the bottom; Evil centers it, so H lands lower", "keys": "GH"},
+  {"id": "H-at-end", "vim": "end-line, window: after G Vim shows the last line at the bottom; Evil centers it, so H lands lower", "keys": "GH"},
   {"id": "dL", "keys": "dL"},
-  {"id": "M-short-buffer", "vim": "window: Vim's M uses the middle of the text shown; Evil the middle of the window, clamped to the end", "keys": "M", "text": ["|a", "b", "c", "d"]},
+  {"id": "M-short-buffer", "vim": "end-line, window: Vim's M uses the middle of the text shown; Evil the middle of the window, clamped to the end", "keys": "M", "text": ["|a", "b", "c", "d"]},
   {"id": "L-short-buffer", "vim": "end-line: Vim's L stops on the last line", "keys": "L", "text": ["|a", "b", "c", "d"]}
  ]}

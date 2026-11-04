@@ -21,7 +21,9 @@
   {"id": "preset-line-selection-y", "keys": "y", "visual": "line", "text": ["<|one", "tw>o", "three"]},
   {"id": "v-p-replaces-and-swaps", "keys": "yiwwviwp$p", "text": ["|foo bar"]},
   {"id": "V-p-linewise", "vim": "end-line, Evil bug: Vp on the last line gives one\\none\\n in Vim; Evil leaves an empty line and drops the final newline", "keys": "yyjVp", "text": ["|one", "two"]},
-  {"id": "gv-reselects", "keys": "vey<Esc>wgvd", "text": ["|abc def"]},
+  {"id": "gv-reselects", "vim": "errors: Vim beeps on the Esc after y, which has nothing to cancel; Evil's doesn't", "keys": "vey<Esc>wgvd", "text": ["|abc def"]},
   {"id": "V-J", "keys": "VjjJ", "text": ["|a", "b", "c"]},
-  {"id": "v-c", "keys": "vecX<Esc>", "text": ["|foo bar"]}
+  {"id": "v-c", "keys": "vecX<Esc>", "text": ["|foo bar"]},
+  {"id": "V-P-last-line", "vim": "end-line, Evil bug: VP on the last line gives one\\none\\n in Vim; Evil leaves an empty line and drops the final newline", "keys": "yyjVP", "text": ["|one", "two"]},
+  {"id": "V-j-p-last-two-lines", "vim": "end-line, Evil bug: Vjp over the last two lines gives one\\none\\n in Vim; Evil leaves an empty line and drops the final newline", "keys": "yyjVjp", "text": ["|one", "two", "three"]}
  ]}

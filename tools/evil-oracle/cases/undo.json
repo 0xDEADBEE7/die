@@ -19,5 +19,6 @@
   {"id": "u-cursor-after-later-move", "keys": "x$u", "text": ["a|bcdef"]},
   {"id": "R-one-step", "keys": "Rxy<Esc>u", "text": ["|abcd"]},
   {"id": "block-insert-one-step", "keys": "<C-v>jIX<Esc>u", "text": ["|ab", "cd"]},
-  {"id": "u-then-dot", "keys": "dwu.", "text": ["|foo bar"]}
+  {"id": "u-then-dot", "keys": "dwu.", "text": ["|foo bar"]},
+  {"id": "u-back-to-last-empty-line", "keys": "ifoo<CR><Esc>ibar<Esc>u", "text": "|"}
  ]}

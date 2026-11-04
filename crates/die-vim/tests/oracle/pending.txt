@@ -1,6 +1,53 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
 
+# V1 (45)
+V1 motions/count-ctrl-a
+V1 motions/count-ctrl-a-past-end
+V1 motions/last-empty-line-0
+V1 motions/last-empty-line-2dollar
+V1 motions/last-empty-line-caret
+V1 motions/last-empty-line-close-brace
+V1 motions/last-empty-line-dollar
+V1 motions/o-esc-0-no-final-newline
+V1 motions/script-w-arabic-latin
+V1 motions/script-w-armenian-latin
+V1 motions/script-w-cyr-digit
+V1 motions/script-w-cyrillic-latin
+V1 motions/script-w-devanagari-bengali
+V1 motions/script-w-devanagari-latin
+V1 motions/script-w-georgian-latin
+V1 motions/script-w-greek-cyr
+V1 motions/script-w-halfkana-latin
+V1 motions/script-w-hebrew-latin
+V1 motions/script-w-hiragana-katakana
+V1 motions/script-w-katakana-halfkana
+V1 motions/script-w-latin-arabic
+V1 motions/script-w-latin-armenian
+V1 motions/script-w-latin-cherokee
+V1 motions/script-w-latin-coptic
+V1 motions/script-w-latin-cyrillic
+V1 motions/script-w-latin-devanagari
+V1 motions/script-w-latin-digit-cyr
+V1 motions/script-w-latin-ethiopic
+V1 motions/script-w-latin-georgian
+V1 motions/script-w-latin-greekext
+V1 motions/script-w-latin-halfkana
+V1 motions/script-w-latin-hebrew
+V1 motions/script-w-latin-khmer
+V1 motions/script-w-latin-myanmar
+V1 motions/script-w-latin-phonetic
+V1 motions/script-w-latin-runic
+V1 motions/script-w-latin-thai
+V1 motions/script-w-latin1-greek
+V1 motions/script-w-latinext-greek
+V1 motions/script-w-phonetic-latin
+V1 motions/script-w-tamil-latin
+V1 motions/script-w-thai-latin
+V1 motions/short-h-keeps-goal-column
+V1 motions/short-l-keeps-goal-column
+V1 undo/u-back-to-last-empty-line
+
 # V2 (14)
 V2 ex/goto-line
 V2 search/hash-backward
@@ -17,7 +64,7 @@ V2 search/star-case
 V2 search/star-n
 V2 search/star-whole-word
 
-# V3 (104)
+# V3 (108)
 V3 motions/f-not-found
 V3 operators/2X
 V3 operators/2cw
@@ -42,11 +89,15 @@ V3 operators/cw-on-whitespace
 V3 operators/d5l-past-end
 V3 operators/dE
 V3 operators/db-at-line-start
+V3 operators/dd-after-dollar-j
+V3 operators/dd-after-j-to-short-line
+V3 operators/dd-keeps-column
 V3 operators/dd-last-line-no-final-newline
 V3 operators/de
 V3 operators/df-paren
 V3 operators/dgg
 V3 operators/dj
+V3 operators/dk-keeps-column
 V3 operators/dt-paren
 V3 operators/dw
 V3 operators/dw-last-word-of-line
@@ -123,7 +174,7 @@ V3 undo/u-cursor-after-later-move
 V3 undo/u-past-oldest
 V3 undo/u-u
 
-# V4 (53)
+# V4 (56)
 V4 insert/R-backspace-restores
 V4 insert/R-count
 V4 insert/R-ends-in-replace-state
@@ -131,6 +182,9 @@ V4 insert/R-past-eol
 V4 insert/R-replace
 V4 macros/at-at
 V4 macros/count-play
+V4 macros/dot-after-motion-macro
+V4 macros/dot-in-macro-repeats-earlier-change
+V4 macros/dot-replays-macro
 V4 macros/macro-with-search
 V4 macros/paste-macro-register
 V4 macros/preset-macro
@@ -191,15 +245,13 @@ V5 ex/s-smartcase-upper
 V5 ex/s-undo-one-step
 V5 ex/s-visual-range
 
-# V6 (40)
+# V6 (52)
 V6 geometry/3L
 V6 geometry/H
 V6 geometry/H-after-jump
-V6 geometry/H-at-end
 V6 geometry/L
 V6 geometry/M
 V6 geometry/M-after-jump
-V6 geometry/M-short-buffer
 V6 geometry/ctrl-b-at-top
 V6 geometry/ctrl-b-from-30
 V6 geometry/ctrl-d
@@ -221,13 +273,27 @@ V6 geometry/zb
 V6 geometry/zt
 V6 geometry/zz
 V6 geometry/zz-near-top
+V6 insert-tty/down-down-keeps-column
+V6 insert-tty/down-into-a-tab
+V6 insert-tty/down-into-a-wide-char
+V6 insert-tty/down-once
+V6 insert-tty/down-onto-the-last-empty-line
+V6 insert-tty/down-past-the-end-fails
+V6 insert-tty/goal-starts-at-the-session
+V6 insert-tty/typing-resets-the-goal
+V6 insert-tty/up-past-the-start-fails
+V6 insert-tty/up-up-keeps-column
 V6 wrapped/2gj-into-next-line
+V6 wrapped/count-ctrl-a-wrapped
+V6 wrapped/ctrl-a-wrapped
 V6 wrapped/dgj
 V6 wrapped/dollar-is-logical
 V6 wrapped/gj
 V6 wrapped/gj-keeps-column
 V6 wrapped/gk
 V6 wrapped/gk-in-tail
+V6 wrapped/insert-down-wrapped
+V6 wrapped/insert-up-wrapped
 V6 wrapped/j-is-logical
 V6 wrapped/j-keeps-logical-column
 V6 wrapped/k-is-logical

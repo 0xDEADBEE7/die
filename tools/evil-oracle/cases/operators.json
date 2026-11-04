@@ -53,5 +53,12 @@
   {"id": "xp-swaps", "keys": "xp", "text": ["|ab"]},
   {"id": "shift-right-rounds", "vim": "shiftround: Vim shifts 2 spaces to 6; Evil rounds to 4", "keys": ">>", "text": ["  |foo"]},
   {"id": "dd-last-line-no-final-newline", "keys": "dd", "text": "one\ntwo\n|three"},
-  {"id": "ctrl-a-does-not-increment", "description": "Outside scope \u00a710: probes whether the user's Evil has Vim's C-a", "vim": "outside \u00a710: Vim's C-a increments the number to 6; the user's Evil has no C-a in normal state", "keys": "<C-a>", "text": ["|5"]}
+  {"id": "ctrl-a-does-not-increment", "description": "Outside scope \u00a710: probes whether the user's Evil has Vim's C-a", "vim": "outside \u00a710: Vim's C-a increments the number to 6; the user's Evil has no C-a in normal state", "keys": "<C-a>", "text": ["|5"]},
+  {"id": "dj-last-line", "vim": "end-line: Vim's dj fails on the last line and deletes nothing; Evil deletes the line and leaves the cursor past the final newline", "keys": "dj", "text": ["a", "|b"]},
+  {"id": "dd-keeps-column", "vim": "startofline: Vim moves to the first non-blank; Evil keeps the column", "keys": "dd", "text": ["  a|bc", "  defgh", "x"]},
+  {"id": "dk-keeps-column", "vim": "startofline: Vim moves to the first non-blank; Evil keeps the column", "keys": "dk", "text": ["one", "  two", "thr|ee", "fourth"]},
+  {"id": "dd-after-j-to-short-line", "vim": "startofline: Vim moves to the first non-blank; Evil keeps the column", "keys": "jdd", "text": ["abcd|ef", "ab", "abcdef", "q"]},
+  {"id": "dd-after-dollar-j", "vim": "startofline: Vim moves to the first non-blank; after $ Evil goes to the line's end", "keys": "$jdd", "text": ["abcd|ef", "ab", "abcdef", "q"]},
+  {"id": "dk-last-lines-column", "vim": "end-line, startofline: Vim's cursor goes to the first non-blank of line 0; Evil's goes past the final newline", "keys": "dk", "text": ["  one", "  two", "thr|ee"]},
+  {"id": "dG-column", "vim": "end-line, startofline: Vim's cursor goes to the first non-blank of the new last line; Evil's goes past the final newline", "keys": "dG", "text": ["  one", "t|wo", "three"]}
  ]}

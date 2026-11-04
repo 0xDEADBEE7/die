@@ -193,7 +193,7 @@ The last column is my proposal for die-vim. "Evil" means keep Evil's behaviour, 
 
 | # | Area | Your Evil | Textbook Vim | Cases | die-vim |
 |---|---|---|---|---|---|
-| 1 | End of file | The cursor can rest on the empty line after the final newline: `G`, `5j` past the end, `w` on the last word, `}`, `dd`/`dk`/`dG` on the last lines, `L` in a short buffer, `C-d` at the end, `gj` on the last line | The last line is the last line | 13 | **Vim** (an Emacs buffer artifact) |
+| 1 | End of file | The cursor can rest on the empty line after the final newline: `G`, `5j` past the end, `w` on the last word, `}`, `dd`/`dk`/`dG`/`dj` on the last lines, `L` and `M` in a short buffer, `C-d` and `H` after `G`, `gj` on the last line | The last line is the last line | 19 | **Evil without the final newline** (an Emacs buffer artifact; see below) |
 | 2 | Column after jumps | `gg`, `G`, `:N`, `>>`, `<<`, `dk` keep the column | `startofline` moves to the first non-blank | 12 | Evil |
 | 3 | Shifts | Round to a multiple of 4: 6 spaces `<<` gives 4, 2 spaces `>>` gives 4 | 6 → 2, 2 → 6 | 2 | Evil |
 | 4 | Indentation | `cc`, `S`, `O` indent by the major mode: in text, like the line above; Lisp and Python modes indent by language | Copy the current line's indent | 6 | Evil (line above); languages later, per mode |
@@ -203,19 +203,22 @@ The last column is my proposal for die-vim. "Evil" means keep Evil's behaviour, 
 | 8 | Numbered registers | `"1`–`"9` are the kill ring: `"1` is the last yank or delete of any size | `"1` is the last delete of a line or more | 2 | Evil |
 | 9 | Appending registers | After `"Ay`, `"` holds only the new text | `"` holds all of `"a` | 2 | Evil |
 | 10 | `*` and `#` | Use smartcase | Ignore smartcase | 1 | Evil |
-| 11 | Search count | `2/x` ignores the count | Goes to the 2nd match | 1 | **Vim** (missing in Evil) |
-| 12 | Empty search | `/<CR>` does nothing | Repeats the last search | 1 | **Vim** (missing in Evil) |
+| 11 | Search count | `2/x` and `2?x` ignore the count | Go to the 2nd match | 1 | **Vim** (missing in Evil) |
+| 12 | Empty search | `/<CR>` does nothing | Repeats the last search, and with none is an error | 1 | **Vim** (missing in Evil) |
 | 13 | `:s` case | Keeps the case of the match: `Foo` → `X` for `:s/foo/x/` | Inserts `x` | 1 | Evil |
 | 14 | Paragraphs | `}` stops at lines holding only spaces | Only at empty lines | 1 | Evil |
 | 15 | `J` | One space after a period | Two (`joinspaces` is on by default) | 1 | Evil |
 | 16 | Cursor details | `yip` leaves the cursor where it was; block `A` leaves it after the first append | Moves to the start | 2 | Evil |
-| 17 | `.` in a macro | Signals an error instead of repeating the macro's own change (Evil runs macros without command hooks) | Repeats it | 2 | **Vim** (Evil bug) |
-| 18 | `Vp` on the last line | Leaves an empty line and drops the final newline | Replaces the line | 1 | **Vim** (Evil bug, from #1) |
+| 17 | `.` in a macro | Repeats the last change made before the macro ran, and errors when there is none (Evil runs macros without command hooks). After `@a`, `.` replays the macro, but errors after an operator | Repeats the macro's own last change, in the macro and after it | 3 | **Vim** in the macro (Evil bug); after `@a`, **Evil's** replay without its error |
+| 18 | `Vp`, `VP` and `Vjp` over the last lines | Leave an empty line and drop the final newline | Replace the lines | 3 | **Vim** (Evil bug, from #1) |
 | 19 | Scrolling | `C-u` is the prefix argument; a count on `C-d` doesn't stick; after `C-b`, and near the end after `C-d`, the cursor lands a line or two off Vim's | `C-u` scrolls; a `C-d` count sticks | 6 | Evil |
-| 20 | Window lines | `M` takes the lower middle line, and uses the window's middle even in a short buffer; `G` recenters, so `H` lands lower; `3H` goes to the 4th line | Upper middle, text's middle, last line at the bottom, 3rd line | 5 | Evil, except **`3H` → Vim** (bug) |
+| 20 | Window lines | `M` takes the lower middle line, and uses the window's middle even in a short buffer; `G` recenters, so `H` lands lower; `nH` goes to line n+1 | Upper middle, text's middle, last line at the bottom, line n | 5 | Evil, except **`nH` → Vim** (bug) |
 | 21 | `C-a` (outside §10) | Not bound | Increments a number | 1 | Out of scope |
+| 22 | Combining marks | `e` and `$` onto a letter with a combining mark leave the cursor after the mark, on the space or the newline (Emacs's command loop, not Evil's grammar) | Stay on the letter | 3 | **Vim** (an Emacs artifact) |
 
 Rows 1–4 and 8 affect everyday editing most. Row 1 is also a question for core, not only die-vim: should a file that ends in a newline show an empty last line?
+
+**Updated 2026-11-05, after the deferred reviews.** Rows 1, 11, 12, 17, 18 and 20 are reworded, and row 22 is new. The deviations review compared errors too, which this section's first run didn't: `compare.vim` now counts Vim's beeps against Evil's errors. Row 1's choice now reads "Evil without the final newline": each of its fixtures takes its cursor and errors from your Evil on the same text without its final newline, and its text and registers from the run with the newline. The exact rules are in `crates/die-vim/tests/oracle/deviations.json`. Three things that differ from Vim stay Evil's, and aren't rows here: `N%` goes N percent through the characters, `e` stops on empty lines, and Esc resets the goal column.
 
 ## 5. Surprises, risks and decisions for you
 
@@ -232,7 +235,7 @@ Rows 1–4 and 8 affect everyday editing most. Row 1 is also a question for core
 
 - **Indentation.** die-vim indents new lines like the line above (Evil in text buffers). Language-aware indentation is a mode hook, later.
 - **Kept Evil's way:** columns after jumps (no `startofline`), shift rounding, numbered registers as the kill ring, smartcase on `*`/`#`, case-keeping `:s`, whitespace-only lines as paragraph breaks, one space on `J`, and Evil's window and scroll positions.
-- **Regex syntax.** One case uses Emacs regex groups, `:s/\(foo\) \(bar\)/\2 \1/`. With D4's Rust regex, die-vim's test must use `:s/(foo) (bar)/$2 $1/` instead. The case says so in its description, and future regex cases need the same note.
+- **Regex syntax.** One case uses Emacs regex groups, `:s/\(foo\) \(bar\)/\2 \1/`. With D4's Rust regex, die-vim's test must use `:s/(foo) (bar)/$2 $1/` instead. The case says so in its description, and future regex cases need the same note. Replacements are Rust's too (`$N`, `${N}`, `$name`, `$$`), so `$1x` names a group called `1x`, and a group followed by a letter needs `${1}x`.
 - **Fixtures are committed.** `cargo test` reads them with no Emacs installed. Emacs and Evil are dev-only tools for regenerating them, as D16 allows.
 
 ### Surprises
