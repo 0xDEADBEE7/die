@@ -364,6 +364,7 @@ pub struct Ctx {
     prompt: Option<Prompt>,
     clock: Duration,
     cmd_seq: u64,
+    /// The window the running command acts for. With none, the focused window acts.
     cur_window: Option<WindowId>,
     registers: HashMap<char, Register>,
     pub(crate) files: crate::files::Files,
@@ -732,6 +733,7 @@ impl Ctx {
     pub fn text_mut(&mut self, buf: BufferId) -> Result<&mut TextBuf> {
         let actor = self
             .cur_window
+            .or(self.focused)
             .filter(|w| self.windows.get(*w).is_some_and(|w| w.buffer == buf));
         let cmd = self.cmd_seq;
         match &mut self.buffers.get_mut(buf).ok_or(Checkout::Gone)?.content {
@@ -755,13 +757,14 @@ impl Ctx {
         if let Content::Text(t) = &mut self.buffers[buf].content {
             t.add_view(w, cols, rows);
         }
-        self.focused = Some(w);
-        self.cur_window = Some(w);
+        self.focus(w);
         Ok(w)
     }
     pub fn focus(&mut self, w: WindowId) {
         if self.windows.contains_key(w) {
             self.focused = Some(w);
+            // A running command goes on acting for the window it moved the focus to.
+            self.cur_window = self.cur_window.and(Some(w));
         }
     }
     pub fn focused(&self) -> Option<WindowId> {
@@ -904,7 +907,8 @@ impl Ctx {
 
     // -------------------------------------------------------------- commands
 
-    /// Run a command now. The one explicit way to nest extension calls (C3).
+    /// Run a command now. The one explicit way to nest extension calls (C3). It acts for
+    /// `args.window`, or with none, for whichever window its caller acts for (contract §9).
     pub fn run(&mut self, name: &str, args: &Args) -> Result {
         let (f, owner) = {
             let c = self
@@ -913,7 +917,11 @@ impl Ctx {
                 .ok_or_else(|| Error::NoCommand(name.into()))?;
             (c.f.clone(), c.owner)
         };
-        self.guarded(owner, |ctx| f(ctx, args))
+        let outer = self.cur_window;
+        self.cur_window = args.window.or(outer);
+        let r = self.guarded(owner, |ctx| f(ctx, args));
+        self.cur_window = outer;
+        r
     }
 
     /// Run a Hide's reveal policy for every Hide covering `pos`. Returns whether `pos` is visible.
@@ -1139,7 +1147,6 @@ impl Ctx {
         if let Some(q) = self.queue.pop_front() {
             if q.alive.as_ref().is_none_or(|a| a.alive.get()) {
                 self.cmd_seq += 1;
-                self.cur_window = self.focused;
                 let r = self.guarded(q.ext, q.f);
                 self.report(r);
                 // Code that runs between units (the host, a harness) gets a number of its own.
@@ -1286,7 +1293,6 @@ impl Ctx {
             buffer: Some(buf),
             ..Default::default()
         };
-        self.cur_window = Some(win);
         let r = self.run(name, &args);
         self.report(r);
     }

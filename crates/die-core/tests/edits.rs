@@ -471,3 +471,144 @@ fn undo_moves_another_windows_cursor_like_any_other_edit() {
     assert_eq!(text(&ctx, b), "abcd");
     assert_eq!(ctx.text(b).unwrap().cursor(other), Some(1));
 }
+
+// ---------------------------------------------------------------- the acting window
+
+thread_local! {
+    /// Where the `go` command below moves the focus, and the window `open-insert` opened.
+    static TARGET: std::cell::Cell<Option<WindowId>> = const { std::cell::Cell::new(None) };
+}
+
+fn insert_x(ctx: &mut Ctx, b: BufferId) -> Result {
+    let t = ctx.text_mut(b)?;
+    t.tx(Origin::Extension).silent().insert(1, "x").commit()?;
+    Ok(())
+}
+
+struct Acting;
+impl Extension for Acting {
+    fn name(&self) -> &'static str {
+        "acting"
+    }
+    fn register(&mut self, reg: &mut Registry) {
+        reg.command("insert", "", |ctx, a| insert_x(ctx, a.buffer.unwrap()));
+        reg.command("nested-insert", "", |ctx, a| {
+            let inner = Args {
+                buffer: a.buffer,
+                ..Default::default()
+            };
+            ctx.run("insert", &inner)
+        });
+        reg.command("go", "", |ctx, _| {
+            ctx.focus(TARGET.get().unwrap());
+            Ok(())
+        });
+        reg.command("go-and-insert", "", |ctx, a| {
+            ctx.focus(TARGET.get().unwrap());
+            insert_x(ctx, a.buffer.unwrap())
+        });
+        reg.command("open-and-insert", "", |ctx, a| {
+            let b = a.buffer.unwrap();
+            let opened = ctx.open_window(b, 40, 5)?;
+            TARGET.set(Some(opened));
+            ctx.text_mut(b)?.set_cursor(opened, 1);
+            insert_x(ctx, b)
+        });
+    }
+}
+
+/// Windows `first` and `second` on "abc", both cursors at 1, and the focus on `first`.
+fn two_windows() -> (Ctx, BufferId, WindowId, WindowId) {
+    let mut ctx = Ctx::new(vec![Box::new(Acting)]).unwrap();
+    let b = ctx.create_text("t", "abc");
+    let first = ctx.open_window(b, 40, 5).unwrap();
+    let second = ctx.open_window(b, 40, 5).unwrap();
+    ctx.focus(first);
+    at_one(&mut ctx, b, first, second);
+    (ctx, b, first, second)
+}
+
+fn at_one(ctx: &mut Ctx, b: BufferId, w1: WindowId, w2: WindowId) {
+    let t = ctx.text_mut(b).unwrap();
+    t.set_cursor(w1, 1);
+    t.set_cursor(w2, 1);
+}
+
+fn cursors(ctx: &Ctx, b: BufferId, w1: WindowId, w2: WindowId) -> (usize, usize) {
+    let t = ctx.text(b).unwrap();
+    (t.cursor(w1).unwrap(), t.cursor(w2).unwrap())
+}
+
+/// Run a command from a callback, where the focused window would otherwise act.
+fn run_for(ctx: &mut Ctx, name: &'static str, b: BufferId, window: Option<WindowId>) {
+    let args = Args {
+        window,
+        buffer: Some(b),
+        ..Default::default()
+    };
+    ctx.defer(move |c| c.run(name, &args));
+    ctx.run_until_idle();
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+}
+
+/// Code between commands acts for the focused window, not the last one opened.
+#[test]
+fn between_commands_the_focused_window_acts() {
+    let (mut ctx, b, first, second) = two_windows();
+    insert_x(&mut ctx, b).unwrap();
+    assert_eq!(cursors(&ctx, b, first, second), (2, 1));
+}
+
+#[test]
+fn a_command_acts_for_the_window_it_was_run_for() {
+    let (mut ctx, b, first, second) = two_windows();
+    run_for(&mut ctx, "insert", b, Some(second));
+    assert_eq!(cursors(&ctx, b, first, second), (1, 2));
+}
+
+#[test]
+fn a_command_run_with_no_window_acts_for_the_focused_one() {
+    let (mut ctx, b, first, second) = two_windows();
+    run_for(&mut ctx, "insert", b, None);
+    assert_eq!(cursors(&ctx, b, first, second), (2, 1));
+}
+
+/// A command run with no window, inside one run for a window, acts for that window. When
+/// they've returned, the focused window acts again.
+#[test]
+fn a_nested_command_with_no_window_acts_for_its_callers() {
+    let (mut ctx, b, first, second) = two_windows();
+    run_for(&mut ctx, "nested-insert", b, Some(second));
+    assert_eq!(cursors(&ctx, b, first, second), (1, 2));
+    at_one(&mut ctx, b, first, second);
+    insert_x(&mut ctx, b).unwrap();
+    assert_eq!(cursors(&ctx, b, first, second), (2, 1));
+}
+
+/// Moving the focus inside a command moves the acting window with it.
+#[test]
+fn a_command_goes_on_acting_for_the_window_it_focused() {
+    let (mut ctx, b, first, second) = two_windows();
+    TARGET.set(Some(second));
+    run_for(&mut ctx, "go-and-insert", b, Some(first));
+    assert_eq!(cursors(&ctx, b, first, second), (1, 2));
+}
+
+/// Once a command that moved the focus has returned, the new window acts.
+#[test]
+fn code_after_a_command_that_moved_the_focus_acts_for_the_new_window() {
+    let (mut ctx, b, first, second) = two_windows();
+    TARGET.set(Some(second));
+    run_for(&mut ctx, "go", b, Some(first));
+    insert_x(&mut ctx, b).unwrap();
+    assert_eq!(cursors(&ctx, b, first, second), (1, 2));
+}
+
+/// A command that opens a window and writes to it acts for the window it opened.
+#[test]
+fn a_command_acts_for_a_window_it_opened() {
+    let (mut ctx, b, first, _) = two_windows();
+    run_for(&mut ctx, "open-and-insert", b, Some(first));
+    let opened = TARGET.get().unwrap();
+    assert_eq!(cursors(&ctx, b, first, opened), (1, 2));
+}

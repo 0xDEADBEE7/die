@@ -228,7 +228,7 @@ The text surface belongs to core. This section covers what extensions can do wit
 
 **Markers.** A marker is a position that moves with edits. Its gravity decides whether it stays before text inserted at it or moves after it. orchid's input marker and its streaming insertion point become markers.
 
-**Cursors and selections.** Each window has its own cursor and selection (C10). A selection has a shape (char, line or block) and a goal column for vertical motion. Extensions can read and set them in a given window, or in the focused one. Text inserted at a window's cursor goes after it in the acting window (the one running the command, or the focused one for a callback) and before it in every other window, as Emacs's window points do. An extension that wants a window to follow its output sets that window's cursor.
+**Cursors and selections.** Each window has its own cursor and selection (C10). A selection has a shape (char, line or block) and a goal column for vertical motion. Extensions can read and set them in a given window, or in the focused one. Text inserted at a window's cursor goes after it in the acting window and before it in every other window, as Emacs's window points do. The acting window is the one a command was run for (`args.window`), and otherwise the focused one: in a callback, in a command run with no window, and in code between commands. A command that moves the focus goes on acting for the window it moved to. An extension that wants a window to follow its output sets that window's cursor.
 
 **Anchored decorations.** Decorations are added and removed by id, and their ranges move with edits, the way markers do. Each end has a gravity. By default, text inserted at either edge stays outside the range.
 
