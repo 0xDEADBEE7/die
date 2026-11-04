@@ -8,6 +8,7 @@
 mod grammar;
 mod insert;
 mod motions;
+mod scripts;
 mod text;
 
 use die_core::{Args, BufferId, Ctx, Dir, Error, Extension, Registry, Result, State};

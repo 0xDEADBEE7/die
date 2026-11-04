@@ -1,43 +1,9 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
 
-# V1 (37)
+# V1 (3)
 V1 hand-written/motions/combining-mark-e
 V1 hand-written/motions/combining-mark-e-line-end
-V1 motions/script-w-arabic-latin
-V1 motions/script-w-armenian-latin
-V1 motions/script-w-cyr-digit
-V1 motions/script-w-cyrillic-latin
-V1 motions/script-w-devanagari-bengali
-V1 motions/script-w-devanagari-latin
-V1 motions/script-w-georgian-latin
-V1 motions/script-w-greek-cyr
-V1 motions/script-w-halfkana-latin
-V1 motions/script-w-hebrew-latin
-V1 motions/script-w-hiragana-katakana
-V1 motions/script-w-katakana-halfkana
-V1 motions/script-w-latin-arabic
-V1 motions/script-w-latin-armenian
-V1 motions/script-w-latin-cherokee
-V1 motions/script-w-latin-coptic
-V1 motions/script-w-latin-cyrillic
-V1 motions/script-w-latin-devanagari
-V1 motions/script-w-latin-digit-cyr
-V1 motions/script-w-latin-ethiopic
-V1 motions/script-w-latin-georgian
-V1 motions/script-w-latin-greekext
-V1 motions/script-w-latin-halfkana
-V1 motions/script-w-latin-hebrew
-V1 motions/script-w-latin-khmer
-V1 motions/script-w-latin-myanmar
-V1 motions/script-w-latin-phonetic
-V1 motions/script-w-latin-runic
-V1 motions/script-w-latin-thai
-V1 motions/script-w-latin1-greek
-V1 motions/script-w-latinext-greek
-V1 motions/script-w-phonetic-latin
-V1 motions/script-w-tamil-latin
-V1 motions/script-w-thai-latin
 V1 undo/u-back-to-last-empty-line
 
 # V2 (16)
