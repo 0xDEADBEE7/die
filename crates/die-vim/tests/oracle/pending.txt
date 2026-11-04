@@ -1,7 +1,9 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
 
-# V1 (45)
+# V1 (47)
+V1 hand-written/motions/combining-mark-e
+V1 hand-written/motions/combining-mark-e-line-end
 V1 motions/count-ctrl-a
 V1 motions/count-ctrl-a-past-end
 V1 motions/last-empty-line-0
@@ -48,8 +50,10 @@ V1 motions/short-h-keeps-goal-column
 V1 motions/short-l-keeps-goal-column
 V1 undo/u-back-to-last-empty-line
 
-# V2 (14)
+# V2 (16)
 V2 ex/goto-line
+V2 hand-written/search/count-slash
+V2 hand-written/search/empty-pattern-repeats
 V2 search/hash-backward
 V2 search/n-wraps
 V2 search/question
@@ -64,7 +68,15 @@ V2 search/star-case
 V2 search/star-n
 V2 search/star-whole-word
 
-# V3 (108)
+# V3 (116)
+V3 hand-written/operators/dG
+V3 hand-written/operators/dG-column
+V3 hand-written/operators/dd-last-line
+V3 hand-written/operators/dj-last-line
+V3 hand-written/operators/dk
+V3 hand-written/operators/dk-last-lines-column
+V3 hand-written/undo/ctrl-r-redo
+V3 hand-written/undo/u-after-move-redoes
 V3 motions/f-not-found
 V3 operators/2X
 V3 operators/2cw
@@ -174,7 +186,16 @@ V3 undo/u-cursor-after-later-move
 V3 undo/u-past-oldest
 V3 undo/u-u
 
-# V4 (56)
+# V4 (65)
+V4 hand-written/macros/dot-after-macro
+V4 hand-written/macros/error-stops-macro
+V4 hand-written/macros/macro-records-count
+V4 hand-written/macros/macro-with-dot
+V4 hand-written/macros/preset-macro-with-dot
+V4 hand-written/macros/recursive
+V4 hand-written/visual/V-P-last-line
+V4 hand-written/visual/V-j-p-last-two-lines
+V4 hand-written/visual/V-p-linewise
 V4 insert/R-backspace-restores
 V4 insert/R-count
 V4 insert/R-ends-in-replace-state
@@ -232,7 +253,7 @@ V4 visual/v-p-replaces-and-swaps
 V4 visual/v-stays-visual
 V4 visual/v-tilde
 
-# V5 (11)
+# V5 (13)
 V5 ex/s-cursor-after-percent
 V5 ex/s-empty-replacement
 V5 ex/s-first
@@ -244,8 +265,10 @@ V5 ex/s-smartcase-lower
 V5 ex/s-smartcase-upper
 V5 ex/s-undo-one-step
 V5 ex/s-visual-range
+V5 hand-written/ex/s-group-before-letter
+V5 hand-written/ex/s-groups
 
-# V6 (52)
+# V6 (58)
 V6 geometry/3L
 V6 geometry/H
 V6 geometry/H-after-jump
@@ -273,6 +296,12 @@ V6 geometry/zb
 V6 geometry/zt
 V6 geometry/zz
 V6 geometry/zz-near-top
+V6 hand-written/geometry/3H
+V6 hand-written/geometry/H-at-end
+V6 hand-written/geometry/L-short-buffer
+V6 hand-written/geometry/M-short-buffer
+V6 hand-written/geometry/ctrl-d-at-end
+V6 hand-written/wrapped/gj-at-last-visual-line
 V6 insert-tty/down-down-keeps-column
 V6 insert-tty/down-into-a-tab
 V6 insert-tty/down-into-a-wide-char
