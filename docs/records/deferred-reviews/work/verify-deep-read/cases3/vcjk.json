@@ -1,0 +1,8 @@
+{"topic": "vcjk",
+ "cases": [
+  {"id": "w-hiragana-katakana", "keys": "w", "text": ["|ですテスト def"]},
+  {"id": "w-katakana-halfkana", "keys": "w", "text": ["|テスｱｲ def"]},
+  {"id": "w-latin-fwdigits", "keys": "w", "text": ["|abc１２ def"]},
+  {"id": "w-han-fullwidth", "keys": "w", "text": ["|日本ＡＢ def"]},
+  {"id": "w-greek-fullwidth", "keys": "w", "text": ["|αβＡＢ def"]}
+ ]}

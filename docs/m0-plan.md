@@ -2,6 +2,8 @@
 
 **Accepted 2026-10-19:** 09 answered B and 10 answered C, both as recommended. Progress is in [m0-log.md](m0-log.md).
 
+**Since 2026-11-03:** 09-B's wait for your approval is off until you say otherwise, and your reviews and hand checks are done for you, with every call logged for veto ([m0-log.md](m0-log.md), 2026-11-05).
+
 This plan breaks scope §12's M0 row into dogfood checkpoints, reviews and work packages. It builds on the S0 spike records in [records/](records/) and on every answer in [.questions/](../.questions/README.md).
 
 It assumes my recommended answer to each of this round's two questions, and says what changes under the others. The specifics I've decided within those answers are listed for veto in the [questions README](../.questions/README.md), under "M0 planning".

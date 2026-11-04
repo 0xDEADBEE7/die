@@ -1,0 +1,98 @@
+//! Verification of the deep-read findings (scratch, not to land as is).
+
+use die_core::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+fn setup(text: &str) -> (Ctx, BufferId, WindowId) {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", text);
+    let w = ctx.open_window(b, 40, 10).unwrap();
+    (ctx, b, w)
+}
+
+fn step<R: 'static>(ctx: &mut Ctx, b: BufferId, f: impl FnOnce(&mut TextBuf) -> R + 'static) -> R {
+    let out = Rc::new(RefCell::new(None));
+    let o = out.clone();
+    ctx.defer(move |ctx| {
+        *o.borrow_mut() = Some(f(ctx.text_mut(b)?));
+        Ok(())
+    });
+    ctx.run_until_idle();
+    out.borrow_mut().take().expect("the step ran")
+}
+
+fn insert(ctx: &mut Ctx, b: BufferId, at: usize, s: &'static str) {
+    step(ctx, b, move |t| {
+        t.tx(Origin::User).insert(at, s).commit().unwrap()
+    });
+}
+
+fn text(ctx: &Ctx, b: BufferId) -> String {
+    ctx.text(b).unwrap().rope().to_string()
+}
+
+#[test]
+fn dr01_undo_restores_the_selection_from_before_the_groups_first_edit() {
+    let (mut ctx, b, w) = setup("abc\n");
+    step(&mut ctx, b, |t| t.begin_undo_group());
+    step(&mut ctx, b, move |t| t.set_cursor(w, 1));
+    insert(&mut ctx, b, 1, "x");
+    step(&mut ctx, b, |t| t.end_undo_group());
+    step(&mut ctx, b, |t| t.undo()).unwrap();
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(1));
+}
+
+#[test]
+fn dr13_an_edit_made_outside_any_command_is_its_own_undo_step() {
+    let (mut ctx, b, _) = setup("");
+    insert(&mut ctx, b, 0, "a");
+    ctx.text_mut(b)
+        .unwrap()
+        .tx(Origin::User)
+        .insert(1, "b")
+        .commit()
+        .unwrap();
+    assert_eq!(text(&ctx, b), "ab");
+    step(&mut ctx, b, |t| t.undo()).unwrap();
+    assert_eq!(text(&ctx, b), "a", "u took back the command's edit too");
+}
+
+#[test]
+fn dr14_an_undo_inside_an_open_group_leaves_the_group_open() {
+    let (mut ctx, b, _) = setup("");
+    step(&mut ctx, b, |t| t.begin_undo_group());
+    insert(&mut ctx, b, 0, "x");
+    step(&mut ctx, b, |t| t.undo()).unwrap();
+    assert_eq!(text(&ctx, b), "");
+    insert(&mut ctx, b, 0, "y");
+    insert(&mut ctx, b, 1, "z");
+    step(&mut ctx, b, |t| t.end_undo_group());
+    step(&mut ctx, b, |t| t.undo()).unwrap();
+    assert_eq!(text(&ctx, b), "", "the rest of the group (yz) should be one step");
+}
+
+#[test]
+fn dr15_history_dropped_by_a_conflict_while_typing_is_reported_as_a_conflict() {
+    let (mut ctx, b, _) = setup("");
+    insert(&mut ctx, b, 0, "older ");
+    step(&mut ctx, b, |t| t.begin_undo_group());
+    insert(&mut ctx, b, 6, "ab");
+    step(&mut ctx, b, |t| {
+        t.tx(Origin::Extension)
+            .silent()
+            .replace(7..8, "B")
+            .commit()
+            .unwrap()
+    });
+    insert(&mut ctx, b, 8, "c");
+    step(&mut ctx, b, |t| t.end_undo_group());
+    assert_eq!(text(&ctx, b), "older aBc");
+    step(&mut ctx, b, |t| t.undo()).unwrap();
+    assert_eq!(text(&ctx, b), "older aB");
+    assert_eq!(
+        step(&mut ctx, b, |t| t.undo()),
+        Err(Error::UndoConflict),
+        "the older steps were dropped by a conflict"
+    );
+}

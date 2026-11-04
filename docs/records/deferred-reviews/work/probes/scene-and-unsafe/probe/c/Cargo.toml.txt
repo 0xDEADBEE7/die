@@ -1,0 +1,8 @@
+[package]
+name = "c"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+a = { path = "../a" }
+[lints]
+workspace = true

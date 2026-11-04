@@ -1,0 +1,22 @@
+{
+ "topic": "deepread8",
+ "run": "tty",
+ "cases": [
+  {
+   "id": "tty-ctrl-a-wrapped",
+   "keys": "$<C-a>",
+   "text": [
+    "|word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23",
+    "next"
+   ]
+  },
+  {
+   "id": "tty-insert-down-wrapped-long",
+   "keys": "i<Down>X<Esc>",
+   "text": [
+    "|word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23",
+    "next"
+   ]
+  }
+ ]
+}

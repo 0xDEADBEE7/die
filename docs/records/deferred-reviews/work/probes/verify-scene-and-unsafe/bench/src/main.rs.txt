@@ -1,0 +1,77 @@
+use die_core::*;
+use std::time::Instant;
+
+struct F;
+impl Extension for F {
+    fn name(&self) -> &'static str { "f" }
+    fn register(&mut self, reg: &mut Registry) {
+        reg.face("p.kw", None, Style::new().fg(Rgb::hex("#ff0000")));
+        reg.face("p.id", None, Style::new().fg(Rgb::hex("#00ff00")).bold());
+    }
+}
+
+fn text(cols: usize, lines: usize) -> String {
+    let words = ["the", "quick", "brown", "fox", "jumped", "over", "lazy", "dogs", "here", "enter", "never", "seven"];
+    let mut out = String::new();
+    let mut k = 0;
+    for _ in 0..lines {
+        let mut line = String::new();
+        while line.len() + 8 < cols {
+            line.push_str(words[k % words.len()]);
+            line.push(' ');
+            k += 7;
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+fn run(label: &str, frame_cols: usize, frame_rows: usize, wcols: usize, line_cols: usize, search: bool, decos: bool) { run2(label, frame_cols, frame_rows, wcols, line_cols, search, decos, 0..60_000) }
+fn run2(label: &str, frame_cols: usize, frame_rows: usize, wcols: usize, line_cols: usize, search: bool, decos: bool, span: std::ops::Range<usize>) {
+    let mut ctx = Ctx::new(vec![Box::new(F)]).unwrap();
+    let src = text(line_cols, 400);
+    let b = ctx.create_text("t", &src);
+    let w = ctx.open_window(b, wcols, frame_rows - 2).unwrap();
+    ctx.focus(w);
+    let mut n = 0;
+    if decos {
+        let t = ctx.text_mut(b).unwrap();
+        let mut start = None;
+        for (i, ch) in src.char_indices() {
+            if ch.is_alphabetic() { if start.is_none() { start = Some(i); } }
+            else if let Some(s) = start.take() {
+                if span.contains(&s) {
+                    t.decorate(s..i, Deco::Face(if n % 2 == 0 { "p.kw" } else { "p.id" })).unwrap();
+                    n += 1;
+                }
+            }
+        }
+    }
+    if search { ctx.set_search_highlight(Some(Pattern::new("e", false).unwrap())); }
+    let p = [Placement { window: w, col: 0, row: 0 }];
+    let mut ts = vec![];
+    let mut last = None;
+    for _ in 0..60 {
+        let t0 = Instant::now();
+        let s = ctx.compose(frame_cols, frame_rows, &p);
+        ts.push(t0.elapsed().as_secs_f64() * 1e3);
+        last = Some(s);
+    }
+    ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let s = last.unwrap();
+    let text_cells = s.positions.iter().filter(|p| p.is_some()).count();
+    println!("{label:<40} p50 {:>7.3} ms  (decos {n}, text cells {text_cells})", ts[ts.len() / 2]);
+}
+
+fn main() {
+    println!("size_of Cell {} Glyph {} pos {}", std::mem::size_of::<Cell>(), std::mem::size_of::<Glyph>(), std::mem::size_of::<Option<(WindowId, usize)>>());
+    run2("300x100 plain, 11k decos all OFF-screen", 300, 100, 300, 290, false, true, 60_000..10_000_000);
+    run2("300x100 plain, 5.5k decos on-screen only", 300, 100, 300, 290, false, true, 0..28_000);
+    for (lbl, fc, fr, wc, lc) in [("300x100 dense", 300, 100, 300, 290), ("80-col window, 100 rows", 81, 100, 80, 78)] {
+        run(&format!("{lbl} plain"), fc, fr, wc, lc, false, false);
+        run(&format!("{lbl} search e"), fc, fr, wc, lc, true, false);
+        run(&format!("{lbl} faces"), fc, fr, wc, lc, false, true);
+        run(&format!("{lbl} both"), fc, fr, wc, lc, true, true);
+    }
+}

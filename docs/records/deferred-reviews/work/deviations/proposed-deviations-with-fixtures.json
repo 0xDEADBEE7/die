@@ -1,0 +1,201 @@
+{
+  "schema": 1,
+  "rules": [
+    {
+      "rule": "the last line is the last line",
+      "s5_row": 1,
+      "kind": "emacs-artifact",
+      "evil": "The cursor can rest on the empty line after a file's final newline: G, 5j, w, }, dd, dk, dG, L and gj go there, and so does M in a short buffer. j from the last line goes there without an error; only j, gj and C-d on that empty line fail.",
+      "die_vim": "What your Evil does when the text has no final newline, with the newline kept: the cursor never rests on the empty line after it. Motions stop on the last line. j, gj, + and C-d on the last line fail, and so do w and e on its last character and } at its end; a macro ends at the first failure. dj, cj and yj on the last line act on that line, as Evil's do (Vim's fail). After dd, dk or dG removes the last lines, the cursor goes to the new last line, in the column the delete started in (S5 row 2). G recentres on the last line, and H, M and L clamp to it.",
+      "cases": [
+        {
+          "case": "motions/w-last-word-of-buffer",
+          "fixture": "hand-written/motions.json"
+        },
+        {
+          "case": "motions/G-trailing-newline",
+          "fixture": "hand-written/motions.json"
+        },
+        {
+          "case": "motions/5j-past-end",
+          "fixture": "hand-written/motions.json"
+        },
+        {
+          "case": "motions/close-brace-last-paragraph",
+          "fixture": "hand-written/motions.json"
+        },
+        {
+          "case": "operators/dd-last-line",
+          "note": "Vim's line; the column is the one dd started in, as for every linewise d in Evil (S5 row 2)",
+          "fixture": "hand-written/operators.json"
+        },
+        {
+          "case": "operators/dk",
+          "note": "Vim's line; the column is the one dk started in, as for every linewise d in Evil (S5 row 2) and in Vim with nostartofline",
+          "fixture": "hand-written/operators.json"
+        },
+        {
+          "case": "operators/dG",
+          "note": "Vim's line; the column is the one dG started in, as for every linewise d in Evil (S5 row 2) and in Vim with nostartofline",
+          "fixture": "hand-written/operators.json"
+        },
+        {
+          "case": "geometry/L-short-buffer",
+          "fixture": "hand-written/geometry.json"
+        },
+        {
+          "case": "geometry/ctrl-d-at-end",
+          "note": "C-d on the last line fails in Vim and in Evil; the cursor stays on line 40 and the window keeps the top line G's recentring gave it",
+          "fixture": "hand-written/geometry.json"
+        },
+        {
+          "case": "geometry/M-short-buffer",
+          "note": "M takes the window's lower middle line, as Evil's does (S5 row 20), clamped to the last line",
+          "fixture": "hand-written/geometry.json"
+        },
+        {
+          "case": "geometry/H-at-end",
+          "note": "G stops on line 40 and recentres there, as Evil's G recentres (S5 row 20), so H lands on line 35, one above Evil's",
+          "fixture": "hand-written/geometry.json"
+        },
+        {
+          "case": "wrapped/gj-at-last-visual-line",
+          "fixture": "hand-written/wrapped.json"
+        },
+        {
+          "case": "macros/error-stops-macro",
+          "note": "the macro ends one repetition earlier, where j fails on the last line",
+          "fixture": "hand-written/macros.json"
+        },
+        {
+          "case": "macros/recursive",
+          "note": "the recursion ends where j fails on the last line",
+          "fixture": "hand-written/macros.json"
+        },
+        {
+          "case": "macros/macro-records-count",
+          "note": "the macro's final j fails on the last line, so the cursor stays on line 2, with an error Evil's run doesn't have",
+          "fixture": "hand-written/macros.json"
+        }
+      ]
+    },
+    {
+      "rule": "a count before / or ? finds the nth match",
+      "s5_row": 11,
+      "kind": "evil-gap",
+      "evil": "2/x and 2?x ignore the count.",
+      "die_vim": "As in Vim: 2/x goes to the second match after the cursor, wrapping past the end as one search does. A later n moves one match.",
+      "cases": [
+        {
+          "case": "search/count-slash",
+          "fixture": "hand-written/search.json"
+        }
+      ]
+    },
+    {
+      "rule": "an empty search repeats the last one",
+      "s5_row": 12,
+      "kind": "evil-gap",
+      "evil": "/<CR> does nothing.",
+      "die_vim": "As in Vim: / or ? with an empty pattern searches for the last pattern again, in its own direction. With no last pattern it's an error.",
+      "cases": [
+        {
+          "case": "search/empty-pattern-repeats",
+          "fixture": "hand-written/search.json"
+        }
+      ]
+    },
+    {
+      "rule": ". inside a macro repeats the macro's change",
+      "s5_row": 17,
+      "kind": "evil-bug",
+      "evil": ". signals an error inside a macro, since Evil runs macros without command hooks.",
+      "die_vim": "As in Vim: a change made inside a macro becomes the last change, so a later . in the same macro repeats it.",
+      "cases": [
+        {
+          "case": "macros/macro-with-dot",
+          "fixture": "hand-written/macros.json"
+        },
+        {
+          "case": "macros/preset-macro-with-dot",
+          "fixture": "hand-written/macros.json"
+        }
+      ]
+    },
+    {
+      "rule": "a linewise put over the last line keeps the final newline",
+      "s5_row": 18,
+      "kind": "evil-bug",
+      "evil": "Vp (and VP, and Vjp over the last two lines) on the buffer's last line leaves an empty line and drops the final newline.",
+      "die_vim": "As in Vim: the lines are replaced and the final newline stays.",
+      "cases": [
+        {
+          "case": "visual/V-p-linewise",
+          "fixture": "hand-written/visual.json"
+        }
+      ]
+    },
+    {
+      "rule": "a count before H counts from 1",
+      "s5_row": 20,
+      "kind": "evil-bug",
+      "evil": "nH goes to line n+1 of the window: 3H goes to the fourth line.",
+      "die_vim": "As in Vim: nH goes to line n of the window, so 3H goes to the third. H, M and L otherwise follow Evil (S5 row 20).",
+      "cases": [
+        {
+          "case": "geometry/3H",
+          "fixture": "hand-written/geometry.json"
+        }
+      ]
+    },
+    {
+      "rule": "undo is Vim's u and C-r",
+      "s5_row": 5,
+      "kind": "undo-model",
+      "evil": "Your Evil has no redo (evil-undo-system is unset): C-r signals an error, and u after another command redoes, as Emacs's undo chain does.",
+      "die_vim": "Your S5 answer: u steps back and C-r steps forward, as in Vim (scope §10). C-r with nothing to redo fails, as u with nothing to undo does.",
+      "cases": [
+        {
+          "case": "undo/ctrl-r-redo",
+          "note": "S5 row 5",
+          "fixture": "hand-written/undo.json"
+        },
+        {
+          "case": "undo/u-after-move-redoes",
+          "note": "S5 row 6",
+          "fixture": "hand-written/undo.json"
+        }
+      ]
+    },
+    {
+      "rule": "regular expressions are Rust's",
+      "s5_row": null,
+      "kind": "regex-syntax",
+      "evil": ":s/\\(foo\\) \\(bar\\)/\\2 \\1/ uses Emacs regex groups.",
+      "die_vim": "DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result. The replacement expands $N and ${N} as the regex crate does, so a group followed by a letter or digit needs braces: ${1}x.",
+      "cases": [
+        {
+          "case": "ex/s-groups",
+          "fixture": "hand-written/ex.json"
+        }
+      ]
+    },
+    {
+      "rule": "language indentation waits for modes",
+      "s5_row": 4,
+      "kind": "needs-modes",
+      "evil": "In emacs-lisp-mode and python-mode, a new line is indented by the language.",
+      "die_vim": "Until file-type modes (M1) give die-vim a language's indentation, a new line is indented like the line above, as Evil does in text.",
+      "cases": [
+        {
+          "case": "insert/o-elisp-mode-indent",
+          "fixture": "hand-written/insert.json"
+        },
+        {
+          "case": "insert/o-python-mode-indent",
+          "fixture": "hand-written/insert.json"
+        }
+      ]
+    }
+  ]
+}

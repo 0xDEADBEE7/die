@@ -1,0 +1,6 @@
+{"topic": "vcomb",
+ "cases": [
+  {"id": "ee-comb-eol", "keys": "ee", "text": ["|café", "bar"]},
+  {"id": "e-then-b-comb-eol", "keys": "eb", "text": ["|café", "bar"]},
+  {"id": "w-from-comb-eol", "keys": "ew", "text": ["|café", "bar"]}
+ ]}

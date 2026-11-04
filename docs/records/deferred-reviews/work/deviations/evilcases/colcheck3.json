@@ -1,0 +1,9 @@
+{"topic": "colcheck3",
+ "cases": [
+  {"id": "at-then-dot", "keys": "@a.", "text": ["|a b c d e f"], "registers": {"a": {"text": "dw", "type": "macro"}}},
+  {"id": "recorded-then-dot", "keys": "qadwq@a.", "text": ["|a b c d e f"]},
+  {"id": "x-then-at-then-dot", "keys": "x@a.", "text": ["|a b c d e f"], "registers": {"a": {"text": "w", "type": "macro"}}},
+  {"id": "u-past-oldest", "keys": "xuu", "text": ["|ab"]},
+  {"id": "u-ctrl-r-ctrl-r", "keys": "xu<C-r><C-r>", "text": ["|ab"]},
+  {"id": "1H", "keys": "1H", "text": ["|a"]}
+ ]}
