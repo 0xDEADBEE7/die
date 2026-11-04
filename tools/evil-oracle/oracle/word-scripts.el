@@ -10,9 +10,12 @@
 ;;   HOME=$(mktemp -d) emacs -Q --batch -l tools/evil-oracle/oracle/word-scripts.el \
 ;;     > crates/die-vim/src/scripts.rs
 ;;
-;; The table only has to answer for word characters that aren't combining
-;; marks: `class' and `combining' in die-vim's text.rs decide those.  Any
-;; other character continues the range before it, which keeps the table small.
+;; A character that isn't a word character continues the range before it,
+;; which keeps the table small: `class' in die-vim's text.rs decides those.
+;; So does a combining mark in its own script's range, whatever its categories:
+;; nothing in Evil's lists splits a mark from its script.  A mark starts a range
+;; only when its script changes, because it can lead its script's block
+;; (Devanagari starts with U+0900-0902), and it mustn't take the script before.
 
 (defconst word-scripts-categories
   '((?r . "ROMAN") (?A . "FULL_WIDTH") (?G . "FULL_GREEK") (?k . "HALF_KANA")
@@ -32,10 +35,11 @@
   (let ((scripts nil) (prev nil) (ranges nil))
     (with-syntax-table (standard-syntax-table)
       (dotimes (c (1+ (max-char 'unicode)))
-        (when (and (eq (char-syntax c) ?w) (not (aref (char-category-set c) ?^)))
+        (when (eq (char-syntax c) ?w)
           (let* ((script (aref char-script-table c))
+                 (mark (aref (char-category-set c) ?^))
                  (v (cons script (word-scripts-mask c))))
-            (unless (equal v prev)
+            (unless (or (equal v prev) (and mark (eq script (car prev))))
               (unless (memq script scripts) (setq scripts (append scripts (list script))))
               (push (list c (seq-position scripts script) (cdr v)) ranges)
               (setq prev v))))))
@@ -50,8 +54,8 @@
       (princ (format "pub const %s: u8 = %d;\n" (cdr k) bit))
       (setq bit (ash bit 1))))
   (princ "\n/// Each range's first character, its script (a number for each of Emacs's scripts)\n")
-  (princ "/// and its categories, sorted. A character the table doesn't speak for (not a word\n")
-  (princ "/// character in Emacs, or a combining mark) just continues the range before it.\n")
+  (princ "/// and its categories, sorted. A character that isn't a word character in Emacs just\n")
+  (princ "/// continues the range before it. So does a combining mark, unless its script changes.\n")
   (princ "#[rustfmt::skip]\npub const RANGES: &[(u32, u8, u8)] = &[\n")
   (let ((col 0))
     (dolist (r ranges)

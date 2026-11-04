@@ -159,5 +159,10 @@
   {"id": "script-b-latin-cyrillic", "vim": "word: Vim's word doesn't end at a change of script; Evil's ends where Emacs's forward-word does", "keys": "b", "text": ["abcабв| def"]},
   {"id": "script-e-latin-cyrillic", "vim": "word: Vim's word doesn't end at a change of script; Evil's ends where Emacs's forward-word does", "keys": "e", "text": ["|abcабв def"]},
   {"id": "script-e-hiragana-katakana", "vim": "word: Vim's word doesn't end at a change of script; Evil's ends where Emacs's forward-word does", "keys": "e", "text": ["|ですテスト def"]},
-  {"id": "script-b-hiragana-katakana", "vim": "word: Vim's word doesn't end at a change of script; Evil's ends where Emacs's forward-word does", "keys": "b", "text": ["ですテスト| def"]}
+  {"id": "script-b-hiragana-katakana", "vim": "word: Vim's word doesn't end at a change of script; Evil's ends where Emacs's forward-word does", "keys": "b", "text": ["ですテスト| def"]},
+  {"id": "script-w-devanagari-anusvara", "keys": "w", "text": ["|हिंदी x"]},
+  {"id": "script-b-devanagari-anusvara", "keys": "b", "text": ["हिंदी |x"]},
+  {"id": "script-w-devanagari-word-end", "keys": "w", "text": ["|मैं x"]},
+  {"id": "script-w-devanagari-candrabindu", "keys": "w", "text": ["|हँसी x"]},
+  {"id": "script-w-malayalam-candrabindu", "keys": "w", "text": ["|ക\u0d01ക x"]}
  ]}
