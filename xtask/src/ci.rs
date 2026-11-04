@@ -2,7 +2,7 @@
 //! work lands"). Nothing merges until it passes.
 
 use crate::util::{self, Result, TempDir, cargo, copy_worktree, git};
-use crate::{budget, clean, cross, fonts, guards, lint};
+use crate::{budget, clean, cross, fonts, guards, lint, sources};
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -51,6 +51,7 @@ pub fn run(root: &Path, source: Source) -> Result {
                 ])
             }),
         ),
+        ("sources", Box::new(|| sources::run(&tree, &target))),
         (
             "cross-check",
             Box::new(|| cross::run(&tree, &work.join("cross"))),

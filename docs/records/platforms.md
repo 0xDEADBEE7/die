@@ -296,7 +296,7 @@ Sizes: `sys` grows from about 80 lines to 110–125 with Linux, about 30–40 of
 | Check | Where | When |
 |---|---|---|
 | Everything on macOS (`cargo xtask ci`) | Your Mac | Every merge, as now |
-| `cargo check` and clippy, whole workspace, `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` | Your Mac, inside `xtask ci` (about 11 s) | Every merge, from phase 0 |
+| `cargo check` and clippy, whole workspace, `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, with `cargo xtask sources` on what each build read | Your Mac, inside `xtask ci` (about 11 s) | Every merge, from phase 0 |
 | Per-target graph check and the lints | Your Mac | Every merge |
 | `cargo xtask ci --linux`: die-core, die-vim, the oracle, xtask tests, and later die-render's neutral tests, in an aarch64 container | colima | Weekly, and at each checkpoint |
 | Linux clean-build, ELF check, all tests, S3L, smoke tests under Xvfb and headless sway, lavapipe fidelity, FreeBSD `cargo check` | Hosted ubuntu-24.04 and ubuntu-24.04-arm | From M2, with the hosted CI question 10 already planned. About $0.11 for a pair of 10-minute runs. |

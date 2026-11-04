@@ -5,12 +5,15 @@
 //! `pkg-config` are stand-ins that fail, so nothing compiles C, and a stand-in
 //! call the target's allowlist doesn't name fails the check even when the
 //! build script carries on. `cargo xtask guards` plants a failure of each kind.
+//! Each target's build is also held to `cargo xtask sources`, since `cfg`s pick
+//! different files there.
 //!
 //! The pinned toolchain builds for each target with its own std, which
 //! rust-toolchain.toml lists, and its own clippy, run directly rather than
 //! through rustup.
 
 use crate::clean::{Allowed, LINUX, STAND_INS, check_calls, clean_command, host, run_clean};
+use crate::sources;
 use crate::util::{Result, TempDir, cargo, require_std, rustc, tool, write};
 use std::path::Path;
 
@@ -59,6 +62,7 @@ pub fn run(root: &Path, target_dir: &Path) -> Result {
                 "--locked",
                 "--offline",
                 "--quiet",
+                sources::MESSAGE_FORMAT,
                 "--target",
                 target,
                 "--target-dir",
@@ -73,11 +77,12 @@ pub fn run(root: &Path, target_dir: &Path) -> Result {
             let _ = std::fs::remove_dir_all(target_dir);
             format!("{what}:\n  {e}")
         });
-        let calls = match (built, calls) {
-            (Ok(()), Ok(calls)) => calls,
+        let (messages, calls) = match (built, calls) {
+            (Ok(messages), Ok(calls)) => (messages, calls),
             (Err(b), Err(c)) => return Err(format!("{c}\n{b}")),
             (Err(e), _) | (_, Err(e)) => return Err(e),
         };
+        sources::check(root, &messages).map_err(|e| format!("{what}:\n{e}"))?;
         println!("cross-check: {target} ok (clippy -D warnings{calls})");
     }
     Ok(())

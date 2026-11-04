@@ -1,5 +1,5 @@
 use xtask::util::{Result, root};
-use xtask::{api, budget, ci, clean, cross, fonts, guards, lint, linux, mutate};
+use xtask::{api, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, sources};
 
 const USAGE: &str = "usage: cargo xtask <task>
 
@@ -7,6 +7,8 @@ const USAGE: &str = "usage: cargo xtask <task>
   lint                 unsafe only in platform modules, no target_os in neutral code,
                        no window or GPU crates under die-core and die-vim, exact pins,
                        D15, lockfile, licenses
+  sources              every file the compiler read is one the lint reads, and every
+                       local crate is a listed member
   guards               unsafe outside platform and -Cpanic=abort fail to build; dead
                        code on Linux and a build script that calls cc fail the
                        cross-check
@@ -41,6 +43,7 @@ fn dispatch(args: &[String]) -> Result {
     match a.as_slice() {
         ["budget"] => budget::run(&root),
         ["lint"] => lint::run(&root),
+        ["sources"] => sources::run(&root, &root.join("target/xtask/sources")),
         ["guards"] => guards::run(&root, &root.join("target/xtask/guards")),
         ["api-diff"] => api::run(&root, None),
         ["api-diff", "--base", b] => api::run(&root, Some(b)),
