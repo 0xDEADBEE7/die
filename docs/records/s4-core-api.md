@@ -145,7 +145,7 @@ Bug 4 got past the first property test, so I added the model-based undo test (§
   - Recommendation: required. Being explicit is the point of C14.
 - **A8. Revisions and the change log.** The revision goes up by one per change, not per transaction. `edits_since` iterates a 1,024-change log. Each change carries byte offsets, line and column points, the new text, the origin and the silent flag.
   - Alternatives: one revision per transaction; a log capped by bytes.
-  - Recommendation: per change, with the cap configurable.
+  - Recommendation: per change, with the cap configurable. *(Amended 2026-11-05: `LOG_CAP` stays a constant in M0, since nothing has asked to change it.)*
 - **A9. Decoration stickiness.** Each decoration has a gravity at each end. The default keeps text inserted at an edge outside the range. Read-only blocks a User insertion only strictly inside a range. To keep streamed text read-only, orchid would make its transcript range end-sticky.
   - Alternative: Emacs's default, which is rear-sticky.
   - Recommendation: keep non-sticky as the default.
@@ -168,7 +168,7 @@ Bug 4 got past the first property test, so I added the model-based undo test (§
 
 ### Layout and cursor positions
 
-- **A15. Cursor positions and Hide.** Layout decides where the cursor can be: these are the "stops". A Hide with replacement text keeps its start as a stop, the fold line. A Hide without replacement text has no stop inside it or at its start. Overlapping Hides merge. The first-starting one wins, preferring one with replacement text, then the longest, then the lowest id.
+- **A15. Cursor positions and Hide.** Layout decides where the cursor can be: these are the "stops". A Hide with replacement text keeps its start as a stop, the fold line. A Hide without replacement text has no stop inside it or at its start. Overlapping Hides merge. The first-starting one wins, preferring one with replacement text, then the longest, then the lowest id. *(Amended 2026-11-05: the one added first, since ids are reused and don't say. Virtual text at one position shows in the order added too. Contract §9 has the whole rule.)*
   - Recommendation: keep, and write it into §9 (edit 14).
 - **A16. Eager cursor fix-up.** After every edit, decoration change or `set_selection`, every window's selection moves to a stop. The default goes to the fold line if there is one, otherwise forward. Motions pass a direction with `snap(pos, dir)`.
   - Alternative: adjust after each command only, as Emacs does.
