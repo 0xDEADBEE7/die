@@ -7,8 +7,10 @@
 //! - The `unsafe` keyword itself appears only in those modules, since rustc's lint
 //!   misses some of it, and no file gets compiled that this lint might not read.
 //! - die-render's `unsafe` blocks each say why they're sound and do one unsafe
-//!   thing, and their pointers to C buffers cover the whole buffer. Nothing outside
-//!   `platform` names `platform::macos`: neutral code names `platform::backend`.
+//!   thing, and no code changes the level of the lints that hold them to it. No
+//!   pointer is made from a reference to one element of a buffer by `NonNull::from`,
+//!   `from_mut` or `from_ref`. Nothing outside `platform` names `platform::macos`:
+//!   neutral code names `platform::backend`.
 //! - Neutral code doesn't branch on the platform: no `target_os` and the like
 //!   (in `cfg`, `cfg_attr` or `cfg_select!`, or anywhere as `target_os = "…"`),
 //!   no `std::os` module but Unix's, no `env::consts::OS`, and no build script
@@ -41,6 +43,9 @@ const UNSAFE_BLOCK_LINTS: &[&str] = &[
     "undocumented_unsafe_blocks",
     "multiple_unsafe_ops_per_block",
 ];
+
+/// The clippy group those lints are in. Allowing it turns them off as well.
+const UNSAFE_BLOCK_GROUP: &str = "restriction";
 
 /// The module that alone may name `platform::macos`.
 const PLATFORM_DIR: &str = "crates/die-render/src/platform/";
@@ -636,6 +641,11 @@ pub fn check_unsafe_allows(rel: &str, src: &str, errors: &mut Vec<String>) {
 /// builds, which can be `path`. Each can compile a file this lint never reads. A
 /// format argument named `path` trips it (`format!("{path}", path = p)`), and `{}`
 /// avoids that.
+///
+/// Everywhere: `UNSAFE_BLOCK_LINTS` and `UNSAFE_BLOCK_GROUP` as identifiers. The
+/// manifest denies those lints, and an `allow` in the code would turn them off, even
+/// one a macro builds, which still has to name them in its call. So a variable
+/// named `restriction` trips this too, and another name avoids that.
 pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
     use crate::count::{Tok, lex, skip_group};
     let toks = lex(src);
@@ -661,6 +671,14 @@ pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
                 if w == "path" && i > 0 && (p(i - 1, '[') || p(i - 1, ',')) && p(i + 1, '=') =>
             {
                 "`path` attribute (it compiles a file this lint may not read)".into()
+            }
+            Tok::Ident(w)
+                if UNSAFE_BLOCK_LINTS.contains(&w.as_str()) || w == UNSAFE_BLOCK_GROUP =>
+            {
+                format!(
+                    "`{w}`: die-render's manifest denies the unsafe-block lints, and code \
+                     may not change their level"
+                )
             }
             Tok::Ident(w) if w == "cfg_attr" && p(i + 1, '(') => {
                 in_cfg_attr = skip_group(&toks, i + 1).unwrap_or(i);
@@ -707,9 +725,11 @@ pub fn check_backend_name(rel: &str, src: &str, errors: &mut Vec<String>) {
     }
 }
 
-/// A pointer made from a reference to one element (`NonNull::from(&mut a[0])`) can't
-/// legally reach the others, and C reads them through it. In `UNSAFE_DIRS`, a pointer
-/// to a buffer covers the buffer: `NonNull::from(&mut *a).cast()`.
+/// A pointer made from a reference to one element can't legally reach the others, and
+/// C reads them through it. In `UNSAFE_DIRS`, this flags `NonNull::from`, `from_mut` and
+/// `from_ref` (`ptr::from_mut` and the like) given a reference to an indexed place, as
+/// in `NonNull::from(&mut self.chars[0])`. A pointer to a buffer covers the buffer:
+/// `NonNull::from(&mut *a).cast()`.
 pub fn check_element_pointers(rel: &str, src: &str, errors: &mut Vec<String>) {
     use crate::count::{Tok, lex};
     if !UNSAFE_DIRS.iter().any(|d| rel.starts_with(d)) {
@@ -718,17 +738,33 @@ pub fn check_element_pointers(rel: &str, src: &str, errors: &mut Vec<String>) {
     let toks = lex(src);
     let p = |i: usize, c: char| toks.get(i).map(|x| &x.0) == Some(&Tok::Punct(c));
     let w = |i: usize, s: &str| toks.get(i).map(|x| &x.0) == Some(&Tok::Ident(s.into()));
+    let name = |i: usize| matches!(toks.get(i), Some((Tok::Ident(_), ..)));
     for (i, (_, line, _)) in toks.iter().enumerate() {
-        let from = w(i, "NonNull") && p(i + 1, ':') && p(i + 2, ':') && w(i + 3, "from");
-        if from && p(i + 4, '(') && p(i + 5, '&') {
-            let at = if w(i + 6, "mut") { i + 7 } else { i + 6 };
-            if matches!(toks.get(at), Some((Tok::Ident(_), ..))) && p(at + 1, '[') {
-                errors.push(format!(
-                    "{rel}:{}: a pointer from a reference to one element can't legally reach \
-                     the rest of its buffer; use `NonNull::from(&mut *buffer).cast()`",
-                    line + 1
-                ));
-            }
+        let open = if w(i, "from_mut") || w(i, "from_ref") {
+            i + 1
+        } else if w(i, "NonNull") && p(i + 1, ':') && p(i + 2, ':') && w(i + 3, "from") {
+            i + 4
+        } else {
+            continue;
+        };
+        if !p(open, '(') || !p(open + 1, '&') {
+            continue;
+        }
+        // Past `mut` and a `name.name.` path to the place's last name.
+        let mut at = if w(open + 2, "mut") {
+            open + 3
+        } else {
+            open + 2
+        };
+        while name(at) && p(at + 1, '.') {
+            at += 2;
+        }
+        if name(at) && p(at + 1, '[') {
+            errors.push(format!(
+                "{rel}:{}: a pointer from a reference to one element can't legally reach \
+                 the rest of its buffer; use `NonNull::from(&mut *buffer).cast()`",
+                line + 1
+            ));
         }
     }
 }
@@ -889,6 +925,39 @@ mod tests {
     }
 
     #[test]
+    fn nothing_turns_off_the_unsafe_block_lints() {
+        let check = |rel: &str, src: &str| {
+            let mut e = Vec::new();
+            check_unsafe_tokens(rel, src, &mut e);
+            e.len()
+        };
+        let macos = "crates/die-render/src/platform/macos/text.rs";
+        let lib = "crates/die-render/src/lib.rs";
+        for src in [
+            "#[allow(clippy::undocumented_unsafe_blocks)]\nfn f() {}\n",
+            "#[expect(clippy::multiple_unsafe_ops_per_block)]\nfn f() {}\n",
+            "#![cfg_attr(all(), allow(clippy::undocumented_unsafe_blocks))]\n",
+            // The group both lints are in.
+            "#[allow(clippy::restriction)]\nfn f() {}\n",
+            // A level a macro builds still names the lint in its call.
+            "macro_rules! l { ($l:path, $i:item) => { #[allow($l)] $i } }\n\
+             l!(clippy::multiple_unsafe_ops_per_block, fn f() {});\n",
+            "macro_rules! l { ($l:ident, $i:item) => { #[allow(clippy::$l)] $i } }\n\
+             l!(restriction, fn f() {});\n",
+        ] {
+            assert_eq!(check(macos, src), 1, "{src}");
+            assert_eq!(check(lib, src), 1, "{src}");
+        }
+        for src in [
+            "// clippy::undocumented_unsafe_blocks, clippy::restriction\n",
+            "const S: &str = \"multiple_unsafe_ops_per_block\";\n",
+            "#[allow(clippy::needless_return)]\nfn f() {}\n",
+        ] {
+            assert_eq!(check(macos, src), 0, "{src}");
+        }
+    }
+
+    #[test]
     fn neutral_code_names_the_backend() {
         let check = |rel: &str, src: &str| {
             let mut e = Vec::new();
@@ -934,10 +1003,27 @@ mod tests {
         let old = "f(NonNull::from(&mut chars[0]), NonNull::from(&glyphs[0]), 2);\n";
         assert_eq!(check(text, old), 2);
         assert_eq!(check("crates/die-core/src/x.rs", old), 0, "no unsafe there");
+        // A buffer held in a field, and the other ways to make the pointer.
+        for src in [
+            "f(NonNull::from(&mut self.chars[0]));\n",
+            "f(NonNull::from(&self.a.b.glyphs[i]));\n",
+            "f(core::ptr::NonNull::from(&mut self.0[0]));\n",
+            "f(std::ptr::from_mut(&mut self.chars[0]));\n",
+            "f(ptr::from_ref(&chars[0]));\n",
+            "f(from_mut(&mut chars[0]));\n",
+        ] {
+            assert_eq!(check(text, src), 1, "{src}");
+        }
         for src in [
             "f(NonNull::from(&mut *chars).cast(), NonNull::from(&mut glyphs).cast(), 2);\n",
             "f(NonNull::from(&mut g), &mut adv, 1);\n",
             "let a = NonNull::from(x);\n",
+            "f(NonNull::from(&mut self.chars).cast());\n",
+            "f(std::ptr::from_mut(&mut self.chars).cast());\n",
+            "f(ptr::from_ref(&self.g));\n",
+            "f(NonNull::from(&mut x).cast(), a[0]);\n",
+            "let n = NonNull::from(&mut self.chars.len);\n",
+            "let n = Thing::from(&a[0]);\n",
         ] {
             assert_eq!(check(text, src), 0, "{src}");
         }

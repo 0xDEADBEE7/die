@@ -65,6 +65,19 @@ const LINT_PLANTS: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+/// `unsafe` blocks in `platform::macos` with no SAFETY comment, and what turns off
+/// the lints that require one. clippy passes each, so only the lint can catch it.
+const BLOCK_LINT_PLANTS: &[(&str, &str)] = &[
+    (
+        "allowing the unsafe-block lints by name",
+        "\n#[allow(clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
+    ),
+    (
+        "allowing the group they're in",
+        "\n#[allow(clippy::restriction)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
+    ),
+];
+
 /// Dead on Linux only: the cross-check's `-D warnings` must catch it.
 const LINUX_ONLY: &str = "\n#[cfg(not(target_os = \"macos\"))]\nfn planted_linux_only() {}\n";
 
@@ -107,15 +120,22 @@ pub fn run(root: &Path, work: &Path) -> Result {
     write(&tree.join(OUTSIDE.0), OUTSIDE.1)?;
     for (what, krate, plant, error) in LINT_PLANTS {
         let path = tree.join(format!("crates/{krate}/src/lib.rs"));
-        let orig = read(&path)?;
-        write(&path, &format!("{orig}{plant}"))?;
-        let res = expect(tree, &target, &["-p", krate], None, None)
-            .and_then(|()| fails_with("the lint", lint::run(tree), &[*error]));
-        write(&path, &orig)?;
-        res?;
+        with_plant(&path, plant, || {
+            expect(tree, &target, &["-p", krate], None, None)?;
+            fails_with("the lint", lint::run(tree), &[*error])
+        })?;
         println!("guards: {what} builds, and fails the lint");
     }
     std::fs::remove_file(tree.join(OUTSIDE.0)).map_err(|e| e.to_string())?;
+
+    let text = tree.join("crates/die-render/src/platform/macos/text.rs");
+    for (what, plant) in BLOCK_LINT_PLANTS {
+        with_plant(&text, plant, || {
+            clippy_passes(tree, &target, "die-render")?;
+            fails_with("the lint", lint::run(tree), &["unsafe-block lints"])
+        })?;
+        println!("guards: {what} passes clippy, and fails the lint");
+    }
 
     expect(
         tree,
@@ -217,6 +237,35 @@ fn with_log_plant(tree: &Path, check: impl FnOnce() -> Result) -> Result {
     write(&manifest, &orig)?;
     write(&lock, &orig_lock)?;
     res
+}
+
+/// Run `check` with `plant` appended to `file`, then put the file back.
+fn with_plant(file: &Path, plant: &str, check: impl FnOnce() -> Result) -> Result {
+    let orig = read(file)?;
+    write(file, &format!("{orig}{plant}"))?;
+    let res = check();
+    write(file, &orig)?;
+    res
+}
+
+/// clippy with ci's `-D warnings` must pass `krate` in `tree`.
+fn clippy_passes(tree: &Path, target: &Path, krate: &str) -> Result {
+    output(
+        Command::new(cargo())
+            .current_dir(tree)
+            .env_remove("RUSTFLAGS")
+            .args([
+                "clippy",
+                "--quiet",
+                "--offline",
+                "-p",
+                krate,
+                "--target-dir",
+            ])
+            .arg(target)
+            .args(["--", "-D", "warnings"]),
+    )
+    .map(|_| ())
 }
 
 /// A check (`what`) that must fail, with each of `texts` in its error.
