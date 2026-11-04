@@ -465,8 +465,7 @@ impl TextBuf {
     // ---- undo
     /// Start an undo group that spans commands, such as an insert session.
     pub fn begin_undo_group(&mut self) {
-        let sel = self.actor_selection();
-        self.history.begin(sel, self.cmd);
+        self.history.begin(self.cmd);
     }
     pub fn end_undo_group(&mut self) {
         self.history.end();
@@ -478,9 +477,10 @@ impl TextBuf {
     }
     /// Undo the last step and return the range it changed, in the text after the undo:
     /// every change the step made lies inside it. The acting window's selection goes back
-    /// to what it was before the step, shape and goal included, moved through any silent
-    /// edits since. Errors: `NothingToUndo`, `ReadOnly`, or `UndoConflict`, which drops the
-    /// history (contract §9).
+    /// to what it was just before the step's first change, shape and goal included, moved
+    /// through any silent edits since. Errors: `NothingToUndo`, `ReadOnly`, or `UndoConflict`,
+    /// which drops the history (contract §9). `UndoConflict` also reports, once, history
+    /// dropped earlier because a silent edit changed text a step being collected needed.
     pub fn undo(&mut self) -> Result<Range<usize>> {
         self.history_step(false)
     }

@@ -866,13 +866,25 @@ impl Ctx {
 
     // -------------------------------------------------------------- modal state, prefix, registers
 
+    /// The focused buffer's modal state, or `Normal` with nothing focused. Modal state is per
+    /// buffer: use `state_of` for a command's `Args` buffer, which may not be the focused one.
     pub fn state(&self) -> State {
         self.focused_buffer()
-            .and_then(|b| self.buffers.get(b))
-            .map_or(State::Normal, |b| b.state)
+            .map_or(State::Normal, |b| self.state_of(b))
     }
+    /// Set the focused buffer's modal state.
     pub fn set_state(&mut self, s: State) {
-        if let Some(b) = self.focused_buffer().and_then(|b| self.buffers.get_mut(b)) {
+        if let Some(b) = self.focused_buffer() {
+            self.set_state_of(b, s);
+        }
+    }
+    /// `buf`'s modal state. A dead buffer reads as `Normal`.
+    pub fn state_of(&self, buf: BufferId) -> State {
+        self.buffers.get(buf).map_or(State::Normal, |b| b.state)
+    }
+    /// Set `buf`'s modal state. A dead buffer is ignored.
+    pub fn set_state_of(&mut self, buf: BufferId, s: State) {
+        if let Some(b) = self.buffers.get_mut(buf) {
             b.state = s;
         }
     }
@@ -1130,15 +1142,19 @@ impl Ctx {
                 self.cur_window = self.focused;
                 let r = self.guarded(q.ext, q.f);
                 self.report(r);
+                // Code that runs between units (the host, a harness) gets a number of its own.
+                self.cmd_seq += 1;
             }
             return true;
         }
         if let Some(ev) = self.fed.pop_front() {
             self.dispatch(ev, KeySource::Fed);
+            self.cmd_seq += 1;
             return true;
         }
         if let Some(ev) = self.typed.pop_front() {
             self.dispatch(ev, KeySource::Typed);
+            self.cmd_seq += 1;
             return true;
         }
         false
@@ -1228,6 +1244,8 @@ impl Ctx {
                 self.run_key(&name, keys, win, buf);
             }
             Lookup::None => {
+                // An undefined key ends the command it began, count and register too.
+                self.prefix = Prefix::default();
                 let keys = std::mem::take(&mut self.pending);
                 let last = keys.last().cloned().unwrap();
                 let handled = self

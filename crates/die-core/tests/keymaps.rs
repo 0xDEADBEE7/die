@@ -430,3 +430,27 @@ fn os_fields_dont_change_what_a_key_matches() {
     ctx.run_until_idle();
     assert_eq!(*log.borrow(), ["c-a", "c-a", "c-s-a", "c-s-a"]);
 }
+
+/// Emacs's `undefined` resets the prefix argument, so a typo can't arm the next command.
+#[test]
+fn an_undefined_key_clears_the_prefix_argument() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text").bind(State::Normal, "ga", "a");
+    };
+    let mut ctx = typing(vec![ext(&log, &["a"], bind)], "");
+    ctx.set_prefix(Prefix {
+        count: Some(3),
+        register: Some('x'),
+    });
+    ctx.type_keys("gz");
+    assert_eq!(ctx.prefix(), Prefix::default());
+    assert_eq!(ctx.messages, ["gz is undefined"]);
+    // A prefix of a longer binding isn't undefined.
+    ctx.set_prefix(Prefix {
+        count: Some(3),
+        register: None,
+    });
+    ctx.type_keys("g");
+    assert_eq!(ctx.prefix().count, Some(3));
+}
