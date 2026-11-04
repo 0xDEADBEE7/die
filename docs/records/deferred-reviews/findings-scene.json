@@ -1,0 +1,374 @@
+[
+ {
+  "id": "scene-1",
+  "severity": "major",
+  "area": "scene / per-frame cost",
+  "file": "crates/die-core/src/scene.rs",
+  "line": 532,
+  "claim": "Each text cell's style is found by scanning every decoration and every search match, with a string-keyed face lookup per decoration per cell. compose is therefore O(text cells \u00d7 (decorations + matches)). M0's every-match search highlight already exceeds K15's 1 ms core budget in the owner's own layout, and blows the 8.3 ms frame at 300\u00d7100. M1's syntax providers make it worse.",
+  "evidence": "scene.rs:534 `for (_, f) in deco.iter().filter(|(r, _)| r.contains(&q))`. scene.rs:535 `faces.get(f)` is a HashMap<String> lookup (faces.rs:321-328). scene.rs:538 `hl.search.iter().any(|m| m.contains(&q))`. scene.rs:553 `t.line_of(q)` runs per cell for linewise selection. All are called for every text cell (scene.rs:601). Release-mode probe (scratchpad/scene-and-unsafe/sceneprobe), p50 per compose:\n- 300\u00d7100, scene.rs as it is (396 faces from a token provider): 0.48 ms.\n- 300\u00d7100, dense 280-column lines: plain 0.61 ms; search \"e\" alone 10.2 ms; 3,703 provider faces 26.0 ms; both 36.5 ms.\n- The owner's layout (an 80-column text area, 98 rows, dense wrapped text): plain 0.15 ms; search \"e\" 1.24 ms; token provider 1.86 ms.\nV2 redraws on every keystroke of an incremental search, so `/e` is the common case. faces and scene stand at 820 of 950 lines, and the fix adds about 20.",
+  "proposed_fix": "In draw_text, resolve each decoration's style once and sweep. Cell positions only move forward through a window, so the sweep restarts if one ever goes back:\n```rust\n// Each decoration's style once; `deco`'s order is the stacking order.\nlet layers: Vec<(Range<usize>, Style)> =\n    deco.iter().map(|(r, f)| (r.clone(), faces.get(f))).collect();\nlet mut by_start: Vec<usize> = (0..layers.len()).collect();\nby_start.sort_by_key(|&i| layers[i].0.start);\nlet (mut next, mut active, mut m, mut prev) = (0, Vec::<usize>::new(), 0, 0);\nlet mut style_at = |q: usize| {\n    if q < prev { (next, m) = (0, 0); active.clear(); }\n    prev = q;\n    while next < by_start.len() && layers[by_start[next]].0.start <= q {\n        let i = by_start[next];\n        active.insert(active.partition_point(|&a| a < i), i);\n        next += 1;\n    }\n    active.retain(|&i| layers[i].0.end > q);\n    let mut s = active.iter().fold(base, |s, &i| layers[i].1.over(s));\n    while m < hl.search.len() && hl.search[m].end <= q { m += 1; }\n    let current = hl.current.as_ref().is_some_and(|r| r.contains(&q));\n    if current || hl.search.get(m).is_some_and(|r| r.contains(&q)) { /* as today */ }\n    // bracket and selection as today, but compute a linewise selection's byte\n    // range once (line start of the first line .. line start after the last)\n    s\n};\n```\nThis also fixes `faces.get` per cell. Tests:\n- Keep today's per-cell scan as a test-only oracle, and add a proptest, `style_sweep_matches_the_naive_scan`. It covers random nested, overlapping and equal decorations, provider faces, search matches and selections, and checks every cell.\n- Add K15 speed test `a_300x100_frame_with_4000_faces_and_a_one_letter_search_composes_within_1ms` (release).",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "scene-1",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "The code shows it: style_at (scene.rs:532-563) scans every `deco` entry, with a HashMap<String> lookup in faces.get, and every search match, for each text cell. The reviewer understates the problem. Stored face decorations are taken from the whole buffer, not the visible range. `t.decorations()` (text.rs:610) is `self.decos.iter()`, and scene.rs:498-504 doesn't filter it. So off-screen decorations cost as much as visible ones.\n\nMy own release benchmark (scratchpad/verify-scene-and-unsafe/bench, die-core at HEAD, p50 per compose) on a 300x100 frame with dense lines:\n- plain: 0.62 ms\n- search \"e\": 29.6 ms\n- 11k stored faces: 76.6 ms\n- both: 105.9 ms\n- about 10k stored faces, all off-screen: 72.9 ms\n- an 80-column window: plain 0.16 ms, search 2.1 ms, faces 9.5 ms\n\nI applied the reviewer's sweep, plus a visible-range clip, in a copy (scratchpad/verify-scene-and-unsafe/clean). All 28 scene tests and all 147 die-core tests pass. Times after the fix:\n- 300x100: plain 0.67 ms; off-screen faces 0.67 ms; search 0.81 ms; faces 0.84 ms; both 1.00 ms.\n- 80-column window: 0.18 to 0.27 ms.\n\nThe sweep as written is correct:\n- `active` stays ordered by deco index, so the stacking order is unchanged.\n- Empty ranges never apply.\n- Search matches are sorted and don't overlap.\n- It needs `q.map_or(base, &mut style_at)`, because the closure is FnMut.\n\nTwo gaps:\n1. Without the clip, it still builds and sorts `layers` from every decoration in the buffer, every frame.\n2. The proposed K15 test (300x100, 4000 faces and a one-letter search within 1 ms) would be flaky or fail. Plain compose is already 0.62-0.67 ms. Fixed, 'both' is 1.00 ms in release and 0.97 ms at the test profile's opt-level 1 (Cargo.toml `[profile.test] opt-level = 1`).",
+   "better_fix": "Use the reviewer's sweep, with `let style = q.map_or(base, &mut style_at);`. Also clip stored decorations to what's drawn (scene.rs:500-503):\n```rust\nDeco::Face(f) if d.range.start < visible.end && d.range.end > visible.start => {\n    Some((d.range.clone(), f))\n}\n```\nKeep the proptest oracle, `style_sweep_matches_the_naive_scan`. Replace the speed test with two tests:\n- `an_80_column_window_with_4000_faces_and_a_one_letter_search_composes_within_1ms`: the owner's layout, measured at 0.25 ms.\n- `faces_and_search_cost_at_most_twice_a_plain_frame`: 300x100 with 4000 stored faces (half of them off-screen) and the search \"e\", p50 of 20 runs, at most 2x the plain frame's p50. It holds at opt-level 1 and in release, and it catches a return to the per-cell scan (100x today).\n\nThis removes about 4 lines from the reviewer's estimate."
+  }
+ },
+ {
+  "id": "scene-3",
+  "severity": "minor",
+  "area": "scene / selection and positions",
+  "file": "crates/die-core/src/scene.rs",
+  "line": 593,
+  "claim": "Layout gives a newline no cell, so compose never draws one. A linewise (or charwise, across a newline) visual selection is invisible on empty lines, where Vim and the owner's Emacs show one highlighted cell. An empty line, and the cells past the end of any line, also map to no position, so K14's click can't land on an empty line or past the end of a line from the frame.",
+  "evidence": "Probe on \"ab\\n\\ncd\\n\", visual linewise over all three lines: row 0 `##........`, row 1 `..........`, row 2 `##........`. The empty line shows no selection. positions: row 0 `[Some(0), Some(1), None \u00d7 8]`; row 1 (the empty line) all None; row 3 all None. The rustdoc (scene.rs:147-151) promises None past the end of a line. K8's selection test only checks non-empty lines (tests/scene.rs:388-425).",
+  "proposed_fix": "In draw_text, after a display row's cells, when the row ends its buffer line:\n- Let `nl` be the newline's position, or the buffer's end on the last line.\n- Draw the next cell (if it's inside `room`) as `Cell::new(Glyph::Char(' '), style_at(nl))`.\n- Set that cell's and the rest of the row's positions to `Some((p.window, nl))`. Under scene-2 this goes into the Ctx table instead.\nRustdoc: \"Cells past the end of a line map to its newline (on the last line, to the end of the buffer), so a click there lands at the line's end, as in Emacs; die-vim moves it onto the last character in normal state. The newline's own cell draws its faces, so a selected or highlighted newline shows as one cell, as in Vim.\"\nTests:\n- `linewise_selection_shows_empty_lines`: the case above, with row 1 col 0 selected.\n- `charwise_selection_across_a_newline_shows_it`.\n- `cells_past_the_end_of_a_line_map_to_its_newline`.\n- Update `every_cell_of_a_tab_or_wide_character_maps_to_its_position`: its last element becomes Some(6).",
+  "failing_test": "linewise_selection_shows_empty_lines: \"ab\\n\\ncd\\n\", State::Visual, Selection{anchor:0, head:4, shape:Line}; assert row 1 col 0's bg is the selection face's",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "scene-3",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "Reproduced in a probe test (scratchpad/verify-scene-and-unsafe/orig/crates/die-core/tests/probe.rs).\n- \"ab\\n\\ncd\\n\", visual linewise over all three lines: the selection masks are `##........`, `..........`, `##........`, so the empty line shows nothing.\n- Charwise 1..=3 (b and both newlines): `.#........`, then nothing on the empty line.\n- Positions: row 0 is [Some(0), Some(1), None x 8], row 1 is all None, and row 3 (the empty last line) is all None.\n\nThe cause is in layout.rs:198-205 and :272-279: the newline gets `stop_here(p)`, a stop with no cell. The rustdoc (scene.rs:147-151) does say None past the end of a line, so that half is documented behaviour, but it leaves K14 nothing to map a click to.\n\nThe one-cell rendering is consistent with the owner's Emacs. mono-dark's region (mono-dark-theme.el:37) has no :extend, so Emacs highlights only the newline glyph, which is also what Vim does.\n\nThe fix is incomplete for wrapped lines: only rows that end their buffer line get positions past their last cell. A click past the end of a non-final wrapped row still maps to None, and Emacs puts point at that row's end. The proposed rustdoc ('Cells past the end of a line map to its newline') would read as covering those rows too.",
+   "better_fix": "Take the reviewer's change for rows that end their line. Add:\n- A row that doesn't end its line maps the cells past its last cell to that row's last drawn position (the break position, which die-vim's `l`/`h` rules then handle).\n- Rustdoc: \"Cells past the end of a row map to its last position; past the end of a line's last row, to its newline (on the last line, to the end of the buffer), so a click there lands at the line's end, as in Emacs.\"\n- Test `cells_past_a_wrapped_row_map_to_its_last_position`.\n\nAn equivalent, and cleaner while K4 rebuilds layout: emit the end-of-line stop as a real cell (`CellKind::Eol`, text \" \", pos Some(nl)) at the (row, col) that stop_here already reserves. Layout, motions and the scene then agree, and draw_text needs no special case."
+  }
+ },
+ {
+  "id": "scene-6",
+  "severity": "minor",
+  "area": "scene / cursor",
+  "file": "crates/die-core/src/scene.rs",
+  "line": 97,
+  "claim": "CursorShape and Cursor fall short of M0's V4 and M2's terminal:\n- No underline (hbar) shape. Evil's replace state draws one, and V4 builds `R` in M0; DECSCUSR 3/4 ask for it in M2.\n- No rule for what a block or half-block does to the glyph under it, which R2 has to invent.\n- No app-focus input. Emacs hollows the cursor of a frame without keyboard focus, and the owner moves focus to the vterm tile all day.\n- No blink. Emacs's default blink-cursor-mode blinks, init.el doesn't turn it off, and DECSCUSR's odd values blink.",
+  "evidence": "scene.rs:97-109 has Block, Bar, HalfBlock, Hollow. scene.rs:459-465 maps only Insert and OperatorPending. keymap.rs:8-16 has no Replace state yet. ~/.emacs.d/lisp/evil/evil-states.el:857 `(evil-define-state replace \u2026 :cursor hbar`, :110 insert `(bar . 2)`, :834 operator `evil-half-cursor`. ghostel exposes `ghostel--cursor-style` and `ghostel--cursor-blinking` (lisp/ghostel/src/Renderer.zig:1023-1037). compose decides Hollow only from window focus and the prompt (scene.rs:341-345).",
+  "proposed_fix": "```rust\npub enum CursorShape {\n    /// Normal and visual state: fills the cell with `color` and draws its glyph\n    /// in the cell's background color, as Emacs's box cursor does.\n    Block,\n    /// Insert state and the command line: a bar 2 px wide at the cell's left (Evil's `(bar . 2)`).\n    Bar,\n    /// Replace state (Evil's `hbar`), and a terminal's underline cursor\n    /// (DECSCUSR 3 and 4): a bar 2 px high at the cell's bottom.\n    Underline,\n    /// Operator-pending state: the cell's lower half filled with `color`,\n    /// hiding the glyph there, as Evil's half cursor does.\n    HalfBlock,\n    /// A cursor that doesn't take input: another window's, the focused window's\n    /// while the command line has a prompt, or every cursor while DIE's window\n    /// doesn't have the keyboard focus, as Emacs draws an unfocused frame.\n    Hollow,\n}\n```\nK9's handle gets a focus input (`Input::Focus(bool)`) stored in Ctx, and compose draws Hollow while it's false. V4 adds `State::Replace`, which shape_for maps to Underline. Test: `cursor_shape_follows_the_state` gains Replace and an unfocused app.\nBlink: none in M0, a deviation the owner can veto. In M2, add `Cursor.blink: bool` for DECSCUSR's blinking styles; die-render owns the timer in its own wake, so core's `next_deadline` never sees it.",
+  "recommendation": "Add Underline, the per-shape rustdoc and app-focus hollowing now. Leave blink out until die-term needs it.",
+  "needs_decision": true,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "scene-6",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "scene.rs:97-109 has Block, Bar, HalfBlock and Hollow. shape_for (scene.rs:459-465) maps only Insert and OperatorPending, and keymap.rs:8-16 has no Replace state. Evil's states are evil-states.el:110 insert `(bar . 2)`, :834 operator `evil-half-cursor` (an hbar of half height, :846-850) and :857 replace `:cursor hbar`. The m0-plan V4 row includes `R`. Hollow is decided only from window focus and the prompt (scene.rs:341-345). The owner's init.el doesn't turn off blink-cursor-mode (the only hits are inside emacs-libvterm). The per-shape glyph rules the reviewer drafted (a block draws its glyph in the cell's background color; hbar covers the lower part) match Emacs's box and hbar cursors.",
+   "decision_view": "Agree with the reviewer:\n- Add Underline and the per-shape rustdoc now. R2 has to draw each shape, and V4 needs Replace in M0.\n- Add `Input::Focus(bool)` in K9, with hollowing in compose. It keeps the shape testable headlessly through the harness. Core needs focus events anyway: K10b's on-disk check when focus returns (Emacs and Vim check on focus-in) and M2's terminal focus reporting.\n- No blink in M0, listed as a deviation. Emacs stops blinking after `blink-cursor-blinks` (10), so the visible difference is small."
+  }
+ },
+ {
+  "id": "KEYS-4",
+  "severity": "minor",
+  "area": "modal states",
+  "file": "crates/die-core/src/keymap.rs",
+  "line": 8,
+  "claim": "State has no replace state. If `R` runs as Insert, it draws a bar instead of Evil's underline and shares insert state's keymap. Adding a variant later breaks every exhaustive match.",
+  "evidence": "keymap.rs:8-16 lists seven states. scope.md:349 puts `R` in scope.\n\nEvil's `(evil-define-state replace ... :cursor hbar` (evil-states.el:854-858) has its own map, where BS restores the replaced character.\n\nscene.rs:461-463 derives the cursor shape from State.",
+  "proposed_fix": "Add `State::Replace` (\"Replace (`R`): typed text overwrites\") to keymap.rs and to the state lists in contract \u00a77 and scope \u00a75.6. Add `CursorShape::Underline` (\"Replace state, as Evil's hbar\") and map Replace to it in scene.rs.",
+  "needs_decision": true,
+  "recommendation": "Add now; it's 3 lines and V4 needs it.",
+  "review": "text-and-keys",
+  "verifier": {
+   "id": "KEYS-4",
+   "verdict": "confirmed",
+   "reasoning": "- State has seven variants, none for replace (keymap.rs:7-16).\n- scope.md:349 includes \"Replace mode (`R`)\", and m0-plan V4 includes `R`.\n- shape_for (scene.rs:459-464) derives the cursor shape from State only, so `R` run as Insert can't get Evil's hbar cursor.\n- Without its own state, R can't have its own keymap (BS restores the replaced character) except through a mode layered over Insert.\n- CursorShape (scene.rs:99-109) has no underline.",
+   "fix_ok": true,
+   "decision_view": "Add State::Replace and CursorShape::Underline now.\n- Evil and Vim both treat replace as its own state, and V4 needs it.\n- The contract's state list is already Vim-shaped (operator-pending).\n- A settable cursor-shape override would be more general, but nothing else needs one yet."
+  }
+ },
+ {
+  "id": "scene-7",
+  "severity": "minor",
+  "area": "scene / Cell shape for M2",
+  "file": "crates/die-core/src/scene.rs",
+  "line": 56,
+  "claim": "Cell can't yet hold what a ghostel-level terminal needs, and adding it later breaks every cell producer. It lacks overline and a link id. Nothing says producers must resolve reverse, faint and invisible themselves. Each attribute is its own public bool with no public constructor, so every new attribute breaks every struct literal once die-term (M2) and cell-writing surfaces construct cells. Surface::render still returns strings, where contract \u00a710 has surfaces write cells into a frame. Box<str> clusters make Cell non-Copy and 40 bytes.",
+  "evidence": "scene.rs:56-74 has the fields glyph, fg, bg, bold, italic, strike, underline, underline_color. `Cell::new` is private (scene.rs:78). ctx.rs:67 `fn render(&mut self, cols: usize, rows: usize, out: &mut Vec<String>)`, while contract \u00a710 says \"render writes into a DIE-owned cell frame clipped to area\". S4 A5: \"The spike renders strings; production renders the cell frame.\" ghostel's resolved cell (lisp/ghostel/src/style_face.zig:31-44): fg, bg, bold, italic, faint, underline, underline_color, strikethrough, overline, inverse, hyperlink. Faint is blended into fg at 65/35 (style_face.zig:77-89), inverse becomes :inverse-video, and blink and invisible aren't rendered. S1's cell used an `attrs: u8` bitset (spikes/s1-renderer/src/scene.rs:9-14). size_of::<Cell>() = 40, Glyph = 24.",
+  "proposed_fix": "Now (K8 is small, and nothing outside die-core constructs a Cell yet):\n```rust\n/// Text attributes, as a set, so adding one later breaks no cell producer.\n#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]\npub struct Attrs(u16);\nimpl Attrs {\n    pub const BOLD: Attrs = Attrs(1);\n    pub const ITALIC: Attrs = Attrs(1 << 1);\n    pub const STRIKE: Attrs = Attrs(1 << 2);\n    pub const OVERLINE: Attrs = Attrs(1 << 3);\n    pub fn contains(self, a: Attrs) -> bool { self.0 & a.0 == a.0 }\n    pub fn set(&mut self, a: Attrs, on: bool) { if on { self.0 |= a.0 } else { self.0 &= !a.0 } }\n}\n```\n- Cell gets `pub attrs: Attrs` in place of the three bools, plus `pub fn new(glyph: Glyph, fg: Rgb, bg: Rgb) -> Cell` (no attributes, underline_color = fg), so producers write `Cell { underline: Underline::Single, ..Cell::new(g, fg, bg) }`.\n- Style gets `overline: Option<bool>`.\n- Cell rustdoc: \"Producers resolve what a cell doesn't hold: reverse swaps fg and bg, faint blends fg toward bg (65 %, as ghostel does), invisible draws a space, and blinking text draws steadily.\"\nWith die-term (M2):\n- `pub link: Option<LinkId>` (a NonZeroU32), with the frame type surfaces write into (a `&mut` view of the window's rectangle in the Scene, `put(row, col, Cell)`), replacing render's `Vec<String>`.\nOptional:\n- Intern clusters (`Glyph::Cluster(u32)` into a per-Scene string table) to make Cell Copy, at about 24 bytes.",
+  "recommendation": "Use flags plus a constructor and overline now, and the link id and cell frame with die-term. Skip interning unless R2's profile asks for it.",
+  "needs_decision": true,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "scene-7",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "scene.rs:56-74 has bold, italic and strike as separate pub bools; Cell::new (scene.rs:78) is private and takes a Style. Nothing outside die-core constructs a Cell today (grep for `Cell {` finds only scene.rs). ctx.rs:67's render takes `&mut Vec<String>`, against contract \u00a710:321, which already says 'the link id arrives with die-term (M2)'. size_of::<Cell>() = 40, confirmed.\n\nThe proposed fix doesn't guarantee that later additions are non-breaking. A bitset plus a constructor still lets a producer write a full struct literal, and that literal breaks when a field is added. Only `#[non_exhaustive]` rules out outside literals, including functional update. Attrs(u16) also doesn't shrink Cell: it stays 40 bytes, padding included.",
+   "decision_view": "Now: `#[non_exhaustive]` on Cell plus a public `Cell::new(glyph, fg, bg)`, and the rustdoc rule for reverse, faint, invisible and blink. Overline, the link id and the cell frame for surfaces then arrive with die-term in M2 without breaking anyone, so none of them needs adding now. Bools or a bitset is then just style; keep the bools, which read better in tests. Skip cluster interning unless R2's profile asks for it.",
+   "better_fix": "```rust\n/// One cell of the grid \u2026 Producers resolve what a cell doesn't hold: reverse\n/// swaps fg and bg, faint blends fg toward bg (65 %, as ghostel does),\n/// invisible draws a space, and blinking text draws steadily.\n#[non_exhaustive]\n#[derive(Clone, PartialEq, Eq, Hash, Debug)]\npub struct Cell { /* fields unchanged */ }\nimpl Cell {\n    /// `glyph` in `fg` on `bg`, with no attributes and the underline in `fg`.\n    pub fn new(glyph: Glyph, fg: Rgb, bg: Rgb) -> Cell { \u2026 }\n}\n```\nRename today's private `Cell::new(glyph, Style)` to `fn styled`. Outside producers write `let mut c = Cell::new(g, fg, bg); c.bold = true;`. Patterns with `..` keep working. Test: `cells_are_built_with_new_and_field_writes` in tests/scene.rs. As an external crate, it would fail to compile on a struct literal."
+  }
+ },
+ {
+  "id": "scene-8",
+  "severity": "minor",
+  "area": "scene / naming",
+  "file": "crates/die-core/src/scene.rs",
+  "line": 129,
+  "claim": "`Placement` means \"where a window sits in the frame\". Scope \u00a75.1, contract \u00a710-11 and both records use \"placement\" for M3's images and pixel buffers anchored to cell rectangles, which the Scene must carry by M3. Keeping the name forces a rename after K9 and R2 adopt it, and it confuses R2's test plan now.",
+  "evidence": "scene.rs:124-136 `pub struct Placement { window, col, row }`. scope \u00a75.1: \"Pixels sit on the same grid as placements \u2026 a source rectangle, a sub-cell pixel offset and a z-order\". \u00a75.11: \"Core builds a scene (cells, placements, cursor)\".",
+  "proposed_fix": "Rename it to `WindowPlacement`, with rustdoc \"Where a window sits in the frame \u2026\". Keep `Placement` free for M3's `Scene.placements: Vec<Placement>` (cell rectangle, source rectangle, pixel offset, z, image or pixel-buffer id). Update the tests' `at()` helper and compose's signature. Do it before K9 uses the type.",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "scene-8",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "scene.rs:124-136 defines `Placement { window, col, row }` as where a window sits in the frame. 'Placement' already names cell-anchored images and pixel buffers in scope.md:63, :88 ('a placement has a source rectangle, a sub-cell pixel offset and a z-order'), :227 and :270 ('cells, placements, cursor'), and in contract \u00a710-11 (extension-contract.md:306, :330, :347). The type is used in 14 lines, all in die-core and its tests, so renaming before K9 and R2 adopt it is cheap. One note: K6's window tree may make compose's `&[Placement]` internal, but the name should still be freed for M3.",
+   "better_fix": ""
+  }
+ },
+ {
+  "id": "scene-9",
+  "severity": "minor",
+  "area": "scene / snapshot",
+  "file": "crates/die-core/src/scene.rs",
+  "line": 218,
+  "claim": "The snapshot silently merges every style past the 62nd into '?', so two different styles can produce the same snapshot. The style key is a hand-written tuple, so a new Cell attribute that isn't added to it also merges styles without an error. M2's 256-colour terminal tests will pass 62 easily.",
+  "evidence": "scene.rs:202 has 62 letters, and scene.rs:218 and :227 use `unwrap_or('?')`. Probe: a row of 70 distinct fg colours gives style row `|abc\u2026XYZ0123456789????????|` and 10 legend lines starting with \"? \". scene.rs:190-201 builds `key` field by field.",
+  "proposed_fix": "Write `let Cell { glyph: _, fg, bg, bold, italic, strike, underline, underline_color } = c;` (an exhaustive destructure, so a new field fails to compile here until the key and legend include it). Replace the two `unwrap_or('?')` with `*letters.get(i).unwrap_or_else(|| panic!(\"a snapshot shows at most {} styles\", letters.len()))`. If M2 needs more, go to two-character keys then. New attributes print only when set, so existing snapshots stay valid. Test: `a_snapshot_with_more_styles_than_letters_panics`.",
+  "failing_test": "a_snapshot_with_more_styles_than_letters_panics: 70 cells with distinct fg; std::panic::catch_unwind(|| s.snapshot()).is_err()",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "scene-9",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "scene.rs:202 has 62 letters, and :218 and :227 fall back to '?'. I built a stronger case than the reviewer's. Two scenes with 62 distinct styles in cols 0-61, then X, Y at 62-63, and col 64 = X in one and Y in the other. They give byte-identical snapshot() strings while `s == t` is false, because the style row reads `???` in both and the legend lists X then Y in both. So the harness's text comparison can pass on different frames. The key tuple (scene.rs:190-201) is hand-written, as claimed. The exhaustive destructure plus a panic is right for a test and harness format.",
+   "better_fix": ""
+  }
+ },
+ {
+  "id": "scene-10",
+  "severity": "nit",
+  "area": "scene / status line",
+  "file": "crates/die-core/src/scene.rs",
+  "line": 318,
+  "claim": "The status line's text is hard-coded to \" \" plus the buffer name. The owner's mode line shows `default-directory`, and Buffer already has a `directory`.",
+  "evidence": "scene.rs:318-326 calls put_text with `b.name`. ~/.emacs.d/init.el:379 `(setq-default mode-line-format (list \" \" 'default-directory))`.",
+  "proposed_fix": "For F3, add a config field `status_line: fn(&Ctx, BufferId) -> String`, defaulting to the buffer name, which die-dev sets to the buffer's directory. For custom surfaces the contract's `Surface::status()` stays. Until then, note it in die-dev's lib.rs as a known difference.",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "scene-10",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "scene.rs:318-326 draws ' ' plus `b.name`, and init.el:379 is `(setq-default mode-line-format (list \" \" 'default-directory))`. Part of the evidence is wrong: Buffer has no `directory` field (ctx.rs:319-325 has name, content, modes, local and state). A visiting buffer's directory comes from `Ctx::file(buf)` (files.rs:156) as `FileInfo.path.parent()`, and buffers that don't visit a file have none. Emacs gives every buffer a default-directory, and the mode line shows it abbreviated (`~/\u2026/`).",
+   "better_fix": "F3: add a config field `status_line: fn(&Ctx, BufferId) -> String`, defaulting to the buffer name. die-dev's version is `ctx.file(b).and_then(|f| f.path.parent())` with $HOME abbreviated to `~` and a trailing `/`, falling back to the process's starting directory for buffers that don't visit a file, as Emacs's default-directory does. Until F3, note the difference in apps/die-dev/src/lib.rs."
+  }
+ },
+ {
+  "id": "faces-1",
+  "severity": "minor",
+  "area": "faces",
+  "file": "crates/die-core/src/faces.rs",
+  "line": 326,
+  "claim": "A decoration or provider face name that no one declared draws as nothing, with no message, though a theme's undeclared face is reported. A typo in an extension's `Deco::Face(\"orchid.usr-message\")` is invisible.",
+  "evidence": "faces.rs:325-328 `get` returns `Style::default()` for an unknown name. scene.rs:535 uses it for every decoration. faces.rs:334-347 reports a theme's unknown faces to *messages*. `TextBuf::decorate` (text.rs:569-594) doesn't check face names.",
+  "proposed_fix": "While resolving layers once per frame (scene-1's `layers`), use `faces.style(f)`. For a None, record the name in a `HashSet<&'static str>` on Ctx and push \"face {f} isn't declared (a decoration or a mode's provider uses it)\" to `messages` the first time each name appears. Test: `an_undeclared_decoration_face_is_reported_once`.",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "faces-1",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "faces.rs:325-328: `get` returns Style::default() for an unknown name. scene.rs:535 uses it for every decoration and provider face. set_theme reports undeclared faces (faces.rs:334-347). TextBuf::decorate can't check names, since it has no registry. Reporting at draw time once per name matches Emacs, which logs 'Invalid face reference' during redisplay.\n\nImplementation note: draw_text is a free function holding `&Faces` through Look, so it should return or collect the unknown names, and compose pushes them to `self.messages`. Disjoint field borrows (`self.faces`, `self.buffers`, `self.messages`) make that work. It belongs in the same per-frame `layers` pass as scene-1's fix.",
+   "better_fix": ""
+  }
+ },
+ {
+  "id": "faces-2",
+  "severity": "nit",
+  "area": "faces / mono-dark",
+  "file": "apps/die-dev/src/theme.rs",
+  "line": 44,
+  "claim": "mono-dark's mode lines draw a 1 px `:box` in #3a3a3a, which DIE's Style can't express. die-dev drops it with a comment. It's the only mono-dark attribute DIE lacks.",
+  "evidence": "~/.emacs.d/lisp/colorschemes/mono-dark-theme.el:98-99 `(mode-line \u2026 :box (:line-width 1 :color ,border))`. Across the theme only :box (6 uses), :slant italic, :weight bold or normal and :underline t appear. apps/die-dev/src/theme.rs: \"mode-line and mode-line-inactive, without their box\".",
+  "proposed_fix": "Accept it, and record it as a deviation in scope \u00a78's text-surface list: \"status lines have no box; dividers separate windows\". A real `box` attribute (cell-edge lines plus run ends) costs renderer work for one face. An overline plus underline doesn't reproduce it, because the underline sits near the baseline, not at the cell edge.",
+  "recommendation": "Accept the deviation.",
+  "needs_decision": true,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "faces-2",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "mono-dark-theme.el:98-99 gives mode-line and mode-line-inactive `:box (:line-width 1 :color ,border)`. apps/die-dev/src/theme.rs:44 drops it with the comment 'without their box'. I tallied the theme's attributes: :weight 39, :underline 12, :slant 9, :box 4 entries (6 lines mention :box), plus colors. Nothing else that DIE lacks appears. A 1 px box also makes Emacs's mode line taller than a text row, which a uniform cell grid can't reproduce. Scope \u00a78 is a requirements table, not a deviation list, so the note fits best in its 'Two custom themes' row.",
+   "decision_view": "Accept the deviation. A box attribute would mean renderer work (cell-edge lines and run ends, plus a taller row) for one face, and dividers already separate windows. Record it in scope \u00a78's 'Two custom themes' row: 'Status lines have no box; dividers separate windows'. Keep theme.rs's comment."
+  }
+ },
+ {
+  "id": "faces-3",
+  "severity": "nit",
+  "area": "faces / API polish",
+  "file": "crates/die-core/src/faces.rs",
+  "line": 96,
+  "claim": "Style's builder can't set an underline colour, and can't set an attribute explicitly off, which Emacs's `:weight normal` and `:underline nil` need to override an inherited one (mono-dark's org-tag and nobreak-space do). Theme's `name` and `faces` fields have no rustdoc, against K15's \"rustdoc on every public item\".",
+  "evidence": "faces.rs:96-124 has only setters that turn attributes on. faces.rs:174-175 `pub name: String, pub faces: BTreeMap<String, Style>` are undocumented. mono-dark-theme.el: `org-tag \u2026 :weight normal`, `nobreak-space \u2026 :underline nil`.",
+  "proposed_fix": "```rust\n/// Set the underline's color.\npub fn underline_color(mut self, c: Rgb) -> Style { self.underline_color = Some(c); self }\n/// Set bold on or off; off overrides a parent's or a lower face's bold.\npub fn bold_is(mut self, on: bool) -> Style { self.bold = Some(on); self }\n```\nAdd the same `italic_is` and `strike_is`. Rustdoc: `/// The theme's name, used in messages.` and `/// Styles by face name; a face it doesn't name keeps its declared style.`",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "faces-3",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "Partly overstated. The builder (faces.rs:96-124) has no underline-colour setter and only turns attributes on. But Style is a pub struct with pub Option fields and no #[non_exhaustive], so `Style { bold: Some(false), ..Style::new() }` and `Style { underline_color: Some(c), ..s }` already work. Explicit 'off' is therefore possible today, which makes this ergonomics, not a capability gap. The mono-dark examples are real: org-tag `:weight normal` (line 242) and nobreak-space `:underline nil` (line 48). Theme's `name` and `faces` (faces.rs:174-175) do lack rustdoc; that's a K15 item, and other die-core items lack docs too (Deco's variants, for one). The proposed setters and rustdoc are harmless polish.",
+   "better_fix": ""
+  }
+ },
+ {
+  "id": "unsafe-1",
+  "severity": "major",
+  "area": "xtask lint / guards",
+  "file": "xtask/src/lint.rs",
+  "line": 534,
+  "claim": "The unsafe confinement can be bypassed three ways that every ci check accepts. (a) A `#[unsafe(naked)]` function with `naked_asm!` is arbitrary machine code, needs no `unsafe` block, and rustc's `unsafe_code` lint doesn't flag it, even under the workspace's `forbid`. (b) In die-render, where the level is `deny`, a macro that builds `#[allow($lint)]` lowers it, and the token lint never sees `allow(unsafe_code)`. (c) A `#[path = \"\u2026\"]` module whose file is outside every workspace member is never scanned, so an inner `#![allow(unsafe_code)]` there passes.",
+  "evidence": "Probe crate (scratchpad/scene-and-unsafe/probe, rustc 1.96.0, `[workspace.lints.rust] unsafe_code = \"forbid\"`): `#[unsafe(naked)] pub extern \"C\" fn f(_x: u64) -> u64 { core::arch::naked_asm!(\"add x0, x0, #1\", \"ret\") }` compiles and runs (`cargo run` printed 42). The same probe shows what rustc does catch: `unsafe extern` blocks (\"usage of an `unsafe extern` block\"), `global_asm!`, `#[unsafe(no_mangle)]` and unsafe in build.rs (\"requested on the command line with `-F unsafe-code`\"). End to end, in a `git archive HEAD` copy (scratchpad/scene-and-unsafe/tree) I appended the naked fn to crates/die-core/src/lib.rs. To crates/die-render/src/lib.rs I appended `macro_rules! level { ($lint:ident, $($i:item)*) => { #[allow($lint)] pub mod planted { $($i)* } }; } level!(unsafe_code, pub fn ok() -> &'static str { unsafe { std::str::from_utf8_unchecked(b\"ok\") } });` and `#[path = \"../../../docs/planted.rs\"] pub mod planted_path;`, with docs/planted.rs holding `#![allow(unsafe_code)]` and an unsafe block. Then `cargo check -p die-core -p die-render` passed, `cargo clippy --all-targets -- -D warnings` exited 0, `cargo xtask lint` printed `lint: ok (7 crates)`, and `cargo xtask budget` passed. Cause: check_unsafe_allows (lint.rs:534-591) only looks for the literal tokens `allow|expect|warn(` \u2026 `unsafe_code`. rust_files scans member directories only (util.rs:204). guards.rs:12 plants only `unsafe {}`. Today's tree has no `unsafe` token outside platform/macos except inside string literals (xtask/src/guards.rs:12, lint.rs:641), and no `#[path]` or `include!` anywhere, so a stricter rule costs nothing.",
+  "proposed_fix": "Add to xtask/src/lint.rs, and call it from run() for every file, next to check_unsafe_allows:\n```rust\n/// Where the `unsafe` keyword may appear (scope \u00a712). M2 adds die-core's `sys/`\n/// and die-term's engine boundary; `platform/linux/` joins with its code.\nconst UNSAFE_DIRS: &[&str] = &[\"crates/die-render/src/platform/macos/\"];\n\n/// The `unsafe` keyword in any form outside `UNSAFE_DIRS`: a block, an `unsafe`\n/// fn, impl, trait or extern block, and unsafe attributes such as\n/// `#[unsafe(naked)]`, which rustc's `unsafe_code` lint misses. Reading the\n/// keyword also catches a lint level a macro builds (`#[allow($lint)]`).\n/// `#[path = \u2026]` and `include!` are flagged everywhere: they compile a file\n/// this scan may never read.\npub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {\n    use crate::count::{Tok, lex};\n    let toks = lex(src);\n    let is = |i: usize, t: Tok| toks.get(i).map(|x| &x.0) == Some(&t);\n    let unsafe_ok = UNSAFE_DIRS.iter().any(|d| rel.starts_with(d));\n    for (i, (tok, line, _)) in toks.iter().enumerate() {\n        let Tok::Ident(w) = tok else { continue };\n        let what = match w.as_str() {\n            \"unsafe\" if !unsafe_ok => format!(\"`unsafe` outside {}\", UNSAFE_DIRS.join(\", \")),\n            \"include\" if is(i + 1, Tok::Punct('!')) => \"`include!` (it compiles a file the lint may not read)\".into(),\n            \"path\" if i > 0 && is(i - 1, Tok::Punct('[')) && is(i + 1, Tok::Punct('=')) => \"`#[path]` (it compiles a file the lint may not read)\".into(),\n            _ => continue,\n        };\n        errors.push(format!(\"{rel}:{}: {what} (scope \u00a712)\", line + 1));\n    }\n}\n```\nAdd lint unit tests. Each of these, at crates/die-core/src/x.rs, gives exactly 1 error:\n- the naked fn above;\n- the `level!` macro plant;\n- `unsafe extern \"C\" { safe fn abs(x: i32) -> i32; }`;\n- `#[path = \"../../docs/x.rs\"] mod x;`;\n- `include!(\"x.rs\");`.\nThese give 0 errors:\n- `unsafe {}` at crates/die-render/src/platform/macos/text.rs;\n- `const S: &str = \"unsafe {}\";`;\n- `// unsafe`;\n- `#![forbid(unsafe_code)]`;\n- `include_str!(\"x\")`.\nIn guards.rs, add the naked-fn plant to die-core's lib.rs and require `lint::run` on the planted tree to fail with \"`unsafe` outside\". rustc can't be the one to fail on it.",
+  "failing_test": "lint::tests: check_unsafe_tokens on \"#[unsafe(naked)]\\npub extern \\\"C\\\" fn f() { core::arch::naked_asm!(\\\"ret\\\") }\\n\" at crates/die-core/src/x.rs must give 1 error (today no check exists, and the full ci gauntlet passes the plant)",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "unsafe-1",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "Reproduced all three bypasses myself with rustc 1.96.0, offline. (a) Probe scratchpad/verify-scene-and-unsafe/naked has `[lints.rust] unsafe_code = \"forbid\"` and a `#[unsafe(naked)]` fn with `naked_asm!`. `cargo run` printed 42 with no lint. (b) and (c) In a `git archive HEAD` copy (scratchpad/verify-scene-and-unsafe/tree) I planted the naked fn in die-core/src/lib.rs, the `level!` macro-built `#[allow($lint)]` in die-render/src/lib.rs, and a path module pointing at docs/planted.rs (which holds `#![allow(unsafe_code)]` and an unsafe block). `cargo check -p die-core -p die-render` passed, `cargo clippy -p die-core -p die-render --all-targets -- -D warnings` exited 0, `cargo xtask lint` printed `lint: ok (7 crates)`, and budget passed. The code explains it: check_unsafe_allows (lint.rs:534-591) only matches the literal tokens allow/expect/warn followed by `(` \u2026 `unsafe_code`, and rust_files (util.rs:204) walks member directories only, picking only `.rs` files.\n\nThe proposed fix is incomplete. I pasted check_unsafe_tokens into the copy as written. It caught the naked fn (die-core/src/lib.rs:46) and the macro plant (die-render/src/lib.rs:38). It missed `#[cfg_attr(all(), path = \"../../../docs/planted.rs\")] pub mod planted_path;`, because `path` there follows `,`, not `[`. That's a common idiom (`#[cfg_attr(target_os = \"macos\", path = \"mac.rs\")]`); lint.rs:724 already has it as a test string. Two more plants compiled and also got past the proposed rule: a macro-built attribute (`macro_rules! m { ($k:ident, $f:literal) => { #[$k = $f] pub mod planted_mac; }; } m!(path, \"\u2026\");`) and a renamed include (`use core::include as inc_renamed; inc_renamed!(\"\u2026\");`, where the included file isn't even `.rs`). On today's tree the proposed rule has no false positives, which I verified: lint ok on a clean copy. The existing lint unit tests also pass.",
+   "better_fix": "Keep the `unsafe` keyword rule, and widen the `#[path]`/`include!` part. Tested in scratchpad/verify-scene-and-unsafe/tree: it flags all five plants. Tested on a clean HEAD copy: `lint: ok`, and the existing lint tests pass.\n```rust\npub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {\n    use crate::count::{Tok, lex};\n    let toks = lex(src);\n    let p = |i: usize, c: char| toks.get(i).map(|x| &x.0) == Some(&Tok::Punct(c));\n    let unsafe_ok = UNSAFE_DIRS.iter().any(|d| rel.starts_with(d));\n    for (i, (t, line, _)) in toks.iter().enumerate() {\n        let what = match t {\n            Tok::Ident(w) if w == \"unsafe\" && !unsafe_ok => {\n                format!(\"`unsafe` outside {}\", UNSAFE_DIRS.join(\", \"))\n            }\n            // Any use, so `use core::include as inc;` is caught too.\n            Tok::Ident(w) if w == \"include\" => {\n                \"`include!` (it compiles a file this lint may not read)\".into()\n            }\n            // `#[path = \u2026]` and `#[cfg_attr(\u2026, path = \u2026)]`.\n            Tok::Ident(w) if w == \"path\" && i > 0 && (p(i - 1, '[') || p(i - 1, ',')) && p(i + 1, '=') => {\n                \"`path` attribute (it compiles a file this lint may not read)\".into()\n            }\n            // An attribute a macro names: `#[$k = $f]`, `#[cfg_attr(\u2026, $k = \u2026)]`.\n            Tok::Punct('$') if i > 0 && (p(i - 1, '[') || p(i - 1, ',')) && p(i + 2, '=') => {\n                \"an attribute built from a macro fragment\".into()\n            }\n            _ => continue,\n        };\n        errors.push(format!(\"{rel}:{}: {what} (scope \u00a712)\", line + 1));\n    }\n}\n```\nAdd these to the reviewer's unit tests, each giving 1 error at crates/die-core/src/x.rs:\n- `#[cfg_attr(test, path = \"x.rs\")] mod x;`\n- `use core::include as inc;`\n- `macro_rules! m { ($k:ident) => { #[$k = \"x.rs\"] mod x; } }`\n\nAnd this gives 0: `let path = \"x\";`.\n\nOne known false positive: `format!(\"{path}\", path = \"x\")`. It's rare, and writing `{}` avoids it.\n\nThe guards plant from the proposal stays as proposed. A fully robust alternative, if ever wanted: after `cargo check --workspace --all-targets --message-format=json`, read each workspace artifact's dep-info file (`deps/<name>-<hash>.d` beside `lib<name>-<hash>.rmeta`) and require every listed source to be a `.rs` file under a member directory. I verified that dep-info lists both `#[path]` files and `include!`d non-.rs files (scratchpad/verify-scene-and-unsafe/deny)."
+  }
+ },
+ {
+  "id": "unsafe-2",
+  "severity": "minor",
+  "area": "platform::macos::text",
+  "file": "crates/die-render/src/platform/macos/text.rs",
+  "line": 84,
+  "claim": "Face::glyph passes pointers made from references to the first element only (`&mut chars[0]`, `&mut glyphs[0]`). For a non-BMP character, Core Text then reads 2 UTF-16 units and writes 2 glyphs through them, which is out of those references' range. That is UB under Stacked Borrows (Miri's default) and accepted by Tree Borrows. Emoji, CJK Extension B and Nerd Font plane-15 icons all take this path. Nothing misbehaves today, since the access happens in C.",
+  "evidence": "text.rs:80-90: `NonNull::from(&mut chars[0])`, `NonNull::from(&mut glyphs[0])`, `chars.len() as isize` (2 for a surrogate pair). The objc2-core-text 0.3.2 doc for CTFontGetGlyphsForCharacters (generated/CTFont.rs:1152-1158) says `count` is \"the capacity of both the characters and glyphs arrays\", and non-BMP characters are surrogate pairs. Miri isn't installed, and couldn't run the FFI call anyway.",
+  "proposed_fix": "Pass pointers to the whole buffers:\n```rust\n// SAFETY: both pointers cover `chars.len()` (1 or 2) elements, as the call requires.\nlet ok = unsafe {\n    self.font.glyphs_for_characters(\n        NonNull::from(&mut *chars).cast(),\n        NonNull::from(&mut glyphs).cast(),\n        chars.len() as isize,\n    )\n};\n```\nThis is verified in scratchpad/scene-and-unsafe/ctprobe: 'M' maps on Term, U+10FFFD gives None, and '\ud83d\ude00' maps on Apple Color Emoji. Add `astral_characters_map` to tests/platform.rs, loading /System/Library/Fonts/Apple Color Emoji.ttc and asserting that `glyph('\ud83d\ude00')` is Some.",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "unsafe-2",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "text.rs:80-90 passes `NonNull::from(&mut chars[0])` and `NonNull::from(&mut glyphs[0])` with `chars.len() as isize`, which is 2 for a surrogate pair. Each pointer's provenance covers one u16. Using `as_mut_ptr`, or a pointer to the whole slice, is the standard requirement for an FFI buffer. I couldn't run Miri (it isn't installed, and it can't follow the call into Core Text anyway). I applied the fix (`NonNull::from(&mut *chars).cast()`, `NonNull::from(&mut glyphs).cast()`) in scratchpad/verify-scene-and-unsafe/clean and added `astral_characters_map`. It passes: Apple Color Emoji maps U+1F600, 'M' maps on Term, and U+10FFFD is None. All 6 platform tests pass. A side note on the reviewer's summary: text.rs has 8 unsafe blocks (lines 41, 47, 49, 55, 61, 67, 84, 102), not 7.",
+   "better_fix": ""
+  }
+ },
+ {
+  "id": "unsafe-3",
+  "severity": "minor",
+  "area": "platform::macos::text",
+  "file": "crates/die-render/src/platform/macos/text.rs",
+  "line": 47,
+  "claim": "The font descriptor comes from a raw-pointer dereference whose lifetime the compiler doesn't tie to `descs`. It's sound only because `desc` is used before `descs` drops. Its SAFETY comment leaves out the bounds requirement, which line 42 happens to meet, and the block holds two unsafe operations. text.rs:67 puts five calls under one SAFETY comment.",
+  "evidence": "text.rs:45-47 `let desc = unsafe { &*(descs.value_at_index(0) as *const CTFontDescriptor) };`. `value_at_index` is `pub unsafe fn` and requires an in-bounds index (objc2-core-foundation 0.3.2 generated/CFArray.rs:538-546). In a copy of the tree I added `#[deny(clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block)]` to `pub mod macos`. clippy then flagged exactly text.rs:47 (2 ops) and text.rs:67 (5 ops); every block is documented.",
+  "proposed_fix": "```rust\n// SAFETY: CTFontManagerCreateFontDescriptorsFromURL returns an array of\n// CTFontDescriptors.\nlet descs: CFRetained<CFArray<CTFontDescriptor>> = unsafe { CFRetained::cast_unchecked(descs) };\nlet desc = descs.get(0).ok_or_else(bad)?; // bounds-checked and retained\n// SAFETY: a null matrix means the identity transform.\nlet font = unsafe { CTFont::with_font_descriptor(&desc, px, std::ptr::null()) };\n```\nThis is verified in ctprobe: it loads Term and a .ttc's first face. It removes the `count() == 0` check and the raw dereference. Split metrics() into one `unsafe` per getter. In platform/mod.rs add `#[deny(clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block)]` on `pub mod macos`, and have the lint require that attribute next to the `allow(unsafe_code)`.",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "unsafe-3",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "text.rs:47 `&*(descs.value_at_index(0) as *const CTFontDescriptor)` has an unbounded lifetime, and value_at_index needs the in-bounds index that line 42 happens to guarantee. Adding the two clippy lints in a copy flagged exactly text.rs:47 (2 operations) and text.rs:67 (5 operations). The proposed `CFRetained::cast_unchecked` plus `descs.get(0)` compiles and passes the platform tests, with no unused_unsafe warning.\n\nThe placement the reviewer proposes for the lint levels fails, though. Putting `#[deny(clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block)]` on `pub mod macos` after `#[allow(unsafe_code)]` makes today's `cargo xtask lint` fail: 'platform/mod.rs:15: allow(unsafe_code) outside the modules scope \u00a712 permits'. check_unsafe_allows compares the tokens after the allow's `]` with \"pub mod macos\" (lint.rs:564-579), and the extra attribute changes them. I reproduced that in scratchpad/verify-scene-and-unsafe/orig.",
+   "better_fix": "Set the levels in die-render's manifest instead, where they can't be detached from the module:\n```toml\n[lints.clippy]\nundocumented_unsafe_blocks = \"deny\"\nmultiple_unsafe_ops_per_block = \"deny\"\n```\nI verified it: clippy then flags only metrics() once the descriptor fix is in, and `cargo xtask lint` stays ok. In lint.rs's OWN_LINTS branch, require both keys, next to the existing `unsafe_code = \"deny\"` check. Use the reviewer's descriptor code, and split metrics() into one `unsafe` per getter."
+  }
+ },
+ {
+  "id": "unsafe-4",
+  "severity": "minor",
+  "area": "die-render structure / thin-wrapper rule",
+  "file": "crates/die-render/src/platform/mod.rs",
+  "line": 5,
+  "claim": "platform/mod.rs says logic \"lives outside this module and calls in\". lib.rs says neutral code is what \"only platform::macos calls\". The first is impossible as written: neutral code can't name `platform::macos` without a `target_os` cfg, which the lint forbids in neutral code, or the Linux cross-check fails. So R2's frame driver (diff, atlas calls, instance building, encode order) would have to live in platform::macos, against the thin-wrapper rule.",
+  "evidence": "platform/mod.rs:5-8: \"Anything with logic of its own (the atlas, the row cache, instance building, key mapping) lives outside this module and calls in.\" lib.rs:10-14: \"neutral code that only `platform::macos` calls is dead on Linux \u2026 Mark it `#[cfg_attr(not(target_os = \\\"macos\\\"), allow(dead_code))]`\". platform/mod.rs:14-16 has `#[cfg(target_os = \"macos\")] pub mod macos;`. lint.rs:316-500 flags target_os cfgs outside platform/. m0-plan R2: \"The test plan states the frame-data boundary between neutral code and the backend\".",
+  "proposed_fix": "In platform/mod.rs:\n```rust\n#[cfg(target_os = \"macos\")]\n#[allow(unsafe_code)]\npub mod macos;\n/// The backend neutral code calls: `macos` on macOS. Elsewhere, until\n/// `platform::linux` and the portable backend land, the same items, each\n/// failing with \"no window backend on this platform yet\".\n#[cfg(target_os = \"macos\")]\npub use macos as backend;\n#[cfg(not(target_os = \"macos\"))]\npub mod backend;\n```\nRustdoc: \"Neutral code calls `platform::backend::\u2026`, and nothing outside `platform` names `platform::macos`. The frame driver is neutral; `platform` only wraps calls.\" Drop lib.rs:10-14's dead-code paragraph. Add a lint check: the path `platform :: macos` outside crates/die-render/src/platform/ is an error. R2's test plan names this boundary.",
+  "recommendation": "The `backend` alias with a stub: the orchestration stays neutral and testable on Linux, and no traits are needed before the second implementation (platforms.md \u00a75.2).",
+  "needs_decision": true,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "unsafe-4",
+   "verdict": "confirmed",
+   "fix_ok": false,
+   "reasoning": "Both quotes are accurate. platform/mod.rs:5-8 says logic 'lives outside this module and calls in'. lib.rs:10-14 talks of 'neutral code that only platform::macos calls'. Neutral code can't name `platform::macos` without a target_os cfg, because the module doesn't exist on Linux and the cross-check would fail, and check_platform_code forbids that cfg outside platform/. So today the only allowed direction is platform::macos calling neutral code, which would put a frame driver inside platform. platforms.md \u00a75.2 defers traits until the second implementation, so an alias in platform/mod.rs, where cfg is allowed, is the natural fix.\n\nThe proposed lint check, though, would flag crates/die-render/tests/platform.rs:6-7 (`use die_render::platform::macos::metal::Gpu;`). That file is in NEUTRAL's allowed list and is macOS-only. Also, `ci --linux` runs the tests in a container, so any neutral test that reaches the stub fails there.",
+   "decision_view": "Take the `backend` alias with a stub that holds only the items neutral code names, with no traits. Also make R2's boundary data in and data out: neutral code (diff, atlas packing, instance building) takes rasterized glyphs and metrics as values, or through a closure, and never calls the backend itself. Only the driver calls `platform::backend`. Then neutral tests run on Linux, and driver tests stay macOS-only.",
+   "better_fix": "Take the reviewer's platform/mod.rs alias and rustdoc. The lint rule ('`platform :: macos` outside crates/die-render/src/platform/ is an error') should exempt crates/die-render/tests/platform.rs, or that test should switch to `platform::backend`. Add to R2's test plan: neutral functions take glyph bitmaps and metrics as data and never call `platform::backend`, so their tests run under `ci --linux`. Rewrite lib.rs:10-14 instead of dropping it. Its `cfg_attr(\u2026, allow(dead_code))` advice still applies to neutral code that only the macOS backend calls back into."
+  }
+ },
+ {
+  "id": "unsafe-5",
+  "severity": "nit",
+  "area": "budget",
+  "file": "budget.toml",
+  "line": 131,
+  "claim": "platform::macos's ratchet is 1,600 lines. The M0 plan sizes the hand review at 0.6\u20130.9k and names \"`platform` over 0.9k lines\" as the early warning for the thin-wrapper rule, but nothing checks the 0.9k.",
+  "evidence": "budget.toml:129-132 `limit = 1600`. m0-plan.md:111 (\"about 0.6\u20130.9k lines\", 3\u20134 h) and :241 (\"`platform` over 0.9k lines\"). platforms.md \u00a75.7 sets 1.6k. Today it's 106 (`cargo xtask budget`). S1's thin parts were platform.rs 118 and font.rs 138 code lines, plus the Metal calls of gpu.rs.",
+  "proposed_fix": "Set `limit = 900` for platform::macos, and change platforms.md \u00a75.7's M0 ratchet to 0.9k. Raising it then goes through the ratchet review, which is when the thin-wrapper question gets asked.",
+  "recommendation": "900.",
+  "needs_decision": true,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "unsafe-5",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "budget.toml:129-132 has `limit = 1600` for platform::macos, from platforms.md \u00a75.7 (1.6k M0 ratchet). m0-plan.md:111 sizes the owner's hand review at 0.6-0.9k lines and 3-4 h, and :241 names '`platform` over 0.9k lines' as the warning sign. budget.rs has only hard limits, no warning threshold, so nothing checks 0.9k. The docs also disagree among themselves: platforms.md \u00a75.2 (line 66) estimates 1.5-2.1k macOS-only lines, roughly twice the plan's review sizing.",
+   "decision_view": "900. It enforces the review size the owner budgeted for and the plan's own warning sign. If R2-R4 really need more, the ratchet edit forces the thin-wrapper question with a count in hand. Update platforms.md \u00a75.7's M0 macOS ratchet to 0.9k, and note that its 1.5-2.1k macOS-only estimate is unmeasured (\u00a75.7 already says R2's first count resets it). If the count does exceed 0.9k, resize the unsafe review's hours in m0-plan.md:111 at the same time."
+  }
+ },
+ {
+  "id": "unsafe-6",
+  "severity": "nit",
+  "area": "platform rules for R3/R4",
+  "file": "crates/die-render/src/platform/mod.rs",
+  "line": 5,
+  "claim": "The module's rules don't yet cover what R3 and R4 bring:\n- Rust closures that AppKit calls (the NSEvent monitor block, delegates, a display-link callback), where a panic must not unwind into Objective-C frames;\n- AppKit's main-thread requirement.\nNeither applies today: no Rust code is called from foreign code, and nothing touches AppKit.",
+  "evidence": "appkit.rs is empty (2 comment lines). Core Text and Metal calls today need no main thread. MTLDevice is Send + Sync in objc2-metal 0.3.2, and CTFont is neither Send nor Sync (objc2-core-text 0.3.2 thread_safety.rs), so the compiler confines a Face to its thread.",
+  "proposed_fix": "Add to platform/mod.rs's rustdoc: \"A Rust closure that Objective-C or C calls (a block, a delegate method, a display-link callback) runs its body in `catch_unwind` and never lets a panic unwind into the framework; it logs and drops the event. AppKit calls take a `MainThreadMarker`, so they can't compile off the main thread.\" R3 and R4's test plans include `a_panic_in_the_key_monitor_is_caught`.",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "unsafe-6",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "appkit.rs is two comment lines, and no Rust code is called from foreign code today. The rule matters for R3 and R4. block2 0.6.2 invokes blocks through `extern \"C-unwind\"` (block2 src/abi.rs:239), so a panic in DIE's own NSEvent-monitor block would unwind through AppKit frames rather than abort. winit 0.30.13 already catches panics in its own handlers on macOS (`stop_app_on_panic` and `resume_unwind`, platform_impl/macos/event_loop.rs:439-444), so only DIE's own blocks, delegates and display-link callbacks need the rule. objc2-app-kit's MainThreadMarker requirement makes the main-thread rule checkable at compile time. The proposed rustdoc and test name are fine; mention that winit's handlers are already covered.",
+   "better_fix": ""
+  }
+ },
+ {
+  "id": "unsafe-7",
+  "severity": "nit",
+  "area": "docs / guard scope",
+  "file": "docs/scope.md",
+  "line": 432,
+  "claim": "Scope \u00a712 implies DIE's only unsafe is in the named modules. The guard actually confines unsafe written in DIE's own source. Dependency macros expand unsafe code into DIE's crates unflagged, which is correct behaviour but should be stated so the review's scope is clear.",
+  "evidence": "crates/die-core/src/ids.rs:4 uses `slotmap::new_key_type!`, which expands to `unsafe impl $crate::Key for $name` (slotmap-1.1.1/src/lib.rs:460). die-core compiles under `#![forbid(unsafe_code)]`, because rustc doesn't report the lint inside external macros.",
+  "proposed_fix": "Append to scope \u00a712's `unsafe` paragraph: \"`cargo xtask lint` rejects the `unsafe` keyword itself outside those modules, since rustc's `unsafe_code` lint misses `#[unsafe(naked)]` and, where it's `deny`, can be lowered by a macro. Unsafe code inside dependencies, including what their macros expand to in DIE's crates (slotmap's `new_key_type!` emits an `unsafe impl Key`), belongs to the dependency and isn't part of this review.\"",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "unsafe-7",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "ids.rs:4 calls `slotmap::new_key_type!`, which expands to `unsafe impl $crate::Key for $name` (slotmap-1.1.1/src/lib.rs:460). die-core still compiles under the workspace's forbid, because rustc doesn't report unsafe_code inside external macro expansions. The token rule from unsafe-1 can't see it either, so the scope sentence is needed to set the review's boundary. Its first half depends on unsafe-1 landing. One clause worth adding: a dependency macro that wraps caller code in `unsafe` would also be invisible to both checks, so adding such a macro is a dependency-review decision.",
+   "better_fix": ""
+  }
+ },
+ {
+  "id": "unsafe-8",
+  "severity": "nit",
+  "area": "platform::macos::text",
+  "file": "crates/die-render/src/platform/macos/text.rs",
+  "line": 31,
+  "claim": "from_file turns the path into a UTF-8 string, so a font under a non-UTF-8 path fails. It also doesn't check `px`: Core Text silently uses 12 pt for 0.0.",
+  "evidence": "text.rs:31-38 builds `CFString::from_str(path.to_str()\u2026)` and then `CFURL::with_file_system_path`. objc2-core-foundation 0.3.2 has `CFURL::from_file_path(path)` (src/url.rs:88), which uses the path's bytes. The CTFontCreateWithFontDescriptor doc (generated/CTFont.rs:259): \"If 0.0 is specified \u2026 the default font size of 12.0 will be used.\"",
+  "proposed_fix": "`let url = CFURL::from_file_path(path).ok_or_else(bad)?;`, which drops the CFString step. Add `if !(px > 0.0 && px.is_finite()) { return Err(format!(\"font size {px} isn't a positive size\")); }`.",
+  "needs_decision": false,
+  "review": "scene-and-unsafe",
+  "verifier": {
+   "id": "unsafe-8",
+   "verdict": "confirmed",
+   "fix_ok": true,
+   "reasoning": "text.rs:31 does `path.to_str()`, then CFString, then CFURL::with_file_system_path. objc2-core-foundation 0.3.2 has `CFURL::from_file_path` (src/url.rs:88, unix, from the path's bytes). I measured px: `Face::from_file(\u2026, 0.0)` gives ascent 11.58, the same as 12.0, so Core Text silently uses 12 pt. The fix (from_file_path plus the px check) compiles, drops the CFString and CFURLPathStyle imports, and passes the platform tests, including a new assert that px 0.0 is an error. The non-UTF-8 half is mostly theoretical on macOS, since APFS stores names as UTF-8. The px half is the useful part.",
+   "better_fix": ""
+  }
+ }
+]

@@ -1,0 +1,21 @@
+{"topic": "vscripts",
+ "cases": [
+  {"id": "w-latin-halfkana", "keys": "w", "text": ["|abcｱｲｳ def"]},
+  {"id": "w-halfkana-latin", "keys": "w", "text": ["|ｱｲｳabc def"]},
+  {"id": "w-latinext-greek", "keys": "w", "text": ["|ŝŝŝαβγ def"]},
+  {"id": "w-latin1-greek", "keys": "w", "text": ["|éééαβγ def"]},
+  {"id": "w-greek-cyr", "keys": "w", "text": ["|αβγабв def"]},
+  {"id": "w-latin-runic", "keys": "w", "text": ["|abcᚠᚠᚠ def"]},
+  {"id": "w-latin-ethiopic", "keys": "w", "text": ["|abcሀሀሀ def"]},
+  {"id": "w-latin-myanmar", "keys": "w", "text": ["|abcကကက def"]},
+  {"id": "w-latin-khmer", "keys": "w", "text": ["|abcកកក def"]},
+  {"id": "w-latin-cherokee", "keys": "w", "text": ["|abcᎠᎠᎠ def"]},
+  {"id": "w-latin-greekext", "keys": "w", "text": ["|abcἀἀἀ def"]},
+  {"id": "w-latin-coptic", "keys": "w", "text": ["|abcϢϢϢ def"]},
+  {"id": "w-latin-fullwidth", "keys": "w", "text": ["|abcＡＢＣ def"]},
+  {"id": "w-latin-latinextadd", "keys": "w", "text": ["|abcḁḁḁ def"]},
+  {"id": "w-tamil-latin", "keys": "w", "text": ["|அஅஅabc def"]},
+  {"id": "w-devanagari-bengali", "keys": "w", "text": ["|ककকক def"]},
+  {"id": "w-latin-digit-cyr", "keys": "w", "text": ["|abc1а def"]},
+  {"id": "w-cyr-digit", "keys": "w", "text": ["|абв123 def"]}
+ ]}

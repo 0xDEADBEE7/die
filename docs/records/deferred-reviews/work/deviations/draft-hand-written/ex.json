@@ -1,0 +1,3 @@
+{"schema":1,"topic":"ex","generator":"hand-written","run":"batch","evil_version":"1.15.0","evil_source_sha256":"c0253cf67578b1a8604030fcaedbf86b95a2c4aa9bc88c2ba9309dbce3fb714e","emacs_version":"30.2","cases":[
+{"id":"s-groups","source":"hand-written","keys":":s/(foo) (bar)/$2 $1/<CR>","key_tokens":[":","s","/","(","f","o","o",")"," ","(","b","a","r",")","/","$","2"," ","$","1","/","<CR>"],"mode":"fundamental-mode","input":{"text":"foo bar\n","cursor":{"line":0,"col":0,"byte":0}},"expected":{"text":"bar foo\n","cursor":{"line":0,"col":0,"byte":0},"state":"normal","registers":{"\"":null},"clipboard":{"text":null,"writes":[]}},"reason":"Deviation \"regular expressions are Rust's\": the same change in Rust syntax, with Evil's result."}
+]}

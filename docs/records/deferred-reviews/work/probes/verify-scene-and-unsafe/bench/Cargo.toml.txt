@@ -1,0 +1,13 @@
+[package]
+name = "bench"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+die-core = { path = "/private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/verify-scene-and-unsafe/clean/crates/die-core" }
+[workspace]
+[profile.release]
+debug = "line-tables-only"
+
+[profile.o1]
+inherits = "release"
+opt-level = 1

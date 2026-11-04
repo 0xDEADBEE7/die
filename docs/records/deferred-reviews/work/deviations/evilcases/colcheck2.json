@@ -1,0 +1,18 @@
+{"topic": "colcheck2",
+ "cases": [
+  {"id": "U2-u-in-macro", "keys": "@a", "text": ["|abc"], "registers": {"a": {"text": "xxu", "type": "macro"}}},
+  {"id": "U3-u-after-macro", "keys": "@au", "text": ["|abc"], "registers": {"a": {"text": "xx", "type": "macro"}}},
+  {"id": "U4-u-after-recorded-macro", "keys": "qaxxq@au", "text": ["|abcdef"]},
+  {"id": "U6-u-after-dot", "keys": "dw.u", "text": ["|a b c d"]},
+  {"id": "U7-u-after-count-dot", "keys": "x3.u", "text": ["|abcdef"]},
+  {"id": "V1-Vp-middle-line", "keys": "yyjVp", "text": ["|one", "two", "three"]},
+  {"id": "V2-Vp-last-line-charwise-reg", "keys": "yiwjVp", "text": ["|one", "two"]},
+  {"id": "V3-Vp-last-two-lines", "keys": "yyjVjp", "text": ["|one", "two", "three"]},
+  {"id": "V4-vp-last-line-linewise-reg", "keys": "yyjviwp", "text": ["|one", "two"]},
+  {"id": "V5-Vp-only-line", "keys": "yiwVp", "text": ["|one"]},
+  {"id": "V6-VP-last-line", "keys": "yyjVP", "text": ["|one", "two"]},
+  {"id": "X4-empty-pattern-after-star", "keys": "*/<CR>", "text": ["|foo bar foo bar"]},
+  {"id": "X5-empty-pattern-no-previous", "keys": "/<CR>", "text": ["|a b"]},
+  {"id": "X2-count-slash-wraps", "keys": "3/x<CR>", "text": ["|x a x b x"]},
+  {"id": "X8-n-after-slash", "keys": "/x<CR>n", "text": ["|x a x b x c x"]}
+ ]}

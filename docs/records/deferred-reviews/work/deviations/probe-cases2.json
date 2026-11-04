@@ -1,0 +1,7 @@
+[
+ {"id":"ctrl-r-redo","text":"abc\n","at":[0,0],"keys":"xu<C-r>","out":"bc\n","want":[0,0],"regs":{"\"":{"text":"a","type":"char"},"1":{"text":"a","type":"char"},"-":{"text":"a","type":"char"}}},
+ {"id":"u-after-move-redoes","text":"abcd\n","at":[0,0],"keys":"xxulu","out":"abcd\n","want":[0,0],"regs":{"\"":{"text":"b","type":"char"},"1":{"text":"b","type":"char"},"2":{"text":"a","type":"char"},"-":{"text":"b","type":"char"}}},
+ {"id":"ctrl-r-nothing","text":"ab\n","at":[0,0],"keys":"xu<C-r><C-r>","out":"b\n","want":[0,0],"errors":1,"regs":{"\"":{"text":"a","type":"char"}}},
+ {"id":"redo-no-regs-check-u-u","text":"abcd\n","at":[0,0],"keys":"xxulu","out":"abcd\n","want":[0,0],"regs":{"\"":{"text":"b","type":"char"}}},
+ {"id":"redo-text-only","text":"abc\n","at":[0,0],"keys":"xu<C-r>","out":"bc\n","want":[0,0],"regs":{"\"":{"text":"a","type":"char"}}}
+]

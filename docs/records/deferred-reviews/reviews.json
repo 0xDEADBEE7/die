@@ -1,0 +1,236 @@
+{
+ "deviations": {
+  "summary": "Deviations review of crates/die-vim/tests/oracle/deviations.json (24 cases, 9 rules) and V1's 6 hand-written fixtures. All 9 rules trace to accepted S5 answers: §5 Q1 (rows 1, 11, 12, 17, 18 and 3H), Q2 (undo), the §5 specifics (regex, indentation) and row 2 (the dk/dG column). Every recorded Evil result shows the behaviour its rule's \"evil\" text claims, with two wording errors in rule 1. Every \"as in Vim\" claim holds in Vim 9.1 except one: ctrl-d-at-end. There Vim beeps, which S5's compare.vim never saw because it records only v:errmsg.\n\nMain problems:\n- **Rule 1 misses two cases.** geometry/M-short-buffer and geometry/H-at-end both land on, or depend on, the empty line after the final newline, and V6 would hit them as plain oracle cases.\n- **Rule 1's \"As in Vim\" is underspecified.** die-vim's `}` already follows \"Evil without a final newline\", not Vim. `dj`, `cj` and `yj` on the last line change the text differently in Evil and in Vim, and no rule covers them.\n- **K4 has a decision to make before it's built:** whether that empty line takes a screen row. Evil's ctrl-d-near-end top line is 31 with the row and 30 without it.\n\nOpen call: keep \"Vim's line, Evil's column\" for dk/dG. It is exactly what Evil does once the artifact is removed: rerun without the final newline, dk from col 3 gives (0,3) and dG from col 1 gives (0,1). It is also Vim with nostartofline. Vim's default (startofline) gives (0,2) for both. But the two fixtures start at col 0, so the call can't be seen in them, and no oracle case anywhere pins the column after a linewise d.\n\nHow I checked:\n- **Vim 9.1.1752** with `--not-a-term -u NONE -i NONE -N -n` plus compare.vim's options: sw=4, et, ai, ic, scs, bs=indent,eol,start. Defaults otherwise: so=0, ww=b,s, ve=, cpo=aABceFsz (no 'u', so undo is Vim's), ws, ul=1000, sol; nosol and nows variants where they matter. Keys go in as typed (feedkeys 'tx'), and `set debug=beep` counts beeps as errors.\n- **The 6 hand-written fixtures** also ran under `vim --clean -Nes` with `normal!` (defaults.vim: so=5, noai, filetype indent on). All 6 match Vim under both setups. With .el or .py filetypes, Vim indents like Evil does.\n- **Evil itself** (the owner's, via run-oracle.sh --out to scratch, with its ~/.emacs.d guard passing) ran on scratch cases.\n- **A sweep** reran all 357 oracle cases without their final newline. 21 change: 14 are listed, the rest are M-short-buffer, H-at-end, ctrl-d-near-end (top line only), count-percent ×2 and two comparison artifacts.\n\nNothing in the repo was changed. Scratch artifacts, all under /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/deviations/:\n- proposed-deviations.json: every JSON change below, 26 cases. It validates.\n- proposed-deviations-with-fixtures.json and proposed-pending.txt: the same, with fixture fields, plus the blessed pending list.\n- draft-hand-written/{operators,geometry,wrapped,macros,search,visual,undo,ex}.json: 20 drafted fixtures. They pass load_fixtures, and the full oracle test passes with them in a scratch copy: copy/.\n- copy/crates/die-vim/tests/oracle.rs: the tested input guard.\n- cmp/compare-beeps.vim: the compare.vim patch.\n- drive.vim and *.out: the Vim runs.\n- evilout/*.json and sweep/out/: the Evil runs.",
+  "verdicts": [
+   {
+    "subject": "Rule: the last line is the last line (S5 row 1, 13 cases)",
+    "verdict": "fix",
+    "note": "Traces to S5 §5 Q1 ('rows 1, 11, 12, 17, 18 and the 3H part of row 20 ... die-vim follows Vim for exactly these six', accepted). All 13 Evil fixtures show the empty-line artifact, and Vim agrees with the rule on them: w (0,6), G (1,0), 5j (2,0) no beep, } (3,0), dd (1,0), dk/dG (0,0), L (3,0), gj beeps, error-stops-macro (2,0), recursive (3,0), macro-records-count (1,0) with a beep. Problems: two cases missing (dev-1), a wrong ctrl-d note (dev-2), die_vim underspecified (dev-3), a K4 screen-row question (dev-4), and wrong evil text (dev-5)."
+   },
+   {
+    "subject": "Rule: a count before / finds the nth match (row 11)",
+    "verdict": "ok",
+    "note": "Traced. Vim: 2/x<CR> on 'x a x b x' gives (0,8), and Evil gives (0,4). 3/x wraps to (0,0), or gives E385 with nowrapscan; ignorecase and smartcase don't change it. Wording nit: Evil also ignores 2?x (Evil (0,4), Vim (0,0)), see dev-14."
+   },
+   {
+    "subject": "Rule: an empty search repeats the last one (row 12)",
+    "verdict": "ok",
+    "note": "Traced. Vim: /b<CR>/<CR> gives (0,6), and Evil gives (0,2). Nit: with no previous pattern Vim gives E35 and Evil stays silent, and the rule doesn't say which die-vim does (dev-14)."
+   },
+   {
+    "subject": "Rule: . inside a macro repeats the macro's change (row 17)",
+    "verdict": "question",
+    "note": "Traced. Vim: macro-with-dot gives 'e f', preset-macro-with-dot gives 'c d e f', neither beeps. The die_vim wording is too narrow, and what . does after @a isn't decided (dev-8)."
+   },
+   {
+    "subject": "Rule: Vp on the last line replaces the line (row 18)",
+    "verdict": "fix",
+    "note": "Traced. Vim gives 'one\\none\\n' at (1,0). The same Evil bug also hits VP and Vjp at the end of the buffer, so the rule should be generalized (dev-9)."
+   },
+   {
+    "subject": "Rule: 3H goes to the third line (row 20)",
+    "verdict": "ok",
+    "note": "Traced. Vim gives (2,0), also with scrolloff=5 at the top. Evil's off-by-one applies to every count (move-to-window-line count, evil-commands.el:898-899), so the text should say nH (dev-14)."
+   },
+   {
+    "subject": "Rule: undo is Vim's u and C-r (rows 5-6)",
+    "verdict": "ok",
+    "note": "Traced to S5 Q2-A. Vim: xu<C-r> gives 'bc' at (0,0), and xxulu gives 'abcd' at (0,0); cpo has no 'u'. Undo granularity: u after @a undoes the whole macro run in both Vim and Evil (scratch runs U3 and U4 agree). Only u inside a macro differs (Vim 'abc', Evil 'bc'), and no case uses it. Nit: C-r with nothing to redo beeps in Vim (dev-14)."
+   },
+   {
+    "subject": "Rule: regular expressions are Rust's",
+    "verdict": "question",
+    "note": "Traces to D4 and S5 §5 'Specifics I decided' (the regex syntax item). Vim and Evil both give 'bar foo'. The replacement-template semantics need stating before V5 (dev-13)."
+   },
+   {
+    "subject": "Rule: language indentation waits for modes (row 4)",
+    "verdict": "ok",
+    "note": "Traces to S5 row 4 and the §5 'Indentation' specific. The hand-written fixtures equal Vim with -u NONE autoindent ('(foo bar\\nbaz\\n' at (1,2), 'def f():\\nbody\\n' at (1,3)) and vim --clean on a .txt file. vim --clean on .el or .py files indents like Evil (5 and 4 spaces), so die-vim is the odd one out until M1, as the rule says."
+   },
+   {
+    "subject": "Open call: dk/dG take Vim's line and Evil's column",
+    "verdict": "ok",
+    "note": "Keep it. It's Evil without the final newline (dk from col 3 gives (0,3), dG from col 1 gives (0,1)), and Vim with nostartofline. Vim's default startofline gives (0,2). The fixtures can't show it, and the notes need rewording (dev-6)."
+   },
+   {
+    "subject": "The 6 hand-written fixtures (V1)",
+    "verdict": "ok",
+    "note": "Schema-valid. Keys, key_tokens, mode and input are identical to their oracle cases, and only the cursor (and, for insert, the text) differs. Vim agrees under both setups and gives no beeps, matching the absent errors. One gap: close-brace-last-paragraph can't show 'the end of the last line' (dev-7)."
+   }
+  ]
+ },
+ "text-and-keys": {
+  "summary": "Text and keys review of die-core (text, search, undo, keys, keymap), contract §9's layout queries and wrap rule, and the undo model test. I checked everything empirically instead of by reading alone:\n- **A tty Emacs 30.2 layout probe** on a pty, as the oracle runs it. It reproduces the `gj` fixture's row starts [0, 35, 65], and I ran 44 wrap cases through it.\n- **A term.el capture of tty Emacs's screen**, for the line-number styles.\n- **An Evil batch probe** for `*`.\n- **A scratch crate** that calls die-core by path.\n- **Targeted mutation runs** of the whole die-core suite, on a copy of the repo.\n\n**Three majors:**\n- **WRAP-1.** Contract §9's wrap sentence contradicts Emacs where whitespace meets the row's end, and it says nothing about long words, tabs, hidden, replacement and virtual text, or which characters break. K4 and the independent naive layout would disagree. I give a full replacement rule that matches all 44 probe cases.\n- **WRAP-2.** A line exactly as wide as the row gets an extra blank row today (S4's `stop_here`, enforced by mutant M5), so `gj` lands on that blank row. Emacs shows no such row.\n- **TEXT-1.** No-op changes, such as an empty delete or text replaced by itself, bump the revision, log a change, record an undo step that does nothing, and drop redo.\n\n**The undo model test.** 6 of 9 plausible undo bugs pass the entire die-core suite:\n- an explicit group's selection taken at its first edit instead of at begin;\n- undo inside an open group;\n- undo logged as silent, or not logged at all;\n- the wrong window's selection restored;\n- the goal dropped.\n\nThe generator changes in TEST-1 catch each of them.\n\n**Keys.** The `KeyEvent` field set holds up against S1's real run and against Ghostty's encoder, but:\n- `printable()` returns OS text even with Ctrl held, and winit sends C0 text such as `\\u0001` for C-a;\n- `num_lock` and a `Key::Unidentified` variant are missing;\n- committed emoji split into several keys when a macro is replayed;\n- `@` on yanked code fails on `Vec<String>`;\n- Evil's `*` matches `foo` inside `foo_bar`, which `Pattern` can't express;\n- `R` has no state, so it can't get Evil's underline cursor.\n\n**S1's interactive keys check is partial.** It recorded 13 of 50 chords. Its 7 failures come from Control being held across chords, and the run stalled at M-f, which AeroSpace probably takes. I recommend not blocking phase 1 on it.\n\n**Reusable artifacts:**\n- Emacs layout probe: /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/probe/probe.el\n- Case generators: /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/probe/gen.py and /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/probe/gen2.py\n- Probe results: /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/probe/out.json and /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/probe/out2.json\n- Result printer: /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/probe/show.py\n- Screen capture: /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/probe/screen.el\n- Evil `*` probe: /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/probe/star.el\n- Scratch crate: /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/scratch-crate/src/main.rs\n- Mutants: /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/mutants.py, /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/run_mutants.py and /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/text-and-keys/mutants.out\n\nThe probe can give the K4 naive-layout session Emacs ground truth for any text and width. I edited no tracked files.",
+  "verdicts": [
+   {
+    "subject": "Contract §9: where soft wrap breaks",
+    "verdict": "rewrite before K4",
+    "note": "Measured Emacs behaviour; replacement text in WRAP-1, end-of-line decision in WRAP-2."
+   },
+   {
+    "subject": "Contract §9: layout queries",
+    "verdict": "keep the set, with fixes",
+    "note": "Fix pos_at_vcol, specify end of line and the gutter, add a scroll setter, narrow the public layout types."
+   },
+   {
+    "subject": "crates/die-core/src/layout.rs (S4)",
+    "verdict": "rebuild in K4 as planned",
+    "note": "Tab splitting, wide-character fillers and the U+200B width already match Emacs. Character wrap and the extra end-of-line row don't."
+   },
+   {
+    "subject": "crates/die-core/src/text.rs",
+    "verdict": "approve after TEXT-1 and DOCS-1"
+   },
+   {
+    "subject": "crates/die-core/src/text/search.rs",
+    "verdict": "approve for / ? n N",
+    "note": "Gaps for * and # word characters (SEARCH-1) and :s captures (SEARCH-2)."
+   },
+   {
+    "subject": "crates/die-core/src/undo.rs",
+    "verdict": "approve",
+    "note": "Correct in every probe; the documentation gaps are in UNDO-2."
+   },
+   {
+    "subject": "undo_history_matches_a_model",
+    "verdict": "strengthen",
+    "note": "6 of 9 plausible bugs pass the whole suite; generator changes are in TEST-1."
+   },
+   {
+    "subject": "crates/die-core/src/keys.rs (KeyEvent, notation)",
+    "verdict": "approve the field set, with fixes",
+    "note": "KEYS-1, KEYS-3, KEYS-6 and KEYS-7."
+   },
+   {
+    "subject": "crates/die-core/src/keymap.rs",
+    "verdict": "approve",
+    "note": "Add State::Replace (KEYS-4) and document no backtracking (KEYMAP-1)."
+   },
+   {
+    "subject": "S1 interactive keys",
+    "verdict": "partial (13/50), not blocking",
+    "note": "KEYS-8."
+   }
+  ]
+ },
+ "scene-and-unsafe": {
+  "summary": "Review of the Scene (K8) and the first piece of the `unsafe` review (die-render's platform::macos and xtask's guards). Everything was checked offline on this Mac with the pinned rustc 1.96.0. The repo was not touched; probes are under /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/scene-and-unsafe/. Baseline: die-core's 28 scene tests and die-render's 4 platform tests pass.\n\nScene. R2 can draw a frame from the Scene alone, given one rendering rule for the block cursor. Memory is not a problem: a 300x100 frame is 1.68 MB (Cell 40 B, position 16 B), allocated fresh on each compose, and a plain compose takes 0.12 ms (code) to 0.61 ms (dense text). R2 can diff rows cheaply by comparing each row with the previous frame (0.07 ms for 100 rows), so the Scene needs no row revision. Two problems should be fixed before R2 and K9:\n- (major) Style resolution scans every decoration and every search match for every cell. M0's every-match search for \"e\" takes 10.2 ms at 300x100 and 1.24 ms in the owner's 80-column layout; a highlighter's 3.7k faces take 26 ms.\n- (major, decision) `positions` (core's pointer map) sits inside the value die-render receives. K9's pointer mapping and an owned per-frame Scene can't both use it.\nSmaller real defects:\n- A linewise selection is invisible on empty lines.\n- Past the end of a line and on empty lines, positions are None.\n- Only the first cell of a Hide replacement gets its style and position.\n- The snapshot silently merges styles past the 62nd.\n- Unknown decoration face names draw nothing, with no message.\nGaps for M2 and M3:\n- Missing: an underline cursor (also Evil's replace state in M0's V4), app-focus hollowing, overline, link ids, and a stated rule for reverse, faint and invisible.\n- Cell additions are cheap to make non-breaking now: attribute flags and a constructor.\n- `Placement` collides with scope's pixel placements.\nFaces match contract §13 and Emacs's layering, and mono-dark is faithful except for the mode line's `:box`.\n\nunsafe. Seven unsafe blocks are in text.rs. metal.rs has none, and appkit.rs is empty. Every invariant holds today: retain/release by the Create/Copy rules, null and bool returns handled, nothing main-thread-bound, no callbacks into Rust, so no panic crosses FFI. One exception: glyph() passes a pointer to one element for a 2-element surrogate-pair access, which is UB under Stacked Borrows and needs a one-line fix. Core Text honours the file even when a font with the same PostScript name is installed (verified with a metrics-patched copy). The thin-wrapper rule holds in code today, but the docs contradict each other on call direction, and as written the frame driver would have to live in platform::macos. The guard is the major finding: `#[unsafe(naked)]` with `naked_asm!` compiles under the workspace's `forbid(unsafe_code)`. In die-render, a macro-built `#[allow($lint)]` and a `#[path]` to a file outside the members each get unsafe past the lint. All three plants passed cargo check, clippy -D warnings, `cargo xtask lint` and budget in a copy of the tree. Fix: a token-level `unsafe`/`#[path]`/`include!` rule in xtask lint. It has no false positives on today's tree.",
+  "verdicts": [
+   {
+    "subject": "R2 can draw a frame from the Scene alone",
+    "verdict": "yes, with one rule to write down",
+    "note": "The Scene holds cells with resolved colours and attributes, wide-character continuations, clusters, cursors with shape and colour, and the background around the grid. Fonts, scale, fallback and box glyphs are die-render's own. Missing is the rule for the glyph under a block or half-block cursor: Emacs draws it in the cell's background colour (scene-6). positions isn't needed for drawing (scene-2)."
+   },
+   {
+    "subject": "Cells and styles for M2's terminal (ghostel-level) without a breaking change",
+    "verdict": "mostly; four additions, cheap to make non-breaking now",
+    "note": "Present: underline styles and colour, 16 ANSI (Theme.ansi) plus truecolor (resolved Rgb), wide characters, strike.\nThe producer resolves:\n- reverse (swap);\n- faint (blend, as ghostel does);\n- invisible (space);\n- text blink, which ghostel doesn't render either.\nMissing:\n- overline;\n- link id (planned for M2);\n- an underline cursor and cursor blink;\n- the cell frame Surface::render should write into.\nNon-breaking: enum variants (the compiler guides the migration, C12) and new Scene fields. Breaking: new Cell fields, unless there are attribute flags and a constructor (scene-7)."
+   },
+   {
+    "subject": "M3 placements",
+    "verdict": "additive, but rename the existing Placement first",
+    "note": "`Scene.placements` can be added later without breaking readers. The name is taken by window placements today (scene-8). Kitty's below-text images need to know which cells have the default background; the rule \"bg == Scene.background\" works without a new field."
+   },
+   {
+    "subject": "Fit with K9's four calls and row diffing",
+    "verdict": "fits once scene()'s ownership is fixed",
+    "note": "Diffing by content against the previous owned Scene costs 0.072 ms per 300×100 frame and cloning a Scene 0.054 ms, so the Scene needs no row identity or revision from core. Use direct comparison for scroll reuse, not SipHash (0.64 ms). The blocker is `positions` living in the handed-over value (scene-2)."
+   },
+   {
+    "subject": "Memory and per-frame cost at 300×100",
+    "verdict": "memory fine; per-cell style resolution is not",
+    "note": "Cell 40 B and position 16 B make 1.68 MB per frame, allocated fresh each compose; plain compose takes 0.12 ms (code) to 0.61 ms (dense text). The quadratic face and search scan costs 10–36 ms on dense text at 300×100 and 1.2–1.9 ms in the owner's 80-column layout (scene-1)."
+   },
+   {
+    "subject": "Faces and themes",
+    "verdict": "sound",
+    "note": "The 14 base faces and 6 UI faces match contract §13. Layering matches Emacs: a theme replaces a face's declared style and keeps its parent, and what a face leaves unset comes from the face below it. Duplicate names, unknown parents and cycles are registration errors. mono-dark in die-dev is a faithful copy of the Emacs theme except for the mode-line :box (faces-2). Unknown decoration face names fail silently (faces-1)."
+   },
+   {
+    "subject": "Snapshot format stability",
+    "verdict": "stable and additive, with two holes",
+    "note": "The format is deterministic: letters by first appearance, lowercase hex, delimited rows that keep trailing spaces. New attributes print only when set, so existing snapshots survive. Holes: '?' past 62 styles, and a hand-written key that can miss a new field (scene-9)."
+   },
+   {
+    "subject": "Each unsafe block in platform::macos (text.rs:40, 47, 49, 55, 61, 67, 84, 102)",
+    "verdict": "invariants hold, except glyph()'s pointer range",
+    "note": "Retain and release follow the Create and Copy rules through objc2's CFRetained::from_raw. Nulls come back as Option, and glyphs_for_characters' bool and glyph 0 are checked. No call is main-thread-bound, and Face is !Send/!Sync. The objc2 0.3.2 signatures match Apple's. Nothing calls back into Rust, so no panic crosses FFI. Core Text's \"best match\" honours the file even when an installed font has the same PostScript name: a copy of Ioskeley-Mono with its ascender patched loaded with ascent 43.68 against 30.88. Exceptions: unsafe-2 (provenance) and unsafe-3 (unbounded lifetime, two operations per block). metal.rs has no unsafe blocks."
+   },
+   {
+    "subject": "xtask confines unsafe (build scripts, macros, tests)",
+    "verdict": "no: three bypasses",
+    "note": "Build scripts get the workspace lints (verified: a build.rs unsafe block fails under -F unsafe-code), and tests/ directories are scanned and linted. `unsafe extern` blocks, global_asm! and no_mangle are caught by rustc. Bypasses: a naked fn under forbid; a macro-built allow and an out-of-tree #[path] in die-render (unsafe-1)."
+   },
+   {
+    "subject": "Thin-wrapper rule",
+    "verdict": "holds in code today; its documented call direction can't hold",
+    "note": "Today metal.rs has 25 lines and text.rs 112, with no atlas, caching or instance logic. The docs contradict each other on who calls whom, and as written the frame driver would land in platform::macos (unsafe-4). The budget allows 1.6k against the plan's 0.9k warning (unsafe-5)."
+   },
+   {
+    "subject": "Coordination note for K4",
+    "verdict": "heads-up",
+    "note": "The gutter labels are drawn in scene.rs:565-589, and `LineNumbers` has no Visual variant yet (text.rs:120-124). K4's visual line numbers (the owner's `display-line-numbers-type 'visual`) therefore change scene.rs and must fit faces and scene's remaining 130 lines along with scene-1's fix."
+   }
+  ]
+ },
+ "deep-read": {
+  "summary": "I read all of undo.rs, the parts of text.rs and ctx.rs that call it, all of grammar.rs, motions.rs, insert.rs and text.rs, and oracle.rs. The undo engine looks sound: I found no unsound path in the OT rebase, the caps, `undo_boundary`, clearing redo on new edits, the returned ranges or read-only handling. The real problems are Evil-parity bugs in die-vim, plus four contained attribution and grouping defects in core.\n\nHow I checked against Evil: I ran the owner's oracle (tools/evil-oracle/run-oracle.sh, using local Emacs and ~/.emacs.d/lisp/evil read-only; the script verifies nothing under ~/.emacs.d changes) on 101 new scratch cases, batch and tty. Results are in /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/deep-read/out*/deepread*.json and the case files in .../deep-read/cases*/.\n\nThree majors:\n- `u` puts the cursor in the wrong place (`ox<Esc>u` mid-line).\n- From the empty line after a final newline, `0`, `^`, `$`, `}` and `u` jump to the end of the line above.\n- An undefined key leaves the count armed for the next command.\n\nI wrote a validated fix patch for 12 of the 17 test-backed findings: /private/tmp/claude-501/-Users-user-workspace-die/80c10c08-831a-470d-a338-74029a942676/scratchpad/deep-read/fixes.patch (339 lines; it covers DR-01, 02, 03, 05, 06, 08, 09, 10, 11, 13, 14, and half of DR-16). With it applied, every die-core and die-vim test passed, including the 10,000-case properties and the oracle (124 of 346 still pass, no pending case changed), along with every deep-read test that existed when I ran it (die-vim 10, die-core 3). fmt and clippy were clean. I then reverted the product code.\n\nWhat's left in the worktree is two new test files, crates/die-core/tests/deep_read.rs and crates/die-vim/tests/deep_read.rs. Every test fails on main except one guard, `u_cursor_cases_that_already_agree`. Land each test with its fix, or mark it `#[ignore]` until then: as they stand they would fail `cargo xtask ci`. Full failure output on main is in .../deep-read/die-vim-deep_read.txt and .../deep-read/die-core-deep_read.txt.\n\nRunner audit: I replayed all 118 passing non-deviation cases one key at a time, and every error was raised on the same key as in Evil. So the runner's count-only error check hides nothing today, but it is a latent gap.",
+  "verdicts": [
+   {
+    "subject": "undo.rs rebase/transform (OT over silent shifts)",
+    "verdict": "sound",
+    "note": "I checked every touching and overlapping case of `transform`, the sequential transforms in `rebase`, how `top_group` orders silent entries, the merging in `push_silent`, and both directions of `commit`. Nothing was wrong. The over-cautious refusals are legal under A12."
+   },
+   {
+    "subject": "step and byte caps (trim)",
+    "verdict": "correct",
+    "note": "The newest step is always kept, steps=0 turns undo off, silent entries below the oldest step are dropped, and a lowered cap applies at the next edit, undo or redo, as documented. The redo stack is only ever filled from the undo stack, so it stays within the cap."
+   },
+   {
+    "subject": "undo_boundary",
+    "verdict": "correct",
+    "note": "It closes the top group and leaves the depth alone, so the next edit in an open group starts a new open step. Joining an earlier edit of the same command still works after a boundary."
+   },
+   {
+    "subject": "redo after new edits; ranges undo/redo return",
+    "verdict": "correct",
+    "note": "`record` clears redo, and silent edits don't. The hull is right for multi-change steps, for changes that delete earlier ones, and for silent shifts."
+   },
+   {
+    "subject": "read-only text (C14, A13) and the undo read-only simulation",
+    "verdict": "correct",
+    "note": "The simulation maps ranges with the default gravities, not each decoration's own. It can differ only when a sticky edge grows during one step, and the net text change is legal anyway. Undo of a recorded Extension edit inside read-only text gets stuck at that step, by design under A13, as in Emacs."
+   },
+   {
+    "subject": "die-vim checkout rules (contract §9)",
+    "verdict": "followed",
+    "note": "Sessions are checked out of `Vim` only around an edit; no `with_ext` is held across `ctx.run`."
+   },
+   {
+    "subject": "counts: 0, overflow, huge values in motions",
+    "verdict": "correct apart from DR-03, DR-08 and DR-09",
+    "note": "`count_digit` saturates. Every motion loop is bounded by text length, or breaks on failure. `0` after a digit is a digit, as it should be."
+   },
+   {
+    "subject": "insert sessions: 3ifoo, A, o, O with counts; Esc cursor rules; drop_indent",
+    "verdict": "match Evil except DR-01, DR-02 and DR-06",
+    "note": "The oracle agrees on 3o<Esc>, 2o<Esc>, 3A<CR><Esc>, 2Afoo<CR>bar<Esc>, 3ifoo<Left>X<Esc>, 2Ox<Esc>u, i<BS> at the start of the buffer, a Tab past the end of the line above, and t,;,."
+   },
+   {
+    "subject": "CRLF-free assumption",
+    "verdict": "consistent",
+    "note": "ropey is built without cr_lines, `\\r` is blank to die-vim's word motions, and `$` lands on `\\r` as in Evil. The only difference is display width (DR-12)."
+   },
+   {
+    "subject": "tabs and wide characters",
+    "verdict": "match Evil",
+    "note": "All the fixtures with tabs and wide characters pass, and so do Han/Kana/Hangul script boundaries. Non-CJK scripts differ (DR-10)."
+   },
+   {
+    "subject": "oracle runner (oracle.rs)",
+    "verdict": "sound with gaps",
+    "note": "Its pending and deviation bookkeeping is strict. The gaps are DR-17 (error positions) and DR-18 (undefined keys). No batch fixture relies on visual-line motion, which batch Emacs gets wrong, but none at all covers insert-state <Up>/<Down> (DR-06)."
+   }
+  ]
+ }
+}

@@ -1,0 +1,1 @@
+exe "normal! obody\<Esc>"

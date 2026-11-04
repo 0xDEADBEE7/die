@@ -1,0 +1,18 @@
+
+  startofline
+  whichwrap=b,s
+  virtualedit=
+  cpoptions=aABceFsz
+  undolevels=1000
+  wrapscan
+noignorecase
+nosmartcase
+  scrolloff=0
+  joinspaces
+nocompatible
+  lines=24
+  columns=80
+noshiftround
+noautoindent
+noincsearch
+  scroll=11

@@ -1,0 +1,273 @@
+{
+ "K4": [
+  {
+   "id": "LAYOUT-4",
+   "severity": "minor",
+   "area": "layout query pos_at_vcol",
+   "file": "crates/die-core/src/layout.rs",
+   "line": 475,
+   "claim": "pos_at_vcol, which the contract lists \"for j/k goals\", lands on a tab or wide character that spans the goal column. Evil's move-to-column lands after it, and pos_at_vcol can also return a position on a later logical line of a folded display line. die-vim already reimplemented it and doesn't call it.",
+   "evidence": "layout.rs:474-479 returns the last stop with vcol \u2264 goal, over the whole display line. Scratch: TextBuf::new(\"a\\tb\\n\").pos_at_vcol(0, 3) = 1, the tab; move-to-column 3 lands on b, at 2.\n\ndie-vim/src/text.rs:149-160 pos_at_col says: \"A column inside a tab or a wide character lands after it, as Emacs's move-to-column does\". It filters stops to the logical line.\n\nContract \u00a79:252: \"pos_at_vcol: the position at a display column, for j/k goals\".",
+   "proposed_fix": "```rust\n/// The first cursor position on logical line `line` at or after display column `vcol`, else the line's end: a column inside a tab or a wide character lands after it, as Emacs's `move-to-column` does for Evil's `j` and `k`.\npub fn pos_at_vcol(&self, line: usize, vcol: usize) -> usize {\n    let s = self.line_start(line);\n    let e = if line + 1 < self.line_count() { self.line_start(line + 1) - 1 } else { self.len() };\n    self.dl(s, None).stops.iter()\n        .filter(|st| (s..=e).contains(&st.pos))\n        .find(|st| st.vcol >= vcol)\n        .map_or(e, |st| st.pos)\n}\n```\nThen die-vim's pos_at_col becomes `t.pos_at_vcol(line, col)`.",
+   "needs_decision": false,
+   "recommendation": "Change it in K4 and drop die-vim's copy.",
+   "review": "text-and-keys",
+   "verifier": {
+    "id": "LAYOUT-4",
+    "verdict": "confirmed",
+    "reasoning": "Scratch: on `a\\tb\\n`, pos_at_vcol(0,v) is 1 (the tab) for v = 1..7, and 2 only at v = 8. On `a\u4e2db`, vcol 2 gives 1 (the wide character).\n\nThe user's Evil (verify-text-and-keys/evil/jk.el):\n- `j` from col 3 onto `a\\tbcdefghij` lands on b at col 8, after the tab;\n- `j` from col 2 onto `a\u4e2dbc` lands on b at col 3.\n\nSo Evil lands after a character that spans the goal column. die-vim's pos_at_col (die-vim/src/text.rs:149-160) reimplements this and doesn't call core. It's used at motions.rs:127 and insert.rs:217.\n\nOn a display line whose newline a Hide covers, pos_at_vcol can return a position on the next logical line. Scratch, with `ab\\ncdef` and Hide 2..3: pos_at_vcol(0,2) = 3.\n\nThe proposed fix is flawed:\n- Its fallback `e` is the line's newline. When a Hide joins the line to the next, that newline is hidden, so it isn't a cursor position.\n- Filtering to the logical line drops the display-line semantics that next_visible and j/k are built on.",
+    "fix_ok": false,
+    "better_fix": "```rust\n/// The first cursor position on `line`'s display line at or after display column\n/// `vcol`, else that display line's last cursor position. A column inside a tab, a\n/// wide character or a replacement lands after it, as Emacs's `move-to-column` does for\n/// Evil's `j` and `k`. `line` is the first line of a display line, as `next_visible` gives.\npub fn pos_at_vcol(&self, line: usize, vcol: usize) -> usize {\n    let dl = self.dl(self.line_start(line), None);\n    let last = *dl.stops.last().expect(\"a display line has a cursor position\");\n    dl.stops.iter().find(|st| st.vcol >= vcol).unwrap_or(&last).pos\n}\n```\nThen die-vim's pos_at_col becomes `t.pos_at_vcol(line, col)`, followed by its existing normal_pos clamp in normal state."
+   }
+  },
+  {
+   "id": "LAYOUT-5",
+   "severity": "minor",
+   "area": "Settings.wrap for copy state",
+   "file": "crates/die-core/src/text.rs",
+   "line": 128,
+   "claim": "`wrap: bool` can't express character wrap. That's what M2's copy state needs for its snapshot's rows to match the terminal's cells once K4 makes wrapping word-based.",
+   "evidence": "scope.md:152: copy state runs die-vim over \"a read-only text snapshot ... its text()\". A terminal soft-wraps by character.\n\nIf the snapshot keeps logical lines (so `yy` takes a whole wrapped line and `w` crosses wraps), its rows match the terminal's only with character wrap at the terminal's width.\n\nToday there's 1 use in src (layout.rs:486) and 6 in tests.",
+   "proposed_fix": "```rust\n/// How long lines break into rows (contract \u00a79).\n#[derive(Clone, Copy, PartialEq, Eq, Debug)]\npub enum Wrap { Off, Word, Char }\n\n/// Soft wrap; default Word. Char breaks between any two items, as a terminal does.\npub wrap: Wrap,\n```\nChar is S4's current algorithm.\n\nThe alternative is a snapshot with one line per terminal row and wrap off. That needs no API change, but `yy` and `w` stop at soft wraps.",
+   "needs_decision": true,
+   "recommendation": "Add Wrap::Char in K4, while the bool has 7 uses.",
+   "review": "text-and-keys",
+   "verifier": {
+    "id": "LAYOUT-5",
+    "verdict": "confirmed",
+    "reasoning": "`wrap: bool` (text.rs:128) can't express a second wrap mode. It has one use in src (layout.rs:485-487).\n\nScope \u00a75.5 runs die-vim over a read-only snapshot of a terminal's text(). Whether that snapshot keeps soft-wrapped terminal rows as one logical line (then character wrap is needed to match the terminal's cells) or as one line per row is not decided anywhere (D19, \u00a75.5).\n\nIt's a real but speculative M2 need. Adding the variant is cheap because Char is S4's algorithm, which the current code and prop.rs's oracle already implement.",
+    "fix_ok": true,
+    "better_fix": "As proposed, but define Char in contract \u00a79 as \"the same rule with no break points\" (WRAP-1). Then K4 and the naive layout each need only one condition for it, and Char inherits WRAP-2's line-end rule.",
+    "decision_view": "Add `enum Wrap { Off, Word, Char }` in K4. K4 is rewriting wrap anyway, the bool has few uses, and defining Char as \"no break points\" makes it nearly free to build and test. If K4 is over budget, ship `Off` and `Word` now and add `Char` with M2's copy-state design."
+   }
+  },
+  {
+   "id": "LAYOUT-6",
+   "severity": "minor",
+   "area": "window scrolling for V6",
+   "file": "crates/die-core/src/layout.rs",
+   "line": 617,
+   "claim": "There's no public way to read or set a window's scroll position. V6's `C-d C-f C-b C-e C-y zz zt zb` can't be built, and core's scroll-to-cursor before every render would undo a scroll that leaves the cursor off-screen.",
+   "evidence": "View.top and top_row are pub(crate) (text.rs:160-168). scroll_to_cursor is pub(crate) and runs before every render (layout.rs:617-643).\n\nContract \u00a79:246-254 lists queries only. Scope \u00a710 requires these scrolling keys.",
+   "proposed_fix": "```rust\n/// The display line start and the row within it that window `w` shows first.\npub fn scroll(&self, w: WindowId) -> Option<(usize, usize)>\n/// Show `top`'s display line from `row` first (top is snapped to its display line's start, row clamped).\npub fn set_scroll(&mut self, w: WindowId, top: usize, row: usize) -> Option<()>\n```\nContract \u00a79 sentence: \"A command that scrolls a window also leaves its cursor on a visible row; otherwise core scrolls back to the cursor before the next render (C5).\"",
+   "needs_decision": false,
+   "recommendation": "Add in K4, which owns the views.",
+   "review": "text-and-keys",
+   "verifier": {
+    "id": "LAYOUT-6",
+    "verdict": "confirmed",
+    "reasoning": "- View, with its top and top_row fields, is pub(crate) (text.rs:160-168).\n- scroll_to_cursor is pub(crate) (layout.rs:617-643), and draw_text calls it before every render (scene.rs, `t.scroll_to_cursor(p.window)`).\n- Viewport exposes top and top_row read-only, but nothing sets them. So a die-vim C-e that scrolls past the cursor would be undone at the next render.\n- Checkpoint 2 already lists `C-d C-f C-b zz` (m0-plan.md:88), so this is needed before V6.\n- The proposed API and contract sentence match Evil, where scrolling moves point to stay visible.",
+    "fix_ok": true
+   }
+  },
+  {
+   "id": "LAYOUT-7",
+   "severity": "minor",
+   "area": "public layout types",
+   "file": "crates/die-core/src/layout.rs",
+   "line": 101,
+   "claim": "DisplayLine and LayoutCell expose their fields, and die-vim reads them, yet K4's compact cells will change them.",
+   "evidence": "layout.rs:79-120: every field is pub.\n\ndie-vim reads `t.display_line(s).stops` and Stop.pos and vcol (die-vim/src/text.rs:154-158, insert.rs:300-303).\n\nm0-plan.md:183, K4: \"a per-line cache, compact cells\". LayoutCell holds a String per cell. Only scene.rs reads cells.",
+   "proposed_fix": "Before K4:\n- keep Stop as it is;\n- make DisplayLine's fields private, with `stops(&self) -> &[Stop]`, `start()`, `end()`, `lines() -> RangeInclusive<usize>` and `eof()`;\n- make LayoutCell, DisplayLine::rows and ViewRow::cells pub(crate);\n- switch die-vim to `.stops()`.",
+   "needs_decision": false,
+   "recommendation": "Do it as K4's first commit.",
+   "review": "text-and-keys",
+   "verifier": {
+    "id": "LAYOUT-7",
+    "verdict": "confirmed",
+    "reasoning": "- Every field of DisplayLine, LayoutCell and ViewRow is pub (layout.rs:79-120, 337-343).\n- LayoutCell holds a String per cell.\n- die-vim reads `display_line(s).stops` (die-vim/src/text.rs:154-155, insert.rs:300-301).\n- Integration tests read only Viewport.rows' first_line and row (tests/layout.rs:88-96). prop.rs's `.cells` is its own oracle's.\n\nThe proposed fix is incomplete: making ViewRow::cells pub(crate) removes the only public way to learn which buffer positions a screen row holds. H/M/L (scope \u00a710) and K14's pointer mapping need that, and display_line(), which is unwrapped, can't supply it for a window's width.",
+    "fix_ok": false,
+    "better_fix": "As proposed:\n- keep Stop;\n- make DisplayLine's fields private, with stops(), start(), end(), lines() and eof();\n- make LayoutCell, DisplayLine::rows and ViewRow::cells pub(crate);\n- switch die-vim to `.stops()`.\n\nIn addition, give ViewRow\n```rust\n/// The cursor positions drawn on this screen row, left to right, with their columns.\npub fn stops(&self) -> &[Stop]\n```\nbuilt from the wrapped display line's stops with `row == self.row`, so H/M/L and pointer mapping don't need cells."
+   }
+  },
+  {
+   "id": "DR-12",
+   "severity": "minor",
+   "area": "core layout: control characters",
+   "file": "crates/die-core/src/layout.rs",
+   "line": 163,
+   "claim": "Layout draws every control character (\\r, \\x01, \u2026) as `?`, one column wide. Emacs draws `^M`/`^A`, two columns. So goal and display columns after one are off by one: `j` lands a column left of Evil, and the same will hold for block selections and rendering. This is the one CRLF-related difference I found. ropey is built without cr_lines (Cargo.toml:35), so \\r stays part of the line, and die-vim treats it as blank, as Evil does (`w`/`$` on \"foo\\r\\nbar\" agree).",
+   "evidence": "layout.rs:163-167: `if g.chars().any(char::is_control) { (\"?\", 1) }`. Evil oracle (scratch out7/deepread7.json): \"a\\rbc\\nxyzwv\\n\"@3 `j` \u2192 9 (col 4); the same with \\x01. die-vim: 8.",
+   "proposed_fix": "In `Builder::put`, for a control grapheme (not \\t), use Emacs's ctl-arrow display:\n- U+0000\u2013001F: two Text cells, \"^\" with `pos` and the letter (U+0040 + c) with `pos: None`, `vcol += 2`;\n- U+007F: \"^?\", two cells;\n- U+0080\u2013009F: \"\\\\ooo\", four cells.\nThis is K4's to fold into the layout rebuild. Add the oracle cases to cases/motions.json.",
+   "needs_decision": false,
+   "failing_test": "crates/die-vim/tests/deep_read.rs (helpers in DR-01):\n```rust\n#[test]\nfn a_control_character_is_two_columns_wide() {\n    assert_eq!(cursor_after(\"a\\rbc\\nxyzwv\\n\", 3, \"j\"), 9, \"after \\\\r\");\n    assert_eq!(cursor_after(\"a\\x01bc\\nxyzwv\\n\", 3, \"j\"), 9, \"after \\\\x01\");\n}\n```\n```\nthread 'a_control_character_is_two_columns_wide' panicked at crates/die-vim/tests/deep_read.rs:216:5:\nassertion `left == right` failed: after \\r\n  left: 8\n right: 9\n```",
+   "review": "deep-read",
+   "verifier": {
+    "id": "DR-12",
+    "verdict": "confirmed",
+    "fix_ok": true,
+    "reasoning": "The oracle gives `j` from \"a\\rbc\\nxyzwv\\n\"@3 \u2192 9, and the same with \\x01, in batch and tty. die-vim gives 8 on main and with the patch. layout.rs:163-167 draws any control grapheme as \"?\" one column wide. Emacs's ctl-arrow display (^X in 2 columns, ^? for DEL, \\ooo in 4 for U+0080\u2013009F) is the right model, and it belongs to K4's layout rebuild. The continuation cell must have pos None so motions never stop inside it. CRLF files open read-only (files.rs:224), so \\r shows up only in unusual files, and minor is the right severity."
+   }
+  },
+  {
+   "id": "scene-4",
+   "severity": "minor",
+   "area": "scene / Hide replacement",
+   "file": "crates/die-core/src/scene.rs",
+   "line": 594,
+   "claim": "A Hide decoration's replacement text is drawn in two styles. Its first grapheme takes the faces at the hidden range's start and maps to that position. The rest fall to `default` and map to no position. A fold marker \"...\" under a face shows one styled dot.",
+   "evidence": "layout.rs:243-248 gives only the replacement's first grapheme `Some(p)` (kind Replacement). scene.rs:594-599 maps `(None, CellKind::Replacement)` to `_ => None`. Probe: \"fn x() { body }\" with Hide 8..14 \u2192 \"...\" and Face 0..15 \"p.kw\". The row draws \"fn VTx() {...}\", and the cells in p.kw's color are `###..######..#`: the first '.' is styled, the other two aren't. Emacs merges a display string over the faces of the text it replaces, so all three should match.",
+   "proposed_fix": "scene.rs:594-599:\n```rust\nlet q = match (c.pos, c.kind) {\n    (Some(q), _) => Some(q),\n    // A tab's later cells, a wide character's right half and a replacement's\n    // later graphemes belong to the cell before them.\n    (None, CellKind::Tab | CellKind::Replacement) => last,\n    (None, CellKind::Text) if c.text.is_empty() => last,\n    _ => None,\n};\n```\nTest `a_hide_replacement_is_drawn_in_one_style`: the probe case, asserting that all three dots take p.kw's fg and map to position 8.",
+   "failing_test": "a_hide_replacement_is_drawn_in_one_style (as above)",
+   "needs_decision": false,
+   "review": "scene-and-unsafe",
+   "verifier": {
+    "id": "scene-4",
+    "verdict": "confirmed",
+    "fix_ok": false,
+    "reasoning": "Reproduced: \"fn x() { body }\" with Hide 8..14 as \"...\" and Face 0..15 p.kw. The row draws `fn VTx() {...}`, the p.kw mask is `###..######..#..`, and the positions are Some(8) for the first dot and None for the other two. layout.rs:243-251 gives only the first grapheme a position, and scene.rs:594-599 maps (None, Replacement) to None.\n\nWith the reviewer's arm change applied, the single-row case is fixed (mask `###..#########..`, all three dots Some(8)). It misses wrapping, because `last` is reset on every display row (scene.rs:592). Replacement \"[folded]\" in a 6-column window: row 1 `lded]` still draws in default with positions None. The same reset already breaks tabs split by the wrap, because Builder::push (layout.rs:139-149) starts a new row in the middle of a tab. In \"abcd\\tx\" at width 6, row 1's two tab cells draw unstyled with positions None. Hoisting `last` out of the row loop fixes both cases (`#####.` with Some(3), and the tab cells Some(4) and styled), and all 147 die-core tests still pass (scratchpad/verify-scene-and-unsafe/clean).",
+    "better_fix": "In draw_text, move `let mut last = None;` above `for (i, vr) in vrows.iter().enumerate().take(rows)`, with the comment: \"A tab's later cells, a wide character's right half and a replacement's later graphemes have no position in layout; they show the character of the cell they belong to, which can be on the row before (a tab or a replacement split by the wrap).\" Keep the reviewer's arm, `(None, CellKind::Tab | CellKind::Replacement) => last`. Doing this is safe: a wide character moves to the next row whole, and Filler and Virtual cells reset `last` to None. Tests:\n- `a_hide_replacement_is_drawn_in_one_style`\n- `a_replacement_split_by_the_wrap_keeps_its_style_and_position`\n- `a_tab_split_by_the_wrap_keeps_its_style_and_position` (\"abcd\\tx\", width 6, row 1 cols 0-1 are Some(4) and in the face)"
+   }
+  },
+  {
+   "id": "scene-5",
+   "severity": "minor",
+   "area": "faces / decorations",
+   "file": "crates/die-core/src/text.rs",
+   "line": 97,
+   "claim": "Virtual text, and a Hide replacement beyond the faces of the text it hides, can't carry a face. Virtual text always draws in `default` (it has no position). manifold propertizes its fold string with faces, and contract \u00a718 lists manifold with no gaps.",
+   "evidence": "text.rs:97-104: `Deco::Virtual(String)` and `Deco::Hide { replacement: Option<String>, reveal }` have no face. scene.rs:597-599 gives virtual cells `None`, hence `base`. Probe: the virtual \"VT\" cells are outside p.kw's color though a p.kw decoration covers them (`###..###\u2026`). ~/.emacs.d/lisp/manifold/lisp/manifold-display.el:41 `(propertize description 'face \u2026)` and :45 `(propertize fold-mark 'face foreground)`.",
+   "proposed_fix": "In K4, while layout is being rebuilt, change the variants to `Deco::Virtual { text: String, face: Option<&'static str> }` and `Deco::Hide { replacement: Option<String>, face: Option<&'static str>, reveal: Reveal }`. Layout carries the face on its cells (`LayoutCell.face: Option<&'static str>`). draw_text draws them in `faces.get(face).over(style_at(anchor))`, where anchor is the position the text sits before (virtual) or the hidden start (replacement). Test: `virtual_and_replacement_text_take_their_face`.",
+   "recommendation": "Yes, in K4. It's a text-API change that's cheapest while layout is open, and it closes manifold's gap.",
+   "needs_decision": true,
+   "review": "scene-and-unsafe",
+   "verifier": {
+    "id": "scene-5",
+    "verdict": "confirmed",
+    "fix_ok": false,
+    "reasoning": "text.rs:97-104: `Deco::Virtual(String)` and `Hide { replacement: Option<String>, reveal }` carry no face. Probe: the virtual \"VT\" cells sit outside p.kw's color although the face covers them (mask `###..`). Emacs's xdisp.c bases overlay and display strings on the underlying text's face, so drawing them in plain `default` is a real difference. Contract \u00a718 (extension-contract.md:472) lists manifold with 'Gaps: None'.\n\nOne face per string doesn't cover manifold, though. manifold-display.el:41-46 propertizes the title with one face and each fold-mark dash with its own `(:foreground color)` from a 60-step gradient, so it needs faces per grapheme. The reviewer's `face: Option<&'static str>` would leave that gap open.",
+    "decision_view": "Do it in K4, but with styled runs, not a single face. Make the replacement and virtual text a small styled string: `pub struct Styled { pub text: String, pub faces: Vec<(Range<usize>, &'static str)> }`, with byte ranges into `text`. Share it with contract \u00a79's 'styled insertion', which needs the same shape. Each run draws as `faces.get(f).over(style_at(anchor))`. manifold's gradient then becomes 60 declared faces (or a few). If K4 can't take that, use the reviewer's single face and record the per-character gradient as a gap in \u00a718's manifold row. Don't leave 'None' standing either way.",
+    "better_fix": "`Deco::Virtual(Styled)` and `Deco::Hide { replacement: Option<Styled>, reveal: Reveal }`, with `Styled` as above (plus `impl From<String> for Styled`, so plain strings stay one call). `LayoutCell` gets `face: Option<&'static str>`, and draw_text draws such a cell as `faces.get(face).over(style_at(anchor))`, where anchor is the position before (virtual) or the hidden start (replacement). Tests: `virtual_and_replacement_text_take_their_faces`, and `a_replacement_with_two_runs_draws_both`."
+   }
+  }
+ ],
+ "K9": [
+  {
+   "id": "scene-2",
+   "severity": "major",
+   "area": "scene / K9 / R2 boundary",
+   "file": "crates/die-core/src/scene.rs",
+   "line": 147,
+   "claim": "The Scene holds core's pointer map (`positions`) and no row revision. K9's `handle(pointer)` needs that map after the frame is handed to die-render, and R2's diff wants to keep the previous frame. Neither works until `scene()`'s ownership is decided, and R2's test plan (the frame-data boundary) is written against whatever is decided now.",
+   "evidence": "scene.rs:147-151 puts `positions: Vec<Option<(WindowId, usize)>>` in Scene. That is 16 B per cell, 480 KB of the 1.68 MB a 300\u00d7100 frame takes (size_of Cell 40, position 16, measured). compose builds a fresh Scene every call (scene.rs:285-292). m0-plan K9: \"Pointer cells map to a window and a position\". platforms.md \u00a75.2 puts \"Scene diff, row cache\" in die-render. Probe at 300\u00d7100:\n- comparing all 100 rows with the previous frame: 0.072 ms;\n- cloning a Scene: 0.054 ms;\n- SipHash of all rows: 0.64 ms, too slow for row keys.\nR2 needs no row revision from core. What it needs is the previous frame, and core needs the positions.",
+   "proposed_fix": "Recommended:\n1. K9's `pub fn scene(&mut self) -> Scene`, documented as: \"A fresh frame, owned by the caller. die-render keeps the previous one and rebuilds only the rows whose cells differ, so core keeps no render state.\"\n2. Move `positions` out of Scene into a Ctx field that compose fills, exposed as `pub fn position_at(&self, row: usize, col: usize) -> Option<(WindowId, usize)>`. It means \"the window and buffer position the cell at (row, col) showed in the last composed frame\". K9's handle(pointer), the harness and K8's two position tests use it. Scene becomes drawing-only.\n3. R2's test plan:\n   - `only_changed_rows_are_rebuilt` compares `prev.row(r) != next.row(r)`.\n   - `scrolling_one_line_rebuilds_one_row` matches the new row r against the previous row r\u00b11, by comparison and not SipHash.\nAlternative, if preferred: Ctx owns the Scene and reuses its buffers, `scene(&mut self) -> &Scene`, and `put` compares before writing and bumps `row_rev: Vec<u64>`. That's about 20 more lines in core, with positions kept in the Scene.",
+   "recommendation": "The owned Scene, with positions in Ctx: it matches platforms.md's split, and the measured diff cost is negligible.",
+   "needs_decision": true,
+   "review": "scene-and-unsafe",
+   "verifier": {
+    "id": "scene-2",
+    "verdict": "confirmed",
+    "fix_ok": true,
+    "reasoning": "`positions` is in Scene (scene.rs:147-151), and compose allocates a fresh Scene on every call (scene.rs:285-292). I measured size_of Option<(WindowId, usize)> = 16 and Cell = 40. platforms.md \u00a75.2 (line 241) puts 'Scene diff, row cache' in die-render. The M0 log already deferred K8-7 (pointer mapping) to K9, so the question is open, and K9 and R2 both start in phase 1. Nothing outside die-core reads `positions` today, so moving it now costs only K8's two position tests (positions_map_cells_to_buffer_positions and every_cell_of_a_tab_or_wide_character_maps_to_its_position). Moving it after K7, K9 or K14 adopt it would break their callers. That justifies 'major' under the API-shape rule, though nothing misbehaves today. One part of the claim is overstated: K9 could still work with positions in the Scene (take or clone them before handing the Scene over), so this is a design choice, not a blocker.",
+    "decision_view": "Move positions to Ctx and make Scene drawing-only, as the reviewer recommends. My reasons:\n1. Core answering clicks from the map of the frame it last composed is what Emacs does: posn-at-x-y reads the last redisplay's glyph matrix.\n2. The diff belongs in die-render (platforms.md \u00a75.2), and it needs only cells.\n3. Positions are core semantics that die-render has no use for.\n4. Headless tests (K7) and K14 use `ctx.position_at(row, col)` without a renderer.\n\nDecide it in K9's API diff, and write R2's tests as `prev.row(r) != next.row(r)`. Skip the row_rev alternative: it puts render state into core, and the measured diff (about 0.07 ms per frame) doesn't need it."
+   }
+  }
+ ],
+ "V3/V4": [
+  {
+   "id": "KEYS-2",
+   "severity": "minor",
+   "area": "macro registers and notation",
+   "file": "docs/extension-contract.md",
+   "line": 149,
+   "claim": "Because register text is parsed as notation, `@` on a register that `q` didn't record fails on yanked Rust code, or presses keys named in it. Vim and Evil type it literally.",
+   "evidence": "Contract \u00a77:149: \"feed_keys and macro register text are notation too, so a literal < there is written <lt>\".\n\nScratch:\n- parse_keys(\"Vec<String>\") = Err(\"unknown key <String> in \\\"Vec<String>\\\"\");\n- parse_keys(\"i<div>\") = Err;\n- `<CR>` or `<Esc>` in yanked text would be pressed.\n\nEvil runs `@a` as execute-kbd-macro on the register's string, typing the characters.",
+   "proposed_fix": "Contract \u00a77 sentence: \"A register that `q` recorded holds notation; any other register holds plain text, and `@` types it as it is, one key per character, as Vim and Evil do.\"\n\nCore:\n```rust\n/// `text` as notation that types it literally: `<` becomes `<lt>`.\npub fn escape_notation(text: &str) -> String { text.replace('<', \"<lt>\") }\n```\nThe Register type gets `pub keys: bool`, set by `q`. die-vim's `@` feeds `escape_notation(text)` when it's false.\n\nTrade-off: a recorded macro that's pasted, edited and yanked back becomes plain text.",
+   "needs_decision": true,
+   "recommendation": "Adopt. Running yanked text matters more than editing macros as text.",
+   "review": "text-and-keys",
+   "verifier": {
+    "id": "KEYS-2",
+    "verdict": "confirmed",
+    "reasoning": "Scratch results:\n- parse_keys(\"Vec<String>\") = Err(\"unknown key <String> in \\\"Vec<String>\\\"\");\n- parse_keys(\"i<div>\") is an Err;\n- parse_keys(\"x <CR> y\") presses Enter.\n\nContract \u00a77:149 makes register text notation. Vim's `@` and Evil's execute-kbd-macro type a register's characters literally.\n\nThe proposed escape_notation is incomplete. A yanked line holds \"\\n\", and in notation that is Key::Char('\\n'), which no keymap binds. Vim and Evil execute a newline in a register as Ctrl-J, and a tab as Tab. `<NL>` already parses as C-j (keys.rs:264-267).",
+    "fix_ok": false,
+    "better_fix": "Use the reviewer's contract sentence and the Register `keys: bool` field set by `q`, with this helper:\n```rust\n/// `text` as notation that types it literally, as Vim's and Evil's `@` do: `<` becomes\n/// `<lt>`, a newline `<NL>` (Ctrl-J), a carriage return `<CR>`, a tab `<Tab>`, ESC\n/// `<Esc>`, and any other C0 character `<C-x>` for its letter.\npub fn escape_notation(text: &str) -> String {\n    let mut s = String::new();\n    for c in text.chars() {\n        match c {\n            '<' => s.push_str(\"<lt>\"),\n            '\\n' => s.push_str(\"<NL>\"),\n            '\\r' => s.push_str(\"<CR>\"),\n            '\\t' => s.push_str(\"<Tab>\"),\n            '\\x1b' => s.push_str(\"<Esc>\"),\n            c if (c as u32) < 0x20 => s.push_str(&format!(\"<C-{}>\", ((c as u8) + b'`') as char)),\n            c => s.push(c),\n        }\n    }\n    s\n}\n```\nThe Register field is K6's (\"typed registers\"), so add it there, before any struct literal is built outside core.",
+    "decision_view": "Adopt.\n- `\"ayy` then `@a` on a line of commands is a common Vim idiom, and code full of `<` must not error or press keys named in it.\n- The cost is the trade-off the reviewer named: a recorded macro that's pasted, edited and yanked back becomes plain text. It can be re-recorded with `q`."
+   }
+  },
+  {
+   "id": "TEXT-3",
+   "severity": "minor",
+   "area": "block selections",
+   "file": "crates/die-core/src/text.rs",
+   "line": 69,
+   "claim": "Selection can't say \"each line to its end\" for V4's `<C-v>$`. The scene's block highlight also misses a tab or wide character that starts left of the block.",
+   "evidence": "text.rs:68 says of goal: \"die-vim decides what it means\".\n\nscene.rs:527-530 builds the block from display_col(anchor) to display_col(head), and tests each cell's start column only.",
+   "proposed_fix": "Selection rustdoc: \"On a `Block` selection, `goal == Some(usize::MAX)` means each line to its end, as `$` in Vim's visual block.\"\n\nscene.rs: when that holds, the column range ends at usize::MAX. Highlight a cell when its item's columns overlap the block's (start \u2264 right && end > left).",
+   "needs_decision": false,
+   "recommendation": "Settle with V4.",
+   "review": "text-and-keys",
+   "verifier": {
+    "id": "TEXT-3",
+    "verdict": "confirmed",
+    "reasoning": "- Selection.goal's doc says \"die-vim decides what it means\" (text.rs:68).\n- The scene builds a block from display_col(anchor) to display_col(head) and tests only each cell's start column (`vcols.contains(&t.display_col(q))` in draw_text's style_at). It never reads goal, so `<C-v>$` can't be drawn.\n- A tab or wide character that starts left of the block's left column but covers it isn't highlighted.\n- The usize::MAX sentinel mirrors Vim's curswant = MAXCOL and Evil's most-positive-fixnum goal. With it, die-vim's pos_at_col naturally lands on each line's end.\n- The overlap test is right if the item's end is exclusive (start + width).",
+    "fix_ok": true
+   }
+  }
+ ],
+ "V5": [
+  {
+   "id": "SEARCH-2",
+   "severity": "minor",
+   "area": "search for :s",
+   "file": "crates/die-core/src/text/search.rs",
+   "line": 18,
+   "claim": "Pattern exposes no captures, so V5's `:s` with `$1` would need a second regex engine in die-vim, with its own syntax settings.",
+   "evidence": "search.rs:17-47: the Regex is private, and only search, matches and match_at use it.\n\nscope.md:351 calls for `:s` with Rust regex, keeping case.\n\nPattern sets multi_line and crlf (search.rs:26-29), which a second engine would have to copy.",
+   "proposed_fix": "```rust\n/// Each match in `range`, in order and without overlaps, with `template` expanded (`$1`, `${name}`, `$$`, as regex's `Captures::expand` does): what `:s` replaces.\npub fn replacements(&self, t: &TextBuf, range: Range<usize>, template: &str) -> Vec<(Range<usize>, String)>\n```\nBuilt on regex-automata's `Regex::search_captures` and `util::interpolate::string`. Keeping case stays in die-vim.",
+   "needs_decision": false,
+   "recommendation": "Add in V5.",
+   "review": "text-and-keys",
+   "verifier": {
+    "id": "SEARCH-2",
+    "verdict": "confirmed",
+    "reasoning": "- Pattern's Regex is private (search.rs:17-21), and only search, matches and match_at use it.\n- Pattern::new sets multi_line(true) and crlf(true) (search.rs:26-29). die-vim would have to copy those settings to compile its own captures regex, and the two would drift.\n- scope \u00a710 requires `:s`.\n- The proposed `replacements` built on regex-automata's search_captures and util::interpolate::string exists in the pinned regex-automata 0.4.18.\n- Leaving case preservation to die-vim is right.",
+    "fix_ok": true
+   }
+  }
+ ],
+ "K7": [
+  {
+   "id": "DR-18",
+   "severity": "nit",
+   "area": "oracle runner",
+   "file": "crates/die-vim/tests/oracle.rs",
+   "line": 262,
+   "claim": "The runner fails any case in which die-vim reports \"\u2026 is undefined\", and the oracle doesn't record Evil's own `undefined` calls, which are a ding plus a message, not a signal. So a case where a key is undefined in both, like `3gzl` (DR-03), can never be pinned as a fixture: Evil's expected errors are [] while die-vim must log a message. The runner also treats every message in `ctx.messages` as an error, so any informational message would count.",
+   "evidence": "oracle.rs:262-264: `if let Some(m) = messages.iter().find(|m| m.ends_with(\" is undefined\"))`. The oracle's output for `3gzl` (scratch out/deepread.json) has `errors: []`, while the Emacs log printed \"g z is undefined\".",
+   "proposed_fix": "In evil-oracle.el, record Evil's `undefined` as an error entry `{symbol: \"undefined\", message: \"g z is undefined\", after_keys: n}`. In oracle.rs, accept a die-vim \"is undefined\" message when the expected errors hold a `symbol == \"undefined\"` entry at the same key. When K7's harness logs messages by kind, count only errors.",
+   "needs_decision": true,
+   "recommendation": "Do it with K7's per-key error log. Until then, keep DR-03's test as a plain die-vim test, as written.",
+   "review": "deep-read",
+   "verifier": {
+    "id": "DR-18",
+    "verdict": "confirmed",
+    "fix_ok": true,
+    "reasoning": "oracle.rs:262-264 fails any case whose messages include \" is undefined\". The oracle's advice (evil-oracle.el, evil-oracle--command-execute) records only signalled errors, and Emacs's `undefined` only dings and prints a message, so `3gzl` comes back with errors []. That case can't be pinned. Everything in ctx.messages counts as an error, and non-error messages exist (theme warnings at faces.rs:342 and file-settings panics at files.rs:131), though no oracle case reaches them today.",
+    "decision_view": "Agree: defer to K7's per-key error log, which should separate errors from informational messages. Then add advice on `undefined` to evil-oracle.el that records {symbol: \"undefined\", message, after_keys}, and let the runner accept die-vim's \"is undefined\" only at the same key. Until then, pin DR-03 with the plain die-vim test plus the die-core keymaps test I propose under DR-03."
+   }
+  }
+ ],
+ "R4": [
+  {
+   "id": "KEYS-8",
+   "severity": "minor",
+   "area": "S1 interactive keys check",
+   "file": "spikes/s1-renderer/results/interactive-keys.md",
+   "line": 3,
+   "claim": "S1's hand check, which was to come before this review, recorded 13 of 50 chords. Its 7 failures are a harness artifact, and the run stalled at M-f.",
+   "evidence": "interactive-keys.md (untracked, 2026-11-03 22:30): \"Chords: 13 recorded, 6 pass\".\n\ninteractive-keys.json: ControlLeft was pressed at t=1271614.6 and released at 1271625.8, so it was held across C-a through C-S-a. Only modifier_key_events_ok is false; every other field is ok.\n\nThe run stopped at M-f (src/keys.rs:84): Alt was pressed for about 6 minutes with no f, then Cmd-Q. AeroSpace taking alt-f fits that (scope \u00a75.6).\n\nBeep and popup are unanswered. For the 13 chords, code, logical key, unshifted, sided mods and text are all present.",
+   "proposed_fix": "Don't block phase 1: the data asks for no new KeyEvent field. Add to m0-log: \"S1 interactive keys: partial, 13/50, remaining 37 rerun at checkpoint 2 on DIE.app (R6), releasing Ctrl between chords and skipping AeroSpace's chords with Cmd-.\"",
+   "needs_decision": true,
+   "recommendation": "Proceed; rerun at checkpoint 2.",
+   "review": "text-and-keys",
+   "verifier": {
+    "id": "KEYS-8",
+    "verdict": "confirmed",
+    "reasoning": "- interactive-keys.md says \"Chords: 13 recorded, 6 pass\", and beep and popup are unanswered.\n- In the JSON, ControlLeft is pressed at 1271614.6185 and released at 1271625.8373, spanning C-a through C-S-a. Every one of the 7 failures has only modifier_key_events_ok false. The rest are ok:\n  - code, logical key, unshifted, mods and text are present;\n  - order, Option-as-Alt and text checks pass.\n- The run stops at M-f, the next chord in MATRIX (src/keys.rs:84). AltLeft was pressed at 1271630.2, released at 1271986.9 and 1271989.5, and then Cmd-Q came at 1272176.2.\n- The user's ~/.config/aerospace/aerospace.toml binds `alt-f = 'fullscreen'` (line 33), and alt-e too, so AeroSpace took M-f, and M-e would go the same way.\n- Nothing in the data asks for a new KeyEvent field. It did surface KEYS-1, the C0 text.",
+    "fix_ok": true,
+    "decision_view": "Proceed with phase 1 and log the check as partial. The remaining chords rerun at checkpoint 2 in DIE.app, which the plan already schedules (\"run S1's hand checks on the real app\"):\n- release Ctrl between chords;\n- skip or rebind AeroSpace's alt-f and alt-e.\nWhat the chords check that matters for the type is already covered by S1's synthetic keymatrix bench."
+   }
+  }
+ ]
+}
