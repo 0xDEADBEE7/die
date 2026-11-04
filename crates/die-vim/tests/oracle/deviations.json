@@ -5,30 +5,36 @@
       "rule": "the last line is the last line",
       "s5_row": 1,
       "kind": "emacs-artifact",
-      "evil": "The cursor can rest on the empty line after a file's final newline: G, 5j, w, }, dd, dk, dG, L, C-d and gj all reach it, and j there succeeds.",
-      "die_vim": "As in Vim: motions stop on the last line, j and gj on it signal an error, and a macro ends at that error.",
+      "evil": "The cursor can rest on the empty line after a file's final newline: G, 5j, w, }, dd, dk, dG, L and gj go there, and so does M in a short buffer. j from the last line goes there without an error; j, gj and C-d on the empty line itself fail.",
+      "die_vim": "What your Evil does when the text has no final newline, with the newline kept: motions never put the cursor on the empty line after it. Motions stop on the last line. j, gj, + and C-d on the last line fail, and so do w and e on its last character and } at its end; a macro ends at the first failure. dj, cj and yj on the last line act on that line, as Evil's do (Vim's fail). After dd, dk or dG removes the last lines, the cursor goes to the new last line, in the column the delete started in (S5 row 2). G recentres on the last line, and H, M and L clamp to it. An insert session or an undo can still leave the cursor on that empty line, as in Evil and Vim. Motions along it (0, ^, $, C-a) stay on it, and } from it fails. Each fixture takes its cursor and errors from your Evil on the same text without its final newline, and its text and registers from the run with the newline: the run without it adds a - register and has text bugs of its own.",
       "cases": [
         { "case": "motions/w-last-word-of-buffer", "fixture": "hand-written/motions.json" },
         { "case": "motions/G-trailing-newline", "fixture": "hand-written/motions.json" },
         { "case": "motions/5j-past-end", "fixture": "hand-written/motions.json" },
         { "case": "motions/close-brace-last-paragraph", "fixture": "hand-written/motions.json" },
-        { "case": "operators/dd-last-line" },
-        { "case": "operators/dk", "note": "Vim's line, Evil's column: die-vim keeps the column after dk (S5 row 2)" },
-        { "case": "operators/dG", "note": "Vim's line, Evil's column: die-vim keeps the column after dG (S5 row 2)" },
+        { "case": "motions/close-brace-last-paragraph-long-line" },
+        { "case": "operators/dd-last-line", "note": "Vim's line; the column is the one dd started in, as for every linewise d in Evil (S5 row 2)" },
+        { "case": "operators/dk", "note": "Vim's line; the column is the one dk started in, as for every linewise d in Evil (S5 row 2) and in Vim with nostartofline" },
+        { "case": "operators/dG", "note": "Vim's line; the column is the one dG started in, as for every linewise d in Evil (S5 row 2) and in Vim with nostartofline" },
+        { "case": "operators/dk-last-lines-column", "note": "shows the column dk keeps: Evil without the final newline gives (0,3), Vim (0,2)" },
+        { "case": "operators/dG-column", "note": "shows the column dG keeps: Evil without the final newline gives (0,1), Vim (0,2)" },
+        { "case": "operators/dj-last-line", "note": "dj acts on the last line, as Evil's does; Vim's fails and deletes nothing" },
         { "case": "geometry/L-short-buffer" },
-        { "case": "geometry/ctrl-d-at-end", "note": "Vim stays on the last line without an error" },
+        { "case": "geometry/ctrl-d-at-end", "note": "C-d on the last line fails in Vim and in Evil; the cursor stays on line 40 and the window keeps the top line G's recentring gave it" },
+        { "case": "geometry/M-short-buffer", "note": "M takes the window's lower middle line, as Evil's does (S5 row 20), clamped to the last line" },
+        { "case": "geometry/H-at-end", "note": "G stops on line 40 and recentres there, as Evil's G recentres (S5 row 20), so H lands on line 35, one above Evil's" },
         { "case": "wrapped/gj-at-last-visual-line" },
         { "case": "macros/error-stops-macro", "note": "the macro ends one repetition earlier, where j fails on the last line" },
         { "case": "macros/recursive", "note": "the recursion ends where j fails on the last line" },
-        { "case": "macros/macro-records-count", "note": "the macro ends where j fails on the last line" }
+        { "case": "macros/macro-records-count", "note": "the macro's final j fails on the last line, so the cursor stays on line 2, with an error Evil's run doesn't have" }
       ]
     },
     {
-      "rule": "a count before / finds the nth match",
+      "rule": "a count before / or ? finds the nth match",
       "s5_row": 11,
       "kind": "evil-gap",
-      "evil": "2/x ignores the count.",
-      "die_vim": "As in Vim: 2/x goes to the second match.",
+      "evil": "2/x and 2?x ignore the count.",
+      "die_vim": "As in Vim: 2/x goes to the second match after the cursor, wrapping past the end as one search does. A later n moves one match.",
       "cases": [{ "case": "search/count-slash" }]
     },
     {
@@ -36,31 +42,39 @@
       "s5_row": 12,
       "kind": "evil-gap",
       "evil": "/<CR> does nothing.",
-      "die_vim": "As in Vim: /<CR> searches for the last pattern again.",
+      "die_vim": "As in Vim: / or ? with an empty pattern searches for the last pattern again, in its own direction. With no last pattern it's an error.",
       "cases": [{ "case": "search/empty-pattern-repeats" }]
     },
     {
       "rule": ". inside a macro repeats the macro's change",
       "s5_row": 17,
       "kind": "evil-bug",
-      "evil": ". signals an error inside a macro, since Evil runs macros without command hooks.",
-      "die_vim": "As in Vim: . repeats the last change made inside the macro.",
-      "cases": [{ "case": "macros/macro-with-dot" }, { "case": "macros/preset-macro-with-dot" }]
+      "evil": ". inside a macro repeats the last change made before the macro ran, since Evil runs macros without command hooks, so it errors when there is none. After @a, . replays the macro, but errors 'No previous macro' when the macro used an operator such as dw.",
+      "die_vim": "As in Vim inside a macro: a change made there becomes the last change, so a later . in the same macro repeats it (before any change, . repeats the change made before the macro). After the macro, . replays the macro, as Evil's does, without Evil's 'No previous macro' error when the macro used an operator.",
+      "cases": [
+        { "case": "macros/macro-with-dot" },
+        { "case": "macros/preset-macro-with-dot" },
+        { "case": "macros/dot-after-macro", "note": ". replays the dw and takes the next word; Evil's fails, and macros/dot-replays-macro and macros/dot-after-motion-macro pin the replay" }
+      ]
     },
     {
-      "rule": "Vp on the last line replaces the line",
+      "rule": "a linewise put over the last line keeps the final newline",
       "s5_row": 18,
       "kind": "evil-bug",
-      "evil": "Vp on the last line leaves an empty line and drops the final newline.",
-      "die_vim": "As in Vim: the line is replaced and the final newline stays.",
-      "cases": [{ "case": "visual/V-p-linewise" }]
+      "evil": "Vp (and VP, and Vjp over the last two lines) on the buffer's last line leaves an empty line and drops the final newline.",
+      "die_vim": "As in Vim: the lines are replaced and the final newline stays.",
+      "cases": [
+        { "case": "visual/V-p-linewise" },
+        { "case": "visual/V-P-last-line" },
+        { "case": "visual/V-j-p-last-two-lines" }
+      ]
     },
     {
-      "rule": "3H goes to the third line",
+      "rule": "a count before H counts from 1",
       "s5_row": 20,
       "kind": "evil-bug",
-      "evil": "3H goes to the fourth line of the window.",
-      "die_vim": "As in Vim: 3H goes to the third line. H, M and L otherwise follow Evil (S5 row 20).",
+      "evil": "nH goes to line n+1 of the window: 3H goes to the fourth line.",
+      "die_vim": "As in Vim: nH goes to line n of the window, so 3H goes to the third. H, M and L otherwise follow Evil (S5 row 20).",
       "cases": [{ "case": "geometry/3H" }]
     },
     {
@@ -68,7 +82,7 @@
       "s5_row": 5,
       "kind": "undo-model",
       "evil": "Your Evil has no redo (evil-undo-system is unset): C-r signals an error, and u after another command redoes, as Emacs's undo chain does.",
-      "die_vim": "Your S5 answer: u steps back and C-r steps forward, as in Vim (scope §10).",
+      "die_vim": "Your S5 answer: u steps back and C-r steps forward, as in Vim (scope §10). C-r with nothing to redo fails, as u with nothing to undo does.",
       "cases": [
         { "case": "undo/ctrl-r-redo", "note": "S5 row 5" },
         { "case": "undo/u-after-move-redoes", "note": "S5 row 6" }
@@ -79,8 +93,11 @@
       "s5_row": null,
       "kind": "regex-syntax",
       "evil": ":s/\\(foo\\) \\(bar\\)/\\2 \\1/ uses Emacs regex groups.",
-      "die_vim": "DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result.",
-      "cases": [{ "case": "ex/s-groups" }]
+      "die_vim": "DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result. Replacements expand $N, ${N} and $name as regex-automata's interpolation does (the regex crate's rule): the longest name wins, so a group followed by a letter, digit or _ needs braces, ${1}x. $0 is the whole match and $$ a literal $; & and \\N are literal.",
+      "cases": [
+        { "case": "ex/s-groups" },
+        { "case": "ex/s-group-before-letter" }
+      ]
     },
     {
       "rule": "language indentation waits for modes",
@@ -91,6 +108,18 @@
       "cases": [
         { "case": "insert/o-elisp-mode-indent", "fixture": "hand-written/insert.json" },
         { "case": "insert/o-python-mode-indent", "fixture": "hand-written/insert.json" }
+      ]
+    },
+    {
+      "rule": "the cursor rests on a grapheme's start",
+      "s5_row": 22,
+      "kind": "emacs-artifact",
+      "evil": "e and $ onto a letter with a combining mark leave the cursor after the mark, on the space or the newline: Emacs's command loop pushes point out of a composition. It isn't Evil's grammar.",
+      "die_vim": "As in Vim: e and $ land on the letter the mark sits on, so e on café lands on the é, mid-line and at a line's end. Another e moves on from there, as Evil's does. From V3, an inclusive operator takes the whole grapheme.",
+      "cases": [
+        { "case": "motions/combining-mark-e" },
+        { "case": "motions/combining-mark-e-line-end" },
+        { "case": "motions/combining-mark-dollar" }
       ]
     }
   ]

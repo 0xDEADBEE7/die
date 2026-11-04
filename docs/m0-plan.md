@@ -35,7 +35,7 @@ The exit test is scope §12's. (f) was added for Linux on 2026-10-19 (question 1
 | (a) | You edit DIE's own source in DIE for a full day, with Emacs's vterm in an adjacent tile as the terminal. | A working day. Each switch to Emacs to edit becomes a test, and the day is tried again. | everything |
 | (b) | 20 rebuild-and-restarts restore files, splits, per-window cursors and scroll, unsaved text and registers, within 1 s from `restart` to the first frame. | `cargo xtask restart-loop 20`. After each restore, DIE writes a digest of its session state. The driver checks that all 20 match and that each restart took under 1 s. | K12, K13, F4a, F4b |
 | (c) | `cargo fmt` on an open file reloads an unmodified buffer, and `:w` refuses on a modified one. | Harness tests on a temporary directory, then once by hand. | K10b, V5 |
-| (d) | Every Evil-oracle case passes (306 today), except the deliberate deviations, which are listed by name and have hand-written fixtures. | `cargo test -p die-vim --test oracle` with an empty pending list. The 24 excluded cases are named in `deviations.json`, each with a hand-written fixture. | V0–V7 |
+| (d) | Every Evil-oracle case passes (306 today), except the deliberate deviations, which are listed by name and have hand-written fixtures. | `cargo test -p die-vim --test oracle` with an empty pending list. The 37 excluded cases are named in `deviations.json`, each with a hand-written fixture. | V0–V7 |
 | (e) | The budgets in guard 7 hold. | `cargo xtask budget` | F2 |
 | (f) | The workspace cross-checks for x86_64 and aarch64 Linux, and die-core, die-vim and the oracle pass their tests on aarch64 Linux. | `cargo xtask ci` cross-checks on every merge; `cargo xtask ci --linux` runs the tests in colima | F1, F2, R1 |
 
@@ -111,7 +111,7 @@ The five scheduled reviews each read a whole surface at once. The other three ru
 | Files and session | weeks 7–10 | The `prompt` spec, core commands and how they're overridden, the save, refuse and revert rules, session schema v1 with a sample file | about 2 h |
 | Restart | weeks 10–13 | The full session, `restart`, single instance, the `restart-loop` log | about 1 h |
 | `unsafe` | in pieces as R1–R4 land, done before checkpoint 2 | `die_render::platform` by hand, about 0.6–0.9k lines | about 3–4 h |
-| Deviations | weeks 1–2 | The 24 entries in `deviations.json` | about 1 h |
+| Deviations | weeks 1–2 | The 37 entries in `deviations.json` | about 1 h |
 | Test plans | as packages start | For each AI-drafted package, the test names and what each asserts | about 10 min each, about 4 h in all |
 
 **Hours.** Under every answer, those come to about 18 hours. Under 09-B you also approve API and grammar changes as they arrive, about 3–6 hours of short diffs. And you read the subtlest code in full: undo, layout, key dispatch and die-vim's grammar core, about 2.5k lines, or 10–17 hours. That's about 30–40 hours across M0, or 2–3 hours a week, plus using DIE at each checkpoint. Under 09-C it's the 18 hours. Under 09-A, add your writing.
@@ -215,14 +215,14 @@ Each case's tranche comes from the keys it uses, not its topic file: a case land
 
 | ID | Deliverable | Needs | Size | Proven by | Owner |
 |---|---|---|---|---|---|
-| V0 | The oracle in the workspace: `tools/evil-oracle` with committed fixtures and its guards. A pending list (a case on it that passes, or a failure not on it, fails the test). `deviations.json` with the 24 excluded cases. A runner on K1's `Ctx`, moving to K7's harness when it lands | F1, K1 | S | All 306 cases validate, and every case starts on the pending list | AI; the deviations are yours |
+| V0 | The oracle in the workspace: `tools/evil-oracle` with committed fixtures and its guards. A pending list (a case on it that passes, or a failure not on it, fails the test). `deviations.json` with the 37 excluded cases. A runner on K1's `Ctx`, moving to K7's harness when it lands | F1, K1 | S | All 306 cases validate, and every case starts on the pending list | AI; the deviations are yours |
 | V1 | Motions, counts, insert sessions and their undo (about 66). New cases with `_`, `::`, `->`, tabs and wide characters | V0 | M | Those cases leave the pending list | Grammar |
 | V2 | Search and moving between files: `/ ? n N * #`, incremental, every match highlighted, smartcase; `:e`, `:b` and `:N` (about 16) | V1, K2, K11a | S–M | Same, plus harness tests for `:e` and `:b` | Grammar |
 | V3 | Operators, registers with the kill ring and clipboard sync, text objects (about 109, with most undo cases) | V1, K6 | L | Same | Grammar |
 | V4 | Visual mode including block, `.`, macros, `R` (about 59) | V3, K5 | M | Same | Grammar |
 | V5 | The rest of ex: `:w :q :wq :s`, and `:w! :e! :q!` (about 12) | V3, K10b, K11a | S–M | Same, plus harness tests for the file commands | Grammar |
 | V6 | Geometry and windows (44): scrolling and recentering, `H M L`, wrapped lines, the `C-w` map, `:sp :vs :only :close`, `:q` on a split | V3, K4, K6 | M | Same, plus about 15 harness tests for window commands | Grammar |
-| V7 | Close-out: every case outside `deviations.json` passes, the pending list is empty, the 24 hand-written fixtures pass, and dogfooding has added cases | V1–V6 | S–M | Exit test (d) | Grammar |
+| V7 | Close-out: every case outside `deviations.json` passes, the pending list is empty, the 37 hand-written fixtures pass, and dogfooding has added cases | V1–V6 | S–M | Exit test (d) | Grammar |
 
 ## 6. Risks and early warnings
 

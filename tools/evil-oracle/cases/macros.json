@@ -10,5 +10,9 @@
   {"id": "macro-with-dot", "vim": "macro, Evil bug: in Vim . repeats the dw inside the macro; Evil runs macros without command hooks, so . errors", "keys": "qadw.q@a", "text": ["|a b c d e f"]},
   {"id": "macro-records-count", "vim": "end-line: Vim's j fails on the last line", "keys": "qa2xjq@a", "text": ["|abc", "def"]},
   {"id": "preset-macro-with-dot", "vim": "macro, Evil bug: in Vim . repeats the dw inside the macro; Evil's . errors", "keys": "@a", "text": ["|a b c d e f"], "registers": {"a": {"text": "dw.", "type": "macro"}}},
-  {"id": "preset-macro", "keys": "@a", "text": ["|one", "two"], "registers": {"a": {"text": "A!<Esc>j", "type": "macro"}}}
+  {"id": "preset-macro", "keys": "@a", "text": ["|one", "two"], "registers": {"a": {"text": "A!<Esc>j", "type": "macro"}}},
+  {"id": "dot-in-macro-repeats-earlier-change", "keys": "x@a", "text": ["|a b c d e f"], "registers": {"a": {"text": "w.", "type": "macro"}}},
+  {"id": "dot-replays-macro", "vim": "macro: Vim's . repeats the macro's last change (x); Evil's replays the whole macro", "keys": "@a.", "text": ["|a b c d e f"], "registers": {"a": {"text": "wx", "type": "macro"}}},
+  {"id": "dot-after-motion-macro", "vim": "macro: Vim's . repeats the x before the macro; Evil's replays the macro's w", "keys": "x@a.", "text": ["|a b c d e f"], "registers": {"a": {"text": "w", "type": "macro"}}},
+  {"id": "dot-after-macro", "vim": "macro, Evil bug: Vim's . repeats the dw; Evil's fails with No previous macro when the macro used an operator", "keys": "@a.", "text": ["|a b c d e f"], "registers": {"a": {"text": "dw", "type": "macro"}}}
  ]}
