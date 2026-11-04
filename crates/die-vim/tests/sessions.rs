@@ -1,5 +1,6 @@
 //! Insert sessions where the Evil oracle can't reach: two buffers, read-only
-//! text, a buffer's own tab width, and the changes an edit logs.
+//! text, a buffer's own tab width, the changes an edit logs, and DIE's own screen
+//! rows until K4's word wrap matches the rows your Evil's fixtures record.
 
 use die_core::{BufferId, Ctx, State, WindowId};
 use die_vim::Vim;
@@ -85,6 +86,49 @@ fn tab_stops_follow_the_buffers_tab_width() {
     ctx.text_mut(b).unwrap().settings_mut().tab_width = 4;
     ctx.type_keys("a<Tab><Esc>");
     assert_eq!(text(&ctx, b), "a   b\n");
+}
+
+/// A line with no break points wraps at the window's width under any wrap rule.
+fn long_line(ctx: &mut Ctx) -> BufferId {
+    let line = "x".repeat(170);
+    let (b, w) = open(ctx, &format!("{line}\nnext\n"));
+    ctx.focus(w);
+    b
+}
+
+#[test]
+fn ctrl_a_goes_to_the_start_of_the_screen_row() {
+    for (keys, want) in [
+        ("$<C-a>", 160),
+        ("<C-a>", 0),
+        ("2<C-a>", 80),
+        ("3<C-a>", 160),
+        ("4<C-a>", 171),
+        ("9<C-a>", 171),
+    ] {
+        let mut ctx = editor();
+        let b = long_line(&mut ctx);
+        ctx.type_keys(keys);
+        let w = ctx.focused().unwrap();
+        assert_eq!(ctx.text(b).unwrap().cursor(w), Some(want), "{keys}");
+        assert!(ctx.messages.is_empty(), "{keys}: {:?}", ctx.messages);
+    }
+}
+
+#[test]
+fn insert_state_arrows_go_by_screen_row() {
+    for (keys, want) in [
+        ("i<Down>X<Esc>", 80),
+        ("i<Down><Down>X<Esc>", 160),
+        ("$i<Up>X<Esc>", 89),
+    ] {
+        let mut ctx = editor();
+        let b = long_line(&mut ctx);
+        ctx.type_keys(keys);
+        let t = text(&ctx, b);
+        assert_eq!(t.find('X'), Some(want), "{keys}");
+        assert!(ctx.messages.is_empty(), "{keys}: {:?}", ctx.messages);
+    }
 }
 
 #[test]

@@ -5,10 +5,9 @@
 use crate::grammar::buffer_window;
 use crate::motions::word_back;
 use crate::text::{
-    Chars, blank_line, indent_end, indentation, line_end, next_stop, pos_at_col, prev_stop,
-    rest_pos,
+    Chars, blank_line, indent_end, indentation, line_end, next_stop, prev_stop, rest_pos,
 };
-use die_core::{Args, Ctx, Error, Origin, Result, State, TextBuf, WindowId};
+use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, WindowId};
 
 /// How a session started. A count repeats the session, opening a line first
 /// when it opened one.
@@ -93,6 +92,10 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
             t.tx(Origin::User).insert(s, "\n").commit()?;
             indent_from_above(t, w, line)?;
         }
+    }
+    // A goal column from normal state doesn't carry into insert state's <Up>.
+    if let Some(sel) = t.selection(w) {
+        t.set_selection(w, sel.with_goal(None));
     }
     // Only now, so that a failed `o` or `O` leaves no group open. The line it
     // opened joins the group: core adds an earlier edit by the same command.
@@ -197,16 +200,22 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
             Some(q) => q,
             None => return fail("End of buffer"),
         },
+        // By screen row, as next-line does under your line-move-visual, and a run of
+        // them keeps the column it started at. Every other edit clears the goal.
         Edit::Up | Edit::Down => {
-            let next = if *e == Edit::Up {
-                line.checked_sub(1)
+            let (dy, none) = if *e == Edit::Up {
+                (-1, "Beginning of buffer")
             } else {
-                Some(line + 1)
+                (1, "End of buffer")
             };
-            let Some(l) = next.filter(|&l| l < t.line_count()) else {
-                return fail("No line there");
+            let goal = t.selection(w).and_then(|s| s.goal);
+            return match t.move_visual(w, p, dy, goal) {
+                Some((q, goal)) if q != p => {
+                    t.set_selection(w, Selection::cursor(q).with_goal(Some(goal)));
+                    Ok(())
+                }
+                _ => fail(none),
             };
-            pos_at_col(t, l, t.display_col(p))
         }
     };
     t.set_cursor(w, pos);

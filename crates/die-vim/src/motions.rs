@@ -6,7 +6,7 @@ use crate::text::{
     Chars, Class, blank_line, class, indent_end, last_line, line_end, next_stop, normal_pos,
     pos_at_col, prev_stop,
 };
-use die_core::{Dir, TextBuf};
+use die_core::{Dir, TextBuf, WindowId};
 
 /// Every motion bound in normal state. `f`, `F`, `t` and `T` take a character
 /// and are bound with `<char>`.
@@ -54,6 +54,28 @@ const fn m(
 /// `0`, bound apart because it's also a count digit.
 pub fn beginning_of_line(s: &Start) -> Result<Target, Fail> {
     Ok(Target::at(s.text.line_start(s.text.line_of(s.pos))))
+}
+
+/// `C-a`, Emacs's beginning-of-visual-line under your global-visual-line-mode: to the
+/// start of the screen row, count-1 rows down. `move_visual` with goal 0 gives a row's
+/// start, but only for another row, so this row's start comes from the row above.
+pub fn row_beginning(s: &Start, w: WindowId) -> Result<Target, Fail> {
+    let t = s.text;
+    let here = t.line_of(s.pos);
+    let row = |pos, dy| t.move_visual(w, pos, dy, Some(0)).map_or(pos, |(q, _)| q);
+    let above = row(s.pos, -1);
+    let mut q = if above == s.pos {
+        t.line_start(here)
+    } else {
+        row(above, 1)
+    };
+    if s.n() > 1 {
+        q = row(q, isize::try_from(s.n() - 1).unwrap_or(isize::MAX));
+    }
+    if t.line_of(q) > last_line(t).max(here) {
+        q = row(q, -1);
+    }
+    Ok(Target::at(q))
 }
 
 // ---------------------------------------------------------------- characters and lines
