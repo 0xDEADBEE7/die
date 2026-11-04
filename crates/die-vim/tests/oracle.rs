@@ -210,11 +210,16 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
     if run == Run::Tty || input.window.is_some() {
         return Err("can't set a window's top line yet (the harness, K7)".into());
     }
+    run_in_window(case, COLS, ROWS)
+}
 
+/// Run one case in a window of this size. Err says every way it differs from Evil.
+fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
+    let (input, want) = (&case.input, &case.expected);
     let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).map_err(|e| e.join("; "))?;
     let buf = ctx.create_text("case", &input.text);
     let w = ctx
-        .open_window(buf, COLS, ROWS)
+        .open_window(buf, cols, rows)
         .map_err(|e| format!("{e:?}"))?;
     ctx.focus(w);
     let set = ctx
@@ -366,6 +371,21 @@ fn a_hand_written_fixture_must_keep_its_oracle_cases_input() {
         keeps(&h, run, Some(DeviationKind::RegexSyntax)),
         "a regex-syntax deviation may change the keys"
     );
+}
+
+/// Every tty case waits for K7, which can set a window's top line. These don't
+/// scroll or wrap, so their text, cursor, state and errors can be held to your
+/// Evil now. `wrapped/` needs K4's word wrap as well.
+#[test]
+fn insert_state_arrows_match_the_tty_run() {
+    let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
+    let fx = fixtures.iter().find(|f| f.topic == "insert-tty").unwrap();
+    assert_eq!(fx.cases.len(), 10);
+    for c in &fx.cases {
+        let size = c.input.window.as_ref().expect("a tty case's window");
+        run_in_window(c, size.width, size.height)
+            .unwrap_or_else(|why| panic!("insert-tty/{}: {why}", c.id));
+    }
 }
 
 #[test]

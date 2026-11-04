@@ -120,8 +120,13 @@ impl Extension for Vim {
         );
         reg.command(
             "vim-line-beginning",
-            "C-a: to the start of the line, as Emacs's global C-a does under your Evil.",
-            |ctx, a| run_motion(ctx, a, Kind::Exclusive, None, motions::beginning_of_line),
+            "C-a: to the start of the screen row, as Emacs's global C-a does under your Evil.",
+            |ctx, a| {
+                let (_, w) = buffer_window(ctx, a)?;
+                run_motion(ctx, a, Kind::Exclusive, None, move |s| {
+                    motions::row_beginning(s, w)
+                })
+            },
         );
         reg.command(
             "vim-repeat-find-char",
