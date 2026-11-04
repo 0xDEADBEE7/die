@@ -21,7 +21,7 @@ pub(crate) struct Span {
     pub start: usize,
     pub end: usize,
     pub repl: Option<String>,
-    pub deco: DecorationId,
+    pub seq: u64,
 }
 
 #[derive(Default, Debug)]
@@ -31,10 +31,10 @@ pub(crate) struct Hidden {
 
 impl Hidden {
     /// Overlapping hides merge. The first-starting one wins, preferring one with a replacement,
-    /// then the longest, then the lowest id.
+    /// then the longest, then the one added first.
     pub fn build(mut v: Vec<Span>) -> Hidden {
         v.retain(|s| s.start < s.end);
-        v.sort_by_key(|s| (s.start, s.repl.is_none(), std::cmp::Reverse(s.end), s.deco));
+        v.sort_by_key(|s| (s.start, s.repl.is_none(), std::cmp::Reverse(s.end), s.seq));
         let mut out: Vec<Span> = vec![];
         for s in v {
             match out.last_mut() {
@@ -370,12 +370,12 @@ impl TextBuf {
         }
         let spans = self
             .decorations()
-            .filter_map(|(id, d)| match &d.deco {
+            .filter_map(|(_, d)| match &d.deco {
                 Deco::Hide { replacement, .. } => Some(Span {
                     start: d.range.start,
                     end: d.range.end,
                     repl: replacement.clone(),
-                    deco: id,
+                    seq: d.seq,
                 }),
                 _ => None,
             })
@@ -388,10 +388,10 @@ impl TextBuf {
         if let Some(v) = &self.cache().virt {
             return v.clone();
         }
-        let mut v: Vec<(DecorationId, usize, String)> = self
+        let mut v: Vec<(u64, usize, String)> = self
             .decorations()
-            .filter_map(|(id, d)| match &d.deco {
-                Deco::Virtual(t) => Some((id, d.range.start, t.clone())),
+            .filter_map(|(_, d)| match &d.deco {
+                Deco::Virtual(t) => Some((d.seq, d.range.start, t.clone())),
                 _ => None,
             })
             .collect();

@@ -114,6 +114,9 @@ pub struct Decoration {
     pub deco: Deco,
     /// Gravity of the start and end. Default (Right, Left): insertions at the edges stay outside.
     pub sticky: (Gravity, Gravity),
+    /// Its place in the order decorations were added to this buffer. Ids can't say: a freed
+    /// slot is reused. Virtual text at one position shows in this order (contract §9).
+    pub seq: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -181,6 +184,7 @@ pub struct TextBuf {
     history: History,
     markers: SlotMap<MarkerId, (usize, Gravity)>,
     decos: SlotMap<DecorationId, Decoration>,
+    next_seq: u64,
     pub(crate) deco_gen: u64,
     pub(crate) views: HashMap<WindowId, View>,
     pub(crate) settings: Settings,
@@ -239,7 +243,12 @@ impl Tx<'_> {
     pub fn delete(self, r: Range<usize>) -> Self {
         self.replace(r, "")
     }
-    /// Apply every change or none. Returns the new revision.
+    /// Apply every change or none, and return the revision after them. A change with an empty
+    /// range and empty text is dropped: it makes no revision, no logged change and no undo step,
+    /// and redo stays available. Text replaced by itself is still a change and an undo step, as
+    /// `ra` on an `a` is in Evil and Vim. Errors: `BadRange` if a range is reversed, past the
+    /// end, off a character boundary, or overlaps another change in the transaction; `ReadOnly`
+    /// if a `User` change touches read-only text.
     pub fn commit(self) -> Result<u64> {
         self.buf.apply(self.origin, self.silent, self.ops)
     }
@@ -254,6 +263,7 @@ impl TextBuf {
             history: History::default(),
             markers: SlotMap::with_key(),
             decos: SlotMap::with_key(),
+            next_seq: 0,
             deco_gen: 0,
             views: HashMap::new(),
             settings: Settings::default(),
@@ -287,6 +297,7 @@ impl TextBuf {
         self.rope.len_lines()
     }
     pub fn point(&self, b: usize) -> Point {
+        let b = b.min(self.len());
         let line = self.rope.byte_to_line(b);
         Point {
             line,
@@ -353,6 +364,12 @@ impl TextBuf {
                 });
             }
             prev = r.end;
+        }
+        // An empty change makes no revision, no log entry and no undo step, as Emacs records
+        // nothing for an empty insertion or deletion. Text replaced by itself is still a change.
+        ops.retain(|(r, s)| !(r.is_empty() && s.is_empty()));
+        if ops.is_empty() {
+            return Ok(self.rev);
         }
         if origin == Origin::User {
             let ro = self.ro_ranges();
@@ -428,6 +445,7 @@ impl TextBuf {
 
     fn map_all(&mut self, start: usize, old_end: usize, new_end: usize) {
         let m = |p, g| map_pos(p, start, old_end, new_end, g);
+        let actor = self.actor;
         for (p, g) in self.markers.values_mut() {
             *p = m(*p, *g);
         }
@@ -435,9 +453,17 @@ impl TextBuf {
             let s = m(d.range.start, d.sticky.0);
             d.range = s..m(d.range.end, d.sticky.1).max(s);
         }
-        for v in self.views.values_mut() {
-            v.sel.anchor = m(v.sel.anchor, Gravity::Right);
-            v.sel.head = m(v.sel.head, Gravity::Right);
+        // Text inserted at a cursor goes after it in the acting window and before it in every
+        // other window, as Emacs's window points do. One gravity for both ends keeps a
+        // collapsed cursor collapsed.
+        for (w, v) in self.views.iter_mut() {
+            let g = if Some(*w) == actor {
+                Gravity::Right
+            } else {
+                Gravity::Left
+            };
+            v.sel.anchor = m(v.sel.anchor, g);
+            v.sel.head = m(v.sel.head, g);
             v.top = m(v.top, Gravity::Left);
         }
     }
@@ -555,14 +581,21 @@ impl TextBuf {
     }
 
     // ---- markers
-    pub fn add_marker(&mut self, pos: usize, g: Gravity) -> MarkerId {
-        self.markers.insert((pos.min(self.len()), g))
+    pub fn add_marker(&mut self, pos: usize, g: Gravity) -> Result<MarkerId> {
+        let pos = pos.min(self.len());
+        if !self.is_boundary(pos) {
+            return Err(Error::BadRange {
+                start: pos,
+                end: pos,
+            });
+        }
+        Ok(self.markers.insert((pos, g)))
     }
     pub fn marker(&self, id: MarkerId) -> Option<usize> {
         self.markers.get(id).map(|m| m.0)
     }
-    pub fn remove_marker(&mut self, id: MarkerId) {
-        self.markers.remove(id);
+    pub fn remove_marker(&mut self, id: MarkerId) -> Option<usize> {
+        self.markers.remove(id).map(|m| m.0)
     }
 
     // ---- decorations
@@ -584,10 +617,13 @@ impl TextBuf {
         if let Deco::Virtual(t) = &mut deco {
             *t = t.replace(['\n', '\t'], " ");
         }
+        let seq = self.next_seq;
+        self.next_seq += 1;
         let id = self.decos.insert(Decoration {
             range,
             deco,
             sticky: (Gravity::Right, Gravity::Left),
+            seq,
         });
         self.deco_gen += 1;
         self.normalize_views();
@@ -599,10 +635,9 @@ impl TextBuf {
         self.normalize_views();
         Some(d)
     }
-    pub fn set_sticky(&mut self, id: DecorationId, start: Gravity, end: Gravity) {
-        if let Some(d) = self.decos.get_mut(id) {
-            d.sticky = (start, end);
-        }
+    pub fn set_sticky(&mut self, id: DecorationId, start: Gravity, end: Gravity) -> Option<()> {
+        self.decos.get_mut(id)?.sticky = (start, end);
+        Some(())
     }
     pub fn decoration(&self, id: DecorationId) -> Option<&Decoration> {
         self.decos.get(id)

@@ -72,7 +72,10 @@ fn c_r_puts_the_cursor_at_the_start_of_the_last_step_redone() {
 #[test]
 fn an_undefined_key_drops_the_count() {
     let (cursor, messages) = run("abcdef\n", 0, "3gzl");
-    assert_eq!(cursor, 1, "l after an undefined key moves once: {messages:?}");
+    assert_eq!(
+        cursor, 1,
+        "l after an undefined key moves once: {messages:?}"
+    );
     assert_eq!(messages, ["gz is undefined"]);
 }
 

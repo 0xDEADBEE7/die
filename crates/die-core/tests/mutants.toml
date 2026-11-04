@@ -15,9 +15,9 @@ let key = (self.rev(), 0, self.settings.tab_width);'''
 name = "M2 hide merge ignores the replacement preference"
 file = "src/layout.rs"
 old = '''
-v.sort_by_key(|s| (s.start, s.repl.is_none(), std::cmp::Reverse(s.end), s.deco));'''
+v.sort_by_key(|s| (s.start, s.repl.is_none(), std::cmp::Reverse(s.end), s.seq));'''
 new = '''
-v.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end), s.deco));'''
+v.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end), s.seq));'''
 
 [[mutant]]
 name = "M3 no cursor fix-up after decorate"
