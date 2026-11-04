@@ -91,8 +91,8 @@ fn oracle() {
             all.insert(format!("hand-written/{name}"), (c, fx.run));
         }
     }
-    for d in deviations.cases().filter(|d| d.fixture.is_some()) {
-        if !all.contains_key(&format!("hand-written/{}", d.case)) {
+    for d in deviations.cases() {
+        if d.fixture.is_none() || !all.contains_key(&format!("hand-written/{}", d.case)) {
             problems.push(format!("{}: its hand-written fixture isn't there", d.case));
         }
     }
