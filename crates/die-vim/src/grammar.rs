@@ -95,7 +95,7 @@ pub struct Target {
     pub pos: usize,
     /// The goal to keep for the next vertical motion; None takes the new column.
     pub goal: Option<Goal>,
-    /// Signal this, as Evil does, and keep the goal column ([`Target::short`]).
+    /// Signal this, as Evil does, and keep the goal column ([`Target::short()`]).
     pub short: Option<&'static str>,
 }
 
@@ -121,7 +121,7 @@ impl Target {
 }
 
 /// A motion failed; the message says why (Evil signals an error). The goal column goes,
-/// as in Emacs after any command that isn't a vertical motion. [`Target::short`] keeps it.
+/// as in Emacs after any command that isn't a vertical motion. [`Target::short()`] keeps it.
 pub type Fail = &'static str;
 
 /// A motion as normal state binds it.
@@ -172,6 +172,8 @@ pub fn count_digit(ctx: &mut Ctx, a: &Args, d: usize) -> Result {
 /// Run a motion from the cursor with the command's count. `arg` is the argument
 /// of `f`, `F`, `t` and `T`. V3: a pending operator takes the range from the
 /// cursor to the target here, treated as `kind` says, instead of the cursor moving.
+/// Evil's operators go on after a motion signals End of line or End of buffer, and
+/// stop after any other signal, whether or not the goal column stays.
 pub fn run_motion(
     ctx: &mut Ctx,
     a: &Args,
