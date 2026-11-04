@@ -141,6 +141,13 @@ pub fn buffer_window(ctx: &Ctx, a: &Args) -> Result<(BufferId, WindowId)> {
     Ok((b, w))
 }
 
+/// Forget the goal column, as Emacs does when anything but a vertical motion runs.
+pub fn forget_goal(t: &mut TextBuf, w: WindowId) {
+    if let Some(sel) = t.selection(w) {
+        t.set_selection(w, sel.with_goal(None));
+    }
+}
+
 /// A count digit: `1`-`9`, and `0` after another digit. The count stays core's
 /// prefix for the next command, keeping any register already typed.
 pub fn count_digit(ctx: &mut Ctx, a: &Args, d: usize) -> Result {

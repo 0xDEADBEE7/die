@@ -10,5 +10,12 @@
   {"id": "down-past-the-end-fails", "vim": "end-line: Vim's second Down fails on the last line; Evil's moves past the final newline, and its third fails", "keys": "i<Down><Down><Down>X<Esc>", "text": ["a|b", "cd"]},
   {"id": "up-past-the-start-fails", "keys": "i<Up>X<Esc>", "text": ["a|b", "cd"]},
   {"id": "down-into-a-tab", "keys": "i<Down>X<Esc>", "text": ["abc|defgh", "\tij"]},
-  {"id": "down-into-a-wide-char", "keys": "i<Down>X<Esc>", "text": ["a|bcdefgh", "日本語"]}
+  {"id": "down-into-a-wide-char", "keys": "i<Down>X<Esc>", "text": ["a|bcdefgh", "日本語"]},
+  {"id": "down-without-a-final-newline", "vim": "end-line: Vim's Down stays put on the last line; Evil's goes to the end of the text before it fails", "keys": "i<Down>X<Esc>", "text": "a|bc"},
+  {"id": "down-past-the-last-row", "vim": "end-line: Vim's second Down stays put on the last line; Evil's goes to the end of the text before it fails", "keys": "i<Down><Down>X<Esc>", "text": "a|b\ncd"},
+  {"id": "down-past-the-last-row-keeps-column", "keys": "i<Down><Up>X<Esc>", "text": "abcdef\nab|c"},
+  {"id": "failed-right-clears-the-column", "vim": "goal: Vim's failed Right keeps the column; Evil's forgets it (Emacs's goal column)", "keys": "i<Down><Right><Up>X<Esc>", "text": "abcd|ef\nab"},
+  {"id": "failed-left-clears-the-column", "vim": "goal: Vim's failed Left keeps the column; Evil's forgets it (Emacs's goal column)", "keys": "i<Up><Left><Down>X<Esc>", "text": "\nabc|d"},
+  {"id": "failed-backspace-clears-the-column", "vim": "goal: Vim's failed Backspace keeps the column; Evil's forgets it (Emacs's goal column)", "keys": "i<Up><BS><Down>X<Esc>", "text": "\nabc|d"},
+  {"id": "failed-ctrl-w-clears-the-column", "vim": "goal: Vim's failed C-w keeps the column; Evil's forgets it (Emacs's goal column)", "keys": "i<Up><C-w><Down>X<Esc>", "text": "\nabc|d"}
  ]}

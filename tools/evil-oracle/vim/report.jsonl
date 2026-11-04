@@ -54,6 +54,13 @@
 {"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":1,"line":0},"state":"normal","text":"aXb\ncd\n","error":""},"id":"up-past-the-start-fails","topic":"insert-tty","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"abcdefgh\nX\tij\n","error":""},"id":"down-into-a-tab","topic":"insert-tty","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"abcdefgh\nX日本語\n","error":""},"id":"down-into-a-wide-char","topic":"insert-tty","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":1,"line":0},"state":"normal","text":"aXbc\n","error":""},"id":"down-without-a-final-newline","topic":"insert-tty","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":1,"line":1},"state":"normal","text":"ab\ncXd\n","error":""},"id":"down-past-the-last-row","topic":"insert-tty","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":2,"line":0},"state":"normal","text":"abXcdef\nabc\n","error":""},"id":"down-past-the-last-row-keeps-column","topic":"insert-tty","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":0},"state":"normal","text":"abcdXef\nab\n","error":""},"id":"failed-right-clears-the-column","topic":"insert-tty","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":1},"state":"normal","text":"\nabcXd\n","error":""},"id":"failed-left-clears-the-column","topic":"insert-tty","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":1},"state":"normal","text":"\nabcXd\n","error":""},"id":"failed-backspace-clears-the-column","topic":"insert-tty","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":1},"state":"normal","text":"\nabcXd\n","error":""},"id":"failed-ctrl-w-clears-the-column","topic":"insert-tty","differs":["text","cursor"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":6,"line":1},"state":"normal","text":"    foo\n    bar\n","error":""},"id":"o-autoindent","topic":"insert","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":6,"line":0},"state":"normal","text":"    bar\n    foo\n","error":""},"id":"O-autoindent","topic":"insert","differs":["text","cursor"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":6,"line":1},"state":"normal","text":"    foo\n    bar\n","error":""},"id":"enter-autoindent","topic":"insert","differs":[]}

@@ -12,7 +12,7 @@ mod scripts;
 mod text;
 
 use die_core::{Args, BufferId, Ctx, Dir, Error, Extension, Registry, Result, State};
-use grammar::{Kind, buffer_window, count_digit, run_motion};
+use grammar::{Kind, buffer_window, count_digit, forget_goal, run_motion};
 use insert::{Edit, Entry, Session};
 use motions::{Find, MOTIONS};
 use std::collections::HashMap;
@@ -163,10 +163,7 @@ impl Extension for Vim {
             "Escape in normal state: forget the goal column, as Evil does.",
             |ctx, a| {
                 let (b, w) = buffer_window(ctx, a)?;
-                let t = ctx.text_mut(b)?;
-                if let Some(sel) = t.selection(w) {
-                    t.set_selection(w, sel.with_goal(None));
-                }
+                forget_goal(ctx.text_mut(b)?, w);
                 Ok(())
             },
         );
