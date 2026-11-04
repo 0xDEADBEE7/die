@@ -1,5 +1,6 @@
 //! Keys the Evil oracle can't record: Escape while `f` waits for its character is a
-//! quit, which ends batch Emacs's keyboard macro.
+//! quit, which ends batch Emacs's keyboard macro. And `j` on the last line with a final
+//! newline, which is rule 1's, with no oracle case of its own.
 
 use die_core::Ctx;
 use die_vim::Vim;
