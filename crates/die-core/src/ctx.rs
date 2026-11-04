@@ -1272,7 +1272,8 @@ impl Ctx {
             self.swallow.push(Key::Esc);
             return;
         }
-        if ev.mods.super_ && ev.kind != KeyKind::Release {
+        let named = !matches!(ev.key, Key::Modifier(_) | Key::Unidentified);
+        if named && ev.mods.super_ && ev.kind != KeyKind::Release {
             if let Lookup::Command(name) =
                 self.layers_lookup(buf, State::Passthrough, &[ev.clone()])
             {
