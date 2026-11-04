@@ -226,6 +226,8 @@ pub fn run(root: &Path, work: &Path) -> Result {
         println!("guards: {what} fails `sources`");
     }
     std::fs::remove_dir_all(tree.join("docs/plantedcrate")).map_err(|e| e.to_string())?;
+    sources::run(tree, &target)?;
+    println!("guards: with those gone, what they left in the target directory doesn't count");
 
     let text = tree.join("crates/die-render/src/platform/macos/text.rs");
     for (what, plant) in BLOCK_LINT_PLANTS {

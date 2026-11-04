@@ -9,9 +9,9 @@ const USAGE: &str = "usage: cargo xtask <task>
                        D15, lockfile, licenses
   sources              every file the compiler read is one the lint reads, and every
                        local crate is a listed member
-  guards               unsafe outside platform and -Cpanic=abort fail to build; dead
-                       code on Linux and a build script that calls cc fail the
-                       cross-check
+  guards               unsafe outside platform and -Cpanic=abort fail to build; what
+                       rustc lets through fails lint or sources; dead code on Linux
+                       and a build script that calls cc fail the cross-check
   api-diff [--base R]  die-core's public API and die-vim's grammar, R -> working tree
                        (R defaults to the merge base with main)
   fonts                fetch Ioskeley Mono Term into fonts/, checked by SHA-256

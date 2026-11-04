@@ -81,8 +81,7 @@ pub fn check(root: &Path, messages: &str) -> Result<usize> {
         let dep_info = names
             .iter()
             .filter_map(Value::as_str)
-            .map(|f| dep_info_of(Path::new(f)))
-            .find(|d| d.exists())
+            .find_map(|f| dep_info_of(Path::new(f)))
             .ok_or_else(|| format!("sources: no dep-info file for {names:?}"))?;
         for listed in listed_files(&read(&dep_info)?) {
             let rel = real(&root.join(&listed)).ok().and_then(|f| {
@@ -112,16 +111,21 @@ fn real(path: &Path) -> Result<PathBuf> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The dep-info file rustc writes beside an artifact: `foo-hash.d` beside
-/// `libfoo-hash.rmeta`, or beside a build script's `build_script_build-hash`.
-fn dep_info_of(artifact: &Path) -> PathBuf {
-    let stem = artifact
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    let stem = stem.strip_prefix("lib").unwrap_or(&stem);
-    artifact.with_file_name(format!("{stem}.d"))
+/// The dep-info file rustc wrote for an artifact: `foo-hash.d` beside
+/// `libfoo-hash.rmeta`. A build script, `build-script-build`, has a directory of its
+/// own, with its dep-info under a name with a hash.
+fn dep_info_of(artifact: &Path) -> Option<PathBuf> {
+    let name = artifact.file_name()?.to_str()?;
+    if name.starts_with("build-script-") {
+        let files = std::fs::read_dir(artifact.parent()?).ok()?;
+        return files
+            .flatten()
+            .map(|f| f.path())
+            .find(|f| f.extension().is_some_and(|x| x == "d"));
+    }
+    let stem = artifact.file_stem()?.to_str()?;
+    let stem = stem.strip_prefix("lib").unwrap_or(stem);
+    Some(artifact.with_file_name(format!("{stem}.d"))).filter(|d| d.exists())
 }
 
 /// The files a dep-info file lists. rustc ends it with an empty rule for each one,
@@ -265,18 +269,23 @@ mod tests {
     }
 
     #[test]
-    fn dep_info_beside_an_artifact() {
+    fn dep_info_of_an_artifact() {
+        let dir = TempDir::new("sources-dep-info").unwrap();
+        let p = dir.path();
         for (artifact, d) in [
-            ("/t/deps/libdie_core-9a.rmeta", "/t/deps/die_core-9a.d"),
-            ("/t/deps/liblibrary-9a.rmeta", "/t/deps/library-9a.d"),
-            ("/t/deps/libm-9a.dylib", "/t/deps/m-9a.d"),
+            ("deps/libdie_core-9a.rmeta", "deps/die_core-9a.d"),
+            ("deps/liblibrary-9a.rmeta", "deps/library-9a.d"),
+            ("deps/libm-9a.dylib", "deps/m-9a.d"),
             (
-                "/t/build/x-9a/build_script_build-9a",
-                "/t/build/x-9a/build_script_build-9a.d",
+                "build/x-9a/build-script-build",
+                "build/x-9a/build_script_build-9a.d",
             ),
         ] {
-            assert_eq!(dep_info_of(Path::new(artifact)), Path::new(d));
+            assert_eq!(dep_info_of(&p.join(artifact)), None, "not written yet");
+            write(&p.join(d), "").unwrap();
+            assert_eq!(dep_info_of(&p.join(artifact)), Some(p.join(d)));
         }
+        assert_eq!(dep_info_of(&p.join("deps/libother-9a.rmeta")), None);
     }
 
     #[test]
