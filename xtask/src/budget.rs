@@ -317,6 +317,15 @@ mod tests {
     }
 
     #[test]
+    fn platform_macos_is_held_to_what_the_unsafe_review_was_planned_for() {
+        // docs/m0-plan.md §3. Raising it means changing this too, with a count in hand.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let budget = load(root).unwrap();
+        let macos = budget.modules.iter().find(|m| m.name == "platform::macos");
+        assert!(macos.unwrap().limit <= 900);
+    }
+
+    #[test]
     fn a_build_is_its_neutral_modules_plus_its_platforms() {
         let (krate, modules) = render();
         assert_eq!(

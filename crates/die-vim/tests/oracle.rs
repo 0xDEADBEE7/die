@@ -234,10 +234,8 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
         (EvilState::Normal, State::Normal)
         | (EvilState::Insert, State::Insert)
         | (EvilState::Visual, State::Visual)
+        | (EvilState::Replace, State::Replace)
         | (EvilState::Operator, State::OperatorPending) => {}
-        (EvilState::Replace, s) => diffs.push(format!(
-            "state {s:?}, want replace, which core has no state for yet (K3)"
-        )),
         (want, got) => diffs.push(format!("state {got:?}, want {want:?}")),
     }
     if want.visual.is_some() {
