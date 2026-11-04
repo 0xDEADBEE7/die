@@ -48,10 +48,12 @@
 //! - `linewise_selection_shows_empty_lines`,
 //!   `charwise_selection_across_a_newline_shows_it`: a newline has a cell.
 //! - `a_highlighted_newline_shows_only_its_own_cell`
+//! - `a_block_selection_skips_a_short_lines_newline`: and the buffer's end, as
+//!   Evil's overlays do.
 //! - `cells_past_the_end_of_a_line_map_to_its_newline`,
 //!   `cells_past_a_wrapped_row_map_to_its_last_position`: where a click lands.
-//! - `cells_are_built_with_new_and_field_writes`: from outside die-core, a
-//!   struct literal doesn't compile.
+//! - `cells_are_built_with_new_and_field_writes`: from outside die-core. The
+//!   doctest on `Cell` shows a struct expression doesn't compile there.
 //! - `a_snapshot_shows_every_style_it_has_a_letter_for`,
 //!   `a_snapshot_with_more_styles_than_letters_panics`
 //! - `an_undeclared_decoration_face_is_reported_once`: to `*messages*`, the
@@ -854,6 +856,28 @@ fn charwise_selection_across_a_newline_shows_it() {
 }
 
 #[test]
+fn a_block_selection_skips_a_short_lines_newline() {
+    let blocks = |text, anchor, head| {
+        selected_cells(&with_selection(text, 3, anchor, head, Shape::Block), 3, 6)
+    };
+    assert_eq!(
+        blocks("abcd\nab\nabcd\n", 2, 11),
+        ["..##..", "......", "..##.."],
+        "the middle line is shorter than the block: nothing on it, as in Evil"
+    );
+    assert_eq!(
+        blocks("ab\n\ncd\n", 0, 5),
+        ["##....", "......", "##...."],
+        "nor on an empty line"
+    );
+    assert_eq!(
+        blocks("abc\nab", 2, 6),
+        ["..#...", "......", "......"],
+        "nor at the end of the buffer"
+    );
+}
+
+#[test]
 fn a_highlighted_newline_shows_only_its_own_cell() {
     let mut ctx = ctx_with(vec![("t.bg", None, Style::new().bg(h("#123456")))]);
     let b = ctx.create_text("t", "ab\ncd\n");
@@ -1196,7 +1220,10 @@ impl Scan {
                 Shape::Line => lines,
                 Shape::Block => {
                     let (a, h) = (t.display_col(sel.anchor), t.display_col(sel.head));
-                    lines && (a.min(h)..=a.max(h)).contains(&t.display_col(q))
+                    lines
+                        && (a.min(h)..=a.max(h)).contains(&t.display_col(q))
+                        && q < t.len()
+                        && t.rope().byte(q) != b'\n'
                 }
             };
             if on {
