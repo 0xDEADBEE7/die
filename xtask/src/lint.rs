@@ -633,7 +633,9 @@ pub fn check_unsafe_allows(rel: &str, src: &str, errors: &mut Vec<String>) {
 /// (`#[allow($lint)]`), which neither the lint nor `check_unsafe_allows` sees.
 ///
 /// Everywhere: `include!` by any name, the `path` attribute and an attribute a macro
-/// builds, which can be `path`. Each can compile a file this lint never reads.
+/// builds, which can be `path`. Each can compile a file this lint never reads. A
+/// format argument named `path` trips it (`format!("{path}", path = p)`), and `{}`
+/// avoids that.
 pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
     use crate::count::{Tok, lex, skip_group};
     let toks = lex(src);
@@ -642,8 +644,10 @@ pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
     // Tokens inside a `cfg_attr(...)`, where a macro fragment can be an attribute too.
     let mut in_cfg_attr = 0;
     for (i, (t, line, _)) in toks.iter().enumerate() {
-        // `#[$...` or `#![$...`.
-        let starts_attr = i >= 2 && p(i - 1, '[') && (p(i - 2, '#') || p(i - 2, '!'));
+        // `#[$...` or `#![$...`, but not `vec![$...`.
+        let starts_attr = i >= 2
+            && p(i - 1, '[')
+            && (p(i - 2, '#') || (i >= 3 && p(i - 2, '!') && p(i - 3, '#')));
         let what = match t {
             Tok::Ident(w) if (w == "unsafe" || w == "global_asm") && !unsafe_ok => {
                 format!("`{w}` outside {}", UNSAFE_DIRS.join(", "))
@@ -873,6 +877,7 @@ mod tests {
                 core,
                 "macro_rules! m { ($a:expr, $b:expr) => { f($a, $b) } }\n",
             ),
+            (core, "macro_rules! m { ($a:expr) => { vec![$a] } }\n"),
             (core, "#[cfg_attr(test, derive(Debug))]\nstruct S;\n$;\n"),
         ];
         for (rel, src) in fine {
