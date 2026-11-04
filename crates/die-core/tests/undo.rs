@@ -510,3 +510,46 @@ fn history_dropped_by_a_conflict_while_typing_is_reported_as_a_conflict() {
     assert_eq!(undo(&mut ctx, b), Err(Error::NothingToUndo), "said once");
     assert_eq!(redo(&mut ctx, b), Ok(8..9), "redo was never affected");
 }
+
+/// A command bound to `g` that inserts text itself, so the step's number is the key's.
+struct InsertsOnG;
+impl Extension for InsertsOnG {
+    fn name(&self) -> &'static str {
+        "inserts-on-g"
+    }
+    fn register(&mut self, reg: &mut Registry) {
+        reg.command("ins", "", |ctx, a| {
+            let t = ctx.text_mut(a.buffer.unwrap())?;
+            t.tx(Origin::User).insert(0, "k").commit()?;
+            Ok(())
+        });
+        reg.kind_keymap("text").bind(State::Normal, "g", "ins");
+    }
+}
+
+/// DR-13: after a key, typed or fed, code outside any command gets a number of its own.
+fn host_edit_after_key(press: fn(&mut Ctx)) -> String {
+    let mut ctx = Ctx::new(vec![Box::new(InsertsOnG)]).unwrap();
+    let b = ctx.create_text("t", "abc");
+    ctx.open_window(b, 40, 5).unwrap();
+    press(&mut ctx);
+    assert_eq!(text(&ctx, b), "kabc");
+    let t = ctx.text_mut(b).unwrap();
+    t.tx(Origin::User).insert(0, "h").commit().unwrap();
+    t.undo().unwrap();
+    text(&ctx, b)
+}
+
+#[test]
+fn an_edit_made_after_a_typed_key_is_its_own_undo_step() {
+    assert_eq!(host_edit_after_key(|ctx| ctx.type_keys("g")), "kabc");
+}
+
+#[test]
+fn an_edit_made_after_a_fed_key_is_its_own_undo_step() {
+    let press = |ctx: &mut Ctx| {
+        ctx.feed_keys("g").unwrap();
+        ctx.run_until_idle();
+    };
+    assert_eq!(host_edit_after_key(press), "kabc");
+}

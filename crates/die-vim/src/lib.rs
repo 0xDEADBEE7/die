@@ -211,11 +211,17 @@ fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
 fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
+    let mut stopped = Ok(());
     for i in 0..a.count.unwrap_or(1).max(1) {
         match if redo { t.redo() } else { t.undo() } {
             Ok(_) => {}
             Err(e) if i == 0 => return Err(e),
-            Err(_) => break,
+            Err(Error::NothingToUndo) => break,
+            // A conflict is reported only once, so a count can't swallow it.
+            Err(e) => {
+                stopped = Err(e);
+                break;
+            }
         }
     }
     let p = t.cursor(w).unwrap_or(0);
@@ -228,5 +234,5 @@ fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
             text::normal_pos(t, p)
         },
     );
-    Ok(())
+    stopped
 }
