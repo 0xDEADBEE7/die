@@ -72,7 +72,7 @@ pub enum Source {
     HandWritten,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
     pub text: String,
@@ -109,7 +109,7 @@ pub struct Pos {
     pub byte: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
     #[serde(rename = "type")]
@@ -166,7 +166,7 @@ pub struct Clipboard {
     pub writes: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Window {
     pub width: usize,
