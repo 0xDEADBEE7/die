@@ -26,6 +26,10 @@ use std::process::Command;
 /// Prints the compiler's own errors as usual, and its artifact messages on stdout.
 pub const MESSAGE_FORMAT: &str = "--message-format=json-render-diagnostics";
 
+/// What a dep-info file from clippy lists beyond rustc's: it reads the manifest in the
+/// directory it runs in, the workspace's root, as data.
+pub const CLIPPY_READS: &[&str] = &["Cargo.toml"];
+
 /// Check the workspace for the host. `target_dir` holds the build cache.
 pub fn run(root: &Path, target_dir: &Path) -> Result {
     let messages = output(
@@ -45,14 +49,15 @@ pub fn run(root: &Path, target_dir: &Path) -> Result {
             ])
             .arg(target_dir),
     )?;
-    let files = check(root, &messages)?;
+    let files = check(root, &messages, &[])?;
     println!("sources: ok ({files} files, all read by the lint)");
     Ok(())
 }
 
-/// Check `messages`, the JSON lines of a build of the workspace at `root`. Returns how
-/// many different files the build's local crates read.
-pub fn check(root: &Path, messages: &str) -> Result<usize> {
+/// Check `messages`, the JSON lines of a build of the workspace at `root`, in which a
+/// dep-info file may also list `extra`, as it spells them. Returns how many different
+/// files the build's local crates read.
+pub fn check(root: &Path, messages: &str, extra: &[&str]) -> Result<usize> {
     let root = real(root)?;
     let members = lint::members(&root)?;
     let mut errors = BTreeSet::new();
@@ -84,6 +89,9 @@ pub fn check(root: &Path, messages: &str) -> Result<usize> {
             .find_map(|f| dep_info_of(Path::new(f)))
             .ok_or_else(|| format!("sources: no dep-info file for {names:?}"))?;
         for listed in listed_files(&read(&dep_info)?) {
+            if extra.contains(&listed.as_str()) {
+                continue;
+            }
             let rel = real(&root.join(&listed)).ok().and_then(|f| {
                 let rel = f.strip_prefix(&root).ok()?;
                 Some(rel.to_string_lossy().into_owned())
@@ -186,7 +194,7 @@ mod tests {
     fn compiled(files: &[&str], listed: &[&str]) -> Result<usize> {
         let dir = workspace(files);
         let msg = artifact(&dir, LOCAL, "crates/a", listed);
-        check(dir.path(), &msg)
+        check(dir.path(), &msg, &[])
     }
 
     #[test]
@@ -246,7 +254,7 @@ mod tests {
             "docs/stray",
             &["docs/stray/src/lib.rs"],
         );
-        let e = check(dir.path(), &msg).unwrap_err();
+        let e = check(dir.path(), &msg, &[]).unwrap_err();
         assert!(e.contains("isn't in the workspace's `members`"), "{e}");
     }
 
@@ -263,9 +271,23 @@ mod tests {
         });
         let other = "{\"reason\":\"build-finished\",\"success\":true}";
         assert_eq!(
-            check(dir.path(), &format!("{registry}\n{good}\n{other}\n")),
+            check(dir.path(), &format!("{registry}\n{good}\n{other}\n"), &[]),
             Ok(1)
         );
+    }
+
+    #[test]
+    fn clippy_reads_the_workspaces_manifest() {
+        let dir = workspace(&["crates/a/src/lib.rs"]);
+        let listed = ["crates/a/src/lib.rs", "Cargo.toml"];
+        let msg = artifact(&dir, LOCAL, "crates/a", &listed);
+        assert_eq!(check(dir.path(), &msg, CLIPPY_READS), Ok(1));
+        let e = check(dir.path(), &msg, &[]).unwrap_err();
+        assert!(e.contains("compiled Cargo.toml, which"), "{e}");
+        // Only as clippy spells it: a `path` attribute's route to it still fails.
+        let msg = artifact(&dir, LOCAL, "crates/a", &["crates/a/../../Cargo.toml"]);
+        let e = check(dir.path(), &msg, CLIPPY_READS).unwrap_err();
+        assert!(e.contains("compiled Cargo.toml, which"), "{e}");
     }
 
     #[test]
