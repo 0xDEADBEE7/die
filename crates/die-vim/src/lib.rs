@@ -204,18 +204,29 @@ fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
     run_motion(ctx, a, kind, None, move |s| motions::find(s, find))
 }
 
-/// `u` and `C-r`. Like Evil, the cursor goes to the start of the last step undone or redone.
+/// `u` and `C-r`. Like Evil, `u` leaves the cursor where it was before the last
+/// step undone (core restores it); `C-r` puts it at the start of the last step
+/// redone, as Vim does. The empty line after a final newline keeps the cursor, as
+/// `insert::end` does.
 fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
-    let mut start = 0;
     for i in 0..a.count.unwrap_or(1).max(1) {
         match if redo { t.redo() } else { t.undo() } {
-            Ok(r) => start = r.start,
+            Ok(_) => {}
             Err(e) if i == 0 => return Err(e),
             Err(_) => break,
         }
     }
-    t.set_cursor(w, text::normal_pos(t, start));
+    let p = t.cursor(w).unwrap_or(0);
+    let on_last_empty_line = p == t.len() && t.line_start(t.line_of(p)) == p;
+    t.set_cursor(
+        w,
+        if on_last_empty_line {
+            p
+        } else {
+            text::normal_pos(t, p)
+        },
+    );
     Ok(())
 }

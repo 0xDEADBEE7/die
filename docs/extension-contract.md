@@ -107,7 +107,7 @@ An extension's global state is the extension struct itself. A command reaches it
 | Text | `text(buffer)` and `text_mut(buffer)` borrow a buffer's text for reading, editing, markers, decorations, per-window cursors and selections, and layout queries (§9) |
 | Commands | `run(name, args)`; `feed_keys(keys)`, which queues keys as if typed, ahead of further typed input; a key observer that sees each key before dispatch, marked typed or fed, so die-vim can record macros (`qb@aq` records `@a`, as Vim does) |
 | Modes | enable, disable, `with_mode::<M>` |
-| Modal state | read and set the state; read and set the prefix argument (count and register) |
+| Modal state | read and set the state, which is per buffer: of the focused buffer, or of any buffer by id; read and set the prefix argument (count and register) |
 | Async | `spawn`, `process`, `pty`, `watch`, `after`, `every`, `idle`, `prompt` (§12) |
 | Hooks | subscribe to buffer lifecycle, edits (after the fact), saves, modes, focus and idle, returning a handle (C4). A save runs its write as a queued step after the before-save hooks. |
 | Pixels | create a pixel buffer, create an image (§11) |
@@ -133,7 +133,7 @@ args
   deco         for a Hide's reveal command: the decoration being revealed (§9)
 ```
 
-- **The prefix argument.** Core stores a count and a register, and doesn't parse Vim syntax. die-vim's digit and `"x` commands fill the slot, and `0` is a die-vim command (scope D9).
+- **The prefix argument.** Core stores a count and a register, and doesn't parse Vim syntax. die-vim's digit and `"x` commands fill the slot, and `0` is a die-vim command (scope D9). An undefined key clears the slot, as Emacs's `undefined` does, so a typo can't arm the next command.
 - **No `interactive`-style argument prompting.** A command that needs input calls `ctx.prompt` and continues in the callback (§12).
 - **Errors** returned from `run` are shown in the command line and logged.
 - **Introspection.** `describe-command` shows the doc, the owning extension and every key bound to the command. `describe-key` follows a key through the lookup order (§7) and reports where it was found, plus any bindings it shadows.
@@ -218,9 +218,9 @@ The text surface belongs to core. This section covers what extensions can do wit
 
 **Editing.**
 - Edits happen inside a **transaction**: a set of changes in the coordinates of the text before it, applied all or none. It carries an **origin**, `User` or `Extension` (C14).
-- **Undo groups** are separate from transactions. Each command or callback is one undo step by default, so `3dd` is one step. An explicit group spans commands, as an insert session does, and `undo_boundary` ends a step early. Undoing a step restores the selection from before it (shape and goal included) and returns the range it changed; redo puts a cursor at the start of that range. Each buffer keeps at most 2,000 steps or 16 MB of undone text, whichever comes first; both limits are buffer settings.
+- **Undo groups** are separate from transactions. Each command or callback is one undo step by default, so `3dd` is one step. Edits made outside any command or callback, by the host or a harness, are a step of their own. An explicit group spans commands, as an insert session does. It takes every recorded edit to its buffer until it ends, so end it on every way out. Undoing inside a group leaves it open: the next edit starts a new step inside it. `undo_boundary` ends a step early. Undoing a step restores the selection from just before its first change (shape and goal included) and returns the range it changed; redo puts a cursor at the start of that range. So a command that moves the cursor and edits in one go, such as die-vim's `p`, `J` or `dd` from mid-line, makes its edit first, or undo restores the moved cursor. Each buffer keeps at most 2,000 steps or 16 MB of undone text, whichever comes first; both limits are buffer settings.
 - **Styled insertion** inserts text together with its faces and tags in one call, the equivalent of inserting a `propertize`d string. Replacing the whole buffer is one call too, which is what seek's "erase and redraw" becomes.
-- A transaction can be **silent**, meaning it isn't recorded in undo. Streaming output, like orchid's assistant text, shouldn't fill your undo history. Undo adjusts for silent edits: if you type, an extension then appends silently above your text, and you press `u`, your text comes back exactly. If a silent edit changed the text an undo step needs, undo refuses with an error and drops the older history.
+- A transaction can be **silent**, meaning it isn't recorded in undo. Streaming output, like orchid's assistant text, shouldn't fill your undo history. Undo adjusts for silent edits: if you type, an extension then appends silently above your text, and you press `u`, your text comes back exactly. If a silent edit changed the text an undo step needs, undo refuses with an error and drops the older history. If that step is still being collected, the history goes at your next edit, and the undo that reaches the gap reports the same error, once.
 - **Read-only ranges block `User` edits only.** Edits from extension code always succeed, which replaces orchid's `inhibit-read-only` wrappers.
 - Every edit produces a **change**: the old range, the new text, and byte and line/column positions. Incremental parsers like tree-sitter need exactly this. Modes read changes with `edits_since` (§8).
 

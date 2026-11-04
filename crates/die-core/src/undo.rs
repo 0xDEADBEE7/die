@@ -142,7 +142,8 @@ pub(crate) struct History {
     undo: Vec<Entry>,
     redo: Vec<Entry>,
     depth: u32,
-    pending_open: Option<Option<Selection>>,
+    /// A conflict while a group was collecting dropped the history, and no undo has said so.
+    dropped: bool,
 }
 
 /// How much history a buffer keeps: at most `steps` steps holding at most `bytes` of text.
@@ -198,7 +199,10 @@ impl History {
                         self.undo.push(Entry::Silent(below));
                         self.undo.push(Entry::Group(g));
                     }
-                    None => self.undo.clear(),
+                    None => {
+                        self.undo.clear();
+                        self.dropped = true;
+                    }
                 }
             }
             if let Some(Entry::Group(g)) = self.undo.last_mut() {
@@ -208,10 +212,9 @@ impl History {
                 return;
             }
         }
-        let sel = self.pending_open.take().unwrap_or(sel_before);
         self.undo.push(Entry::Group(Group {
             ops: vec![op],
-            sel,
+            sel: sel_before,
             cmd,
             open: self.depth > 0,
             bytes,
@@ -247,19 +250,15 @@ impl History {
             g.open = false;
             g.cmd = CLOSED;
         }
-        self.pending_open = None;
     }
 
     pub fn silent(&mut self, s: Shift) {
-        if let Some(Some(c)) = &mut self.pending_open {
-            *c = map_sel(*c, &[s]);
-        }
         push_silent(&mut self.undo, s);
         push_silent(&mut self.redo, s);
     }
 
     /// Open an explicit group. Edits until the matching `end` are one undo step.
-    pub fn begin(&mut self, sel: Option<Selection>, cmd: u64) {
+    pub fn begin(&mut self, cmd: u64) {
         self.depth += 1;
         if self.depth > 1 {
             return;
@@ -269,11 +268,9 @@ impl History {
             if let Entry::Group(g) = &mut self.undo[i] {
                 if g.cmd == cmd {
                     g.open = true;
-                    return;
                 }
             }
         }
-        self.pending_open = Some(sel);
     }
 
     pub fn end(&mut self) {
@@ -287,7 +284,6 @@ impl History {
                     g.open = false;
                 }
             }
-            self.pending_open = None;
         }
     }
 
@@ -295,7 +291,11 @@ impl History {
     pub fn plan(&self, redo: bool) -> Result<Plan> {
         let stack = if redo { &self.redo } else { &self.undo };
         let (Some(i), pending) = top_group(stack) else {
-            return Err(Error::NothingToUndo);
+            return Err(if !redo && self.dropped {
+                Error::UndoConflict
+            } else {
+                Error::NothingToUndo
+            });
         };
         let Entry::Group(g) = &stack[i] else {
             unreachable!()
@@ -313,7 +313,7 @@ impl History {
                 Group {
                     ops: ops.clone(),
                     sel: before,
-                    cmd: 0,
+                    cmd: CLOSED,
                     open: false,
                     bytes: g.bytes,
                 },
@@ -325,7 +325,7 @@ impl History {
                 Group {
                     ops: invert_seq(&ops),
                     sel: cur,
-                    cmd: 0,
+                    cmd: CLOSED,
                     open: false,
                     bytes: g.bytes,
                 },
@@ -352,15 +352,15 @@ impl History {
             from.push(Entry::Silent(p.pending));
         }
         to.push(Entry::Group(p.other));
-        self.depth = 0;
-        self.pending_open = None;
+        // An open group stays open: the next edit starts a new step inside it.
     }
 
     pub fn truncate(&mut self, redo: bool) {
         if redo {
             self.redo.clear()
         } else {
-            self.undo.clear()
+            self.undo.clear();
+            self.dropped = false;
         }
     }
 }
