@@ -113,7 +113,8 @@ winit = { version = "=0.30.13", default-features = false, features = ["x11", "wa
 unsafe_code = "deny"
 
 # Every `unsafe` block says why it's sound, and does one unsafe thing, so each
-# SAFETY comment covers all of its block. `cargo xtask lint` checks these are set.
+# SAFETY comment covers all of its block. `cargo xtask lint` checks these are set,
+# and that no code changes their level.
 [lints.clippy]
 undocumented_unsafe_blocks = "deny"
 multiple_unsafe_ops_per_block = "deny"
