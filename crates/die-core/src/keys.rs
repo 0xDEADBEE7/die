@@ -176,12 +176,12 @@ impl KeyEvent {
             num_lock: false,
         }
     }
-    /// Committed text, as delivered for dead keys. `key` is its first character.
+    /// Committed text, as delivered for dead keys. `key` is its first character. Empty text
+    /// is no key at all: `Unidentified`, with no notation.
     pub fn committed(s: &str) -> Self {
-        let c = s.chars().next().unwrap_or(' ');
         KeyEvent {
             text: Some(s.into()),
-            ..KeyEvent::press(Key::Char(c))
+            ..KeyEvent::press(s.chars().next().map_or(Key::Unidentified, Key::Char))
         }
     }
     /// This event with `m` held.
@@ -266,9 +266,39 @@ const NAMES: &[(&str, Key)] = &[
 /// followed by something that isn't a key (`<C-X-a>`) or with no closing `>` (`<C-a`), and
 /// Shift written with a character it can't change (`<C-S-2>`, `<S-Space>`) are errors, since
 /// they're almost always typos: write `<lt>` for a literal `<`, and the shifted character
-/// itself, as in `<C-@>`. `<C-[>`, `<C-i>` and `<C-m>` are `<Esc>`, `<Tab>` and `<CR>`.
+/// itself, as in `<C-@>`. `<C-[>`, `<C-i>` and `<C-m>` are `<Esc>`, `<Tab>` and `<CR>`. Literal
+/// characters that form one grapheme cluster are one key, whose chord holds only the first
+/// of them, so a pattern can't match it and they're an error too: bind `<char>`.
 pub fn parse_pats(s: &str) -> Result<Vec<Pat>, String> {
-    Ok(parse(s)?.into_iter().map(|(p, _)| p).collect())
+    let steps = parse(s)?;
+    for run in steps.chunk_by(|a, b| a.1 && b.1) {
+        let text: String = run.iter().filter_map(literal).collect();
+        if let Some(g) = text.graphemes(true).find(|g| one_key(g)) {
+            return Err(format!(
+                "one key can't be bound to {g}: bind <char> and read Args::typed"
+            ));
+        }
+    }
+    Ok(steps.into_iter().map(|(p, _)| p).collect())
+}
+
+/// The character a step of `parse` types, if it's a literal one.
+fn literal(step: &(Pat, bool)) -> Option<char> {
+    match step {
+        (
+            Pat::Chord(Chord {
+                key: Key::Char(c), ..
+            }),
+            true,
+        ) => Some(*c),
+        _ => None,
+    }
+}
+
+/// Whether a grapheme cluster is one key rather than a key per character. A cluster with a
+/// control character in it (CR LF) isn't: committed text can't hold one.
+fn one_key(g: &str) -> bool {
+    g.chars().nth(1).is_some() && !g.chars().any(char::is_control)
 }
 
 /// `parse_pats`, saying which steps are literal characters rather than `<...>`.
@@ -383,18 +413,13 @@ pub fn parse_keys(s: &str) -> Result<Vec<KeyEvent>, String> {
 pub(crate) fn typed(s: &str, leader: Option<Chord>) -> Result<Vec<KeyEvent>, String> {
     let (mut out, mut run) = (vec![], String::new());
     for step in parse(s)? {
-        match (step, leader) {
-            (
-                (
-                    Pat::Chord(Chord {
-                        key: Key::Char(c), ..
-                    }),
-                    true,
-                ),
-                _,
-            ) => run.push(c),
-            ((Pat::Chord(c), _), _) | ((Pat::Leader, _), Some(c)) => {
-                literals(&mut run, &mut out);
+        if let Some(c) = literal(&step) {
+            run.push(c);
+            continue;
+        }
+        literals(&mut run, &mut out);
+        match (step.0, leader) {
+            (Pat::Chord(c), _) | (Pat::Leader, Some(c)) => {
                 out.push(KeyEvent::press(c.key).mods(c.mods));
             }
             _ => return Err(format!("{s:?} has a key pattern, which can't be typed")),
@@ -404,11 +429,10 @@ pub(crate) fn typed(s: &str, leader: Option<Chord>) -> Result<Vec<KeyEvent>, Str
     Ok(out)
 }
 
-/// Turn a run of literal characters into keys, one per grapheme cluster. A cluster with a
-/// control character in it (CR LF) is a key per character: committed text can't hold one.
+/// Turn a run of literal characters into keys, one per grapheme cluster.
 fn literals(run: &mut String, out: &mut Vec<KeyEvent>) {
     for g in run.graphemes(true) {
-        if g.chars().nth(1).is_some() && !g.chars().any(char::is_control) {
+        if one_key(g) {
             out.push(KeyEvent::committed(g));
         } else {
             out.extend(g.chars().map(|c| KeyEvent::press(Key::Char(c))));
@@ -448,6 +472,7 @@ pub fn key_notation(evs: &[KeyEvent]) -> String {
             Key::Char('<') => "lt".into(),
             Key::Char(c) => c.to_string(),
             Key::F(n) => format!("F{n}"),
+            Key::Unidentified => continue,
             k => NAMES
                 .iter()
                 .find(|(_, x)| *x == k)

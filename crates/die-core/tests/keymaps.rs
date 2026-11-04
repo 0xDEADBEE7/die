@@ -545,3 +545,59 @@ fn an_unnamed_key_never_reaches_a_keymap() {
     plain_command(&mut ctx, &[KeyEvent::press(Key::Unidentified)]);
     assert_eq!(events.borrow().len(), 1, "passthrough forwards it");
 }
+
+/// A surface in passthrough with `<any>` bound, as the DIE layer can bind it: it takes a key
+/// with Super held from the surface, unless the key is one keymaps never see.
+#[test]
+fn with_super_held_passthrough_keeps_keys_keymaps_never_see() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("term").bind(State::Passthrough, "<any>", "a");
+    };
+    let mut ctx = Ctx::new(vec![ext(&log, &["a"], bind)]).unwrap();
+    let events = Rc::new(RefCell::new(vec![]));
+    let s = TermSurface {
+        events: events.clone(),
+    };
+    let b = ctx.create_surface("term", s);
+    ctx.open_window(b, 40, 5).unwrap();
+    let held = Mods {
+        super_: true,
+        ..Mods::default()
+    };
+    for (i, key) in [Key::Unidentified, Key::Modifier(ModifierKey::Super)]
+        .into_iter()
+        .enumerate()
+    {
+        plain_command(&mut ctx, &[KeyEvent::press(key).mods(held)]);
+        assert!(log.borrow().is_empty(), "{key:?} reached a keymap");
+        assert_eq!(events.borrow().len(), i + 1, "{key:?} went to the surface");
+    }
+    plain_command(&mut ctx, &[KeyEvent::press(Key::Char('a')).mods(held)]);
+    assert_eq!(*log.borrow(), ["a"], "a named key still does");
+}
+
+#[test]
+fn an_empty_commit_doesnt_run_a_space_binding() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text").bind(State::Normal, "<Space>", "a");
+    };
+    let mut ctx = typing(vec![ext(&log, &["a"], bind)], "");
+    plain_command(&mut ctx, &[KeyEvent::committed("")]);
+    assert!(log.borrow().is_empty());
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+}
+
+/// `🇦🇺` as a binding could never fire, and typing it would arm a prefix that takes the next key.
+#[test]
+fn binding_a_cluster_of_several_characters_is_a_startup_error() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text")
+            .bind(State::Normal, "\u{1f1e6}\u{1f1fa}", "a");
+    };
+    let errs = errors(vec![ext(&log, &["a"], bind)]);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].contains("<char>"), "{errs:?}");
+}

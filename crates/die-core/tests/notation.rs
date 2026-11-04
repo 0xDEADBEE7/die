@@ -279,6 +279,42 @@ fn literal_characters_of_one_cluster_are_one_key() {
     assert_eq!(keys("<Esc>🇦🇺").len(), 2);
 }
 
+/// Such a key's chord holds only its first character, so no run of chords could match it.
+#[test]
+fn a_cluster_of_several_characters_cant_be_bound() {
+    for c in CLUSTERS {
+        let e = parse_pats(c).unwrap_err();
+        assert!(e.contains(c) && e.contains("<char>"), "{c:?}: {e}");
+    }
+    assert!(parse_pats("r\u{2764}\u{fe0f}x").is_err());
+    assert!(parse_pats("<Esc>\u{1f1e6}\u{1f1fa}").is_err());
+    // Nothing else changes: these are all still a pattern per character.
+    for (s, n) in [
+        ("gg", 2),
+        ("\u{e9}", 1),
+        ("\u{1f44d}", 1),
+        ("\r\n", 2),
+        ("<Space>\u{301}", 2),
+        ("<lt>\u{301}", 2),
+        ("<C-e>\u{301}", 2),
+    ] {
+        assert_eq!(parse_pats(s).unwrap().len(), n, "{s:?}");
+    }
+}
+
+/// An empty commit isn't a key. `committed` used to give it Space's chord, which ran a
+/// `<Space>` binding and was written back as a space.
+#[test]
+fn an_empty_commit_is_no_key_and_has_no_notation() {
+    let empty = KeyEvent::committed("");
+    assert_eq!(empty.key, Key::Unidentified);
+    assert_eq!(key_notation(&[ch('a'), empty, ch('b')]), "ab");
+    let unnamed = KeyEvent::press(Key::Unidentified);
+    assert_eq!(key_notation(std::slice::from_ref(&unnamed)), "");
+    let held = with(unnamed, |m| m.ctrl = true);
+    assert_eq!(key_notation(&[held]), "");
+}
+
 /// Only literal characters merge. A named key is a key of its own, and committed text can't
 /// hold a control character, so CR LF, one cluster, stays two keys.
 #[test]
