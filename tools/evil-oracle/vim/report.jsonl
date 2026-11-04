@@ -262,6 +262,13 @@
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":6,"line":0},"state":"normal","text":"abc１２ def\n","error":""},"id":"script-w-latin-fwdigits","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"日本ＡＢ def\n","error":""},"id":"script-w-han-fullwidth","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":5,"line":0},"state":"normal","text":"αβＡＢ def\n","error":""},"id":"script-w-greek-fullwidth","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":3,"line":0},"state":"normal","text":"foo$bar baz\n","error":""},"id":"w-dollar-is-a-word-character","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"50% off\n","error":""},"id":"w-percent-is-a-word-character","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":4,"line":0},"state":"normal","text":"がか def\n","error":""},"id":"script-w-kana-dakuten","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"abcабв def\n","error":""},"id":"script-b-latin-cyrillic","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":5,"line":0},"state":"normal","text":"abcабв def\n","error":""},"id":"script-e-latin-cyrillic","topic":"motions","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":1,"line":0},"state":"normal","text":"ですテスト def\n","error":""},"id":"script-e-hiragana-katakana","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"ですテスト def\n","error":""},"id":"script-b-hiragana-katakana","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"foo "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"bar baz\n","error":""},"id":"dw","topic":"operators","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"one two "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"three four\n","error":""},"id":"2dw","topic":"operators","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"a b c d e f "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"g h\n","error":""},"id":"2d3w-counts-multiply","topic":"operators","differs":[]}

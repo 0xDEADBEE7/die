@@ -12,7 +12,7 @@
 ;;
 ;; The table only has to answer for word characters that aren't combining
 ;; marks: `class' and `combining' in die-vim's text.rs decide those.  Any
-;; other character continues the range before it, which saves 900 ranges.
+;; other character continues the range before it, which keeps the table small.
 
 (defconst word-scripts-categories
   '((?r . "ROMAN") (?A . "FULL_WIDTH") (?G . "FULL_GREEK") (?k . "HALF_KANA")
