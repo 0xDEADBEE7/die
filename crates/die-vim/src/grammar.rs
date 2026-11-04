@@ -174,7 +174,14 @@ pub fn run_motion(
     // From the empty line after a final newline, a motion along that line stays on it.
     let stays = on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head);
     let pos = if stays { to.pos } else { normal_pos(t, to.pos) };
-    t.set_selection(w, Selection::cursor(pos).with_goal(Goal::encode(to.goal)));
+    // Like Evil's h and l, a motion that falls short signals and counts as never
+    // having happened (Evil sets this-command back to last-command), so the goal
+    // column survives it, as it survives a motion that fails outright.
+    let goal = match to.short {
+        Some(_) => sel.goal,
+        None => Goal::encode(to.goal),
+    };
+    t.set_selection(w, Selection::cursor(pos).with_goal(goal));
     match to.short {
         Some(e) => Err(Error::Msg(e.into())),
         None => Ok(()),
