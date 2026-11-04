@@ -66,6 +66,9 @@ pub enum Class {
 }
 
 /// A character's class. With `big` (WORD motions), every non-blank is one class.
+/// Word characters are Rust's alphanumerics, not Emacs's word syntax. So marks Rust
+/// doesn't call alphanumeric (virama, nukta, Thai tone marks) split words even in
+/// one script, and emoji and dingbats are punctuation.
 pub fn class(c: char, big: bool) -> Class {
     match c {
         '\n' => Class::Newline,
