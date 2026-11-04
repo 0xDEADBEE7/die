@@ -123,8 +123,9 @@ fn script(c: char) -> (u8, u8) {
 /// Whether a word ends between two word characters next to each other, by Emacs's
 /// `word_boundary_p` with your Evil's lists. Characters of one script join unless
 /// `SEPARATING` splits them, and of two scripts split unless `COMBINING` joins them.
-/// Either way a combining mark joins what it's next to; only the main blocks of marks
-/// are known here, and a script's own marks take the script around them.
+/// Either way a combining mark joins what it's next to. Only the main blocks of marks
+/// are known here; the table gives any other mark its own script, so it joins letters
+/// of that script.
 fn word_boundary(a: char, b: char) -> bool {
     if combining(a) || combining(b) {
         return false;
@@ -293,6 +294,38 @@ mod tests {
         }
         assert!(!same_word('a', '_', false));
         assert!(same_word(':', '>', false));
+    }
+
+    /// These marks lead their scripts' blocks, so the table must give them their own
+    /// script, not the block's before: Devanagari's anusvara isn't Arabic.
+    #[test]
+    fn a_mark_joins_a_letter_of_its_own_script() {
+        for (letter, mark) in [
+            ('क', '\u{902}'),           // Devanagari
+            ('క', '\u{c00}'),           // Telugu
+            ('ക', '\u{d01}'),           // Malayalam
+            ('а', '\u{2de0}'),          // Cyrillic Extended-A
+            ('\u{1b13}', '\u{1b00}'),   // Balinese
+            ('\u{1b8a}', '\u{1b80}'),   // Sundanese
+            ('\u{2c00}', '\u{1e000}'),  // Glagolitic
+            ('\u{a98f}', '\u{a980}'),   // Javanese
+            ('\u{11083}', '\u{11080}'), // Kaithi
+            ('\u{11103}', '\u{11100}'), // Chakma
+            ('\u{11183}', '\u{11180}'), // Sharada
+            ('\u{11305}', '\u{11300}'), // Grantha
+            ('\u{11f04}', '\u{11f00}'), // Kawi
+        ] {
+            assert!(
+                same_word(letter, mark, false),
+                "{letter} U+{:04X}",
+                mark as u32
+            );
+            assert!(
+                same_word(mark, letter, false),
+                "U+{:04X} {letter}",
+                mark as u32
+            );
+        }
     }
 
     #[test]
