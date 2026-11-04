@@ -58,7 +58,14 @@ impl Glyph {
 /// and `bg`, faint blends `fg` toward `bg` (65 %, as ghostel does), invisible
 /// text draws a space, and blinking text draws steadily. Cells are built with
 /// `Cell::new` and then their fields set, so a field added later (overline and
-/// the link id, with die-term in M2) breaks no producer.
+/// the link id, with die-term in M2) breaks no producer. Outside die-core, a
+/// struct expression doesn't compile, even one that names only some fields:
+///
+/// ```compile_fail,E0639
+/// use die_core::{Cell, Glyph, Rgb};
+/// let c = Rgb::hex("#000000");
+/// let _ = Cell { bold: true, ..Cell::new(Glyph::Char('x'), c, c) };
+/// ```
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Cell {
@@ -605,9 +612,10 @@ fn draw_text(
         }
         if let Some((bytes, block_cols)) = &selection
             && bytes.contains(&q)
-            && block_cols
-                .as_ref()
-                .is_none_or(|v| v.contains(&t.display_col(q)))
+            && block_cols.as_ref().is_none_or(|v| {
+                // A block stops at a line's end, as Evil's overlays do.
+                v.contains(&t.display_col(q)) && q < t.len() && t.rope().byte(q) != b'\n'
+            })
         {
             s = selection_face.over(s);
         }
