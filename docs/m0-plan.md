@@ -126,6 +126,7 @@ The five scheduled reviews each read a whole surface at once. The other three ru
 - Each package an AI drafts starts with a test plan. That's 08's "under tests you review".
 - A weekly note in `docs/m0-log.md` says what merged, what waits on you, what changed in the API, and where the budget stands.
 - Every problem you hit while dogfooding becomes a test first: an oracle case for die-vim, a harness test for core.
+- Every test binary has a memory limit (scope §12). A new `tests/*.rs` file starts with `use die_test_cap as _;`, and `cargo xtask lint` fails one that doesn't.
 
 ## 4. Budget
 
@@ -138,7 +139,7 @@ The five scheduled reviews each read a whole surface at once. The other three ru
 | die-vim | none yet; proposed ≤ about 5k | 3.6–4.6k | small: copy state (M2) | 3.7–4.7k |
 | die | – | about 0.2k | registering die-term, the holder and helper modes (M2) | |
 | apps/die-dev | – (your config) | about 0.15k | | |
-| xtask, tools/evil-oracle | dev-only: counted, not capped | about 0.7k and 0.3k | `ghostty bump` (M2) | |
+| xtask, tools/evil-oracle, tools/test-cap | dev-only: counted, not capped | about 0.7k, 0.3k and 0.2k | `ghostty bump` (M2) | |
 | **Product code** | | **about 15–19k** | | |
 
 die-render's M0 figure is S1's 4.1–5.0k minus what M3 adds. The platforms record puts the macOS build at 4.1–5.25k, up to 0.25k above S1's figure, and all platforms at 5.35–7.15k ([records/platforms.md](records/platforms.md) §5.7). Tests come on top: about 5–6k in core (2.6k of it from S4), 1.5k in die-vim and 0.5k in the renderer.

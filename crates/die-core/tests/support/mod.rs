@@ -1,12 +1,48 @@
 //! Test fixtures that use only the public API: a toy die-vim grammar, a fold mode in
 //! manifold's shape, and a toy terminal surface. Throwaway, like the contract-test fixtures (§16).
 #![allow(dead_code)]
+pub mod naive_layout;
 use die_core::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 pub fn quiet_panics() {
     std::panic::set_hook(Box::new(|_| {}));
+}
+
+/// How far a limit in ms stretches at background priority, which macOS can give a whole
+/// session while its terminal isn't in use. The same frame then takes about 3.6 times as
+/// long: 0.27 ms against 0.94 ms for scene's 1 ms test, measured in turns on one machine.
+/// Priorities below 10 are background on macOS, and nice 10 or more on Linux. With no `ps`
+/// to ask, a limit stays as it is.
+pub fn stretch_at(priority: Option<i32>) -> f64 {
+    if priority.is_some_and(|p| p < 10) {
+        4.0
+    } else {
+        1.0
+    }
+}
+
+fn priority() -> Option<i32> {
+    let pid = std::process::id().to_string();
+    let ps = std::process::Command::new("ps")
+        .args(["-o", "pri=", "-p", &pid])
+        .output()
+        .ok()?;
+    String::from_utf8(ps.stdout).ok()?.trim().parse().ok()
+}
+
+/// Three tries at a limit in ms, so a busy machine doesn't fail it. A limit in ms means a
+/// machine at its normal speed, so it stretches if the process is at background priority
+/// when the tries are done. Limits on a ratio don't need this: both sides slow down alike.
+pub fn within_three_tries_ms(limit: f64, mut measure: impl FnMut() -> f64) {
+    let tries: Vec<f64> = (0..3).map(|_| measure()).collect();
+    println!("{tries:.3?}, limit {limit} ms");
+    let best = tries.iter().copied().fold(f64::INFINITY, f64::min);
+    if best > limit {
+        let allowed = limit * stretch_at(priority());
+        assert!(best <= allowed, "{tries:.3?} are all over {allowed} ms");
+    }
 }
 
 /// The buffer and window a command acts on.
@@ -99,8 +135,8 @@ impl Extension for Vim {
                 for _ in 0..a.count.unwrap_or(1) {
                     let t = ctx.text_mut(b)?;
                     let dl = t.display_line(t.cursor(w).unwrap());
-                    let (mut s, e) = (t.line_start(dl.first_line), dl.end);
-                    if dl.eof && s > 0 {
+                    let (mut s, e) = (t.line_start(*dl.lines().start()), dl.end());
+                    if dl.eof() && s > 0 {
                         s -= 1; // last line: take the newline before it
                     }
                     if s == e {
@@ -326,9 +362,10 @@ fn vertical(ctx: &mut Ctx, a: &Args, d: Dir) -> Result {
     let mut p = t.pos_at_vcol(line, goal);
     // Normal state doesn't rest on the end of a non-empty line.
     let dl = t.display_line(p);
-    let n = dl.stops.len();
-    if n > 1 && dl.stops[n - 1].pos == p {
-        p = dl.stops[n - 2].pos;
+    let stops = dl.stops();
+    let n = stops.len();
+    if n > 1 && stops[n - 1].pos == p {
+        p = stops[n - 2].pos;
     }
     t.set_selection(w, Selection::cursor(p).with_goal(Some(goal)));
     Ok(())

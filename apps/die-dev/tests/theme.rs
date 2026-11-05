@@ -1,5 +1,7 @@
 //! mono-dark styles every base and UI face, and draws as your Emacs does.
 
+use die_test_cap as _;
+
 use die::core::{BASE_FACES, Ctx, Rgb, UI_FACES};
 use die_dev::theme::mono_dark;
 

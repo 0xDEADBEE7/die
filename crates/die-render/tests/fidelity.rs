@@ -4,6 +4,8 @@
 //! compiles them against the stub, so this file carries no platform cfg. Set
 //! `DIE_RENDER_PNG_DIR` to have them write the pictures they measure.
 
+use die_test_cap as _;
+
 use die_core::{Cell, Cursor, CursorShape, Glyph, Rgb, Scene, Underline};
 use die_render::driver::{Config, Renderer};
 use die_render::font::{Draw, RangeRule, fit};

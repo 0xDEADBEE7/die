@@ -1,0 +1,11 @@
+{"note": "Where tty Emacs 30.2 really draws its cursor: the terminal's cursor after a redisplay, read through term.el (probe/screen4.el). `cursor` is a byte offset here. posn-at-point reports a wide character that moved whole, or a control character with no cell left on its row, at the column it left, as wrap.json shows, but the cursor is drawn on its new row. probe/screens2.sh and probe/screens3.sh made these.",
+ "cursors": [
+  {"text": "aaaaaaaaa\u4e2db", "tty_cols": 11, "cursor": 9, "row": 1, "col": 0},
+  {"text": "aaaaaaaaa\u4e2db", "tty_cols": 11, "cursor": 12, "row": 1, "col": 2},
+  {"text": "aaaaaaaaaa\nb", "tty_cols": 11, "cursor": 10, "row": 0, "col": 10},
+  {"text": "aaaaaaaaa\tb", "tty_cols": 11, "cursor": 9, "row": 0, "col": 9},
+  {"text": "aaaaaaaaaa\u0001b", "tty_cols": 11, "cursor": 10, "row": 1, "col": 0},
+  {"text": "aaaaaaaaa \u0001b", "tty_cols": 11, "cursor": 10, "row": 1, "col": 0},
+  {"text": "aaaaaaaa \u0001b", "tty_cols": 11, "cursor": 9, "row": 1, "col": 0},
+  {"text": "\u0001\u0001\u0001\u0001\u0001\u0001", "tty_cols": 11, "cursor": 5, "row": 1, "col": 0}
+]}
