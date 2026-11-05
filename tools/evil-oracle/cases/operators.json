@@ -282,5 +282,19 @@
   {"id": "r-enter-after-a-blank-line", "keys": "r<CR>", "text": ["   ", "|a\tb"]},
   {"id": "J-on-empty-line-keeps-a-tab-that-fits", "vim": "Vim leaves \"\\tx\\ny\\n\", Evil \"\\tx\\n        y\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 8", "keys": "J", "text": ["\tx", "|", "\ty"]},
   {"id": "J-on-empty-line-too-far-right", "vim": "Vim leaves \"  x\\ny\\n\", Evil \"  x\\n  y\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 2", "keys": "J", "text": ["  x", "|", "\ty"]},
-  {"id": "J-on-empty-line-too-little", "vim": "Vim leaves \"        x\\ny\\n\", Evil \"        x\\n        y\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 8", "keys": "J", "text": ["        x", "|", "  y"]}
+  {"id": "J-on-empty-line-too-little", "vim": "Vim leaves \"        x\\ny\\n\", Evil \"        x\\n        y\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 8", "keys": "J", "text": ["        x", "|", "  y"]},
+  {"id": "2J-onto-a-spaces-only-line", "keys": "2J", "text": ["|a", "   ", "   ", "b"]},
+  {"id": "3J-over-spaces-only-lines", "keys": "3J", "text": ["|a", "   ", "   ", "b"]},
+  {"id": "2J-from-spaces-only-lines", "vim": "Vim leaves \"   \\nb\\n\", Evil \"\\nb\\n\"; Vim's cursor is at line 0 col 2, Evil's at line 0 col 0", "keys": "2J", "text": ["|   ", "   ", "b"]},
+  {"id": "3J-from-spaces-only-lines", "vim": "Vim leaves \"   \\nb\\n\", Evil \"\\nb\\n\"; Vim's cursor is at line 0 col 2, Evil's at line 0 col 0", "keys": "3J", "text": ["|   ", "   ", "   ", "b"]},
+  {"id": "3J-from-an-empty-line-ends-on-spaces", "vim": "Vim leaves \"  x\\n\\ny\\n\", Evil \"  x\\n  \\ny\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 1", "keys": "3J", "text": ["  x", "|", "  ", "", "y"]},
+  {"id": "4J-from-an-empty-line", "vim": "Vim leaves \"  x\\ny\\n\", Evil \"  x\\n  y\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 2", "keys": "4J", "text": ["  x", "|", "  ", "", "y"]},
+  {"id": "2J-closer-on-the-next-line", "keys": "2J", "text": ["|(", "  )"]},
+  {"id": "3J-closer-then-text", "keys": "3J", "text": ["|(", "  )", "  a"]},
+  {"id": "3J-closer-after-a-spaces-only-line", "vim": "Vim leaves \"a(  )b\\n\", Evil \"a()b\\n\"; Vim's cursor is at line 0 col 4, Evil's at line 0 col 2", "keys": "3J", "text": ["|a(  ", "   ", "  )b"]},
+  {"id": "3J-tail-of-spaces-no-final-newline", "keys": "3J", "text": "|a\n  b\n  "},
+  {"id": "5J-then-u", "keys": "5Ju", "text": ["a|bc", "  def", "g", "h", "i", "j", "k"]},
+  {"id": "J-on-the-empty-line-at-the-end", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 1 col 0", "keys": "J", "text": "    a\n|"},
+  {"id": "3J-on-the-empty-line-at-the-end", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 1 col 0", "keys": "3J", "text": "    a\n|"},
+  {"id": "J-on-empty-line-tabs-that-reach-exactly", "vim": "Vim leaves \"        a\\nb\\n\", Evil \"        a\\n        b\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 8", "keys": "J", "text": ["        a", "|", "\t\tb"]}
  ]}

@@ -596,6 +596,20 @@
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"\tx\ny\n","error":""},"id":"J-on-empty-line-keeps-a-tab-that-fits","topic":"operators","differs":["text","cursor"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"  x\ny\n","error":""},"id":"J-on-empty-line-too-far-right","topic":"operators","differs":["text","cursor"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"        x\ny\n","error":""},"id":"J-on-empty-line-too-little","topic":"operators","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"a\n   \nb\n","error":""},"id":"2J-onto-a-spaces-only-line","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"a\nb\n","error":""},"id":"3J-over-spaces-only-lines","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"   \nb\n","error":""},"id":"2J-from-spaces-only-lines","topic":"operators","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"   \nb\n","error":""},"id":"3J-from-spaces-only-lines","topic":"operators","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"  x\n\ny\n","error":""},"id":"3J-from-an-empty-line-ends-on-spaces","topic":"operators","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"  x\ny\n","error":""},"id":"4J-from-an-empty-line","topic":"operators","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":1,"line":0},"state":"normal","text":"()\n","error":""},"id":"2J-closer-on-the-next-line","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"() a\n","error":""},"id":"3J-closer-then-text","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":4,"line":0},"state":"normal","text":"a(  )b\n","error":""},"id":"3J-closer-after-a-spaces-only-line","topic":"operators","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"a b\n","error":""},"id":"3J-tail-of-spaces-no-final-newline","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":1,"line":0},"state":"normal","text":"abc\n  def\ng\nh\ni\nj\nk\n","error":""},"id":"5J-then-u","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":0},"state":"normal","text":"    a\n","error":""},"id":"J-on-the-empty-line-at-the-end","topic":"operators","differs":["cursor","errors 0 vs 1"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"    a\n","error":""},"id":"3J-on-the-empty-line-at-the-end","topic":"operators","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"        a\nb\n","error":""},"id":"J-on-empty-line-tabs-that-reach-exactly","topic":"operators","differs":["text","cursor"]}
 {"vim":{"registers":{"a":{"type":"line","text":"one\n"},"\"":{"type":"line","text":"one\n"}},"beeps":0,"cursor":{"col":0,"line":2},"state":"normal","text":"one\ntwo\none\n","error":""},"id":"named-yank-paste","topic":"registers","differs":[]}
 {"vim":{"registers":{"a":{"type":"line","text":"one\n"},"\"":{"type":"line","text":"one\n"}},"beeps":0,"cursor":{"col":0,"line":2},"state":"normal","text":"one\ntwo\none\n","error":""},"id":"named-yank-also-sets-unnamed","topic":"registers","differs":[]}
 {"vim":{"registers":{"a":{"type":"char","text":"foobar"},"\"":{"type":"char","text":"foobar"}},"beeps":0,"cursor":{"col":9,"line":0},"state":"normal","text":"foo foobarbar\n","error":""},"id":"uppercase-appends-charwise","topic":"registers","differs":["register \""]}

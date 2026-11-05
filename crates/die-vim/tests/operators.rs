@@ -326,3 +326,75 @@ fn case_changes_that_change_the_length() {
     let (t, at, ..) = run("ßb\n", 0, "2~");
     assert_eq!((t.as_str(), at), ("ßB\n", 2));
 }
+
+/// `J` with a count is one edit. A transaction lists its changes from the last position
+/// to the first (`edits_since`), so joining line by line would list them the other way.
+#[test]
+fn j_with_a_count_is_one_transaction() {
+    let mut ctx = editor();
+    let (b, w) = open(&mut ctx, "a\nb\nc\nd\ne\nf\n");
+    ctx.focus(w);
+    let rev = ctx.text(b).unwrap().rev();
+    ctx.type_keys("5J");
+    assert_eq!(text(&ctx, b), "a b c d e\nf\n");
+    let t = ctx.text(b).unwrap();
+    let starts: Vec<usize> = t.edits_since(rev).unwrap().map(|c| c.start).collect();
+    assert_eq!(starts, [7, 5, 3, 1]);
+}
+
+/// Each join changes only the line break, so a cursor on the text between them stays on it.
+#[test]
+fn j_leaves_another_windows_cursor_on_its_text() {
+    let mut ctx = editor();
+    let (b, w) = open(&mut ctx, "aa\n  bb\n  cc\nd\n");
+    let other = ctx.open_window(b, 80, 24).unwrap();
+    ctx.focus(w);
+    ctx.text_mut(b).unwrap().set_cursor(other, 11);
+    ctx.type_keys("3J");
+    assert_eq!(text(&ctx, b), "aa bb cc\nd\n");
+    assert_eq!(ctx.text(b).unwrap().cursor(other), Some(7), "the second c");
+}
+
+fn numbered_lines(n: usize) -> String {
+    (0..n)
+        .map(|n| format!("line number {n} with some words\n"))
+        .collect()
+}
+
+/// A mistyped count mustn't freeze the editor. Joining line by line took 231 seconds here
+/// in a release build, because each edit laid the whole line out again.
+#[test]
+fn j_with_a_huge_count_on_a_long_text_is_quick() {
+    let start = numbered_lines(20_000);
+    let mut ctx = editor();
+    let (b, w) = open(&mut ctx, &start);
+    ctx.focus(w);
+    let began = std::time::Instant::now();
+    ctx.type_keys("99999J");
+    let took = began.elapsed();
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+    assert_eq!(ctx.text(b).unwrap().line_count(), 2, "one line and the end");
+    assert!(took.as_secs() < 20, "J took {took:?}");
+    ctx.type_keys("u");
+    assert_eq!(text(&ctx, b), start, "one undo step");
+}
+
+/// As for `p` and a replayed insert (m0-log's call 46): a count that would make a line past
+/// the cap fails and changes nothing. With no count it just joins, whatever the size.
+#[test]
+fn a_count_on_j_that_would_make_too_long_a_line_fails() {
+    let start = numbered_lines(40_000);
+    assert!(start.len() > 1 << 20);
+    let mut ctx = editor();
+    let (b, w) = open(&mut ctx, &start);
+    ctx.focus(w);
+    ctx.type_keys("99999J");
+    assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
+    assert!(ctx.messages[0].contains("Count too large"));
+    assert_eq!(text(&ctx, b), start);
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(0));
+
+    let big = "x".repeat(2 << 20);
+    let (t, ..) = run(&format!("{big}\n{big}\n"), 0, "J");
+    assert_eq!(t.len(), 2 * big.len() + 2, "no count");
+}
