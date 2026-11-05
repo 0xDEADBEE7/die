@@ -5,7 +5,7 @@
 //! `grammar.rs` says how counts, motions, operators and insert sessions fit
 //! together. So far (V1, V3, V4): motions, counts, insert and replace sessions with their
 //! undo, operators, registers, text objects, visual state (`visual.rs`), and `.` and macros
-//! (`repeat.rs`). `registers.rs` is the one place that touches registers, for K6.
+//! (`repeat.rs`), and windows (`window.rs`). `registers.rs` is the one place that touches registers, for K6.
 
 #[cfg(test)]
 use die_test_cap as _;
@@ -21,6 +21,7 @@ mod repeat;
 mod scripts;
 mod text;
 mod visual;
+mod window;
 
 use die_core::key_notation;
 use die_core::{Args, BufferId, Ctx, Dir, Error, Extension, Registry, Result, Shape, State};
@@ -107,7 +108,7 @@ const EDITS: &[(&str, &str, Edit, &str)] = &[
     ("<Down>", "vim-insert-down", Edit::Down, "Down a line."),
 ];
 
-type Body = fn(&mut Ctx, &Args) -> Result;
+pub(crate) type Body = fn(&mut Ctx, &Args) -> Result;
 
 /// The other commands.
 #[rustfmt::skip]
@@ -255,6 +256,12 @@ impl Extension for Vim {
                 .bind(state, "/", "vim-search-forward")
                 .bind(state, "?", "vim-search-backward");
         }
+        for &(keys, name, ..) in window::MAP {
+            for key in keys.split_whitespace() {
+                let keys = format!("<C-w>{key}");
+                k.bind(Normal, &keys, name).bind(Visual, &keys, name);
+            }
+        }
         k.bind(Normal, ".", "vim-repeat")
             .bind(CommandLine, "<any>", "vim-record-macro-into");
         k.bind(Visual, "<Esc>", "vim-exit-visual")
@@ -338,6 +345,9 @@ impl Extension for Vim {
         }
         for &(name, doc, f) in COMMANDS {
             command(reg, name, doc, f);
+        }
+        for &(_, name, doc, f) in window::MAP {
+            command(reg, name, doc, move |ctx, a| window::run(ctx, a, f));
         }
     }
 }
