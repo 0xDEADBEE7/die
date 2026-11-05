@@ -6,7 +6,7 @@ use crate::text::{
     Chars, Class, Lists, blank_line, class, indent_end, last_line, line_end, next_stop, normal_pos,
     pos_at_col, prev_stop, same_word, string_around,
 };
-use die_core::{Dir, TextBuf, WindowId};
+use die_core::{Dir, TextBuf, ViewRow, WindowId};
 
 /// Every motion bound in normal state. `f`, `F`, `t` and `T` take a character
 /// and are bound with `<char>`.
@@ -33,6 +33,11 @@ pub const MOTIONS: &[Motion] = &[
     m("vim-jump-item", "%", Kind::Inclusive, "To the bracket matching the next one on the line, or count percent down the text.", jump_item),
     m("vim-forward-paragraph", "}", Kind::Exclusive, "To the next blank line after this paragraph.", forward_paragraph),
     m("vim-backward-paragraph", "{", Kind::Exclusive, "To the previous blank line before this paragraph.", backward_paragraph),
+    m("vim-window-top", "H", Kind::Linewise, "To the window's top row, or its row count.", |s| window_row(s, |_, n| n - 1)),
+    m("vim-window-middle", "M", Kind::Linewise, "To the window's middle row, the lower of two.", |s| window_row(s, |rows, _| rows / 2)),
+    m("vim-window-bottom", "L", Kind::Linewise, "To the window's bottom row, or count rows from it.", |s| window_row(s, |rows, n| rows.saturating_sub(n))),
+    m("vim-next-visual-line", "gj", Kind::Exclusive, "Down a screen row, keeping the column on the row.", |s| visual_line(s, 1, "End of buffer")),
+    m("vim-previous-visual-line", "gk", Kind::Exclusive, "Up a screen row, keeping the column on the row.", |s| visual_line(s, -1, "Beginning of buffer")),
 ];
 
 const fn m(
@@ -56,19 +61,25 @@ pub fn beginning_of_line(s: &Start) -> Result<Target, Fail> {
     Ok(Target::at(s.text.line_start(s.text.line_of(s.pos))))
 }
 
-/// `C-a`, Emacs's beginning-of-visual-line under your global-visual-line-mode: to the
-/// start of the screen row, count-1 rows down. `move_visual` with goal 0 gives a row's
-/// start, but only for another row, so this row's start comes from the row above.
-pub fn row_beginning(s: &Start, w: WindowId) -> Result<Target, Fail> {
-    let t = s.text;
-    let here = t.line_of(s.pos);
+/// Where `pos`'s screen row starts. `move_visual` with goal 0 gives a row's start, but only for
+/// another row, so this row's start comes from the row above.
+pub fn row_start(t: &TextBuf, w: WindowId, pos: usize) -> usize {
     let row = |pos, dy| t.move_visual(w, pos, dy, Some(0)).map_or(pos, |(q, _)| q);
-    let above = row(s.pos, -1);
-    let mut q = if above == s.pos {
-        t.line_start(here)
+    let above = row(pos, -1);
+    if above == pos {
+        t.line_start(t.line_of(pos))
     } else {
         row(above, 1)
-    };
+    }
+}
+
+/// `C-a`, Emacs's beginning-of-visual-line under your global-visual-line-mode: to the
+/// start of the screen row, count-1 rows down.
+pub fn row_beginning(s: &Start) -> Result<Target, Fail> {
+    let (t, w) = (s.text, s.window);
+    let here = t.line_of(s.pos);
+    let row = |pos, dy| t.move_visual(w, pos, dy, Some(0)).map_or(pos, |(q, _)| q);
+    let mut q = row_start(t, w, s.pos);
     if s.n() > 1 {
         q = row(q, isize::try_from(s.n() - 1).unwrap_or(isize::MAX));
     }
@@ -151,11 +162,63 @@ fn vertical(s: &Start, dir: Dir, err: Fail) -> Result<Target, Fail> {
 }
 
 /// The position on `line` at the goal column, which may be its newline.
-fn goal_pos(t: &TextBuf, line: usize, goal: Goal) -> usize {
+pub fn goal_pos(t: &TextBuf, line: usize, goal: Goal) -> usize {
     match goal {
         Goal::Col(col) => pos_at_col(t, line, col),
         Goal::Eol => line_end(t, line),
     }
+}
+
+/// Where a cursor lands on a window's row, keeping the goal column, as Evil's scrolling and
+/// `H M L` do. The column is the line's, so on a wrapped line it may not be on this row, and
+/// then the row's nearest stop does: the cursor stays where the window shows it. The empty row
+/// after a final newline takes the cursor to the last line (scope §10).
+pub fn row_pos(t: &TextBuf, row: &ViewRow, goal: Goal) -> usize {
+    if t.line_of(row.dline_start) > last_line(t) {
+        return goal_pos(t, last_line(t), goal);
+    }
+    let want = Goal::encode(Some(goal)).unwrap_or(0);
+    let stops = row.stops();
+    let stop = stops.iter().rfind(|st| st.vcol <= want).or(stops.first());
+    stop.map_or(row.dline_start, |st| st.pos)
+}
+
+/// The goal a motion or a scroll keeps: the one in force, or the cursor's column.
+pub fn goal_at(s: Option<Goal>, t: &TextBuf, pos: usize) -> Goal {
+    s.unwrap_or(Goal::Col(t.display_col(pos)))
+}
+
+/// `H`, `M`, `L`: the window's row `which(rows, count)`, or its last row if it shows fewer.
+fn window_row(s: &Start, which: fn(usize, usize) -> usize) -> Result<Target, Fail> {
+    let v = s.text.viewport(s.window).ok_or("No window")?;
+    let i = which(v.geometry.rows, s.n());
+    let row = v.rows.get(i).or(v.rows.last()).ok_or("No window")?;
+    let goal = goal_at(s.goal, s.text, s.pos);
+    Ok(Target {
+        goal: Some(goal),
+        ..Target::at(row_pos(s.text, row, goal))
+    })
+}
+
+/// `gj` and `gk`: by screen row, keeping the column on the row. They go as far as they can and
+/// signal if that's short of the count. The empty row after a final newline isn't one to land
+/// on (scope §10).
+fn visual_line(s: &Start, dy: isize, err: Fail) -> Result<Target, Fail> {
+    let t = s.text;
+    let mut goal = Goal::encode(s.goal);
+    let mut pos = s.pos;
+    for _ in 0..s.n() {
+        let (q, g) = t.move_visual(s.window, pos, dy, goal).ok_or("No window")?;
+        goal = Some(g);
+        if q == pos || t.line_of(q) > last_line(t) {
+            return Ok(Target::short(pos, err));
+        }
+        pos = q;
+    }
+    Ok(Target {
+        goal: Goal::decode(goal),
+        ..Target::at(pos)
+    })
 }
 
 fn first_non_blank(s: &Start) -> Result<Target, Fail> {
@@ -664,6 +727,7 @@ mod tests {
     fn start(t: &TextBuf, pos: usize, count: usize) -> Start<'_> {
         Start {
             text: t,
+            window: WindowId::default(),
             pos,
             count: Some(count),
             goal: None,
@@ -683,6 +747,7 @@ mod tests {
         let t = TextBuf::new(text);
         let s = Start {
             text: &t,
+            window: WindowId::default(),
             pos,
             count: None,
             goal: None,

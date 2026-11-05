@@ -99,6 +99,8 @@ pub enum Operator {
 pub struct Start<'a> {
     /// The text, with its layout queries.
     pub text: &'a TextBuf,
+    /// The window it runs in, for the motions that read its rows.
+    pub window: WindowId,
     /// The cursor.
     pub pos: usize,
     /// The count typed before the motion, if any.
@@ -238,6 +240,7 @@ pub fn run_motion(
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
     let start = Start {
         text: t,
+        window: w,
         pos: sel.head,
         count: a.count,
         goal: Goal::decode(sel.goal),
