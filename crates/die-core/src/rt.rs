@@ -42,19 +42,23 @@ impl Drop for Sub {
 pub(crate) type Callback = Box<dyn FnOnce(&mut Ctx) -> Result>;
 type JobDone = Box<dyn FnOnce(&mut Ctx, Box<dyn Any + Send>) -> Result>;
 
+type TimerFn = Rc<RefCell<dyn FnMut(&mut Ctx) -> Result>>;
+type KilledFn = Rc<RefCell<dyn FnMut(&mut Ctx, BufferId) -> Result>>;
+type KeysFn = RefCell<Box<dyn FnMut(&KeyEvent, KeySource)>>;
+
 pub(crate) enum SubKind {
     Timer {
         at: Cell<Duration>,
         every: Option<Duration>,
         fired: Cell<bool>,
-        f: Rc<RefCell<dyn FnMut(&mut Ctx) -> Result>>,
+        f: TimerFn,
     },
-    Killed(Rc<RefCell<dyn FnMut(&mut Ctx, BufferId) -> Result>>),
+    Killed(KilledFn),
     Job {
         id: u64,
         f: RefCell<Option<JobDone>>,
     },
-    Keys(RefCell<Box<dyn FnMut(&KeyEvent, KeySource)>>),
+    Keys(KeysFn),
 }
 
 pub(crate) struct SubEntry {
@@ -161,18 +165,18 @@ impl Ctx {
             self.outstanding -= 1;
             let mut v = Some(v);
             for e in &self.subs {
-                if let SubKind::Job { id: jid, f } = &e.kind {
-                    if *jid == id && e.inner.alive.get() {
-                        if let Some(f) = f.borrow_mut().take() {
-                            let v = v.take().unwrap();
-                            let ext = e.inner.ext;
-                            self.queue.push_back(Queued {
-                                ext,
-                                alive: Some(e.inner.clone()),
-                                f: Box::new(move |ctx| f(ctx, v)),
-                            });
-                        }
-                    }
+                if let SubKind::Job { id: jid, f } = &e.kind
+                    && *jid == id
+                    && e.inner.alive.get()
+                    && let Some(f) = f.borrow_mut().take()
+                {
+                    let v = v.take().unwrap();
+                    let ext = e.inner.ext;
+                    self.queue.push_back(Queued {
+                        ext,
+                        alive: Some(e.inner.clone()),
+                        f: Box::new(move |ctx| f(ctx, v)),
+                    });
                 }
             }
         }

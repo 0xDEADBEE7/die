@@ -9,17 +9,8 @@
 #[cfg(panic = "abort")]
 compile_error!("DIE requires panic = \"unwind\" (C9). Set it in the config crate's profile.");
 
-// S4's code as ported (K1) has a few clippy findings; changing it here would
-// break the accepted port and the planted bugs' exact text. K2 and K5 rebuild
-// these modules and drop the allows.
-#[allow(
-    clippy::collapsible_if,
-    clippy::cloned_ref_to_slice_refs,
-    clippy::type_complexity
-)]
 mod dispatch;
 mod error;
-#[allow(clippy::type_complexity, clippy::large_enum_variant)]
 mod ext;
 mod faces;
 mod files;
@@ -27,12 +18,9 @@ mod ids;
 mod keymap;
 mod keys;
 mod layout;
-#[allow(clippy::collapsible_if, clippy::type_complexity)]
 mod rt;
 mod scene;
-#[allow(clippy::collapsible_if, clippy::if_same_then_else)]
 mod text;
-#[allow(clippy::collapsible_if)]
 mod undo;
 
 pub use dispatch::*;

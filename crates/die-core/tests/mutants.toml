@@ -222,10 +222,9 @@ new = '''
 name = "M25 begin doesn't join an edit made earlier in the same command"
 file = "src/undo.rs"
 old = '''
-                if g.cmd == cmd {
-                    g.open = true;
-                }'''
-new = ''
+            && g.cmd == cmd'''
+new = '''
+            && false'''
 
 [[mutant]]
 name = "M26 a folded silent rewrite gets the wrong length"
