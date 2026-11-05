@@ -188,7 +188,7 @@ fn a_theme_replaces_a_declared_style_and_keeps_the_parent() {
 fn base_and_ui_faces_inherit_from_their_parents() {
     let ctx = ctx_with(vec![]);
     let names: Vec<&str> = BASE_FACES.iter().chain(UI_FACES).map(|f| f.0).collect();
-    assert_eq!(names.len(), 20);
+    assert_eq!(names.len(), 22);
     assert!(names.iter().all(|n| ctx.face_style(n).is_some()));
     assert_eq!(
         ctx.face_style("heading").unwrap(),
