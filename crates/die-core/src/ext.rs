@@ -649,8 +649,7 @@ impl Ctx {
     pub(crate) fn report(&mut self, r: Result) {
         match r {
             Ok(()) | Err(Error::Panicked { .. }) => {}
-            Err(e) => self.messages.push(e.to_string()),
-            Err(e) => self.log_error(format!("{e:?}")),
+            Err(e) => self.log_error(e.to_string()),
         }
     }
     /// Log a key's or a call's failure, as opposed to news such as "Wrote foo".
