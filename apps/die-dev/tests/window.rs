@@ -16,9 +16,10 @@
 //! - `scale`: each scale change gives the right drawable in its first frame, and
 //!   rebuilds the cell and the grid. Simulated: this machine may have one display.
 //! - `occlusion`: covered by another window of ours, nothing draws though the text
-//!   changed, and uncovering draws the change with nothing else poking the loop.
-//! - `show`: the file is on the drawable, pixel for pixel what the offscreen path
-//!   draws. `Ctx::input` draws in the same turn. A timer and a job's wake each make
+//!   changed, and uncovering draws the change with nothing else poking the loop. A
+//!   window with no frame yet draws one under a cover, and only one.
+//! - `show`: its own buffer is on the drawable, pixel for pixel what the offscreen path
+//!   draws, whatever file was named. `Ctx::input` draws in the same turn. A timer and a job's wake each make
 //!   a frame with no other event. Borderless, Option as Alt, not active, not key.
 //!
 //! Plain `die file.txt` stays up with no output, which `no window yet` didn't, and
@@ -114,11 +115,15 @@ impl Run {
 }
 
 fn run_check(names: &str) -> Run {
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let path = file("show.txt", &"a line of the file\n".repeat(200));
+    run_check_on(names, Some(path))
+}
+
+fn run_check_on(names: &str, path: Option<PathBuf>) -> Run {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let child = Command::new(DIE)
         .args(["--check", names])
-        .arg(path)
+        .args(path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -167,12 +172,14 @@ fn the_window_holds_to_s1s_rules() {
         assert!(num(&occ, "cycles") >= 3.0, "{occ:?}");
         let stall = num(&occ, "worst_stall_ms");
         assert!(stall <= 200.0, "S1's 50 ms, allowing for load: {occ:?}");
+        assert_eq!(num(&occ, "first_frame_covered"), 1.0, "{occ:?}");
     }
 
     let show = run.passed("show").expect("show can always run");
     assert_eq!(num(&show, "pixels_differ"), 0.0, "{show:?}");
     assert!(num(&show, "colors") >= 2.0, "not one flat color: {show:?}");
-    assert_eq!(show["text"], "yes", "the file's text: {show:?}");
+    assert_eq!(show["text"], "yes", "its text: {show:?}");
+    assert_eq!(show["unreadable_refused"], "yes", "{show:?}");
     assert_eq!(num(&show, "input_frames"), 1.0, "same turn: {show:?}");
     assert_eq!(show["input_shown"], "yes", "{show:?}");
     assert_eq!(num(&show, "timer_frames"), 1.0, "{show:?}");
@@ -201,6 +208,24 @@ fn a_median_resize_frame_stays_under_s1s_limit() {
         }
     }
     panic!("{tries:?} are all over {limit} ms");
+}
+
+#[test]
+fn show_passes_whatever_file_was_named() {
+    if no_backend() {
+        return;
+    }
+    let long = "word ".repeat(60) + "\n";
+    let files = [
+        None,
+        Some(file("blank.txt", "\nsecond\n")),
+        Some(file("long.txt", &long)),
+        Some(file("tab.txt", "\tstarts with a tab\n")),
+    ];
+    for path in files {
+        let run = run_check_on("show", path);
+        run.passed("show").expect("show can always run");
+    }
 }
 
 #[test]

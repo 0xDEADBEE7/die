@@ -398,11 +398,14 @@ fn finish(commands: &ProtocolObject<dyn MTLCommandBuffer>) -> Result<(), String>
     Ok(())
 }
 
-/// A finished target's pixels. A window's drawable must have been made readable.
+/// A finished target's pixels: the offscreen target's, or a drawable's when the surface
+/// asked, which only a readable one can (`Surface::read_next_frame`).
 fn read_back(target: &ProtocolObject<dyn MTLTexture>, w: u32, h: u32) -> Image {
     let mut bgra = vec![0u8; w as usize * h as usize * 4];
-    // SAFETY: the buffer holds the region's `w` × `h` BGRA pixels at the stride given, the
-    // texture is readable, as its doc says, and the GPU has finished with it.
+    // SAFETY: the buffer holds the region's `w` × `h` BGRA pixels at the stride given, and
+    // the GPU has finished with the texture. It isn't framebuffer-only: the offscreen target
+    // never is, and `Surface::read_next_frame`, the one way to reach this for a drawable,
+    // refuses a surface whose layer is framebuffer-only.
     unsafe {
         target.getBytes_bytesPerRow_fromRegion_mipmapLevel(
             NonNull::from(&mut *bgra).cast(),

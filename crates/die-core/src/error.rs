@@ -1,6 +1,8 @@
 //! Errors. `Checkout` is the C2 result for `with_surface`, `with_mode` and `with_ext`.
 #![warn(missing_docs)]
 
+use std::fmt;
+
 /// Why a checkout failed (C2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Checkout {
@@ -50,6 +52,26 @@ pub enum Error {
     UndoConflict,
     /// Anything else, as text for the command line.
     Msg(String),
+}
+
+impl fmt::Display for Error {
+    /// The text for a person: the command line, `*messages*` or stderr.
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::Checkout(Checkout::Gone) => f.write_str("that buffer is gone"),
+            Error::Checkout(Checkout::Busy) => f.write_str("that's already checked out"),
+            Error::Checkout(Checkout::Missing) => f.write_str("there's no such object"),
+            Error::ReadOnly { at } => write!(f, "the text at {at} is read-only"),
+            Error::BadRange { start, end } => write!(f, "bad range {start}..{end}"),
+            Error::NotText => f.write_str("that buffer has no text"),
+            Error::NoCommand(name) => write!(f, "no command named {name}"),
+            Error::Panicked { ext, msg } => write!(f, "{ext} panicked: {msg}"),
+            Error::NothingToUndo => f.write_str("nothing to undo"),
+            Error::BadPattern(why) => write!(f, "bad pattern: {why}"),
+            Error::UndoConflict => f.write_str("undo history was cut short by an overlapping edit"),
+            Error::Msg(text) => f.write_str(text),
+        }
+    }
 }
 
 impl From<Checkout> for Error {

@@ -58,6 +58,13 @@ pub fn grid(px: (u32, u32), cell: &CellMetrics) -> (usize, usize) {
     (cols as usize, rows as usize)
 }
 
+/// Whether occlusion holds a frame back: with the guard on, a window that can't be seen
+/// doesn't draw, except its first frame, so that it has its contents when it's uncovered
+/// and whatever waits for a first frame isn't kept waiting.
+pub fn holds_frame(guard: bool, frames: u64, occluded: bool) -> bool {
+    guard && frames > 0 && occluded
+}
+
 /// What a pump did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Pumped {
@@ -111,7 +118,7 @@ impl Host {
         };
         let (cols, rows) = (grid.0, grid.1.saturating_sub(2));
         if let Err(e) = self.ctx.resize(window, cols, rows) {
-            self.ctx.messages.push(format!("{e:?}"));
+            self.ctx.messages.push(e.to_string());
         }
     }
 
@@ -246,7 +253,7 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
     ctx.set_waker(move || {
         let _ = wake.send_event(Wake::Core);
     })
-    .map_err(|e| format!("{e:?}"))?;
+    .map_err(|e| e.to_string())?;
     let mut shell = Shell {
         host: Host::new(ctx),
         font: options.font,
@@ -375,7 +382,7 @@ impl Shell {
             self.stale = true;
             self.resized = true;
         }
-        if self.guard && live.surface.occluded() {
+        if holds_frame(self.guard, self.stats.frames, live.surface.occluded()) {
             self.stats.skipped += 1;
             self.dirty = true;
             return;

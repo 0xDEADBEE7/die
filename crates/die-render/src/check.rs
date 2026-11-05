@@ -5,13 +5,14 @@
 #![warn(missing_docs)]
 
 use crate::window::{Remote, Script, Shell, floating_window};
-use die_core::{Ctx, Key, KeyEvent, Origin, Result as CoreResult, Scene};
+use die_core::{Ctx, Key, KeyEvent, Origin, Result as CoreResult, Scene, WindowId};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use winit::dpi::LogicalSize;
+use winit::event_loop::ActiveEventLoop;
 
 /// The checks there are.
 pub const NAMES: [&str; 5] = ["idle", "resize", "scale", "occlusion", "show"];
@@ -28,6 +29,9 @@ const SETTLE: Duration = Duration::from_millis(1000);
 /// A timer's or a job's delay, then how long a frame gets after it.
 const LATER: Duration = Duration::from_millis(30);
 const THEN: Duration = Duration::from_millis(1000);
+/// What `show` puts on screen, whatever file was named: its first line is on row 0 as it
+/// is, and `x` changes it.
+const SHOW_TEXT: &str = "the show check's own line\nand another\n";
 
 enum Verdict {
     Ok(String),
@@ -296,6 +300,42 @@ fn scale(r: &Remote) -> Outcome {
     )))
 }
 
+/// Put a floating window over the check's.
+fn cover(s: &mut Shell, el: &ActiveEventLoop) -> Result<(), String> {
+    let live = s.live.as_ref().ok_or("no window")?;
+    let (x, y) = live.window.outer_position().map_or((0, 0), |p| (p.x, p.y));
+    let size = live.window.outer_size();
+    let k = live.scale;
+    let at = (f64::from(x) / k - 20.0, f64::from(y) / k - 20.0);
+    let over = (
+        f64::from(size.width) / k + 40.0,
+        f64::from(size.height) / k + 40.0,
+    );
+    let window = el.create_window(floating_window(at, over));
+    s.cover = Some(window.map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+/// A window that can't be seen and has drawn nothing draws its first frame anyway, and only
+/// that one. This has the frame count start over under a cover, which is the state of a
+/// window that opened hidden. How many frames that drew.
+fn first_frame_covered(r: &Remote) -> Result<u64, String> {
+    r.call(cover)??;
+    ensure(wait_occluded(r, true)?, || {
+        "the window server never reported it covered".into()
+    })?;
+    r.call(|s, _| {
+        s.stats.frames = 0;
+        s.host.ctx.defer(edit);
+    })?;
+    sleep(Duration::from_millis(100));
+    r.call(|s, _| s.host.ctx.defer(edit))?;
+    sleep(Duration::from_millis(100));
+    let drawn = frames(r)?;
+    r.call(|s, _| s.cover = None)?;
+    Ok(drawn)
+}
+
 /// Covered, nothing draws though the text changed. Uncovered, the change draws with nothing
 /// from this check poking the loop, which is why it sleeps rather than polls.
 fn occlusion(r: &Remote) -> Outcome {
@@ -311,22 +351,7 @@ fn occlusion(r: &Remote) -> Outcome {
     }
     let (mut drawn, mut missed) = (0, 0);
     for cycle in 0..OCCLUSION_CYCLES {
-        r.call(|s, el| {
-            let Some(live) = &s.live else {
-                return Err("no window".to_owned());
-            };
-            let (x, y) = live.window.outer_position().map_or((0, 0), |p| (p.x, p.y));
-            let size = live.window.outer_size();
-            let k = live.scale;
-            let at = (f64::from(x) / k - 20.0, f64::from(y) / k - 20.0);
-            let cover = (
-                f64::from(size.width) / k + 40.0,
-                f64::from(size.height) / k + 40.0,
-            );
-            let window = el.create_window(floating_window(at, cover));
-            s.cover = Some(window.map_err(|e| e.to_string())?);
-            Ok(())
-        })??;
+        r.call(cover)??;
         ensure(wait_occluded(r, true)?, || {
             format!("cycle {cycle}: the window server never reported it covered")
         })?;
@@ -348,10 +373,14 @@ fn occlusion(r: &Remote) -> Outcome {
         }
     }
     let stall = r.call(|s, _| s.stats.worst_turn_ms)?;
+    let first = first_frame_covered(r)?;
     ensure(drawn == 0, || format!("{drawn} frames while covered"))?;
     ensure(missed == 0, || format!("{missed} uncovers drew nothing"))?;
+    ensure(first == 1, || {
+        format!("a hidden window's first frame drew {first} frames, not 1")
+    })?;
     Ok(Verdict::Ok(format!(
-        "cycles={OCCLUSION_CYCLES} frames_while_covered={drawn} missed_uncover={missed} worst_stall_ms={stall:.1}"
+        "cycles={OCCLUSION_CYCLES} frames_while_covered={drawn} missed_uncover={missed} worst_stall_ms={stall:.1} first_frame_covered={first}"
     )))
 }
 
@@ -373,12 +402,12 @@ fn what_is_shown(s: &mut Shell) -> Result<Shown, String> {
         .as_ref()
         .ok_or("no window")?
         .surface
-        .read_next_frame();
+        .read_next_frame()?;
     s.stale = true;
     s.draw();
     let scene = s.last.clone().ok_or("no frame yet")?;
     let buf = s.host.ctx.focused_buffer().ok_or("no buffer")?;
-    let t = s.host.ctx.text(buf).map_err(|e| format!("{e:?}"))?;
+    let t = s.host.ctx.text(buf).map_err(|e| e.to_string())?;
     let first = t.rope().line(0).to_string();
     let first = first.trim_end().to_owned();
     let row = row_text(&scene, 0);
@@ -401,10 +430,33 @@ fn what_is_shown(s: &mut Shell) -> Result<Shown, String> {
     })
 }
 
-/// The file is on the drawable. Input draws in its own turn. A timer and a job's wake each
+/// Whether a surface attached without `readable` refuses to read a frame back.
+fn unreadable_refuses(s: &mut Shell, el: &ActiveEventLoop) -> Result<bool, String> {
+    let hidden = crate::window::quiet_window().with_visible(false);
+    let window = el.create_window(hidden).map_err(|e| e.to_string())?;
+    let live = s.live.as_ref().ok_or("no window")?;
+    let surface = live.renderer.attach(&window, false)?;
+    Ok(surface.read_next_frame().is_err())
+}
+
+/// Put a window on `show`'s own buffer in front. The window that was there, to go back to.
+fn open_show_buffer(s: &mut Shell) -> Result<WindowId, String> {
+    let ctx = &mut s.host.ctx;
+    let back = ctx.focused().ok_or("no window")?;
+    let (cols, rows) = ctx.window_size(back).ok_or("no window")?;
+    let buf = ctx.create_text("*show*", SHOW_TEXT);
+    ctx.open_window(buf, cols, rows)
+        .map_err(|e| e.to_string())?;
+    Ok(back)
+}
+
+/// A buffer of its own is on the drawable, so what was named can't change the verdict: a
+/// file reaching the window is `die`'s facade tests' to hold. Input draws in its own turn. A timer and a job's wake each
 /// draw with nothing else waking the loop. The window has no border and takes no focus.
 fn show(r: &Remote) -> Outcome {
     first_frame(r)?;
+    let refused = r.call(unreadable_refuses)??;
+    let back = r.call(|s, _| open_show_buffer(s))??;
     let shown = r.call(|s, _| what_is_shown(s))??;
     let (input_frames, input_shown) = r.call(|s, _| {
         let (f0, before) = (s.stats.frames, s.last.clone());
@@ -426,6 +478,7 @@ fn show(r: &Remote) -> Outcome {
     sleep(LATER + THEN);
     let f2 = frames(r)?;
     let (timer_frames, job_frames) = (f1 - f0, f2 - f1);
+    r.call(move |s, _| s.host.ctx.focus(back))?;
     let Shown {
         differ,
         colors,
@@ -435,6 +488,9 @@ fn show(r: &Remote) -> Outcome {
         active,
         key,
     } = shown;
+    ensure(refused, || {
+        "a surface that isn't readable took a read".into()
+    })?;
     ensure(differ == 0, || {
         format!("{differ} pixels differ from the offscreen path")
     })?;
@@ -458,7 +514,7 @@ fn show(r: &Remote) -> Outcome {
         format!("took focus: active={active} key={key}")
     })?;
     Ok(Verdict::Ok(format!(
-        "pixels_differ={differ} colors={colors} text=yes input_frames={input_frames} input_shown={} timer_frames={timer_frames} job_frames={job_frames} decorated={decorated} option_as_alt={option_as_alt} active={active} key={key}",
+        "pixels_differ={differ} colors={colors} text=yes unreadable_refused=yes input_frames={input_frames} input_shown={} timer_frames={timer_frames} job_frames={job_frames} decorated={decorated} option_as_alt={option_as_alt} active={active} key={key}",
         yes_no(input_shown),
     )))
 }

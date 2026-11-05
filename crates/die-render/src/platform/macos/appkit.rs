@@ -47,6 +47,8 @@ pub struct Surface {
     pub(super) layer: Retained<CAMetalLayer>,
     /// Whether the next frame comes back as an image: `Presented::image`.
     pub(super) read_next: Cell<bool>,
+    /// Whether its drawables can be read: they aren't framebuffer-only.
+    readable: bool,
 }
 
 impl Surface {
@@ -75,12 +77,18 @@ impl Surface {
             window: ns_window,
             layer,
             read_next: Cell::new(false),
+            readable,
         })
     }
 
-    /// Read the next frame back, which costs tens of ms. The surface must be readable.
-    pub fn read_next_frame(&self) {
+    /// Read the next frame back, which costs tens of ms. On a surface attached without
+    /// `readable` this is an error, and nothing will be read.
+    pub fn read_next_frame(&self) -> Result<(), String> {
+        if !self.readable {
+            return Err("this surface's frames can't be read back".into());
+        }
         self.read_next.set(true);
+        Ok(())
     }
 
     /// The view's size now, in pixels at `scale`.

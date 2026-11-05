@@ -5,7 +5,7 @@ use die_test_cap as _;
 
 use die_core::{Clock, Config, Ctx, Key, KeyEvent, Result, Scene};
 use die_render::font::{CellMetrics, FaceMetrics};
-use die_render::window::{Host, Sleep, TURN_LIMIT, grid, sleep_for};
+use die_render::window::{Host, Sleep, TURN_LIMIT, grid, holds_frame, sleep_for};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -174,4 +174,15 @@ fn a_real_clock_fires_a_timer_through_the_host() {
     h.pump();
     assert!(fired.get());
     assert_eq!(h.sleep(false), Sleep::Forever);
+}
+
+#[test]
+fn occlusion_holds_back_every_frame_but_the_first() {
+    assert!(!holds_frame(true, 0, true), "the first frame always draws");
+    assert!(holds_frame(true, 1, true));
+    assert!(!holds_frame(true, 1, false));
+    assert!(
+        !holds_frame(false, 1, true),
+        "with the guard off, nothing's held"
+    );
 }

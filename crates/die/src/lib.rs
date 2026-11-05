@@ -13,7 +13,9 @@ use die_core::{Clock, Ctx, Extension, StatusTextFn};
 use die_render::driver::Config as Font;
 use die_render::{check, window};
 use die_vim::Vim;
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 
 /// Everything your config says.
 pub struct Config {
@@ -43,9 +45,31 @@ impl Default for Config {
     }
 }
 
-/// Everything before the window opens: the editor, with one window showing the first file
-/// that opened, or an empty buffer. A file that won't open is logged, and the next one goes
-/// on screen instead. Every problem with the config comes back at once (C8).
+/// Where DIE started, as Emacs has it: `$PWD`, which keeps the symlinks you came through, if
+/// it's absolute and the same directory as the real one. Otherwise the real one, or `/`.
+pub fn started_dir() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    started_dir_from(std::env::var_os("PWD").as_deref(), cwd)
+}
+
+/// [`started_dir`], given `$PWD` and the real working directory.
+pub fn started_dir_from(pwd: Option<&OsStr>, cwd: PathBuf) -> PathBuf {
+    let same = |pwd: &Path| {
+        let (Ok(a), Ok(b)) = (pwd.metadata(), cwd.metadata()) else {
+            return false;
+        };
+        (a.dev(), a.ino()) == (b.dev(), b.ino())
+    };
+    match pwd.map(Path::new) {
+        Some(pwd) if pwd.is_absolute() && same(pwd) => pwd.to_path_buf(),
+        _ => cwd,
+    }
+}
+
+/// Everything before the window opens: the editor, with a window on the first file that
+/// opened. A file that won't open is logged, and the next one goes on screen instead. With
+/// none open, whatever window the startup hook opened stays on screen, and without one
+/// there's an empty buffer. Every problem with the config comes back at once (C8).
 pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
     let Config {
         mut core,
@@ -61,17 +85,23 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
     if let Some(f) = status_text {
         ctx.set_status_text(f);
     }
-    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let here = started_dir();
     let mut first = None;
     for file in files {
         match ctx.open_file(&here.join(file)) {
             Ok(buf) => first = first.or(Some(buf)),
-            Err(e) => ctx.messages.push(format!("{e:?}")),
+            Err(e) => ctx.messages.push(e.to_string()),
         }
     }
-    let buf = first.unwrap_or_else(|| ctx.create_text("*scratch*", ""));
-    ctx.open_window(buf, 80, 24)
-        .map_err(|e| vec![format!("{e:?}")])?;
+    let on_screen = match first {
+        Some(buf) => Some(buf),
+        None if ctx.focused().is_none() => Some(ctx.create_text("*scratch*", "")),
+        None => None,
+    };
+    if let Some(buf) = on_screen {
+        ctx.open_window(buf, 80, 24)
+            .map_err(|e| vec![e.to_string()])?;
+    }
     Ok(ctx)
 }
 

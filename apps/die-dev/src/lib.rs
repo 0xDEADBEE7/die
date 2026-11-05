@@ -14,10 +14,12 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// The files your `init.el` turns line numbers on for: python-mode, c-mode, c++-mode,
-/// emacs-lisp-mode, js-mode, mhtml-mode and css-mode, by their usual extensions.
+/// emacs-lisp-mode, js-mode, mhtml-mode and css-mode, and the modes derived from them, by
+/// the extensions `emacs -Q` gives those modes. Lower case: Emacs folds case when nothing
+/// matches exactly, and `.C` and `.H`, which do match, are in these modes too.
 const LINE_NUMBERS: &[&str] = &[
-    "py", "c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx", "el", "js", "mjs", "cjs", "html",
-    "htm", "css",
+    "py", "pyi", "pyw", "c", "h", "i", "lex", "y", "cc", "cpp", "cxx", "c++", "hh", "hpp", "hxx",
+    "h++", "ii", "el", "js", "jsx", "html", "htm", "xhtml", "shtml", "shtm", "css", "scss", "less",
 ];
 
 /// What the command line asked for.
@@ -52,7 +54,7 @@ pub fn parse_args(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result
                 ));
             }
             parsed.check = Some(names);
-        } else if !only_files && name.starts_with("--") {
+        } else if !only_files && name.starts_with('-') && name != "-" {
             return Err(format!("no option {name}"));
         } else {
             parsed.files.push(PathBuf::from(arg));
@@ -63,7 +65,7 @@ pub fn parse_args(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result
 
 /// Your config, for these files.
 pub fn config(files: Vec<PathBuf>) -> die::Config {
-    let started = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let started = die::started_dir();
     let home = std::env::home_dir();
     let core = die::core::Config {
         register: Some(Box::new(bindings)),
@@ -101,7 +103,7 @@ fn text_defaults() -> Settings {
 /// Line numbers by file: `init.el`'s `display-line-numbers-type` is `visual`.
 fn file_settings(path: &Path, settings: &mut Settings) {
     let extension = path.extension().and_then(|e| e.to_str());
-    if extension.is_some_and(|e| LINE_NUMBERS.contains(&e)) {
+    if extension.is_some_and(|e| LINE_NUMBERS.iter().any(|n| n.eq_ignore_ascii_case(e))) {
         settings.line_numbers = LineNumbers::Visual;
     }
 }
