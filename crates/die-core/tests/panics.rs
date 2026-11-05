@@ -902,7 +902,10 @@ fn a_long_run_of_panic_lines_stops_being_compared() {
 
 #[test]
 fn a_render_panic_keeps_its_line_when_a_command_panics_next() {
-    for (key, command_line) in [('P', "ext panicked: boom"), ('R', "ext panicked: rethrown")] {
+    for (command, line) in [
+        ("boom", "ext panicked: boom"),
+        ("rethrows", "ext panicked: rethrown"),
+    ] {
         let mut w = world();
         let s = w.ctx.create_surface(
             "s",
@@ -918,11 +921,11 @@ fn a_render_panic_keeps_its_line_when_a_command_panics_next() {
             row: 0,
         };
         let _ = w.ctx.compose(20, 4, &[place]);
-        w.ctx.focus(w.win);
-        w.ctx.input(KeyEvent::press(Key::Char(key)));
-        w.ctx.run_until_idle();
+        assert!(w.ctx.messages.is_empty(), "that line waits for a turn");
+        assert!(w.ctx.run(command, &Args::default()).is_err());
+        w.ctx.step();
         let has = |what: &str| w.ctx.messages.iter().filter(|m| m.contains(what)).count();
         assert_eq!(has("render bug"), 1, "{:?}", w.ctx.messages);
-        assert_eq!(has(command_line), 1, "{:?}", w.ctx.messages);
+        assert_eq!(has(line), 1, "{:?}", w.ctx.messages);
     }
 }
