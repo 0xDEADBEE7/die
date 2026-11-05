@@ -439,6 +439,13 @@ fn the_gutter_counts_lines_not_the_empty_last_one() {
         let g = ctx.text(b).unwrap().geometry(w).unwrap();
         assert_eq!(g.gutter, gutter, "{} bytes", text.len());
     }
+    // Hidden lines count: folding the end of a file doesn't move the text.
+    let text = format!("{}x", "x\n".repeat(999));
+    let (mut ctx, b, w) = window(&text, 20, 5);
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().line_numbers = LineNumbers::Absolute;
+    t.decorate(text.len() - 2..text.len(), hide(None)).unwrap();
+    assert_eq!(ctx.text(b).unwrap().geometry(w).unwrap().gutter, 5);
 }
 
 /// §9's table, with its text and width, in each style and with the cursor where it says.
