@@ -8,7 +8,7 @@ use crate::ext::*;
 use crate::ids::*;
 use crate::text::*;
 
-const MESSAGES: &str = "*messages*";
+pub(crate) const MESSAGES: &str = "*messages*";
 /// How many lines the log and the buffer keep, as Emacs's `message-log-max`.
 const KEEP: usize = 1000;
 
