@@ -136,7 +136,10 @@ fn an_upload_that_does_not_fit_its_atlas_is_refused() {
     // Metal asserts on a region with no pixels.
     assert!(p.upload(&upload(0, 0, 8, 0)).is_err(), "no width");
     assert!(p.upload(&upload(0, 4, 0, 0)).is_err(), "no height");
-    assert!(p.upload(&upload(8, 0, 8, 0)).is_err(), "no width, at the edge");
+    assert!(
+        p.upload(&upload(8, 0, 8, 0)).is_err(),
+        "no width, at the edge"
+    );
 }
 
 #[test]
