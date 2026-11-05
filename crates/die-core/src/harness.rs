@@ -1,5 +1,5 @@
 //! The public harness (contract §16, K7): a workspace with no window and no GPU, and what tests
-//! stand in for the outside world with. Saving and restoring a session comes with K12.
+//! stand in for the outside world with.
 #![warn(missing_docs)]
 use crate::app::{Input, PointerEvent, PointerKind};
 use crate::error::Result;
@@ -164,6 +164,14 @@ impl Harness {
     /// The frame with its styles and cursors ([`crate::Scene::snapshot`]).
     pub fn style_dump(&mut self) -> String {
         self.ctx.scene().snapshot()
+    }
+
+    /// Restore what [`Ctx::session_json`] gave, perhaps on another harness, into this workspace
+    /// ([`Ctx::restore_session`]), and draw a frame.
+    pub fn restore_session(&mut self, json: &str) -> Result {
+        self.ctx.restore_session(json)?;
+        self.redisplay();
+        Ok(())
     }
 
     fn redisplay(&mut self) {

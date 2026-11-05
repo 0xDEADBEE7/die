@@ -498,9 +498,11 @@ impl Ctx {
         wait
     }
 
-    /// Shut extensions down in reverse order and cancel what they detached (C4). What your config
-    /// detached goes last, since an extension's `shutdown` can still run config's commands.
+    /// Write the session, then shut extensions down in reverse order and cancel what they
+    /// detached (C4). What your config detached goes last, since an extension's `shutdown` can
+    /// still run config's commands.
     pub fn shutdown(&mut self) {
+        self.save_session_at_quit();
         for i in (0..self.exts.len()).rev() {
             let r = self.guarded(i, |ctx| {
                 ctx.with_ext_idx(i, |e, ctx| e.shutdown(ctx))?;
