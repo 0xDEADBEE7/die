@@ -200,7 +200,11 @@ fn q_on_a_split_closes_the_window_and_evens_out_nothing() {
         typed(&mut h, keys);
         assert_eq!(h.window_list(), [top, bottom], "{keys}");
         assert_eq!(rows(&h, bottom), b, "{keys}");
-        assert_eq!(rows(&h, top), t + m + 1, "{keys}: the one before gets the cells");
+        assert_eq!(
+            rows(&h, top),
+            t + m + 1,
+            "{keys}: the one before gets the cells"
+        );
     }
 }
 
@@ -208,7 +212,10 @@ fn q_on_a_split_closes_the_window_and_evens_out_nothing() {
 fn quit_on_the_last_window_runs_the_apps_quit() {
     let (mut h, _, w) = start("");
     let log = h.type_keys(":q<CR>").unwrap();
-    assert!(!log.last().unwrap().errors.is_empty(), "no app here to quit");
+    assert!(
+        !log.last().unwrap().errors.is_empty(),
+        "no app here to quit"
+    );
     assert_eq!(h.window_list(), [w]);
 }
 
@@ -240,7 +247,11 @@ fn sizes_change_by_count_and_stop_at_the_frame() {
 
     let (mut h, _, w) = start("<C-w>+<C-w>>");
     typed(&mut h, "<C-w>_");
-    assert_eq!(h.window_size(w), Some((80, 24)), "a sole window fills the frame");
+    assert_eq!(
+        h.window_size(w),
+        Some((80, 24)),
+        "a sole window fills the frame"
+    );
 }
 
 #[test]
