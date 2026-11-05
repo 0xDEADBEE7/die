@@ -495,11 +495,19 @@ fn a_panic_in_a_surfaces_event_in_passthrough() {
 #[test]
 fn a_panic_in_a_resize_event() {
     let mut w = world();
-    let s = w.ctx.create_surface("s", Surf::default());
-    let win = w.ctx.open_window(s, 20, 2).unwrap();
+    w.ctx.type_keys("S");
+    let s = w.ctx.find_buffer("from-ext").unwrap();
+    let win = w.ctx.focused().unwrap();
     w.ctx.resize(win, 30, 3).unwrap();
-    w.logged_once_and_usable("resize bug");
+    w.ctx.run_until_idle();
+    let line = w.ctx.messages.iter().find(|m| m.contains("resize bug"));
+    assert!(
+        line.is_some_and(|l| l.starts_with("ext panicked: resize bug")),
+        "attributed to the extension that made it: {:?}",
+        w.ctx.messages
+    );
     assert_eq!(w.ctx.with_surface(s, |_: &mut Surf, _| 1), Ok(1));
+    w.logged_once_and_usable("resize bug");
 }
 
 #[test]
