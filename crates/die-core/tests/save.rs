@@ -703,6 +703,42 @@ fn the_poll_runs_on_the_clock_and_stops_with_the_last_file() {
     assert_eq!(text_of(&c, a), "four\n", "a new file starts it again");
 }
 
+/// M0's criterion (c), with the real tool: `rustfmt` on an open file reloads an unmodified
+/// buffer, and `:w` refuses on a modified one.
+#[test]
+fn rustfmt_reloads_an_unmodified_buffer_and_w_refuses_a_modified_one() {
+    let d = Dir::new("rustfmt");
+    let before = "fn one( ){}\n\nfn keep() {\n    stay();\n}\n\nfn two( ){}\n";
+    let after = "fn one() {}\n\nfn keep() {\n    stay();\n}\n\nfn two() {}\n";
+    let (p, q) = (
+        d.file("a.rs", before.as_bytes()),
+        d.file("b.rs", before.as_bytes()),
+    );
+    let mut c = ctx();
+    let (a, b) = (c.open_file(&p).unwrap(), c.open_file(&q).unwrap());
+    let cursor = c
+        .text_mut(a)
+        .unwrap()
+        .add_marker(before.find("stay").unwrap(), Gravity::Left);
+    let cursor = cursor.unwrap();
+    append(&mut c, b, "// mine\n");
+    // The toolchain's `rustfmt`, as `cargo fmt` runs it. `ci --linux`'s image doesn't have it.
+    let done = std::process::Command::new("rustfmt")
+        .args([&p, &q])
+        .status();
+    if cfg!(target_os = "linux") && !done.as_ref().is_ok_and(|d| d.success()) {
+        return;
+    }
+    assert!(done.unwrap().success());
+    assert_eq!(fs::read(&p).unwrap(), after.as_bytes());
+    c.advance(POLL);
+    assert_eq!(text_of(&c, a), after);
+    assert_eq!(c.text(a).unwrap().marker(cursor), after.find("stay"));
+    assert_eq!(text_of(&c, b), format!("{before}// mine\n"));
+    assert!(c.save(b).is_err());
+    assert_eq!(fs::read(&q).unwrap(), after.as_bytes());
+}
+
 #[test]
 fn check_files_looks_now_without_the_clock() {
     let d = Dir::new("check-now");
