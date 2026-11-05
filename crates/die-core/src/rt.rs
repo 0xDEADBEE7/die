@@ -402,11 +402,8 @@ impl Ctx {
             due.push((at, fire(&t.sub, &t.f)));
             if let Some(d) = t.every {
                 let on_time = at.saturating_add(d);
-                let next = if on_time > now {
-                    on_time
-                } else {
-                    now.saturating_add(d)
-                };
+                let late = now.saturating_add(d);
+                let next = if on_time > now { on_time } else { late };
                 if next > now {
                     self.arm(next, t);
                 }

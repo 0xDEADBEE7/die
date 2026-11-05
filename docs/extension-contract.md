@@ -493,7 +493,7 @@ All callbacks run on the main thread, receive `Ctx`, and are queued (C3). Every 
 **Timers.**
 - They fire in deadline order, idle timers among them. Timers due together fire in the order they were set, and a repeat counts as set again each time it fires. An idle timer goes after any other timer due at the same moment.
 - A repeat counts from its last deadline, so being late doesn't shift the next one. One that has fallen a whole period behind, as after a laptop's sleep, skips what it missed instead of running it all. The shortest period is a millisecond.
-- Timers fire in batches, with queued calls running first. After a batch, the next key gets a turn, and with none waiting, the host does: it draws, reads its events, and finds the next timer already due. So a repeat that takes longer than its period can't lock out keys or the frame.
+- Timers due together fire as a batch. After a batch, the next key gets a turn, and with none waiting, the host does: it draws, reads its events, and finds the next timer already due. So a repeat that takes longer than its period can't lock out keys or the frame.
 - `idle(d, f)` runs `f` when no key has come for `d`, once each time that happens, as `run-with-idle-timer` does with a repeat. It counts from when it's set, however long the editor has already been idle, and after that from when a key's command or prompt answer ended, so a slow command doesn't use up the wait. It doesn't fire while a key is waiting.
 - Core can say when the next timer is due. The host sleeps until then, or until it's woken.
 
@@ -542,7 +542,7 @@ C3 costs you something with multi-step prompts, which nest one callback per step
 ## 15. Errors and panics
 
 - **Errors.** Commands and callbacks return results. Errors go to the command line and to `*messages*`.
-- **Panics** are caught at every call from core into extension code, on a best-effort basis (C9). Each is logged to `*messages*` once, with the extension's name and the place in the source, whoever else sees the error. What the code had checked out goes back, and the editor goes on. A line already among the panic lines at the log's end isn't logged again, so panics on every frame can't flood the log, even from several objects taking turns.
+- **Panics** are caught at every call from core into extension code, on a best-effort basis (C9). Each is logged to `*messages*` once, with the extension's name and the place in the source, whoever else sees the error. What the code had checked out goes back, and the editor goes on. A line already among the last panic lines in the log isn't logged again, so panics on every frame can't flood the log, even from several objects taking turns.
   - A panic in `render` replaces that window's content with an error placeholder until the next successful render. A panic in `decorate` draws that frame without the rest of the mode's faces. Neither gets a `Ctx`, so the log line comes at the next turn of the loop, and names only the place.
   - A panic in a job's `work` reaches the main thread as its value would. `done` doesn't run.
   - A panic in a key observer doesn't stop the key.
