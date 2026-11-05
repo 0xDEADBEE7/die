@@ -17,7 +17,7 @@
 //! live. Past [`DEFAULT_LIMIT`], an allocation writes one line to stderr, and fails. Rust's
 //! usual handling of a failed allocation then aborts the process. The line starts with
 //! `die-test-cap:`, and `cargo xtask mutate` looks for it. A test that truly needs more
-//! calls [`set_limit`]. No environment variable can raise the limit: a limit anyone can
+//! calls [`set_limit`]. No environment variable can raise this limit: a limit anyone can
 //! switch off isn't one.
 //!
 //! Behind it is the kernel's. At its first allocation, a test binary runs itself again
@@ -42,6 +42,9 @@
 //! - A little over the count. Threads count apart, so it can be passed by up to 4 MiB. And
 //!   a `realloc` that moves a block holds both copies until it's done, and only the new one
 //!   counts.
+//! - A test binary that runs itself with a plain `exec`. That drops the kernel's limit, and
+//!   the pid and the mark stay, so it doesn't go under it again. Setting the mark by hand
+//!   does the same. The count still holds in both.
 
 use std::env;
 use std::ffi::OsStr;
@@ -51,7 +54,9 @@ use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{self, Command};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicBool, AtomicU8, AtomicUsize, Ordering::Relaxed, Ordering::SeqCst, fence,
+};
 use std::time::{Duration, Instant};
 
 #[allow(unsafe_code)]
@@ -135,7 +140,7 @@ fn reserve(bytes: usize) -> bool {
     let limit = LIMIT.load(Relaxed);
     if bytes <= limit {
         let before = my_counter().fetch_add(bytes, Relaxed);
-        if stays_in_its_step(limit, before, bytes) || within(limit, live()) {
+        if stays_in_its_step(limit, before, bytes) || fits(limit, live) {
             return true;
         }
         release(bytes);
@@ -155,6 +160,22 @@ fn stays_in_its_step(limit: usize, before: usize, bytes: usize) -> bool {
     limit >= COUNTERS * STEP && (before ^ before.wrapping_add(bytes)) < STEP
 }
 
+/// A look at the total, which is what lets a block through.
+///
+/// The fence is for two threads that each count a big block at the same moment, when only
+/// one fits. Without it each can miss the other's add, and both get through. It's on this
+/// path alone, which only a block that passes a step takes.
+///
+/// The second read is for a healthy process: a block that moves between threads can be read
+/// in its new counter before the free shows in its old one. It costs nothing unless the
+/// first read says no, and a process really over the limit stays over it.
+#[cold]
+#[inline(never)]
+fn fits(limit: usize, mut total: impl FnMut() -> isize) -> bool {
+    fence(SeqCst);
+    within(limit, total()) || within(limit, total())
+}
+
 /// This thread's counter. Threads' stacks are at least 2 MiB apart, unless a thread asks
 /// for less, so the address of a local tells them apart. Nothing is kept per thread, so a
 /// thread that ends loses nothing from the count, and this can't allocate.
@@ -168,8 +189,9 @@ fn counter_here() -> usize {
 }
 
 /// What's counted now. A thread may free a block another thread allocated, so one counter
-/// can fall below zero, in wrapping arithmetic, and only the total means anything. That
-/// can fall below zero too, for a moment, if it reads a free and not its allocation.
+/// can fall below zero, in wrapping arithmetic, and only the total means anything. The
+/// counters are read one at a time, so for a moment it can read low, if it sees a free and
+/// not its allocation, or high, if it sees an allocation and not its free.
 fn live() -> isize {
     LIVE.iter()
         .map(|counter| counter.0.load(Relaxed))
@@ -183,12 +205,16 @@ fn within(limit: usize, live: isize) -> bool {
 
 /// Run this binary again from its start under the kernel's limit, unless it's already
 /// there. This is its first allocation, so nothing has happened that a restart would lose.
-/// If it can't be done, the binary carries on without that limit.
+///
+/// If the `exec` itself fails, the binary carries on without that limit, and with SIGPIPE
+/// at its default, which `Command::exec` has reset. Only a sandbox that denies this program
+/// has done that. Once the `exec` has worked, `taskpolicy`'s own failure ends the binary,
+/// with its message and exit code. A refusal that says why beats a limit that's quietly off.
 #[cold]
 #[inline(never)]
 fn go_under_the_kernels_limit() {
     // Not just for speed: `Command::exec` resets SIGPIPE before it tries, and a try that
-    // failed would leave a test binary to die of a closed pipe.
+    // failed would leave a test binary to die of a closed pipe. This covers Linux.
     if !Path::new(TASKPOLICY).exists() {
         return;
     }
@@ -209,12 +235,14 @@ fn go_under_the_kernels_limit() {
         .exec();
 }
 
-/// The kernel's limit to ask for, in MiB, given what [`LOWER_LIMIT`] says.
+/// The kernel's limit to ask for, in MiB, given what [`LOWER_LIMIT`] says. `taskpolicy`
+/// refuses a limit of 0, so that doesn't lower it either.
 fn system_limit_mib(lower: Option<&OsStr>) -> usize {
     lower
         .and_then(OsStr::to_str)
         .and_then(|mib| mib.parse().ok())
-        .map_or(SYSTEM_LIMIT_MIB, |mib: usize| mib.min(SYSTEM_LIMIT_MIB))
+        .filter(|&mib: &usize| mib > 0)
+        .map_or(SYSTEM_LIMIT_MIB, |mib| mib.min(SYSTEM_LIMIT_MIB))
 }
 
 /// Write the line, once. This runs inside the allocator, when there may be no room for
@@ -263,7 +291,7 @@ fn to_stderr(line: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        COUNTERS, LINE, STEP, SYSTEM_LIMIT_MIB, WRITING, WRITTEN, charge, counter_here,
+        COUNTERS, LINE, STEP, SYSTEM_LIMIT_MIB, WRITING, WRITTEN, charge, counter_here, fits,
         stays_in_its_step, system_limit_mib, within, write_line_once,
     };
     use std::ffi::OsStr;
@@ -278,12 +306,16 @@ mod tests {
         let threads: Vec<_> = (0..THREADS)
             .map(|_| {
                 let barrier = barrier.clone();
-                std::thread::spawn(move || {
-                    // No thread ends and gives its stack to the next until all have looked.
-                    let counter = counter_here();
-                    barrier.wait();
-                    counter
-                })
+                // The stack's size is what tells them apart, whatever RUST_MIN_STACK says.
+                std::thread::Builder::new()
+                    .stack_size(2 << 20)
+                    .spawn(move || {
+                        // No thread ends and gives its stack to the next until all have looked.
+                        let counter = counter_here();
+                        barrier.wait();
+                        counter
+                    })
+                    .unwrap()
             })
             .collect();
         let mut counters: Vec<usize> = threads.into_iter().map(|t| t.join().unwrap()).collect();
@@ -308,6 +340,18 @@ mod tests {
         // Under a limit too small to allow for the steps, every block looks.
         assert!(!stays_in_its_step(ENOUGH - 1, 0, 32));
         assert!(!stays_in_its_step(0, 0, 32));
+    }
+
+    /// A block in the middle of moving between threads can read high, once.
+    #[test]
+    fn a_total_over_the_limit_gets_a_second_read() {
+        let reads = |values: [isize; 2]| {
+            let mut values = values.into_iter();
+            fits(1024, || values.next().unwrap())
+        };
+        assert!(reads([1024, 5000]));
+        assert!(reads([5000, 1024]));
+        assert!(!reads([5000, 1025]));
     }
 
     #[test]
@@ -365,6 +409,7 @@ mod tests {
         assert_eq!(limit(Some("8192")), 8192);
         assert_eq!(limit(Some("8193")), 8192);
         assert_eq!(limit(Some("not a number")), 8192);
+        assert_eq!(limit(Some("0")), 8192);
         assert_eq!(limit(Some("")), 8192);
     }
 }
