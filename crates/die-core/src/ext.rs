@@ -595,8 +595,9 @@ impl Ctx {
             msg: c.msg,
         }
     }
-    /// A line already among the panic lines at the log's end isn't news, so panics on every frame
-    /// can't flood the log, even from several objects taking turns. Disabling them is M1's.
+    /// A line already among the panic lines at the log's end, up to 32 back, isn't news, so panics
+    /// on every frame can't flood the log, even from several objects taking turns. Disabling them
+    /// is M1's.
     fn log_panic(&mut self, what: String) {
         let line = format!("{what}{RESTART}");
         let recent = self.messages.iter().rev().take(32);
