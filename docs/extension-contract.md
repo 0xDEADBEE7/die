@@ -146,13 +146,13 @@ args
 - **States** (scope §5.6): normal, insert, replace, visual, operator-pending, command line, copy and passthrough.
 - **Copy state** is normal and visual running over a read-only snapshot (scope D19). A window enters it when you leave passthrough with the DIE layer's Esc, and when you're in normal state on a surface without a text keymap. die-vim registers its normal and visual grammar as the copy-state keymap for every surface kind. In a terminal, `i` and `a` return to passthrough.
 - **A keymap** maps key sequences to command names, per state. The notation follows Vim: `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`.
-  - Key names match without case. A `<` that doesn't start a key name is a literal `<`. A bracketed word that isn't a key name, or modifiers followed by something that isn't a key or by no closing `>`, is a startup error. `feed_keys` and macro register text are notation too, so a literal `<` there is written `<lt>`. Literal characters that form one grapheme cluster (`👍🏽`, `🇦🇺`) are one key, as text committed by the OS is. A keymap can't bind one: that's a startup error, so bind `<char>` and read `args.key`.
+  - Key names match without case. A `<` that doesn't start a key name is a literal `<`. A bracketed word that isn't a key name, or modifiers followed by something that isn't a key or by no closing `>`, is a startup error. `feed_keys` and macro register text are notation too, so a literal `<` there is written `<lt>`. Literal characters that form one grapheme cluster (`👍🏽`, `🇦🇺`) are one key, as text committed by the OS is. A keymap can't bind one: that's a startup error, so bind `<char>` and read `args.typed()`.
   - Ctrl with a letter ignores the letter's case (`<C-V>` is `<C-v>`); `<C-S-v>` is Ctrl-Shift-V. Key events match the same way, so Caps Lock doesn't change what Ctrl-v matches.
   - Shift counts on named keys and with Ctrl and a letter. Written with any other character it's a startup error, because the layout already applied it and no key sends what it says: write `<C-@>`, not `<C-S-2>`, and `<Space>`, not `<S-Space>`.
   - `<C-[>` is `<Esc>`, `<C-i>` is `<Tab>` and `<C-m>` is `<CR>`, as in your GUI Emacs and in Vim, so they can't be bound apart. Only keymaps fold these: the raw event keeps the difference for terminals that report it.
   - `<A-…>` and `<M-…>` are Alt (Option on macOS). `<D-…>` names the DIE layer, which on macOS is scope D18's Cmd layer: `<D-v>` is Cmd-V there.
   - `<leader>` is the key your config sets, `\` by default. It applies to every keymap once all extensions have registered.
-- **`<char>` matches any printable character,** including text committed by dead keys. No key with Ctrl, Alt or Super held is printable. The command reads which character it was from `args.key`. This replaces the loops in scrib's and orchid's search modes that bind every character to a self-insert command.
+- **`<char>` matches any printable character,** including text committed by dead keys. No key with Ctrl, Alt or Super held is printable. The command reads which character it was with `args.typed()`. This replaces the loops in scrib's and orchid's search modes that bind every character to a self-insert command.
 - **`<any>` matches any key** a keymap doesn't otherwise bind, printable or not. die-vim uses it to cancel operator-pending on an unbound key. `<char>` and `<any>` match one key where they're bound: a key that fails under a prefix isn't tried against the root's, so die-vim also binds `i<any>` and `a<any>` to cancel `di` followed by an unbound key.
 - **Specificity applies within one keymap; order applies across keymaps.** An exact key beats `<char>`, which beats `<any>`, inside the same keymap. Across keymaps, lookup order wins, so a seek-style mode's `<char>` beats die-vim's `j`.
 - **A binding can't also be a prefix** of a longer binding in the same keymap and state, such as `g` and `gg`. Registration reports it, along with the C8 check.
@@ -390,7 +390,7 @@ With lines `a` to `e`, `b` to `d` folded, and the cursor on `a`: Absolute shows 
 | `cl-letf` overriding `window-width` to cap row width | `die-seek` takes width as a parameter, so no override is needed |
 | `highlight` face on the selected row | A face decoration, or a face included in the styled lines |
 | `cursor-type` set to nil | The buffer's cursor-visibility setting |
-| Every printable character bound to a search self-insert command | One `<char>` binding that reads `args.key` |
+| Every printable character bound to a search self-insert command | One `<char>` binding that reads `args.typed()` |
 | `evil-normal-state` when search ends | `ctx.set_state(normal)` |
 | `define-key` / `evil-define-key` on the mode map | Mode keymaps, per state |
 

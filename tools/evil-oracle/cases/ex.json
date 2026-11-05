@@ -7,10 +7,11 @@
   {"id": "s-visual-range", "keys": "Vj:s/a/b/g<CR>", "text": ["a a", "|a a", "a a", "a a"]},
   {"id": "s-groups", "description": "Emacs/Vim regex groups. With DIE's Rust regex syntax the same command is :s/(foo) (bar)/$2 $1/", "keys": ":s/\\(foo\\) \\(bar\\)/\\2 \\1/<CR>", "text": ["|foo bar"]},
   {"id": "s-empty-replacement", "keys": ":s/o//g<CR>", "text": ["|foo"]},
-  {"id": "s-no-match", "keys": ":s/z/y/<CR>", "text": ["a|bc"]},
+  {"id": "s-no-match", "vim": "errors: Vim's :s fails with E486 when nothing matches; Evil's only says so", "keys": ":s/z/y/<CR>", "text": ["a|bc"]},
   {"id": "s-undo-one-step", "keys": ":%s/a/b/g<CR>u", "text": ["|a", "a", "a"]},
   {"id": "s-smartcase-lower", "vim": "ex: Vim inserts x literally; Evil's :s keeps the case of the match (Emacs case-replace)", "keys": ":s/foo/x/<CR>", "text": ["|Foo foo"]},
   {"id": "s-smartcase-upper", "keys": ":s/Foo/x/g<CR>", "text": ["|foo Foo"]},
   {"id": "goto-line", "vim": "startofline: Vim moves to the first non-blank; Evil goes to column 0", "keys": ":3<CR>", "text": ["|one", "two", "  three", "four"]},
-  {"id": "s-cursor-after-percent", "keys": ":%s/a/b/<CR>", "text": ["|a", "x", "  a", "x"]}
+  {"id": "s-cursor-after-percent", "keys": ":%s/a/b/<CR>", "text": ["|a", "x", "  a", "x"]},
+  {"id": "s-group-before-letter", "description": "A group followed by a letter. With DIE's Rust regex syntax the same command is :s/(foo)/${1}x/", "keys": ":s/\\(foo\\)/\\1x/<CR>", "text": ["|foo"]}
  ]}

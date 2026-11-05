@@ -4,9 +4,9 @@
 use crate::grammar::{Fail, Goal, Kind, Motion, Start, Target};
 use crate::text::{
     Chars, Class, blank_line, class, indent_end, last_line, line_end, next_stop, normal_pos,
-    pos_at_col, prev_stop,
+    pos_at_col, prev_stop, same_word,
 };
-use die_core::{Dir, TextBuf};
+use die_core::{Dir, TextBuf, WindowId};
 
 /// Every motion bound in normal state. `f`, `F`, `t` and `T` take a character
 /// and are bound with `<char>`.
@@ -56,6 +56,28 @@ pub fn beginning_of_line(s: &Start) -> Result<Target, Fail> {
     Ok(Target::at(s.text.line_start(s.text.line_of(s.pos))))
 }
 
+/// `C-a`, Emacs's beginning-of-visual-line under your global-visual-line-mode: to the
+/// start of the screen row, count-1 rows down. `move_visual` with goal 0 gives a row's
+/// start, but only for another row, so this row's start comes from the row above.
+pub fn row_beginning(s: &Start, w: WindowId) -> Result<Target, Fail> {
+    let t = s.text;
+    let here = t.line_of(s.pos);
+    let row = |pos, dy| t.move_visual(w, pos, dy, Some(0)).map_or(pos, |(q, _)| q);
+    let above = row(s.pos, -1);
+    let mut q = if above == s.pos {
+        t.line_start(here)
+    } else {
+        row(above, 1)
+    };
+    if s.n() > 1 {
+        q = row(q, isize::try_from(s.n() - 1).unwrap_or(isize::MAX));
+    }
+    if t.line_of(q) > last_line(t).max(here) {
+        q = row(q, -1);
+    }
+    Ok(Target::at(q))
+}
+
 // ---------------------------------------------------------------- characters and lines
 
 fn backward_char(s: &Start) -> Result<Target, Fail> {
@@ -79,14 +101,11 @@ fn steps(s: &Start, err: Fail, step: impl Fn(usize) -> Option<usize>) -> Result<
         let Some(q) = step(p) else { break };
         (p, n) = (q, n + 1);
     }
-    match n {
-        0 => Err(err),
-        n if n < s.n() => Ok(Target {
-            short: Some(err),
-            ..Target::at(p)
-        }),
-        _ => Ok(Target::at(p)),
-    }
+    Ok(if n < s.n() {
+        Target::short(p, err)
+    } else {
+        Target::at(p)
+    })
 }
 
 fn next_line(s: &Start) -> Result<Target, Fail> {
@@ -98,7 +117,9 @@ fn previous_line(s: &Start) -> Result<Target, Fail> {
 }
 
 /// `j` and `k`: by logical line, skipping hidden lines, keeping the goal column.
-/// They move as far as they can, and fail only when they can't move at all.
+/// They move as far as they can. With no line to go to, Evil's try the goal column on
+/// this line and signal only if that doesn't move the cursor. A goal past the line's end
+/// does move it, onto the newline, and normal state puts it back.
 fn vertical(s: &Start, dir: Dir, err: Fail) -> Result<Target, Fail> {
     let t = s.text;
     let goal = s.goal.unwrap_or(Goal::Col(t.display_col(s.pos)));
@@ -110,24 +131,22 @@ fn vertical(s: &Start, dir: Dir, err: Fail) -> Result<Target, Fail> {
             _ => break,
         }
     }
-    if !moved {
-        return Err(err);
+    let at = goal_pos(t, line, goal);
+    if !moved && at == s.pos {
+        return Ok(Target::short(s.pos, err));
     }
     Ok(Target {
         goal: Some(goal),
-        ..Target::at(at_goal(t, line, goal))
+        ..Target::at(normal_pos(t, at))
     })
 }
 
-/// The position on `line` at the goal column.
-fn at_goal(t: &TextBuf, line: usize, goal: Goal) -> usize {
-    normal_pos(
-        t,
-        match goal {
-            Goal::Col(col) => pos_at_col(t, line, col),
-            Goal::Eol => line_end(t, line),
-        },
-    )
+/// The position on `line` at the goal column, which may be its newline.
+fn goal_pos(t: &TextBuf, line: usize, goal: Goal) -> usize {
+    match goal {
+        Goal::Col(col) => pos_at_col(t, line, col),
+        Goal::Eol => line_end(t, line),
+    }
 }
 
 fn first_non_blank(s: &Start) -> Result<Target, Fail> {
@@ -136,7 +155,8 @@ fn first_non_blank(s: &Start) -> Result<Target, Fail> {
 
 fn end_of_line(s: &Start) -> Result<Target, Fail> {
     let t = s.text;
-    let line = t.line_of(s.pos).saturating_add(s.n() - 1).min(last_line(t));
+    let here = t.line_of(s.pos);
+    let line = here.saturating_add(s.n() - 1).min(last_line(t).max(here));
     Ok(Target {
         goal: Some(Goal::Eol),
         ..Target::at(line_end(t, line))
@@ -151,7 +171,7 @@ fn goto_line(s: &Start, n: usize) -> Result<Target, Fail> {
     let line = n.saturating_sub(1).min(last_line(t));
     Ok(Target {
         goal: Some(goal),
-        ..Target::at(at_goal(t, line, goal))
+        ..Target::at(normal_pos(t, goal_pos(t, line, goal)))
     })
 }
 
@@ -204,12 +224,11 @@ fn empty_line(c: &Chars) -> bool {
 
 fn word_begin(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
     let mut c = Chars::at(t, p);
-    let k = class(c.ch()?, big);
-    if matches!(k, Class::Word(_) | Class::Punct) {
-        while c.ch().map(|ch| class(ch, big)) == Some(k) {
-            c.fwd();
-        }
-    } else {
+    let mut a = c.ch()?;
+    let in_word = matches!(class(a, big), Class::Word | Class::Punct);
+    c.fwd();
+    while let Some(b) = c.ch().filter(|&b| in_word && same_word(a, b, big)) {
+        a = b;
         c.fwd();
     }
     loop {
@@ -223,20 +242,22 @@ fn word_begin(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
     }
 }
 
+/// The end of the word after `p` (`e`). It steps over whole graphemes and lands on one,
+/// so on "café" with a combining mark it lands on the é, as in Vim (deviations.json).
 fn word_end(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
-    let mut c = Chars::at(t, p);
-    c.ch()?;
-    c.fwd();
+    let mut c = Chars::at(t, next_stop(t, p)?);
     loop {
-        match class(c.ch()?, big) {
+        let mut a = c.ch()?;
+        match class(a, big) {
             Class::Blank => {}
             Class::Newline if empty_line(&c) => return Some(c.pos()),
             Class::Newline => {}
-            k => loop {
+            _ => loop {
                 let here = c.pos();
                 c.fwd();
-                if c.ch().map(|ch| class(ch, big)) != Some(k) {
-                    return Some(here);
+                match c.ch() {
+                    Some(b) if same_word(a, b, big) => a = b,
+                    _ => return Some(t.snap(here, Some(Dir::Backward))),
                 }
             },
         }
@@ -251,12 +272,14 @@ pub(crate) fn word_back(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
         return None;
     }
     loop {
-        match class(c.ch()?, big) {
+        let mut b = c.ch()?;
+        match class(b, big) {
             Class::Blank => {}
             Class::Newline if empty_line(&c) => return Some(c.pos()),
             Class::Newline => {}
-            k => {
-                while c.prev_ch().map(|ch| class(ch, big)) == Some(k) {
+            _ => {
+                while let Some(a) = c.prev_ch().filter(|&a| same_word(a, b, big)) {
+                    b = a;
                     c.back();
                 }
                 return Some(c.pos());
@@ -308,7 +331,8 @@ impl Find {
 }
 
 /// The count-th `ch` on the line in `dir`. Fails without moving if there aren't
-/// that many.
+/// that many. Evil's forward search first steps off the cursor with its `l`, so from a
+/// line's last character it fails as `l` does, and the goal column stays.
 pub fn find(s: &Start, search: Find) -> Result<Target, Fail> {
     let t = s.text;
     let line = t.line_of(s.pos);
@@ -337,6 +361,9 @@ pub fn find(s: &Start, search: Find) -> Result<Target, Fail> {
                 return Ok(Target::at(pos));
             }
         }
+    }
+    if search.dir == Dir::Forward && next_stop(t, s.pos).is_none_or(|q| q >= end) {
+        return Ok(Target::short(s.pos, "End of line"));
     }
     Err("Can't find the character")
 }
@@ -415,6 +442,9 @@ fn percent(s: &Start, n: usize) -> Result<Target, Fail> {
 /// Evil). With no blank line after, to the end of the last line, as in Vim.
 fn forward_paragraph(s: &Start) -> Result<Target, Fail> {
     let t = s.text;
+    if s.pos == t.len() {
+        return Err("End of buffer");
+    }
     let (last, mut line) = (last_line(t), t.line_of(s.pos));
     let mut pos = None;
     for _ in 0..s.n() {

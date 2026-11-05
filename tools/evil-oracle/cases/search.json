@@ -12,7 +12,7 @@
   {"id": "hash-backward", "keys": "#", "text": ["foo foobar |foo"]},
   {"id": "star-case", "vim": "search: Vim's * ignores smartcase and matches foo; Evil's * applies smartcase", "keys": "*", "text": ["|Foo foo Foo"]},
   {"id": "star-n", "keys": "*n", "text": ["|ab x ab y ab"]},
-  {"id": "not-found", "keys": "/zzz<CR>x", "text": ["a|bc"]},
+  {"id": "not-found", "vim": "errors: Vim's failed search is an error (E486); Evil's only says so", "keys": "/zzz<CR>x", "text": ["a|bc"]},
   {"id": "d-slash", "keys": "d/bar<CR>", "text": ["|foo bar"]},
   {"id": "count-slash", "vim": "search: Vim goes to the 2nd match; Evil ignores the count", "keys": "2/x<CR>", "text": ["|x a x b x"]},
   {"id": "empty-pattern-repeats", "vim": "search: Vim's empty / repeats the last pattern; Evil's does nothing", "keys": "/b<CR>/<CR>", "text": ["|a b c b"]},

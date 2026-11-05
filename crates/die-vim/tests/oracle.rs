@@ -3,11 +3,14 @@
 //!
 //! Each case runs through die-core with die-vim registered: the case's text and
 //! cursor, its registers, its keys typed one by one, then text, cursor, state,
-//! registers and errors compared with what your Evil did.
+//! registers and errors compared with what your Evil did. An error has to come
+//! after the same key as Evil's; its message isn't compared.
 //!
 //! - `oracle/deviations.json` names the cases die-vim deliberately doesn't match.
 //!   They're left out here. Each gets a hand-written fixture in
-//!   `oracle/hand-written/`, which runs here like an oracle case once it's written.
+//!   `oracle/hand-written/`, which runs here like an oracle case. It states a
+//!   different result for the same keys, mode and input, and only a regex-syntax
+//!   deviation may change the keys.
 //! - `oracle/pending.txt` names the cases die-vim doesn't pass yet, by the work
 //!   package they land with. A pending case that passes fails this test, and so
 //!   does a failing case that isn't pending.
@@ -21,8 +24,8 @@
 use die_core::{Ctx, RegKind, Register, State, parse_keys};
 use die_vim::Vim;
 use evil_oracle::{
-    Case, Deviations, RegisterKind, Run, State as EvilState, Tranche, fixtures_dir, load_fixtures,
-    parse_pending, tranche,
+    Case, DeviationKind, Deviations, RegisterKind, Run, State as EvilState, Tranche, fixtures_dir,
+    load_fixtures, parse_pending, tranche,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -73,11 +76,23 @@ fn oracle() {
                     "{file}: {name} isn't a deviation that names this file"
                 ));
             }
+            if let Some(&(oracle, oracle_run)) = all.get(&name) {
+                let kind = deviations
+                    .rules
+                    .iter()
+                    .find(|r| r.cases.iter().any(|d| d.case == name))
+                    .map(|r| r.kind);
+                if !same_input((oracle, oracle_run), (c, fx.run), kind) {
+                    problems.push(format!(
+                        "{file}: {name} must keep its oracle case's keys, mode, run and input"
+                    ));
+                }
+            }
             all.insert(format!("hand-written/{name}"), (c, fx.run));
         }
     }
-    for d in deviations.cases().filter(|d| d.fixture.is_some()) {
-        if !all.contains_key(&format!("hand-written/{}", d.case)) {
+    for d in deviations.cases() {
+        if d.fixture.is_none() || !all.contains_key(&format!("hand-written/{}", d.case)) {
             problems.push(format!("{}: its hand-written fixture isn't there", d.case));
         }
     }
@@ -151,6 +166,16 @@ fn oracle() {
     assert!(problems.is_empty(), "\n{}\n", problems.join("\n"));
 }
 
+/// Whether a hand-written fixture runs what its oracle case runs, so that it only
+/// changes the result. A regex-syntax deviation changes the keys, not the result.
+fn same_input(oracle: (&Case, Run), hand: (&Case, Run), kind: Option<DeviationKind>) -> bool {
+    let ((o, orun), (h, hrun)) = (oracle, hand);
+    o.input == h.input
+        && o.mode == h.mode
+        && orun == hrun
+        && (kind == Some(DeviationKind::RegexSyntax) || o.keys == h.keys)
+}
+
 fn pending_file(failing: &BTreeMap<String, Tranche>) -> String {
     let mut s = String::from(
         "# Oracle cases die-vim doesn't pass yet, by the work package they land with\n\
@@ -175,7 +200,7 @@ fn pending_file(failing: &BTreeMap<String, Tranche>) -> String {
 
 /// Run one case; Err says every way it differs from Evil, or what can't be checked yet.
 fn run_case(case: &Case, run: Run) -> Result<(), String> {
-    let (input, want) = (&case.input, &case.expected);
+    let input = &case.input;
     if input.visual.is_some() {
         return Err("can't start a case in visual state yet (the harness, K7)".into());
     }
@@ -185,11 +210,16 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
     if run == Run::Tty || input.window.is_some() {
         return Err("can't set a window's top line yet (the harness, K7)".into());
     }
+    run_in_window(case, COLS, ROWS)
+}
 
+/// Run one case in a window of this size. Err says every way it differs from Evil.
+fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
+    let (input, want) = (&case.input, &case.expected);
     let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).map_err(|e| e.join("; "))?;
     let buf = ctx.create_text("case", &input.text);
     let w = ctx
-        .open_window(buf, COLS, ROWS)
+        .open_window(buf, cols, rows)
         .map_err(|e| format!("{e:?}"))?;
     ctx.focus(w);
     let set = ctx
@@ -212,10 +242,17 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
         );
     }
     let before = ctx.messages.len();
-    for ev in parse_keys(&case.keys).map_err(|e| format!("keys {}: {e}", case.keys))? {
+    let mut errors_after = Vec::new();
+    for (i, ev) in parse_keys(&case.keys)
+        .map_err(|e| format!("keys {}: {e}", case.keys))?
+        .into_iter()
+        .enumerate()
+    {
+        let n = ctx.messages.len();
         ctx.input(ev);
+        ctx.run_until_idle();
+        errors_after.extend(std::iter::repeat_n(i + 1, ctx.messages.len() - n));
     }
-    ctx.run_until_idle();
 
     let mut diffs = Vec::new();
     let text = ctx.text(buf).map_err(|e| format!("{e:?}"))?;
@@ -254,17 +291,16 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
     if want.clipboard.text.is_some() || !want.clipboard.writes.is_empty() {
         diffs.push("can't check the clipboard yet (K6)".into());
     }
-    // Errors are counted until the harness logs them per key (K7). A key die-vim
-    // doesn't bind is never the error Evil signalled, even when the counts agree.
+    // A key die-vim doesn't bind is never the error Evil signalled, even when it
+    // comes after the same key.
     let messages = &ctx.messages[before..];
     if let Some(m) = messages.iter().find(|m| m.ends_with(" is undefined")) {
         diffs.push(format!("die-vim doesn't bind a key: {m}"));
     }
-    let errors = messages.len();
-    let want_errors = want.errors.as_ref().map_or(0, Vec::len);
-    if errors != want_errors {
+    let want_after: Vec<usize> = want.errors.iter().flatten().map(|e| e.after_keys).collect();
+    if errors_after != want_after {
         diffs.push(format!(
-            "{errors} errors ({messages:?}), want {want_errors}"
+            "errors after keys {errors_after:?} ({messages:?}), want {want_after:?}"
         ));
     }
     if diffs.is_empty() {
@@ -289,4 +325,74 @@ fn reg_kind(k: RegisterKind) -> RegKind {
         RegisterKind::Line => RegKind::Line,
         RegisterKind::Block => RegKind::Block,
     }
+}
+
+/// The named case of a topic, fresh from its file, for a test to change.
+fn fixture_case(dir: &Path, topic: &str, id: &str) -> (Case, Run) {
+    let fx = load_fixtures(dir)
+        .expect("the fixtures load and validate")
+        .into_iter()
+        .find(|f| f.topic == topic)
+        .expect("the topic");
+    let c = fx.cases.into_iter().find(|c| c.id == id).expect("the case");
+    (c, fx.run)
+}
+
+#[test]
+fn a_hand_written_fixture_must_keep_its_oracle_cases_input() {
+    let (oracle, orun) = fixture_case(&fixtures_dir(), "motions", "w-last-word-of-buffer");
+    let hand = || fixture_case(&data("hand-written"), "motions", "w-last-word-of-buffer");
+    let keeps = |h: &Case, run: Run, kind| same_input((&oracle, orun), (h, run), kind);
+
+    let (h, run) = hand();
+    assert!(keeps(&h, run, None), "the committed fixture");
+
+    let (mut h, run) = hand();
+    h.input.cursor.byte = 0;
+    assert!(!keeps(&h, run, None), "another cursor");
+
+    let (mut h, run) = hand();
+    h.input.text.push('x');
+    assert!(!keeps(&h, run, None), "another text");
+
+    let (mut h, run) = hand();
+    h.mode = "text-mode".into();
+    assert!(!keeps(&h, run, None), "another mode");
+
+    let (h, _) = hand();
+    assert!(!keeps(&h, Run::Tty, None), "another run");
+
+    let (mut h, run) = hand();
+    h.keys = "b".into();
+    assert!(!keeps(&h, run, None), "other keys");
+    assert!(
+        keeps(&h, run, Some(DeviationKind::RegexSyntax)),
+        "a regex-syntax deviation may change the keys"
+    );
+}
+
+/// Every tty case waits for K7, which can set a window's top line. These don't
+/// scroll or wrap, so their text, cursor, state and errors can be held to your
+/// Evil now. `wrapped/` needs K4's word wrap as well.
+#[test]
+fn insert_state_arrows_match_the_tty_run() {
+    let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
+    let fx = fixtures.iter().find(|f| f.topic == "insert-tty").unwrap();
+    assert_eq!(fx.cases.len(), 17);
+    for c in &fx.cases {
+        let size = c.input.window.as_ref().expect("a tty case's window");
+        run_in_window(c, size.width, size.height)
+            .unwrap_or_else(|why| panic!("insert-tty/{}: {why}", c.id));
+    }
+}
+
+#[test]
+fn an_error_must_come_after_the_same_key_as_evils() {
+    let (case, run) = fixture_case(&fixtures_dir(), "motions", "count-l-past-end");
+    assert_eq!(run_case(&case, run), Ok(()), "the committed case");
+
+    let (mut case, run) = fixture_case(&fixtures_dir(), "motions", "count-l-past-end");
+    case.expected.errors.as_mut().expect("an error")[0].after_keys = 1;
+    let why = run_case(&case, run).expect_err("the error comes after key 2");
+    assert!(why.contains("errors after keys [2]"), "{why}");
 }
