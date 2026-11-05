@@ -50,6 +50,9 @@ fragment float4 fs(Out in [[stage_in]],
 
 const TARGET_FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm;
 
+/// The longest side every Apple GPU has for a 2D texture. Some have more.
+const MAX_TEXTURE_SIDE: u32 = 16384;
+
 type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
 type State = Retained<ProtocolObject<dyn MTLRenderPipelineState>>;
 
@@ -110,7 +113,11 @@ impl Gpu {
         format: MTLPixelFormat,
         usage: MTLTextureUsage,
     ) -> Result<Texture, String> {
-        // SAFETY: a valid format and nonzero sizes, which both callers make sure of.
+        // Metal stops the process for a size it can't make, rather than returning none.
+        if w == 0 || h == 0 || w > MAX_TEXTURE_SIDE || h > MAX_TEXTURE_SIDE {
+            return Err(format!("Metal has no {w}x{h} texture"));
+        }
+        // SAFETY: a valid format, from the constants here, and sizes checked above.
         let d = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
                 format, w as usize, h as usize, false,
@@ -203,7 +210,8 @@ impl Pipeline {
             return Err(format!("an upload that doesn't fit its atlas: {u:?}"));
         }
         // SAFETY: the region is inside the texture and `data` holds exactly its pixels,
-        // both checked above, and Metal copies them before this returns.
+        // both checked above, and Metal copies them before this returns. No frame is
+        // reading the texture, since `render` waits for each one.
         unsafe {
             texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
                 region(u.x, u.y, u.w, u.h),
@@ -240,7 +248,7 @@ impl Pipeline {
     }
 
     /// Clear a new `w` × `h` texture to `clear`, draw `quads` on it, wait for the GPU and
-    /// read the pixels back. Neither size may be 0.
+    /// read the pixels back. A size Metal can't make is an error.
     pub fn render(&mut self, quads: &[Quad], clear: Rgb, w: u32, h: u32) -> Result<Image, String> {
         autoreleasepool(|_| self.render_in_pool(quads, clear, w, h))
     }

@@ -4,6 +4,7 @@
 //!
 //! R2 draws offscreen: a scene to a texture, read back. There's no window here, and
 //! R3 gives this a drawable to present.
+#![warn(missing_docs)]
 
 use crate::atlas::GlyphKey;
 use crate::font::{self, CellMetrics, Draw, RangeRule};

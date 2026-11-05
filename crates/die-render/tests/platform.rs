@@ -2,6 +2,7 @@
 //! the fonts from `cargo xtask fonts`.
 #![cfg(target_os = "macos")]
 
+use die_core::Rgb;
 use die_render::font::{CellMetrics, fit};
 use die_render::font_dir;
 use die_render::frame::{Plane, Quad, Upload};
@@ -114,6 +115,68 @@ fn an_upload_that_does_not_fit_its_atlas_is_refused() {
         ..upload(0, 2, 2, 4)
     };
     assert!(p.upload(&color).is_err(), "a color pixel is 4 bytes");
+}
+
+#[test]
+fn a_texture_metal_cannot_make_is_an_error_since_metal_would_stop_the_process() {
+    let gpu = Gpu::system_default().expect("a Metal device");
+    assert!(Gpu::system_default().unwrap().pipeline(0, 8).is_err());
+    assert!(Gpu::system_default().unwrap().pipeline(8, 0).is_err());
+    let mut p = gpu.pipeline(8, 8).expect("a pipeline");
+    let black = Rgb(0, 0, 0);
+    assert_eq!(
+        p.render(&[], black, 0, 4).err().unwrap(),
+        "Metal has no 0x4 texture"
+    );
+    assert!(p.render(&[], black, 4, 0).is_err());
+    assert!(p.render(&[], black, 16385, 1).is_err());
+    assert!(p.render(&[], black, 1, 16385).is_err());
+    assert_eq!(p.render(&[], black, 16384, 1).map(|i| i.w), Ok(16384));
+    assert_eq!(p.render(&[], black, 4, 4).map(|i| i.w), Ok(4));
+}
+
+#[test]
+fn shaping_counts_each_glyph_where_the_font_puts_it() {
+    let f = regular();
+    let advance = f.advance(f.glyph('i').unwrap());
+    let top = |t: &str| {
+        let i = f.shape(t).ink;
+        i.y + i.h
+    };
+    assert!(
+        f.shape("ii").ink.w > advance,
+        "the second glyph's ink is past the first's advance"
+    );
+    assert!(
+        top("E\u{301}") > top("e\u{301}") + 3.0,
+        "a mark rides higher on a capital: {} {}",
+        top("E\u{301}"),
+        top("e\u{301}")
+    );
+}
+
+#[test]
+fn a_squeezed_glyph_is_drawn_smaller_and_keeps_its_margin() {
+    let f = regular();
+    let cell = CellMetrics::new(f.metrics(), f.advance(f.glyph('M').unwrap()), 2.0);
+    let arrow = f.shape("\u{27F5}");
+    let at = fit(arrow.ink, arrow.advance, 1, &cell, false).unwrap();
+    assert!(at.scale < 0.7, "{}", at.scale);
+    let b = arrow.draw(&at).unwrap();
+    let w = b.w as usize;
+    // Drawn at full size it would run off the bitmap, whose size allows for the squeeze.
+    assert!(
+        b.data.chunks(w).all(|r| r[0] == 0 && r[w - 1] == 0),
+        "the sides are clear"
+    );
+    assert!(
+        b.data.chunks(w).any(|r| r[1] > 0 || r[2] > 0),
+        "and ink reaches the left"
+    );
+    assert!(
+        b.data.chunks(w).any(|r| r[w - 2] > 0 || r[w - 3] > 0),
+        "and the right"
+    );
 }
 
 #[test]

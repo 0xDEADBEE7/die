@@ -2,6 +2,7 @@
 //! Ghostty's do (scope §5.11): box drawing, blocks, braille and powerline, and the
 //! underlines and strike-through. Each is a cell-sized coverage bitmap, from the
 //! cell's size in pixels and nothing else, so its tests need no font and no GPU.
+#![warn(missing_docs)]
 
 use die_core::Underline;
 use std::f32::consts::TAU;
@@ -25,7 +26,7 @@ const BOX: [u16; 128] = [
     0x0002, 0x2000, 0x0200, 0x0020, 0x0201, 0x1020, 0x0102, 0x2010,
 ];
 
-/// The cell's pixels, written as coverage. `rect` keeps the most covered value.
+/// The cell's pixels, as coverage.
 struct Canvas {
     w: i32,
     h: i32,

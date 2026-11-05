@@ -1,6 +1,7 @@
 //! The frame data that crosses the boundary between neutral code and the backend.
 //! These are plain values: neutral code makes them and reads them, the driver
 //! hands them over, and the backend never decides anything from them.
+#![warn(missing_docs)]
 
 use die_core::Rgb;
 
