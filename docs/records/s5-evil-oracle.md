@@ -193,12 +193,12 @@ The last column is my proposal for die-vim. "Evil" means keep Evil's behaviour, 
 
 | # | Area | Your Evil | Textbook Vim | Cases | die-vim |
 |---|---|---|---|---|---|
-| 1 | End of file | The cursor can rest on the empty line after the final newline: `G`, `5j` past the end, `w` on the last word, `}`, `dd`/`dk`/`dG`/`dj` on the last lines, `L` and `M` in a short buffer, `gj` on the last line, and `C-d` and `H` after `G` follow from it | The last line is the last line | 19 | **Evil without the final newline** (an Emacs buffer artifact; see below) |
+| 1 | End of file | The cursor can rest on the empty line after the final newline: `G`, `5j` past the end, `w` on the last word, `}`, `dd`/`dk`/`dG`/`dj` on the last lines, `L` and `M` in a short buffer, `gj` on the last line, and `C-d` and `H` after `G` follow from it. `J` on the last line takes the final newline, and a count past the last line reaches that empty line | The last line is the last line | 24 | **Evil without the final newline** (an Emacs buffer artifact; see below) |
 | 2 | Column after jumps | `gg`, `G`, `:N`, `>>`, `<<`, `dk` keep the column | `startofline` moves to the first non-blank | 12 | Evil |
 | 3 | Shifts | Round to a multiple of 4: 6 spaces `<<` gives 4, 2 spaces `>>` gives 4 | 6 → 2, 2 → 6 | 2 | Evil |
 | 4 | Indentation | `cc`, `S`, `O` indent by the major mode: in text, like the line above; Lisp and Python modes indent by language | Copy the current line's indent | 6 | Evil (line above); languages later, per mode |
 | 5 | Redo | None: `C-r` signals an error | `C-r` redoes | 1 | **Your call** (§5) |
-| 6 | Undo chain | `u`, another command, `u` redoes the first undo | Undoes further | 1 | **Your call** (§5) |
+| 6 | Undo chain | `u`, another command, `u` redoes the first undo. A run of `~`, `J`, `r` or `g~` is one step, because Emacs's `delete-char` joins them. After `J` from an empty line, `u` leaves the cursor on the next line | Undoes further; each command is a step; `u` goes back where the step started | 4 | **Your call** (§5) |
 | 7 | Undo in insert | Arrow keys don't split the insert's undo step | Arrow keys split it | 1 | Evil |
 | 8 | Numbered registers | `"1`–`"9` are the kill ring: `"1` is the last yank or delete of any size | `"1` is the last delete of a line or more | 2 | Evil |
 | 9 | Appending registers | After `"Ay`, `"` holds only the new text | `"` holds all of `"a` | 2 | Evil |
@@ -214,11 +214,16 @@ The last column is my proposal for die-vim. "Evil" means keep Evil's behaviour, 
 | 19 | Scrolling | `C-u` is the prefix argument; a count on `C-d` doesn't stick; after `C-b`, and near the end after `C-d`, the cursor lands a line or two off Vim's | `C-u` scrolls; a `C-d` count sticks | 6 | Evil |
 | 20 | Window lines | `M` takes the lower middle line, and uses the window's middle even in a short buffer; `G` recenters, so `H` lands lower; `nH` goes to line n+1 | Upper middle, text's middle, last line at the bottom, line n | 5 | Evil, except **`nH` → Vim** (bug) |
 | 21 | `C-a` (outside §10) | Not bound | Increments a number | 1 | Out of scope |
-| 22 | Combining marks | `e` and `$` onto a letter with a combining mark leave the cursor after the mark, on the space or the newline (Emacs's command loop, not Evil's grammar) | Stay on the letter | 3 | **Vim** (an Emacs artifact) |
+| 22 | Combining marks | `e` and `$` onto a letter with a combining mark leave the cursor after the mark, on the space or the newline (Emacs's command loop, not Evil's grammar). `x`, `X`, `s`, `r`, `~` and an operator over `h` or `l` split a letter from its mark | Stay on the letter, and take the letter and its mark together | 12 | **Vim** (an Emacs artifact) |
+| 23 | A key after an operator | Any other command runs as if it were a motion: `dA` deletes to the end of the line. Some (`x`, `y`, `p`, Esc) quit | Fails, and does nothing | 1 | **Vim** (Evil bug) |
+| 24 | A string that never closes | `di"` deletes from the quote, or the character before it, to the end of the text less one character, or fails, depending on what's earlier in the text | Fails | 2 | **Vim** (Evil bug) |
+| 25 | A register before a failed motion | `"a` before an `h`, `l` or `f` that fails stays named for the next command | The failed command uses it up | 1 | **Vim** (Evil bug) |
 
 Rows 1–4 and 8 affect everyday editing most. Row 1 is also a question for core, not only die-vim: should a file that ends in a newline show an empty last line?
 
 **Updated 2026-11-05, after the deferred reviews.** Rows 1, 11, 12, 17, 18 and 20 are reworded, and row 22 is new. The deviations review compared errors too, which this section's first run didn't: `compare.vim` now counts Vim's beeps against Evil's errors. Of the 523 cases at this update, 504 were compared and 166 differ, and each of those carries a `vim` note. Row 1's choice now reads "Evil without the final newline": each of its fixtures takes its cursor and errors from your Evil on the same text without its final newline, and its text and registers from the run with the newline. The exact rules are in `crates/die-vim/tests/oracle/deviations.json`. Three things that differ from Vim stay Evil's, and aren't rows here: `N%` goes N percent through the characters, `e` stops on empty lines, and Esc or a failed motion resets the goal column. Only `h`, `l`, `j`, `k`, and `f` or `t` from a line's last character keep it when they fail.
+
+**Updated again with V3.** Row 6 takes in the undo differences operators showed. Rows 23–25 are new. Rows 1 and 22 take in more cases. V3 added 550 cases, for what you'll meet in Rust: `snake_case`, `::`, `->`, tabs, wide characters, operators over several lines, counts on both sides. Of the 1,073 cases now, 1,053 were compared and 380 differ, and each of those carries a `vim` note. A random differential test against your Evil found the rest of these rows. It also found a few rare differences that aren't rows, because they're corners of Emacs and Evil, not choices. The M0 log lists them.
 
 ## 5. Surprises, risks and decisions for you
 

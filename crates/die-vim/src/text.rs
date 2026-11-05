@@ -183,9 +183,34 @@ pub fn indent_end(t: &TextBuf, line: usize) -> usize {
     s + ws
 }
 
+/// Where `line`'s indentation can be cut: the position and column at its start, after each
+/// of its leading spaces and tabs in turn, and so last at its end. Columns come from the text
+/// alone. A Hide can join a line to the one before or cover its indentation, and it has the
+/// same indentation then, where `display_col` would count from the joined line's start.
+pub fn indent_stops(t: &TextBuf, line: usize) -> Vec<(usize, usize)> {
+    let s = t.line_start(line);
+    let tab = t.settings().tab_width.max(1);
+    let mut col = 0;
+    let mut stops = vec![(s, 0)];
+    for (i, b) in t
+        .rope()
+        .byte_slice(s..indent_end(t, line))
+        .bytes()
+        .enumerate()
+    {
+        col = if b == b'\t' {
+            (col / tab + 1) * tab
+        } else {
+            col + 1
+        };
+        stops.push((s + i + 1, col));
+    }
+    stops
+}
+
 /// The width of `line`'s leading spaces and tabs, in display columns.
 pub fn indentation(t: &TextBuf, line: usize) -> usize {
-    t.display_col(indent_end(t, line))
+    indent_stops(t, line).last().map_or(0, |&(_, col)| col)
 }
 
 /// The first cursor position on `line`'s display line at or after display column
@@ -237,6 +262,183 @@ pub fn next_stop(t: &TextBuf, pos: usize) -> Option<usize> {
 pub fn prev_stop(t: &TextBuf, pos: usize) -> Option<usize> {
     let mut c = Chars::at(t, pos);
     c.back().then(|| t.snap(c.pos(), Some(Dir::Backward)))
+}
+
+/// The first string that ends after `p`, as Emacs's parser sees strings in fundamental-mode:
+/// parsing from the start of the text, `"` and `quote` delimit them, and `\\` escapes the
+/// next character, in a string or out. `.0` is its delimiter, and `.1..2` its range with
+/// both quotes. One that never closes runs to the end of the text, and `.3` is false.
+pub fn string_after(t: &TextBuf, p: usize, quote: char) -> Option<(char, usize, usize, bool)> {
+    let mut c = Chars::at(t, 0);
+    let mut open: Option<(char, usize)> = None;
+    while let Some(ch) = c.ch() {
+        let at = c.pos();
+        match open {
+            _ if ch == '\\' => {
+                c.fwd();
+            }
+            None if ch == quote || ch == '"' => open = Some((ch, at)),
+            Some((q, start)) if ch == q => {
+                c.fwd();
+                let end = c.pos();
+                if end > p {
+                    return Some((q, start, end, true));
+                }
+                open = None;
+                continue;
+            }
+            _ => {}
+        }
+        c.fwd();
+    }
+    open.map(|(q, start)| (q, start, t.len(), false))
+}
+
+/// The `"` string `p` is inside: past its opening quote, up to and on its closing one.
+pub fn string_around(t: &TextBuf, p: usize) -> Option<(usize, usize)> {
+    string_after(t, p, '"')
+        .filter(|&(_, beg, ..)| beg < p)
+        .map(|(_, beg, end, _)| (beg, end))
+}
+
+/// Scanning brackets as Emacs's `scan-lists` does in fundamental-mode. `(`, `[` and `{` and
+/// their closers always count, and `<` and `>` when they're what's asked for. They count
+/// toward depth by position, not by kind, so in `(a [b) c]` the `)` closes the `[`. `"`
+/// strings are skipped whole, and `\\` escapes the next character. It doesn't know
+/// whether it starts in a string, and stays in `lo..hi`.
+pub struct Lists<'a> {
+    /// The text.
+    pub t: &'a TextBuf,
+    /// One more opener, as `<`.
+    pub open: char,
+    /// One more closer, as `>`.
+    pub close: char,
+    /// Where the scan may reach back to.
+    pub lo: usize,
+    /// Where the scan may reach forward to.
+    pub hi: usize,
+}
+
+impl<'a> Lists<'a> {
+    /// Scan the whole text for `open`, `close` and the three kinds that always count.
+    pub fn new(t: &'a TextBuf, open: char, close: char) -> Self {
+        Lists {
+            t,
+            open,
+            close,
+            lo: 0,
+            hi: t.len(),
+        }
+    }
+    fn opens(&self, c: char) -> bool {
+        matches!(c, '(' | '[' | '{') || c == self.open
+    }
+    fn closes(&self, c: char) -> bool {
+        matches!(c, ')' | ']' | '}') || c == self.close
+    }
+    /// Whether the character at `c` follows an odd number of backslashes.
+    fn escaped(&self, c: &Chars) -> bool {
+        let mut b = Chars::at(self.t, c.pos());
+        let mut n = 0;
+        while b.pos() > self.lo && b.prev_ch() == Some('\\') {
+            b.back();
+            n += 1;
+        }
+        n % 2 == 1
+    }
+    /// Walk forward from `p`, skipping strings and what's escaped, and give each bracket
+    /// to `f`, which can stop the walk with a result. A string that never closes stops it.
+    fn walk<T>(&self, p: usize, mut f: impl FnMut(char, &Chars) -> Option<Option<T>>) -> Option<T> {
+        let mut c = Chars::at(self.t, p);
+        while c.pos() < self.hi {
+            let ch = c.ch()?;
+            if ch == '\\' {
+                c.fwd();
+            } else if ch == '"' {
+                c.fwd();
+                loop {
+                    if c.pos() >= self.hi {
+                        return None;
+                    }
+                    match c.ch()? {
+                        '\\' => {
+                            c.fwd();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                    c.fwd();
+                }
+            } else if let Some(stop) = f(ch, &c) {
+                return stop;
+            }
+            c.fwd();
+        }
+        None
+    }
+    /// Out of one level forward, Emacs's `(scan-lists p 1 1)`: just past the first closer
+    /// that nothing after `p` opened.
+    pub fn up_forward(&self, p: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        self.walk(p, |ch, c| {
+            if self.opens(ch) {
+                depth += 1;
+            } else if self.closes(ch) {
+                if depth == 0 {
+                    let mut after = Chars::at(self.t, c.pos());
+                    after.fwd();
+                    return Some(Some(after.pos()));
+                }
+                depth -= 1;
+            }
+            None
+        })
+    }
+    /// Into the next list forward, Emacs's `(scan-lists p 1 -1)`: on the first opener after
+    /// `p`, unless a closer comes first.
+    pub fn down(&self, p: usize) -> Option<usize> {
+        self.walk(p, |ch, c| {
+            if self.opens(ch) {
+                Some(Some(c.pos()))
+            } else if self.closes(ch) {
+                Some(None)
+            } else {
+                None
+            }
+        })
+    }
+    /// Out of one level backward, Emacs's `(scan-lists p -1 1)`: on the first opener before
+    /// `p` that nothing before `p` closed.
+    pub fn up_backward(&self, p: usize) -> Option<usize> {
+        let mut c = Chars::at(self.t, p);
+        let mut depth = 0usize;
+        while c.pos() > self.lo {
+            c.back();
+            let ch = c.ch()?;
+            if self.escaped(&c) {
+                continue;
+            }
+            if ch == '"' {
+                loop {
+                    if c.pos() <= self.lo {
+                        return None;
+                    }
+                    c.back();
+                    if c.ch() == Some('"') && !self.escaped(&c) {
+                        break;
+                    }
+                }
+            } else if self.closes(ch) {
+                depth += 1;
+            } else if self.opens(ch) {
+                if depth == 0 {
+                    return Some(c.pos());
+                }
+                depth -= 1;
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
