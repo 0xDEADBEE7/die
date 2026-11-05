@@ -1,6 +1,9 @@
 //! Criteria 10, 11, 12: keymap precedence and passthrough; the prefix argument; feed_keys and a
 //! key observer (q/@ round trip).
 #![allow(clippy::type_complexity)] // S4's test as ported (K1)
+
+use die_test_cap as _;
+
 mod support;
 use die_core::*;
 use std::cell::RefCell;

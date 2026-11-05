@@ -50,6 +50,11 @@ name = "evil-oracle"
 path = "tools/evil-oracle"
 dev = true
 
+[[crate]]
+name = "die-test-cap"
+path = "tools/test-cap"
+dev = true
+
 # die-core's modules at M0. `ctx.rs` holds S4's extension machinery, dispatch,
 # runtime, windows and prompt until K5 and K6 split it.
 

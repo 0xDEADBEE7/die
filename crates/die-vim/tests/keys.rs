@@ -2,6 +2,8 @@
 //! quit, which ends batch Emacs's keyboard macro. And `j` on the last line with a final
 //! newline, which is rule 1's, with no oracle case of its own.
 
+use die_test_cap as _;
+
 use die_core::Ctx;
 use die_vim::Vim;
 

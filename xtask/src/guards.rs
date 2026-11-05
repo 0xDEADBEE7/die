@@ -1,7 +1,8 @@
 //! `cargo xtask guards`: proves F1's build guards in a throwaway copy of the
-//! working tree. `unsafe` outside die-render's `platform` module fails to build,
+//! working tree. `unsafe` outside the places allowed it fails to build,
 //! and so does `-Cpanic=abort`, with the guard's message. The `unsafe` rustc lets
-//! through builds, and fails `cargo xtask lint`. A file or crate the lint wouldn't
+//! through builds, and fails `cargo xtask lint`. So does a test binary with no memory
+//! limit, and that limit in a product build. A file or crate the lint wouldn't
 //! read fails `cargo xtask sources`. For Linux, the cross-check fails on dead code
 //! (its `-D warnings`), on a build script that compiles C (its stand-ins) and on a
 //! Linux-only file the lint wouldn't read.
@@ -91,6 +92,24 @@ const LINT_PLANTS: &[(&str, &str, &str, &str)] = &[
         "`include!`",
     ),
 ];
+
+/// A test file like those other branches add, with no memory limit. It builds.
+const UNCAPPED_TEST: (&str, &str) = (
+    "crates/die-core/tests/planted.rs",
+    "#[test]\nfn planted() {}\n",
+);
+
+/// The allocator in die-dev's own build.
+const CAP_IN_A_PRODUCT: &str =
+    "\n[target.'cfg(unix)'.dependencies]\ndie-test-cap.workspace = true\n";
+
+/// The same under another name, given in the workspace's manifest, so that die-dev's says
+/// nothing of what it is.
+const CAP_RENAMED: (&str, &str) = (
+    "\n[workspace.dependencies.die_test_cap]\npath = \"tools/test-cap\"\n\
+     package = \"die-test-cap\"\n",
+    "\n[dependencies.die_test_cap]\nworkspace = true\n",
+);
 
 /// What `sources` fails with for a file, and for a crate.
 const NOT_READ: &str = "compiled docs/planted.rs, which `cargo xtask lint` doesn't read";
@@ -200,6 +219,37 @@ pub fn run(root: &Path, work: &Path) -> Result {
         println!("guards: {what} builds, and fails the lint");
     }
 
+    let root = tree.join(UNCAPPED_TEST.0);
+    write(&root, UNCAPPED_TEST.1)?;
+    let res = fails_with("the lint", lint::run(tree), &["no memory limit"]);
+    std::fs::remove_file(&root).map_err(|e| e.to_string())?;
+    res?;
+    println!("guards: a new test file without the memory limit fails the lint");
+
+    let lock = tree.join("Cargo.lock");
+    let orig_lock = read(&lock)?;
+    let res = with_plant(
+        &tree.join("apps/die-dev/Cargo.toml"),
+        CAP_IN_A_PRODUCT,
+        || {
+            update_lockfile(tree)?;
+            fails_with("the lint", lint::run(tree), &["depends on die-test-cap"])
+        },
+    );
+    write(&lock, &orig_lock)?;
+    res?;
+    println!("guards: die-test-cap as a normal dependency fails the lint");
+
+    let res = with_plant(&tree.join("Cargo.toml"), CAP_RENAMED.0, || {
+        with_plant(&tree.join("apps/die-dev/Cargo.toml"), CAP_RENAMED.1, || {
+            update_lockfile(tree)?;
+            fails_with("the lint", lint::run(tree), &["depends on die-test-cap"])
+        })
+    });
+    write(&lock, &orig_lock)?;
+    res?;
+    println!("guards: the same, renamed in the workspace's manifest, fails the lint");
+
     let module = tree.join(TARGET_MODULE.0);
     write(&module, TARGET_MODULE.1)?;
     let render = tree.join("crates/die-render/src/lib.rs");
@@ -214,8 +264,6 @@ pub fn run(root: &Path, work: &Path) -> Result {
     for (file, text) in OUTSIDE_CRATE {
         write(&tree.join(file), text)?;
     }
-    let lock = tree.join("Cargo.lock");
-    let orig_lock = read(&lock)?;
     for (what, file, plant, error) in SOURCE_PLANTS {
         let res = with_plant(&tree.join(file), plant, || {
             update_lockfile(tree)?;

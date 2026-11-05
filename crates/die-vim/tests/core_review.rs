@@ -2,6 +2,8 @@
 //! what an undefined key does to a count (DR-03), and insert state for a window that
 //! isn't focused (DR-04). The oracle checks the cursor cases too, in `undo-cursor.json`.
 
+use die_test_cap as _;
+
 use die_core::{Args, Ctx, Deco, Key, KeyEvent, Mods, Origin, State};
 use die_vim::Vim;
 

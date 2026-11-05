@@ -1,17 +1,21 @@
+#[cfg(test)]
+use die_test_cap as _;
+
 use xtask::util::{Result, root};
 use xtask::{api, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, sources};
 
 const USAGE: &str = "usage: cargo xtask <task>
 
   budget               line counts against guard 7 and budget.toml
-  lint                 unsafe only in platform modules, no target_os in neutral code,
-                       no window or GPU crates under die-core and die-vim, exact pins,
-                       D15, lockfile, licenses
+  lint                 unsafe only in platform modules and the test cap, no target_os in
+                       neutral code, no window or GPU crates under die-core and die-vim,
+                       exact pins, D15, a memory limit in every test binary, lockfile,
+                       licenses
   sources              every file the compiler read is one the lint reads, and every
                        local crate is a listed member
-  guards               unsafe outside platform and -Cpanic=abort fail to build; what
-                       rustc lets through fails lint or sources; dead code on Linux
-                       and a build script that calls cc fail the cross-check
+  guards               unsafe outside the allowed places and -Cpanic=abort fail to
+                       build; what rustc lets through fails lint or sources; dead code
+                       on Linux and a build script that calls cc fail the cross-check
   api-diff [--base R]  die-core's public API and die-vim's grammar, R -> working tree
                        (R defaults to the merge base with main)
   fonts                fetch Ioskeley Mono Term into fonts/, checked by SHA-256
@@ -20,7 +24,8 @@ const USAGE: &str = "usage: cargo xtask <task>
                        pkg-config, which no build script calls unless allowlisted (D16)
   cross-check          clippy -D warnings (so cargo check) of the workspace for
                        x86_64 and aarch64 Linux, with no C compiler or pkg-config
-  mutate [--cases N]   die-core's planted bugs; the property tests must catch each
+  mutate [--cases N]   die-core's planted bugs; the property tests must catch each, by
+                       a named test, the memory limit or the time limit
   ci [--worktree | --rev R]
                        every check in a fresh clone of HEAD (or R), or of the
                        working tree as git would commit it
