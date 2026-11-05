@@ -345,6 +345,8 @@ pub struct Ctx {
     /// on the command row, and the oldest go past 1,000.
     pub messages: Vec<String>,
     pub(crate) log: crate::messages::Log,
+    /// The errors among them since the harness last took them. Only the harness keeps these.
+    pub(crate) errors: Option<Vec<String>>,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
 }
@@ -502,6 +504,7 @@ impl Ctx {
             files: Default::default(),
             messages: vec![],
             log: Default::default(),
+            errors: None,
             faces,
             search_highlight: None,
         };
@@ -621,6 +624,9 @@ impl Ctx {
     /// is M1's.
     fn log_panic(&mut self, what: String) {
         let line = format!("{what}{RESTART}");
+        if let Some(errors) = &mut self.errors {
+            errors.push(line.clone());
+        }
         let recent = self.messages.iter().rev().take(32);
         let mut run = recent.take_while(|m| m.ends_with(RESTART));
         if !run.any(|m| *m == line) {
@@ -644,7 +650,15 @@ impl Ctx {
         match r {
             Ok(()) | Err(Error::Panicked { .. }) => {}
             Err(e) => self.messages.push(e.to_string()),
+            Err(e) => self.log_error(format!("{e:?}")),
         }
+    }
+    /// Log a key's or a call's failure, as opposed to news such as "Wrote foo".
+    pub(crate) fn log_error(&mut self, line: String) {
+        if let Some(errors) = &mut self.errors {
+            errors.push(line.clone());
+        }
+        self.messages.push(line);
     }
 
     // -------------------------------------------------------------- C2 checkout

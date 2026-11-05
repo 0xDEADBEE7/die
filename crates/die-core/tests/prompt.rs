@@ -104,7 +104,11 @@ fn history_goes_back_and_forward_and_keeps_what_was_typed() {
         ctx.type_keys(answer);
         ctx.type_keys("<CR>");
     }
-    assert_eq!(ctx.prompt_history("h"), ["one", "two"], "no repeat, no empty");
+    assert_eq!(
+        ctx.prompt_history("h"),
+        ["one", "two"],
+        "no repeat, no empty"
+    );
     ask(&mut ctx, PromptSpec::new("?").history("other"));
     ctx.type_keys("<Up>");
     assert_eq!(ctx.prompt_text(), Some(""), "a history per name");
@@ -124,7 +128,11 @@ fn history_goes_back_and_forward_and_keeps_what_was_typed() {
         assert_eq!(ctx.prompt_text(), Some(want), "{key}");
     }
     ctx.type_keys("<Up>X");
-    assert_eq!(ctx.prompt_text(), Some("twoX"), "the cursor lands at the end");
+    assert_eq!(
+        ctx.prompt_text(),
+        Some("twoX"),
+        "the cursor lands at the end"
+    );
 }
 
 #[test]
@@ -150,18 +158,20 @@ fn on_change_hears_each_edit_with_no_power_over_the_keys() {
     let h = heard.clone();
     let answers = ask(
         &mut ctx,
-        PromptSpec::new("/")
-            .initial("a")
-            .on_change(move |_, text| {
-                h.borrow_mut().push(text.to_string());
-                Err(Error::Msg("heard".into()))
-            }),
+        PromptSpec::new("/").initial("a").on_change(move |_, text| {
+            h.borrow_mut().push(text.to_string());
+            Err(Error::Msg("heard".into()))
+        }),
     );
     assert_eq!(ctx.prompt_text(), Some("a"));
     ctx.feed_keys("b<Left><Home>c<CR>").unwrap();
     ctx.run_until_idle();
     assert_eq!(*heard.borrow(), ["ab", "cab"], "moves change no text");
-    assert_eq!(*answers.borrow(), [Some("cab".to_string())], "errors drop no keys");
+    assert_eq!(
+        *answers.borrow(),
+        [Some("cab".to_string())],
+        "errors drop no keys"
+    );
     assert_eq!(ctx.messages, ["heard", "heard"]);
 }
 
@@ -173,7 +183,10 @@ fn the_cursor_shows_where_it_is_and_a_long_line_scrolls_to_it() {
     ctx.type_keys("ab<Left>");
     let s = ctx.scene();
     assert_eq!(s.row_text(2), ":ab");
-    assert_eq!((s.cursors[0].col, s.cursors[0].shape), (2, CursorShape::Bar));
+    assert_eq!(
+        (s.cursors[0].col, s.cursors[0].shape),
+        (2, CursorShape::Bar)
+    );
 
     ctx.type_keys("<End>cdefgh");
     let s = ctx.scene();
@@ -191,7 +204,11 @@ fn the_cursor_shows_where_it_is_and_a_long_line_scrolls_to_it() {
 fn messages_reach_a_read_only_buffer_and_the_command_row_until_the_next_key() {
     let mut ctx = ctx();
     ctx.set_frame_size(20, 3);
-    assert_eq!(ctx.find_buffer("*messages*"), None, "made with the first one");
+    assert_eq!(
+        ctx.find_buffer("*messages*"),
+        None,
+        "made with the first one"
+    );
     ctx.messages.push("first".into());
     ctx.messages.push("second\nmore".into());
     assert_eq!(ctx.scene().row_text(2), "second", "its first line");

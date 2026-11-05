@@ -10,8 +10,8 @@
 #[cfg(test)]
 use die_test_cap as _;
 
-mod grammar;
 mod ex;
+mod grammar;
 mod insert;
 mod motions;
 mod objects;

@@ -227,11 +227,7 @@ fn u_with_a_count_reports_a_read_only_step() {
     ctx.type_keys("3u");
     assert_eq!(ctx.text(b).unwrap().rope().to_string(), "axyz\n");
     assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
-    assert!(
-        ctx.messages[0].contains("read-only"),
-        "{:?}",
-        ctx.messages
-    );
+    assert!(ctx.messages[0].contains("read-only"), "{:?}", ctx.messages);
 }
 
 /// Running out of history partway through a count isn't an error, in either direction.
