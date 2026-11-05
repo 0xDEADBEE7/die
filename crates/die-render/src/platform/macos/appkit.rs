@@ -1,13 +1,23 @@
-//! AppKit: the event loop's and the window's macOS options, and the window's layer.
-//! The key monitor (R4) and the clipboard (R5) join here.
+//! AppKit: the event loop's and the window's macOS options, the window's layer, and the
+//! key monitor. The clipboard (R5) joins here.
 
 use super::metal::{Pipeline, TARGET_FORMAT};
+use block2::RcBlock;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSRunningApplication, NSView, NSWindow, NSWindowOcclusionState};
+use objc2::runtime::AnyObject;
+use objc2_app_kit::{
+    NSApplication, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSRunningApplication,
+    NSView, NSWindow, NSWindowOcclusionState,
+};
 use objc2_core_foundation::CGSize;
+use objc2_foundation::{NSDictionary, NSNumber, NSString, NSUserDefaults};
 use objc2_quartz_core::CAMetalLayer;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr::{NonNull, null_mut};
+use std::rc::Rc;
+use std::time::Duration;
 use winit::event_loop::EventLoopBuilder;
 use winit::platform::macos::{
     ActivationPolicy, EventLoopBuilderExtMacOS, OptionAsAlt, WindowAttributesExtMacOS,
@@ -16,9 +26,22 @@ use winit::platform::macos::{
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Window, WindowAttributes};
 
+/// The default that makes holding a key offer accents rather than repeat.
+const PRESS_AND_HOLD: &str = "ApplePressAndHoldEnabled";
+/// The virtual key codes the monitor cares about.
+const CAPS_LOCK: u16 = 57;
+const SLASH: u16 = 44;
+const RETURN: u16 = 36;
+
 /// No default menu, and never activate the app on launch. With `dock`, it's a regular app
 /// with a Dock icon, and otherwise an accessory, which has none: a check's window is one.
+/// Holding a key repeats it: that's set for this process only, and nothing goes to disk.
 pub fn prepare_loop<T: 'static>(builder: &mut EventLoopBuilder<T>, dock: bool) {
+    let key = NSString::from_str(PRESS_AND_HOLD);
+    let no = NSNumber::new_bool(false);
+    let defaults = NSDictionary::<NSString, AnyObject>::from_slices(&[&*key], &[&**no]);
+    // SAFETY: the dictionary's values are NSNumbers, which the defaults system can hold.
+    unsafe { NSUserDefaults::standardUserDefaults().registerDefaults(&defaults) };
     let policy = if dock {
         ActivationPolicy::Regular
     } else {
@@ -38,6 +61,152 @@ pub fn window_attributes(attributes: WindowAttributes) -> WindowAttributes {
 /// Whether Option acts as Alt on both sides of this window.
 pub fn option_as_alt(window: &Window) -> bool {
     window.option_as_alt() == OptionAsAlt::Both
+}
+
+/// Whether holding a key would offer accents.
+pub fn press_and_hold() -> bool {
+    NSUserDefaults::standardUserDefaults().boolForKey(&NSString::from_str(PRESS_AND_HOLD))
+}
+
+/// How close together two presses are one click run, as you've set it.
+pub fn double_click_interval() -> Duration {
+    Duration::try_from_secs_f64(NSEvent::doubleClickInterval())
+        .unwrap_or(Duration::from_millis(500))
+}
+
+/// What AppKit treats as a key equivalent and beeps at, never reaching the view: Ctrl-/ and
+/// Ctrl-Return, with no Option or Cmd (winit #4093).
+fn trapped(code: u16, flags: NSEventModifierFlags) -> bool {
+    let other = NSEventModifierFlags::Command | NSEventModifierFlags::Option;
+    matches!(code, SLASH | RETURN)
+        && flags.contains(NSEventModifierFlags::Control)
+        && !flags.intersects(other)
+}
+
+/// What the monitor's block shares with `KeyMonitor`.
+struct Seen {
+    mtm: MainThreadMarker,
+    caps: Cell<bool>,
+    toggles: RefCell<Vec<bool>>,
+    panics: Cell<u64>,
+    on_caps: RefCell<Box<dyn Fn()>>,
+    deliver_to: RefCell<Option<Retained<NSWindow>>>,
+}
+
+impl Seen {
+    /// One key event, on its way into `sendEvent:`. Whether this delivered it, so that AppKit
+    /// shouldn't. A flags-changed event for Caps Lock is all there is of it: winit drops those.
+    fn see(&self, e: &NSEvent) -> bool {
+        let (kind, code, flags) = (e.r#type(), e.keyCode(), e.modifierFlags());
+        let caps = flags.contains(NSEventModifierFlags::CapsLock);
+        self.caps.set(caps);
+        if kind == NSEventType::FlagsChanged && code == CAPS_LOCK {
+            self.toggles.borrow_mut().push(caps);
+            (self.on_caps.borrow())();
+        }
+        let is_key = matches!(kind, NSEventType::KeyDown | NSEventType::KeyUp);
+        let trap = is_key && trapped(code, flags);
+        let chosen = self.deliver_to.borrow().clone();
+        if let Some(window) = &chosen
+            && !trap
+        {
+            window.sendEvent(e);
+            return true;
+        }
+        if !trap {
+            return false;
+        }
+        let app = NSApplication::sharedApplication(self.mtm);
+        let window = chosen.or_else(|| app.keyWindow());
+        let Some(responder) = window.and_then(|w| w.firstResponder()) else {
+            return false;
+        };
+        if kind == NSEventType::KeyDown {
+            responder.keyDown(e);
+        } else {
+            responder.keyUp(e);
+        }
+        true
+    }
+}
+
+/// A local event monitor: it runs inside `sendEvent:`, before the event is dispatched. It sees
+/// Caps Lock, and hands the chords AppKit traps straight to the first responder. A panic
+/// in it can't unwind into AppKit, so it's caught and counted, and the event goes on as if
+/// the monitor weren't there. It's removed on drop.
+pub struct KeyMonitor {
+    token: Retained<AnyObject>,
+    seen: Rc<Seen>,
+}
+
+impl KeyMonitor {
+    /// Install it. `on_caps` runs when Caps Lock changes, so the loop can wake for it.
+    pub fn install(on_caps: impl Fn() + 'static) -> Result<KeyMonitor, String> {
+        let mtm = MainThreadMarker::new().ok_or("the key monitor isn't on the main thread")?;
+        let caps = NSEvent::modifierFlags_class().contains(NSEventModifierFlags::CapsLock);
+        let seen = Rc::new(Seen {
+            mtm,
+            caps: Cell::new(caps),
+            toggles: RefCell::default(),
+            panics: Cell::new(0),
+            on_caps: RefCell::new(Box::new(on_caps)),
+            deliver_to: RefCell::new(None),
+        });
+        let shared = seen.clone();
+        let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit passes a live event for the length of this call.
+            let e = unsafe { event.as_ref() };
+            match catch_unwind(AssertUnwindSafe(|| shared.see(e))) {
+                Ok(true) => null_mut(),
+                Ok(false) => event.as_ptr(),
+                Err(_) => {
+                    shared.panics.set(shared.panics.get() + 1);
+                    event.as_ptr()
+                }
+            }
+        });
+        let mask = NSEventMask::KeyDown | NSEventMask::KeyUp | NSEventMask::FlagsChanged;
+        // SAFETY: the block takes and returns what the method says, and AppKit keeps a copy of
+        // it until `removeMonitor`.
+        let token = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
+        let token = token.ok_or("AppKit gave no key monitor")?;
+        Ok(KeyMonitor { token, seen })
+    }
+
+    /// What Caps Lock did since the last call, in order: on or off.
+    pub fn take_caps(&self) -> Vec<bool> {
+        std::mem::take(&mut self.seen.toggles.borrow_mut())
+    }
+
+    /// Whether Caps Lock was on at the last event.
+    pub fn caps(&self) -> bool {
+        self.seen.caps.get()
+    }
+
+    /// How many panics it has caught.
+    pub fn panics(&self) -> u64 {
+        self.seen.panics.get()
+    }
+
+    /// Run this when Caps Lock changes, rather than what it ran before.
+    pub fn set_on_caps(&self, on_caps: impl Fn() + 'static) {
+        *self.seen.on_caps.borrow_mut() = Box::new(on_caps);
+    }
+
+    /// Deliver every key event to this surface's window, key or not. A test does this to take
+    /// keys it posts to its own process, since a window that doesn't take the keyboard from
+    /// you gets none.
+    pub fn deliver_to(&self, surface: &Surface) {
+        *self.seen.deliver_to.borrow_mut() = Some(surface.window.clone());
+    }
+}
+
+impl Drop for KeyMonitor {
+    fn drop(&mut self) {
+        // SAFETY: the token is what `addLocalMonitorForEventsMatchingMask:handler:` returned,
+        // and only this drop removes it.
+        unsafe { NSEvent::removeMonitor(&self.token) };
+    }
 }
 
 /// A window's view and the layer DIE draws on, which DIE owns, with its scale and size.
@@ -72,6 +241,8 @@ impl Surface {
         layer.setFramebufferOnly(!readable);
         view.setLayer(Some(&layer));
         view.setWantsLayer(true);
+        // A window that isn't key yet hasn't made its view the first responder.
+        ns_window.makeFirstResponder(Some(&view));
         Ok(Surface {
             view,
             window: ns_window,
