@@ -367,6 +367,30 @@ fn wide_characters_from_fallback_faces_take_two_cells_and_stay_in_them() {
 }
 
 #[test]
+fn a_wide_character_term_draws_one_cell_wide_is_centered_across_its_two() {
+    let Some(mut r) = term() else { return };
+    let mut s = page(6, 1);
+    text(&mut s, 0, 1, &["☰"]);
+    let img = draw(&mut r, &s);
+    write_png(&img, "wide-from-term.png");
+    let (x0, _, x1, _) = cell_ink(&img, 0, 1, 2);
+    assert!(x0 >= CW && x1 <= 3 * CW, "{x0}..{x1}");
+    let (left, right) = (x0 - CW, 3 * CW - x1);
+    assert!(left.abs_diff(right) <= 2, "{left} and {right}");
+}
+
+#[test]
+fn a_fallback_glyph_whose_ink_starts_left_of_its_pen_stays_in_its_cell() {
+    let Some(mut r) = term() else { return };
+    // Thai sara am, whose ring reaches back over the character before it.
+    let mut s = page(5, 1);
+    text(&mut s, 0, 2, &["\u{E33}"]);
+    let img = draw(&mut r, &s);
+    let (x0, _, x1, _) = cell_ink(&img, 0, 2, 1);
+    assert!(x0 >= 2 * CW && x1 <= 3 * CW, "{x0}..{x1}");
+}
+
+#[test]
 fn emoji_keep_their_own_colors_and_text_takes_the_cell_color() {
     let Some(mut r) = term() else { return };
     let mut s = page(6, 1);
