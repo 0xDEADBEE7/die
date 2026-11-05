@@ -522,6 +522,78 @@ fn a_cursor_on_a_wide_character_covers_its_cells_and_on_its_right_half_takes_it_
     }
 }
 
+/// A frame with a block cursor on an "x" at (1, 1) whose bitmap is 30×50 at this place
+/// in its cell: the glyph's own instance, and the ones the cursor added.
+fn block_on_a_big_glyph(left: i32, top: i32) -> (Quad, Vec<Quad>) {
+    let mut f = frames();
+    let mut s = blank(3, 3);
+    put(&mut s, 1, 1, "x");
+    let bitmap = GlyphBitmap {
+        w: 30,
+        h: 50,
+        left,
+        top,
+        plane: Plane::Gray,
+        data: vec![255; 1500],
+    };
+    for key in f.diff(&s) {
+        f.supply(&key, Some(bitmap.clone()));
+    }
+    let glyph = f.build(&s).quads[0];
+    s.cursors = vec![cursor(1, 1, CursorShape::Block)];
+    f.diff(&s);
+    let quads = f.build(&s).quads;
+    (glyph, quads[1..].to_vec())
+}
+
+#[test]
+fn a_block_cursor_cuts_its_redrawn_glyph_to_its_cell() {
+    let (glyph, q) = block_on_a_big_glyph(-5, -3);
+    assert_eq!(
+        glyph.rect,
+        [X - 5.0, Y - 3.0, 30.0, 50.0],
+        "whole, without it"
+    );
+    assert_eq!(q[0].rect, [X, Y, 19.0, 40.0], "the fill");
+    assert_eq!(q[1].rect, [X, Y, 19.0, 40.0], "the glyph, only in the cell");
+    assert_eq!(q[1].uv, [5.0, 3.0, 19.0, 40.0], "and the same pixels of it");
+    assert_eq!(q[1].color, rgba(BG));
+    // Over two sides only: the left and top edges stay where the bitmap has them.
+    let (_, q) = block_on_a_big_glyph(2, 4);
+    assert_eq!(q[1].rect, [X + 2.0, Y + 4.0, 17.0, 36.0]);
+    assert_eq!(q[1].uv, [0.0, 0.0, 17.0, 36.0]);
+    // Ink all outside the cell leaves nothing to draw.
+    let (_, q) = block_on_a_big_glyph(-40, 0);
+    assert_eq!(q[1].rect[2], 0.0, "{:?}", q[1]);
+}
+
+#[test]
+fn a_block_cursor_on_a_wide_character_redraws_the_lines_of_both_of_its_cells() {
+    for col in [0, 1] {
+        let mut f = frames();
+        let mut s = blank(4, 1);
+        put_with(&mut s, 0, 0, &["中"], |c| {
+            c.underline = Underline::Single;
+            c.strike = true;
+        });
+        let without = frame(&mut f, &s).0.len();
+        s.cursors = vec![cursor(0, col, CursorShape::Block)];
+        let (quads, ..) = frame(&mut f, &s);
+        let q = &quads[without..];
+        assert_eq!(
+            q.len(),
+            6,
+            "the fill, the glyph, and two lines on each cell"
+        );
+        let lines: Vec<f32> = q[2..].iter().map(|q| q.rect[0]).collect();
+        assert_eq!(lines, [0.0, 0.0, 19.0, 19.0], "at column {col}");
+        assert!(
+            q[1..].iter().all(|q| q.color == rgba(BG)),
+            "at column {col}"
+        );
+    }
+}
+
 /// A frame's instances for a cursor in `RED` on an "x" in these colors, on a scene of
 /// this background.
 fn cursor_on(shape: CursorShape, fg: Rgb, bg: Rgb, background: Rgb) -> Vec<Quad> {

@@ -632,10 +632,21 @@ const CELL_BG: Rgb = Rgb(30, 60, 90);
 
 /// An H in white on a colored cell at (1, 1), with and without a cursor.
 fn cursor_frames(r: &mut Renderer, shape: CursorShape) -> (Image, Image) {
+    cursor_frames_on(r, shape, "H", false)
+}
+
+/// The same with this grapheme, italic or not.
+fn cursor_frames_on(
+    r: &mut Renderer,
+    shape: CursorShape,
+    grapheme: &str,
+    italic: bool,
+) -> (Image, Image) {
     let mut s = page(3, 3);
-    put_with(&mut s, 1, 1, &["H"], |c| {
+    put_with(&mut s, 1, 1, &[grapheme], |c| {
         c.fg = WHITE;
         c.bg = CELL_BG;
+        c.italic = italic;
     });
     let without = draw(r, &s);
     s.cursors = vec![cursor(1, 1, shape)];
@@ -737,6 +748,49 @@ fn a_hollow_cursor_outlines_the_cell_and_draws_the_glyph_as_it_is() {
             assert_eq!(b, RGB_RED, "the outline, at {x},{y}");
         }
     });
+}
+
+#[test]
+fn a_block_cursor_changes_no_pixel_outside_its_cell_whatever_its_glyph_overruns() {
+    let Some(mut r) = term() else { return };
+    for (grapheme, italic) in [
+        ("x\u{20DD}", false),
+        ("a\u{301}\u{301}\u{301}\u{301}", false),
+        ("—", false),
+        ("f", true),
+        ("j", true),
+    ] {
+        let (without, with) = cursor_frames_on(&mut r, CursorShape::Block, grapheme, italic);
+        write_png(&with, "cursor-overrun.png");
+        // This also says the part of it inside the cell is where it was.
+        each_pixel(&without, &with, |x, y, a, b| {
+            if a == [255; 3] {
+                assert_eq!(b, RGB_BG, "{grapheme}'s own pixel at {x},{y}");
+            }
+        });
+    }
+}
+
+#[test]
+fn a_block_cursor_on_a_wide_character_keeps_its_lines_across_both_cells() {
+    let Some(mut r) = term() else { return };
+    let mut s = page(4, 1);
+    put_with(&mut s, 0, 1, &["中"], |c| {
+        c.fg = WHITE;
+        c.bg = CELL_BG;
+        c.underline = Underline::Single;
+        c.underline_color = GREEN;
+        c.strike = true;
+    });
+    s.cursors = vec![cursor(0, 1, CursorShape::Block)];
+    let img = draw(&mut r, &s);
+    write_png(&img, "cursor-wide-lines.png");
+    for y in [r.cell().underline_y as u32, r.cell().strike_y as u32] {
+        assert_eq!(
+            columns_in(&img, y, CW, 3 * CW, CELL_BG).len() as u32,
+            2 * CW
+        );
+    }
 }
 
 /// mono-dark's text and background colors.
