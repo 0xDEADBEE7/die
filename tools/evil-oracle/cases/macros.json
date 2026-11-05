@@ -11,6 +11,8 @@
   {"id": "macro-records-count", "vim": "end-line: Vim's j fails on the last line", "keys": "qa2xjq@a", "text": ["|abc", "def"]},
   {"id": "preset-macro-with-dot", "vim": "macro, Evil bug: in Vim . repeats the dw inside the macro; Evil's . errors", "keys": "@a", "text": ["|a b c d e f"], "registers": {"a": {"text": "dw.", "type": "macro"}}},
   {"id": "preset-macro", "keys": "@a", "text": ["|one", "two"], "registers": {"a": {"text": "A!<Esc>j", "type": "macro"}}},
+  {"id": "nested-macro-runs-first", "keys": "@a", "text": ["|one"], "registers": {"a": {"text": "@bA!<Esc>", "type": "macro"}, "b": {"text": "A?<Esc>", "type": "macro"}}},
+  {"id": "error-in-nested-macro-ends-both", "keys": "@a", "text": ["|one"], "registers": {"a": {"text": "@bA!<Esc>", "type": "macro"}, "b": {"text": "kA?<Esc>", "type": "macro"}}},
   {"id": "dot-in-macro-repeats-earlier-change", "keys": "x@a", "text": ["|a b c d e f"], "registers": {"a": {"text": "w.", "type": "macro"}}},
   {"id": "dot-replays-macro", "vim": "macro: Vim's . repeats the macro's last change (x); Evil's replays the whole macro", "keys": "@a.", "text": ["|a b c d e f"], "registers": {"a": {"text": "wx", "type": "macro"}}},
   {"id": "dot-after-motion-macro", "vim": "macro: Vim's . repeats the x before the macro; Evil's replays the macro's w", "keys": "x@a.", "text": ["|a b c d e f"], "registers": {"a": {"text": "w", "type": "macro"}}},
