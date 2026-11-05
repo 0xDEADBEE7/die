@@ -285,6 +285,12 @@ pub struct TextBuf {
     decos: SlotMap<DecorationId, Decoration>,
     next_seq: u64,
     pub(crate) views: HashMap<WindowId, View>,
+    /// Views of windows that don't show this buffer now, moved through edits as the others are,
+    /// so going back to a buffer finds the cursor and scroll position it left.
+    pub(crate) parked: HashMap<WindowId, View>,
+    /// The view the last window to leave this buffer left, Emacs's buffer point: where a window
+    /// with no view of its own starts, if no window shows the buffer.
+    pub(crate) rest: Option<View>,
     pub(crate) settings: Settings,
     /// The maximum width `toggle-max-width` turned off.
     pub(crate) max_width_off: Option<usize>,
@@ -367,6 +373,8 @@ impl TextBuf {
             decos: SlotMap::with_key(),
             next_seq: 0,
             views: HashMap::new(),
+            parked: HashMap::new(),
+            rest: None,
             settings: Settings::default(),
             max_width_off: None,
             cmd: 0,
@@ -590,6 +598,17 @@ impl TextBuf {
     /// End the group `begin_undo_group` started. With no group open, this does nothing.
     pub fn end_undo_group(&mut self) {
         self.history.end();
+    }
+    /// Whether the text has changed since it was last saved, Emacs's `buffer-modified-p`. Undoing
+    /// or redoing back to the saved text clears it. Text replaced by itself sets it, as any undo
+    /// step does. A silent edit sets it too, and undo can't clear that: it isn't in the history.
+    pub fn modified(&self) -> bool {
+        self.history.modified()
+    }
+    /// Set the flag: `false` says the text as it is now is what's saved (a save, a revert),
+    /// `true` that it differs, until a later `false`.
+    pub fn set_modified(&mut self, modified: bool) {
+        self.history.set_modified(modified);
     }
     /// End the current undo step here: the next edit starts a new step, even in the same
     /// command or inside an open group (which stays open, as a new step).

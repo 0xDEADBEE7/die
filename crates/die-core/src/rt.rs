@@ -1,6 +1,7 @@
 //! The runtime (contract §12, C3, C4): subscription handles, the queue of calls that receive
 //! `Ctx`, the timer heap and clocks, jobs with their channel and `Waker`, and the loop.
 #![warn(missing_docs)]
+use crate::app::Input;
 use crate::dispatch::*;
 use crate::error::*;
 use crate::ext::*;
@@ -450,11 +451,20 @@ impl Ctx {
             return true;
         }
         self.timers_ran = false;
-        let fed = self.fed.pop_front().map(|ev| (ev, KeySource::Fed));
-        let key = fed.or_else(|| self.typed.pop_front().map(|ev| (ev, KeySource::Typed)));
-        let Some((ev, src)) = key else { return false };
-        self.dispatch(ev, src);
-        self.restart_idle();
+        let fed = self
+            .fed
+            .pop_front()
+            .map(|ev| (Input::Key(ev), KeySource::Fed));
+        let next = fed.or_else(|| self.typed.pop_front().map(|i| (i, KeySource::Typed)));
+        let Some((input, src)) = next else {
+            return false;
+        };
+        if let Input::Key(ev) = input {
+            self.dispatch(ev, src);
+            self.restart_idle();
+        } else {
+            self.run_input(input);
+        }
         self.cmd_seq += 1;
         true
     }

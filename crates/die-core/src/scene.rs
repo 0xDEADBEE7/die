@@ -144,8 +144,8 @@ pub enum CursorShape {
     /// hiding the glyph there, as Evil's half cursor does.
     HalfBlock,
     /// A cursor that doesn't take input: another window's, or the focused
-    /// window's while the command line has a prompt, and from K9 every cursor
-    /// while DIE's window doesn't have the keyboard focus. A 1 logical px outline
+    /// window's while the command line has a prompt, and every cursor while
+    /// DIE's window doesn't have the keyboard focus. A 1 logical px outline
     /// of the cell, with the glyph drawn as it is, as Emacs draws the cursor of a
     /// window that isn't selected.
     Hollow,
@@ -203,7 +203,7 @@ pub struct Scene {
     pub positions: Vec<Option<(WindowId, usize)>>,
     /// Every cursor drawn. The one that takes input (the command line's while
     /// a prompt is open, otherwise the focused window's) comes first, and it's
-    /// the only one that isn't `Hollow`. A cursor that's hidden, or past the
+    /// the only one that can be other than `Hollow`. A cursor that's hidden, or past the
     /// edge of an unwrapped window (M0 has no horizontal scrolling), isn't drawn.
     pub cursors: Vec<Cursor>,
     /// `default`'s background, for the pixels around the grid.
@@ -352,11 +352,13 @@ impl Ctx {
             .unwrap_or(FALLBACK_FG);
         let input_in_prompt = self.prompt_label().is_some();
         let mut hollow = vec![];
+        let mut placed = Vec::with_capacity(placements.len());
         for p in placements {
             let Some(win) = self.windows.get(p.window) else {
                 continue;
             };
             let (wc, wr, bid) = (win.cols, win.rows, win.buffer);
+            placed.push((*p, wc, wr));
             let focused = self.focused() == Some(p.window);
             let cursor = self.draw_window(&mut scene, p, base, focused);
             let status = if focused {
@@ -392,7 +394,8 @@ impl Ctx {
                 .filter(|&(r, c, _)| r < rows && c < cols);
             if let Some((row, col, past_end)) = cursor {
                 let state = self.buffers.get(bid).map_or(State::Normal, |b| b.state);
-                let shape = if focused && !input_in_prompt {
+                let takes_input = focused && !input_in_prompt;
+                let shape = if takes_input && self.app_focused {
                     shape_for(state)
                 } else {
                     CursorShape::Hollow
@@ -404,10 +407,10 @@ impl Ctx {
                     color: cursor_color,
                     past_end,
                 };
-                if shape == CursorShape::Hollow {
-                    hollow.push(cur)
-                } else {
+                if takes_input {
                     scene.cursors.push(cur)
+                } else {
+                    hollow.push(cur)
                 }
             }
         }
@@ -427,7 +430,11 @@ impl Ctx {
                 let bar = Cursor {
                     row: last,
                     col,
-                    shape: CursorShape::Bar,
+                    shape: if self.app_focused {
+                        CursorShape::Bar
+                    } else {
+                        CursorShape::Hollow
+                    },
                     color: cursor_color,
                     past_end: false,
                 };
@@ -435,6 +442,7 @@ impl Ctx {
             }
         }
         scene.cursors.extend(hollow);
+        self.drawn.note(&scene, placed);
         scene
     }
 

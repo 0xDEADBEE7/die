@@ -430,3 +430,45 @@ old = '''
                 Visual if on_cursor => Some(self.line_of(at.pos) + 1),'''
 new = '''
                 Visual if on_cursor => Some(own),'''
+
+[[mutant]]
+name = "M49 rounding's last cells go to no window"
+file = "src/workspace/tree.rs"
+old = '''
+    let left = len - out.iter().sum::<usize>();'''
+new = '''
+    let left = (len - out.iter().sum::<usize>()) * 0;'''
+
+[[mutant]]
+name = "M50 a window's text covers the divider beside it"
+file = "src/workspace/tree.rs"
+old = '''
+        let divider = usize::from(self.x + self.w < frame_cols);'''
+new = '''
+        let divider = usize::from(self.x + self.w < frame_cols) * 0;'''
+
+[[mutant]]
+name = "M51 a window in a frame with room can shrink to nothing"
+file = "src/workspace/tree.rs"
+old = '''
+        while out[i] < mins[i] {'''
+new = '''
+        while out[i] < mins[i] && len == usize::MAX {'''
+
+[[mutant]]
+name = "M52 undo leaves the flag as if the step were still there"
+file = "src/undo.rs"
+old = '''
+            p.other.before
+        };'''
+new = '''
+            p.other.after
+        };'''
+
+[[mutant]]
+name = "M53 a silent edit leaves the buffer unmodified"
+file = "src/undo.rs"
+old = '''
+        self.silent_since_saved = true;'''
+new = '''
+'''
