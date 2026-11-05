@@ -52,7 +52,7 @@ pub mod metal {
 pub mod text {
     use super::Never;
     use crate::font::{FaceMetrics, Fit, Ink};
-    use crate::frame::{GlyphBitmap, Plane};
+    use crate::frame::GlyphBitmap;
     use std::path::Path;
 
     /// A face, which this target can't have.
@@ -97,8 +97,6 @@ pub mod text {
         pub advance: f64,
         /// Unused.
         pub ink: Ink,
-        /// Unused.
-        pub plane: Plane,
     }
 
     impl Shaped {

@@ -555,6 +555,40 @@ fn blocks_split_a_cell_at_one_place_even_at_an_odd_size() {
     }
 }
 
+/// The quadrants with their Unicode names, less "QUADRANT": the names say which corners
+/// they light, not the renderer's table.
+const QUADRANTS: [(char, &str); 10] = [
+    ('▖', "LOWER LEFT"),
+    ('▗', "LOWER RIGHT"),
+    ('▘', "UPPER LEFT"),
+    ('▙', "UPPER LEFT AND LOWER LEFT AND LOWER RIGHT"),
+    ('▚', "UPPER LEFT AND LOWER RIGHT"),
+    ('▛', "UPPER LEFT AND UPPER RIGHT AND LOWER LEFT"),
+    ('▜', "UPPER LEFT AND UPPER RIGHT AND LOWER RIGHT"),
+    ('▝', "UPPER RIGHT"),
+    ('▞', "UPPER RIGHT AND LOWER LEFT"),
+    ('▟', "UPPER RIGHT AND LOWER LEFT AND LOWER RIGHT"),
+];
+
+#[test]
+fn each_quadrant_lights_the_corners_its_name_says() {
+    for (w, h) in [(19, 40), (20, 41), (9, 21)] {
+        for (ch, name) in QUADRANTS {
+            let px = draw(ch, w, h, 1).unwrap();
+            let (w, h) = (w as usize, h as usize);
+            for (corner, x, y) in [
+                ("UPPER LEFT", 0, 0),
+                ("UPPER RIGHT", w - 1, 0),
+                ("LOWER LEFT", 0, h - 1),
+                ("LOWER RIGHT", w - 1, h - 1),
+            ] {
+                let want = name.split(" AND ").any(|part| part == corner);
+                assert_eq!(px[y * w + x] == 255, want, "{ch} {name}: {corner}");
+            }
+        }
+    }
+}
+
 #[test]
 fn eighths_grow_from_their_edge() {
     let (w, h) = (19, 40);
@@ -672,6 +706,49 @@ fn powerline_shapes_span_the_cell_and_mirror() {
             draw(ch, 19, 40, 2).unwrap().iter().any(|&p| p > 128),
             "{ch:?}"
         );
+    }
+}
+
+#[test]
+fn the_round_and_thin_powerline_glyphs_point_the_way_they_should() {
+    let (w, h) = (19usize, 40usize);
+    let px = |ch: char| draw(ch, 19, 40, 2).unwrap();
+    let (right_round, left_round) = (px('\u{E0B4}'), px('\u{E0B6}'));
+    let (right_thin, left_thin) = (px('\u{E0B1}'), px('\u{E0B3}'));
+    let at = |img: &[u8], x: usize, y: usize| img[y * w + x];
+    let (mid, last) = (h / 2, w - 1);
+    // U+E0B4 is a half circle with its flat side at the left, and U+E0B6 the opposite.
+    assert!(at(&right_round, 0, mid) > 128, "E0B4's flat side");
+    assert!(
+        at(&right_round, last, mid) > 128,
+        "E0B4's curve reaches the far side"
+    );
+    assert_eq!(
+        at(&right_round, last, 0),
+        0,
+        "and rounds off before the far corner"
+    );
+    assert!(at(&left_round, last, mid) > 128, "E0B6's flat side");
+    assert_eq!(at(&left_round, 0, 0), 0, "E0B6 rounds off on the left");
+    // U+E0B1 is the outline of U+E0B0: its tip is lit, and inside it is clear.
+    assert!(at(&right_thin, last, mid) > 128, "E0B1's tip");
+    assert_eq!(at(&right_thin, w / 2, mid), 0, "E0B1 is only an outline");
+    assert!(at(&right_thin, 0, 0) > 128, "E0B1 starts at the corner");
+    assert!(at(&left_thin, 0, mid) > 128, "E0B3's tip");
+    for y in 0..h {
+        for x in 0..w {
+            let mirrored = last - x;
+            assert_eq!(
+                at(&right_round, x, y),
+                at(&left_round, mirrored, y),
+                "round {x},{y}"
+            );
+            assert_eq!(
+                at(&right_thin, x, y),
+                at(&left_thin, mirrored, y),
+                "thin {x},{y}"
+            );
+        }
     }
 }
 
