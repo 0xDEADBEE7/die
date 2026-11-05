@@ -1,5 +1,5 @@
 //! K4's third check: layout against real Emacs. `emacs_layout/` holds what tty Emacs 30.2 did with
-//! about 110 texts, and the scripts that asked it. Every case passes here, or differs in a way
+//! about 150 texts, and the scripts that asked it. Every case passes here, or differs in a way
 //! contract §9 names as deliberate, and `the_differences_are_the_contracts` checks §9 still names
 //! each one.
 //!

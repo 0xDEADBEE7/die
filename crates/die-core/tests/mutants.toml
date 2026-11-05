@@ -417,17 +417,17 @@ old = '''
 new = ''
 
 [[mutant]]
-name = "M48 a fold's cursor row shows its first line's number in Visual"
-file = "src/layout.rs"
-old = '''
-                Visual if on_cursor => Some(self.line_of(at.pos) + 1),'''
-new = '''
-                Visual if on_cursor => Some(own),'''
-
-[[mutant]]
 name = "M40 the gutter counts the empty last line"
 file = "src/layout.rs"
 old = '''
 self.line_count() - usize::from(empty_last)'''
 new = '''
 self.line_count() - usize::from(empty_last && false)'''
+
+[[mutant]]
+name = "M48 a fold's cursor row shows its first line's number in Visual"
+file = "src/layout.rs"
+old = '''
+                Visual if on_cursor => Some(self.line_of(at.pos) + 1),'''
+new = '''
+                Visual if on_cursor => Some(own),'''
