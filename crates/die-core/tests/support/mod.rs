@@ -1,6 +1,7 @@
 //! Test fixtures that use only the public API: a toy die-vim grammar, a fold mode in
 //! manifold's shape, and a toy terminal surface. Throwaway, like the contract-test fixtures (§16).
 #![allow(dead_code)]
+pub mod naive_layout;
 use die_core::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -99,8 +100,8 @@ impl Extension for Vim {
                 for _ in 0..a.count.unwrap_or(1) {
                     let t = ctx.text_mut(b)?;
                     let dl = t.display_line(t.cursor(w).unwrap());
-                    let (mut s, e) = (t.line_start(dl.first_line), dl.end);
-                    if dl.eof && s > 0 {
+                    let (mut s, e) = (t.line_start(*dl.lines().start()), dl.end());
+                    if dl.eof() && s > 0 {
                         s -= 1; // last line: take the newline before it
                     }
                     if s == e {
@@ -326,9 +327,10 @@ fn vertical(ctx: &mut Ctx, a: &Args, d: Dir) -> Result {
     let mut p = t.pos_at_vcol(line, goal);
     // Normal state doesn't rest on the end of a non-empty line.
     let dl = t.display_line(p);
-    let n = dl.stops.len();
-    if n > 1 && dl.stops[n - 1].pos == p {
-        p = dl.stops[n - 2].pos;
+    let stops = dl.stops();
+    let n = stops.len();
+    if n > 1 && stops[n - 1].pos == p {
+        p = stops[n - 2].pos;
     }
     t.set_selection(w, Selection::cursor(p).with_goal(Some(goal)));
     Ok(())

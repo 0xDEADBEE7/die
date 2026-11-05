@@ -188,6 +188,8 @@ pub struct Layout {
     pub positions: Vec<CursorPos>,
     /// The gutter's width.
     pub gutter: usize,
+    /// Where each display line starts.
+    pub line_starts: Vec<usize>,
 }
 
 impl Layout {
@@ -234,7 +236,7 @@ impl Layout {
 // ---------------------------------------------------------------- "Hides merge first"
 
 /// A hidden range: one or more Hides, merged.
-struct Hidden {
+pub struct Hidden {
     start: usize,
     end: usize,
     replacement: Option<String>,
@@ -246,7 +248,7 @@ fn one_line(s: &str) -> String {
     s.replace(['\n', '\t'], " ")
 }
 
-fn hidden_ranges(hides: &[Hide]) -> Vec<Hidden> {
+pub fn hidden_ranges(hides: &[Hide]) -> Vec<Hidden> {
     // "A Hide with an empty range hides nothing and shows nothing." "an empty replacement is no
     // replacement".
     let mut live: Vec<Hide> = hides
@@ -676,7 +678,7 @@ fn gutter_cells(number: Option<usize>, gutter: usize) -> String {
 ///
 /// Reading: "the fold line if there is one" means the hidden range the cursor is in has a
 /// replacement. A fold line elsewhere on the display line doesn't count.
-fn moved_cursor(cursor: usize, hidden: &[Hidden], positions: &[CursorPos]) -> usize {
+pub fn moved_cursor(cursor: usize, hidden: &[Hidden], positions: &[CursorPos]) -> usize {
     let inside = hidden.iter().find(|h| h.start <= cursor && cursor < h.end);
     if let Some(h) = inside
         && h.replacement.is_some()
@@ -773,5 +775,6 @@ pub fn layout(input: &Input) -> Layout {
         rows,
         positions,
         gutter,
+        line_starts: lines.iter().map(|l| l.start).collect(),
     }
 }
