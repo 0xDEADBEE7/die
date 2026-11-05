@@ -97,7 +97,7 @@ No limit was raised and no dependency added. Text and undo has 37 lines left, an
 
 ### Open, and what wasn't verified
 
-- **`ci`:** PLACEHOLDER
+- **`ci`:** passed on a fresh clone of the commit before this line was written, on the third run. The first two failed only `layout_speed`, at load about 20 to 27, with 4.6 to 13.6 ms against the 4 ms limit, and 431 to 479 ms against the 400 ms limit in the second. Nothing changed between runs and no limit was raised. `ci` stops at the first failing test binary, so those two runs skipped what comes after it. All tests then passed in a separate `cargo test --workspace` and in the third run, with load near 7 when it started and 17.5 when it ended. So these limits fail under load, whatever K10b does, which the K10b fixer also saw on an older binary (of unknown commit) from the main checkout. `scene` wasn't compared with a build without K10b.
 - **`mutate` wasn't run.** The five mutants were each caught when applied by hand and run against the model property, before the review's fixes, so `cargo xtask mutate`'s own report on them doesn't exist yet.
 - **`ci --linux` wasn't run,** so these tests haven't run on Linux. The root and missing-`rustfmt` guards were written from reading `xtask/src/linux.rs`.
 - **Not tested:** the in-place fallback for an owner it can't keep, which needs a file owned by someone else, and crash behaviour during a save.
