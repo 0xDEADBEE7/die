@@ -451,6 +451,7 @@ mod matrix {
             title: "DIE keys".into(),
             script: Some(Box::new(script)),
             hidden: true,
+            first_frame: None,
         };
         let code = window::run(ctx, options).expect("a window");
         std::process::exit(code);

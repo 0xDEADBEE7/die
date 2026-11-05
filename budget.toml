@@ -55,7 +55,7 @@ name = "die-test-cap"
 path = "tools/test-cap"
 dev = true
 
-# die-core's modules at M0. `prompt.rs` holds S4's prompt until K11a rebuilds it.
+# die-core's modules at M0.
 
 [[module]]
 crate = "die-core"
@@ -109,7 +109,7 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 crate = "die-core"
 name = "session"
 limit = 1000
-files = ["session.rs", "session/"]
+files = ["session.rs", "session/", "instance.rs", "sys/"]
 
 [[module]]
 crate = "die-core"
@@ -147,10 +147,10 @@ limit = 900
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
-# from 3 lines to 64, and R3 to 105.
+# from 3 lines to 64, R3 to 105, and R5 to 112.
 [[module]]
 crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
-limit = 140
+limit = 150
 files = ["platform/backend.rs"]

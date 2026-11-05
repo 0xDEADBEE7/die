@@ -26,7 +26,7 @@ pub use crate::platform::backend::appkit::{
     KeyMonitor, Surface, double_click_interval, option_as_alt, prepare_loop, press_and_hold,
     window_attributes,
 };
-pub use crate::platform::backend::ready;
+pub use crate::platform::backend::{ready, system_clipboard};
 
 /// The gray atlas's side, in pixels: about 2,500 glyphs of a 19×40 cell.
 const GRAY_ATLAS: u32 = 2048;

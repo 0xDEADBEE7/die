@@ -203,6 +203,7 @@ fn backward_takes_only_matches_that_end_by_from() {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn backward_on_a_long_run_is_fast() {
     // Each start position matches to the end of the run: trying them all from the
     // buffer's start is quadratic (seconds here), from `from` it's immediate.

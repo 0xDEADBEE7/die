@@ -37,7 +37,7 @@ The exit test is scope §12's. (f) was added for Linux on 2026-10-19 (question 1
 | (c) | `cargo fmt` on an open file reloads an unmodified buffer, and `:w` refuses on a modified one. | Harness tests on a temporary directory, then once by hand. | K10b, V5 |
 | (d) | Every Evil-oracle case passes (1,075 today), except the deliberate deviations, which are listed by name and have hand-written fixtures. | `cargo test -p die-vim --test oracle` with an empty pending list. The 58 excluded cases are named in `deviations.json`, each with a hand-written fixture. | V0–V7 |
 | (e) | The budgets in guard 7 hold. | `cargo xtask budget` | F2 |
-| (f) | The workspace cross-checks for x86_64 and aarch64 Linux, and die-core, die-vim and the oracle pass their tests on aarch64 Linux. | `cargo xtask ci` cross-checks on every merge; `cargo xtask ci --linux` runs the tests in colima | F1, F2, R1 |
+| (f) | The workspace cross-checks for x86_64 and aarch64 Linux, and die-core, die-vim and the oracle pass their tests on aarch64 Linux. | `cargo xtask ci` cross-checks at each checkpoint; `cargo xtask ci --linux` runs the tests in colima | F1, F2, R1 |
 
 How they're judged:
 
@@ -120,9 +120,12 @@ The five scheduled reviews each read a whole surface at once. The other three ru
 
 ### How work lands
 
-- Each work package is a branch, and up to four AI sessions work at once.
-- Nothing merges until `cargo xtask ci` passes in a fresh clone: the tests, the oracle's pending list and the budget, with the properties at 2,000 cases. `guards` and the clean build run only when the diff from the merge base with main touches a `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain.toml`, a build script, `xtask/` or `tools/test-cap/`. `cargo xtask ci --full` runs everything at the old counts, at each checkpoint.
-- `cargo xtask api-diff` lists every public item a branch adds, removes or changes in die-core, and every change to die-vim's grammar module. Under 09-B, a branch with a non-empty list waits for you. Everything else merges when the checks pass.
+- Each work package is a branch, and many AI sessions work at once.
+- A package lands on an integration branch, not on main, when its own gate passes: `cargo fmt --all --check`, `cargo xtask lint`, `cargo xtask budget`, `cargo check --workspace --all-targets`, and clippy and the tests of the crates it touched. It merges the integration branch first, and if the push is refused, it merges again, checks again and retries. A review runs behind the landing and doesn't hold it.
+- `cargo xtask ci --full`, `cargo xtask ci --linux` and `cargo xtask mutate` run at checkpoints. `--full` runs every step and every test at the old counts, and `ci --linux` and `mutate` run the ignored tests too.
+- `cargo xtask ci` is the same checks in a fresh clone, for when one is wanted: the tests, the oracle's pending list and the budget, with the properties at 100 cases unless `DIE_PROP_CASES` is set. It leaves out the tests marked `#[ignore]`. `guards` and the clean build run only when the diff from the merge base with main touches a `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain.toml`, a build script, `xtask/` or `tools/test-cap/`.
+- `cargo test` leaves three kinds of test for the checkpoints, each marked by the reason in its `#[ignore]`. `speed`: an absolute limit in ms or s, which load alone fails. `window`: it puts a window on your screen. `slow`: over 5 s. A limit on a ratio stays in, as long as load doesn't fail it.
+- `cargo xtask api-diff` lists every public item a branch adds, removes or changes in die-core, and every change to die-vim's grammar module. Under 09-B, a branch with a non-empty list waits for you. Everything else lands when its gate passes.
 - Each package an AI drafts starts with a test plan. That's 08's "under tests you review".
 - A weekly note in `docs/m0-log.md` says what merged, what waits on you, what changed in the API, and where the budget stands.
 - Every problem you hit while dogfooding becomes a test first: an oracle case for die-vim, a harness test for core.
@@ -245,7 +248,7 @@ Each case's tranche comes from the keys it uses, not its topic file: a case land
 | **die-render near its cap.** | M0's size over 3.9k. | Its cut list. |
 | **Code you can't read in a weekend** (09-B, 09-C). | A review takes much longer than its estimate. | Simplify before going on. That's the weekend rule doing its job. |
 | **M2's copy state reuses die-vim's grammar.** | A motion that reads editor state instead of the text and layout. | Motions are plain functions from V1 on. |
-| **Linux drifts while nobody runs it.** | A Linux-only failure found weeks after the change that caused it. | The cross-check in `cargo xtask ci` on every merge, and `cargo xtask ci --linux` on colima weekly and at each checkpoint. |
+| **Linux drifts while nobody runs it.** | A Linux-only failure found weeks after the change that caused it. | The cross-check in `cargo xtask ci` and `cargo xtask ci --linux` on colima, both at each checkpoint. |
 
 ## 7. Deferred out of M0
 

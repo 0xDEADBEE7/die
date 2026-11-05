@@ -193,6 +193,7 @@ fn arguments_are_files_and_checks() {
     let args = |check: Option<&[&str]>, files: &[&str]| Args {
         check: check.map(|c| c.iter().map(|s| s.to_string()).collect()),
         files: files.iter().map(PathBuf::from).collect(),
+        launch: Default::default(),
     };
     assert_eq!(parse(&[]), Ok(args(None, &[])));
     assert_eq!(parse(&["a", "b"]), Ok(args(None, &["a", "b"])));

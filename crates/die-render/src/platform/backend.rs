@@ -11,6 +11,11 @@ pub fn ready() -> Result<(), String> {
     Err("no window backend on this platform yet".into())
 }
 
+/// No system clipboard yet, so core keeps its own.
+pub fn system_clipboard() -> Option<Box<dyn die_core::Clipboard>> {
+    None
+}
+
 /// The window's side.
 pub mod appkit {
     use super::{Never, metal::Pipeline};

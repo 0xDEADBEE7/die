@@ -57,3 +57,36 @@ fn a_cancelled_find_leaves_the_last_one_for_semicolon() {
     assert!(messages.is_empty(), "{messages:?}");
     assert_eq!(cursor, 3);
 }
+
+/// K11a: `:` runs what's in the registry, with the rest of the line, and remembers it.
+#[test]
+fn colon_reads_a_line_and_runs_a_command() {
+    let (cursor, messages) = run("abc\n", ":vim-forward-char<CR>");
+    assert_eq!(cursor, 1);
+    assert!(messages.is_empty(), "{messages:?}");
+
+    let (cursor, messages) = run("abc\n", ":nonsense<CR>l");
+    assert_eq!(messages, ["no command named nonsense"]);
+    assert_eq!(cursor, 1, "typed keys stay after a failure");
+
+    let (cursor, messages) = run("abc\n", ":<BS>l");
+    assert!(messages.is_empty(), "{messages:?}");
+    assert_eq!(cursor, 1, "<BS> left the line, so l moved");
+}
+
+/// K11a: `/` and `?` read a line with a history of their own. V2 makes them search.
+#[test]
+fn slash_and_question_share_a_history_and_cancel_quietly() {
+    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers");
+    let b = ctx.create_text("t", "abc\n");
+    let w = ctx.open_window(b, 80, 24).expect("a window");
+    ctx.focus(w);
+    ctx.type_keys("/abc");
+    assert_eq!(ctx.prompt_text(), Some("abc"));
+    ctx.type_keys("<CR>?<Up>");
+    assert_eq!(ctx.prompt_text(), Some("abc"));
+    ctx.type_keys("<Esc>:<Up>");
+    assert_eq!(ctx.prompt_text(), Some(""), ": has its own");
+    ctx.type_keys("<Esc>");
+    assert_eq!(ctx.state_of(b), die_core::State::Normal);
+}

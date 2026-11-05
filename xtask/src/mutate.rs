@@ -254,6 +254,8 @@ fn prop_tests(tree: &Path, target: &Path, cases: u32, limit: Duration, log: &Pat
             "--target-dir",
         ])
         .arg(target)
+        // A test `ci` leaves out for its time still catches mutants here.
+        .args(["--", "--include-ignored"])
         .env("DIE_PROP_CASES", cases.to_string())
         .env("DIE_PROP_SHRINK", "0")
         .env("CARGO_PROFILE_TEST_DEBUG", "false");
@@ -646,6 +648,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "speed: runs in ci --full"]
     fn the_first_failure_ends_a_run_and_the_whole_group() {
         let dir = TempDir::new("mutate-failure").unwrap();
         let log = dir.path().join("log");

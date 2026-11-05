@@ -171,6 +171,10 @@ impl Ctx {
 
     pub(crate) fn dispatch(&mut self, ev: KeyEvent, src: KeySource) {
         self.cmd_seq += 1;
+        if ev.kind != KeyKind::Release && !matches!(ev.key, Key::Modifier(_)) {
+            self.sync_messages();
+            self.log.echo = None;
+        }
         // A key DIE took in passthrough swallows its own repeat and release.
         if let Some(i) = self.swallow.iter().position(|k| *k == ev.key) {
             match ev.kind {
@@ -229,8 +233,7 @@ impl Ctx {
                     self.drop_fed();
                 }
                 if !matches!(handled, Ok(true) | Err(Error::Panicked { .. })) {
-                    self.messages
-                        .push(format!("{} is undefined", key_notation(&keys)));
+                    self.log_error(format!("{} is undefined", key_notation(&keys)));
                 }
             }
         }
@@ -269,7 +272,13 @@ impl Ctx {
         })
     }
 
-    fn run_key(&mut self, name: &str, keys: Vec<KeyEvent>, win: WindowId, buf: BufferId) {
+    pub(crate) fn run_key(
+        &mut self,
+        name: &str,
+        keys: Vec<KeyEvent>,
+        win: WindowId,
+        buf: BufferId,
+    ) {
         let p = std::mem::take(&mut self.prefix);
         let args = Args {
             count: p.count,
@@ -291,7 +300,7 @@ impl Ctx {
     }
 
     /// Lookup order: range keymap at the cursor, buffer-local, modes (newest first), kind, global.
-    fn layers_lookup(&self, buf: BufferId, state: State, keys: &[KeyEvent]) -> Lookup {
+    pub(crate) fn layers_lookup(&self, buf: BufferId, state: State, keys: &[KeyEvent]) -> Lookup {
         let b = &self.buffers[buf];
         let mut layers: Vec<&Keymap> = vec![];
         let (kind, ranges): (&str, Vec<&Keymap>) = match &b.content {
