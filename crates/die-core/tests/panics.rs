@@ -31,6 +31,9 @@
 //!   case's panic isn't the next case's.
 //! - `a_loop_that_never_goes_idle_is_reported_not_a_panic`: core's own panic on a self-feeding
 //!   callback becomes a message.
+
+use die_test_cap as _;
+
 use die_core::*;
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};

@@ -1,5 +1,8 @@
 //! K3: key notation. One parser for keymaps, `feed_keys`, the harness and the Evil oracle's
 //! fixtures. It follows Vim: `<...>` is one key only when its name is known.
+
+use die_test_cap as _;
+
 use die_core::*;
 use proptest::prelude::*;
 

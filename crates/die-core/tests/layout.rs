@@ -1,4 +1,7 @@
 //! Criterion 8 (C16 + layout) and criterion 13 (Hide reveal policy).
+
+use die_test_cap as _;
+
 mod support;
 use die_core::*;
 use support::*;

@@ -1,4 +1,7 @@
 //! Criteria 5, 6, 7: edit origins (C14), undo across silent edits and undo groups, `edits_since` (C15).
+
+use die_test_cap as _;
+
 mod support;
 use die_core::*;
 use support::*;

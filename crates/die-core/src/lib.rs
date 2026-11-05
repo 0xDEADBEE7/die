@@ -6,6 +6,9 @@
 //! `render.rs`, are rebuilt under these tests during M0 (docs/m0-plan.md §2).
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+use die_test_cap as _;
+
 #[cfg(panic = "abort")]
 compile_error!("DIE requires panic = \"unwind\" (C9). Set it in the config crate's profile.");
 

@@ -24,6 +24,9 @@
 //! - `shutdown_cancels_what_config_detached`: its timers, idle timers and hooks.
 //! - `shutdown_cancels_what_config_sets_during_it`: an extension's `shutdown` running config's
 //!   command, so config's handles go last.
+
+use die_test_cap as _;
+
 use die_core::*;
 use std::cell::RefCell;
 use std::path::Path;

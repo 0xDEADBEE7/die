@@ -1,5 +1,8 @@
 //! Criterion 4 (C4): subscription handles cancel on drop; `.detach()` ties them to the extension;
 //! a handle stored in a mode is cancelled when its buffer is killed.
+
+use die_test_cap as _;
+
 mod support;
 use die_core::*;
 use std::cell::Cell;
