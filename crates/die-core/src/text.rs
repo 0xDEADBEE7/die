@@ -615,6 +615,10 @@ impl TextBuf {
     pub fn undo_boundary(&mut self) {
         self.history.boundary();
     }
+    /// Whether an undo group is open: an insert session, say.
+    pub(crate) fn undo_group_open(&self) -> bool {
+        self.history.group_open()
+    }
     /// Undo the last step and return the range it changed, in the text after the undo:
     /// every change the step made lies inside it. The acting window's selection goes back
     /// to what it was just before the step's first change, shape and goal included, moved
