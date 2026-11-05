@@ -65,7 +65,7 @@ your config crate (main)
 | C6 | **Support faithful ports.** The contract has to let you rebuild your existing packages later with the same structure they have in Emacs: text buffers, modes and keymaps. That includes seek-style browsers that redraw a read-only buffer, and orchid's conversation buffer. **Custom surfaces** are for things text can't do: terminals, pixel views, and new graphical extensions. | The graphical work is for things you couldn't build in Emacs. What already works shouldn't be redesigned, and text buffers get Vim motions, search, undo and yank for free. |
 | C7 | Extension options are typed fields on the extension's struct, set in your config. There's no `defcustom`-style registry. | Checked at compile time, with no machinery. Cost: no runtime customize; you change config and rebuild. Core buffer settings (wrap, width, line numbers) stay changeable at runtime. |
 | C8 | Keymaps bind keys to command names. Extensions provide default keymaps. Your config is applied last, so within any keymap it binds into, it wins; to override a mode's or die-vim's key, bind in that mode's or surface kind's keymap. After config is applied, core checks that every bound name exists and reports all missing names at once. | Names keep `describe-key` working and make every binding inspectable. The startup check catches typos that strings would otherwise hide. |
-| C9 | *(Amended)* Every call from core into extension code is wrapped in `catch_unwind`, on a best-effort basis.<br>- A panic becomes an error message naming the extension, and a panic hook logs it to `*messages*`.<br>- Repeated panics disable the object that panicked (a mode, a surface or a subscription), never a whole crate.<br>- DIE refuses to build with `panic = "abort"`. | A bug in one extension shouldn't take your terminals down with it. Some failures abort the process anyway: stack overflows, double panics and panics inside FFI callbacks. Surviving those is the holder's job (scope D20), not C9's. `die-term` never runs extension code inside engine callbacks. |
+| C9 | *(Amended)* Every call from core into extension code is wrapped in `catch_unwind`, on a best-effort basis.<br>- A panic becomes an error message naming the extension, and a panic hook logs it to `*messages*`.<br>- Repeated panics disable the object that panicked (a mode, a surface or a subscription), never a whole crate.<br>- DIE refuses to build with `panic = "abort"`.<br><br>*(K5, 2026-11-05: a panic in `render` or `decorate` names only the place, not the extension, and disabling comes from M1. §15 has the details.)* | A bug in one extension shouldn't take your terminals down with it. Some failures abort the process anyway: stack overflows, double panics and panics inside FFI callbacks. Surviving those is the holder's job (scope D20), not C9's. `die-term` never runs extension code inside engine callbacks. |
 | C10 | A custom surface has one state, shared by every window that shows it. Text buffers keep a cursor, selection and scroll position per window, as Vim does, and the session saves them per window. | Per-window state for arbitrary surfaces is a lot of machinery for a rare case. |
 | C11 | A headless test harness is part of core's public API (§16). | Your packages have ERT suites, and extensions need the same. |
 | C12 | No API stability promises. Everything is compiled together, so the compiler is the migration tool. | It's a personal project. Semantic-versioning ceremony would be pure cost. |
@@ -79,12 +79,12 @@ your config crate (main)
 
 1. **Build.** Your config lists extensions as values, with their typed options.
 2. **Register.** Core calls each extension's `register` in config order. Registration only declares things: commands, keymaps, modes (with their keymaps, initial state and restorer), surface kinds, faces, hooks, restorers and file-type associations. There's no editor access yet. Registering the same extension type twice is an error, because `with_ext` looks extensions up by type.
-3. **Apply config.** Your bindings, theme, buffer defaults and environment are applied after all extensions, so they win within each keymap they bind into (C8). Core then checks that every bound command exists.
-4. **Init.** Core calls each extension's `init` in order, with `Ctx`. Extensions start watchers, timers and background state here.
+3. **Apply config.** Your bindings, theme, buffer defaults and settings by path are applied after all extensions, so they win within each keymap they bind into (C8). Your config can declare commands and faces here too, and a panic here is a startup error. Core then checks that every bound command exists, and reports every problem at once. Your environment joins this step in M2.
+4. **Init.** Core calls each extension's `init` in order, with `Ctx`. Extensions start watchers, timers and background state here. An error or a panic is logged, and the next extension still inits.
 5. **Restore.** Core restores the session (§14). Extensions are already initialized, so their restorers work. Terminals reattach to their PTYs in the holder.
-6. **Startup.** Your config's startup hook runs. It's told whether this is a cold start or a restore, so it can open a terminal as `user/startup` does today without adding another one on every restart.
+6. **Startup.** Your config's startup hook runs. An error or a panic is logged, and the editor still starts. From M2 it's told whether this is a cold start or a restore, so it can open a terminal as `user/startup` does today without adding another one on every restart.
 7. **Run.** The main loop.
-8. **Shutdown or restart.** Core asks every surface and mode to `save()`, writes the session, then calls each extension's `shutdown` in reverse order.
+8. **Shutdown or restart.** Core asks every surface and mode to `save()`, writes the session, then calls each extension's `shutdown` in reverse order. What an extension detached is cancelled after its `shutdown`, and what your config detached is cancelled last.
    - On restart, core starts the newly built binary and exits. Terminals stay alive in the holder (scope §5.9).
    - On quit (the DIE layer's Q, Cmd-Q on macOS, after confirming if processes are running), core tells the holder to close the terminals and exit.
 
@@ -94,6 +94,14 @@ Extension
   register(reg)      declarations only
   init(ctx)          optional
   shutdown(ctx)      optional
+
+Config               everything optional; the harness can run with none
+  register(reg)      your bindings, commands, faces and leader, on the registry the extensions used
+  theme
+  text defaults      the settings every text buffer starts with
+  file settings      settings by path, on top of the defaults, until file-type modes (M1)
+  clock              real in DIE, fake in the harness (§12)
+  startup(ctx)       step 6
 ```
 
 An extension's global state is the extension struct itself. A command reaches it with `ctx.with_ext::<Orchid>(|orchid, ctx| …)`.
@@ -105,7 +113,7 @@ An extension's global state is the extension struct itself. A command reaches it
 | Buffers | create (name and surface; names made unique as in Emacs, `term<2>`), open file, find by name, list, kill, `with_surface::<S>`. Each buffer has a `directory`, like `default-directory`. |
 | Windows | focused window and buffer; the size in cells of each window showing a buffer (`window-width`, `window-body-height`); `show(buffer, ShowIn)`, where `ShowIn` is the current window, a new split, a window already showing it, or background (not shown); split, close, only, and focus by direction (for `C-w`) |
 | Text | `text(buffer)` and `text_mut(buffer)` borrow a buffer's text for reading, editing, markers, decorations, per-window cursors and selections, and layout queries (§9) |
-| Commands | `run(name, args)`; `feed_keys(keys)`, which queues keys as if typed, ahead of further typed input; a key observer that sees each key before dispatch, marked typed or fed, so die-vim can record macros (`qb@aq` records `@a`, as Vim does) |
+| Commands | `run(name, args)`; `feed_keys(keys)`, which queues keys as if typed, ahead of further typed input (§6); a key observer that sees each key before dispatch, marked typed or fed, so die-vim can record macros (`qb@aq` records `@a`, as Vim does) |
 | Modes | enable, disable, `with_mode::<M>` |
 | Modal state | read and set the state, which is per buffer: of the focused buffer, or of any buffer by id; read and set the prefix argument (count and register) |
 | Async | `spawn`, `process`, `pty`, `watch`, `after`, `every`, `idle`, `prompt` (§12) |
@@ -136,6 +144,8 @@ args
 - **The prefix argument.** Core stores a count and a register, and doesn't parse Vim syntax. die-vim's digit and `"x` commands fill the slot, and `0` is a die-vim command (scope D9). An undefined key clears the slot, as Emacs's `undefined` does, so a typo can't arm the next command.
 - **No `interactive`-style argument prompting.** A command that needs input calls `ctx.prompt` and continues in the callback (§12).
 - **Errors** returned from `run` are shown in the command line and logged.
+- **An error ends what was fed.** When a key's command fails, by an error or a panic, or a key reaches nothing that handles it, the rest of the fed keys are dropped, so a macro stops where it fails, as Emacs's keyboard macros do. A prompt's answer is part of the key that submitted it, so `/nomatch<CR>dd` stops at the search. Typed keys stay. An error from a timer or another callback drops nothing, since it isn't part of the key stream, and neither does one a command handles itself. In passthrough only a panic ends what was fed: a terminal that ignores a key hasn't failed.
+- **The order of fed keys.** Fed keys run ahead of typed ones. Keys fed from inside a call also run ahead of what's left of the fed keys, in the order they're fed, so a macro inside a macro runs before the rest of it, as in Emacs, and an error in it ends both. Keys the host feeds outside any call go behind what's left.
 - **Introspection.** `describe-command` shows the doc, the owning extension and every key bound to the command. `describe-key` follows a key through the lookup order (§7) and reports where it was found, plus any bindings it shadows.
 - **Core commands** include `find-file`, `switch-buffer`, `kill-buffer`, `command-palette` and `restart`, built on the command-line prompt. A picker extension can replace them by registering its own commands under the same names and declaring them as overrides.
 - **Name collisions.** Overriding a core command is allowed only when declared explicitly. Any other duplicate name is a registration error.
@@ -473,12 +483,23 @@ All callbacks run on the main thread, receive `Ctx`, and are queued (C3). Every 
 
 | API | Shape | Replaces |
 |---|---|---|
-| `spawn(work, done)` | `work` runs on a thread pool and returns a value; `done(ctx, value)` runs on the main thread | Anything slow, such as scrib's blocking `call-process` or delta's `shell-command-to-string` |
+| `spawn(work, done)` | `work` runs on a thread of its own and returns a value; `done(ctx, value)` runs on the main thread | Anything slow, such as scrib's blocking `call-process` or delta's `shell-command-to-string` |
 | `process(cmd)` | A builder for args, environment and working directory, with callbacks for stdout (lines or chunks), stderr and exit. Returns a handle for writing to stdin or killing the process. | `make-process` with a filter and sentinel |
 | `pty(cmd, size)` | The same, on a PTY. Used by `die-term`, which hands the PTY to the terminal's helper process, so its output never passes through DIE. | |
 | `watch(path, f)` | File-system events | `file-notify-add-watch` |
 | `after(d, f)`, `every(d, f)`, `idle(d, f)` | Timers | `run-with-timer`, `run-at-time`, `run-with-idle-timer` |
 | `prompt(spec, f)` | A command-line prompt with optional completion candidates. `f(ctx, answer)` runs with the answer on submit, and with nothing on cancel, so a multi-step flow can clean up. | `completing-read`, `read-string` |
+
+**Timers.**
+- They fire in deadline order, idle timers among them. Timers due together fire in the order they were set, and a repeat counts as set again each time it fires. An idle timer goes after any other timer due at the same moment.
+- A repeat counts from its last deadline, so being late doesn't shift the next one. One that has fallen a whole period behind, as after a laptop's sleep, skips what it missed instead of running it all. The shortest period is a millisecond.
+- Timers due together fire as a batch. After a batch, the next key gets a turn, and with none waiting, the host does: it draws, reads its events, and finds the next timer already due. So a repeat that takes longer than its period can't lock out keys or the frame.
+- `idle(d, f)` runs `f` when no key has come for `d`, once each time that happens, as `run-with-idle-timer` does with a repeat. It counts from when it's set, however long the editor has already been idle, and after that from when a key's command or prompt answer ended, so a slow command doesn't use up the wait. It doesn't fire while a key is waiting.
+- Core can say when the next timer is due. The host sleeps until then, or until it's woken.
+
+**The clock** is real in DIE and fake in the harness (§16). A fake clock moves only when the harness moves it. It stops at each deadline on the way, so a callback reads its own time, and a chain of retries runs inside one move. If a job outlasts its wait, the rest of that move doesn't wait for it again. A real clock can't be moved.
+
+**Waking the loop.** A background thread never touches the editor. It posts to a channel, and a `Waker` tells whatever runs the loop. The waker names no event loop: the host connects its own, once. Any thread can call it, and however many jobs finish between two turns of the loop, the host hears once. A turn of the loop never waits for a job, so `work` can take as long as it needs.
 
 **PTYs** need more than pipes do:
 - A PTY is registered with the holder when `pty()` creates it, so it survives restarts and crashes (scope §5.9). The holder takes labelled fds from any DIE process (`term/<id>/pty`, `term/<id>/engine`), so a terminal's helper process can reach its PTY, and a restarted DIE can reach the helper.
@@ -521,10 +542,14 @@ C3 costs you something with multi-step prompts, which nest one callback per step
 ## 15. Errors and panics
 
 - **Errors.** Commands and callbacks return results. Errors go to the command line and to `*messages*`.
-- **Panics** are caught at every call from core into extension code, on a best-effort basis (C9).
-  - A panic in `render` replaces that window's content with an error placeholder until the next successful render.
-  - After repeated panics in a short time, the object that panicked is disabled until restart. That's a mode, a surface or a subscription, never a whole crate such as die-vim.
-  - A panic hook logs every panic to `*messages*`, including ones that abort.
+- **Panics** are caught at every call from core into extension code, on a best-effort basis (C9). Each is logged to `*messages*` once, with the extension's name and the place in the source, whoever else sees the error. What the code had checked out goes back, and the editor goes on. A line already among the last panic lines in the log isn't logged again, so panics on every frame can't flood the log, even from several objects taking turns.
+  - A panic in `render` replaces that window's content with an error placeholder until the next successful render. A panic in `decorate` draws that frame without the rest of the mode's faces. Neither gets a `Ctx`, so the log line comes at the next turn of the loop, and names only the place.
+  - A panic in a job's `work` reaches the main thread as its value would. `done` doesn't run.
+  - A panic in a key observer doesn't stop the key.
+  - A panic in a key's command or a prompt's answer drops the rest of the fed keys (§6).
+  - A panic in the `Drop` of something core holds for an extension, such as a cancelled timer's closure or a cancelled job's value, is logged and names core, with the place. It doesn't escape the turn of the loop.
+  - From M1, after repeated panics in a short time, the object that panicked is disabled until restart. That's a mode, a surface or a subscription, never a whole crate such as die-vim.
+  - A panic hook sees what no guard catches, such as a panic the host caught itself. It can't reach two kinds of panic, which go only to the standard error stream: one on a thread an extension started itself, and one that aborts, since `*messages*` dies with the process.
 - **Half-updated state.** A panic can leave an extension's state half-updated, so the error message suggests restarting.
 - **Crashes.** What `catch_unwind` can't catch, the holder covers: terminals survive, and the session restores unsaved text (scope D20).
 
@@ -534,7 +559,7 @@ Core provides a headless harness that:
 
 - builds a workspace with no window and no GPU, at a fixed grid size
 - loads extensions and your config
-- feeds in keys (`\o`, `jjx`) and pointer events through `feed_keys`
+- types keys (`\o`, `jjx`) and sends pointer events. `feed_keys` is for macros, since what it feeds drops at the first error (§6)
 - runs until idle, using a **fake clock** so timer-driven code (orchid's retries) runs instantly
 - exposes buffer text, decorations, and the rendered screen as text for snapshot tests
 - can save the session and restore it into a fresh workspace

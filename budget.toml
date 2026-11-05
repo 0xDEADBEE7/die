@@ -55,8 +55,8 @@ name = "die-test-cap"
 path = "tools/test-cap"
 dev = true
 
-# die-core's modules at M0. `ctx.rs` holds S4's extension machinery, dispatch,
-# runtime, windows and prompt until K5 and K6 split it.
+# die-core's modules at M0. `ext.rs` holds S4's buffers and windows until K6
+# moves them, and `prompt.rs` S4's prompt until K11a rebuilds it.
 
 [[module]]
 crate = "die-core"
@@ -80,7 +80,7 @@ files = ["keys.rs", "keymap.rs", "describe.rs"]
 crate = "die-core"
 name = "ext, dispatch, rt"
 limit = 1500
-files = ["ctx.rs", "ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
+files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
 crate = "die-core"
