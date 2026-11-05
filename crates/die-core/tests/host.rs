@@ -307,6 +307,118 @@ fn pointer_input_counts_as_activity_and_a_bare_move_doesnt() {
     }
 }
 
+// ------------------------------------------------------------------ the pointer on text
+
+fn press(c: &mut Ctx, kind: PointerKind, row: usize, col: usize) {
+    c.handle(pointer(kind, row, col));
+    c.run_ready();
+    c.scene();
+}
+
+const LEFT: PointerKind = PointerKind::Press(Button::Left);
+const DRAG: PointerKind = PointerKind::Drag(Button::Left);
+
+#[test]
+fn a_click_focuses_the_window_and_places_the_cursor() {
+    let (mut c, b, a, _) = world(23, 10);
+    let r = c.split_window(a, Side::Right).unwrap();
+    c.scene();
+    c.focus(r);
+    press(&mut c, LEFT, 1, 2);
+    assert_eq!(c.focused(), Some(a));
+    let t = c.text(b).unwrap();
+    assert_eq!((t.cursor(a), t.cursor(r)), (Some(8), Some(0)));
+
+    press(&mut c, LEFT, 8, 15);
+    assert_eq!(c.focused(), Some(r), "a status line focuses its window");
+    assert_eq!(c.text(b).unwrap().cursor(r), Some(0), "and places nothing");
+
+    press(&mut c, PointerKind::Press(Button::Right), 1, 2);
+    assert_eq!(c.focused(), Some(r), "only the left button");
+}
+
+#[test]
+fn a_click_past_a_rows_end_lands_on_its_end_of_line_position() {
+    let (mut c, b, w, _) = world(8, 5);
+    let t = c.text_mut(b).unwrap();
+    t.tx(Origin::User).insert(0, "abcd\n").commit().unwrap();
+    let s = t.settings_mut();
+    s.max_width = Some(4);
+    s.center = true;
+    c.scene();
+    press(&mut c, LEFT, 0, 7);
+    assert_eq!(
+        c.text(b).unwrap().cursor(w),
+        Some(4),
+        "a full row's padding"
+    );
+    press(&mut c, LEFT, 1, 7);
+    assert_eq!(
+        c.text(b).unwrap().cursor(w),
+        Some(8),
+        "a wrapped row: its last"
+    );
+    press(&mut c, LEFT, 2, 7);
+    assert_eq!(
+        c.text(b).unwrap().cursor(w),
+        Some(10),
+        "a short row: its newline"
+    );
+}
+
+#[test]
+fn a_drag_selects_in_visual_state_from_where_it_was_pressed() {
+    let (mut c, b, w, _) = world(23, 10);
+    c.scene();
+    press(&mut c, LEFT, 0, 1);
+    press(&mut c, DRAG, 0, 1);
+    assert_eq!(c.state(), State::Normal, "it hasn't left the cell");
+    press(&mut c, DRAG, 1, 2);
+    press(&mut c, PointerKind::Release(Button::Left), 1, 2);
+    press(&mut c, DRAG, 0, 4);
+    assert_eq!(c.state(), State::Visual);
+    let sel = c.text(b).unwrap().selection(w).unwrap();
+    assert_eq!((sel.anchor, sel.head, sel.shape), (1, 8, Shape::Char));
+
+    press(&mut c, LEFT, 0, 3);
+    assert_eq!(c.state(), State::Normal, "with no keymap too");
+    assert_eq!(c.text(b).unwrap().selection(w), Some(Selection::cursor(3)));
+}
+
+#[test]
+fn the_trackpad_scrolls_the_window_under_it_and_brings_the_cursor_along() {
+    let (mut c, _, a, _) = world(23, 6);
+    let b = c.create_text("long", &"0123\n".repeat(20));
+    c.show(b, ShowIn::Current).unwrap();
+    let r = c.split_window(a, Side::Right).unwrap();
+    c.scene();
+    press(&mut c, LEFT, 0, 3);
+    let scroll = |c: &mut Ctx, dy| press(c, PointerKind::Scroll { dx: 0.0, dy }, 0, 15);
+    let view = |c: &Ctx, w| {
+        let t = c.text(b).unwrap();
+        (t.scroll(w).unwrap().0, t.cursor(w).unwrap())
+    };
+
+    scroll(&mut c, 0.6);
+    assert_eq!(view(&c, r).0, 0, "short of a row");
+    scroll(&mut c, 0.6);
+    assert_eq!(view(&c, r), (5, 5), "the cursor kept to the top row");
+    scroll(&mut c, 2.0);
+    assert_eq!(view(&c, r), (15, 15));
+    assert_eq!(c.focused(), Some(a), "the focus stays");
+    assert_eq!(view(&c, a), (0, 3), "and so does the other window");
+
+    scroll(&mut c, -2.2);
+    assert_eq!(view(&c, r).0, 5, "up, keeping the 0.2 over from before");
+    c.text_mut(b).unwrap().set_cursor(r, 5);
+    scroll(&mut c, 1e6);
+    assert_eq!(view(&c, r), (100, 100), "the last row, and no further");
+    c.focus(r);
+    scroll(&mut c, -1e6);
+    assert_eq!(view(&c, r).0, 0);
+    assert_eq!(view(&c, r).1, 15, "the bottom row of 3, at its column");
+}
+
 // ------------------------------------------------------------------ scene
 
 #[test]
