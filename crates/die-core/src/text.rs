@@ -301,9 +301,7 @@ pub(crate) fn map_pos(p: usize, start: usize, old_end: usize, new_end: usize, g:
         p
     } else if p > old_end || (p == old_end && old_end > start) {
         p - old_end + new_end
-    } else if p == start && old_end > start {
-        start
-    } else if g == Gravity::Left {
+    } else if (p == start && old_end > start) || g == Gravity::Left {
         start
     } else {
         new_end

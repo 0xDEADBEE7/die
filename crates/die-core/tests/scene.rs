@@ -72,6 +72,8 @@
 //!   and `faces_and_search_cost_at_most_twice_a_plain_frame`: K15's speed.
 //! - `rgb_hex_and_display`
 
+use die_test_cap as _;
+
 use die_core::*;
 use proptest::prelude::*;
 use std::ops::Range;
@@ -1894,7 +1896,7 @@ fn p50_ms(ctx: &mut Ctx, w: WindowId, cols: usize) -> f64 {
     ms[10]
 }
 
-/// Three tries at a speed limit, so a busy machine doesn't fail it: the per-cell
+/// Three tries at a limit on a ratio, so a busy machine doesn't fail it: the per-cell
 /// scan this guards against misses them by far more than a machine's load.
 fn within_three_tries(limit: f64, mut measure: impl FnMut() -> f64) {
     let tries: Vec<f64> = (0..3).map(|_| measure()).collect();
@@ -1909,7 +1911,16 @@ fn an_80_column_window_with_4000_faces_and_a_one_letter_search_composes_within_1
     let mut ctx = speed_ctx();
     let w = dense(&mut ctx, 84, true);
     ctx.set_search_highlight(search("e"));
-    within_three_tries(1.0, || p50_ms(&mut ctx, w, 84));
+    support::within_three_tries_ms(1.0, || p50_ms(&mut ctx, w, 84));
+}
+
+#[test]
+fn a_limit_in_ms_stretches_only_at_background_priority() {
+    assert_eq!(support::stretch_at(Some(4)), 4.0);
+    assert_eq!(support::stretch_at(Some(9)), 4.0);
+    assert_eq!(support::stretch_at(Some(10)), 1.0);
+    assert_eq!(support::stretch_at(Some(31)), 1.0);
+    assert_eq!(support::stretch_at(None), 1.0);
 }
 
 #[test]

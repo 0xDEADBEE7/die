@@ -15,6 +15,9 @@
 //! only sets a lint level is the one platform cfg neutral code may carry.
 #![deny(unsafe_code)]
 
+#[cfg(test)]
+use die_test_cap as _;
+
 pub mod platform;
 
 use std::path::PathBuf;

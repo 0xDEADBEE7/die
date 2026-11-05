@@ -6,4 +6,7 @@
 //! `$HOME` and a trailing `/`, falling back to where DIE started for a buffer that
 //! visits no file, as Emacs's `default-directory` does.
 
+#[cfg(test)]
+use die_test_cap as _;
+
 pub mod theme;

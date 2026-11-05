@@ -7,7 +7,7 @@
 //! from the window's selection, the search pattern and the cursor, so they need
 //! no stored decorations.
 
-use crate::ctx::*;
+use crate::ext::*;
 use crate::faces::*;
 use crate::ids::*;
 use crate::keymap::State;

@@ -3,6 +3,10 @@
 //! (DR-09). Each limit gets three tries, so a busy machine doesn't fail it. Laying a long line out
 //! again on every edit misses them by far more than a machine's load.
 
+use die_test_cap as _;
+
+mod support;
+
 use die_core::*;
 
 fn editor(text: &str, cols: usize, rows: usize) -> (Ctx, BufferId, WindowId) {
@@ -55,6 +59,8 @@ fn keystroke_ms(ctx: &mut Ctx, b: BufferId, w: WindowId, cols: usize, rows: usiz
     ms[20]
 }
 
+/// Three tries at a limit on a ratio. The limits in ms go through `support`, which allows for
+/// background priority.
 fn within_three_tries(limit: f64, mut measure: impl FnMut() -> f64) {
     let tries: Vec<f64> = (0..3).map(|_| measure()).collect();
     println!("{tries:.3?}, limit {limit}");
@@ -84,7 +90,7 @@ fn a_keystroke_on_a_10k_line_file_costs_at_most_1ms() {
     t.settings_mut().line_numbers = LineNumbers::Visual;
     let middle = t.line_start(5_000);
     t.set_cursor(w, middle);
-    within_three_tries(1.0, || keystroke_ms(&mut ctx, b, w, 100, 50));
+    support::within_three_tries_ms(1.0, || keystroke_ms(&mut ctx, b, w, 100, 50));
 }
 
 #[test]
@@ -105,13 +111,13 @@ fn a_keystroke_at_either_end_of_a_1_mb_line_costs_at_most_1ms() {
         let t = ctx.text_mut(b).unwrap();
         t.settings_mut().wrap = wrap;
         t.set_cursor(w, 0);
-        within_three_tries(1.0, || keystroke_ms(&mut ctx, b, w, 80, 40));
+        support::within_three_tries_ms(1.0, || keystroke_ms(&mut ctx, b, w, 80, 40));
         let t = ctx.text_mut(b).unwrap();
         let end = t.len() - 1;
         t.set_cursor(w, end);
         // The first frame there lays the line out once. It isn't a keystroke.
         compose(&mut ctx, w, 80, 40);
-        within_three_tries(1.0, || keystroke_ms(&mut ctx, b, w, 80, 40));
+        support::within_three_tries_ms(1.0, || keystroke_ms(&mut ctx, b, w, 80, 40));
     }
 }
 
@@ -127,7 +133,7 @@ fn moving_to_the_far_end_of_a_1_mb_line_costs_at_most_100ms() {
     ] {
         let text = one_mb_line(unit);
         let (mut ctx, b, w) = editor(&text, 80, 40);
-        within_three_tries(100.0, || {
+        support::within_three_tries_ms(100.0, || {
             let t = ctx.text_mut(b).unwrap();
             // An edit at the start leaves no row to reuse.
             t.tx(Origin::User).insert(0, "x").commit().unwrap();
@@ -149,7 +155,7 @@ fn a_keystroke_after_visiting_every_line_costs_at_most_1ms() {
     for line in 0..t.line_count() {
         std::hint::black_box(t.display_col(t.line_start(line)));
     }
-    within_three_tries(1.0, || {
+    support::within_three_tries_ms(1.0, || {
         let us = median_us(21, || {
             t.tx(Origin::User).insert(0, "y").commit().unwrap();
             std::hint::black_box(t.screen_pos(w, 0));
@@ -166,7 +172,7 @@ fn a_face_decoration_costs_no_layout() {
     let end = t.len() - 1;
     t.set_cursor(w, end);
     std::hint::black_box(t.screen_pos(w, end));
-    within_three_tries(1.0, || {
+    support::within_three_tries_ms(1.0, || {
         let us = median_us(21, || {
             let face = t.decorate(0..1, Deco::Face("error")).unwrap();
             std::hint::black_box(t.screen_pos(w, end));

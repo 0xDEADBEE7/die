@@ -1,0 +1,22 @@
+[package]
+name = "die-test-cap"
+description = "Dev-only: a memory limit inside every test binary, as a counting global allocator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# std only, and a dev-dependency of every crate: `cargo xtask lint` fails it under any
+# other table, so it can't reach a product build.
+
+# die-test-cap may not inherit the workspace's `unsafe_code = "forbid"`: a global
+# allocator can't be written without `unsafe`. `cap.rs` alone allows it, and `cargo
+# xtask lint` checks that (scope §12).
+[lints.rust]
+unsafe_code = "deny"
+
+# As in die-render: every `unsafe` block says why it's sound, and does one unsafe thing.
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"

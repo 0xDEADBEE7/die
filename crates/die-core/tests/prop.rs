@@ -12,6 +12,9 @@
 //! the rope's chunks. S4's oracle wraps by character, so with `Wrap::Word` the sequences above read
 //! their rows from that layout.
 #![allow(clippy::nonminimal_bool)] // S4's test as ported (K1)
+
+use die_test_cap as _;
+
 use die_core::*;
 use proptest::prelude::*;
 use std::cell::RefCell;
