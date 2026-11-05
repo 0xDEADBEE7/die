@@ -1,32 +1,6 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
 
-# V2 (16)
-V2 ex/goto-line
-V2 hand-written/search/count-slash
-V2 hand-written/search/empty-pattern-repeats
-V2 search/hash-backward
-V2 search/n-wraps
-V2 search/question
-V2 search/question-n-continues-backward
-V2 search/search-next-line
-V2 search/slash
-V2 search/slash-N
-V2 search/slash-n
-V2 search/smartcase-lower-matches-upper
-V2 search/smartcase-upper-is-exact
-V2 search/star-case
-V2 search/star-n
-V2 search/star-whole-word
-
-# V3 (2)
-V3 search/d-slash
-V3 search/not-found
-
-# V4 (2)
-V4 macros/macro-with-search
-V4 search/v-slash-d
-
 # V5 (13)
 V5 ex/s-cursor-after-percent
 V5 ex/s-empty-replacement

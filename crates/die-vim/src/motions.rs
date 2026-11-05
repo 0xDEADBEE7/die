@@ -193,7 +193,7 @@ pub fn end_of_line(s: &Start) -> Result<Target, Fail> {
 
 /// `gg` and `G` to a line counted from 1, keeping the goal column, as in your Evil
 /// (no `startofline`).
-fn goto_line(s: &Start, n: usize) -> Result<Target, Fail> {
+pub fn goto_line(s: &Start, n: usize) -> Result<Target, Fail> {
     let t = s.text;
     let goal = s.goal.unwrap_or(Goal::Col(t.display_col(s.pos)));
     let line = n.saturating_sub(1).min(last_line(t));

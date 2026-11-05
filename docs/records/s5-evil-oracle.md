@@ -223,6 +223,7 @@ The last column is my proposal for die-vim. "Evil" means keep Evil's behaviour, 
 | 28 | A block's `I` replayed by a macro | Reaches only the first line, since macros run without hooks: `XXab`, `Xcd` | Every line: `XXab`, `XXcd` | 1 | **Vim** (Evil bug) |
 | 29 | `gv` after undoing what took its text | Emacs's undo moves markers back, so `vjdugv` ends on the old head | Markers stay where the delete put them, so it ends at the start | 1 | **DIE** (Emacs artifact) |
 | 30 | A second `i(` on a one-character selection | On `((a))` it fails with `(` selected; from an opening bracket it takes the outer pair | Finds what the first did | 2 | **DIE** (Evil bug) |
+| 31 | A failed search | `/zzz<CR>` only says so: no error, and the next key runs | An error, so a macro stops there. Typed keys still run | 1 | **Vim** (missing in Evil) |
 
 Rows 1–4 and 8 affect everyday editing most. Row 1 is also a question for core, not only die-vim: should a file that ends in a newline show an empty last line?
 
