@@ -155,7 +155,7 @@ In a terminal, leaving passthrough (the DIE layer's Esc) enters copy state. Whil
 
 ### 5.6 Modal input and keymaps
 
-- **States:** normal, insert, visual (char, line, block), operator-pending, command line, copy, and **passthrough**. In passthrough, keys go straight to the surface (used by terminals).
+- **States:** normal, insert, replace, visual (char, line, block), operator-pending, command line, copy, and **passthrough**. In passthrough, keys go straight to the surface (used by terminals).
 - **Leaving passthrough.** The DIE layer's Esc (Cmd-Esc on macOS, Ctrl+Shift+Esc on Linux) always leaves and is never sent to programs. The DIE layer belongs to DIE in every buffer (D18).
 - **Lookup order** for a key is defined in [extension-contract.md](extension-contract.md) §7: the range keymap at the cursor, buffer-local, modes, surface kind, global, then the surface's `event()`.
 - **Prefix keys and a leader key.** Yours is `\`.
@@ -296,7 +296,8 @@ Rebuild-and-restart is how you extend DIE, so a restart should feel like nothing
 | Relative/visual line numbers in programming modes | Line-number gutter (absolute, relative or visual), set per mode. Relative counts display lines, as `j` does, so a fold counts once. Emacs's counts hidden lines, and this deliberately differs. Visual matches Emacs. The rules are in [extension-contract.md](extension-contract.md) §9 |
 | manifold: `{{{ }}}` folds, a `▼` marker, `j`/`k` skip folded text | Decorations can hide a range and show replacement text; motions skip hidden ranges |
 | `search-invisible t` | Search matches inside hidden ranges and reveals them |
-| Two custom themes | Named faces; a theme maps faces to styles |
+| Two custom themes | Named faces; a theme maps faces to styles. Status lines have no box: mono-dark's 1 px `:box` on its mode lines is the one attribute DIE's styles lack, it would take renderer work for one face, and dividers separate the windows |
+| Evil's cursors; `blink-cursor-mode` is on | Each state's cursor shape, with replace state's underline. A cursor that isn't taking input is hollow, and from K9 that includes every cursor while DIE's window doesn't have the keyboard focus. Cursors don't blink in M0, a deliberate deviation: Emacs stops blinking after 10 blinks, so the difference is small. With die-term (M2), a cursor can carry a terminal's blinking style, and die-render owns the timer |
 | `global-auto-revert-mode`; `cargo fmt` and agents rewrite open files | Reload unmodified buffers when the file changes on disk. `:w` checks for on-disk changes first |
 | Evil copies every yank and delete to the macOS clipboard | die-vim's unnamed register syncs with the clipboard both ways (§10) |
 | Files reached through symlinks, such as `claude-session` | Saves write through symlinks and keep file permissions |
@@ -429,7 +430,7 @@ tools/evil-oracle          Evil in batch and tty Emacs (dev-only); fixtures are 
 xtask                      cargo xtask ghostty bump, budget report, clean-environment build check
 ```
 
-`unsafe` is denied everywhere except three small places: `die-render`'s platform modules (`macos`, and `linux` with about 10–30 lines), `die-term`'s engine boundary, and `die-core`'s `sys` module, one file per OS. On macOS, `sys` is about 80 lines of libc calls for processes and PTYs: `posix_spawn`, `getpeereid`, kqueue, `posix_openpt`, which have no safe route there. Linux adds about 30–40 lines, for the spawn flags and the `PIDFD_GET_INFO` ioctl. You review those modules by hand.
+`unsafe` is denied everywhere except three small places: `die-render`'s platform modules (`macos`, and `linux` with about 10–30 lines), `die-term`'s engine boundary, and `die-core`'s `sys` module, one file per OS. On macOS, `sys` is about 80 lines of libc calls for processes and PTYs: `posix_spawn`, `getpeereid`, kqueue, `posix_openpt`, which have no safe route there. Linux adds about 30–40 lines, for the spawn flags and the `PIDFD_GET_INFO` ioctl. You review those modules by hand. `cargo xtask lint` rejects the `unsafe` keyword itself outside them, since rustc's `unsafe_code` lint misses `#[unsafe(naked)]` and, where it's `deny`, can be lowered by a macro. It also rejects `include!` and the `path` attribute, which could compile a file it never reads. A macro can build that attribute from parts the lint can't recognise, and a manifest can point anywhere, so `cargo xtask sources` then asks the compiler, on macOS and for each Linux target: every file a local crate read must be a `.rs` file in that crate's own directory, and every local crate must be a listed workspace member. Unsafe code inside dependencies, including what their macros expand to in DIE's crates (slotmap's `new_key_type!` emits an `unsafe impl Key`), belongs to the dependency and isn't part of your review. Neither check can see a dependency macro that wraps your code in `unsafe`, so adding one is a dependency decision.
 
 ### How the work is split
 

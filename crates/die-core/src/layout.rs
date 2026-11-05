@@ -653,6 +653,13 @@ impl TextBuf {
         })
     }
 
+    /// Where the line a viewport row shows ends (its newline, or the buffer's end
+    /// on the last line), when that's on the row. Layout gives it a stop but no cell.
+    pub(crate) fn line_end_on(&self, g: &Geometry, row: &ViewRow) -> Option<Stop> {
+        let d = self.dl_at(row.dline_start, self.wrap(g));
+        d.stops.last().copied().filter(|s| s.row == row.row)
+    }
+
     /// Scroll so the cursor is visible. Core does this before every render (C5).
     pub(crate) fn scroll_to_cursor(&mut self, w: WindowId) {
         let Some(g) = self.geometry(w) else { return };

@@ -1,7 +1,7 @@
 //! Core Text: a font face loaded from a file (nothing is installed), its metrics,
 //! and glyph lookup. R2 adds fallback and rasterization.
 
-use objc2_core_foundation::{CFArray, CFRetained, CFString, CFURL, CFURLPathStyle, CGSize};
+use objc2_core_foundation::{CFArray, CFRetained, CFURL, CGSize};
 use objc2_core_text::{
     CTFont, CTFontDescriptor, CTFontManagerCreateFontDescriptorsFromURL, CTFontOrientation,
     CTFontSymbolicTraits,
@@ -25,28 +25,23 @@ pub struct FaceMetrics {
 }
 
 impl Face {
-    /// The first face in the font file at `path`, at `px` pixels per em.
+    /// The first face in the font file at `path`, at `px` pixels per em. Core Text
+    /// would take a size of 0 to mean 12, so a size that isn't positive is an error.
     pub fn from_file(path: &Path, px: f64) -> Result<Face, String> {
-        let bad = || format!("can't load a font from {}", path.display());
-        let s = CFString::from_str(path.to_str().ok_or_else(bad)?);
-        let url = CFURL::with_file_system_path(
-            None,
-            Some(&s),
-            CFURLPathStyle::CFURLPOSIXPathStyle,
-            false,
-        )
-        .ok_or_else(bad)?;
-        // SAFETY: `url` is a valid CFURL; the call returns a new array or null.
-        let descs: CFRetained<CFArray> =
-            unsafe { CTFontManagerCreateFontDescriptorsFromURL(&url) }.ok_or_else(bad)?;
-        if descs.count() == 0 {
-            return Err(bad());
+        if !(px > 0.0 && px.is_finite()) {
+            return Err(format!("font size {px} isn't a positive size"));
         }
-        // SAFETY: every element of the array this call returns is a CTFontDescriptor,
-        // and `descs` keeps it alive while it's borrowed.
-        let desc = unsafe { &*(descs.value_at_index(0) as *const CTFontDescriptor) };
+        let bad = || format!("can't load a font from {}", path.display());
+        let url = CFURL::from_file_path(path).ok_or_else(bad)?;
+        // SAFETY: `url` is a valid CFURL; the call returns a new array or null.
+        let descs = unsafe { CTFontManagerCreateFontDescriptorsFromURL(&url) }.ok_or_else(bad)?;
+        // SAFETY: every element of the array that call returns is a CTFontDescriptor.
+        let descs: CFRetained<CFArray<CTFontDescriptor>> =
+            unsafe { CFRetained::cast_unchecked(descs) };
+        // Bounds-checked, and retained, so its lifetime isn't tied to `descs`.
+        let desc = descs.get(0).ok_or_else(bad)?;
         // SAFETY: a null matrix means the identity transform.
-        let font = unsafe { CTFont::with_font_descriptor(desc, px, std::ptr::null()) };
+        let font = unsafe { CTFont::with_font_descriptor(&desc, px, std::ptr::null()) };
         Ok(Face { font })
     }
 
@@ -63,15 +58,17 @@ impl Face {
 
     pub fn metrics(&self) -> FaceMetrics {
         let f = &self.font;
-        // SAFETY: plain getters on a live font.
-        unsafe {
-            FaceMetrics {
-                ascent: f.ascent(),
-                descent: f.descent(),
-                leading: f.leading(),
-                underline_position: f.underline_position(),
-                underline_thickness: f.underline_thickness(),
-            }
+        FaceMetrics {
+            // SAFETY: a plain getter on a live font.
+            ascent: unsafe { f.ascent() },
+            // SAFETY: a plain getter on a live font.
+            descent: unsafe { f.descent() },
+            // SAFETY: a plain getter on a live font.
+            leading: unsafe { f.leading() },
+            // SAFETY: a plain getter on a live font.
+            underline_position: unsafe { f.underline_position() },
+            // SAFETY: a plain getter on a live font.
+            underline_thickness: unsafe { f.underline_thickness() },
         }
     }
 
@@ -80,11 +77,11 @@ impl Face {
         let mut chars = [0u16; 2];
         let chars = ch.encode_utf16(&mut chars);
         let mut glyphs = [0u16; 2];
-        // SAFETY: both buffers hold `chars.len()` (1 or 2) elements, as the call requires.
+        // SAFETY: both pointers cover `chars.len()` (1 or 2) elements, as the call requires.
         let ok = unsafe {
             self.font.glyphs_for_characters(
-                NonNull::from(&mut chars[0]),
-                NonNull::from(&mut glyphs[0]),
+                NonNull::from(&mut *chars).cast(),
+                NonNull::from(&mut glyphs).cast(),
                 chars.len() as isize,
             )
         };
