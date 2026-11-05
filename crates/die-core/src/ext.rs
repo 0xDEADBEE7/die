@@ -197,7 +197,7 @@ pub(crate) struct ExtSlot {
 }
 
 pub(crate) enum Content {
-    Text(TextBuf),
+    Text(Box<TextBuf>),
     Custom {
         type_id: TypeId,
         kind: &'static str,
@@ -552,7 +552,7 @@ impl Ctx {
         let name = self.unique_name(name);
         let b = Buffer {
             name,
-            content: Content::Text(TextBuf::new(text)),
+            content: Content::Text(Box::new(TextBuf::new(text))),
             modes: vec![],
             local: Keymap::with_leader(self.leader),
             state: State::Normal,

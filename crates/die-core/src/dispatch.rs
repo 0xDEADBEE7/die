@@ -54,12 +54,14 @@ pub enum KeySource {
     Fed,
 }
 
+type PromptFn = Box<dyn FnOnce(&mut Ctx, Option<String>) -> Result>;
+
 pub(crate) struct Prompt {
     label: String,
     text: String,
     ext: ExtIdx,
     prev: State,
-    f: Box<dyn FnOnce(&mut Ctx, Option<String>) -> Result>,
+    f: PromptFn,
 }
 
 impl Ctx {
@@ -232,10 +234,10 @@ impl Ctx {
             return; // release events, lone modifier keys and unnamed keys never reach keymaps
         }
         for e in &self.subs {
-            if let SubKind::Keys(f) = &e.kind {
-                if e.inner.alive.get() {
-                    (f.borrow_mut())(&ev, src);
-                }
+            if let SubKind::Keys(f) = &e.kind
+                && e.inner.alive.get()
+            {
+                (f.borrow_mut())(&ev, src);
             }
         }
         if self.prompt.is_some() {
@@ -271,13 +273,14 @@ impl Ctx {
             return;
         }
         let named = !matches!(ev.key, Key::Modifier(_) | Key::Unidentified);
-        if named && ev.mods.super_ && ev.kind != KeyKind::Release {
-            if let Lookup::Command(name) =
-                self.layers_lookup(buf, State::Passthrough, &[ev.clone()])
-            {
-                self.swallow.push(ev.key);
-                return self.run_key(&name, vec![ev], win, buf);
-            }
+        if named
+            && ev.mods.super_
+            && ev.kind != KeyKind::Release
+            && let Lookup::Command(name) =
+                self.layers_lookup(buf, State::Passthrough, std::slice::from_ref(&ev))
+        {
+            self.swallow.push(ev.key);
+            return self.run_key(&name, vec![ev], win, buf);
         }
         let _ = self.checkout_surface(buf, |s, ctx| s.event(&Event::Key(ev), ctx));
     }
