@@ -145,7 +145,7 @@ Bug 4 got past the first property test, so I added the model-based undo test (§
   - Recommendation: required. Being explicit is the point of C14.
 - **A8. Revisions and the change log.** The revision goes up by one per change, not per transaction. `edits_since` iterates a 1,024-change log. Each change carries byte offsets, line and column points, the new text, the origin and the silent flag.
   - Alternatives: one revision per transaction; a log capped by bytes.
-  - Recommendation: per change, with the cap configurable.
+  - Recommendation: per change, with the cap configurable. *(Amended 2026-11-05: `LOG_CAP` stays a constant in M0, since nothing has asked to change it.)*
 - **A9. Decoration stickiness.** Each decoration has a gravity at each end. The default keeps text inserted at an edge outside the range. Read-only blocks a User insertion only strictly inside a range. To keep streamed text read-only, orchid would make its transcript range end-sticky.
   - Alternative: Emacs's default, which is rear-sticky.
   - Recommendation: keep non-sticky as the default.
@@ -154,21 +154,21 @@ Bug 4 got past the first property test, so I added the model-based undo test (§
 
 ### Undo
 
-- **A11. Grouping.** Each top-level unit (a key-dispatched command or a queued callback) is one undo step by default, like Emacs's undo boundaries. Explicit `begin_undo_group` and `end_undo_group` calls span commands. An explicit group also takes in an edit made earlier in the same command, as `o` needs; that part is built but not tested. An open group takes in every recorded edit to its buffer until it closes, including recorded Extension edits from callbacks. *(Amended by K2, 2026-10-19: `undo_boundary` ends the current step early, even inside one command or an open group, which stays open as a new step.)*
+- **A11. Grouping.** Each top-level unit (a key-dispatched command or a queued callback) is one undo step by default, like Emacs's undo boundaries. Explicit `begin_undo_group` and `end_undo_group` calls span commands. An explicit group also takes in an edit made earlier in the same command, as `o` needs; that part is built but not tested. An open group takes in every recorded edit to its buffer until it closes, including recorded Extension edits from callbacks. *(Amended by K2, 2026-10-19: `undo_boundary` ends the current step early, even inside one command or an open group, which stays open as a new step.)* *(Amended 2026-11-05, DR-13 and DR-14: an edit made between units, by the host or a harness, is a step of its own, not part of the last command's. An undo or redo inside an open group leaves it open, and the next edit starts a new step inside it.)*
   - Alternatives: no implicit grouping, so die-vim groups everything; or open groups that take only User edits.
   - Recommendation: keep it. Revisit if an extension makes recorded edits during an insert session. None of your packages does: orchid's streaming is silent.
-- **A12. Overlapping silent edits.** If a silent edit overlapped text an undo step needs, undo refuses with `UndoConflict` and drops the undo history.
+- **A12. Overlapping silent edits.** If a silent edit overlapped text an undo step needs, undo refuses with `UndoConflict` and drops the undo history. *(Amended 2026-11-05, DR-15: if the step is still being collected, the history goes at the next recorded edit, and the undo that reaches the gap returns `UndoConflict`, once.)*
   - Alternatives: undo only the parts that don't overlap (CodeMirror 6 does this); or adjust nothing, as Emacs does, where positions go stale.
   - Recommendation: refuse and drop, for v1. It's honest and small.
 - **A13. Undo is a User edit,** so it's blocked by read-only text, as in Emacs. After orchid moves your submitted input into its read-only transcript, `u` can't take it back.
   - Alternative: undo bypasses read-only.
   - Recommendation: blocked.
-- **A14. Cursor and decorations on undo.** Undo restores the cursor from before the step, moved through any silent edits. Redo puts it at the start of the first change. *(Amended by K2, 2026-10-19: undo restores the acting window's whole selection from before the step (anchor, head, shape and goal), moved through any silent edits, and returns the range it changed, in the text after it. Redo returns its range too and puts a cursor at that range's start. die-vim collapses a restored visual selection after `u`.)* Undo doesn't restore decorations: after `dd` on a fold and then `u`, the lines come back unfolded (tested), as with Emacs overlays. manifold would re-derive its folds from `edits_since`.
+- **A14. Cursor and decorations on undo.** Undo restores the cursor from before the step, moved through any silent edits. Redo puts it at the start of the first change. *(Amended by K2, 2026-10-19: undo restores the acting window's whole selection from before the step (anchor, head, shape and goal), moved through any silent edits, and returns the range it changed, in the text after it. Redo returns its range too and puts a cursor at that range's start. die-vim collapses a restored visual selection after `u`.)* *(Amended 2026-11-05, DR-01: undo restores the acting window's whole selection from just before the step's first change, not from `begin_undo_group`, and die-vim's `u` leaves the cursor there, as your Evil does. So a die-vim command that moves and edits in one go makes its edit first.)* Undo doesn't restore decorations: after `dd` on a fold and then `u`, the lines come back unfolded (tested), as with Emacs overlays. manifold would re-derive its folds from `edits_since`.
   - Recommendation: keep.
 
 ### Layout and cursor positions
 
-- **A15. Cursor positions and Hide.** Layout decides where the cursor can be: these are the "stops". A Hide with replacement text keeps its start as a stop, the fold line. A Hide without replacement text has no stop inside it or at its start. Overlapping Hides merge. The first-starting one wins, preferring one with replacement text, then the longest, then the lowest id.
+- **A15. Cursor positions and Hide.** Layout decides where the cursor can be: these are the "stops". A Hide with replacement text keeps its start as a stop, the fold line. A Hide without replacement text has no stop inside it or at its start. Overlapping Hides merge. The first-starting one wins, preferring one with replacement text, then the longest, then the lowest id. *(Amended 2026-11-05: the one added first, since ids are reused and don't say. Virtual text at one position shows in the order added too. Contract §9 has the whole rule.)*
   - Recommendation: keep, and write it into §9 (edit 14).
 - **A16. Eager cursor fix-up.** After every edit, decoration change or `set_selection`, every window's selection moves to a stop. The default goes to the fold line if there is one, otherwise forward. Motions pass a direction with `snap(pos, dir)`.
   - Alternative: adjust after each command only, as Emacs does.
@@ -184,7 +184,7 @@ Bug 4 got past the first property test, so I added the model-based undo test (§
   - Recommendation: a registration error, reported with C8. Evil doesn't bind `g` alone.
 - **A19. Passthrough.** Cmd-Esc is checked first. The Cmd layer is looked up in every layer, in passthrough state. Any key DIE takes swallows its own repeat and release, not only Cmd-Esc.
   - Recommendation: keep. Otherwise a program gets a release for a press it never saw.
-- **A20. Prefix argument.** The slot is taken, and cleared, when a key-dispatched command starts, and it's handed over in `Args`. Prefix commands, such as digits and `"x`, write it back. This is Emacs's model. Core never parses Vim syntax.
+- **A20. Prefix argument.** The slot is taken, and cleared, when a key-dispatched command starts, and it's handed over in `Args`. Prefix commands, such as digits and `"x`, write it back. This is Emacs's model. Core never parses Vim syntax. *(Amended 2026-11-05, DR-03: an undefined key clears it too.)*
   - Recommendation: keep.
 - **A21. `feed_keys` and the key observer.** `feed_keys` parses notation, and fed keys run before further typed keys. `observe_keys(FnMut(&KeyEvent, KeySource))` is synchronous and gets no `Ctx`. It sees presses and repeats before dispatch, each marked typed or fed.
   - Recommendation: keep.
