@@ -992,10 +992,11 @@ impl TextBuf {
     }
 
     /// Scroll `n` rows down, or up if it's negative, stopping at the first row and at the last.
-    pub(crate) fn scroll_rows(&mut self, w: WindowId, n: isize) -> Option<()> {
+    /// Returns how many rows it scrolled, or None if `w` doesn't show this buffer.
+    pub fn scroll_rows(&mut self, w: WindowId, n: isize) -> Option<usize> {
         let g = self.geometry(w)?;
         let m = self.mode(&g);
-        let mut at = self.top(w, m);
+        let (mut at, mut moved) = (self.top(w, m), 0);
         for _ in 0..n.unsigned_abs() {
             let next = if n > 0 {
                 self.next_row(at, m)
@@ -1003,9 +1004,23 @@ impl TextBuf {
                 self.prev_row(at, m)
             };
             let Some(next) = next else { break };
-            at = next;
+            (at, moved) = (next, moved + 1);
         }
-        self.set_scroll(w, at.0, at.1)
+        self.set_scroll(w, at.0, at.1)?;
+        Some(moved)
+    }
+
+    /// Scroll so the cursor is on row `row` of the window, or as near as the text's start allows.
+    /// None if `w` doesn't show this buffer.
+    pub fn recenter(&mut self, w: WindowId, row: usize) -> Option<()> {
+        let g = self.geometry(w)?;
+        let m = self.mode(&g);
+        let (cur, _) = self.locate(self.views.get(&w)?.sel.head, m);
+        let up = |t: Row, _| self.prev_row(t, m).unwrap_or(t);
+        let top = (0..row).fold(cur, up);
+        let v = self.views.get_mut(&w)?;
+        (v.top, v.top_row) = top;
+        Some(())
     }
 
     /// Scroll so the cursor is visible. Core does this before every render (C5).
