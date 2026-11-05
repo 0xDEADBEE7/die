@@ -280,7 +280,7 @@ fn prev_char(t: &TextBuf, p: usize) -> Option<usize> {
 /// `<CR>`, as Emacs's `newline` with `electric-indent-mode` in fundamental-mode:
 /// the line left behind loses its trailing whitespace, and the new line takes the
 /// indentation of the line above it.
-pub fn newline(t: &mut TextBuf, w: WindowId, p: usize) -> Result {
+fn newline(t: &mut TextBuf, w: WindowId, p: usize) -> Result {
     let mut c = Chars::at(t, p);
     while matches!(c.prev_ch(), Some(' ' | '\t')) {
         c.back();

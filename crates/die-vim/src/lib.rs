@@ -389,8 +389,7 @@ fn insert_edit(ctx: &mut Ctx, a: &Args, e: Edit) -> Result {
 fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
     let last = ctx.with_ext(|v: &mut Vim, _| v.find)?;
     let Some(mut find) = last else {
-        let (b, w) = buffer_window(ctx, a)?;
-        forget_goal(ctx.text_mut(b)?, w);
+        operators::cancel(ctx, a)?;
         return Err(Error::Msg("No previous f, F, t or T".into()));
     };
     if reverse {
