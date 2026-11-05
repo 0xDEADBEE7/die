@@ -292,8 +292,8 @@ Rebuild-and-restart is how you extend DIE, so a restart should feel like nothing
 | Your Emacs setup | DIE requirement |
 |---|---|
 | `global-visual-line-mode`; `line-move-visual t`, which Evil overrides for `j`/`k` | Soft wrap on by default. `j`/`k` move by logical line and `gj`/`gk` by visual line, as in your Evil today (§10) |
-| `visual-fill-column`, centered at 80 columns | Optional maximum text width, centered in the window |
-| Relative/visual line numbers in programming modes | Line-number gutter (absolute, relative or visual), set per mode |
+| `visual-fill-column`, centered at 80 columns | Optional maximum text width, centered in the window. It counts text cells only, so you get 80 columns of code with or without line numbers. `visual-fill-column` counts the gutter too, and this deliberately differs. Your `.rs` files show no line numbers in Emacs, so rows still break where Emacs breaks them |
+| Relative/visual line numbers in programming modes | Line-number gutter (absolute, relative or visual), set per mode. Relative counts display lines, as `j` does, so a fold counts once. Emacs's counts hidden lines, and this deliberately differs. Visual matches Emacs. The rules are in [extension-contract.md](extension-contract.md) §9 |
 | manifold: `{{{ }}}` folds, a `▼` marker, `j`/`k` skip folded text | Decorations can hide a range and show replacement text; motions skip hidden ranges |
 | `search-invisible t` | Search matches inside hidden ranges and reveals them |
 | Two custom themes | Named faces; a theme maps faces to styles |
@@ -343,7 +343,7 @@ None of your existing packages need pixel buffers (scope guard 8). Pixel buffers
 - Visual mode: char, line and block
 - Insert: autoindent, and one undo step per insert session (arrow keys don't split it). `o`, `O`, `cc`, `S` and Enter indent like the line above, which is what Evil does in text buffers. Indentation that depends on the language (Lisp, Python) belongs to a mode, not to die-vim.
 - Registers: unnamed, `a`–`z`, `0`, `_` and `+`. The unnamed register syncs with the system clipboard both ways, including deletes, so `p` pastes whatever you last copied anywhere. `"_` is the escape. `1`–`9` hold the last nine yanks and deletes, newest first (Evil's kill ring), and `-` the last small delete. After `"Ay`, the unnamed register holds only the appended text.
-- Search with `/ ? n N * #`: incremental, highlights every match, smartcase, including for `*` and `#`. A count before `/`, and an empty `/` that repeats the last search, work as in Vim. Evil ignores both; die-vim deliberately differs.
+- Search with `/ ? n N * #`: incremental, highlights every match, smartcase, including for `*` and `#`. `*` and `#` follow your Evil in fundamental-mode: `_` isn't a word character, so `*` on `foo` matches inside `foo_bar` but not `foobar`. A count before `/`, and an empty `/` that repeats the last search, work as in Vim. Evil ignores both; die-vim deliberately differs.
 - Macros (`q`, `@`). `.` inside a macro repeats the macro's own last change; Evil's signals an error, and die-vim deliberately differs.
 - Undo and redo: `u` and `C-r`, a linear history as in Vim. Your Evil has no redo (`evil-undo-system` is unset, so its `u` walks Emacs's undo chain); this is a deliberate change. Setting `(setq evil-undo-system 'undo-redo)` would make your Emacs match while you use both.
 - Replace mode (`R`)

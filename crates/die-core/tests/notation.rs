@@ -158,7 +158,8 @@ const NAMED: &[Key] = &[
 ];
 
 /// A key press as notation can write it: no text, no OS fields, and Shift folded into
-/// characters, except with Ctrl and a letter, which is lowercase.
+/// characters, except with Ctrl and a letter, which is lowercase. No two of its characters
+/// form one grapheme cluster: literal ones that did would come back as one key.
 fn key_press() -> impl Strategy<Value = KeyEvent> {
     let chars = prop_oneof![
         prop::char::range('a', 'z'),
@@ -180,6 +181,9 @@ fn key_press() -> impl Strategy<Value = KeyEvent> {
             Key::Char(_) => (key, false),
             _ => (key, s),
         };
+        // Ctrl-i and Ctrl-m alone are written <Tab> and <CR>, so they come back as those keys.
+        let aliased = matches!(key, Key::Char('i' | 'm')) && c && !a && !shift && !d;
+        let key = if aliased { Key::Char('j') } else { key };
         KeyEvent::press(key).mods(Mods {
             ctrl: c,
             alt: a,
@@ -203,12 +207,222 @@ proptest! {
         prop_assert_eq!(back, evs, "via {:?}", s);
     }
 
-    /// Committed text comes back as one key per character, typing the same text.
+    /// Committed text comes back as one key per grapheme cluster, typing the same text.
     #[test]
     fn committed_text_round_trips(texts in prop::collection::vec("[^\\p{Cc}]{1,4}", 1..4)) {
         let evs: Vec<_> = texts.iter().map(|t| KeyEvent::committed(t)).collect();
         let s = key_notation(&evs);
         let back = parse_keys(&s).map_err(|e| TestCaseError::fail(format!("{s:?}: {e}")))?;
         prop_assert_eq!(typed_text(&back), typed_text(&evs), "via {:?}", s);
+    }
+}
+
+// ---------------------------------------------------------------- what the keys review found
+
+/// S1's real run: winit's text for Ctrl chords is a control character, and for Alt the plain
+/// letter. `<char>` must not match either, and insert state must not type them.
+#[test]
+fn a_key_with_ctrl_alt_or_super_held_prints_nothing() {
+    let os = |key, text: &str, f: fn(&mut Mods)| {
+        let mut m = Mods::default();
+        f(&mut m);
+        KeyEvent {
+            text: Some(text.into()),
+            ..KeyEvent::press(key).mods(m)
+        }
+    };
+    let held_ctrl: fn(&mut Mods) = |m| m.ctrl = true;
+    let held_alt: fn(&mut Mods) = |m| m.alt = true;
+    let held_super: fn(&mut Mods) = |m| m.super_ = true;
+    assert_eq!(os(Key::Char('a'), "\u{1}", held_ctrl).printable(), None);
+    assert_eq!(os(Key::Char('/'), "/", held_ctrl).printable(), None);
+    assert_eq!(os(Key::Char('x'), "x", held_alt).printable(), None);
+    assert_eq!(os(Key::Char('v'), "v", held_super).printable(), None);
+    assert_eq!(ctrl('a').printable(), None);
+    // Shift alone still types.
+    assert_eq!(ch('A').printable().as_deref(), Some("A"));
+}
+
+#[test]
+fn committed_text_prints_unless_its_empty_or_holds_a_control_character() {
+    assert_eq!(KeyEvent::committed("é").printable().as_deref(), Some("é"));
+    assert_eq!(KeyEvent::committed("").printable(), None);
+    assert_eq!(KeyEvent::committed("a\u{7}").printable(), None);
+    // A key whose OS text is a control character, with no modifier: Return's "\r".
+    let cr = KeyEvent {
+        text: Some("\r".into()),
+        ..KeyEvent::press(Key::Enter)
+    };
+    assert_eq!(cr.printable(), None);
+    assert_eq!(KeyEvent::press(Key::Char('\u{7f}')).printable(), None);
+}
+
+/// Each is one key: as typed, recorded and replayed.
+const CLUSTERS: &[&str] = &[
+    "👍🏽",
+    "🇦🇺",
+    "❤\u{fe0f}",
+    "e\u{301}",
+    "👨\u{200d}👩\u{200d}👧",
+];
+
+#[test]
+fn literal_characters_of_one_cluster_are_one_key() {
+    for c in CLUSTERS {
+        assert_eq!(one(c), KeyEvent::committed(c), "{c:?}");
+        assert_eq!(one(c).printable().as_deref(), Some(*c), "{c:?}");
+    }
+    assert_eq!(
+        keys("r❤\u{fe0f}x"),
+        [ch('r'), KeyEvent::committed("❤\u{fe0f}"), ch('x')]
+    );
+    assert_eq!(keys("<Esc>🇦🇺").len(), 2);
+}
+
+/// Such a key's chord holds only its first character, so no run of chords could match it.
+#[test]
+fn a_cluster_of_several_characters_cant_be_bound() {
+    for c in CLUSTERS {
+        let e = parse_pats(c).unwrap_err();
+        assert!(e.contains(c) && e.contains("<char>"), "{c:?}: {e}");
+    }
+    assert!(parse_pats("r\u{2764}\u{fe0f}x").is_err());
+    assert!(parse_pats("<Esc>\u{1f1e6}\u{1f1fa}").is_err());
+    // Nothing else changes: these are all still a pattern per character.
+    for (s, n) in [
+        ("gg", 2),
+        ("\u{e9}", 1),
+        ("\u{1f44d}", 1),
+        ("\r\n", 2),
+        ("<Space>\u{301}", 2),
+        ("<lt>\u{301}", 2),
+        ("<C-e>\u{301}", 2),
+    ] {
+        assert_eq!(parse_pats(s).unwrap().len(), n, "{s:?}");
+    }
+}
+
+/// An empty commit isn't a key. `committed` used to give it Space's chord, which ran a
+/// `<Space>` binding and was written back as a space.
+#[test]
+fn an_empty_commit_is_no_key_and_has_no_notation() {
+    let empty = KeyEvent::committed("");
+    assert_eq!(empty.key, Key::Unidentified);
+    assert_eq!(key_notation(&[ch('a'), empty, ch('b')]), "ab");
+    let unnamed = KeyEvent::press(Key::Unidentified);
+    assert_eq!(key_notation(std::slice::from_ref(&unnamed)), "");
+    let held = with(unnamed, |m| m.ctrl = true);
+    assert_eq!(key_notation(&[held]), "");
+}
+
+/// Only literal characters merge. A named key is a key of its own, and committed text can't
+/// hold a control character, so CR LF, one cluster, stays two keys.
+#[test]
+fn named_keys_and_control_characters_dont_merge() {
+    assert_eq!(keys("<Space>\u{301}"), [ch(' '), ch('\u{301}')]);
+    assert_eq!(keys("<lt>\u{301}"), [ch('<'), ch('\u{301}')]);
+    assert_eq!(keys("\r\n"), [ch('\r'), ch('\n')]);
+    assert_eq!(keys("<C-e>\u{301}"), [ctrl('e'), ch('\u{301}')]);
+}
+
+#[test]
+fn ctrl_bracket_i_and_m_are_escape_tab_and_return() {
+    for (alias, named) in [
+        ("<C-[>", "<Esc>"),
+        ("<c-[>", "<Esc>"),
+        ("<C-i>", "<Tab>"),
+        ("<C-I>", "<Tab>"),
+        ("<C-m>", "<CR>"),
+        ("<C-M>", "<CR>"),
+    ] {
+        assert_eq!(parse_pats(alias), parse_pats(named), "{alias}");
+        assert_eq!(one(alias), one(named), "{alias}");
+    }
+    // Another modifier makes it a different key, in notation and in events.
+    for different in ["<C-S-i>", "<A-C-i>", "<C-S-m>", "<C-D-[>"] {
+        assert_ne!(parse_pats(different), parse_pats("<Tab>"), "{different}");
+        assert_ne!(parse_pats(different), parse_pats("<CR>"), "{different}");
+        assert_ne!(parse_pats(different), parse_pats("<Esc>"), "{different}");
+    }
+    let tab = KeyEvent::press(Key::Tab).chord();
+    assert_eq!(ctrl('i').chord(), tab);
+    assert_eq!(ctrl('I').chord(), tab, "Caps Lock on");
+    assert_eq!(ctrl('[').chord(), KeyEvent::press(Key::Esc).chord());
+    assert_eq!(ctrl('m').chord(), KeyEvent::press(Key::Enter).chord());
+    // The raw event keeps the difference, for a terminal's key reporting.
+    assert_eq!(ctrl('[').key, Key::Char('['));
+    assert!(ctrl('[').mods.ctrl);
+    assert_eq!(key_notation(&[ctrl('[')]), "<Esc>");
+}
+
+#[test]
+fn notation_refuses_what_no_key_can_send() {
+    for typo in [
+        "<C-S-2>",
+        "<S-1>",
+        "<S-Space>",
+        "<C-S-Space>",
+        "<S-é>",
+        "<S-lt>",
+        "<C-a",
+        "<C-x",
+        "<D-",
+        "<A-b c",
+    ] {
+        if typo == "<D-" {
+            // Nothing after the dash: a literal `<`, as `<C-` always was.
+            assert_eq!(keys(typo), [ch('<'), ch('D'), ch('-')]);
+            continue;
+        }
+        assert!(parse_keys(typo).is_err(), "{typo}");
+        assert!(parse_pats(typo).is_err(), "{typo}");
+    }
+    let unclosed = parse_keys("x<C-a").unwrap_err();
+    assert!(unclosed.contains("unclosed <C-a"), "{unclosed}");
+    let shifted = parse_keys("<C-S-2>").unwrap_err();
+    assert!(shifted.contains("<C-@>"), "{shifted}");
+    let space = parse_keys("<S-Space>").unwrap_err();
+    assert!(space.contains("write <Space>"), "{space}");
+    // Shift still means what it says on letters and named keys.
+    assert_eq!(one("<S-a>"), ch('A'));
+    assert!(parse_keys("<C-S-a>").is_ok());
+    assert!(parse_keys("<S-Tab>").is_ok());
+    assert!(parse_keys("<S-F1>").is_ok());
+    // An event with Shift held on Space still matches <Space>: the layout sends plain Space.
+    let shift_space = with(ch(' '), |m| m.shift = true);
+    assert_eq!(
+        parse_pats("<Space>").unwrap(),
+        [Pat::Chord(shift_space.chord())]
+    );
+}
+
+#[test]
+fn num_lock_and_caps_lock_dont_change_what_a_key_matches() {
+    let plain = ch('a');
+    let locked = KeyEvent {
+        num_lock: true,
+        caps_lock: true,
+        ..plain.clone()
+    };
+    assert_eq!(locked.chord(), plain.chord());
+    assert_eq!(locked.printable(), plain.printable());
+    assert!(!KeyEvent::press(Key::Char('a')).num_lock);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(500))]
+
+    #[test]
+    fn single_cluster_texts_round_trip_as_one_key_each(
+        picks in prop::collection::vec(0..CLUSTERS.len(), 1..6),
+    ) {
+        let texts: Vec<&str> = picks.iter().map(|&i| CLUSTERS[i]).collect();
+        let evs: Vec<_> = texts.iter().map(|t| KeyEvent::committed(t)).collect();
+        let s = key_notation(&evs);
+        let back = parse_keys(&s).map_err(|e| TestCaseError::fail(format!("{s:?}: {e}")))?;
+        prop_assert_eq!(back.len(), texts.len(), "via {:?}", s);
+        for (k, t) in back.iter().zip(&texts) {
+            prop_assert_eq!(k.printable(), Some(t.to_string()));
+        }
     }
 }

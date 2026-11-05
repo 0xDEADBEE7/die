@@ -18,6 +18,8 @@ use std::ops::Range;
 pub struct Pattern {
     re: Regex,
     src: String,
+    /// A `word` pattern: a match stands only where its neighbours aren't word characters.
+    is_word: Option<fn(char) -> bool>,
 }
 
 impl Pattern {
@@ -31,6 +33,18 @@ impl Pattern {
         Ok(Pattern {
             re,
             src: src.to_string(),
+            is_word: None,
+        })
+    }
+
+    /// A literal pattern for `*` and `#`: `text` matches only where the characters on either
+    /// side aren't word characters by `is_word` (Evil's in fundamental-mode: alphanumerics, not
+    /// `_`, so `foo` matches inside `foo_bar` but not `foobar`). Rust's `\b` can't say this,
+    /// since its word characters include `_`. Errors: `BadPattern`.
+    pub fn word(text: &str, ignore_case: bool, is_word: fn(char) -> bool) -> Result<Pattern> {
+        Ok(Pattern {
+            is_word: Some(is_word),
+            ..Pattern::new(&Pattern::escape(text), ignore_case)?
         })
     }
 
@@ -44,6 +58,67 @@ impl Pattern {
     pub fn as_str(&self) -> &str {
         &self.src
     }
+
+    /// Whether a match counts: for a `word` pattern, its neighbours aren't word characters.
+    fn stands_alone(&self, text: &str, m: &Range<usize>) -> bool {
+        self.is_word.is_none_or(|is_word| {
+            !text[..m.start].chars().next_back().is_some_and(is_word)
+                && !text[m.end..].chars().next().is_some_and(is_word)
+        })
+    }
+
+    /// The first match that counts, starting in `at..end`. A match that doesn't count can
+    /// overlap one that does, so the search goes on from the next character after its start.
+    fn first_from(&self, text: &str, mut at: usize, end: usize) -> Option<Range<usize>> {
+        while at <= end {
+            let m = self.re.search(&Input::new(text).range(at..end))?.range();
+            if self.stands_alone(text, &m) {
+                return Some(m);
+            }
+            at = after_start(text, &m);
+        }
+        None
+    }
+
+    /// Every match that counts, starting in `..end`, left to right and without overlaps. It
+    /// finds them as they're asked for, so stopping early doesn't scan a long line to its end.
+    fn all<'a>(&'a self, text: &'a str, end: usize) -> Box<dyn Iterator<Item = Range<usize>> + 'a> {
+        if self.is_word.is_none() {
+            let input = Input::new(text).range(..end);
+            return Box::new(self.re.find_iter(input).map(|m| m.range()));
+        }
+        let mut at = 0;
+        Box::new(std::iter::from_fn(move || {
+            let m = self.first_from(text, at, end)?;
+            at = if m.is_empty() {
+                after_start(text, &m)
+            } else {
+                m.end
+            };
+            Some(m)
+        }))
+    }
+
+    /// `last_before`, skipping matches that don't count and looking further left for one.
+    fn last_from(&self, text: &str, mut hi: usize) -> Option<Range<usize>> {
+        loop {
+            let m = last_before(&self.re, text, hi)?;
+            if self.stands_alone(text, &m) {
+                return Some(m);
+            }
+            // The next match must start before `hi`, so an empty one looks from where it is.
+            hi = if m.is_empty() {
+                m.start
+            } else {
+                m.end.checked_sub(1)?
+            };
+        }
+    }
+}
+
+/// Just past the character a match starts on.
+fn after_start(text: &str, m: &Range<usize>) -> usize {
+    m.start + text[m.start..].chars().next().map_or(1, char::len_utf8)
 }
 
 fn bad(e: BuildError) -> Error {
@@ -108,15 +183,14 @@ impl TextBuf {
     /// count; revealing them is the caller's (`Ctx::reveal`).
     pub fn search(&self, pat: &Pattern, from: usize, dir: Dir) -> Option<Found> {
         let text = self.flat();
-        let (re, text) = (&pat.re, &*text);
+        let text = &*text;
         let from = from.min(text.len());
         let near = match dir {
             // Matches start on character boundaries, so `from + 1` works inside one too.
             Dir::Forward => (from < text.len())
-                .then(|| re.search(&Input::new(text).range(from + 1..)))
-                .flatten()
-                .map(|m| m.range()),
-            Dir::Backward => last_before(re, text, from),
+                .then(|| pat.first_from(text, from + 1, text.len()))
+                .flatten(),
+            Dir::Backward => pat.last_from(text, from),
         };
         if let Some(range) = near {
             return Some(Found {
@@ -125,8 +199,8 @@ impl TextBuf {
             });
         }
         let far = match dir {
-            Dir::Forward => re.find(text).map(|m| m.range()),
-            Dir::Backward => last_before(re, text, text.len() + 1),
+            Dir::Forward => pat.first_from(text, 0, text.len()),
+            Dir::Backward => pat.last_from(text, text.len() + 1),
         };
         far.map(|range| Found {
             range,
@@ -141,8 +215,8 @@ impl TextBuf {
     pub fn matches(&self, pat: &Pattern, range: Range<usize>) -> Vec<Range<usize>> {
         let (start, text, end) = self.lines(&range);
         let mut out = vec![];
-        for m in pat.re.find_iter(Input::new(&text).range(..end - start)) {
-            let m = start + m.start()..start + m.end();
+        for m in pat.all(&text, end - start) {
+            let m = start + m.start..start + m.end;
             if m.start >= range.end && !(m.is_empty() && m.start == range.start) {
                 break;
             }
@@ -163,7 +237,9 @@ impl TextBuf {
             .anchored(Anchored::Yes);
         pat.re
             .search(&at)
-            .map(|m| start + m.start()..start + m.end())
+            .map(|m| m.range())
+            .filter(|m| pat.stands_alone(&text, m))
+            .map(|m| start + m.start..start + m.end)
     }
 
     /// The lines `range` touches, for `matches` and `match_at`: where they start, their
@@ -191,5 +267,22 @@ impl TextBuf {
             *self.flat.borrow_mut() = Some(String::from(&self.rope));
         }
         Ref::map(self.flat.borrow(), |f| f.as_deref().unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The scene draws this as the current match, so it's one `n` can land on.
+    #[test]
+    fn the_match_at_a_position_follows_a_word_patterns_rule() {
+        let t = TextBuf::new("foo foobar\nfoo_bar\n");
+        let word = Pattern::word("foo", false, char::is_alphanumeric).unwrap();
+        assert_eq!(t.match_at(&word, 0), Some(0..3));
+        assert_eq!(t.match_at(&word, 4), None, "inside foobar");
+        assert_eq!(t.match_at(&word, 11), Some(11..14), "before the _");
+        let plain = Pattern::new("foo", false).unwrap();
+        assert_eq!(t.match_at(&plain, 4), Some(4..7));
     }
 }
