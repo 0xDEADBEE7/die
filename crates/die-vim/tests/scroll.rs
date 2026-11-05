@@ -28,7 +28,10 @@ fn a_motion_off_the_bottom_recentres_as_your_emacs_does() {
     errors(&mut ctx, "9j");
     assert_eq!(ctx.top_line(w), Some(0));
     errors(&mut ctx, "j");
-    let line = ctx.text(b).unwrap().line_of(ctx.text(b).unwrap().cursor(w).unwrap());
+    let line = ctx
+        .text(b)
+        .unwrap()
+        .line_of(ctx.text(b).unwrap().cursor(w).unwrap());
     assert_eq!((line, ctx.top_line(w)), (10, Some(5)));
 }
 
@@ -37,7 +40,10 @@ fn c_f_past_the_end_goes_to_the_last_line_then_fails() {
     let (mut ctx, b, w) = open(&lines(10));
     assert!(errors(&mut ctx, "<C-f>").is_empty());
     assert!(errors(&mut ctx, "<C-f>").is_empty());
-    let line = ctx.text(b).unwrap().line_of(ctx.text(b).unwrap().cursor(w).unwrap());
+    let line = ctx
+        .text(b)
+        .unwrap()
+        .line_of(ctx.text(b).unwrap().cursor(w).unwrap());
     assert_eq!(line, 9, "the last line, not the empty row after it");
     assert_eq!(errors(&mut ctx, "<C-f>").len(), 1);
 }
@@ -47,7 +53,10 @@ fn c_e_stops_with_the_last_line_on_top() {
     let (mut ctx, b, w) = open(&lines(20));
     assert_eq!(errors(&mut ctx, "99<C-e>"), Vec::<String>::new());
     assert_eq!(ctx.top_line(w), Some(19));
-    let line = ctx.text(b).unwrap().line_of(ctx.text(b).unwrap().cursor(w).unwrap());
+    let line = ctx
+        .text(b)
+        .unwrap()
+        .line_of(ctx.text(b).unwrap().cursor(w).unwrap());
     assert_eq!(line, 19);
     assert_eq!(errors(&mut ctx, "<C-e>").len(), 1);
 }
