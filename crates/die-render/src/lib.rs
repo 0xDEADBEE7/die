@@ -21,6 +21,7 @@
 #![warn(missing_docs)]
 
 pub mod atlas;
+pub mod driver;
 pub mod font;
 pub mod frame;
 pub mod platform;
