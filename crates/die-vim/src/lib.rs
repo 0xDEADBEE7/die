@@ -60,6 +60,24 @@ const OPERATORS: &[(&str, &str, &str, Operator, &str)] = &[
     ("gu", "u", "vim-downcase", Operator::Downcase, "Lower-case what a motion covers."),
 ];
 
+/// Commands that are an operator over a motion of their own.
+#[rustfmt::skip]
+const OWN_MOTION: &[(&str, &str, Operator, Kind, operators::Own, &str)] = &[
+    ("x", "vim-delete-char", Operator::Delete, Kind::Exclusive, motions::forward_char, "Delete count characters."),
+    ("X", "vim-delete-char-before", Operator::Delete, Kind::Exclusive, motions::backward_char, "Delete count characters before the cursor."),
+    ("s", "vim-substitute", Operator::Change, Kind::Exclusive, motions::forward_char, "Change count characters."),
+    ("D", "vim-delete-line", Operator::Delete, Kind::Inclusive, motions::end_of_line, "Delete to the end of the line."),
+    ("C", "vim-change-line", Operator::Change, Kind::Inclusive, motions::end_of_line, "Change to the end of the line."),
+    ("~", "vim-invert-char", Operator::InvertCase, Kind::Exclusive, motions::forward_char, "Invert the case of count characters."),
+];
+
+/// Commands that are an operator over count whole lines.
+#[rustfmt::skip]
+const OWN_LINES: &[(&str, &str, Operator, &str)] = &[
+    ("S", "vim-change-whole-line", Operator::Change, "Change count lines."),
+    ("Y", "vim-yank-line", Operator::Yank, "Yank count lines."),
+];
+
 #[rustfmt::skip]
 const EDITS: &[(&str, &str, Edit, &str)] = &[
     ("<CR>", "vim-insert-newline", Edit::Newline, "A new line, indented like the line above."),
@@ -150,15 +168,13 @@ impl Extension for Vim {
         ] {
             k.bind(OperatorPending, keys, "vim-cancel");
         }
-        k.bind(Normal, "x", "vim-delete-char")
-            .bind(Normal, "X", "vim-delete-char-before")
-            .bind(Normal, "s", "vim-substitute")
-            .bind(Normal, "S", "vim-change-whole-line")
-            .bind(Normal, "D", "vim-delete-line")
-            .bind(Normal, "C", "vim-change-line")
-            .bind(Normal, "Y", "vim-yank-line")
-            .bind(Normal, "~", "vim-invert-char")
-            .bind(Normal, "r<any>", "vim-replace")
+        for (keys, name, ..) in OWN_MOTION {
+            k.bind(Normal, keys, name);
+        }
+        for (keys, name, ..) in OWN_LINES {
+            k.bind(Normal, keys, name);
+        }
+        k.bind(Normal, "r<any>", "vim-replace")
             .bind(Normal, "J", "vim-join")
             .bind(Normal, "p", "vim-paste-after")
             .bind(Normal, "P", "vim-paste-before")
@@ -203,88 +219,14 @@ impl Extension for Vim {
                 });
             }
         }
-        reg.command(
-            "vim-delete-char",
-            "x: delete count characters.",
-            |ctx, a| {
-                operators::with_motion(
-                    ctx,
-                    a,
-                    Operator::Delete,
-                    Kind::Exclusive,
-                    motions::forward_char,
-                )
-            },
-        );
-        reg.command(
-            "vim-delete-char-before",
-            "X: delete count characters before the cursor.",
-            |ctx, a| {
-                operators::with_motion(
-                    ctx,
-                    a,
-                    Operator::Delete,
-                    Kind::Exclusive,
-                    motions::backward_char,
-                )
-            },
-        );
-        reg.command("vim-substitute", "s: change count characters.", |ctx, a| {
-            operators::with_motion(
-                ctx,
-                a,
-                Operator::Change,
-                Kind::Exclusive,
-                motions::forward_char,
-            )
-        });
-        reg.command(
-            "vim-change-whole-line",
-            "S: change count lines.",
-            |ctx, a| operators::with_lines(ctx, a, Operator::Change),
-        );
-        reg.command(
-            "vim-delete-line",
-            "D: delete to the end of the line.",
-            |ctx, a| {
-                operators::with_motion(
-                    ctx,
-                    a,
-                    Operator::Delete,
-                    Kind::Inclusive,
-                    motions::end_of_line,
-                )
-            },
-        );
-        reg.command(
-            "vim-change-line",
-            "C: change to the end of the line.",
-            |ctx, a| {
-                operators::with_motion(
-                    ctx,
-                    a,
-                    Operator::Change,
-                    Kind::Inclusive,
-                    motions::end_of_line,
-                )
-            },
-        );
-        reg.command("vim-yank-line", "Y: yank count lines.", |ctx, a| {
-            operators::with_lines(ctx, a, Operator::Yank)
-        });
-        reg.command(
-            "vim-invert-char",
-            "~: invert the case of count characters.",
-            |ctx, a| {
-                operators::with_motion(
-                    ctx,
-                    a,
-                    Operator::InvertCase,
-                    Kind::Exclusive,
-                    motions::forward_char,
-                )
-            },
-        );
+        for &(_, name, op, kind, motion, doc) in OWN_MOTION {
+            reg.command(name, doc, move |ctx, a| {
+                operators::with_motion(ctx, a, op, kind, motion)
+            });
+        }
+        for &(_, name, op, doc) in OWN_LINES {
+            reg.command(name, doc, move |ctx, a| operators::with_lines(ctx, a, op));
+        }
         reg.command(
             "vim-replace",
             "r: replace count characters with the next key.",
