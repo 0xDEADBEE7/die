@@ -208,6 +208,21 @@
       "evil": "A second i( on a selection of one character, itself inside brackets: on ((a)) it fails with (1, 2) selected, and on ((a) b) from the inner opening bracket it selects (1, 6).",
       "die_vim": "A selection of one character counts as none, as Evil's word objects do, so the second i( finds what the first did.",
       "cases": [{ "case": "visual-corners/v-paren-on-open", "fixture": "hand-written/visual-corners.json" }, { "case": "visual-corners/v-paren-twice", "fixture": "hand-written/visual-corners.json" }]
+    },
+    {
+      "rule": "a failed search is an error",
+      "s5_row": 31,
+      "kind": "evil-gap",
+      "evil": "isearch only says it failed: /zzz<CR> on text without zzz signals nothing, and the next key runs.",
+      "die_vim": "As Vim's: it's an error, so what follows it in a macro is dropped (contract §7). Typed keys still run, so the result is your Evil's, with the error added.",
+      "cases": [{ "case": "search/not-found", "fixture": "hand-written/search.json" }]
+    },
+    {
+      "rule": "a failed search in a macro",
+      "kind": "oracle-dies",
+      "evil": "The oracle's batch Emacs dies when isearch fails inside a keyboard macro, so there's no fixture of what your Evil does.",
+      "die_vim": "The macro stops at the search: the keys after it don't run.",
+      "cases": [{ "case": "macros/failed-search-stops", "fixture": "hand-written/macros.json" }]
     }
   ]
 }

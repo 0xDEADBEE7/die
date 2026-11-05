@@ -3,9 +3,10 @@
 //! (`tests/oracle.rs`), except the deviations named in `tests/oracle/deviations.json`.
 //!
 //! `grammar.rs` says how counts, motions, operators and insert sessions fit
-//! together. So far (V1, V3, V4): motions, counts, insert and replace sessions with their
-//! undo, operators, registers, text objects, visual state (`visual.rs`), and `.` and macros
-//! (`repeat.rs`). `registers.rs` is the one place that touches registers, for K6.
+//! together. So far (V1 to V4): motions, counts, insert and replace sessions with their
+//! undo, operators, registers, text objects, visual state (`visual.rs`), `.` and macros
+//! (`repeat.rs`), scrolling (`scroll.rs`), search (`search.rs`), and `:e`, `:b` and `:N`
+//! (`ex.rs`). `registers.rs` is the one place that touches registers, for K6.
 
 #[cfg(test)]
 use die_test_cap as _;
@@ -19,11 +20,15 @@ mod operators;
 mod registers;
 mod repeat;
 mod scripts;
+mod scroll;
+mod search;
 mod text;
 mod visual;
 
 use die_core::key_notation;
-use die_core::{Args, BufferId, Ctx, Dir, Error, Extension, Registry, Result, Shape, State};
+use die_core::{
+    Args, BufferId, Ctx, Dir, Error, Extension, Prefix, Registry, Result, Shape, State,
+};
 use grammar::{Kind, Operator, buffer_window, char_key, count_digit, forget_goal, run_motion};
 use insert::{Edit, Entry, Session};
 use motions::{Find, MOTIONS};
@@ -44,6 +49,8 @@ pub struct Vim {
     pending: HashMap<BufferId, Pending>,
     /// The last `f`, `F`, `t` or `T`, which `;` and `,` repeat.
     find: Option<Find>,
+    /// The last search, which `n` and `N` repeat.
+    search: Option<search::Last>,
     /// Each buffer's last selection, for `gv`.
     last_visual: HashMap<BufferId, visual::Last>,
     /// The register named before a selection began: its operator uses it, as your Evil's does.
@@ -113,8 +120,12 @@ type Body = fn(&mut Ctx, &Args) -> Result;
 #[rustfmt::skip]
 const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-ex", ":: read a line and run it.", ex::open),
-    ("vim-search-forward", "/: read a pattern to search forward for.", ex::search_forward),
-    ("vim-search-backward", "?: read a pattern to search backward for.", ex::search_backward),
+    ("vim-search-forward", "/: read a pattern to search forward for.", |ctx, a| search::open(ctx, a, true)),
+    ("vim-search-backward", "?: read a pattern to search backward for.", |ctx, a| search::open(ctx, a, false)),
+    ("vim-search-next", "n: the last search again.", |ctx, a| search::again(ctx, a, false)),
+    ("vim-search-previous", "N: the last search again, the other way.", |ctx, a| search::again(ctx, a, true)),
+    ("vim-search-word-forward", "*: search forward for the word under the cursor.", |ctx, a| search::word(ctx, a, true)),
+    ("vim-search-word-backward", "#: search backward for the word under the cursor.", |ctx, a| search::word(ctx, a, false)),
     ("vim-cancel", "Escape after a key that waits for another: only the operator, the count and the goal column go.", operators::cancel),
     ("vim-replace", "r: replace count characters with the next key.", operators::replace),
     ("vim-join", "J: join count lines.", operators::join),
@@ -123,7 +134,16 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-use-register", "\"x: use a register for the next command.", operators::name_register),
     ("vim-digit-argument", "A count digit.", |ctx, a| count_digit(ctx, a, a.char().and_then(|c| c.to_digit(10)).unwrap_or(0) as usize)),
     ("vim-beginning-of-line", "0: to the start of the line, or a count digit.", zero),
-    ("vim-line-beginning", "C-a: to the start of the screen row, as Emacs's global C-a does under your Evil.", row_beginning),
+    ("vim-line-beginning", "C-a: to the start of the screen row, as Emacs's global C-a does under your Evil.", |ctx, a| run_motion(ctx, a, Kind::Exclusive, None, motions::row_beginning)),
+    ("vim-universal-argument", "C-u: the prefix argument, 4 or four times the count, as in your Evil.", universal_argument),
+    ("vim-scroll-down", "C-d: scroll half a window down, or count rows, and the cursor with it.", scroll::half_down),
+    ("vim-scroll-page-down", "C-f: scroll count windows down, less two rows.", |ctx, a| scroll::page(ctx, a, true)),
+    ("vim-scroll-page-up", "C-b: scroll count windows up, less two rows.", |ctx, a| scroll::page(ctx, a, false)),
+    ("vim-scroll-line-down", "C-e: scroll count rows down.", |ctx, a| scroll::rows(ctx, a, true)),
+    ("vim-scroll-line-up", "C-y: scroll count rows up.", |ctx, a| scroll::rows(ctx, a, false)),
+    ("vim-scroll-line-to-center", "zz: put the cursor's line, or line count, in the window's middle.", |ctx, a| scroll::put_line(ctx, a, |rows| rows / 2)),
+    ("vim-scroll-line-to-top", "zt: put the cursor's line, or line count, at the window's top.", |ctx, a| scroll::put_line(ctx, a, |_| 0)),
+    ("vim-scroll-line-to-bottom", "zb: put the cursor's line, or line count, at the window's bottom.", |ctx, a| scroll::put_line(ctx, a, |rows| rows.saturating_sub(1))),
     ("vim-repeat-find-char", ";: repeat the last f, F, t or T.", |ctx, a| repeat_find(ctx, a, false)),
     ("vim-repeat-find-char-reverse", ",: repeat it the other way.", |ctx, a| repeat_find(ctx, a, true)),
     ("vim-force-normal-state", "Escape in normal state: forget the goal column, as Evil does.", force_normal_state),
@@ -205,7 +225,8 @@ impl Extension for Vim {
             k.bind(state, "0", "vim-beginning-of-line")
                 .bind(state, ";", "vim-repeat-find-char")
                 .bind(state, ",", "vim-repeat-find-char-reverse")
-                .bind(state, "<C-a>", "vim-line-beginning");
+                .bind(state, "<C-a>", "vim-line-beginning")
+                .bind(state, "<C-u>", "vim-universal-argument");
         }
         k.bind(Normal, "u", "vim-undo")
             .bind(Normal, "<C-r>", "vim-redo")
@@ -247,13 +268,27 @@ impl Extension for Vim {
                 .bind(state, "V", "vim-visual-line")
                 .bind(state, "<C-v>", "vim-visual-block")
                 .bind(state, "gv", "vim-visual-restore")
+                .bind(state, "<C-d>", "vim-scroll-down")
+                .bind(state, "<C-f>", "vim-scroll-page-down")
+                .bind(state, "<C-b>", "vim-scroll-page-up")
+                .bind(state, "<C-e>", "vim-scroll-line-down")
+                .bind(state, "<C-y>", "vim-scroll-line-up")
+                .bind(state, "zz", "vim-scroll-line-to-center")
+                .bind(state, "zt", "vim-scroll-line-to-top")
+                .bind(state, "zb", "vim-scroll-line-to-bottom")
                 .bind(state, "q", "vim-record-macro")
                 .bind(state, "@<any>", "vim-execute-macro");
         }
         for state in [Normal, Visual] {
-            k.bind(state, ":", "vim-ex")
-                .bind(state, "/", "vim-search-forward")
-                .bind(state, "?", "vim-search-backward");
+            k.bind(state, ":", "vim-ex");
+        }
+        for state in [Normal, OperatorPending, Visual] {
+            k.bind(state, "/", "vim-search-forward")
+                .bind(state, "?", "vim-search-backward")
+                .bind(state, "n", "vim-search-next")
+                .bind(state, "N", "vim-search-previous")
+                .bind(state, "*", "vim-search-word-forward")
+                .bind(state, "#", "vim-search-word-backward");
         }
         k.bind(Normal, ".", "vim-repeat")
             .bind(CommandLine, "<any>", "vim-record-macro-into");
@@ -342,7 +377,8 @@ impl Extension for Vim {
     }
 }
 
-/// Register a command. Every one goes through here so that [`repeat::before`] runs first.
+/// Register a command. Every one goes through here so that [`repeat::before`] runs first, and
+/// [`scroll::reveal`] after it.
 fn command(
     reg: &mut Registry,
     name: &str,
@@ -351,7 +387,9 @@ fn command(
 ) {
     reg.command(name, doc, move |ctx, a| {
         repeat::before(ctx)?;
-        f(ctx, a)
+        let r = f(ctx, a);
+        scroll::reveal(ctx, a);
+        r
     });
 }
 
@@ -363,11 +401,13 @@ fn zero(ctx: &mut Ctx, a: &Args) -> Result {
     }
 }
 
-fn row_beginning(ctx: &mut Ctx, a: &Args) -> Result {
-    let (_, w) = buffer_window(ctx, a)?;
-    run_motion(ctx, a, Kind::Exclusive, None, move |s| {
-        motions::row_beginning(s, w)
-    })
+/// `C-u`: your Evil leaves it Emacs's prefix argument, so it scrolls nothing.
+fn universal_argument(ctx: &mut Ctx, a: &Args) -> Result {
+    ctx.set_prefix(Prefix {
+        count: Some(a.count.unwrap_or(1).saturating_mul(4)),
+        register: a.register,
+    });
+    Ok(())
 }
 
 fn force_normal_state(ctx: &mut Ctx, a: &Args) -> Result {

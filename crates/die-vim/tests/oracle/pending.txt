@@ -1,32 +1,6 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
 
-# V2 (16)
-V2 ex/goto-line
-V2 hand-written/search/count-slash
-V2 hand-written/search/empty-pattern-repeats
-V2 search/hash-backward
-V2 search/n-wraps
-V2 search/question
-V2 search/question-n-continues-backward
-V2 search/search-next-line
-V2 search/slash
-V2 search/slash-N
-V2 search/slash-n
-V2 search/smartcase-lower-matches-upper
-V2 search/smartcase-upper-is-exact
-V2 search/star-case
-V2 search/star-n
-V2 search/star-whole-word
-
-# V3 (2)
-V3 search/d-slash
-V3 search/not-found
-
-# V4 (2)
-V4 macros/macro-with-search
-V4 search/v-slash-d
-
 # V5 (13)
 V5 ex/s-cursor-after-percent
 V5 ex/s-empty-replacement
@@ -41,46 +15,3 @@ V5 ex/s-undo-one-step
 V5 ex/s-visual-range
 V5 hand-written/ex/s-group-before-letter
 V5 hand-written/ex/s-groups
-
-# V6 (41)
-V6 geometry/3L
-V6 geometry/H
-V6 geometry/H-after-jump
-V6 geometry/L
-V6 geometry/M
-V6 geometry/M-after-jump
-V6 geometry/ctrl-b-at-top
-V6 geometry/ctrl-b-from-30
-V6 geometry/ctrl-d
-V6 geometry/ctrl-d-count
-V6 geometry/ctrl-d-count-sticks
-V6 geometry/ctrl-d-near-end
-V6 geometry/ctrl-d-twice
-V6 geometry/ctrl-e
-V6 geometry/ctrl-e-ctrl-y
-V6 geometry/ctrl-e-pushes-cursor
-V6 geometry/ctrl-f
-V6 geometry/ctrl-f-ctrl-b
-V6 geometry/ctrl-f-twice
-V6 geometry/ctrl-u-does-not-scroll
-V6 geometry/ctrl-u-is-prefix-arg
-V6 geometry/ctrl-y-at-top
-V6 geometry/dL
-V6 geometry/zb
-V6 geometry/zt
-V6 geometry/zz
-V6 geometry/zz-near-top
-V6 hand-written/geometry/3H
-V6 hand-written/geometry/H-at-end
-V6 hand-written/geometry/L-short-buffer
-V6 hand-written/geometry/M-short-buffer
-V6 hand-written/geometry/ctrl-d-at-end
-V6 hand-written/wrapped/gj-at-last-visual-line
-V6 wrapped/2gj-into-next-line
-V6 wrapped/dgj
-V6 wrapped/esc-at-a-wrapped-rows-start
-V6 wrapped/gj
-V6 wrapped/gj-keeps-column
-V6 wrapped/gk
-V6 wrapped/gk-in-tail
-V6 wrapped/zero-is-logical
