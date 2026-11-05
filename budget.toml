@@ -55,7 +55,7 @@ name = "die-test-cap"
 path = "tools/test-cap"
 dev = true
 
-# die-core's modules at M0. `prompt.rs` holds S4's prompt until K11a rebuilds it.
+# die-core's modules at M0.
 
 [[module]]
 crate = "die-core"
@@ -109,7 +109,7 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 crate = "die-core"
 name = "session"
 limit = 1000
-files = ["session.rs", "session/"]
+files = ["session.rs", "session/", "instance.rs", "sys/"]
 
 [[module]]
 crate = "die-core"

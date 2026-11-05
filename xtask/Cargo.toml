@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Dev-only: budget, lint, sources, guards, api-diff, fonts, clean-build, cross-check, mutate and ci"
+description = "Dev-only: app, budget, lint, sources, guards, api-diff, fonts, clean-build, cross-check, mutate and ci"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
