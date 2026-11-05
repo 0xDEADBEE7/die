@@ -602,6 +602,22 @@ fn scroll_reads_and_sets_a_windows_first_row() {
     assert_eq!(t.set_scroll(other, 0, 0), None);
 }
 
+/// The row it stops at is the row it keeps, so a line that grows later doesn't move the window.
+#[test]
+fn set_scroll_keeps_the_row_it_stopped_at() {
+    let long = "x".repeat(25);
+    let (mut ctx, b, w) = window(&format!("{long}\nb\n"), 10, 2);
+    let t = ctx.text_mut(b).unwrap();
+    t.set_scroll(w, 0, 99).unwrap();
+    assert_eq!(t.scroll(w), Some((0, 2)));
+    let more = "x".repeat(1100);
+    t.tx(Origin::Extension)
+        .insert(25, more.as_str())
+        .commit()
+        .unwrap();
+    assert_eq!(t.scroll(w), Some((0, 2)), "the line now has over 100 rows");
+}
+
 /// §9: a command that scrolls also leaves the cursor on a visible row, or core scrolls back.
 #[test]
 fn core_scrolls_back_to_the_cursor_before_a_render() {
@@ -701,6 +717,15 @@ fn toggle_max_width_turns_the_width_off_and_back_on() {
     ctx.run("toggle-max-width", &args).unwrap();
     assert_eq!(ctx.text(other).unwrap().settings().max_width, Some(80));
     assert_eq!(width(&ctx), Some(100), "not the focused one");
+    // And on the buffer a command was run for, ahead of any window.
+    let args = Args {
+        window: Some(w),
+        buffer: Some(other),
+        ..Default::default()
+    };
+    ctx.run("toggle-max-width", &args).unwrap();
+    assert_eq!(ctx.text(other).unwrap().settings().max_width, None);
+    assert_eq!(width(&ctx), Some(100), "not the window's");
     assert!(
         ctx.command_doc("toggle-max-width")
             .is_some_and(|(_, owner)| owner == "core")

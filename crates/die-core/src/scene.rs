@@ -585,6 +585,7 @@ fn draw_text(
         .selection(p.window)
         .filter(|_| look.visual)
         .map(|s| selected(t, s));
+    let block = selection.as_ref().is_some_and(|s| s.1.is_some());
 
     // Each face once, and a sweep over the cells, so a frame costs one step per
     // cell and per face, not their product. `deco`'s order is the stacking order.
@@ -653,12 +654,14 @@ fn draw_text(
             }
         }
         // Every cell of a tab, a wide character or a replacement shows its one position, and
-        // virtual text is styled as the position it stands before, but isn't that position.
+        // virtual text is styled as the position it stands before, but isn't that position. A
+        // block takes a replacement whole, by that position's column, as it does a tab.
         let mut row_end = None;
         for (j, c) in vr.cells.iter().enumerate().take(room) {
             let mut style = base;
             if c.kind != CellKind::Filler {
-                style = style_at(c.pos, c.vcol);
+                let whole = block && c.kind == CellKind::Replacement;
+                style = style_at(c.pos, if whole { t.display_col(c.pos) } else { c.vcol });
             }
             if let Some(f) = c.face {
                 style = faces.of_decoration(f, messages).over(style);

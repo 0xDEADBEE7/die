@@ -50,6 +50,12 @@
 //! - `a_highlighted_newline_shows_only_its_own_cell`
 //! - `a_block_selection_skips_a_short_lines_newline`: and the buffer's end, as
 //!   Evil's overlays do.
+//! - `a_block_selection_takes_a_replacement_whole`: by its position's column,
+//!   so a block's edge can't cut it.
+//! - `a_provider_isnt_asked_for_a_wide_character_on_the_row_below`: the filler
+//!   it leaves isn't its text.
+//! - `a_folds_later_line_takes_the_current_number_face`: the current number
+//!   goes by display line.
 //! - `cells_past_the_end_of_a_line_map_to_its_newline`,
 //!   `cells_past_a_wrapped_row_map_to_its_last_position`: where a click lands.
 //! - `cells_are_built_with_new_and_field_writes`: from outside die-core. The
@@ -728,6 +734,38 @@ fn providers_are_asked_for_the_drawn_text_only() {
 }
 
 #[test]
+fn a_provider_isnt_asked_for_a_wide_character_on_the_row_below() {
+    let mut ctx = Ctx::new(vec![Box::new(PaintExt)]).unwrap();
+    let b = ctx.create_text("t", "aaaaaaaaa中b");
+    let w = ctx.open_window(b, 10, 1).unwrap();
+    ctx.enable_mode::<Paint>(b).unwrap();
+    compose_one(&mut ctx, w);
+    let asked = ctx.with_mode(b, |p: &mut Paint, _| p.asked.pop());
+    assert_eq!(
+        asked.unwrap().unwrap(),
+        0..9,
+        "the filler at column 9 stands for 中, which shows only on the row below the window"
+    );
+}
+
+#[test]
+fn a_folds_later_line_takes_the_current_number_face() {
+    let (mut ctx, b, w) = one("a\nb\nc\nd\n", 10, 2);
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().line_numbers = LineNumbers::Absolute;
+    let deco = Deco::Hide {
+        replacement: None,
+        reveal: Reveal::Never,
+    };
+    t.decorate(1..4, deco).unwrap();
+    t.set_cursor(w, 4); // On c, which the fold joins to a.
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(s.row_text(0), "  1 ac");
+    assert_eq!(s.row(0)[2].fg, h("#999999"), "the cursor's display line");
+    assert_eq!(s.row(1)[2].fg, h("#555555"));
+}
+
+#[test]
 fn search_matches_dont_overlap_and_the_current_one_starts_at_the_cursor() {
     let (mut ctx, b, w) = one("aaaa\n", 10, 1);
     ctx.text_mut(b).unwrap().set_cursor(w, 1);
@@ -874,6 +912,40 @@ fn a_block_selection_skips_a_short_lines_newline() {
         blocks("abc\nab", 2, 6),
         ["..#...", "......", "......"],
         "nor at the end of the buffer"
+    );
+}
+
+/// scene-4: a replacement shows one position, so it's selected whole or not at all, as a tab is.
+#[test]
+fn a_block_selection_takes_a_replacement_whole() {
+    let blocks = |anchor, head| {
+        let (mut ctx, b, w) = one("abcdefgh\nabcdefgh\n", 10, 2);
+        ctx.set_state(State::Visual);
+        let t = ctx.text_mut(b).unwrap();
+        let deco = Deco::Hide {
+            replacement: Some("XYZ".into()),
+            reveal: Reveal::Never,
+        };
+        t.decorate(1..3, deco).unwrap();
+        let shape = Shape::Block;
+        let sel = Selection {
+            anchor,
+            head,
+            shape,
+            goal: None,
+        };
+        t.set_selection(w, sel);
+        selected_cells(&compose_one(&mut ctx, w), 2, 8)
+    };
+    assert_eq!(
+        blocks(0, 10),
+        ["####....", "##......"],
+        "the block's edge at the replacement's column takes all of it"
+    );
+    assert_eq!(
+        blocks(3, 11),
+        ["....#...", "..###..."],
+        "a block starting past its first cell doesn't take its later ones"
     );
 }
 
