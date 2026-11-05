@@ -2,7 +2,9 @@
 
 use die_test_cap as _;
 
-use die_core::{Ctx, CursorShape, Error, PromptSpec, State};
+use die_core::{
+    Args, Ctx, CursorShape, Error, Extension, PromptSpec, Registry, Rgb, State, Style, Theme,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -135,6 +137,69 @@ fn history_goes_back_and_forward_and_keeps_what_was_typed() {
     );
 }
 
+/// Evil's `<Up>` and `<Down>`: only entries that start with what's before the cursor, which
+/// stays where it is. `<C-p>`, `<C-n>` and the page keys walk every entry, on any prompt.
+#[test]
+fn evil_keys_recall_by_what_is_before_the_cursor() {
+    let mut ctx = ctx();
+    for answer in ["foo", "bar", "fig"] {
+        ask(&mut ctx, PromptSpec::new("?").history("h"));
+        ctx.type_keys(answer);
+        ctx.type_keys("<CR>");
+    }
+    ask(&mut ctx, PromptSpec::new("?").history("h").evil_keys());
+    ctx.type_keys("f");
+    for (key, want) in [
+        ("<Up>", "fig"),
+        ("<Up>", "foo"),
+        ("<Up>", "foo"),
+        ("<Down>", "fig"),
+        ("<Down>", "f"),
+        ("<C-p>", "fig"),
+        ("<C-p>", "bar"),
+        ("<PageUp>", "foo"),
+        ("<PageDown>", "bar"),
+        ("<C-n>", "fig"),
+    ] {
+        ctx.type_keys(key);
+        assert_eq!(ctx.prompt_text(), Some(want), "{key}");
+    }
+    ctx.type_keys("<Esc>");
+    ask(&mut ctx, PromptSpec::new("?").history("h").evil_keys());
+    ctx.type_keys("f<Up>X");
+    assert_eq!(ctx.prompt_text(), Some("fXig"), "the cursor stays");
+    ctx.type_keys("<Esc>");
+    ask(&mut ctx, PromptSpec::new("?").history("h"));
+    ctx.type_keys("f<Up><Up>");
+    assert_eq!(
+        ctx.prompt_text(),
+        Some("bar"),
+        "a plain prompt walks every entry"
+    );
+    ctx.type_keys("<PageDown>");
+    assert_eq!(ctx.prompt_text(), Some("fig"), "and has the page keys");
+}
+
+/// `evil-command-line-map`'s line keys, and the Shift word moves every prompt has.
+#[test]
+fn evil_keys_take_the_whole_line_and_shift_moves_by_word() {
+    for (evil, keys, want) in [
+        (true, "<Left><C-u>X", "X"),
+        (true, "<C-b>X", "Xabc def"),
+        (true, "<S-Left>X", "abc Xdef"),
+        (true, "<Home><S-Right>X", "abcX def"),
+        (false, "<S-Left>X", "abc Xdef"),
+        (false, "<Home><S-Right>X", "abcX def"),
+    ] {
+        let mut ctx = ctx();
+        let spec = PromptSpec::new("?");
+        ask(&mut ctx, if evil { spec.evil_keys() } else { spec });
+        ctx.type_keys("abc def");
+        ctx.type_keys(keys);
+        assert_eq!(ctx.prompt_text(), Some(want), "{keys}");
+    }
+}
+
 #[test]
 fn backspace_on_an_empty_line_cancels_only_when_asked() {
     let mut ctx = ctx();
@@ -263,4 +328,333 @@ fn the_log_keeps_its_last_thousand_lines() {
     let text = ctx.text(log).unwrap().rope().to_string();
     assert!(text.starts_with("500\n501\n") && text.ends_with("1499\n"));
     assert_eq!(text.lines().count(), 1000);
+}
+
+// ------------------------------------------------------------------ candidates (K11b)
+
+/// Each order is what Emacs 30.2 printed for `completion-styles '(flex)`, candidates in the order
+/// given, as `completion--flex-adjust-metadata`'s sort leaves them.
+#[test]
+fn flex_ranks_as_emacs_does() {
+    for (query, candidates, want) in [
+        (
+            "ff",
+            &[
+                "diff",
+                "find-file",
+                "buffer-file",
+                "off",
+                "fringe-face",
+                "of-find",
+            ][..],
+            &[
+                "off",
+                "diff",
+                "buffer-file",
+                "of-find",
+                "find-file",
+                "fringe-face",
+            ][..],
+        ),
+        (
+            "foo",
+            &[
+                "fabrobazo",
+                "fbarbazoo",
+                "barfoobaz",
+                "foo",
+                "food",
+                "f-o-o",
+            ],
+            &[
+                "foo",
+                "food",
+                "barfoobaz",
+                "f-o-o",
+                "fbarbazoo",
+                "fabrobazo",
+            ],
+        ),
+        (
+            "sb",
+            &[
+                "switch-buffer",
+                "sb",
+                "subscribe",
+                "kill-buffer",
+                "absorb",
+                "s-b",
+            ],
+            &["sb", "s-b", "subscribe", "absorb", "switch-buffer"],
+        ),
+        (
+            "kb",
+            &["kill-buffer", "keyboard", "kb", "knob", "k-x-b"],
+            &["kb", "knob", "k-x-b", "keyboard", "kill-buffer"],
+        ),
+        (
+            "cp",
+            &["command-palette", "copy", "cp", "scope", "cap", "c-p"],
+            &["cp", "cap", "c-p", "copy", "scope", "command-palette"],
+        ),
+        (
+            "fnd",
+            &["find", "fund", "find-file", "friend", "fine-tuned"],
+            &["find", "fund", "find-file", "friend", "fine-tuned"],
+        ),
+        (
+            "mt",
+            &["mt", "at-mt", "m-t", "mid-text", "market", "ampt", "tm"],
+            &["mt", "at-mt", "m-t", "ampt", "market", "mid-text"],
+        ),
+        (
+            "aa",
+            &["abab", "aab", "baab", "aba", "a-a"],
+            &["aab", "baab", "aba", "a-a", "abab"],
+        ),
+        (
+            "rs",
+            &["src/main.rs", "src/rs", "docs.rs", "cargo.rs", "rust"],
+            &["docs.rs", "rust", "src/rs", "cargo.rs", "src/main.rs"],
+        ),
+        ("zz", &["abc", "zebra"], &[]),
+        ("é", &["café", "cafe", "éa"], &["éa", "café"]),
+        // Not Emacs: smartcase, where Emacs matches case exactly.
+        ("rd", &["README", "bird", "rod"], &["bird", "rod", "README"]),
+        ("Rd", &["README", "bird", "Rod"], &["Rod"]),
+        // With nothing typed, everything, in the order given.
+        ("", &["b", "a"], &["b", "a"]),
+    ] {
+        assert_eq!(die_core::flex_rank(query, candidates), want, "{query}");
+    }
+}
+
+fn numbered(n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("item{i}")).collect()
+}
+
+#[test]
+fn twenty_rows_show_under_the_line_and_scroll_to_the_chosen_one() {
+    let mut ctx = ctx();
+    ctx.set_frame_size(30, 30);
+    ask(&mut ctx, PromptSpec::new("? ").candidates(numbered(50)));
+    let s = ctx.scene();
+    assert_eq!(s.row_text(9), "1/50   ?", "above the 20 rows");
+    assert_eq!(s.row_text(10), "item0");
+    assert_eq!(s.row_text(29), "item19");
+    assert_eq!((s.cursors[0].row, s.cursors[0].col), (9, 9));
+
+    ctx.type_keys("<PageDown><C-n><C-n>");
+    assert_eq!(ctx.prompt_chosen(), Some("item22"));
+    let s = ctx.scene();
+    assert_eq!(s.row_text(9), "23/50  ?");
+    assert_eq!(s.row_text(10), "item3");
+    assert_eq!(s.row_text(29), "item22");
+    ctx.type_keys("<M-v><Up>");
+    assert_eq!(ctx.prompt_chosen(), Some("item1"));
+    assert_eq!(
+        ctx.scene().row_text(10),
+        "item1",
+        "back up, it stays in view"
+    );
+
+    ctx.type_keys("<PageUp><Up>");
+    assert_eq!(ctx.prompt_chosen(), Some("item0"), "stops at the first");
+    for _ in 0..3 {
+        ctx.type_keys("<PageDown>");
+    }
+    ctx.type_keys("<Down>");
+    assert_eq!(ctx.prompt_chosen(), Some("item49"), "stops at the last");
+
+    ctx.type_keys("item1");
+    assert_eq!(ctx.prompt_chosen(), Some("item1"), "typing starts over");
+    assert_eq!(
+        ctx.prompt_candidates().len(),
+        14,
+        "item1, item10.., item21.."
+    );
+    let s = ctx.scene();
+    assert_eq!(s.row_text(9), "1/14   ? item1", "the list doesn't shrink");
+    assert_eq!(s.row_text(11), "item10", "ties in the order given");
+    assert_eq!(s.row_text(24), "");
+}
+
+#[test]
+fn the_list_covers_the_windows_and_marks_the_chosen_row_and_the_match() {
+    let mut ctx = ctx();
+    ctx.set_frame_size(20, 8);
+    let red = Rgb::hex("#c80000");
+    let blue = Rgb::hex("#0000c8");
+    let theme = Theme::new("t", [Rgb::hex("#000000"); 16])
+        .face("prompt-current", Style::new().bg(red))
+        .face("prompt-match", Style::new().fg(blue));
+    ctx.set_theme(theme);
+
+    ask(&mut ctx, PromptSpec::new("").candidates(["abc", "xbz"]));
+    ctx.type_keys("b");
+    let s = ctx.scene();
+    assert_eq!(s.row_text(5), "1/2    b");
+    assert_eq!(s.row_text(6), "abc");
+    assert_eq!(s.row_text(7), "xbz");
+    assert_eq!(s.position(6, 0), None, "nothing to click on under it");
+    assert_eq!(s.cursors.len(), 2, "the window's cursor is above the list");
+    assert_eq!(s.row(6)[19].bg, red, "the chosen row, all the way across");
+    assert_eq!(s.row(6)[1].fg, blue, "the match");
+    assert_ne!(s.row(6)[0].fg, blue);
+    assert_ne!(s.row(7)[0].bg, red);
+    assert_eq!(s.row(7)[1].fg, blue);
+
+    ctx.set_frame_size(20, 2);
+    let s = ctx.scene();
+    assert_eq!(s.row_text(0), "1/2    b", "a small frame gets what fits");
+    assert_eq!(s.row_text(1), "abc");
+    assert_eq!(s.cursors.len(), 1, "the window's cursor is under the list");
+}
+
+#[test]
+fn the_answer_is_the_chosen_candidate_or_on_request_what_was_typed() {
+    let list = ["alpha", "beta"];
+    for (keys, want) in [
+        ("<CR>", "alpha"),
+        ("<C-n><CR>", "beta"),
+        ("<Down><Up><CR>", "alpha"),
+        ("bet<CR>", "beta"),
+        ("zzz<CR>", "zzz"),
+        ("be<M-CR>", "be"),
+    ] {
+        let mut ctx = ctx();
+        let answers = ask(&mut ctx, PromptSpec::new("?").candidates(list));
+        ctx.type_keys(keys);
+        assert_eq!(*answers.borrow(), [Some(want.to_string())], "{keys}");
+    }
+
+    let mut ctx = ctx();
+    let answers = ask(&mut ctx, PromptSpec::new("?").candidates(list));
+    ctx.type_keys("<Down><Tab>");
+    assert_eq!(ctx.prompt_text(), Some("beta"), "<Tab> doesn't answer");
+    assert!(answers.borrow().is_empty());
+    assert_eq!(ctx.prompt_candidates(), ["beta"], "and matches again");
+}
+
+#[test]
+fn history_stays_on_meta_keys_beside_a_list() {
+    let mut ctx = ctx();
+    for list in [["one", "two"], ["two", "one"]] {
+        ask(&mut ctx, PromptSpec::new("?").history("h").candidates(list));
+        ctx.type_keys("<CR>");
+    }
+    assert_eq!(ctx.prompt_history("h"), ["one", "two"], "what was answered");
+    ask(
+        &mut ctx,
+        PromptSpec::new("?").history("h").candidates(["x"]),
+    );
+    ctx.type_keys("<Up><M-p>");
+    assert_eq!(ctx.prompt_text(), Some("two"));
+    ctx.type_keys("<M-p><M-n><M-n><M-n>");
+    assert_eq!(ctx.prompt_text(), Some(""));
+    ctx.type_keys("<Esc>");
+    ask(&mut ctx, PromptSpec::new("?").history("h"));
+    ctx.type_keys("<M-p>");
+    assert_eq!(ctx.prompt_text(), Some("two"), "and with no list");
+}
+
+#[test]
+fn candidates_can_follow_the_text_and_a_directory_descends() {
+    let mut ctx = ctx();
+    let asked = Rc::new(RefCell::new(vec![]));
+    let a = asked.clone();
+    let spec = PromptSpec::new("Find: ")
+        .initial("src/")
+        .descends()
+        .candidates_from(move |text| {
+            a.borrow_mut().push(text.to_string());
+            let base = text.rfind('/').map_or(0, |i| i + 1);
+            let items = match &text[..base] {
+                "src/" => vec!["core/", "main.rs"],
+                "src/core/" => vec!["lib.rs"],
+                _ => vec![],
+            };
+            (base, items.into_iter().map(String::from).collect())
+        });
+    let answers = ask(&mut ctx, spec);
+    assert_eq!(
+        ctx.prompt_candidates(),
+        ["core/", "main.rs"],
+        "from the start"
+    );
+
+    ctx.type_keys("c<CR>");
+    assert_eq!(ctx.prompt_text(), Some("src/core/"), "stays open");
+    assert!(answers.borrow().is_empty());
+    assert_eq!(ctx.prompt_candidates(), ["lib.rs"]);
+
+    ctx.type_keys("lb<CR>");
+    assert_eq!(*answers.borrow(), [Some("src/core/lib.rs".to_string())]);
+    assert_eq!(
+        *asked.borrow(),
+        ["src/", "src/c", "src/core/", "src/core/l", "src/core/lb"]
+    );
+
+    let answers = ask(
+        &mut ctx,
+        PromptSpec::new("?").candidates_from(|text| match text {
+            "" => (0, vec!["ok".to_string()]),
+            _ => panic!("no list for you"),
+        }),
+    );
+    ctx.type_keys("x");
+    assert!(ctx.prompt_candidates().is_empty(), "a panic empties it");
+    assert_eq!(ctx.prompt_text(), Some("x"));
+    assert!(ctx.messages.iter().any(|m| m.contains("no list for you")));
+    ctx.type_keys("<CR>");
+    assert_eq!(*answers.borrow(), [Some("x".to_string())]);
+}
+
+struct Commands(Rc<RefCell<Vec<Option<usize>>>>);
+
+impl Extension for Commands {
+    fn name(&self) -> &'static str {
+        "commands"
+    }
+    fn register(&mut self, reg: &mut Registry) {
+        let log = self.0.clone();
+        reg.command("say-hello", "", move |_, a| {
+            log.borrow_mut().push(a.count);
+            Ok(())
+        });
+    }
+}
+
+#[test]
+fn command_palette_runs_what_is_chosen_with_its_count() {
+    let log = Rc::new(RefCell::new(vec![]));
+    let mut ctx = Ctx::new(vec![Box::new(Commands(log.clone()))]).unwrap();
+    let b = ctx.create_text("t", "");
+    ctx.open_window(b, 40, 5).unwrap();
+    let args = Args {
+        count: Some(3),
+        ..Args::default()
+    };
+
+    ctx.run("command-palette", &args).unwrap();
+    assert!(ctx.prompt_candidates().contains(&"toggle-max-width"));
+    assert!(ctx.prompt_candidates().is_sorted(), "sorted to start with");
+    ctx.type_keys("<Esc>");
+    assert!(log.borrow().is_empty(), "a cancel runs nothing");
+
+    ctx.run("command-palette", &args).unwrap();
+    ctx.type_keys("shl");
+    assert_eq!(ctx.prompt_chosen(), Some("say-hello"));
+    ctx.type_keys("<CR>");
+    assert_eq!(*log.borrow(), [Some(3)]);
+    assert_eq!(ctx.state(), State::Normal);
+
+    let before = ctx.messages.len();
+    ctx.run("command-palette", &Args::default()).unwrap();
+    ctx.type_keys("zzzz<CR>");
+    assert_eq!(
+        ctx.messages.len(),
+        before + 1,
+        "a name that isn't one says so"
+    );
 }
