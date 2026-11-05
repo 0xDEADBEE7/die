@@ -111,7 +111,7 @@ V5 ex/s-visual-range
 V5 hand-written/ex/s-group-before-letter
 V5 hand-written/ex/s-groups
 
-# V6 (65)
+# V6 (66)
 V6 geometry/3L
 V6 geometry/H
 V6 geometry/H-after-jump
@@ -167,6 +167,7 @@ V6 wrapped/count-ctrl-a-wrapped
 V6 wrapped/ctrl-a-wrapped
 V6 wrapped/dgj
 V6 wrapped/dollar-is-logical
+V6 wrapped/esc-at-a-wrapped-rows-start
 V6 wrapped/gj
 V6 wrapped/gj-keeps-column
 V6 wrapped/gk

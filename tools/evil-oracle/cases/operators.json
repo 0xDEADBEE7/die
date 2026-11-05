@@ -312,5 +312,10 @@
   {"id": "Down-shift-left-dollar", "vim": "Vim's cursor is at line 1 col 0, Evil's at line 1 col 4", "keys": "<Down><$", "text": ["    a|bc", "    defgh"]},
   {"id": "Down-d5-dollar", "vim": "Vim's cursor is at line 1 col 0, Evil's at line 1 col 1", "keys": "<Down>d5$", "text": ["|abc", "defgh", "xyz", "uvw", "q", "r", "ss"]},
   {"id": "shift-right-dollar-without-a-vertical-motion", "vim": "Vim's cursor is at line 0 col 4, Evil's at line 0 col 1", "keys": "l>$", "text": ["|abcdef"]},
-  {"id": "failed-h-then-shift-right-dollar", "vim": "Vim's cursor is at line 1 col 4, Evil's at line 1 col 8", "keys": "jh>$", "text": ["|a", "bcdef", "x"]}
+  {"id": "failed-h-then-shift-right-dollar", "vim": "Vim's cursor is at line 1 col 4, Evil's at line 1 col 8", "keys": "jh>$", "text": ["|a", "bcdef", "x"]},
+  {"id": "s-combining-mark", "vim": "Vim leaves \"Z x\\n\", Evil \"Z\\u0301 x\\n\"; Vim's registers differ", "keys": "sZ<Esc>", "text": ["|e\u0301 x"]},
+  {"id": "dl-combining-mark", "vim": "Vim leaves \" x\\n\", Evil \"\\u0301 x\\n\"; Vim's registers differ", "keys": "dl", "text": ["|e\u0301 x"]},
+  {"id": "yl-combining-mark", "vim": "Vim's registers differ", "keys": "yl", "text": ["|e\u0301 x"]},
+  {"id": "dh-combining-mark", "vim": "Vim leaves \"x\\n\", Evil \"ex\\n\"; Vim's cursor is at line 0 col 0, Evil's at line 0 col 1; Vim's registers differ", "keys": "dh", "text": ["e\u0301|x"]},
+  {"id": "2x-combining-mark", "vim": "Vim leaves \"e\\u0301y\\n\", Evil \"xe\\u0301y\\n\"; Vim's registers differ", "keys": "2x", "text": ["|e\u0301xe\u0301y"]}
  ]}
