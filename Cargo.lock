@@ -283,6 +283,8 @@ dependencies = [
  "regex-automata",
  "regex-syntax",
  "ropey",
+ "serde",
+ "serde_json",
  "slotmap",
  "unicode-segmentation",
  "unicode-width",
