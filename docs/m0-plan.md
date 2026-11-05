@@ -126,6 +126,7 @@ The five scheduled reviews each read a whole surface at once. The other three ru
 - Each package an AI drafts starts with a test plan. That's 08's "under tests you review".
 - A weekly note in `docs/m0-log.md` says what merged, what waits on you, what changed in the API, and where the budget stands.
 - Every problem you hit while dogfooding becomes a test first: an oracle case for die-vim, a harness test for core.
+- Every test binary has a memory limit (scope §12). A new `tests/*.rs` file starts with `use die_test_cap as _;`, and `cargo xtask lint` fails one that doesn't.
 
 ## 4. Budget
 
@@ -138,7 +139,7 @@ The five scheduled reviews each read a whole surface at once. The other three ru
 | die-vim | none yet; proposed ≤ about 5k | 3.6–4.6k | small: copy state (M2) | 3.7–4.7k |
 | die | – | about 0.2k | registering die-term, the holder and helper modes (M2) | |
 | apps/die-dev | – (your config) | about 0.15k | | |
-| xtask, tools/evil-oracle | dev-only: counted, not capped | about 0.7k and 0.3k | `ghostty bump` (M2) | |
+| xtask, tools/evil-oracle, tools/test-cap | dev-only: counted, not capped | about 0.7k, 0.3k and 0.2k | `ghostty bump` (M2) | |
 | **Product code** | | **about 15–19k** | | |
 
 die-render's M0 figure is S1's 4.1–5.0k minus what M3 adds. The platforms record puts the macOS build at 4.1–5.25k, up to 0.25k above S1's figure, and all platforms at 5.35–7.15k ([records/platforms.md](records/platforms.md) §5.7). Tests come on top: about 5–6k in core (2.6k of it from S4), 1.5k in die-vim and 0.5k in the renderer.
@@ -203,7 +204,7 @@ Sizes are AI-assisted effort: S is up to 2 days, M 3–7 days, L 1.5–3 weeks. 
 | ID | Deliverable | Needs | Size | Proven by | Owner |
 |---|---|---|---|---|---|
 | R1 | The crate, from S1's skeleton: pinned versions, trimmed AppKit features, objc-sys's `.m` feature off. `platform::macos::{appkit, metal, text}`, cfg-gated to macOS, is the only `unsafe`, and holds thin wrappers only: the atlas, row cache and instance building live outside it. The Apple crates sit in a macOS target table. Neutral code names `platform::backend`, which on other platforms is a stub whose items return "no window backend on this platform yet" | F1 | S | It builds, the budget counts it, `clean-build` passes, and it cross-checks for Linux | AI; you review `platform` |
-| R2 | Offscreen renderer, scene to texture: the glyph atlas, row cache and diff, renderer-drawn box and block glyphs, Core Text with a fallback chain and combining marks, cursors. The test plan states the frame-data boundary between neutral code and the backend: neutral functions take glyph bitmaps and metrics as data, so their tests run under `ci --linux`, and only the driver calls `platform::backend`. The instance layout is asserted | R1, K8 | L | CPU row tests, the GPU struct-layout assertion, glyph joins, advances, offscreen fidelity | AI |
+| R2 | Offscreen renderer, scene to texture: the glyph atlas, row cache and diff, renderer-drawn box and block glyphs, Core Text with a fallback chain and combining marks, cursors. The test plan states the frame-data boundary between neutral code and the backend: neutral functions take glyph bitmaps and metrics as data, so their tests run under `ci --linux`, and only the driver calls `platform::backend`. The instance layout is asserted against the compiled shader's struct | R1, K8 | L | CPU row tests, the GPU struct-layout assertion, glyph joins, advances, offscreen fidelity | AI |
 | R3 | Window and loop: borderless, Option as Alt, render in the same run-loop turn as the input, occlusion, S1's resize and scale rules, wakes through the event loop. Its neutral code compiles on Linux | R2, K9 | M | `die-dev --check idle,resize,scale,occlusion` | AI |
 | R4 | Input: `KeyEvent` mapping, the key monitor (Caps Lock, `C-/`, `C-Return`), pointer with click count and trackpad deltas. Modifier sides come from modifier-key events, and the mapping compiles on Linux | R3, K3 | M | S1's 50-chord matrix with every field checked. Mapping tests. `a_panic_in_the_key_monitor_is_caught` | AI |
 | R5 | The macOS clipboard behind K6's `Clipboard` trait, with its change count (NSPasteboard's) and line or block kind | R3, K6 | S | A round trip on a private pasteboard. An outside copy is detected | AI |

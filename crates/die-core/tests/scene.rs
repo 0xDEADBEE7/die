@@ -50,6 +50,12 @@
 //! - `a_highlighted_newline_shows_only_its_own_cell`
 //! - `a_block_selection_skips_a_short_lines_newline`: and the buffer's end, as
 //!   Evil's overlays do.
+//! - `a_block_selection_takes_a_replacement_whole`: by its position's column,
+//!   so a block's edge can't cut it.
+//! - `a_provider_isnt_asked_for_a_wide_character_on_the_row_below`: the filler
+//!   it leaves isn't its text.
+//! - `a_folds_later_line_takes_the_current_number_face`: the current number
+//!   goes by display line.
 //! - `cells_past_the_end_of_a_line_map_to_its_newline`,
 //!   `cells_past_a_wrapped_row_map_to_its_last_position`: where a click lands.
 //! - `cells_are_built_with_new_and_field_writes`: from outside die-core. The
@@ -65,6 +71,8 @@
 //! - `an_80_column_window_with_4000_faces_and_a_one_letter_search_composes_within_1ms`
 //!   and `faces_and_search_cost_at_most_twice_a_plain_frame`: K15's speed.
 //! - `rgb_hex_and_display`
+
+use die_test_cap as _;
 
 use die_core::*;
 use proptest::prelude::*;
@@ -267,7 +275,7 @@ text
 |  1 fn f() {    |
 |  2     x       |
 |  3 }           |
-|  4             |
+|                |
 | t              |
 |                |
 style
@@ -575,7 +583,7 @@ fn nothing_a_window_draws_spills_into_its_neighbour() {
         ctx.open_window(b, 10, 1).unwrap(),
     );
     ctx.focus(wa);
-    ctx.text_mut(a).unwrap().settings_mut().wrap = false;
+    ctx.text_mut(a).unwrap().settings_mut().wrap = Wrap::Off;
     for pos in [10, 15] {
         ctx.text_mut(a).unwrap().set_cursor(wa, pos);
         let s = ctx.compose(21, 3, &[at(wb, 11), at(wa, 0)]);
@@ -701,7 +709,7 @@ fn providers_are_asked_for_the_drawn_text_only() {
     let mut ctx = Ctx::new(vec![Box::new(PaintExt)]).unwrap();
     let b = ctx.create_text("t", &format!("{}\n", "x".repeat(1000)));
     let w = ctx.open_window(b, 10, 1).unwrap();
-    ctx.text_mut(b).unwrap().settings_mut().wrap = false;
+    ctx.text_mut(b).unwrap().settings_mut().wrap = Wrap::Off;
     ctx.enable_mode::<Paint>(b).unwrap();
     let asked = |ctx: &mut Ctx| {
         compose_one(ctx, w);
@@ -725,6 +733,38 @@ fn providers_are_asked_for_the_drawn_text_only() {
     ctx.resize(w, 3, 1).unwrap();
     ctx.text_mut(b).unwrap().settings_mut().line_numbers = LineNumbers::Absolute;
     assert_eq!(asked(&mut ctx), 0..0, "no text fits beside the gutter");
+}
+
+#[test]
+fn a_provider_isnt_asked_for_a_wide_character_on_the_row_below() {
+    let mut ctx = Ctx::new(vec![Box::new(PaintExt)]).unwrap();
+    let b = ctx.create_text("t", "aaaaaaaaa中b");
+    let w = ctx.open_window(b, 10, 1).unwrap();
+    ctx.enable_mode::<Paint>(b).unwrap();
+    compose_one(&mut ctx, w);
+    let asked = ctx.with_mode(b, |p: &mut Paint, _| p.asked.pop());
+    assert_eq!(
+        asked.unwrap().unwrap(),
+        0..9,
+        "the filler at column 9 stands for 中, which shows only on the row below the window"
+    );
+}
+
+#[test]
+fn a_folds_later_line_takes_the_current_number_face() {
+    let (mut ctx, b, w) = one("a\nb\nc\nd\n", 10, 2);
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().line_numbers = LineNumbers::Absolute;
+    let deco = Deco::Hide {
+        replacement: None,
+        reveal: Reveal::Never,
+    };
+    t.decorate(1..4, deco).unwrap();
+    t.set_cursor(w, 4); // On c, which the fold joins to a.
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(s.row_text(0), "  1 ac");
+    assert_eq!(s.row(0)[2].fg, h("#999999"), "the cursor's display line");
+    assert_eq!(s.row(1)[2].fg, h("#555555"));
 }
 
 #[test]
@@ -874,6 +914,40 @@ fn a_block_selection_skips_a_short_lines_newline() {
         blocks("abc\nab", 2, 6),
         ["..#...", "......", "......"],
         "nor at the end of the buffer"
+    );
+}
+
+/// scene-4: a replacement shows one position, so it's selected whole or not at all, as a tab is.
+#[test]
+fn a_block_selection_takes_a_replacement_whole() {
+    let blocks = |anchor, head| {
+        let (mut ctx, b, w) = one("abcdefgh\nabcdefgh\n", 10, 2);
+        ctx.set_state(State::Visual);
+        let t = ctx.text_mut(b).unwrap();
+        let deco = Deco::Hide {
+            replacement: Some("XYZ".into()),
+            reveal: Reveal::Never,
+        };
+        t.decorate(1..3, deco).unwrap();
+        let shape = Shape::Block;
+        let sel = Selection {
+            anchor,
+            head,
+            shape,
+            goal: None,
+        };
+        t.set_selection(w, sel);
+        selected_cells(&compose_one(&mut ctx, w), 2, 8)
+    };
+    assert_eq!(
+        blocks(0, 10),
+        ["####....", "##......"],
+        "the block's edge at the replacement's column takes all of it"
+    );
+    assert_eq!(
+        blocks(3, 11),
+        ["....#...", "..###..."],
+        "a block starting past its first cell doesn't take its later ones"
     );
 }
 
@@ -1029,7 +1103,7 @@ fn status_line_prompt_and_surface_text_are_laid_out_like_buffer_text() {
     );
     let s = ctx.compose(12, 4, &[at(wc, 0)]);
     assert_eq!(s.row_text(0), "abcdefghi │");
-    assert_eq!(s.row_text(1), "a?b       │", "a tab is a control character");
+    assert_eq!(s.row_text(1), "a^Ib      │", "a tab is a control character");
     // A prompt too long for the row shows its end, where the cursor is.
     ctx.prompt(":", |_, _| Ok(()));
     ctx.type_keys("ab");
@@ -1303,7 +1377,7 @@ fn check_sweep(case: SweepCase) -> std::result::Result<(), TestCaseError> {
     ctx.focus(w);
     let len = case.text.len();
     let t = ctx.text_mut(b).unwrap();
-    t.settings_mut().wrap = case.wrap;
+    t.settings_mut().wrap = if case.wrap { Wrap::Char } else { Wrap::Off };
     if case.gutter {
         t.settings_mut().line_numbers = LineNumbers::Absolute;
     }
@@ -1431,6 +1505,335 @@ proptest! {
     }
 }
 
+// ---------------------------------------------------------------- K4: what layout's rows draw
+
+fn with_kw_face() -> Ctx {
+    ctx_with(vec![
+        ("p.kw", None, Style::new().fg(h("#ff0000"))),
+        ("p.other", None, Style::new().bg(h("#00ff00"))),
+    ])
+}
+
+fn kw_mask(s: &Scene, row: usize, cols: usize) -> String {
+    (0..cols)
+        .map(|x| {
+            if s.row(row)[x].fg == h("#ff0000") {
+                '#'
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
+
+fn in_window(ctx: &mut Ctx, text: &str, cols: usize, rows: usize) -> (BufferId, WindowId) {
+    let b = ctx.create_text("t", text);
+    let w = ctx.open_window(b, cols, rows).unwrap();
+    ctx.focus(w);
+    (b, w)
+}
+
+/// scene-4: every cell of a replacement is its hidden range's start, in that position's faces.
+#[test]
+fn a_hide_replacement_is_drawn_in_one_style() {
+    let mut ctx = with_kw_face();
+    let (b, w) = in_window(&mut ctx, "fn x() { body }", 16, 1);
+    let t = ctx.text_mut(b).unwrap();
+    let hide = Deco::Hide {
+        replacement: Some("...".into()),
+        reveal: Reveal::Never,
+    };
+    t.decorate(8..14, hide).unwrap();
+    t.decorate(0..15, Deco::Face("p.kw")).unwrap();
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(s.row_text(0), "fn x() {...}");
+    assert_eq!(kw_mask(&s, 0, 12), "############");
+    let at: Vec<_> = (8..11).map(|x| s.position(0, x).unwrap().1).collect();
+    assert_eq!(at, [8, 8, 8]);
+}
+
+#[test]
+fn a_replacement_split_by_the_wrap_keeps_its_style_and_position() {
+    let mut ctx = with_kw_face();
+    let (b, w) = in_window(&mut ctx, "x body y", 6, 3);
+    let t = ctx.text_mut(b).unwrap();
+    let hide = Deco::Hide {
+        replacement: Some("[folded]".into()),
+        reveal: Reveal::Never,
+    };
+    t.decorate(2..6, hide).unwrap();
+    t.decorate(0..8, Deco::Face("p.kw")).unwrap();
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(s.row_text(0), "x");
+    assert_eq!(s.row_text(1), "[folde");
+    assert_eq!(s.row_text(2), "d] y");
+    assert_eq!(kw_mask(&s, 1, 6), "######");
+    assert_eq!(s.position(1, 5).unwrap().1, 2);
+    assert_eq!(
+        s.position(2, 0).unwrap().1,
+        2,
+        "the replacement's rest, on the next row"
+    );
+}
+
+#[test]
+fn a_tab_split_by_the_wrap_keeps_its_style_and_position() {
+    let mut ctx = with_kw_face();
+    let (b, w) = in_window(&mut ctx, "abcd\tx", 6, 2);
+    let t = ctx.text_mut(b).unwrap();
+    t.decorate(4..5, Deco::Face("p.other")).unwrap();
+    let s = compose_one(&mut ctx, w);
+    for (row, col) in [(0, 4), (0, 5), (1, 0), (1, 1)] {
+        assert_eq!(s.position(row, col).unwrap().1, 4, "{row}, {col}");
+        assert_eq!(s.row(row)[col].bg, h("#00ff00"), "{row}, {col}");
+    }
+    assert_eq!(s.position(1, 2).unwrap().1, 5, "x");
+}
+
+/// scene-5, call 6: runs of faces, over the text the string stands in for or before.
+#[test]
+fn virtual_and_replacement_text_take_their_faces() {
+    let mut ctx = with_kw_face();
+    let (b, w) = in_window(&mut ctx, "abcd", 20, 1);
+    let t = ctx.text_mut(b).unwrap();
+    let styled = |text: &str| Styled {
+        text: text.into(),
+        faces: vec![(0..text.len(), "p.kw")],
+    };
+    t.decorate(1..1, Deco::Virtual(styled("VT"))).unwrap();
+    let hide = Deco::Hide {
+        replacement: Some(styled("R")),
+        reveal: Reveal::Never,
+    };
+    t.decorate(2..3, hide).unwrap();
+    t.decorate(1..2, Deco::Face("p.other")).unwrap();
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(s.row_text(0), "aVTbRd");
+    assert_eq!(kw_mask(&s, 0, 6), ".##.#.");
+    assert_eq!(s.position(0, 1), None, "virtual text has no position");
+    assert_eq!(s.position(0, 4).unwrap().1, 2);
+    assert_eq!(
+        s.row(0)[1].bg,
+        h("#00ff00"),
+        "over the faces at its position"
+    );
+}
+
+/// The faces at its position reach it, even when that position's own cell isn't drawn.
+#[test]
+fn virtual_text_takes_the_faces_of_a_position_off_screen() {
+    let mut ctx = with_kw_face();
+    let (b, w) = in_window(&mut ctx, "ab", 4, 1);
+    let t = ctx.text_mut(b).unwrap();
+    t.decorate(1..1, Deco::Virtual("xxxx".into())).unwrap();
+    t.decorate(1..2, Deco::Face("p.kw")).unwrap();
+    t.set_cursor(w, 0);
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(
+        s.row_text(0),
+        "axxx",
+        "x and b go on the next row, out of view"
+    );
+    assert_eq!(kw_mask(&s, 0, 4), ".###");
+}
+
+#[test]
+fn a_replacement_with_two_runs_draws_both() {
+    let mut ctx = with_kw_face();
+    let (b, w) = in_window(&mut ctx, "abcd", 20, 1);
+    let t = ctx.text_mut(b).unwrap();
+    let replacement = Styled {
+        text: "xyz".into(),
+        faces: vec![(0..1, "p.kw"), (2..3, "p.other"), (0..1, "p.other")],
+    };
+    let hide = Deco::Hide {
+        replacement: Some(replacement),
+        reveal: Reveal::Never,
+    };
+    t.decorate(1..3, hide).unwrap();
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(s.row_text(0), "axyzd");
+    assert_eq!(s.row(0)[1].bg, h("#00ff00"), "the last run holding it wins");
+    assert_ne!(s.row(0)[1].fg, h("#ff0000"));
+    assert_eq!(s.row(0)[2].bg, h("#000000"), "no run: the text's own");
+    assert_eq!(s.row(0)[3].bg, h("#00ff00"));
+}
+
+#[test]
+fn an_undeclared_face_on_styled_text_is_reported_and_filler_takes_none() {
+    let mut ctx = with_kw_face();
+    let (b, w) = in_window(&mut ctx, "aa", 4, 2);
+    let t = ctx.text_mut(b).unwrap();
+    let styled = Styled {
+        text: "中".into(),
+        faces: vec![(0..3, "p.kw")],
+    };
+    t.decorate(2..2, Deco::Virtual(styled)).unwrap();
+    t.decorate(
+        1..1,
+        Deco::Virtual(Styled {
+            text: "x".into(),
+            faces: vec![(0..1, "nope")],
+        }),
+    )
+    .unwrap();
+    let s = compose_one(&mut ctx, w);
+    assert!(
+        ctx.messages.iter().any(|m| m.contains("nope")),
+        "{:?}",
+        ctx.messages
+    );
+    assert_eq!(s.row_text(1), "中");
+    assert_eq!(
+        s.row(0)[3].fg,
+        h("#aaaaaa"),
+        "the filler a wide item leaves isn't in its face"
+    );
+}
+
+/// WRAP-2's cost. A cursor past a full row goes in the right padding, or else on the row's last cell.
+#[test]
+fn a_cursor_past_a_full_row_goes_in_the_padding_or_on_the_last_cell() {
+    let cursor = |s: &Scene| {
+        let c = s.cursors[0];
+        (c.row, c.col, c.past_end)
+    };
+    let mut ctx = ctx_with(vec![]);
+    let (b, w) = in_window(&mut ctx, "aaaaaaaaaa\nb", 10, 3);
+    ctx.text_mut(b).unwrap().set_cursor(w, 10);
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(
+        cursor(&s),
+        (0, 9, true),
+        "no padding: the last cell's right edge"
+    );
+    assert!(
+        s.snapshot().contains("0,9 Block past-end "),
+        "{}",
+        s.snapshot()
+    );
+
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().max_width = Some(10);
+    ctx.resize(w, 14, 3).unwrap();
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(cursor(&s), (0, 10, false), "the right padding");
+
+    // Centered, the same: the padding's after the text.
+    ctx.text_mut(b).unwrap().settings_mut().center = true;
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(cursor(&s), (0, 12, false));
+
+    // At the end of the text too, and past an unwrapped row it's not drawn at all.
+    let (b2, w2) = in_window(&mut ctx, "aaaaaaaaaa", 10, 1);
+    let t = ctx.text_mut(b2).unwrap();
+    t.set_cursor(w2, 10);
+    let s = compose_one(&mut ctx, w2);
+    assert_eq!(cursor(&s), (0, 9, true));
+    ctx.text_mut(b2).unwrap().settings_mut().wrap = Wrap::Off;
+    assert!(compose_one(&mut ctx, w2).cursors.is_empty());
+
+    // A cursor on the last cell itself isn't past anything.
+    ctx.text_mut(b2).unwrap().settings_mut().wrap = Wrap::Word;
+    ctx.text_mut(b2).unwrap().set_cursor(w2, 9);
+    assert_eq!(cursor(&compose_one(&mut ctx, w2)), (0, 9, false));
+}
+
+/// K4's call: a full row's newline takes no cell, even with padding there to draw one in.
+#[test]
+fn a_full_rows_newline_has_no_cell_in_a_centered_window() {
+    let (mut ctx, b, w) = one("abcd\nef\n", 8, 3);
+    let t = ctx.text_mut(b).unwrap();
+    let s = t.settings_mut();
+    s.max_width = Some(4);
+    s.center = true;
+    t.set_selection(
+        w,
+        Selection {
+            anchor: 0,
+            head: 5,
+            shape: Shape::Line,
+            goal: None,
+        },
+    );
+    ctx.set_state(State::Visual);
+    let s = compose_one(&mut ctx, w);
+    let sel = h("#aa0000");
+    let bgs = |r: usize| (0..8).map(|x| bg(&s, r, x) == sel).collect::<Vec<_>>();
+    let (t, f) = (true, false);
+    assert_eq!(
+        bgs(0),
+        [f, f, t, t, t, t, f, f],
+        "abcd, and nothing past it"
+    );
+    assert_eq!(
+        bgs(1),
+        [f, f, t, t, t, f, f, f],
+        "ef, and its newline's cell"
+    );
+    assert_eq!(
+        s.position(0, 6),
+        Some((w, 4)),
+        "a click in the padding lands on the newline"
+    );
+    assert_eq!(s.position(0, 7), Some((w, 4)));
+}
+
+/// DR-12: as Emacs draws them, a cell per character, and each cell is the character's.
+#[test]
+fn control_characters_draw_as_emacs_draws_them() {
+    let (mut ctx, _, w) = one("a\u{1}\r\u{7f}\u{85}b\n", 20, 1);
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(s.row_text(0), "a^A^M^?\\205b");
+    let at: Vec<usize> = (0..13).map(|x| s.position(0, x).unwrap().1).collect();
+    assert_eq!(at, [0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 6, 7]);
+}
+
+/// A gutter sized by lines can be narrower than a Visual distance in rows.
+#[test]
+fn a_visual_number_wider_than_its_gutter_shows_its_last_digits() {
+    let (mut ctx, b, w) = one(&"a".repeat(2004), 6, 1001);
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().line_numbers = LineNumbers::Visual;
+    let s = compose_one(&mut ctx, w);
+    let vp = ctx.text(b).unwrap().viewport(w).unwrap();
+    assert_eq!(vp.geometry.gutter, 4);
+    assert_eq!(vp.rows[1000].number, Some(1000), "the whole number");
+    assert_eq!(
+        s.row_text(1000),
+        "000 aa",
+        "its last digits, and the text doesn't move"
+    );
+    assert_eq!(s.row_text(0), "  1 aa");
+    assert_eq!(s.row_text(5), "  5 aa");
+}
+
+/// Rows above and below a window's edge: only its own rows are numbered, from its cursor.
+#[test]
+fn only_the_cursors_row_takes_the_current_lines_face() {
+    let (mut ctx, b, w) = one("aaaa bbbb cccc\nd\n", 9, 5);
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().line_numbers = LineNumbers::Visual;
+    let current = h("#999999");
+    let face = |s: &Scene, r: usize| s.row(r)[2].fg == current;
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(s.row_text(0), "  1 aaaa");
+    assert_eq!(s.row_text(1), "  1 bbbb");
+    assert_eq!(s.row_text(2), "  2 cccc");
+    assert!(face(&s, 0), "the cursor's row");
+    assert!(!face(&s, 1), "the next row of its display line");
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().line_numbers = LineNumbers::Absolute;
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(
+        s.row_text(1),
+        "    bbbb",
+        "Absolute: a display line's first row only"
+    );
+    assert!(face(&s, 0));
+    assert!(!face(&s, 3), "line 2");
+}
+
 // ---------------------------------------------------------------- speed (K15)
 
 /// Dense prose: `lines` lines of about `width` columns, with plenty of e's.
@@ -1493,7 +1896,7 @@ fn p50_ms(ctx: &mut Ctx, w: WindowId, cols: usize) -> f64 {
     ms[10]
 }
 
-/// Three tries at a speed limit, so a busy machine doesn't fail it: the per-cell
+/// Three tries at a limit on a ratio, so a busy machine doesn't fail it: the per-cell
 /// scan this guards against misses them by far more than a machine's load.
 fn within_three_tries(limit: f64, mut measure: impl FnMut() -> f64) {
     let tries: Vec<f64> = (0..3).map(|_| measure()).collect();
@@ -1508,7 +1911,16 @@ fn an_80_column_window_with_4000_faces_and_a_one_letter_search_composes_within_1
     let mut ctx = speed_ctx();
     let w = dense(&mut ctx, 84, true);
     ctx.set_search_highlight(search("e"));
-    within_three_tries(1.0, || p50_ms(&mut ctx, w, 84));
+    support::within_three_tries_ms(1.0, || p50_ms(&mut ctx, w, 84));
+}
+
+#[test]
+fn a_limit_in_ms_stretches_only_at_background_priority() {
+    assert_eq!(support::stretch_at(Some(4)), 4.0);
+    assert_eq!(support::stretch_at(Some(9)), 4.0);
+    assert_eq!(support::stretch_at(Some(10)), 1.0);
+    assert_eq!(support::stretch_at(Some(31)), 1.0);
+    assert_eq!(support::stretch_at(None), 1.0);
 }
 
 #[test]

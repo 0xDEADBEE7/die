@@ -9,11 +9,11 @@ use crate::text::{
 };
 use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, WindowId};
 
-/// The most typed text a count may replay at once, K4's budget for one line. Until
-/// K4's compact cells, a longer line costs about 160 bytes of layout per character.
+/// The most typed text a count may replay at once, K4's budget for one line. K4 took
+/// away the layout memory this guarded, so it can rise, and it stands until it does.
 pub const MAX_REPEAT: usize = 1 << 20;
-/// The most edits a count may replay one by one. Until K4, each lays the whole line
-/// out again, so a mistyped count would freeze the editor.
+/// The most edits a count may replay one by one, so a mistyped count can't freeze the
+/// editor. K4 made an edit cost the same on any line, so this can rise too.
 const MAX_REPLAY: usize = 10_000;
 
 /// How a session started. A count repeats the session, opening a line first
@@ -318,7 +318,7 @@ pub fn indent_from_above(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
         let s = t.line_start(line);
         let keep = t
             .display_line(s)
-            .stops
+            .stops()
             .iter()
             .filter(|st| st.pos >= s && st.pos <= end)
             .rfind(|st| st.vcol <= col)
@@ -365,7 +365,7 @@ fn indent_point(t: &TextBuf, line: usize, col: usize) -> Option<usize> {
     let (s, e) = (t.line_start(line), line_end(t, line));
     let p = t
         .display_line(s)
-        .stops
+        .stops()
         .iter()
         .rfind(|st| st.pos >= s && st.pos <= e && st.vcol <= col)
         .map_or(s, |st| st.pos);

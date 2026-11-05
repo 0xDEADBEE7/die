@@ -7,6 +7,9 @@
 //! operators, registers and text objects. `registers.rs` is the one place that touches
 //! registers, for K6.
 
+#[cfg(test)]
+use die_test_cap as _;
+
 mod grammar;
 mod insert;
 mod motions;

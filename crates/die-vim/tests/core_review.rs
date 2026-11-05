@@ -2,6 +2,8 @@
 //! what an undefined key does to a count (DR-03), and insert state for a window that
 //! isn't focused (DR-04). The oracle checks the cursor cases too, in `undo-cursor.json`.
 
+use die_test_cap as _;
+
 use die_core::{Args, Ctx, Deco, Key, KeyEvent, Mods, Origin, State};
 use die_vim::Vim;
 
@@ -240,4 +242,11 @@ fn a_count_past_the_end_of_history_is_quiet() {
         ["NothingToUndo"],
         "with nothing at all to do, it says so"
     );
+}
+
+/// DR-12: a control character is two columns wide, as Emacs draws it, so `j` keeps Evil's column.
+#[test]
+fn a_control_character_is_two_columns_wide() {
+    assert_eq!(cursor_after("a\rbc\nxyzwv\n", 3, "j"), 9, "after \\r");
+    assert_eq!(cursor_after("a\x01bc\nxyzwv\n", 3, "j"), 9, "after \\x01");
 }

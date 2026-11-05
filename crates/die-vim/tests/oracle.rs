@@ -27,6 +27,8 @@
 //! That checks what would be sent, and not that it arrives. A case about the clipboard
 //! itself, one that names it or `"+`, or starts with text on it, stays pending for K6.
 
+use die_test_cap as _;
+
 use die_core::{Ctx, RegKind, Register, State, parse_keys};
 use die_vim::Vim;
 use evil_oracle::{

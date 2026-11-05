@@ -16,6 +16,7 @@ regex-automata.workspace = true
 regex-syntax.workspace = true
 
 [dev-dependencies]
+die-test-cap.workspace = true
 proptest.workspace = true
 
 [lints]

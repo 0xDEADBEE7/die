@@ -10,13 +10,12 @@
 //! Settings by path are a stopgap until file-type modes (M1), which extensions
 //! will declare at Register.
 
-use crate::ctx::panic_msg;
+use crate::ext::catch;
 use crate::{BufferId, Ctx, Error, Result, Settings};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::MetadataExt;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
@@ -77,13 +76,14 @@ pub struct FileInfo {
     pub read_only: Option<Uneditable>,
 }
 
-type SettingsFn = Box<dyn Fn(&Path, &mut Settings)>;
+/// Settings by path, as [`crate::Config`] and [`Ctx::set_file_settings`] take them.
+pub(crate) type SettingsFn = Box<dyn Fn(&Path, &mut Settings)>;
 
 /// Which buffers visit files, and the config's settings by path.
 #[derive(Default)]
 pub(crate) struct Files {
     by_buffer: HashMap<BufferId, FileInfo>,
-    settings: Option<SettingsFn>,
+    pub(crate) settings: Option<SettingsFn>,
 }
 
 impl Files {
@@ -123,14 +123,14 @@ impl Ctx {
             || path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
-        let mut settings = Settings::default();
+        let mut settings = self.text_defaults.clone();
         if let Some(f) = &self.files.settings
-            && let Err(p) = catch_unwind(AssertUnwindSafe(|| f(&path, &mut settings)))
+            && let Err(c) = catch(|| f(&path, &mut settings))
         {
-            settings = Settings::default();
+            settings = self.text_defaults.clone();
             self.messages.push(format!(
                 "{name}: file settings panicked ({}); opened with the defaults",
-                panic_msg(&*p)
+                c.msg
             ));
         }
         if let Some(why) = read_only {
@@ -177,7 +177,7 @@ impl Ctx {
     /// buffer's settings when the file opens. Until file-type modes (M1), this is
     /// where wrap, width and line numbers are set per kind of file. Set it once,
     /// before any file opens, the session's included: a second call replaces the
-    /// first. If `f` panics, the file opens with the default settings and a message.
+    /// first. If `f` panics, the file opens with `Config::text_defaults` and a message.
     pub fn set_file_settings(&mut self, f: impl Fn(&Path, &mut Settings) + 'static) {
         self.files.settings = Some(Box::new(f));
     }

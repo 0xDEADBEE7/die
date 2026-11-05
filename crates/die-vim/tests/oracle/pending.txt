@@ -29,7 +29,7 @@ V3 search/d-slash
 V3 search/not-found
 V3 undo/gU-after-an-undone-edit-then-u
 
-# V4 (65)
+# V4 (67)
 V4 hand-written/macros/dot-after-macro
 V4 hand-written/macros/error-stops-macro
 V4 hand-written/macros/macro-records-count
@@ -49,7 +49,9 @@ V4 macros/count-play
 V4 macros/dot-after-motion-macro
 V4 macros/dot-in-macro-repeats-earlier-change
 V4 macros/dot-replays-macro
+V4 macros/error-in-nested-macro-ends-both
 V4 macros/macro-with-search
+V4 macros/nested-macro-runs-first
 V4 macros/paste-macro-register
 V4 macros/preset-macro
 V4 macros/record-and-play

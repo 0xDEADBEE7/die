@@ -1,5 +1,8 @@
 //! Criterion 2 (C2): checkout returns Busy, Gone and Missing; panics put the object back and are
 //! attributed; killing a buffer during checkout drops the object at check-in.
+
+use die_test_cap as _;
+
 mod support;
 use die_core::*;
 use std::cell::Cell;
