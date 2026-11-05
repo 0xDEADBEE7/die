@@ -196,5 +196,6 @@
   {"id": "script-b-devanagari-anusvara", "keys": "b", "text": ["हिंदी |x"]},
   {"id": "script-w-devanagari-word-end", "keys": "w", "text": ["|मैं x"]},
   {"id": "script-w-devanagari-candrabindu", "keys": "w", "text": ["|हँसी x"]},
-  {"id": "script-w-malayalam-candrabindu", "keys": "w", "text": ["|ക\u0d01ക x"]}
+  {"id": "script-w-malayalam-candrabindu", "keys": "w", "text": ["|ക\u0d01ക x"]},
+  {"id": "failed-f-is-still-the-last-find", "keys": "fafz;", "text": ["|xaxzxa"]}
  ]}

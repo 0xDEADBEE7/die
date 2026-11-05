@@ -298,7 +298,8 @@ fn apply(
     how: How,
 ) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
-    match op {
+    let head = cursor(ctx.text(b)?, w)?;
+    let done = match op {
         Operator::Delete => delete(ctx, b, w, register, span, how),
         Operator::Change => change(ctx, a, b, w, register, span),
         Operator::Yank => yank(ctx, b, w, register, span),
@@ -307,7 +308,16 @@ fn apply(
         Operator::InvertCase | Operator::Upcase | Operator::Downcase => {
             recase(ctx.text_mut(b)?, w, op, span, how.past_end)
         }
+    };
+    // Evil's operators go to the range's start before they act, except `y` and `>`, so that's
+    // where one that fails leaves the cursor. Only one that fails: otherwise the edit comes
+    // first (call 7).
+    if done.is_err() {
+        let stays = matches!(op, Operator::Yank | Operator::ShiftRight);
+        let t = ctx.text_mut(b)?;
+        t.set_cursor(w, rest_pos(t, if stays { head } else { span.beg }));
     }
+    done
 }
 
 /// The text of a span, as a register holds it: whole lines end in a newline.
@@ -632,7 +642,11 @@ pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
         for (range, space) in edits {
             tx = tx.replace(range, space);
         }
-        tx.commit()?;
+        if let Err(e) = tx.commit() {
+            // Evil's `J` goes to the next line to join it, and stays there if it can't.
+            t.set_cursor(w, t.line_start(here + 1));
+            return Err(e);
+        }
         if was_blank {
             insert::indent_from_above(t, w, here)?;
             cursor(t, w)?
