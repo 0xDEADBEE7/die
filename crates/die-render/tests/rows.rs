@@ -3,7 +3,9 @@
 
 use die_test_cap as _;
 
-use die_core::{Cell, Cursor, CursorShape, Glyph, Rgb, Scene, Underline};
+use die_core::{
+    Cell, Ctx, Cursor, CursorShape, Glyph, Rgb, Scene, State, Underline, WindowPlacement,
+};
 use die_render::atlas::GlyphKey;
 use die_render::font::{CellMetrics, FaceMetrics};
 use die_render::frame::{GlyphBitmap, Plane, Quad, kind, rgba};
@@ -458,6 +460,59 @@ fn past_end_quads(text: &str, col: usize, shape: CursorShape, past_end: bool) ->
         ..cursor(0, col, shape)
     }];
     frame(&mut f, &s).0[without..].to_vec()
+}
+
+/// Where `compose` puts a bar at `pos`, in a `cols`-wide window with another window beside
+/// it, and the bar's rectangle from `Frames`.
+fn composed_bar(text: &str, cols: usize, pos: usize) -> (Cursor, [f32; 4]) {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", text);
+    let w = ctx.open_window(b, cols, 4).unwrap();
+    let other = ctx.create_text("o", "right");
+    let right = ctx.open_window(other, 5, 4).unwrap();
+    ctx.focus(w);
+    ctx.set_state_of(b, State::Insert);
+    ctx.text_mut(b).unwrap().set_cursor(w, pos);
+    let at = |window, col| WindowPlacement {
+        window,
+        col,
+        row: 0,
+    };
+    let mut scene = ctx.compose(cols + 6, 6, &[at(w, 0), at(right, cols + 1)]);
+    let bar = *scene
+        .cursors
+        .iter()
+        .find(|c| c.shape == CursorShape::Bar)
+        .unwrap();
+    scene.cursors.clear();
+    let mut f = frames();
+    let without = frame(&mut f, &scene).0.len();
+    scene.cursors = vec![bar];
+    let quads = frame(&mut f, &scene).0;
+    assert_eq!(quads.len(), without + 1);
+    (bar, quads[without].rect)
+}
+
+/// K4's flag as `compose` really sets it. Each package has its side of this tested alone, and
+/// here they must agree: a flagged cursor is on its row's last cell, and the bar stays inside
+/// its window, off the divider.
+#[test]
+fn a_bar_compose_puts_past_a_full_row_draws_at_its_windows_right_edge() {
+    const CELL: f32 = 19.0;
+    for (text, pos) in [("abcd\nef\n", 4), ("ab中\nef\n", 5), ("中中\nef\n", 6)] {
+        let (bar, [x, _, w, _]) = composed_bar(text, 4, pos);
+        assert!(bar.past_end, "{text:?}");
+        assert_eq!(bar.col, 3, "{text:?}");
+        assert_eq!(x + w, 4.0 * CELL, "{text:?}");
+    }
+    // With room on the row there's nothing past its end, and the bar is at its cell's left edge.
+    let (bar, [x, ..]) = composed_bar("abc\nef\n", 4, 3);
+    assert!(!bar.past_end);
+    assert_eq!((bar.col, x), (3, 3.0 * CELL));
+    // A bar inside a full row is at its cell's left edge too.
+    let (bar, [x, ..]) = composed_bar("abcd\nef\n", 4, 2);
+    assert!(!bar.past_end);
+    assert_eq!((bar.col, x), (2, 2.0 * CELL));
 }
 
 #[test]
