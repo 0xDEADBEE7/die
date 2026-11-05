@@ -1188,7 +1188,7 @@ fn the_gutter_agrees_with_the_naive_layout_where_it_grows() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: naive_layout_cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
     /// K4's second check: rows, positions, numbers and queries match the naive layout, across edits
     /// and decoration changes, so a stale cache shows too.
     #[test]
@@ -1296,10 +1296,18 @@ fn run(init: String, ops: Vec<Op>) {
 }
 
 fn cases() -> u32 {
-    std::env::var("DIE_PROP_CASES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10_000)
+    prop_cases().unwrap_or(10_000)
+}
+
+/// The naive layout's cases cost 20 to 40 times the others. At 10,000 they took about 8 minutes
+/// of each `cargo xtask ci` at background priority, against about 2 at this count. K4 passed
+/// 40,000: run `DIE_PROP_CASES=40000` after changing the layout.
+fn naive_layout_cases() -> u32 {
+    prop_cases().unwrap_or(2_000)
+}
+
+fn prop_cases() -> Option<u32> {
+    std::env::var("DIE_PROP_CASES").ok()?.parse().ok()
 }
 
 proptest! {
