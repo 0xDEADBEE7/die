@@ -186,5 +186,8 @@
   {"id": "2di-paren-string-next-to-more-in-the-pair", "vim": "Vim leaves \"f(\\\"ab\\\", c)\\n\", Evil \"f()\\n\"; Vim's cursor is at line 0 col 4, Evil's at line 0 col 2; Vim's registers differ", "keys": "2di(", "text": ["f(\"a|b\", c)"]},
   {"id": "2di-paren-string-in-two-pairs", "keys": "2di(", "text": ["f(g(\"a|b\"))"]},
   {"id": "3di-paren-string-in-two-pairs", "vim": "Vim leaves \"f(g(\\\"ab\\\"))\\n\", Evil \"f()\\n\"; Vim's cursor is at line 0 col 6, Evil's at line 0 col 2; Vim's registers differ", "keys": "3di(", "text": ["f(g(\"a|b\"))"]},
-  {"id": "2di-paren-string-then-goes-to-the-next-pairs", "vim": "Vim leaves \"f(\\\"ab\\\") (c) (d)\\n\", Evil \"f(\\\"ab\\\") (c) ()\\n\"; Vim's cursor is at line 0 col 4, Evil's at line 0 col 13; Vim's registers differ", "keys": "2di(", "text": ["f(\"a|b\") (c) (d)"]}
+  {"id": "2di-paren-string-then-goes-to-the-next-pairs", "vim": "Vim leaves \"f(\\\"ab\\\") (c) (d)\\n\", Evil \"f(\\\"ab\\\") (c) ()\\n\"; Vim's cursor is at line 0 col 4, Evil's at line 0 col 13; Vim's registers differ", "keys": "2di(", "text": ["f(\"a|b\") (c) (d)"]},
+  {"id": "di-squote-before-a-pair-under-a-pair-on-the-first-line", "vim": "Vim leaves \"\\\"'a'\\nb '' d\\ne\\\"\\n\", Evil \"\\\"\\\"\\n\"; Vim's cursor is at line 1 col 3, Evil's at line 0 col 1; Vim's registers differ", "keys": "di'", "text": ["\"'a'", "b| 'c' d", "e\""]},
+  {"id": "di-squote-on-a-dquote-with-nothing-after", "keys": "di'", "text": ["|\"ab\""]},
+  {"id": "di-paren-string-directly-in-the-pair", "keys": "di(", "text": ["f(\"a|b\")"]}
  ]}

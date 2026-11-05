@@ -462,6 +462,7 @@ fn a_count_on_j_that_would_make_too_long_a_line_fails() {
     assert_eq!(ctx.text(b).unwrap().cursor(w), Some(0));
 
     let big = "x".repeat(2 << 20);
-    let (t, ..) = run(&format!("{big}\n{big}\n"), 0, "J");
-    assert_eq!(t.len(), 2 * big.len() + 2, "no count");
+    let (t, _, messages, _) = run(&format!("{big}\n{big}\n"), 0, "J");
+    assert!(t == format!("{big} {big}\n"), "no count: J joins them");
+    assert!(messages.is_empty(), "{messages:?}");
 }

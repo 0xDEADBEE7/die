@@ -197,7 +197,9 @@
   {"id": "script-w-devanagari-word-end", "keys": "w", "text": ["|मैं x"]},
   {"id": "script-w-devanagari-candrabindu", "keys": "w", "text": ["|हँसी x"]},
   {"id": "script-w-malayalam-candrabindu", "keys": "w", "text": ["|ക\u0d01ക x"]},
-  {"id": "failed-f-is-still-the-last-find", "keys": "fafz;", "text": ["|xaxzxa"]},
+  {"id": "second-f-is-the-one-that-repeats", "keys": "fafz;", "text": ["|xaxzxa"]},
   {"id": "l-over-a-combining-mark", "keys": "l", "text": ["|e\u0301x"]},
-  {"id": "h-over-a-combining-mark", "keys": "h", "text": ["e\u0301|x"]}
+  {"id": "h-over-a-combining-mark", "keys": "h", "text": ["e\u0301|x"]},
+  {"id": "failed-f-is-the-one-that-repeats", "keys": "fafq;", "text": ["|xaxzxa"]},
+  {"id": "failed-f-is-the-one-that-repeats-reversed", "keys": "fafq,", "text": ["|xaxzxa"]}
  ]}

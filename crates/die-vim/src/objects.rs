@@ -2,7 +2,8 @@
 //! and `a` forms. Like motions, each is a plain function over the text: it takes where the
 //! cursor is and the count, and gives the [`Span`] an operator acts on. Each follows your
 //! Evil in fundamental-mode. So quotes pair up from the start of the text, not the line,
-//! `"` makes a string whichever object is asked for, and `\` escapes.
+//! `"` makes a string whichever object is asked for, and `\` escapes. Only inside a `"`
+//! string do `'` and `` ` `` pair up along the line.
 
 use crate::grammar::{Fail, Start};
 use crate::operators::Span;
@@ -375,8 +376,7 @@ trait Quotes {
             return Some(pair);
         }
         let (to, found) = self.forward(p);
-        let (beg, end) = self.around(to).filter(|_| found)?;
-        Some((beg, end.max(to)))
+        self.around(to).filter(|_| found)
     }
 }
 
@@ -443,7 +443,7 @@ impl TextQuotes<'_> {
     /// The start of the string `p` is inside, past its opening quote.
     fn inside(&self, p: usize) -> Option<usize> {
         string_after(self.t, p, self.quote)
-            .filter(|s| s.3 && s.1 < p)
+            .filter(|s| s.1 < p)
             .map(|s| s.1)
     }
 }
@@ -459,9 +459,6 @@ impl Quotes for TextQuotes<'_> {
     /// string counts only if the quote asked for is in it. If it finds none, it stops where
     /// it last started to look.
     fn backward(&self, p: usize) -> usize {
-        if let Some(start) = self.inside(p) {
-            return start;
-        }
         let mut c = Chars::at(self.t, p);
         while c.prev_ch().is_some() {
             let from = c.pos();
@@ -512,12 +509,7 @@ fn quoted(s: &Start, quote: char, outer: bool) -> Result<Span, Fail> {
     const NONE: Fail = "No quoted string found";
     let (t, pos) = (s.text, s.pos);
     // Inside a `"` string, any other quote looks along the cursor's line first, closed or not.
-    // Evil skips this if the string ends in that quote, which only an open one can.
-    let inside = string_around(t, pos).filter(|&(_, end)| {
-        let mut last = Chars::at(t, end);
-        last.back();
-        quote != '"' && pos < end && last.ch() != Some(quote)
-    });
+    let inside = string_around(t, pos).filter(|_| quote != '"');
     let on_line = inside.and_then(|(lo, hi)| {
         let (beg, end) = LineQuotes { t, quote, lo, hi }.pick(pos)?;
         Some((lo, hi, beg, end))
