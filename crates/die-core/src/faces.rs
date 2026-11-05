@@ -186,6 +186,8 @@ pub const UI_FACES: &[(&str, Option<&str>)] = &[
     ("search-current", Some("search")),
     ("bracket-match", Some("highlight")),
     ("prompt", Some("bold")),
+    ("prompt-current", Some("highlight")),
+    ("prompt-match", Some("bold")),
 ];
 
 /// A theme: styles for faces by name, and the 16 ANSI colors terminals use.

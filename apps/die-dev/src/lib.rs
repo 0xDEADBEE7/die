@@ -97,6 +97,7 @@ fn bindings(reg: &mut Registry) {
     reg.set_leader("\\");
     let keys = reg.global_keymap();
     keys.bind(State::Normal, "<leader>z", "toggle-max-width");
+    keys.bind(State::Normal, "<leader>x", "command-palette");
 }
 
 /// `global-visual-line-mode` and `visual-fill-column`, centered at 80.

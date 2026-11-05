@@ -59,6 +59,9 @@ pub struct Config {
     /// Runs once every extension has initialized, and the session is restored (K12), with
     /// `Ctx`. An error or a panic is logged, and the editor still starts.
     pub startup: Option<StartupFn>,
+    /// DIE's state directory: restore the session kept there, and keep it there, once
+    /// [`Ctx::resume_session`] says this instance may write. None keeps no session.
+    pub session: Option<std::path::PathBuf>,
 }
 
 // ------------------------------------------------------------------ traits
@@ -316,6 +319,7 @@ pub struct Ctx {
     pub(crate) prompt: Option<Prompt>,
     /// What prompts remember, by history name (K11a).
     pub(crate) histories: HashMap<String, Vec<String>>,
+    pub(crate) session: Option<crate::session::Session>,
     pub(crate) clock: Clock,
     pub(crate) timers: Timers,
     pub(crate) timer_seq: u64,
@@ -412,7 +416,7 @@ impl Ctx {
 
     /// Startup, contract §4's steps 2 to 6: register extensions in order, apply your config,
     /// check every bound name exists (C8) and report every problem at once, then init each
-    /// extension and run the startup hook. K12's restore goes between those last two.
+    /// extension, restore the session and run the startup hook.
     pub fn with_config(
         exts: Vec<Box<dyn Extension>>,
         config: Config,
@@ -424,6 +428,7 @@ impl Ctx {
             ..Default::default()
         };
         crate::layout::register_commands(&mut reg);
+        crate::commands::register_commands(&mut reg);
         let mut errors = vec![];
         let mut slots: Vec<ExtSlot> = vec![];
         for mut e in exts {
@@ -482,6 +487,7 @@ impl Ctx {
             prefix: Prefix::default(),
             prompt: None,
             histories: HashMap::new(),
+            session: None,
             clock: config.clock,
             timers: Timers::new(),
             timer_seq: 0,
@@ -532,6 +538,9 @@ impl Ctx {
         for i in 0..ctx.exts.len() {
             let r = ctx.guarded(i, |ctx| ctx.with_ext_idx(i, |e, ctx| e.init(ctx))?);
             ctx.report(r);
+        }
+        if let Some(dir) = config.session {
+            ctx.attach_session(dir);
         }
         if let Some(f) = config.startup {
             let r = ctx.guarded(CONFIG, f);

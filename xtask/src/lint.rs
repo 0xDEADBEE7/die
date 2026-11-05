@@ -79,6 +79,7 @@ const NEUTRAL: &[(&str, &[&str])] = &[
         &[
             "crates/die-render/src/platform/",
             "crates/die-render/tests/platform.rs",
+            "crates/die-render/tests/keys.rs",
         ],
     ),
 ];

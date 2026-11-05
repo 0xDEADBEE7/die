@@ -104,7 +104,7 @@ impl Cell {
 
     /// A cell drawing `glyph` in `style`, which has `default` under it, so only a
     /// theme that leaves `default`'s colors unset gets the fallbacks.
-    fn styled(glyph: Glyph, s: Style) -> Cell {
+    pub(crate) fn styled(glyph: Glyph, s: Style) -> Cell {
         let fg = s.fg.unwrap_or(FALLBACK_FG);
         let mut c = Cell::new(glyph, fg, s.bg.unwrap_or(FALLBACK_BG));
         c.bold = s.bold.unwrap_or(false);
@@ -229,7 +229,7 @@ impl Scene {
             .flatten()
     }
 
-    fn put(&mut self, row: usize, col: usize, cell: Cell) {
+    pub(crate) fn put(&mut self, row: usize, col: usize, cell: Cell) {
         if row < self.rows && col < self.cols {
             self.cells[row * self.cols + col] = cell;
             self.positions[row * self.cols + col] = None;
@@ -351,7 +351,7 @@ impl Ctx {
             .bg
             .or(base.fg)
             .unwrap_or(FALLBACK_FG);
-        let input_in_prompt = self.prompt_label().is_some();
+        let input_in_prompt = self.prompt.is_some();
         let mut hollow = vec![];
         let mut placed = Vec::with_capacity(placements.len());
         for p in placements {
@@ -410,9 +410,13 @@ impl Ctx {
                 }
             }
         }
-        if let (Some(label), Some(text), Some(last)) =
-            (self.prompt_label(), self.prompt_text(), rows.checked_sub(1))
-        {
+        if let (Some(label), Some(last)) = (self.prompt_lead(), rows.checked_sub(1)) {
+            let room = self.prompt_list_height().min(last);
+            let row = last - room;
+            self.draw_prompt_list(&mut scene, row, room, base);
+            hollow.retain(|c: &Cursor| room == 0 || c.row < row);
+            let label = label.as_str();
+            let text = self.prompt_text().unwrap_or_default();
             let prompt = self.faces.get("prompt").over(base);
             let parts: Vec<_> = glyphs(label, prompt).chain(glyphs(text, base)).collect();
             let typed = self.prompt_before_cursor().unwrap_or_default();
@@ -423,10 +427,10 @@ impl Ctx {
                 col -= parts[skip].1;
                 skip += 1;
             }
-            put_text(&mut scene, last, 0, cols, parts.into_iter().skip(skip));
+            put_text(&mut scene, row, 0, cols, parts.into_iter().skip(skip));
             if col < cols {
                 let bar = Cursor {
-                    row: last,
+                    row,
                     col,
                     shape: if self.app_focused {
                         CursorShape::Bar
@@ -488,7 +492,7 @@ impl Ctx {
 
 /// `text`'s graphemes in `style`, each with its width in cells, as layout
 /// draws them: a control character shows as `^A`, a cell per character.
-fn glyphs(text: &str, style: Style) -> impl Iterator<Item = (Glyph, usize, Style)> + '_ {
+pub(crate) fn glyphs(text: &str, style: Style) -> impl Iterator<Item = (Glyph, usize, Style)> + '_ {
     text.graphemes(true)
         .flat_map(move |g| match g.chars().next().filter(|c| c.is_control()) {
             Some(c) => control_cells(c)
@@ -502,7 +506,7 @@ fn glyphs(text: &str, style: Style) -> impl Iterator<Item = (Glyph, usize, Style
 /// Put glyphs on `row` from `col` and return the column after them. They
 /// stop before `end`: a wide glyph that doesn't fit isn't drawn, and the
 /// cells it would have taken keep what they had.
-fn put_text(
+pub(crate) fn put_text(
     scene: &mut Scene,
     row: usize,
     mut col: usize,

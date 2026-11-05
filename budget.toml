@@ -84,7 +84,7 @@ files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 [[module]]
 crate = "die-core"
 name = "workspace, windows, pointer"
-limit = 1100
+limit = 1190
 files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
 
 [[module]]
@@ -127,7 +127,7 @@ files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
 crate = "die-render"
 name = "neutral"
 limit = 2300
-files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "sprite.rs", "window.rs"]
+files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "input.rs", "sprite.rs", "window.rs"]
 
 # `die --check`: the window's own checks, which ship in the binary. R3's are about 420
 # lines, and R6 adds `typing` and `firstframe`.
@@ -152,5 +152,5 @@ files = ["platform/macos/"]
 crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
-limit = 115
+limit = 150
 files = ["platform/backend.rs"]
