@@ -1948,6 +1948,7 @@ fn within_three_tries(limit: f64, mut measure: impl FnMut() -> f64) {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn an_80_column_window_with_4000_faces_and_a_one_letter_search_composes_within_1ms() {
     let mut ctx = speed_ctx();
     let w = dense(&mut ctx, 84, true);

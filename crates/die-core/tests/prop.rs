@@ -1262,6 +1262,7 @@ proptest! {
     // About a second a case, so a fixed few however many the others run.
     #![proptest_config(ProptestConfig { cases: 5, max_shrink_iters: 200, ..ProptestConfig::default() })]
     #[test]
+    #[ignore = "slow: runs in ci --full"]
     fn long_text_across_a_ropes_chunks_agrees_with_the_naive_layout(
         init in long_rich_text(1600),
         width in 2u8..40,
@@ -1329,6 +1330,7 @@ proptest! {
 
 /// Not a pass criterion: shows what the random sequences actually exercise.
 #[test]
+#[ignore = "slow: runs in ci --full"]
 fn coverage_stats() {
     use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
     let cfg = Config {

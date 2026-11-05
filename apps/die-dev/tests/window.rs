@@ -143,6 +143,7 @@ fn num(m: &HashMap<String, String>, k: &str) -> f64 {
 }
 
 #[test]
+#[ignore = "window: runs in ci --full"]
 fn the_window_holds_to_s1s_rules() {
     if no_backend() {
         return;
@@ -191,6 +192,7 @@ fn the_window_holds_to_s1s_rules() {
 }
 
 #[test]
+#[ignore = "window: runs in ci --full"]
 fn a_median_resize_frame_stays_under_s1s_limit() {
     if no_backend() {
         return;
@@ -211,6 +213,7 @@ fn a_median_resize_frame_stays_under_s1s_limit() {
 }
 
 #[test]
+#[ignore = "window: runs in ci --full"]
 fn show_passes_whatever_file_was_named() {
     if no_backend() {
         return;
@@ -240,6 +243,7 @@ fn an_unknown_check_fails_before_a_window_opens() {
 }
 
 #[test]
+#[ignore = "window: runs in ci --full"]
 fn die_file_stays_up_and_says_nothing() {
     if no_backend() {
         return;

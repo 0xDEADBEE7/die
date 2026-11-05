@@ -83,6 +83,7 @@ fn one_mb_line(unit: &str) -> String {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn a_keystroke_on_a_10k_line_file_costs_at_most_1ms() {
     let text = ten_k_lines();
     let (mut ctx, b, w) = editor(&text, 100, 50);
@@ -94,6 +95,7 @@ fn a_keystroke_on_a_10k_line_file_costs_at_most_1ms() {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn a_keystroke_at_either_end_of_a_1_mb_line_costs_at_most_1ms() {
     for (unit, wrap) in [
         ("word ", Wrap::Word),
@@ -122,6 +124,7 @@ fn a_keystroke_at_either_end_of_a_1_mb_line_costs_at_most_1ms() {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn moving_to_the_far_end_of_a_1_mb_line_costs_at_most_100ms() {
     for unit in [
         "word ",
@@ -149,6 +152,7 @@ fn moving_to_the_far_end_of_a_1_mb_line_costs_at_most_100ms() {
 /// The cache's bound: an edit moves every cached line after it, so after a walk through a big file
 /// a keystroke at its top costs what it did before the walk.
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn a_keystroke_after_visiting_every_line_costs_at_most_1ms() {
     let (mut ctx, b, w) = editor(&"x\n".repeat(100_000), 80, 40);
     let t = ctx.text_mut(b).unwrap();
@@ -166,6 +170,7 @@ fn a_keystroke_after_visiting_every_line_costs_at_most_1ms() {
 
 /// A Face shapes no rows, so adding or removing one keeps what's laid out, even a whole 1 MB line.
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn a_face_decoration_costs_no_layout() {
     let (mut ctx, b, w) = editor(&one_mb_line("word "), 80, 40);
     let t = ctx.text_mut(b).unwrap();
