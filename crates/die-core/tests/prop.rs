@@ -1043,6 +1043,26 @@ fn run_naive(init: String, width: u8, steps: Vec<N>) {
     }
 }
 
+/// The random texts are too short to reach a gutter's next digit.
+#[test]
+fn the_gutter_agrees_with_the_naive_layout_where_it_grows() {
+    for lines in [0, 1, 99, 100, 999, 1000, 9999, 10_000] {
+        for end in ["", "\n", "x", "x\n"] {
+            let text = format!("{}{end}", "y\n".repeat(lines));
+            let mut ctx = Ctx::new(vec![]).unwrap();
+            let b = ctx.create_text("g", &text);
+            let w = ctx.open_window(b, 40, 4).unwrap();
+            for style in [LineNumbers::Off, LineNumbers::Relative] {
+                let t = ctx.text_mut(b).unwrap();
+                t.settings_mut().line_numbers = style;
+                let g = t.geometry(w).unwrap().gutter;
+                let want = naive::gutter_width(&text, naive_numbers(style));
+                assert_eq!(g, want, "{style:?}, {lines} lines and {end:?}");
+            }
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
     /// K4's second check: rows, positions, numbers and queries match the naive layout, across edits
