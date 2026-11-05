@@ -347,29 +347,137 @@ fn a_paragraph(s: &Start) -> Result<Span, Fail> {
 
 // ---------------------------------------------------------------- quotes
 
-/// `quote`'s pair in a line of `string`, which `"` delimits: the pair at `p`, else the next
-/// one, counting from the line's start. With neither, the whole string.
-fn pair_in_string(t: &TextBuf, p: usize, quote: char, string: (usize, usize)) -> (usize, usize) {
-    let (start, end) = string;
-    let line_start = t.line_start(t.line_of(p)).max(start);
-    let stop = line_end(t, t.line_of(p)).min(end);
-    let mut c = Chars::at(t, line_start);
-    let mut open = None;
-    while c.pos() < stop {
-        if c.ch() == Some(quote) {
-            match open.take() {
-                None => open = Some(c.pos()),
-                Some(a) => {
-                    let b = next_stop(t, c.pos()).unwrap_or(c.pos());
-                    if b > p {
-                        return (a, b);
-                    }
-                }
-            }
+/// A way to step over quoted strings, forward to one's end and back to one's start. Evil
+/// finds a string by moving like this and seeing where it lands, through Emacs's
+/// `bounds-of-thing-at-point`, so a pair is whatever those moves make of the text.
+trait Quotes {
+    /// Just past the end of a string. `.1` is false if there was nothing to step over.
+    fn forward(&self, p: usize) -> (usize, bool);
+    /// The start of a string.
+    fn backward(&self, p: usize) -> usize;
+
+    /// The string around `p`: forward then back, and if that lands past `p`, back then forward.
+    fn around(&self, p: usize) -> Option<(usize, usize)> {
+        let beg = self.backward(self.forward(p).0);
+        if beg <= p {
+            let end = self.forward(beg).0;
+            return (p <= end && beg < end).then_some((beg, end));
         }
-        c.fwd();
+        let end = self.forward(self.backward(p)).0;
+        let beg = self.backward(end);
+        (beg <= p && p <= end && beg < end).then_some((beg, end))
     }
-    string
+
+    /// The string `i'` and `a'` take from `p`: the one around it, else the next one, as Evil's
+    /// `evil-select-quote-thing` picks it.
+    fn pick(&self, p: usize) -> Option<(usize, usize)> {
+        if let Some(pair) = self.around(p).filter(|pair| p < pair.1) {
+            return Some(pair);
+        }
+        let (to, found) = self.forward(p);
+        let (beg, end) = self.around(to).filter(|_| found)?;
+        Some((beg, end.max(to)))
+    }
+}
+
+/// Quotes inside a `"` string, Evil's `forward-evil-quote-simple`: they pair up along one line,
+/// from its start or the string's, with no notion of escapes. With too few on the line, an end
+/// is the string's own.
+struct LineQuotes<'a> {
+    t: &'a TextBuf,
+    quote: char,
+    lo: usize,
+    hi: usize,
+}
+
+impl LineQuotes<'_> {
+    fn bol(&self, p: usize) -> usize {
+        self.t.line_start(self.t.line_of(p)).max(self.lo)
+    }
+
+    /// How many quotes from `p` end a pair: one if a pair is open here, else two.
+    fn wanted(&self, p: usize) -> usize {
+        let mut c = Chars::at(self.t, self.bol(p));
+        let mut seen = 0;
+        while c.pos() < p {
+            seen += usize::from(c.ch() == Some(self.quote));
+            c.fwd();
+        }
+        2 - seen % 2
+    }
+}
+
+impl Quotes for LineQuotes<'_> {
+    fn forward(&self, p: usize) -> (usize, bool) {
+        let eol = line_end(self.t, self.t.line_of(p)).min(self.hi);
+        let mut need = self.wanted(p);
+        let mut c = Chars::at(self.t, p);
+        while need > 0 && c.pos() < eol {
+            need -= usize::from(c.ch() == Some(self.quote));
+            c.fwd();
+        }
+        (if need > 0 { self.hi } else { c.pos() }, need < 2)
+    }
+
+    fn backward(&self, p: usize) -> usize {
+        let bol = self.bol(p);
+        let mut need = self.wanted(p);
+        let mut c = Chars::at(self.t, p);
+        while need > 0 && c.pos() > bol {
+            need -= usize::from(c.prev_ch() == Some(self.quote));
+            c.back();
+        }
+        if need > 0 { self.lo } else { c.pos() }
+    }
+}
+
+/// Strings through the whole text, Evil's `evil-forward-quote`: `"` and the quote asked for both
+/// delimit them. A string that never closes isn't one: Evil's range there starts a character
+/// before the quote, or it fails, and neither is any use.
+struct TextQuotes<'a> {
+    t: &'a TextBuf,
+    quote: char,
+}
+
+impl TextQuotes<'_> {
+    /// The start of the string `p` is inside, past its opening quote.
+    fn inside(&self, p: usize) -> Option<usize> {
+        string_after(self.t, p, self.quote)
+            .filter(|s| s.3 && s.1 < p)
+            .map(|s| s.1)
+    }
+}
+
+impl Quotes for TextQuotes<'_> {
+    fn forward(&self, p: usize) -> (usize, bool) {
+        string_after(self.t, p, self.quote)
+            .filter(|s| s.3)
+            .map_or((p, false), |s| (s.2, true))
+    }
+
+    /// Back to the last of this quote, and to the start of the string it's in. So a `"`
+    /// string counts only if the quote asked for is in it. If it finds none, it stops where
+    /// it last started to look.
+    fn backward(&self, p: usize) -> usize {
+        if let Some(start) = self.inside(p) {
+            return start;
+        }
+        let mut c = Chars::at(self.t, p);
+        while c.prev_ch().is_some() {
+            let from = c.pos();
+            while c.prev_ch().is_some() && c.ch() != Some(self.quote) {
+                c.back();
+            }
+            if let Some(start) = self.inside(c.pos()) {
+                return start;
+            }
+            if c.prev_ch().is_none() {
+                return from;
+            }
+            c.back();
+        }
+        c.pos()
+    }
 }
 
 /// The whitespace around a string that `a"` takes, newlines included: after it, or else
@@ -383,6 +491,16 @@ fn space_around(t: &TextBuf, beg: usize, end: usize, lo: usize, hi: usize) -> (u
         }
         return (beg, c.pos());
     }
+    // Emacs's thing-at-point finds whitespace by skipping to it. With none anywhere, what it
+    // skips over is all there is, so the range runs to the end.
+    if !t
+        .rope()
+        .byte_slice(lo..hi)
+        .chars()
+        .any(|c| is_space(Some(c)))
+    {
+        return (beg, hi);
+    }
     let mut c = Chars::at(t, beg);
     while c.pos() > lo && is_space(c.prev_ch()) {
         c.back();
@@ -393,26 +511,24 @@ fn space_around(t: &TextBuf, beg: usize, end: usize, lo: usize, hi: usize) -> (u
 fn quoted(s: &Start, quote: char, outer: bool) -> Result<Span, Fail> {
     const NONE: Fail = "No quoted string found";
     let (t, pos) = (s.text, s.pos);
-    let (lo, hi, beg, end);
-    // Inside a `"` string, any other quote looks only in that string, closed or not.
-    if let Some(string) = string_around(t, pos).filter(|_| quote != '"') {
-        (lo, hi) = string;
-        (beg, end) = pair_in_string(t, pos, quote, string);
-    } else {
-        // A string that never closes isn't one: Evil's range there starts a character
-        // before the quote, or it fails, and neither is any use. `"` can come first here,
-        // and then that's the next string, which isn't the one asked for.
-        let string = |p| string_after(t, p, quote).filter(|s| s.3);
-        let (q, b, e, _) = string(pos).ok_or(NONE)?;
-        // A string right after the next one is the one that counts, as Evil's
-        // thing-at-point finds it from the end of the first.
-        let right_after = string(e).filter(|n| b > pos && n.1 == e);
-        let (q, b, e) = right_after.map_or((q, b, e), |n| (n.0, n.1, n.2));
-        if q != quote {
-            return Err(NONE);
+    // Inside a `"` string, any other quote looks along the cursor's line first, closed or not.
+    // Evil skips this if the string ends in that quote, which only an open one can.
+    let inside = string_around(t, pos).filter(|&(_, end)| {
+        let mut last = Chars::at(t, end);
+        last.back();
+        quote != '"' && pos < end && last.ch() != Some(quote)
+    });
+    let on_line = inside.and_then(|(lo, hi)| {
+        let (beg, end) = LineQuotes { t, quote, lo, hi }.pick(pos)?;
+        Some((lo, hi, beg, end))
+    });
+    let (lo, hi, beg, end) = match on_line {
+        Some(found) => found,
+        None => {
+            let (beg, end) = TextQuotes { t, quote }.pick(pos).ok_or(NONE)?;
+            (0, t.len(), beg, end)
         }
-        (lo, hi, beg, end) = (0, t.len(), b, e);
-    }
+    };
     if outer {
         let (b, e) = space_around(t, beg, end, lo, hi);
         return Ok(Span::chars(b, e));
@@ -551,7 +667,14 @@ fn around_range(
 
 /// The brackets round the cursor. In a string it looks in that string first, and then
 /// round the string.
-fn around_cursor(t: &TextBuf, pos: usize, open: char, close: char, n: usize) -> Option<Pair> {
+fn around_cursor(
+    t: &TextBuf,
+    pos: usize,
+    open: char,
+    close: char,
+    n: usize,
+    outer: bool,
+) -> Option<Pair> {
     let whole = Lists::new(t, open, close);
     let mut c = Chars::at(t, pos);
     c.fwd();
@@ -563,7 +686,12 @@ fn around_cursor(t: &TextBuf, pos: usize, open: char, close: char, n: usize) -> 
         hi: end,
         ..Lists::new(t, open, close)
     };
-    around_range(&narrow, pos, pos, n, false).or_else(|| around_range(&whole, beg, end, n, true))
+    around_range(&narrow, pos, pos, n, false).or_else(|| {
+        let pair = around_range(&whole, beg, end, n, true)?;
+        // A count that gets no further than the string it started from has failed.
+        let inner = inside(t, pair.0, pair.1);
+        (outer || n == 1 || (inner.beg, inner.end) != (beg, end)).then_some(pair)
+    })
 }
 
 type Pair = ((usize, usize), (usize, usize));
@@ -571,7 +699,7 @@ type Pair = ((usize, usize), (usize, usize));
 fn bracket(s: &Start, open: char, close: char, outer: bool) -> Result<Span, Fail> {
     const NONE: Fail = "No surrounding delimiters found";
     let (t, pos) = (s.text, s.pos);
-    let pair = around_cursor(t, pos, open, close, s.n()).or_else(|| {
+    let pair = around_cursor(t, pos, open, close, s.n(), outer).or_else(|| {
         // Not in a pair: the count-th next opener's, wherever it is, unless the cursor's
         // on one.
         let mut c = Chars::at(t, pos);
@@ -591,7 +719,7 @@ fn bracket(s: &Start, open: char, close: char, outer: bool) -> Result<Span, Fail
             }
             c.fwd();
         }
-        around_cursor(t, c.pos(), open, close, 1).filter(|p| p.0.0 >= c.pos())
+        around_cursor(t, c.pos(), open, close, 1, outer).filter(|p| p.0.0 >= c.pos())
     });
     let (op, cl) = pair.ok_or(NONE)?;
     Ok(if outer {

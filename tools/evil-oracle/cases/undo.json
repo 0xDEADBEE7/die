@@ -82,5 +82,9 @@
   {"id": "failed-u-forgets-the-goal", "keys": "4ljuj", "text": ["|abcdef", "ab", "abcdef"]},
   {"id": "failed-u-forgets-the-goal-at-eol", "keys": "$juj", "text": ["|abcdef", "", "abcdef"]},
   {"id": "failed-u-forgets-eol-after-dollar", "keys": "$uj", "text": ["|foo bar", "abcdefghij"]},
-  {"id": "failed-redo-forgets-the-goal", "keys": "4lj<C-r>j", "text": ["|abcdef", "ab", "abcdef"]}
+  {"id": "failed-redo-forgets-the-goal", "keys": "4lj<C-r>j", "text": ["|abcdef", "ab", "abcdef"]},
+  {"id": "gU-after-an-undone-edit-then-u", "keys": "xugUiwu", "text": ["a b|c d"]},
+  {"id": "gu-after-a-motion-then-u", "keys": "lguuu", "text": ["a|bc"]},
+  {"id": "gU-after-two-undone-edits-then-u", "keys": "xuiabc<Esc>ugUwu", "text": ["|abc def"]},
+  {"id": "gU-after-an-edit-then-u", "keys": "xgUwu", "text": ["|abc def"]}
  ]}
