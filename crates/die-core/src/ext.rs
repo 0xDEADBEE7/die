@@ -1,6 +1,7 @@
 //! The extension machinery (contract §2, §4, §8, §10; C1, C2, C9): the traits extensions
 //! implement, the registry they declare into, `Ctx` and its startup, checkout, modes and the guard
 //! around every call into extension code. Buffers and windows are here until K6 moves them.
+#![warn(missing_docs)]
 use crate::dispatch::*;
 use crate::error::*;
 use crate::faces::{Faces, Style};
@@ -18,18 +19,25 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// An extension's place in the startup order.
 pub type ExtIdx = usize;
 pub(crate) const CORE: ExtIdx = usize::MAX;
 
 // ------------------------------------------------------------------ traits
 
+/// An extension: a typed value in your config (contract §4). Its struct is its global
+/// state, reached with [`Ctx::with_ext`].
 pub trait Extension: Any {
+    /// Its name, as messages show it, and the prefix for its commands and faces.
     fn name(&self) -> &'static str;
     /// Declarations only: commands, keymaps, modes. No editor access.
     fn register(&mut self, reg: &mut Registry);
+    /// Start watchers, timers and background state (contract §4, step 4). An error or
+    /// panic is logged, and startup goes on.
     fn init(&mut self, _ctx: &mut Ctx) -> Result {
         Ok(())
     }
+    /// Called in reverse order at shutdown. What the extension detached is cancelled after.
     fn shutdown(&mut self, _ctx: &mut Ctx) {}
 }
 
@@ -51,44 +59,64 @@ pub trait Mode: Any {
         _out: &mut Vec<(Range<usize>, &'static str)>,
     ) {
     }
+    /// What the session keeps for this mode (contract §14).
     fn save(&self) -> Option<String> {
         None
     }
 }
 
+/// Input a surface receives through [`Surface::event`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// A key no keymap took, or any key in passthrough.
     Key(KeyEvent),
-    Resize { cols: usize, rows: usize },
+    /// A window showing the surface changed size, in cells.
+    Resize {
+        /// Its new width.
+        cols: usize,
+        /// Its new height.
+        rows: usize,
+    },
+    /// A window showing the surface gained or lost the focus.
     Focus(bool),
 }
 
+/// A custom surface: what a buffer shows when it isn't text (contract §10).
 pub trait Surface: Any {
+    /// Its kind (`"term"`), which names its keymap.
     fn kind(&self) -> &'static str;
+    /// Write its rows. No `Ctx`, so it runs synchronously (C3).
     fn render(&mut self, cols: usize, rows: usize, out: &mut Vec<String>);
     /// Input keymaps didn't take; every key (and release) in passthrough. Checked out (C2).
     fn event(&mut self, _ev: &Event, _ctx: &mut Ctx) -> bool {
         false
     }
+    /// The state a buffer showing it starts in.
     fn initial_state(&self) -> State {
         State::Normal
     }
 }
 
+/// What's true of a mode whichever buffer it's on, declared once in the registry.
 pub struct ModeSpec {
+    /// Its name.
     pub name: &'static str,
     type_id: TypeId,
     pub(crate) owner: ExtIdx,
+    /// The state a buffer enters when the mode is enabled, if any.
     pub initial_state: Option<State>,
+    /// Its keymap, looked up before the surface kind's.
     pub keymap: Keymap,
     new: Rc<dyn Fn() -> Box<dyn Mode>>,
 }
 
 impl ModeSpec {
+    /// Bind `keys` to `cmd` in `state`.
     pub fn bind(&mut self, state: State, keys: &str, cmd: &str) -> &mut Self {
         self.keymap.bind(state, keys, cmd);
         self
     }
+    /// Set the state a buffer enters when the mode is enabled.
     pub fn initial_state(&mut self, s: State) -> &mut Self {
         self.initial_state = Some(s);
         self
@@ -116,6 +144,7 @@ impl Registry {
             .push((name.into(), parent.map(String::from), style));
         self
     }
+    /// Declare a command. It runs guarded, and its errors go to `*messages*`.
     pub fn command(
         &mut self,
         name: &str,
@@ -142,6 +171,7 @@ impl Registry {
             ctx.with_ext(|e: &mut E, ctx| f(e, ctx, a))?
         });
     }
+    /// Declare a mode, with what makes each buffer's instance.
     pub fn mode<M: Mode>(
         &mut self,
         name: &'static str,
@@ -157,6 +187,7 @@ impl Registry {
         });
         self.modes.last_mut().unwrap()
     }
+    /// The global keymap, looked up last.
     pub fn global_keymap(&mut self) -> &mut Keymap {
         &mut self.global
     }
@@ -176,16 +207,23 @@ impl Registry {
     }
 }
 
+/// A register's shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegKind {
+    /// Characters.
     Char,
+    /// Whole lines.
     Line,
+    /// A rectangle.
     Block,
 }
 
+/// What a register holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Register {
+    /// Its shape.
     pub kind: RegKind,
+    /// Its text.
     pub text: String,
 }
 
@@ -225,6 +263,7 @@ pub(crate) struct Window {
     pub rows: usize,
 }
 
+/// The workspace, passed mutably to every command, callback and hook (C1).
 pub struct Ctx {
     pub(crate) exts: Vec<ExtSlot>,
     pub(crate) commands: HashMap<String, Command>,
@@ -255,6 +294,7 @@ pub struct Ctx {
     pub(crate) cur_window: Option<WindowId>,
     pub(crate) registers: HashMap<char, Register>,
     pub(crate) files: crate::files::Files,
+    /// The log: errors, panics and messages, oldest first (K11a's `*messages*` shows it).
     pub messages: Vec<String>,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
@@ -398,6 +438,7 @@ impl Ctx {
     pub fn nesting(&self) -> usize {
         self.ext_stack.len()
     }
+    /// A command's doc and the name of whoever registered it.
     pub fn command_doc(&self, name: &str) -> Option<(&'static str, &'static str)> {
         self.commands
             .get(name)
@@ -429,6 +470,8 @@ impl Ctx {
 
     // -------------------------------------------------------------- C2 checkout
 
+    /// Check an extension out (C2). `Busy` while it's already out, and `Missing` if it isn't
+    /// registered. A panic in `f` puts it back, then goes on.
     pub fn with_ext<E: Extension, R>(
         &mut self,
         f: impl FnOnce(&mut E, &mut Ctx) -> R,
@@ -465,6 +508,9 @@ impl Ctx {
         Ok(r.unwrap_or_else(|p| resume_unwind(p)))
     }
 
+    /// Check a buffer's mode out (C2). `Gone` if the buffer was killed, `Busy` while it's
+    /// already out, and `Missing` if the buffer doesn't have it. A panic in `f` puts it back,
+    /// then goes on.
     pub fn with_mode<M: Mode, R>(
         &mut self,
         buf: BufferId,
@@ -501,6 +547,9 @@ impl Ctx {
         Ok(r.unwrap_or_else(|p| resume_unwind(p)))
     }
 
+    /// Check a buffer's surface out (C2). `Gone` if the buffer was killed, `Busy` while it's
+    /// already out, and `Missing` if it's another type. A panic in `f` puts it back, then
+    /// goes on.
     pub fn with_surface<S: Surface, R>(
         &mut self,
         buf: BufferId,
@@ -548,6 +597,7 @@ impl Ctx {
             .find(|n| !taken(n))
             .unwrap()
     }
+    /// Create a text buffer. Its name is made unique, as in Emacs (`term<2>`).
     pub fn create_text(&mut self, name: &str, text: &str) -> BufferId {
         let name = self.unique_name(name);
         let b = Buffer {
@@ -559,6 +609,7 @@ impl Ctx {
         };
         self.buffers.insert(b)
     }
+    /// Create a buffer showing a custom surface. Its name is made unique.
     pub fn create_surface<S: Surface>(&mut self, name: &str, s: S) -> BufferId {
         let name = self.unique_name(name);
         let (kind, state) = (s.kind(), s.initial_state());
@@ -575,15 +626,18 @@ impl Ctx {
             state,
         })
     }
+    /// The buffer with this name.
     pub fn find_buffer(&self, name: &str) -> Option<BufferId> {
         self.buffers
             .iter()
             .find(|(_, b)| b.name == name)
             .map(|(id, _)| id)
     }
+    /// A buffer's name. None if it's dead.
     pub fn buffer_name(&self, buf: BufferId) -> Option<&str> {
         self.buffers.get(buf).map(|b| b.name.as_str())
     }
+    /// Whether a buffer is still alive.
     pub fn is_live(&self, buf: BufferId) -> bool {
         self.buffers.contains_key(buf)
     }
@@ -614,6 +668,7 @@ impl Ctx {
         true
     }
 
+    /// A buffer's text, for reading (C2).
     pub fn text(&self, buf: BufferId) -> Result<&TextBuf> {
         match &self.buffers.get(buf).ok_or(Checkout::Gone)?.content {
             Content::Text(t) => Ok(t),
@@ -637,6 +692,7 @@ impl Ctx {
         }
     }
 
+    /// Open a window on a buffer and focus it.
     pub fn open_window(&mut self, buf: BufferId, cols: usize, rows: usize) -> Result<WindowId> {
         let b = self.buffers.get(buf).ok_or(Checkout::Gone)?;
         let _ = b;
@@ -651,6 +707,7 @@ impl Ctx {
         self.focus(w);
         Ok(w)
     }
+    /// Focus a window. A running command goes on acting for it (contract §9).
     pub fn focus(&mut self, w: WindowId) {
         if self.windows.contains_key(w) {
             self.focused = Some(w);
@@ -658,17 +715,21 @@ impl Ctx {
             self.cur_window = self.cur_window.and(Some(w));
         }
     }
+    /// The focused window.
     pub fn focused(&self) -> Option<WindowId> {
         self.focused
     }
+    /// The buffer the focused window shows.
     pub fn focused_buffer(&self) -> Option<BufferId> {
         self.focused
             .and_then(|w| self.windows.get(w))
             .map(|w| w.buffer)
     }
+    /// The buffer a window shows.
     pub fn window_buffer(&self, w: WindowId) -> Option<BufferId> {
         self.windows.get(w).map(|w| w.buffer)
     }
+    /// A window's columns and rows.
     pub fn window_size(&self, w: WindowId) -> Option<(usize, usize)> {
         self.windows.get(w).map(|w| (w.cols, w.rows))
     }
@@ -705,6 +766,8 @@ impl Ctx {
 
     // -------------------------------------------------------------- modes
 
+    /// Enable a registered mode on a text buffer (C17). Its `on_enable` is queued (C3).
+    /// Enabling it again does nothing.
     pub fn enable_mode<M: Mode>(&mut self, buf: BufferId) -> Result {
         let tid = TypeId::of::<M>();
         let spec = self
@@ -739,6 +802,7 @@ impl Ctx {
         });
         Ok(())
     }
+    /// Disable a mode. Its `on_disable` is queued (C3), and it drops after that.
     pub fn disable_mode<M: Mode>(&mut self, buf: BufferId) -> Result {
         let tid = TypeId::of::<M>();
         let b = self.buffers.get_mut(buf).ok_or(Checkout::Gone)?;
@@ -760,9 +824,11 @@ impl Ctx {
 
     // -------------------------------------------------------------- registers
 
+    /// What a register holds.
     pub fn register(&self, c: char) -> Option<&Register> {
         self.registers.get(&c)
     }
+    /// Set a register.
     pub fn set_register(&mut self, c: char, r: Register) {
         self.registers.insert(c, r);
     }

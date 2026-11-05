@@ -1,5 +1,6 @@
 //! The runtime (contract §12, C3, C4): subscription handles, the queue of calls that receive
 //! `Ctx`, timers, jobs and the loop.
+#![warn(missing_docs)]
 use crate::dispatch::*;
 use crate::error::*;
 use crate::ext::*;
@@ -23,9 +24,11 @@ pub(crate) struct SubInner {
 pub struct Sub(Rc<SubInner>);
 
 impl Sub {
+    /// Keep the subscription until the extension shuts down.
     pub fn detach(self) {
         self.0.detached.set(true);
     }
+    /// Whether the subscription hasn't been cancelled.
     pub fn is_active(&self) -> bool {
         self.0.alive.get()
     }
@@ -99,10 +102,12 @@ impl Ctx {
         });
         Sub(inner)
     }
+    /// Run `f` once, `d` from now, from the top of the loop (C3).
     pub fn after(&mut self, d: Duration, f: impl FnOnce(&mut Ctx) -> Result + 'static) -> Sub {
         let mut f = Some(f);
         self.timer(d, None, move |ctx| f.take().map_or(Ok(()), |f| f(ctx)))
     }
+    /// Run `f` every `d`, from the top of the loop (C3).
     pub fn every(&mut self, d: Duration, f: impl FnMut(&mut Ctx) -> Result + 'static) -> Sub {
         self.timer(d, Some(d), f)
     }
@@ -120,6 +125,7 @@ impl Ctx {
             f: Rc::new(RefCell::new(f)),
         })
     }
+    /// Run `f` after a buffer is killed, from the top of the loop (C3).
     pub fn on_buffer_killed(
         &mut self,
         f: impl FnMut(&mut Ctx, BufferId) -> Result + 'static,
@@ -234,6 +240,7 @@ impl Ctx {
         false
     }
 
+    /// Harness: take turns until nothing is ready and no job is out.
     pub fn run_until_idle(&mut self) {
         for _ in 0..1_000_000 {
             if self.step() {

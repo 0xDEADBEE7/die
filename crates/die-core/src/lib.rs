@@ -1,9 +1,9 @@
 //! die-core: DIE's headless editor (scope §5, the extension contract).
 //!
 //! M0 starts from spike S4's prototype, ported as it was (work package K1; you
-//! accepted its API as A1-A24). Its spike-quality parts, `ctx.rs`, the layout
-//! cache and its character wrap, the key type and `render.rs`, are rebuilt under
-//! these tests during M0 (docs/m0-plan.md §2).
+//! accepted its API as A1-A24). Its spike-quality parts, `ctx.rs` (now `ext`,
+//! `dispatch` and `rt`), the layout cache and its character wrap, the key type and
+//! `render.rs`, are rebuilt under these tests during M0 (docs/m0-plan.md §2).
 #![forbid(unsafe_code)]
 
 #[cfg(panic = "abort")]
