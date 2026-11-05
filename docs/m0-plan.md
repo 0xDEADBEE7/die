@@ -35,7 +35,7 @@ The exit test is scope §12's. (f) was added for Linux on 2026-10-19 (question 1
 | (a) | You edit DIE's own source in DIE for a full day, with Emacs's vterm in an adjacent tile as the terminal. | A working day. Each switch to Emacs to edit becomes a test, and the day is tried again. | everything |
 | (b) | 20 rebuild-and-restarts restore files, splits, per-window cursors and scroll, unsaved text and registers, within 1 s from `restart` to the first frame. | `cargo xtask restart-loop 20`. After each restore, DIE writes a digest of its session state. The driver checks that all 20 match and that each restart took under 1 s. | K12, K13, F4a, F4b |
 | (c) | `cargo fmt` on an open file reloads an unmodified buffer, and `:w` refuses on a modified one. | Harness tests on a temporary directory, then once by hand. | K10b, V5 |
-| (d) | Every Evil-oracle case passes (523 today), except the deliberate deviations, which are listed by name and have hand-written fixtures. | `cargo test -p die-vim --test oracle` with an empty pending list. The 37 excluded cases are named in `deviations.json`, each with a hand-written fixture. | V0–V7 |
+| (d) | Every Evil-oracle case passes (1,075 today), except the deliberate deviations, which are listed by name and have hand-written fixtures. | `cargo test -p die-vim --test oracle` with an empty pending list. The 58 excluded cases are named in `deviations.json`, each with a hand-written fixture. | V0–V7 |
 | (e) | The budgets in guard 7 hold. | `cargo xtask budget` | F2 |
 | (f) | The workspace cross-checks for x86_64 and aarch64 Linux, and die-core, die-vim and the oracle pass their tests on aarch64 Linux. | `cargo xtask ci` cross-checks on every merge; `cargo xtask ci --linux` runs the tests in colima | F1, F2, R1 |
 
@@ -212,7 +212,7 @@ Sizes are AI-assisted effort: S is up to 2 days, M 3–7 days, L 1.5–3 weeks. 
 
 ### die-vim
 
-Each case's tranche comes from the keys it uses, not its topic file: a case lands with the last feature it needs. The counts are a first pass over the 306 fixtures S5 ended with. There are 523 today, and `crates/die-vim/tests/oracle/pending.txt` holds the exact list for each package.
+Each case's tranche comes from the keys it uses, not its topic file: a case lands with the last feature it needs. The counts are a first pass over the 306 fixtures S5 ended with. There are 1,075 today, and `crates/die-vim/tests/oracle/pending.txt` holds the exact list for each package.
 
 | ID | Deliverable | Needs | Size | Proven by | Owner |
 |---|---|---|---|---|---|
@@ -223,7 +223,7 @@ Each case's tranche comes from the keys it uses, not its topic file: a case land
 | V4 | Visual mode including block, `.`, macros, `R` (about 59) | V3, K5 | M | Same | Grammar |
 | V5 | The rest of ex: `:w :q :wq :s`, and `:w! :e! :q!` (about 12) | V3, K10b, K11a | S–M | Same, plus harness tests for the file commands | Grammar |
 | V6 | Geometry and windows (44): scrolling and recentering, `H M L`, wrapped lines, the `C-w` map, `:sp :vs :only :close`, `:q` on a split | V3, K4, K6 | M | Same, plus about 15 harness tests for window commands | Grammar |
-| V7 | Close-out: every case outside `deviations.json` passes, the pending list is empty, the 37 hand-written fixtures pass, and dogfooding has added cases | V1–V6 | S–M | Exit test (d) | Grammar |
+| V7 | Close-out: every case outside `deviations.json` passes, the pending list is empty, the 58 hand-written fixtures pass, and dogfooding has added cases | V1–V6 | S–M | Exit test (d) | Grammar |
 
 ## 6. Risks and early warnings
 
