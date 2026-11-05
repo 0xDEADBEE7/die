@@ -733,6 +733,7 @@ mod tests {
     fn start(t: &TextBuf, pos: usize) -> Start<'_> {
         Start {
             text: t,
+            window: die_core::WindowId::default(),
             pos,
             count: None,
             goal: None,

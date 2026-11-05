@@ -266,7 +266,7 @@ The text surface belongs to core. This section covers what extensions can do wit
 - `pos_at_vcol`: the first cursor position at or after a display column, or else the display line's last, for `j`/`k` goals. A column inside a tab, a wide character or a replacement lands after it, as `move-to-column` does for Evil
 - `snap`: the nearest cursor position in a direction, for `h`/`l`
 - `screen_pos`: where a position is drawn in a window
-- `scroll` and `set_scroll`: which row a window shows first. A command that scrolls a window also leaves its cursor on a visible row; otherwise core scrolls back to the cursor before the next render (C5)
+- `scroll`, `set_scroll`, `scroll_rows` and `recenter`: which row a window shows first, set outright, moved by rows, or chosen to put the cursor on a given row. A command that scrolls a window also leaves its cursor on a visible row; otherwise core scrolls back to the cursor before the next render (C5)
 
 **How text becomes rows.** The paragraphs from here to "Motions respect hidden ranges" are the whole rule. Someone reading only them can write a layout that agrees with K4's on every row and every cursor position, and K4's property test does exactly that. The rule is Emacs's `visual-line-mode` with `word-wrap` on, checked case by case against tty Emacs (`die-core/tests/emacs_layout.rs`). A Hide that shows a placement is M3's: `Deco::Hide` has no placement yet, and its rule gets written with it.
 

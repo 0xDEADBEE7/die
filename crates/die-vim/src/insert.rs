@@ -4,7 +4,7 @@
 //! on lines or a block, what's typed goes in on each of them when it ends ([`Rows`]).
 
 use crate::grammar::{buffer_window, forget_goal};
-use crate::motions::word_back;
+use crate::motions::{row_start, word_back};
 use crate::repeat::Change;
 use crate::text::{
     Chars, blank_line, indent_end, indent_stops, indentation, line_end, next_stop, pos_at_col,
@@ -226,7 +226,8 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
         t.end_undo_group();
     }
     let p = cursor(t);
-    let back = if p > t.line_start(t.line_of(p)) {
+    // As Evil's evil-move-cursor-back does under visual-line-mode: not back over a row's start.
+    let back = if p > row_start(t, w, p) {
         prev_stop(t, p).unwrap_or(p)
     } else {
         p
