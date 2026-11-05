@@ -184,6 +184,7 @@ pub fn on_object(ctx: &mut Ctx, a: &Args, object: Object, shape: visual::ObjectS
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
     let found = object(&Start {
         text: t,
+        window: w,
         pos: sel.head,
         count: counts(p.count, a.count),
         goal: None,
@@ -255,6 +256,7 @@ fn covered(
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
     let start = Start {
         text: t,
+        window: w,
         pos: sel.head,
         count,
         goal: Goal::decode(sel.goal),
