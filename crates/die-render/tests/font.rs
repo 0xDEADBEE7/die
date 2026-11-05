@@ -115,6 +115,103 @@ fn a_primary_glyph_stays_where_its_font_puts_it() {
     assert!((top_of_cell_y - c.baseline).abs() < 1e-9, "{top_of_cell_y}");
 }
 
+/// Where the pen ends up from the cell's left edge.
+fn pen(f: &Fit) -> f64 {
+    f64::from(f.left) + f.pen_x
+}
+
+/// Where a fitted glyph's ink ends up across its span, from the cell's left edge.
+fn across(f: &Fit, i: Ink) -> (f64, f64) {
+    (pen(f) + i.x * f.scale, pen(f) + (i.x + i.w) * f.scale)
+}
+
+#[test]
+fn a_primary_glyph_is_not_squeezed_for_the_pixel_rounding_took_from_its_cell() {
+    // The cell is the advance rounded down, and these are sizes R3's scale rules reach:
+    // 16 pt at 1x, then 14, 13 and 18 pt at 2x, then the 16 pt at 2x you use.
+    for (advance, w) in [(9.6, 9), (16.8, 16), (15.6, 15), (21.6, 21), (19.2, 19)] {
+        let c = CellMetrics { w, ..cell2x() };
+        let f = fit(ink(1.0, 0.0, advance - 2.0, 20.0), advance, 1, &c, false).unwrap();
+        assert_eq!(f.scale, 1.0, "{advance} across {w}");
+        assert_eq!(
+            pen(&f),
+            0.0,
+            "{advance} across {w}: the pen stays at the left"
+        );
+    }
+    let c = CellMetrics { w: 9, ..cell2x() };
+    let at = |advance: f64| fit(ink(0.0, 0.0, 8.0, 20.0), advance, 1, &c, false).unwrap();
+    assert_eq!(
+        at(10.0).scale,
+        1.0,
+        "a whole pixel over is what rounding can lose"
+    );
+    assert!(at(10.1).scale < 1.0, "and past that it's too wide");
+    let f = at(14.4);
+    assert!(
+        (f.scale - 9.0 / 14.4).abs() < 1e-9,
+        "Term's shortest long glyph, at 1x"
+    );
+    // Per cell: 2 of 19.2 is 38.4 across 38, and it stays.
+    let f = fit(ink(0.0, 0.0, 36.0, 20.0), 38.4, 2, &cell2x(), false).unwrap();
+    assert_eq!(f.scale, 1.0);
+}
+
+#[test]
+fn a_primary_glyph_narrower_than_its_two_cells_is_centered_across_them() {
+    let c = cell2x();
+    // What Term has for 288 wide characters: one cell's advance, in two cells.
+    let f = fit(ink(2.0, 0.0, 15.0, 22.0), 19.2, 2, &c, false).unwrap();
+    assert_eq!(f.scale, 1.0);
+    assert!((pen(&f) - 9.4).abs() < 1e-9, "{f:?}");
+    // One that fills both stays at the left, with no room to center in.
+    let f = fit(ink(1.0, 0.0, 36.0, 22.0), 38.4, 2, &c, false).unwrap();
+    assert_eq!(pen(&f), 0.0, "{f:?}");
+    let f = fit(ink(1.0, 0.0, 15.0, 22.0), 19.2, 1, &c, false).unwrap();
+    assert_eq!(pen(&f), 0.0, "and a narrow one is where its font puts it");
+}
+
+#[test]
+fn a_fallback_glyph_is_squeezed_past_half_a_pixel_over_as_ever() {
+    let c = cell2x();
+    let f = fit(ink(0.0, 0.0, 10.0, 20.0), 19.4, 1, &c, true).unwrap();
+    assert_eq!(f.scale, 1.0);
+    let f = fit(ink(0.0, 0.0, 10.0, 20.0), 19.6, 1, &c, true).unwrap();
+    assert!((f.scale - 19.0 / 19.6).abs() < 1e-9, "{f:?}");
+}
+
+#[test]
+fn a_fallback_glyph_stays_in_its_span_whichever_side_its_ink_leaves_by() {
+    let c = cell2x();
+    // Wider than the cell, starting left of the pen, as a lone mark's ink can.
+    let i = ink(-15.0, 0.0, 30.0, 10.0);
+    let f = fit(i, 19.0, 1, &c, true).unwrap();
+    assert!((f.scale - 19.0 / 30.0).abs() < 1e-9, "{f:?}");
+    let (left, right) = across(&f, i);
+    assert!(left >= -1e-9 && right <= 19.0 + 1e-9, "{left}..{right}");
+    // Narrow enough to fit, so moved rather than squeezed: left of the span,
+    let i = ink(-15.0, 0.0, 10.0, 10.0);
+    let f = fit(i, 0.0, 1, &c, true).unwrap();
+    assert_eq!(f.scale, 1.0);
+    assert_eq!(across(&f, i), (0.0, 10.0));
+    // and right of it, where centering by the advance alone would put it.
+    let i = ink(5.0, 0.0, 16.0, 10.0);
+    let f = fit(i, 12.0, 1, &c, true).unwrap();
+    assert_eq!(f.scale, 1.0);
+    assert_eq!(across(&f, i), (3.0, 19.0));
+    // Ink already inside stays centered by its advance.
+    let i = ink(2.0, 0.0, 10.0, 10.0);
+    let f = fit(i, 14.0, 1, &c, true).unwrap();
+    assert_eq!(across(&f, i), (4.5, 14.5));
+    // So does ink up to half a pixel over, as an italic's can be.
+    let i = ink(0.0, 0.0, 19.4, 10.0);
+    let f = fit(i, 19.2, 1, &c, true).unwrap();
+    assert_eq!((f.scale, across(&f, i)), (1.0, (0.0, 19.4)));
+    let i = ink(-0.4, 0.0, 10.0, 10.0);
+    let f = fit(i, 19.0, 1, &c, true).unwrap();
+    assert_eq!(across(&f, i), (-0.4, 9.6));
+}
+
 #[test]
 fn a_primary_glyph_too_wide_for_its_cell_is_squeezed_and_centered() {
     let c = cell2x();

@@ -159,29 +159,48 @@ pub struct Fit {
 
 /// Fit a shaped glyph with this `ink` and `advance` into `span` cells.
 ///
-/// A glyph from the primary font stays where its font puts it, unless its advance
-/// is too wide, as Term's long arrows are. A fallback face's glyph has no such
-/// promise: it's squeezed if its ink or advance doesn't fit across or its ink
-/// doesn't fit down, centered across the span, and moved to the cell's middle if
-/// its ink would leave the cell. `None` if it has no ink.
+/// A glyph from the primary font stays where its font puts it. The cell's width is
+/// the font's advance rounded down, so an advance up to a pixel per cell over is what
+/// it's meant to have. Past that it's too wide, as Term's long arrows are, so it's
+/// squeezed and centered. A wide character that the font draws narrower than its
+/// cells is centered across them.
+///
+/// A fallback face's glyph has no such promise. It's squeezed if its ink or advance
+/// doesn't fit across or its ink doesn't fit down, and centered across the span by its
+/// advance. If its ink would still leave the span by more than half a pixel, it moves
+/// back in, and if its ink would leave the cell's height, it moves to the cell's
+/// middle. `None` if it has no ink.
 pub fn fit(ink: Ink, advance: f64, span: u32, cell: &CellMetrics, fallback: bool) -> Option<Fit> {
     if ink.is_empty() {
         return None;
     }
     let (span_w, cell_h) = (f64::from(span * cell.w), f64::from(cell.h));
-    let right = ink.x + ink.w;
+    let (too_wide, across) = if fallback {
+        (advance.max(ink.w) > span_w + 0.5, ink.w)
+    } else {
+        (advance > f64::from(span * (cell.w + 1)), ink.x + ink.w)
+    };
     let mut scale = 1.0_f64;
-    if advance > span_w + 0.5 || (fallback && right > span_w + 0.5) {
-        scale = span_w / advance.max(right);
+    if too_wide {
+        scale = span_w / advance.max(across);
     }
     if fallback && ink.h * scale > cell_h {
         scale = cell_h / ink.h;
     }
-    let pen_x = if scale < 1.0 || fallback {
+    let mut pen_x = if scale < 1.0 || fallback || span > 1 {
         ((span_w - advance * scale) / 2.0).max(0.0)
     } else {
         0.0
     };
+    if fallback {
+        let left = pen_x + ink.x * scale;
+        let right = left + ink.w * scale;
+        if left < -0.5 {
+            pen_x -= left;
+        } else if right > span_w + 0.5 {
+            pen_x -= right - span_w;
+        }
+    }
     let mut baseline = cell.baseline;
     if fallback {
         let top = baseline - (ink.y + ink.h) * scale;
