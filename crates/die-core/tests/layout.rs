@@ -99,6 +99,8 @@ fn gj_gk_over_soft_wrap_with_centered_max_width_and_gutter() {
 #[test]
 fn tabs_and_wide_characters_have_correct_display_columns() {
     let (mut ctx, b, w) = vim_ctx("a\tb中c\nabcdefghi中j\nabcdefgh\tX", 10, 6);
+    // S4's rows: character wrap, now that word wrap is the default.
+    ctx.text_mut(b).unwrap().settings_mut().wrap = Wrap::Char;
     let t = ctx.text(b).unwrap();
     let cols: Vec<usize> = [0, 1, 2, 3, 6, 7]
         .iter()
@@ -107,10 +109,14 @@ fn tabs_and_wide_characters_have_correct_display_columns() {
     assert_eq!(cols, [0, 1, 8, 9, 11, 12], "a, tab, b, 中, c, end of line");
     assert_eq!(
         t.pos_at_vcol(0, 10),
-        3,
-        "a column inside a wide char lands on it"
+        6,
+        "a column inside a wide char lands after it (LAYOUT-4)"
     );
-    assert_eq!(t.pos_at_vcol(0, 5), 1, "a column inside a tab lands on it");
+    assert_eq!(
+        t.pos_at_vcol(0, 5),
+        2,
+        "a column inside a tab lands after it (LAYOUT-4)"
+    );
     let f = screen(&mut ctx, w);
     assert_eq!(
         f.rows[0], "a       b",
@@ -154,7 +160,7 @@ fn sub_line_hides_and_virtual_text() {
     }
     t.decorate(9..9, Deco::Virtual(" [3 tokens]".into()))
         .unwrap();
-    let stops: Vec<usize> = t.display_line(0).stops.iter().map(|s| s.pos).collect();
+    let stops: Vec<usize> = t.display_line(0).stops().iter().map(|s| s.pos).collect();
     assert_eq!(stops, [0, 1, 4, 7, 8, 9]);
     assert_eq!(t.display_col(4), 2);
     ctx.type_keys("ll");
@@ -237,21 +243,28 @@ fn reveal_never_and_remove() {
     assert_eq!(lc(&ctx, b, w), (1, 2));
 }
 
-fn row_text(t: &TextBuf) -> String {
-    let d = t.display_line(0);
-    d.rows[0].iter().map(|c| c.text.as_str()).collect()
+fn editor(text: &str) -> (Ctx, BufferId, WindowId) {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", text);
+    let w = ctx.open_window(b, 20, 3).unwrap();
+    (ctx, b, w)
+}
+
+fn row_text(ctx: &mut Ctx, w: WindowId) -> String {
+    screen(ctx, w).rows[0].clone()
 }
 
 /// A freed slot is reused, so a decoration's id doesn't say when it was added.
 #[test]
 fn virtual_text_at_one_position_shows_in_the_order_added() {
     let virt = |s: &str| Deco::Virtual(s.into());
-    let mut t = TextBuf::new("abc");
+    let (mut ctx, b, w) = editor("abc");
+    let t = ctx.text_mut(b).unwrap();
     let first = t.decorate(1..1, virt("1")).unwrap();
     t.decorate(1..1, virt("2")).unwrap();
     t.undecorate(first).unwrap();
     t.decorate(1..1, virt("3")).unwrap();
-    assert_eq!(row_text(&t), "a23bc");
+    assert_eq!(row_text(&mut ctx, w), "a23bc");
 }
 
 fn hide(replacement: Option<&str>) -> Deco {
@@ -265,11 +278,12 @@ fn hide(replacement: Option<&str>) -> Deco {
 #[test]
 fn virtual_text_where_two_hides_touch_follows_the_later_ones_start() {
     for (replacement, want) in [(None, "af"), (Some("R"), "aVRf")] {
-        let mut t = TextBuf::new("abcdef");
+        let (mut ctx, b, w) = editor("abcdef");
+        let t = ctx.text_mut(b).unwrap();
         t.decorate(1..3, hide(None)).unwrap();
         t.decorate(3..5, hide(replacement)).unwrap();
         t.decorate(3..3, Deco::Virtual("V".into())).unwrap();
-        assert_eq!(row_text(&t), want);
+        assert_eq!(row_text(&mut ctx, w), want);
     }
 }
 
@@ -316,10 +330,14 @@ fn a_position_that_isnt_a_cursor_position_answers_for_the_one_before_it() {
 
 #[test]
 fn an_empty_replacement_is_no_replacement() {
-    let mut t = TextBuf::new("abc");
-    let id = t.decorate(1..2, hide(Some(""))).unwrap();
-    assert_eq!(row_text(&t), "ac");
-    let stored = t.decoration(id).unwrap();
+    let (mut ctx, b, w) = editor("abc");
+    let id = ctx
+        .text_mut(b)
+        .unwrap()
+        .decorate(1..2, hide(Some("")))
+        .unwrap();
+    assert_eq!(row_text(&mut ctx, w), "ac");
+    let stored = ctx.text(b).unwrap().decoration(id).unwrap();
     assert!(matches!(
         &stored.deco,
         Deco::Hide {
@@ -336,10 +354,11 @@ fn among_equal_hides_the_first_added_gives_the_replacement() {
         replacement: Some(s.into()),
         reveal: Reveal::Never,
     };
-    let mut t = TextBuf::new("abcd");
+    let (mut ctx, b, w) = editor("abcd");
+    let t = ctx.text_mut(b).unwrap();
     let gone = t.decorate(1..3, hide("x")).unwrap();
     t.decorate(1..3, hide("y")).unwrap();
     t.undecorate(gone).unwrap();
     t.decorate(1..3, hide("z")).unwrap();
-    assert_eq!(row_text(&t), "ayd");
+    assert_eq!(row_text(&mut ctx, w), "ayd");
 }

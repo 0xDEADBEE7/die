@@ -10,6 +10,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use unicode_width::UnicodeWidthChar;
 
+mod support;
+use support::naive_layout as naive;
+
 thread_local! {
     static STATS: RefCell<std::collections::BTreeMap<&'static str, usize>> = RefCell::default();
 }
@@ -50,10 +53,10 @@ enum Op {
         rows: u8,
     },
     Set {
-        nums: bool,
+        nums: u8,
         maxw: Option<u8>,
         center: bool,
-        wrap: bool,
+        wrap: u8,
         tab: u8,
     },
     J(bool),
@@ -80,7 +83,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (any::<u16>(), text_s(4)).prop_map(|(at, s)| Op::Virt { at, s }),
         1 => (any::<u16>(), 0u8..10).prop_map(|(at, len)| Op::Ro { at, len }),
         1 => (8u8..40, 1u8..8).prop_map(|(cols, rows)| Op::Resize { cols, rows }),
-        1 => (any::<bool>(), prop::option::of(2u8..30), any::<bool>(), prop::bool::weighted(0.8), 1u8..9)
+        1 => (0u8..4, prop::option::of(2u8..30), any::<bool>(), 0u8..5, 1u8..9)
             .prop_map(|(nums, maxw, center, wrap, tab)| Op::Set { nums, maxw, center, wrap, tab }),
         4 => any::<bool>().prop_map(Op::J),
         4 => (-3i8..=3).prop_map(Op::Gj),
@@ -166,7 +169,7 @@ fn apply(ctx: &mut Ctx, b: BufferId, w: WindowId, op: &Op, hides: &mut Vec<Decor
                 t.decorate(
                     p..q,
                     Deco::Hide {
-                        replacement: repl.clone(),
+                        replacement: repl.clone().map(Into::into),
                         reveal: Reveal::Remove,
                     },
                 )
@@ -181,7 +184,7 @@ fn apply(ctx: &mut Ctx, b: BufferId, w: WindowId, op: &Op, hides: &mut Vec<Decor
         }
         Op::Virt { at: a, s } => {
             let p = at(t, *a);
-            t.decorate(p..p, Deco::Virtual(s.clone())).unwrap();
+            t.decorate(p..p, Deco::Virtual(s.clone().into())).unwrap();
         }
         Op::Ro { at: a, len } => {
             let p = at(t, *a);
@@ -196,14 +199,19 @@ fn apply(ctx: &mut Ctx, b: BufferId, w: WindowId, op: &Op, hides: &mut Vec<Decor
             tab,
         } => {
             let s = t.settings_mut();
-            s.line_numbers = if *nums {
-                LineNumbers::Absolute
-            } else {
-                LineNumbers::Off
+            s.line_numbers = match nums {
+                0 => LineNumbers::Off,
+                1 => LineNumbers::Absolute,
+                2 => LineNumbers::Relative,
+                _ => LineNumbers::Visual,
             };
             s.max_width = maxw.map(|m| m as usize);
             s.center = *center;
-            s.wrap = *wrap;
+            s.wrap = match wrap {
+                0 => Wrap::Off,
+                1 | 2 => Wrap::Char,
+                _ => Wrap::Word,
+            };
             s.tab_width = *tab as usize;
         }
         Op::J(down) => {
@@ -400,10 +408,7 @@ fn oracle(
             }
             let c = s[p..].chars().next();
             if c.is_none() || c == Some('\n') {
-                if full(col) {
-                    cur.push(vec![]);
-                    col = 0;
-                }
+                // A line end stays on its row, even a full one (WRAP-2).
                 stops.push(OStop {
                     pos: p,
                     row: base + cur.len() - 1,
@@ -455,16 +460,19 @@ fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
     let hides: Vec<HideD> = t
         .decorations()
         .filter_map(|(_, d)| match &d.deco {
-            Deco::Hide { replacement, .. } => {
-                Some((d.range.start, d.range.end, replacement.clone(), d.seq))
-            }
+            Deco::Hide { replacement, .. } => Some((
+                d.range.start,
+                d.range.end,
+                replacement.as_ref().map(|r| r.text.clone()),
+                d.seq,
+            )),
             _ => None,
         })
         .collect();
     let virt: Vec<(usize, String, u64)> = t
         .decorations()
         .filter_map(|(_, d)| match &d.deco {
-            Deco::Virtual(v) => Some((d.range.start, v.clone(), d.seq)),
+            Deco::Virtual(v) => Some((d.range.start, v.text.clone(), d.seq)),
             _ => None,
         })
         .collect();
@@ -488,7 +496,8 @@ fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
     {
         bump("hide joining lines");
     }
-    if t.settings().wrap && t.viewport(w).unwrap().rows.iter().any(|r| r.row > 0) {
+    let wrap = t.settings().wrap;
+    if wrap != Wrap::Off && t.viewport(w).unwrap().rows.iter().any(|r| r.row > 0) {
         bump("wrapped rows on screen");
     }
     if t.viewport(w).unwrap().top > 0 {
@@ -514,8 +523,12 @@ fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
         );
     }
     let g = t.geometry(w).unwrap();
-    let width = t.settings().wrap.then_some(g.text_w);
-    let (orows, ostops) = oracle(&s, &hides, &virt, width, t.settings().tab_width);
+    let width = (wrap != Wrap::Off).then_some(g.text_w);
+    let (orows, ostops) = if wrap == Wrap::Word {
+        word_oracle(t, w)
+    } else {
+        oracle(&s, &hides, &virt, width, t.settings().tab_width)
+    };
     let vp = t.viewport(w).unwrap();
     let top = orows
         .iter()
@@ -564,11 +577,445 @@ fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
             );
         }
     }
-    let cursor = frame.cursors.first().map(|c| (c.row, c.col));
+    let cursor = frame.cursors.first().map(|c| (c.row, c.col, c.past_end));
     let want = t.screen_pos(w, cur);
     assert!(want.is_some(), "step {step}: cursor scrolled out of view");
-    // M0 has no horizontal scrolling: a cursor past an unwrapped window's edge isn't drawn.
-    assert_eq!(cursor, want.filter(|&(_, c)| c < cols));
+    // Past a full row, the cursor goes in the right padding, or else on the row's last cell
+    // (WRAP-2). M0 has no horizontal scrolling: a cursor past an unwrapped window's edge isn't
+    // drawn.
+    let want = want
+        .map(|(r, c)| {
+            let past = width.is_some() && c == g.text_x + g.text_w && c >= cols;
+            (r, c - past as usize, past)
+        })
+        .filter(|&(_, c, _)| c < cols);
+    assert_eq!(cursor, want, "step {step}: the cursor in {s:?}");
+}
+
+// ---------------------------------------------------------------- the property against the naive layout (K4)
+
+/// `support/naive_layout.rs`, written from contract §9 alone, on what this buffer holds.
+fn naive_input(t: &TextBuf, w: WindowId, text_w: usize) -> naive::Input {
+    let s = t.settings();
+    let mut decos: Vec<&Decoration> = t.decorations().map(|(_, d)| d).collect();
+    decos.sort_by_key(|d| d.seq);
+    let mut input = naive::Input::new(&t.rope().to_string(), text_w)
+        .tab_width(s.tab_width)
+        .wrap(match s.wrap {
+            Wrap::Off => naive::Wrap::Off,
+            Wrap::Word => naive::Wrap::Word,
+            Wrap::Char => naive::Wrap::Char,
+        })
+        .numbers(naive_numbers(s.line_numbers), t.cursor(w).unwrap());
+    for d in decos {
+        match &d.deco {
+            Deco::Hide { replacement, .. } => {
+                let r = replacement.as_ref().map(|r| r.text.as_str());
+                input = input.hide(d.range.clone(), r);
+            }
+            Deco::Virtual(v) => input = input.virtual_text(d.range.start, &v.text),
+            _ => {}
+        }
+    }
+    input
+}
+
+fn naive_numbers(n: LineNumbers) -> naive::LineNumbers {
+    match n {
+        LineNumbers::Off => naive::LineNumbers::Off,
+        LineNumbers::Absolute => naive::LineNumbers::Absolute,
+        LineNumbers::Relative => naive::LineNumbers::Relative,
+        LineNumbers::Visual => naive::LineNumbers::Visual,
+    }
+}
+
+/// The naive layout's rows and positions, in the shape of S4's oracle, for word wrap.
+fn word_oracle(t: &TextBuf, w: WindowId) -> (Vec<ORow>, Vec<OStop>) {
+    let g = t.geometry(w).unwrap();
+    let l = naive::layout(&naive_input(t, w, g.text_w));
+    let mut starts = vec![];
+    let mut rows = vec![];
+    for (i, r) in l.rows.iter().enumerate() {
+        if i == 0 || l.rows[i - 1].display_line != r.display_line {
+            starts.push(l.line_starts[r.display_line]);
+        }
+        let first = rows
+            .iter()
+            .rposition(|x: &ORow| x.dl_start != l.line_starts[r.display_line]);
+        rows.push(ORow {
+            dl_start: l.line_starts[r.display_line],
+            row: first.map_or(rows.len(), |f| rows.len() - f - 1),
+            cells: r.cells.iter().map(naive_cell).collect(),
+        });
+    }
+    let stops = l
+        .positions
+        .iter()
+        .map(|p| OStop {
+            pos: p.pos,
+            row: p.row,
+            col: p.col,
+            has_cell: l.rows[p.row].cells.len() > p.col,
+        })
+        .collect();
+    (rows, stops)
+}
+
+fn naive_cell(c: &naive::Cell) -> String {
+    match c {
+        naive::Cell::Cluster(s) => s.clone(),
+        naive::Cell::Continue => String::new(),
+        naive::Cell::Tab | naive::Cell::Filler => " ".into(),
+        naive::Cell::Control(c) => c.to_string(),
+    }
+}
+
+/// Every row, cursor position, number and query against the naive layout, with the window made
+/// tall enough to show them all. The window's size and scroll are put back after.
+fn check_naive(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
+    let (cols, rows) = ctx.window_size(w).unwrap();
+    let t = ctx.text(b).unwrap();
+    let scroll = t.scroll(w).unwrap();
+    let g = t.geometry(w).unwrap();
+    let s = t.rope().to_string();
+    let input = naive_input(t, w, g.text_w);
+    let l = naive::layout(&input);
+    let n = t.settings();
+    let ng = naive::geometry(&s, input.numbers, cols, n.max_width, n.center);
+    let got = (g.gutter, g.text_w, g.pad, g.text_x);
+    assert_eq!(
+        got,
+        (ng.gutter, ng.text_w, ng.pad, ng.text_x),
+        "step {step}: geometry of {s:?}"
+    );
+
+    // Every position's answers, whether or not it's a cursor position.
+    for q in s.char_indices().map(|(i, _)| i).chain([s.len()]) {
+        let at = l.positions.iter().find(|p| p.pos == q);
+        assert_eq!(
+            t.is_stop(q),
+            at.is_some(),
+            "step {step}: is {q} a stop in {input:?}"
+        );
+        let le = l
+            .positions
+            .iter()
+            .rev()
+            .find(|p| p.pos <= q && l.rows[p.row].display_line == naive_line(&l, q));
+        let answer = le.or(l.positions.iter().find(|p| p.pos >= q)).unwrap();
+        assert_eq!(
+            t.display_col(q),
+            answer.display_col,
+            "step {step}: display_col({q}) in {input:?}"
+        );
+        let moved = naive::moved_cursor(q, &naive::hidden_ranges(&input.hides), &l.positions);
+        assert_eq!(
+            t.snap(q, None),
+            moved,
+            "step {step}: snap({q}) in {input:?}"
+        );
+        let on_line = |p: &&naive::CursorPos| l.rows[p.row].display_line == naive_line(&l, q);
+        let before = l.positions.iter().filter(on_line).rfind(|p| p.pos <= q);
+        let after = l.positions.iter().filter(on_line).find(|p| p.pos >= q);
+        assert_eq!(
+            t.snap(q, Some(Dir::Backward)),
+            before.or(after).unwrap().pos,
+            "step {step}: snap({q}, Backward) in {input:?}"
+        );
+        assert_eq!(
+            t.snap(q, Some(Dir::Forward)),
+            after.or(before).unwrap().pos,
+            "step {step}: snap({q}, Forward) in {input:?}"
+        );
+    }
+    for q in 0..s.len() {
+        if !s.is_char_boundary(q) {
+            assert!(
+                !t.is_stop(q),
+                "step {step}: {q} is inside a character of {s:?}"
+            );
+        }
+    }
+
+    ctx.resize(w, cols, l.rows.len().max(1)).unwrap();
+    let t = ctx.text_mut(b).unwrap();
+    t.set_scroll(w, 0, 0).unwrap();
+    let frame = ctx.compose(
+        cols,
+        l.rows.len() + 2,
+        &[WindowPlacement {
+            window: w,
+            col: 0,
+            row: 0,
+        }],
+    );
+    let t = ctx.text(b).unwrap();
+    let vp = t.viewport(w).unwrap();
+    assert_eq!(
+        vp.rows.len(),
+        l.rows.len(),
+        "step {step}: the rows of {input:?}"
+    );
+    let room = cols.saturating_sub(g.text_x);
+    for (i, (have, want)) in vp.rows.iter().zip(&l.rows).enumerate() {
+        assert_eq!(
+            have.number, want.number,
+            "step {step}: row {i}'s number in {input:?}"
+        );
+        assert_eq!(
+            have.dline_start, l.line_starts[want.display_line],
+            "step {step}: row {i}'s line in {input:?}"
+        );
+        // The text cells, as far as the window reaches. A newline's cell is blank past them.
+        let cell = |x: usize| frame.row(i)[g.text_x + x].glyph.clone();
+        for x in 0..room.min(want.cells.len()) {
+            let glyph = match &want.cells[x] {
+                naive::Cell::Cluster(c) if c.chars().count() == 1 => {
+                    Glyph::Char(c.chars().next().unwrap())
+                }
+                naive::Cell::Cluster(c) => Glyph::Cluster(c.as_str().into()),
+                naive::Cell::Continue => Glyph::Continuation,
+                naive::Cell::Tab | naive::Cell::Filler => Glyph::Char(' '),
+                naive::Cell::Control(c) => Glyph::Char(*c),
+            };
+            assert_eq!(
+                cell(x),
+                glyph,
+                "step {step}: row {i}, cell {x} of {input:?}"
+            );
+        }
+        for x in want.cells.len()..room {
+            assert_eq!(
+                cell(x),
+                Glyph::Char(' '),
+                "step {step}: row {i}, cell {x} is past its end in {input:?}"
+            );
+        }
+        // The gutter's cells.
+        let gutter: String = frame.row(i)[g.pad.min(cols)..(g.pad + g.gutter).min(cols)]
+            .iter()
+            .map(|c| c.glyph.to_string())
+            .collect();
+        let shown = &want.gutter[..gutter.len().min(want.gutter.len())];
+        assert_eq!(gutter, shown, "step {step}: row {i}'s gutter in {input:?}");
+        // This row's cursor positions, as far as an unwrapped row reports them.
+        let stops: Vec<(usize, usize, usize)> = have
+            .stops()
+            .iter()
+            .map(|p| (p.pos, p.col, p.vcol))
+            .collect();
+        let mine: Vec<(usize, usize, usize)> = l
+            .positions
+            .iter()
+            .filter(|p| p.row == i)
+            .map(|p| (p.pos, p.col, p.display_col))
+            .collect();
+        assert_eq!(
+            stops[..],
+            mine[..stops.len().min(mine.len())],
+            "step {step}: row {i}'s stops in {input:?}"
+        );
+        if n_is_wrapped(t) {
+            assert_eq!(stops, mine, "step {step}: row {i}'s stops in {input:?}");
+        }
+    }
+    for p in &l.positions {
+        assert_eq!(
+            t.screen_pos(w, p.pos),
+            Some((p.row, g.text_x + p.col)),
+            "step {step}: screen_pos({}) in {input:?}",
+            p.pos
+        );
+    }
+    check_moves(t, w, &l, &input, step);
+    ctx.resize(w, cols, rows).unwrap();
+    let t = ctx.text_mut(b).unwrap();
+    t.set_scroll(w, scroll.0, scroll.1).unwrap();
+}
+
+fn n_is_wrapped(t: &TextBuf) -> bool {
+    t.settings().wrap != Wrap::Off
+}
+
+/// Which display line the naive layout puts position `q` on.
+fn naive_line(l: &naive::Layout, q: usize) -> usize {
+    l.line_starts.partition_point(|s| *s <= q) - 1
+}
+
+/// `move_visual` and `pos_at_vcol` by their sentences in §9, over the naive layout's positions.
+fn check_moves(t: &TextBuf, w: WindowId, l: &naive::Layout, input: &naive::Input, step: usize) {
+    let on_row = |r: usize| l.positions.iter().filter(move |p| p.row == r);
+    let wrapped = n_is_wrapped(t);
+    // With no wrapping, a display line is one row and a column is a display column.
+    let col_of = |p: &naive::CursorPos| if wrapped { p.col } else { p.display_col };
+    let rows_with_stop: Vec<usize> = (0..l.rows.len())
+        .filter(|&r| on_row(r).next().is_some())
+        .collect();
+    for p in &l.positions {
+        for dy in [-2isize, -1, 1, 3] {
+            for goal in [None, Some(0), Some(4)] {
+                let i = rows_with_stop.iter().position(|&r| r == p.row).unwrap() as isize;
+                let to = (i + dy).clamp(0, rows_with_stop.len() as isize - 1);
+                let used = goal.unwrap_or(col_of(p));
+                let want = if to == i {
+                    p.pos
+                } else {
+                    let row = rows_with_stop[to as usize];
+                    let mut there = on_row(row);
+                    let first = there.next().unwrap();
+                    on_row(row)
+                        .filter(|s| col_of(s) <= used)
+                        .last()
+                        .unwrap_or(first)
+                        .pos
+                };
+                assert_eq!(
+                    t.move_visual(w, p.pos, dy, goal),
+                    Some((want, used)),
+                    "step {step}: move_visual({}, {dy}, {goal:?}) in {input:?}",
+                    p.pos
+                );
+            }
+        }
+    }
+    for line in 0..t.line_count() {
+        let start = t.line_start(line);
+        let d = naive_line(l, start);
+        let stops: Vec<&naive::CursorPos> = l
+            .positions
+            .iter()
+            .filter(|p| l.rows[p.row].display_line == d)
+            .collect();
+        for vcol in [0, 1, 3, 8, 9, 40] {
+            let want = stops
+                .iter()
+                .find(|p| p.display_col >= vcol)
+                .unwrap_or(stops.last().unwrap());
+            assert_eq!(
+                t.pos_at_vcol(line, vcol),
+                want.pos,
+                "step {step}: pos_at_vcol({line}, {vcol}) in {input:?}"
+            );
+        }
+    }
+}
+
+/// Text with what the naive layout has rules for: clusters, marks, control characters, wide
+/// characters, and whitespace with marks on it.
+fn rich_text(max: usize) -> impl Strategy<Value = String> {
+    let ch = prop_oneof![
+        8 => Just('a'), 3 => Just('b'), 5 => Just(' '), 3 => Just('\n'), 2 => Just('\t'),
+        2 => Just('中'), 1 => Just('é'), 1 => Just('\u{301}'), 1 => Just('\u{903}'),
+        1 => Just('\u{1}'), 1 => Just('\r'), 1 => Just('\u{7f}'), 1 => Just('\u{85}'),
+        1 => Just('👍'), 1 => Just('\u{1f3fd}'), 1 => Just('\u{1f1e6}'), 1 => Just('\u{200b}'),
+        1 => Just('\u{200d}'), 1 => Just('\u{a0}'), 1 => Just('-'),
+    ];
+    prop::collection::vec(ch, 0..max).prop_map(|v| v.into_iter().collect())
+}
+
+#[derive(Debug, Clone)]
+enum N {
+    Ins(u16, String),
+    Del(u16, u8),
+    Hide(u16, u8, Option<String>),
+    Unhide(u8),
+    Virt(u16, String),
+    Size(u8),
+    Set(u8, Option<u8>, bool, u8, u8),
+    Cursor(u16),
+}
+
+fn n_step() -> impl Strategy<Value = N> {
+    prop_oneof![
+        3 => (any::<u16>(), rich_text(5)).prop_map(|(a, s)| N::Ins(a, s)),
+        3 => (any::<u16>(), 0u8..8).prop_map(|(a, n)| N::Del(a, n)),
+        2 => (any::<u16>(), 0u8..12, prop::option::of(rich_text(5))).prop_map(|(a, n, r)| N::Hide(a, n, r)),
+        1 => any::<u8>().prop_map(N::Unhide),
+        2 => (any::<u16>(), rich_text(5)).prop_map(|(a, s)| N::Virt(a, s)),
+        1 => (2u8..30).prop_map(N::Size),
+        1 => (0u8..4, prop::option::of(2u8..20), any::<bool>(), 0u8..5, 0u8..9).prop_map(|(n, m, c, wr, t)| N::Set(n, m, c, wr, t)),
+        2 => any::<u16>().prop_map(N::Cursor),
+    ]
+}
+
+fn run_naive(init: String, width: u8, steps: Vec<N>) {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("p", &init);
+    let w = ctx.open_window(b, width as usize, 4).unwrap();
+    check_naive(&mut ctx, b, w, 0);
+    let mut hides = vec![];
+    for (i, step) in steps.iter().enumerate() {
+        if let N::Size(cols) = step {
+            ctx.resize(w, *cols as usize, 4).unwrap();
+        }
+        let t = ctx.text_mut(b).unwrap();
+        match step {
+            N::Ins(a, s) => {
+                let p = at(t, *a);
+                t.tx(Origin::Extension)
+                    .insert(p, s.as_str())
+                    .commit()
+                    .unwrap();
+            }
+            N::Del(a, n) => {
+                let p = at(t, *a);
+                let q = chars_after(t, p, *n as usize);
+                t.tx(Origin::Extension).delete(p..q).commit().unwrap();
+            }
+            N::Hide(a, n, r) => {
+                let p = at(t, *a);
+                let q = chars_after(t, p, *n as usize);
+                let deco = Deco::Hide {
+                    replacement: r.clone().map(Into::into),
+                    reveal: Reveal::Remove,
+                };
+                hides.push(t.decorate(p..q, deco).unwrap());
+            }
+            N::Unhide(k) => {
+                if !hides.is_empty() {
+                    t.undecorate(hides.remove(*k as usize % hides.len()));
+                }
+            }
+            N::Virt(a, s) => {
+                let p = at(t, *a);
+                t.decorate(p..p, Deco::Virtual(s.clone().into())).unwrap();
+            }
+            N::Size(_) => {}
+            N::Set(nums, maxw, center, wrap, tab) => {
+                let s = t.settings_mut();
+                s.line_numbers = [
+                    LineNumbers::Off,
+                    LineNumbers::Absolute,
+                    LineNumbers::Relative,
+                    LineNumbers::Visual,
+                ][*nums as usize];
+                s.max_width = maxw.map(|m| m as usize);
+                s.center = *center;
+                s.wrap =
+                    [Wrap::Off, Wrap::Char, Wrap::Word, Wrap::Word, Wrap::Word][*wrap as usize];
+                s.tab_width = *tab as usize;
+            }
+            N::Cursor(a) => {
+                let p = at(t, *a);
+                t.set_cursor(w, p);
+            }
+        }
+        check_naive(&mut ctx, b, w, i + 1);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
+    /// K4's second check: rows, positions, numbers and queries match the naive layout, across edits
+    /// and decoration changes, so a stale cache shows too.
+    #[test]
+    fn layout_agrees_with_the_naive_layout(
+        init in rich_text(60),
+        width in 2u8..24,
+        steps in prop::collection::vec(n_step(), 0..12),
+    ) {
+        run_naive(init, width, steps);
+    }
 }
 
 fn run(init: String, ops: Vec<Op>) {

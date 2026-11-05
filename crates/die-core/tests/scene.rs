@@ -267,7 +267,7 @@ text
 |  1 fn f() {    |
 |  2     x       |
 |  3 }           |
-|  4             |
+|                |
 | t              |
 |                |
 style
@@ -575,7 +575,7 @@ fn nothing_a_window_draws_spills_into_its_neighbour() {
         ctx.open_window(b, 10, 1).unwrap(),
     );
     ctx.focus(wa);
-    ctx.text_mut(a).unwrap().settings_mut().wrap = false;
+    ctx.text_mut(a).unwrap().settings_mut().wrap = Wrap::Off;
     for pos in [10, 15] {
         ctx.text_mut(a).unwrap().set_cursor(wa, pos);
         let s = ctx.compose(21, 3, &[at(wb, 11), at(wa, 0)]);
@@ -701,7 +701,7 @@ fn providers_are_asked_for_the_drawn_text_only() {
     let mut ctx = Ctx::new(vec![Box::new(PaintExt)]).unwrap();
     let b = ctx.create_text("t", &format!("{}\n", "x".repeat(1000)));
     let w = ctx.open_window(b, 10, 1).unwrap();
-    ctx.text_mut(b).unwrap().settings_mut().wrap = false;
+    ctx.text_mut(b).unwrap().settings_mut().wrap = Wrap::Off;
     ctx.enable_mode::<Paint>(b).unwrap();
     let asked = |ctx: &mut Ctx| {
         compose_one(ctx, w);
@@ -1029,7 +1029,7 @@ fn status_line_prompt_and_surface_text_are_laid_out_like_buffer_text() {
     );
     let s = ctx.compose(12, 4, &[at(wc, 0)]);
     assert_eq!(s.row_text(0), "abcdefghi │");
-    assert_eq!(s.row_text(1), "a?b       │", "a tab is a control character");
+    assert_eq!(s.row_text(1), "a^Ib      │", "a tab is a control character");
     // A prompt too long for the row shows its end, where the cursor is.
     ctx.prompt(":", |_, _| Ok(()));
     ctx.type_keys("ab");
@@ -1303,7 +1303,7 @@ fn check_sweep(case: SweepCase) -> std::result::Result<(), TestCaseError> {
     ctx.focus(w);
     let len = case.text.len();
     let t = ctx.text_mut(b).unwrap();
-    t.settings_mut().wrap = case.wrap;
+    t.settings_mut().wrap = if case.wrap { Wrap::Char } else { Wrap::Off };
     if case.gutter {
         t.settings_mut().line_numbers = LineNumbers::Absolute;
     }
