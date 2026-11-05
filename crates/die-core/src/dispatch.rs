@@ -1,5 +1,6 @@
 //! Commands and key dispatch (contract §5-§7): `Args`, the prefix argument, modal state, `run`,
 //! `feed_keys` and the lookup order. The prompt is here until K11a moves it.
+#![warn(missing_docs)]
 use crate::error::*;
 use crate::ext::*;
 use crate::ids::*;
@@ -11,14 +12,20 @@ use std::rc::Rc;
 
 // ------------------------------------------------------------------ commands and registry
 
+/// What a command was invoked with (contract §6).
 #[derive(Clone, Default, Debug)]
 pub struct Args {
+    /// The prefix argument's count, if set.
     pub count: Option<usize>,
+    /// The prefix argument's register, if set.
     pub register: Option<char>,
+    /// The rest of the line, when called as `:orchid-send hello`.
     pub text: Option<String>,
     /// The key sequence that invoked the command (Emacs's last-command-event).
     pub keys: Vec<KeyEvent>,
+    /// The window it was invoked from, so async code doesn't depend on focus.
     pub window: Option<WindowId>,
+    /// The buffer it was invoked on.
     pub buffer: Option<BufferId>,
     /// For a Hide's reveal command: the decoration being revealed.
     pub deco: Option<DecorationId>,
@@ -29,11 +36,13 @@ impl Args {
     pub fn typed(&self) -> Option<String> {
         self.keys.last().and_then(KeyEvent::printable)
     }
+    /// The first character the last key typed, for `<char>` bindings.
     pub fn char(&self) -> Option<char> {
         self.typed().and_then(|s| s.chars().next())
     }
 }
 
+/// A command's body, as `Registry::command` stores it.
 pub type CommandFn = Rc<dyn Fn(&mut Ctx, &Args) -> Result>;
 
 pub(crate) struct Command {
@@ -42,15 +51,21 @@ pub(crate) struct Command {
     pub(crate) f: CommandFn,
 }
 
+/// The prefix argument (contract §6). Core stores it and doesn't parse Vim syntax.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Prefix {
+    /// The count.
     pub count: Option<usize>,
+    /// The register.
     pub register: Option<char>,
 }
 
+/// Where a key came from, for key observers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeySource {
+    /// From the OS or `Ctx::input`.
     Typed,
+    /// From `Ctx::feed_keys`.
     Fed,
 }
 
@@ -89,6 +104,7 @@ impl Ctx {
             b.state = s;
         }
     }
+    /// The prefix argument as it stands.
     pub fn prefix(&self) -> Prefix {
         self.prefix
     }
@@ -165,6 +181,7 @@ impl Ctx {
             f: Box::new(f),
         });
     }
+    /// The text typed into the open prompt, if there is one.
     pub fn prompt_text(&self) -> Option<&str> {
         self.prompt.as_ref().map(|p| p.text.as_str())
     }
