@@ -504,6 +504,30 @@ fn a_fold_counts_once_in_relative_and_visual_numbers() {
     }
 }
 
+/// §9, and call 29 once a probe answered it: on a fold that joins lines, Visual's cursor row shows
+/// the line the cursor is on, as tty Emacs does. Relative stays on the first line's number.
+#[test]
+fn a_fold_joining_lines_numbers_the_cursors_own_line_in_visual() {
+    let (mut ctx, b, w) = window("a\nb\nc\nd", 10, 2);
+    ctx.text_mut(b).unwrap().decorate(1..4, hide(None)).unwrap();
+    for (style, cursor, want) in [
+        (LineNumbers::Absolute, 4, [1, 4]),
+        (LineNumbers::Relative, 4, [1, 1]),
+        (LineNumbers::Visual, 4, [3, 1]),
+        (LineNumbers::Visual, 5, [3, 1]),
+        (LineNumbers::Visual, 0, [1, 1]),
+    ] {
+        let t = ctx.text_mut(b).unwrap();
+        t.settings_mut().line_numbers = style;
+        t.set_cursor(w, cursor);
+        assert_eq!(
+            numbers(&mut ctx, b, w),
+            want.map(Some),
+            "{style:?}, {cursor}"
+        );
+    }
+}
+
 #[test]
 fn numbers_for_a_cursor_off_screen_are_still_its_distance() {
     let text = "x\n".repeat(30);

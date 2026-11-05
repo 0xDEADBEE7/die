@@ -5,7 +5,8 @@
 //! it item by item from any row's start, `Src::place` makes one row, and `Line` keeps where each
 //! row starts, so a row's cells are made again when they're drawn and hold no memory. An edit keeps
 //! the rows it can't have changed. Cursor positions need no layout at all: they read the rope around
-//! them, so they cost the same whatever the line's length.
+//! them, so they cost the same whatever the line's length, unless one cluster or run of flags is that
+//! long, because Unicode's rules look back along it.
 #![warn(missing_docs)]
 
 use crate::Registry;
@@ -943,7 +944,7 @@ impl TextBuf {
         if style == Off {
             return;
         }
-        let (cur, _) = self.locate(self.views[&w].sel.head, m);
+        let (cur, at) = self.locate(self.views[&w].sel.head, m);
         let cur_row = match self.rows_between(top, cur, m, usize::MAX) {
             Some(n) => n as isize,
             None => -(self.rows_between(cur, top, m, usize::MAX).unwrap_or(0) as isize),
@@ -966,7 +967,7 @@ impl TextBuf {
                 Absolute => (vr.row == 0).then_some(own),
                 Relative if line == cur_line => (vr.row == 0).then_some(own),
                 Relative => (vr.row == 0).then_some(line.abs_diff(cur_line)),
-                Visual if on_cursor => Some(own),
+                Visual if on_cursor => Some(self.line_of(at.pos) + 1),
                 Visual => Some((i as isize).abs_diff(cur_row)),
             };
         }

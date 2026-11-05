@@ -763,7 +763,10 @@ pub fn layout(input: &Input) -> Layout {
                 LineNumbers::Relative if !is_first_row => None,
                 LineNumbers::Relative if d == cursor_line => Some(own_number),
                 LineNumbers::Relative => Some(d.abs_diff(cursor_line)),
-                LineNumbers::Visual if r == cursor_row => Some(own_number),
+                // "the cursor's row shows the number of the line the cursor is on".
+                LineNumbers::Visual if r == cursor_row => {
+                    Some(input.text[..cursor].matches('\n').count() + 1)
+                }
                 LineNumbers::Visual => Some(r.abs_diff(cursor_row)),
             }
         };

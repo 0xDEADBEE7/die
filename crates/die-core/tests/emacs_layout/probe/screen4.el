@@ -17,7 +17,10 @@
       (setq display-line-numbers (intern mode) display-line-numbers-width 2))
     (insert text)
     (unless (string-empty-p fold)
-      (let ((o (make-overlay 3 8))) (overlay-put o 'invisible t)))
+      ;; FOLD is the hidden range's first byte and the byte after it, from 0, in ASCII text.
+      (let* ((p (mapcar #'string-to-number (split-string fold " ")))
+             (o (make-overlay (1+ (car p)) (1+ (cadr p)))))
+        (overlay-put o 'invisible t)))
     (goto-char (1+ cur))
     (redisplay t) (sit-for 0.5) (redisplay t)
     (with-temp-file (getenv "MARK") (insert "x"))
