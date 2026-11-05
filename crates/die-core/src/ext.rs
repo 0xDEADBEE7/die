@@ -426,6 +426,7 @@ impl Ctx {
             ..Default::default()
         };
         crate::layout::register_commands(&mut reg);
+        crate::commands::register_commands(&mut reg);
         let mut errors = vec![];
         let mut slots: Vec<ExtSlot> = vec![];
         for mut e in exts {
