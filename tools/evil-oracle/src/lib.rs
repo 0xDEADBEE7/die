@@ -651,6 +651,8 @@ pub enum DeviationKind {
     RegexSyntax,
     /// Needs file-type modes (M1); until then die-vim indents like the line above.
     NeedsModes,
+    /// Emacs dies on this case, so the oracle has none. What die-vim does is its fixture's say.
+    OracleDies,
 }
 
 #[derive(Debug, Deserialize)]

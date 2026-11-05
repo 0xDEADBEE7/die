@@ -10,7 +10,8 @@
 //!   They're left out here. Each gets a hand-written fixture in
 //!   `oracle/hand-written/`, which runs here like an oracle case. It states a
 //!   different result for the same keys, mode and input, and only a regex-syntax
-//!   deviation may change the keys.
+//!   deviation may change the keys. A case whose oracle run dies has no oracle case to replace:
+//!   its rule's kind says so, and it runs here like any other hand-written fixture.
 //! - `oracle/pending.txt` names the cases die-vim doesn't pass yet, by the work
 //!   package they land with. A pending case that passes fails this test, and so
 //!   does a failing case that isn't pending.
@@ -30,8 +31,8 @@ use die_test_cap as _;
 use die_core::{Ctx, Harness, RegKind, Register, Selection, Shape, State, TextBuf};
 use die_vim::Vim;
 use evil_oracle::{
-    Case, DeviationKind, Deviations, RegisterKind, Run, SelectionKind, State as EvilState, Tranche,
-    fixtures_dir, load_fixtures, parse_pending, tranche,
+    Case, DeviationKind, DeviationRule, Deviations, RegisterKind, Run, SelectionKind,
+    State as EvilState, Tranche, fixtures_dir, load_fixtures, parse_pending, tranche,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -62,8 +63,25 @@ fn oracle() {
             all.insert(format!("{}/{}", fx.topic, c.id), (c, fx.run));
         }
     }
-    let excluded: BTreeSet<&str> = deviations.cases().map(|d| d.case.as_str()).collect();
+    let unrunnable = |r: &&DeviationRule| r.kind == DeviationKind::OracleDies;
+    let excluded: BTreeSet<&str> = deviations
+        .rules
+        .iter()
+        .filter(|r| !unrunnable(r))
+        .flat_map(|r| &r.cases)
+        .map(|d| d.case.as_str())
+        .collect();
     let mut problems = Vec::new();
+    for d in deviations
+        .rules
+        .iter()
+        .filter(unrunnable)
+        .flat_map(|r| &r.cases)
+    {
+        if all.contains_key(&d.case) {
+            problems.push(format!("{}: the oracle does run this case", d.case));
+        }
+    }
 
     // A hand-written fixture replaces a deviation's oracle case, under the same name.
     let hand =
