@@ -19,7 +19,7 @@ V2 search/star-case
 V2 search/star-n
 V2 search/star-whole-word
 
-# V3 (7)
+# V3 (8)
 V3 registers/black-hole-skips-clipboard
 V3 registers/clipboard-paste-from-other-app
 V3 registers/clipboard-written-on-yank-and-delete
@@ -27,6 +27,7 @@ V3 registers/plus-register-paste
 V3 registers/plus-register-yank
 V3 search/d-slash
 V3 search/not-found
+V3 undo/gU-after-an-undone-edit-then-u
 
 # V4 (65)
 V4 hand-written/macros/dot-after-macro

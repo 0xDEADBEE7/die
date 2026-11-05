@@ -169,7 +169,10 @@ pub fn end_of_line(s: &Start) -> Result<Target, Fail> {
                 ..Target::at(end)
             }
         } else {
-            Target::at(normal_pos(t, end))
+            Target {
+                goal: Some(Goal::Eol),
+                ..Target::at(normal_pos(t, end))
+            }
         });
     }
     Ok(Target {

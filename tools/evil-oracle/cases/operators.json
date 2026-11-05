@@ -304,5 +304,13 @@
   {"id": "dB-is-exclusive", "keys": "dB", "text": ["foo bar| baz"]},
   {"id": "g~g~", "keys": "g~g~", "text": ["a|bC", "d"]},
   {"id": "gUgU", "keys": "gUgU", "text": ["a|bC", "d"]},
-  {"id": "gugu", "keys": "gugu", "text": ["a|bC", "d"]}
+  {"id": "gugu", "keys": "gugu", "text": ["a|bC", "d"]},
+  {"id": "j-shift-right-dollar", "vim": "Vim's cursor is at line 1 col 4, Evil's at line 1 col 7", "keys": "j>$", "text": ["a|bcdef", "abcd"]},
+  {"id": "k-shift-right-dollar", "vim": "Vim's cursor is at line 0 col 4, Evil's at line 0 col 6", "keys": "k>$", "text": ["abc", "defg|h"]},
+  {"id": "gg-shift-right-dollar", "vim": "Vim's cursor is at line 0 col 4, Evil's at line 0 col 6", "keys": "gg>$", "text": ["abc", "defg|h"]},
+  {"id": "G-shift-right-dollar", "vim": "Vim's cursor is at line 1 col 4, Evil's at line 1 col 8", "keys": "G>$", "text": "ab|c\ndefgh"},
+  {"id": "Down-shift-left-dollar", "vim": "Vim's cursor is at line 1 col 0, Evil's at line 1 col 4", "keys": "<Down><$", "text": ["    a|bc", "    defgh"]},
+  {"id": "Down-d5-dollar", "vim": "Vim's cursor is at line 1 col 0, Evil's at line 1 col 1", "keys": "<Down>d5$", "text": ["|abc", "defgh", "xyz", "uvw", "q", "r", "ss"]},
+  {"id": "shift-right-dollar-without-a-vertical-motion", "vim": "Vim's cursor is at line 0 col 4, Evil's at line 0 col 1", "keys": "l>$", "text": ["|abcdef"]},
+  {"id": "failed-h-then-shift-right-dollar", "vim": "Vim's cursor is at line 1 col 4, Evil's at line 1 col 8", "keys": "jh>$", "text": ["|a", "bcdef", "x"]}
  ]}

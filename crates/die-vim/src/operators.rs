@@ -228,6 +228,10 @@ fn covered(
     if let Some(e) = to.short.filter(|&e| !goes_on(e)) {
         return Err(Error::Msg(e.into()));
     }
+    // After a vertical motion, Evil's `$` sets the goal column its operator then goes by.
+    if to.goal == Some(Goal::Eol) && sel.goal.is_some() {
+        t.set_selection(w, sel.with_goal(Goal::encode(to.goal)));
+    }
     let (beg, end) = (sel.head.min(to.pos), sel.head.max(to.pos));
     let span = if takes_lines(op) {
         lines(t, beg, end)
@@ -508,7 +512,9 @@ fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, past_end: bool
         _ => old.chars().map(inverted).collect(),
     };
     let end = span.beg + new.len();
-    // As a buffer's first change, Evil's `u` after `gU` and `gu` goes to the change's start.
+    // As the first change since the buffer was last unmodified, Evil's `u` after `gU` and `gu`
+    // goes to the change's start. An unchanged revision is the nearest die-vim can ask until
+    // K6's modified flag, so it gets this wrong after an undone edit, and will after a save.
     if op != Operator::InvertCase && t.rev() == 0 {
         t.set_cursor(w, span.beg);
     }

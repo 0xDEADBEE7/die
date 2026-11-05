@@ -87,8 +87,9 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
             t.set_cursor(w, q);
         }
         Entry::Append => {}
+        // On a line of nothing but spaces that's the last one, where `^` lands, as in Evil.
         Entry::InsertLine => {
-            t.set_cursor(w, indent_end(t, line));
+            t.set_cursor(w, rest_pos(t, indent_end(t, line)));
         }
         Entry::AppendLine => {
             t.set_cursor(w, line_end(t, line));
