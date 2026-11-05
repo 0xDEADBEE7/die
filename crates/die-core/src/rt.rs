@@ -144,6 +144,7 @@ fn fire(sub: &Rc<SubInner>, f: &TimerFn) -> Queued {
     Queued {
         ext: sub.ext,
         alive: Some(sub.clone()),
+        keyed: false,
         f: Box::new(move |ctx| (f.borrow_mut())(ctx)),
     }
 }
@@ -166,6 +167,8 @@ pub(crate) struct SubEntry {
 pub(crate) struct Queued {
     pub(crate) ext: ExtIdx,
     pub(crate) alive: Option<Rc<SubInner>>,
+    /// A prompt's answer a key submitted: part of the key stream (contract §6).
+    pub(crate) keyed: bool,
     pub(crate) f: Callback,
 }
 
@@ -176,6 +179,7 @@ impl Ctx {
         self.queue.push_back(Queued {
             ext,
             alive: None,
+            keyed: false,
             f: Box::new(f),
         });
     }
@@ -356,6 +360,7 @@ impl Ctx {
             ) if inner.alive.get() => self.queue.push_back(Queued {
                 ext: inner.ext,
                 alive: Some(inner),
+                keyed: false,
                 f: Box::new(move |ctx| f(ctx, v)),
             }),
             _ => {}
@@ -401,11 +406,16 @@ impl Ctx {
     /// One turn of the loop: queued calls first (C3), then one key (fed keys before typed ones).
     /// False if nothing was ready. It never waits, so a host can call it until it returns false.
     pub fn step(&mut self) -> bool {
+        self.fed_at = 0;
         self.collect_due();
         if let Some(q) = self.queue.pop_front() {
             if q.alive.as_ref().is_none_or(|a| a.alive.get()) {
                 self.cmd_seq += 1;
+                let keyed = q.keyed;
                 let r = self.guarded(q.ext, q.f);
+                if keyed && r.is_err() {
+                    self.fed.clear();
+                }
                 self.report(r);
                 // Code that runs between units (the host, a harness) gets a number of its own.
                 self.cmd_seq += 1;
