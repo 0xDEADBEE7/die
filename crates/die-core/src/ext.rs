@@ -250,6 +250,8 @@ pub enum RegKind {
     Line,
     /// A rectangle.
     Block,
+    /// Keys `q` recorded, in notation. Any other register holds plain text, which `@` types.
+    Macro,
 }
 
 /// What a register holds.

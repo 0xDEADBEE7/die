@@ -29,11 +29,11 @@
 
 use die_test_cap as _;
 
-use die_core::{Ctx, RegKind, Register, State, parse_keys};
+use die_core::{Ctx, RegKind, Register, Selection, Shape, State, TextBuf, parse_keys};
 use die_vim::Vim;
 use evil_oracle::{
-    Case, DeviationKind, Deviations, RegisterKind, Run, State as EvilState, Tranche, fixtures_dir,
-    load_fixtures, parse_pending, tranche,
+    Case, DeviationKind, Deviations, RegisterKind, Run, SelectionKind, State as EvilState, Tranche,
+    fixtures_dir, load_fixtures, parse_pending, tranche,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -209,9 +209,6 @@ fn pending_file(failing: &BTreeMap<String, Tranche>) -> String {
 /// Run one case; Err says every way it differs from Evil, or what can't be checked yet.
 fn run_case(case: &Case, run: Run) -> Result<(), String> {
     let input = &case.input;
-    if input.visual.is_some() {
-        return Err("can't start a case in visual state yet (the harness, K7)".into());
-    }
     if input.clipboard.is_some() || case.id.contains("clipboard") || case.keys.contains("\"+") {
         return Err("no clipboard yet (K6)".into());
     }
@@ -239,6 +236,13 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
             "the cursor can't start at byte {}: core put it at {set:?}",
             input.cursor.byte
         ));
+    }
+    if let Some(v) = &input.visual {
+        let sel = selection_from(&ctx, buf, input.cursor.byte, v)?;
+        ctx.text_mut(buf)
+            .map_err(|e| format!("{e:?}"))?
+            .set_selection(w, sel);
+        ctx.set_state_of(buf, State::Visual);
     }
     for (name, r) in input.registers.iter().flatten() {
         ctx.set_register(
@@ -283,8 +287,12 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
         | (EvilState::Operator, State::OperatorPending) => {}
         (want, got) => diffs.push(format!("state {got:?}, want {want:?}")),
     }
-    if want.visual.is_some() {
-        diffs.push("can't compare a visual selection yet (V4 defines the mapping)".into());
+    if let Some(v) = &want.visual {
+        let got = text.selection(w).map(|sel| selected(text, sel));
+        let wanted = Some((v.kind, v.start.byte, v.end.byte));
+        if got != wanted {
+            diffs.push(format!("selection {got:?}, want {wanted:?}"));
+        }
     }
     // Your Evil lists every register the keys changed, so the others must be as they were.
     let names = ('0'..='9').chain('a'..='z').chain(['-']);
@@ -350,6 +358,69 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
     }
 }
 
+/// A case's starting selection: your Evil's `start` and `end`, with the cursor on one end.
+/// `end` is just past the selection, so the anchor is the character before it.
+fn selection_from(
+    ctx: &Ctx,
+    buf: die_core::BufferId,
+    head: usize,
+    v: &evil_oracle::Selection,
+) -> Result<Selection, String> {
+    let t = ctx.text(buf).map_err(|e| format!("{e:?}"))?;
+    let r = t.rope();
+    let last = r.char_to_byte(r.byte_to_char(v.end.byte).saturating_sub(1));
+    Ok(Selection {
+        anchor: if head == v.start.byte {
+            last
+        } else {
+            v.start.byte
+        },
+        head,
+        shape: match v.kind {
+            SelectionKind::Char => Shape::Char,
+            SelectionKind::Line => Shape::Line,
+            SelectionKind::Block => Shape::Block,
+        },
+        goal: None,
+    })
+}
+
+/// A selection as your Evil's fixture says it: its shape, and the bytes from its start to
+/// just past its end. Whole lines run through the last one's newline.
+fn selected(t: &TextBuf, sel: Selection) -> (SelectionKind, usize, usize) {
+    let (lo, hi) = (sel.anchor.min(sel.head), sel.anchor.max(sel.head));
+    let r = t.rope();
+    let past = |p: usize| r.char_to_byte((r.byte_to_char(p) + 1).min(r.len_chars()));
+    let after_line = |line: usize| {
+        if line + 1 < t.line_count() {
+            t.line_start(line + 1)
+        } else {
+            t.len()
+        }
+    };
+    let line_of = t.line_of(lo);
+    match sel.shape {
+        Shape::Char => (SelectionKind::Char, lo, past(hi)),
+        Shape::Line => (
+            SelectionKind::Line,
+            t.line_start(line_of),
+            after_line(t.line_of(hi)),
+        ),
+        Shape::Block => {
+            // Evil's region: the corner further right takes in its character, unless it's
+            // on a line's end, and in one column, the lower one does.
+            let (cl, ch) = (t.display_col(lo), t.display_col(hi));
+            let at_end = |p: usize| r.get_byte(p).is_none_or(|b| b == b'\n');
+            let (beg, end) = if cl > ch || (cl == ch && at_end(hi)) {
+                (if at_end(lo) { lo } else { past(lo) }, hi)
+            } else {
+                (lo, if at_end(hi) { hi } else { past(hi) })
+            };
+            (SelectionKind::Block, beg, end)
+        }
+    }
+}
+
 fn reg_char(name: &str) -> Result<char, String> {
     let mut c = name.chars();
     match (c.next(), c.next()) {
@@ -358,10 +429,10 @@ fn reg_char(name: &str) -> Result<char, String> {
     }
 }
 
-/// A recorded macro is held as its keys in notation, so it's charwise text.
 fn reg_kind(k: RegisterKind) -> RegKind {
     match k {
-        RegisterKind::Char | RegisterKind::Macro => RegKind::Char,
+        RegisterKind::Macro => RegKind::Macro,
+        RegisterKind::Char => RegKind::Char,
         RegisterKind::Line => RegKind::Line,
         RegisterKind::Block => RegKind::Block,
     }

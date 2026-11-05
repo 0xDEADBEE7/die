@@ -218,6 +218,7 @@ The last column is my proposal for die-vim. "Evil" means keep Evil's behaviour, 
 | 23 | A key after an operator | Any other command runs as if it were a motion: `dA` deletes to the end of the line. Some (`x`, `y`, `p`, Esc) quit | Fails, and does nothing | 1 | **Vim** (Evil bug) |
 | 24 | A string that never closes | `di"` deletes from the quote, or the character before it, to the end of the text less one character, or fails, depending on what's earlier in the text | Fails | 2 | **Vim** (Evil bug) |
 | 25 | A register before a failed motion | `"a` before an `h`, `l` or `f` that fails stays named for the next command | The failed command uses it up | 1 | **Vim** (Evil bug) |
+| 26 | `R`'s `<BS>` over a newline it typed | Deletes it and inserts the next character a second time: `Rx<CR><BS><BS>` on `abc` gives `abbc` | Puts back what the key took: `abc` | 1 | **Vim** (Evil bug) |
 
 Rows 1–4 and 8 affect everyday editing most. Row 1 is also a question for core, not only die-vim: should a file that ends in a newline show an empty last line?
 

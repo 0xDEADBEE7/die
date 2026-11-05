@@ -31,7 +31,8 @@
         { "case": "wrapped/gj-at-last-visual-line", "fixture": "hand-written/wrapped.json" },
         { "case": "macros/error-stops-macro", "note": "the macro ends one repetition earlier, where j fails on the last line", "fixture": "hand-written/macros.json" },
         { "case": "macros/recursive", "note": "the recursion ends where j fails on the last line", "fixture": "hand-written/macros.json" },
-        { "case": "macros/macro-records-count", "note": "the macro's final j fails on the last line, so the cursor stays on line 2, with an error Evil's run doesn't have", "fixture": "hand-written/macros.json" }
+        { "case": "macros/macro-records-count", "note": "the macro's final j fails on the last line, so the cursor stays on line 2, with an error Evil's run doesn't have", "fixture": "hand-written/macros.json" },
+        { "case": "visual-corners/v-G-d", "note": "G in visual state stops on the last line, so it takes as far as the goal column there, and the newline stays", "fixture": "hand-written/visual-corners.json" }
       ]
     },
     {
@@ -165,6 +166,14 @@
       "evil": "A \"x before an h, l or f that fails stays named for the next command, because those motions reset this-command when they signal.",
       "die_vim": "As in Vim: the failed command uses it up.",
       "cases": [{ "case": "registers/register-kept-after-failed-X", "fixture": "hand-written/registers.json" }]
+    },
+    {
+      "rule": "R's backspace takes back a newline",
+      "s5_row": 26,
+      "kind": "evil-bug",
+      "evil": "In replace state, <BS> over a newline typed there deletes it and inserts the character after it a second time: Rx<CR><BS><BS> on abc gives abbc.",
+      "die_vim": "As in Vim: <BS> puts back what the key took, and a newline took nothing, so abc stays abc.",
+      "cases": [{ "case": "visual-corners/replace-backspace-past-a-typed-newline", "fixture": "hand-written/visual-corners.json" }]
     }
   ]
 }
