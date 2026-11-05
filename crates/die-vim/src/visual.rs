@@ -274,6 +274,7 @@ pub fn object(ctx: &mut Ctx, a: &Args, object: Object, kind: ObjectShape) -> Res
     let at = |pos| {
         object(&Start {
             text: t,
+            window: w,
             pos,
             count: a.count,
             goal: None,
