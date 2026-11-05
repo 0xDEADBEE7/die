@@ -202,6 +202,10 @@ fn top_group(stack: &[Entry]) -> (Option<usize>, Vec<Shift>) {
 }
 
 impl History {
+    /// Whether an explicit group is collecting.
+    pub fn group_open(&self) -> bool {
+        self.depth > 0
+    }
     /// Record a change. `sel_before` is the acting window's selection just before it, which
     /// undo restores if this is the step's first change.
     pub fn record(&mut self, op: Op, sel_before: Option<Selection>, cmd: u64, limit: Limit) {
