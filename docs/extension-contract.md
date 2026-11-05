@@ -143,7 +143,7 @@ args
 
 ## 7. Keymaps and modal states
 
-- **States** (scope §5.6): normal, insert, visual, operator-pending, command line, copy and passthrough.
+- **States** (scope §5.6): normal, insert, replace, visual, operator-pending, command line, copy and passthrough.
 - **Copy state** is normal and visual running over a read-only snapshot (scope D19). A window enters it when you leave passthrough with the DIE layer's Esc, and when you're in normal state on a surface without a text keymap. die-vim registers its normal and visual grammar as the copy-state keymap for every surface kind. In a terminal, `i` and `a` return to passthrough.
 - **A keymap** maps key sequences to command names, per state. The notation follows Vim: `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`.
   - Key names match without case. A `<` that doesn't start a key name is a literal `<`. A bracketed word that isn't a key name, or modifiers followed by something that isn't a key or by no closing `>`, is a startup error. `feed_keys` and macro register text are notation too, so a literal `<` there is written `<lt>`. Literal characters that form one grapheme cluster (`👍🏽`, `🇦🇺`) are one key, as text committed by the OS is. A keymap can't bind one: that's a startup error, so bind `<char>` and read `args.key`.
@@ -437,7 +437,9 @@ Surface
 ```
 
 **Rendering.**
-- `render` writes into a DIE-owned cell frame clipped to `area` (scope D8). A cell holds a character, colors, attributes, an underline style and color, and wide-character continuation; the link id arrives with die-term (M2).
+- `render` writes into a DIE-owned cell frame clipped to `area` (scope D8). A cell holds a character, colors, attributes, an underline style and color, and wide-character continuation.
+- A producer resolves what a cell doesn't hold. Reverse video swaps the colors, faint blends the foreground toward the background (65 %, as ghostel does), invisible text draws a space, and blinking text draws steadily.
+- Cells are built with `Cell::new(glyph, fg, bg)` and then their fields set, since a struct literal doesn't compile outside die-core. So overline and the link id can arrive with die-term (M2) without breaking a producer.
 - `render` also places images and pixel buffers on rectangles of cells, each with a source rectangle, a pixel offset and a z-order. A negative z draws below text.
 - `render` can't change the workspace. It gets the surface mutably, so it can update its own caches, but it doesn't get `Ctx`.
 - **Components are plain Rust types that render into part of an area,** so a new graphical extension can be assembled from reusable pieces. The contract needs nothing extra for this. Your existing browsers don't use custom surfaces at all (§9).
@@ -494,6 +496,8 @@ C3 costs you something with multi-step prompts, which nest one callback per step
 
 - **Base faces in core:** `default`, `shadow`, `bold`, `highlight`, `selection`, `search`, `link`, `heading` (inherits from `bold`), `error`, `warning`, `success`, `line-number` (inherits from `shadow`), `status-line` and `cursor`. Core also declares the faces it draws its own screen parts with, each inheriting from a base face: `line-number-current`, `status-line-inactive`, `divider`, `search-current`, `bracket-match` and `prompt`. An extension can't declare those names. seek uses only base faces (`shadow`, `bold`, `highlight` and `search`).
 - **Faces stack** on a text cell from the bottom up: `default`, then stored face decorations (one nested inside another is above it), then mode providers' faces, then search, bracket-match and selection. What a face leaves unset comes from the face below it.
+- **A newline has a cell of its own,** so a selected or highlighted newline shows as one cell, as in Vim and in your Emacs, where mono-dark's region has no `:extend`. The cells past it draw `default`. A block selection is the exception: it stops at each line's end, so it shows nothing on a short or empty line's newline, as in Evil.
+- **A face no one declared draws as nothing.** A decoration or a provider can name any face, so the first time one no one declared is drawn, `*messages*` reports it, once for each name. A theme's undeclared faces are reported when it's set.
 - **Extension faces** are declared with a default style and an optional parent face. For example, `orchid.user-message` inherits from `default`.
 - **A theme** is data that maps face names to styles, and it can style any extension's faces. It also sets the 16 ANSI colors that terminals use. mono-dark and dark-coffee become theme values in your config.
 

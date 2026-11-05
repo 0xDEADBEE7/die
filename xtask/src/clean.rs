@@ -562,10 +562,10 @@ pub fn clean_command(
 
 /// Run a `clean_cargo` command. On failure, lead with any stand-in that was
 /// called and the build script that called it.
-pub fn run_clean(cmd: &mut Command, what: &str) -> Result {
+pub fn run_clean(cmd: &mut Command, what: &str) -> Result<String> {
     let out = cmd.output().map_err(|e| e.to_string())?;
     if out.status.success() {
-        return Ok(());
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
     let err = String::from_utf8_lossy(&out.stderr);
     let mut summary: Vec<String> = Vec::new();

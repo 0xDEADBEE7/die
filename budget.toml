@@ -116,7 +116,8 @@ files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
 # die-render's modules at M0 (docs/records/platforms.md §5.7). The neutral code
 # (the atlas, row cache, instance building, window, loop and input: R2-R4) goes
 # here as it lands. Linux's modules, `platform::linux` and the portable backend
-# (`backend::wgpu`, `text::fontations`), join with their code.
+# (`backend::wgpu`, `text::fontations`), join with their code, and replace the
+# stub.
 
 [[module]]
 crate = "die-render"
@@ -124,9 +125,18 @@ name = "neutral"
 limit = 2300
 files = ["lib.rs", "platform/mod.rs"]
 
+# 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
+# Raising it is when the thin-wrapper question gets asked.
 [[module]]
 crate = "die-render"
 name = "platform::macos"
 platforms = ["macos"]
-limit = 1600
+limit = 900
 files = ["platform/macos/"]
+
+[[module]]
+crate = "die-render"
+name = "platform stub"
+platforms = ["linux"]
+limit = 50
+files = ["platform/backend.rs"]

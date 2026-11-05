@@ -13,6 +13,8 @@ pub enum State {
     Normal,
     /// Typing inserts text.
     Insert,
+    /// Replace (`R`): typed text overwrites. Its cursor is `CursorShape::Underline`.
+    Replace,
     /// A selection grows with the motions.
     Visual,
     /// An operator waits for its motion.

@@ -11,11 +11,11 @@ use crate::ctx::*;
 use crate::faces::*;
 use crate::ids::*;
 use crate::keymap::State;
-use crate::layout::{CellKind, Viewport};
+use crate::layout::{CellKind, Stop, Viewport};
 use crate::text::*;
 use std::cmp::Reverse;
 use std::fmt::{self, Write};
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -53,6 +53,20 @@ impl Glyph {
 }
 
 /// One cell of the grid, with its faces resolved to colors and attributes.
+///
+/// A cell producer resolves what a cell doesn't hold: reverse video swaps `fg`
+/// and `bg`, faint blends `fg` toward `bg` (65 %, as ghostel does), invisible
+/// text draws a space, and blinking text draws steadily. Cells are built with
+/// `Cell::new` and then their fields set, so a field added later (overline and
+/// the link id, with die-term in M2) breaks no producer. Outside die-core, a
+/// struct expression doesn't compile, even one that names only some fields:
+///
+/// ```compile_fail,E0639
+/// use die_core::{Cell, Glyph, Rgb};
+/// let c = Rgb::hex("#000000");
+/// let _ = Cell { bold: true, ..Cell::new(Glyph::Char('x'), c, c) };
+/// ```
+#[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Cell {
     /// What the cell draws.
@@ -74,19 +88,31 @@ pub struct Cell {
 }
 
 impl Cell {
-    /// A cell drawing `glyph` in `style`, which must set `fg` and `bg`.
-    fn new(glyph: Glyph, s: Style) -> Cell {
-        let fg = s.fg.unwrap_or(FALLBACK_FG);
+    /// `glyph` in `fg` on `bg`, with no attributes and the underline in `fg`.
+    pub fn new(glyph: Glyph, fg: Rgb, bg: Rgb) -> Cell {
         Cell {
             glyph,
             fg,
-            bg: s.bg.unwrap_or(FALLBACK_BG),
-            bold: s.bold.unwrap_or(false),
-            italic: s.italic.unwrap_or(false),
-            strike: s.strike.unwrap_or(false),
-            underline: s.underline.unwrap_or_default(),
-            underline_color: s.underline_color.unwrap_or(fg),
+            bg,
+            bold: false,
+            italic: false,
+            strike: false,
+            underline: Underline::None,
+            underline_color: fg,
         }
+    }
+
+    /// A cell drawing `glyph` in `style`, which has `default` under it, so only a
+    /// theme that leaves `default`'s colors unset gets the fallbacks.
+    fn styled(glyph: Glyph, s: Style) -> Cell {
+        let fg = s.fg.unwrap_or(FALLBACK_FG);
+        let mut c = Cell::new(glyph, fg, s.bg.unwrap_or(FALLBACK_BG));
+        c.bold = s.bold.unwrap_or(false);
+        c.italic = s.italic.unwrap_or(false);
+        c.strike = s.strike.unwrap_or(false);
+        c.underline = s.underline.unwrap_or_default();
+        c.underline_color = s.underline_color.unwrap_or(fg);
+        c
     }
 }
 
@@ -94,17 +120,27 @@ impl Cell {
 const FALLBACK_FG: Rgb = Rgb::hex("#d0d0d0");
 const FALLBACK_BG: Rgb = Rgb::hex("#101010");
 
-/// How a cursor is drawn.
+/// How a cursor is drawn, in its `color`. It doesn't blink (scope §8).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CursorShape {
-    /// Normal and visual state.
+    /// Normal and visual state: the cell filled with the color, and its glyph
+    /// drawn in the cell's background color, as Emacs's box cursor does.
     Block,
-    /// Insert state, and the command line.
+    /// Insert state and the command line: a bar 2 px wide at the cell's left
+    /// edge, over the glyph (Evil's `(bar . 2)`).
     Bar,
-    /// Operator-pending state: the lower half of a block, as Evil draws it.
+    /// Replace state (Evil's `hbar`), and with die-term (M2) a terminal's
+    /// underline cursor (DECSCUSR 3 and 4): a bar 2 px high at the cell's
+    /// bottom, over the glyph.
+    Underline,
+    /// Operator-pending state: the cell's lower half filled with the color,
+    /// hiding the glyph there, as Evil's half cursor does.
     HalfBlock,
     /// A cursor that doesn't take input: another window's, or the focused
-    /// window's while the command line has a prompt.
+    /// window's while the command line has a prompt, and from K9 every cursor
+    /// while DIE's window doesn't have the keyboard focus. A 1 px outline of the
+    /// cell, with the glyph drawn as it is, as Emacs draws the cursor of a
+    /// window that isn't selected.
     Hollow,
 }
 
@@ -124,9 +160,10 @@ pub struct Cursor {
 /// Where a window sits in the frame: its text area's top-left cell. The text
 /// area is the window's own size (`Ctx::window_size`), its status line is the
 /// row below that, and a divider column follows it on the right unless it
-/// reaches the frame's right edge.
+/// reaches the frame's right edge. (`Placement` is left for M3's images and
+/// pixel buffers on rectangles of cells.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Placement {
+pub struct WindowPlacement {
     /// The window placed.
     pub window: WindowId,
     /// The frame column of the text area's left edge.
@@ -146,8 +183,11 @@ pub struct Scene {
     pub cells: Vec<Cell>,
     /// For each cell of a window's text, the window and the buffer position of
     /// the character it shows: every cell of a tab or a wide character maps to
-    /// it. Other cells, such as gutters, status lines and the cells past the
-    /// end of a line, map to None.
+    /// it, and a line's newline has a cell of its own. Cells past the end of a
+    /// row map to its last position, and past the end of a line's last row, to
+    /// its newline (on the last line, to the end of the buffer), so a click
+    /// there lands at the line's end, as in Emacs. Other cells, such as gutters,
+    /// status lines and the rows below the buffer's last line, map to None.
     pub positions: Vec<Option<(WindowId, usize)>>,
     /// Every cursor drawn. The one that takes input (the command line's while
     /// a prompt is open, otherwise the focused window's) comes first, and it's
@@ -184,22 +224,36 @@ impl Scene {
         }
     }
 
+    fn map(&mut self, row: usize, col: usize, to: (WindowId, usize)) {
+        if row < self.rows && col < self.cols {
+            self.positions[row * self.cols + col] = Some(to);
+        }
+    }
+
     /// The scene as plain text, for tests and the harness: the characters, then
-    /// a letter per cell naming its style, a legend for the letters, and the cursors.
+    /// a letter per cell naming its style, a legend for the letters, and the
+    /// cursors. It panics past 62 styles, the letters it has.
     pub fn snapshot(&self) -> String {
         type Key = (Rgb, Rgb, bool, bool, bool, Underline, Rgb);
+        // Every field, so a new one doesn't compile here until the key shows it.
         let key = |c: &Cell| {
-            (
-                c.fg,
-                c.bg,
-                c.bold,
-                c.italic,
-                c.strike,
-                c.underline,
-                c.underline_color,
-            )
+            let Cell {
+                glyph: _,
+                fg,
+                bg,
+                bold,
+                italic,
+                strike,
+                underline,
+                underline_color,
+            } = *c;
+            (fg, bg, bold, italic, strike, underline, underline_color)
         };
         let letters: Vec<char> = ('a'..='z').chain('A'..='Z').chain('0'..='9').collect();
+        let letter = |i: usize| match letters.get(i) {
+            Some(l) => *l,
+            None => panic!("a snapshot shows at most {} styles", letters.len()),
+        };
         let mut styles: Vec<Key> = vec![];
         let mut out = format!("scene {}x{}\ntext\n", self.cols, self.rows);
         for r in 0..self.rows {
@@ -215,17 +269,13 @@ impl Scene {
                     styles.push(k);
                     styles.len() - 1
                 });
-                line.push(letters.get(i).copied().unwrap_or('?'));
+                line.push(letter(i));
             }
             let _ = writeln!(out, "|{line}|");
         }
         out.push_str("legend\n");
         for (i, (fg, bg, bold, italic, strike, ul, ulc)) in styles.iter().enumerate() {
-            let _ = write!(
-                out,
-                "{} {fg} on {bg}",
-                letters.get(i).copied().unwrap_or('?')
-            );
+            let _ = write!(out, "{} {fg} on {bg}", letter(i));
             for (on, name) in [(bold, "bold"), (italic, "italic"), (strike, "strike")] {
                 if *on {
                     let _ = write!(out, " {name}");
@@ -254,15 +304,6 @@ struct Look<'a> {
     visual: bool,
 }
 
-/// What a window's text shows in this frame, beyond its decorations.
-struct Highlights {
-    search: Vec<Range<usize>>,
-    /// The match that starts at the cursor.
-    current: Option<Range<usize>>,
-    bracket: Option<[usize; 2]>,
-    selection: Option<Selection>,
-}
-
 impl Ctx {
     /// Highlight every match of `pattern` in every window, as `/` does in
     /// die-vim. `None` turns it off. A match that starts at a window's cursor
@@ -275,12 +316,12 @@ impl Ctx {
     /// Compose a `cols` × `rows` frame: each placed window with its gutter,
     /// status line and divider, and the command line in the last row. Each
     /// window is scrolled to show its cursor first (C5).
-    pub fn compose(&mut self, cols: usize, rows: usize, placements: &[Placement]) -> Scene {
+    pub fn compose(&mut self, cols: usize, rows: usize, placements: &[WindowPlacement]) -> Scene {
         let base = self
             .faces
             .get("default")
             .over(Style::new().fg(FALLBACK_FG).bg(FALLBACK_BG));
-        let blank = Cell::new(Glyph::Char(' '), base);
+        let blank = Cell::styled(Glyph::Char(' '), base);
         let background = base.bg.unwrap_or(FALLBACK_BG);
         let mut scene = Scene {
             cols,
@@ -313,7 +354,7 @@ impl Ctx {
             let style = self.faces.get(status).over(base);
             let row = p.row + wr;
             for x in 0..wc {
-                scene.put(row, p.col + x, Cell::new(Glyph::Char(' '), style));
+                scene.put(row, p.col + x, Cell::styled(Glyph::Char(' '), style));
             }
             if let Some(b) = self.buffers.get(bid) {
                 put_text(
@@ -327,7 +368,7 @@ impl Ctx {
             if p.col + wc < cols {
                 let style = self.faces.get("divider").over(base);
                 for y in 0..=wr {
-                    scene.put(p.row + y, p.col + wc, Cell::new(Glyph::Char('│'), style));
+                    scene.put(p.row + y, p.col + wc, Cell::styled(Glyph::Char('│'), style));
                 }
             }
             // A cursor past an unwrapped window's edge isn't drawn (M0 has no
@@ -386,7 +427,7 @@ impl Ctx {
     fn draw_window(
         &mut self,
         scene: &mut Scene,
-        p: &Placement,
+        p: &WindowPlacement,
         base: Style,
         focused: bool,
     ) -> Option<(usize, usize)> {
@@ -403,7 +444,7 @@ impl Ctx {
                     search: self.search_highlight.as_ref(),
                     visual: state == State::Visual && focused,
                 };
-                draw_text(scene, p, (cols, rows), t, modes, &look)
+                draw_text(scene, p, (cols, rows), t, modes, &look, &mut self.messages)
             }
             Content::Custom { obj, .. } => {
                 let mut out = vec![];
@@ -447,9 +488,9 @@ fn put_text(
         if col + w > end {
             break;
         }
-        scene.put(row, col, Cell::new(g, style));
+        scene.put(row, col, Cell::styled(g, style));
         for i in 1..w {
-            scene.put(row, col + i, Cell::new(Glyph::Continuation, style));
+            scene.put(row, col + i, Cell::styled(Glyph::Continuation, style));
         }
         col += w;
     }
@@ -459,18 +500,22 @@ fn put_text(
 fn shape_for(state: State) -> CursorShape {
     match state {
         State::Insert => CursorShape::Bar,
+        State::Replace => CursorShape::Underline,
         State::OperatorPending => CursorShape::HalfBlock,
-        _ => CursorShape::Block,
+        State::Normal | State::Visual | State::CommandLine | State::Copy | State::Passthrough => {
+            CursorShape::Block
+        }
     }
 }
 
 fn draw_text(
     scene: &mut Scene,
-    p: &Placement,
+    p: &WindowPlacement,
     (cols, rows): (usize, usize),
     t: &mut TextBuf,
     modes: &mut [ModeSlot],
     look: &Look,
+    messages: &mut Vec<String>,
 ) -> Option<(usize, usize)> {
     let Look { faces, base, .. } = *look;
     t.scroll_to_cursor(p.window);
@@ -482,14 +527,22 @@ fn draw_text(
     let cursor = t.cursor(p.window);
     // The columns left for text: an unwrapped line shows only its first ones.
     let room = cols.saturating_sub(g.text_x);
+    // Where each row's line ends, when that's on the row and it has room for a cell.
+    let ends: Vec<Option<Stop>> = vrows
+        .iter()
+        .map(|r| t.line_end_on(&g, r).filter(|e| e.col < room))
+        .collect();
     let positions = || {
-        vrows
-            .iter()
-            .flat_map(|r| r.cells.iter().take(room).filter_map(|c| c.pos))
+        let drawn = vrows.iter().flat_map(|r| r.cells.iter().take(room));
+        let ends = ends.iter().flatten().map(|e| e.pos);
+        drawn.filter_map(|c| c.pos).chain(ends)
     };
     let visible = match (positions().min(), positions().max()) {
         // To the end of the last character drawn, so the range slices.
-        (Some(lo), Some(hi)) => lo..t.rope().char_to_byte(t.rope().byte_to_char(hi) + 1),
+        (Some(lo), Some(hi)) if hi < t.len() => {
+            lo..t.rope().char_to_byte(t.rope().byte_to_char(hi) + 1)
+        }
+        (Some(lo), Some(hi)) => lo..hi,
         _ => 0..0,
     };
 
@@ -498,7 +551,9 @@ fn draw_text(
     let mut deco: Vec<(Range<usize>, &'static str)> = t
         .decorations()
         .filter_map(|(_, d)| match d.deco {
-            Deco::Face(f) => Some((d.range.clone(), f)),
+            Deco::Face(f) if d.range.start < visible.end && d.range.end > visible.start => {
+                Some((d.range.clone(), f))
+            }
             _ => None,
         })
         .collect();
@@ -514,56 +569,62 @@ fn draw_text(
     let (search, current) = look
         .search
         .map_or((vec![], None), |pat| matches(t, pat, &visible, cursor));
-    let hl = Highlights {
-        search,
-        current,
-        bracket: cursor.and_then(|c| bracket_pair(t, c, &visible)),
-        selection: if look.visual {
-            t.selection(p.window)
-        } else {
-            None
-        },
-    };
-    let block = hl.selection.filter(|s| s.shape == Shape::Block).map(|s| {
-        let (a, h) = (t.display_col(s.anchor), t.display_col(s.head));
-        let (la, lh) = (t.line_of(s.anchor), t.line_of(s.head));
-        (la.min(lh)..=la.max(lh), a.min(h)..=a.max(h))
-    });
-    let style_at = |q: usize| {
-        let mut s = base;
-        for (_, f) in deco.iter().filter(|(r, _)| r.contains(&q)) {
-            s = faces.get(f).over(s);
+    let bracket = cursor.and_then(|c| bracket_pair(t, c, &visible));
+    let selection = t
+        .selection(p.window)
+        .filter(|_| look.visual)
+        .map(|s| selected(t, s));
+
+    // Each face once, and a sweep over the cells, so a frame costs one step per
+    // cell and per face, not their product. `deco`'s order is the stacking order.
+    let layers: Vec<(Range<usize>, Style)> = deco
+        .iter()
+        .map(|(r, f)| (r.clone(), faces.of_decoration(f, messages)))
+        .collect();
+    let mut by_start: Vec<usize> = (0..layers.len()).collect();
+    by_start.sort_by_key(|&i| layers[i].0.start);
+    let [search_face, current_face, bracket_face, selection_face] =
+        ["search", "search-current", "bracket-match", "selection"].map(|f| faces.get(f));
+    let (mut next, mut on, mut in_search, mut at) = (0, Vec::<usize>::new(), 0, 0);
+    let mut style_at = |q: usize| {
+        // Cells only move forward through a window; start over if one ever doesn't.
+        if q < at {
+            (next, in_search) = (0, 0);
+            on.clear();
         }
-        let current = hl.current.as_ref().is_some_and(|m| m.contains(&q));
-        if current || hl.search.iter().any(|m| m.contains(&q)) {
-            s = faces
-                .get(if current { "search-current" } else { "search" })
-                .over(s);
+        at = q;
+        while let Some(&i) = by_start.get(next).filter(|&&i| layers[i].0.start <= q) {
+            on.insert(on.partition_point(|&a| a < i), i);
+            next += 1;
         }
-        if hl.bracket.is_some_and(|b| b.contains(&q)) {
-            s = faces.get("bracket-match").over(s);
+        on.retain(|&i| layers[i].0.end > q);
+        let mut s = on.iter().fold(base, |s, &i| layers[i].1.over(s));
+        while search.get(in_search).is_some_and(|m| m.end <= q) {
+            in_search += 1;
         }
-        if let Some(sel) = hl.selection {
-            let on = match (&block, sel.shape) {
-                (Some((lines, vcols)), _) => {
-                    lines.contains(&t.line_of(q)) && vcols.contains(&t.display_col(q))
-                }
-                (None, Shape::Line) => {
-                    let (a, h) = (t.line_of(sel.anchor), t.line_of(sel.head));
-                    (a.min(h)..=a.max(h)).contains(&t.line_of(q))
-                }
-                // A charwise selection covers both of its ends, as Vim's does.
-                _ => (sel.anchor.min(sel.head)..=sel.anchor.max(sel.head)).contains(&q),
-            };
-            if on {
-                s = faces.get("selection").over(s);
-            }
+        if current.as_ref().is_some_and(|m| m.contains(&q)) {
+            s = current_face.over(s);
+        } else if search.get(in_search).is_some_and(|m| m.contains(&q)) {
+            s = search_face.over(s);
+        }
+        if bracket.is_some_and(|b| b.contains(&q)) {
+            s = bracket_face.over(s);
+        }
+        if let Some((bytes, block_cols)) = &selection
+            && bytes.contains(&q)
+            && block_cols.as_ref().is_none_or(|v| {
+                // A block stops at a line's end, as Evil's overlays do.
+                v.contains(&t.display_col(q)) && q < t.len() && t.rope().byte(q) != b'\n'
+            })
+        {
+            s = selection_face.over(s);
         }
         s
     };
 
     let cur_line = cursor.map(|c| t.line_of(c));
     let numbers = t.settings().line_numbers;
+    let text_x = p.col + g.text_x;
     for (i, vr) in vrows.iter().enumerate().take(rows) {
         let y = p.row + i;
         if g.gutter > 0 {
@@ -584,12 +645,12 @@ fn draw_text(
             let s = format!("{label:>w$} ", w = g.gutter - 1);
             // A window narrower than its gutter shows the gutter's start.
             for (k, ch) in s.chars().enumerate().take(cols.saturating_sub(g.pad)) {
-                scene.put(y, p.col + g.pad + k, Cell::new(Glyph::Char(ch), style));
+                scene.put(y, p.col + g.pad + k, Cell::styled(Glyph::Char(ch), style));
             }
         }
         // A tab's later cells and a wide character's right half have no position
         // in layout; they show the character of the cell they belong to.
-        let mut last = None;
+        let (mut last, mut row_end) = (None, None);
         for (j, c) in vr.cells.iter().enumerate().take(room) {
             let q = match (c.pos, c.kind) {
                 (Some(q), _) => Some(q),
@@ -598,11 +659,24 @@ fn draw_text(
                 _ => None,
             };
             last = q;
-            let style = q.map_or(base, style_at);
-            let x = p.col + g.text_x + j;
-            scene.put(y, x, Cell::new(Glyph::of(&c.text), style));
-            if let (Some(q), true) = (q, y < scene.rows && x < scene.cols) {
-                scene.positions[y * scene.cols + x] = Some((p.window, q));
+            row_end = q.or(row_end);
+            let style = q.map_or(base, &mut style_at);
+            scene.put(y, text_x + j, Cell::styled(Glyph::of(&c.text), style));
+            if let Some(q) = q {
+                scene.map(y, text_x + j, (p.window, q));
+            }
+        }
+        // The newline's own cell, and where the cells past the row's end land.
+        // Padding where a wide character didn't fit is past the end too.
+        if let Some(e) = ends[i] {
+            let style = style_at(e.pos);
+            scene.put(y, text_x + e.col, Cell::styled(Glyph::Char(' '), style));
+            row_end = Some(e.pos);
+        }
+        if let Some(to) = row_end {
+            let tail = vr.cells.iter().rposition(|c| c.kind != CellKind::Filler);
+            for j in tail.map_or(0, |n| n + 1)..room {
+                scene.map(y, text_x + j, (p.window, to));
             }
         }
     }
@@ -610,6 +684,24 @@ fn draw_text(
         cursor.and_then(|c| t.screen_pos(p.window, c))
     } else {
         None
+    }
+}
+
+/// A selection's bytes, and for a block its display columns on those lines. A
+/// charwise selection covers both of its ends, as Vim's does. A linewise one takes
+/// in the buffer's end on the last line, which has a cell too.
+fn selected(t: &TextBuf, sel: Selection) -> (Range<usize>, Option<RangeInclusive<usize>>) {
+    let (lo, hi) = (sel.anchor.min(sel.head), sel.anchor.max(sel.head));
+    let past = t.line_of(hi) + 1;
+    let end = t.line_start(past) + usize::from(past == t.line_count());
+    let lines = t.line_start(t.line_of(lo))..end;
+    match sel.shape {
+        Shape::Char => (lo..hi + 1, None),
+        Shape::Line => (lines, None),
+        Shape::Block => {
+            let (a, h) = (t.display_col(sel.anchor), t.display_col(sel.head));
+            (lines, Some(a.min(h)..=a.max(h)))
+        }
     }
 }
 

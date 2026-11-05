@@ -444,7 +444,7 @@ fn check(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
     let frame = ctx.compose(
         cols,
         rows + 2,
-        &[Placement {
+        &[WindowPlacement {
             window: w,
             col: 0,
             row: 0,
