@@ -1,7 +1,8 @@
 //! `cargo xtask ci`: the checks, in a fresh clone (docs/m0-plan.md §3, "How work lands").
-//! Nothing merges until it passes. `guards` and `clean-build` run only when a change could
-//! affect them, and the property tests run at a lower count. `--full` runs everything at the
-//! old counts, at each checkpoint.
+//! `guards` and `clean-build` run only when a change could affect them, the property tests run
+//! at a lower count, and the tests marked `#[ignore]` don't run: the limits in ms, the windows
+//! and the slowest. `--full` runs everything, ignored tests too, at the old counts, at each
+//! checkpoint.
 
 use crate::util::{self, Result, TempDir, cargo, copy_worktree, git};
 use crate::{budget, clean, cross, fonts, guards, lint, sources};
@@ -22,7 +23,7 @@ pub const SLOW_STEPS: [&str; 2] = ["guards", "clean-build"];
 
 /// The property tests' case count in `ci`. The old counts are `cases()` in die-core's
 /// `tests/prop.rs`, which `--full` runs.
-pub const PROP_CASES: &str = "2000";
+pub const PROP_CASES: &str = "100";
 
 const PROP_VAR: &str = "DIE_PROP_CASES";
 
@@ -71,6 +72,8 @@ pub struct Plan {
     /// Why those steps do or don't run. Empty when there was no choice to make.
     pub steps_note: String,
     pub cases: PropCases,
+    /// The test step also runs the tests marked `#[ignore]`.
+    pub include_ignored: bool,
 }
 
 impl Plan {
@@ -80,16 +83,31 @@ impl Plan {
             skip: Vec::new(),
             steps_note: String::new(),
             cases: PropCases::OldCounts,
+            include_ignored: true,
         }
+    }
+
+    /// The test step's arguments for cargo.
+    pub fn test_args(&self) -> Vec<&'static str> {
+        let mut args = vec!["test", "--workspace", "--locked", "--offline", "--quiet"];
+        if self.include_ignored {
+            args.extend(["--", "--include-ignored"]);
+        }
+        args
     }
 
     pub fn cases_note(&self) -> String {
         match &self.cases {
             PropCases::Lowered => {
-                format!("test runs at {PROP_VAR}={PROP_CASES} (`ci --full` runs the old counts)")
+                format!(
+                    "test runs at {PROP_VAR}={PROP_CASES} without the ignored tests (`ci --full` \
+                     runs them, at the old counts)"
+                )
             }
             PropCases::AlreadySet(n) => format!("test runs at {PROP_VAR}={n}, as already set"),
-            PropCases::OldCounts => "test runs at the old property counts".into(),
+            PropCases::OldCounts => {
+                "test runs at the old property counts, ignored tests included".into()
+            }
         }
     }
 
@@ -137,6 +155,7 @@ pub fn plan(full: bool, changed: &Result<Vec<String>>, cases_set: Option<&str>) 
         skip,
         steps_note,
         cases,
+        include_ignored: full,
     }
 }
 
@@ -197,8 +216,7 @@ pub fn run(root: &Path, source: Source, full: bool) -> Result {
         (
             "test",
             Box::new(|| {
-                let mut cmd =
-                    cargo_cmd(&["test", "--workspace", "--locked", "--offline", "--quiet"]);
+                let mut cmd = cargo_cmd(&plan.test_args());
                 plan.cases.apply(&mut cmd);
                 util::run(&mut cmd)
             }),

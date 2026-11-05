@@ -428,6 +428,7 @@ fn a_panic_in_a_prompts_answer_leaves_the_state_restored() {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn a_panic_in_a_jobs_work_reaches_the_loop() {
     let mut w = world();
     let ran = Rc::new(Cell::new(false));
