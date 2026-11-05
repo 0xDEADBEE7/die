@@ -392,7 +392,20 @@ fn quoted(s: &Start, quote: char, outer: bool) -> Result<Span, Fail> {
     const NONE: Fail = "No quoted string found";
     let t = s.text;
     let pos = s.pos;
-    let (q, mut beg, mut end) = string_after(t, pos, quote).ok_or(NONE)?;
+    // A string that never closes isn't one: Evil's range there starts a character before
+    // the quote, or it fails, and neither is any use.
+    let string = |p| string_after(t, p, quote).filter(|s| s.3);
+    let (q, mut beg, mut end, _) = string(pos).ok_or(NONE)?;
+    // A string right after the next one is the one that counts, as Evil's thing-at-point
+    // finds it from the end of the first.
+    if beg > pos
+        && let Some((nq, nb, ne, _)) = string(end).filter(|s| s.1 == end)
+    {
+        (beg, end) = (nb, ne);
+        if nq != q {
+            return Err(NONE);
+        }
+    }
     let (mut lo, mut hi) = (0, t.len());
     // Inside a string of another delimiter, which it doesn't look outside of.
     if q != quote {

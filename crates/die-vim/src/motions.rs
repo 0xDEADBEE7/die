@@ -541,7 +541,14 @@ fn jump_item(s: &Start) -> Result<Target, Fail> {
 /// but its partner can be anywhere.
 fn bracket_partner(t: &TextBuf, p: usize) -> Option<usize> {
     let lists = Lists::new(t, '(', ')');
-    let eol = line_end(t, t.line_of(p));
+    let line = t.line_of(p);
+    let eol = line_end(t, line);
+    // From a line's end, the character before counts, as when `%` retries from a string's.
+    let p = if p == eol && p > t.line_start(line) {
+        normal_pos(t, p)
+    } else {
+        p
+    };
     let open = lists.down(p);
     let closer_at = |after: usize| {
         let mut c = Chars::at(t, after);

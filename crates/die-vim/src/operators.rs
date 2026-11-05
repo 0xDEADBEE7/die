@@ -531,16 +531,14 @@ pub fn with_lines(ctx: &mut Ctx, a: &Args, op: Operator) -> Result {
 
 /// `"x`: name a register for the next command. A count typed before it goes, as in Evil.
 pub fn name_register(ctx: &mut Ctx, a: &Args) -> Result {
-    match a.char() {
-        Some(c) => ctx.set_prefix(die_core::Prefix {
+    if let Some(c) = a.char() {
+        ctx.set_prefix(die_core::Prefix {
             count: None,
             register: Some(c),
-        }),
-        None => {
-            let (b, w) = buffer_window(ctx, a)?;
-            forget_goal(ctx.text_mut(b)?, w);
-        }
+        });
     }
+    let (b, w) = buffer_window(ctx, a)?;
+    forget_goal(ctx.text_mut(b)?, w);
     Ok(())
 }
 
@@ -645,6 +643,8 @@ pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
 /// before the cursor, and it goes to the last one. Both are one edit, made first.
 pub fn paste(ctx: &mut Ctx, a: &Args, before: bool) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    // Whatever happens next, the goal column goes, as after any command but `j` and `k`.
+    forget_goal(ctx.text_mut(b)?, w);
     let r = registers::read(ctx, a.register)?;
     let n = a.count.unwrap_or(1).max(1);
     if n > 1 && r.text.len().saturating_mul(n) > MAX_REPEAT {

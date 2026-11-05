@@ -247,9 +247,9 @@ pub fn prev_stop(t: &TextBuf, pos: usize) -> Option<usize> {
 
 /// The first string that ends after `p`, as Emacs's parser sees strings in fundamental-mode:
 /// parsing from the start of the text, `"` and `quote` delimit them, and `\\` escapes the
-/// next character, in a string or out. So `.0` is its delimiter, and `.1..2` its range with
-/// both quotes. A string that never closes isn't one.
-pub fn string_after(t: &TextBuf, p: usize, quote: char) -> Option<(char, usize, usize)> {
+/// next character, in a string or out. `.0` is its delimiter, and `.1..2` its range with
+/// both quotes. One that never closes runs to the end of the text, and `.3` is false.
+pub fn string_after(t: &TextBuf, p: usize, quote: char) -> Option<(char, usize, usize, bool)> {
     let mut c = Chars::at(t, 0);
     let mut open: Option<(char, usize)> = None;
     while let Some(ch) = c.ch() {
@@ -263,7 +263,7 @@ pub fn string_after(t: &TextBuf, p: usize, quote: char) -> Option<(char, usize, 
                 c.fwd();
                 let end = c.pos();
                 if end > p {
-                    return Some((q, start, end));
+                    return Some((q, start, end, true));
                 }
                 open = None;
                 continue;
@@ -272,14 +272,14 @@ pub fn string_after(t: &TextBuf, p: usize, quote: char) -> Option<(char, usize, 
         }
         c.fwd();
     }
-    None
+    open.map(|(q, start)| (q, start, t.len(), false))
 }
 
 /// The `"` string `p` is inside: past its opening quote, up to and on its closing one.
 pub fn string_around(t: &TextBuf, p: usize) -> Option<(usize, usize)> {
     string_after(t, p, '"')
-        .filter(|&(_, beg, _)| beg < p)
-        .map(|(_, beg, end)| (beg, end))
+        .filter(|&(_, beg, ..)| beg < p)
+        .map(|(_, beg, end, _)| (beg, end))
 }
 
 /// Scanning brackets as Emacs's `scan-lists` does in fundamental-mode. `(`, `[` and `{` and
