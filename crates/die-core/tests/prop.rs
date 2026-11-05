@@ -733,12 +733,47 @@ fn check_naive(ctx: &mut Ctx, b: BufferId, w: WindowId, step: usize) {
             "step {step}: snap({q}, Forward) in {input:?}"
         );
     }
+    for (d, start) in l.line_starts.iter().enumerate() {
+        let dl = t.display_line(*start);
+        let last = d + 1 == l.line_starts.len();
+        let end = l.line_starts.get(d + 1).copied().unwrap_or(s.len());
+        let lines =
+            s[..*start].matches('\n').count()..=s[..end - usize::from(!last)].matches('\n').count();
+        assert_eq!(
+            (dl.start(), dl.end(), dl.eof(), dl.lines()),
+            (*start, end, last, lines),
+            "step {step}: display line {d} of {input:?}"
+        );
+        let got: Vec<(usize, usize, usize, usize)> = dl
+            .stops()
+            .iter()
+            .map(|p| (p.pos, p.vcol, p.row, p.col))
+            .collect();
+        let want: Vec<(usize, usize, usize, usize)> = l
+            .positions
+            .iter()
+            .filter(|p| l.rows[p.row].display_line == d)
+            .map(|p| (p.pos, p.display_col, 0, p.display_col))
+            .collect();
+        assert_eq!(
+            got, want,
+            "step {step}: display line {d}'s stops in {input:?}"
+        );
+    }
     for q in 0..s.len() {
         if !s.is_char_boundary(q) {
             assert!(
                 !t.is_stop(q),
                 "step {step}: {q} is inside a character of {s:?}"
             );
+            for dir in [None, Some(Dir::Forward), Some(Dir::Backward)] {
+                let p = t.snap(q, dir);
+                assert!(
+                    t.is_stop(p),
+                    "step {step}: snap({q}, {dir:?}) gave {p} in {s:?}"
+                );
+            }
+            let _ = (t.display_col(q), t.screen_pos(w, q), t.display_line(q));
         }
     }
 

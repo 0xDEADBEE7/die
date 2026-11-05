@@ -1545,6 +1545,24 @@ fn virtual_and_replacement_text_take_their_faces() {
     );
 }
 
+/// The faces at its position reach it, even when that position's own cell isn't drawn.
+#[test]
+fn virtual_text_takes_the_faces_of_a_position_off_screen() {
+    let mut ctx = with_kw_face();
+    let (b, w) = in_window(&mut ctx, "ab", 4, 1);
+    let t = ctx.text_mut(b).unwrap();
+    t.decorate(1..1, Deco::Virtual("xxxx".into())).unwrap();
+    t.decorate(1..2, Deco::Face("p.kw")).unwrap();
+    t.set_cursor(w, 0);
+    let s = compose_one(&mut ctx, w);
+    assert_eq!(
+        s.row_text(0),
+        "axxx",
+        "x and b go on the next row, out of view"
+    );
+    assert_eq!(kw_mask(&s, 0, 4), ".###");
+}
+
 #[test]
 fn a_replacement_with_two_runs_draws_both() {
     let mut ctx = with_kw_face();
@@ -1570,13 +1588,13 @@ fn a_replacement_with_two_runs_draws_both() {
 #[test]
 fn an_undeclared_face_on_styled_text_is_reported_and_filler_takes_none() {
     let mut ctx = with_kw_face();
-    let (b, w) = in_window(&mut ctx, "aaa", 4, 2);
+    let (b, w) = in_window(&mut ctx, "aa", 4, 2);
     let t = ctx.text_mut(b).unwrap();
     let styled = Styled {
         text: "中".into(),
         faces: vec![(0..3, "p.kw")],
     };
-    t.decorate(3..3, Deco::Virtual(styled)).unwrap();
+    t.decorate(2..2, Deco::Virtual(styled)).unwrap();
     t.decorate(
         1..1,
         Deco::Virtual(Styled {
