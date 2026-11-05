@@ -126,11 +126,12 @@ const FALLBACK_BG: Rgb = Rgb::hex("#101010");
 /// A cursor the color of its cell's background wouldn't show, and a `Block` would
 /// erase the glyph. So on such a cell, as mono-dark's current search match is, the
 /// cell's foreground takes the cursor's place, and a `Block`'s glyph stays in the
-/// cell's background, as Emacs's box cursor does there.
+/// cell's background, as Emacs's `x_set_cursor_gc` does.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CursorShape {
     /// Normal and visual state: the cell filled with the color, and its glyph
-    /// drawn in the cell's background color, as Emacs's box cursor does.
+    /// drawn in the cell's background color and only inside the cell, as Emacs's
+    /// box cursor does.
     Block,
     /// Insert state and the command line: a bar 2 logical px wide at the cell's
     /// left edge, over the glyph (Evil's `(bar . 2)`).

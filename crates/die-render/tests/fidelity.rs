@@ -612,7 +612,7 @@ fn styled_letters(letters: &[(&str, bool, bool)]) -> Image {
 }
 
 #[test]
-fn each_rule_draws_with_the_files_it_pins_and_no_other_rule_s() {
+fn each_rule_draws_with_its_own_pinned_files() {
     let (italic, bold) = (
         font_dir().join("IoskeleyMonoTerm-Italic.ttf"),
         font_dir().join("IoskeleyMonoTerm-Bold.ttf"),
@@ -1251,7 +1251,7 @@ fn a_target_with_no_pixels_is_an_empty_image() {
 }
 
 #[test]
-fn a_frame_after_a_target_with_no_pixels_still_has_that_frame_s_glyphs() {
+fn a_frame_after_a_target_with_no_pixels_still_has_the_glyphs_it_asked_for() {
     let Some(mut r) = term() else { return };
     let mut s = page(4, 1);
     line(&mut s, 0, 0, "abc");

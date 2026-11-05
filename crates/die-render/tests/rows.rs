@@ -827,6 +827,20 @@ fn a_page_with_more_glyphs_than_the_atlas_costs_nothing_until_it_changes() {
 }
 
 #[test]
+fn a_page_that_fits_again_goes_back_to_rebuilding_only_what_changed() {
+    let mut f = small();
+    let mut s = blank(5, 2);
+    put(&mut s, 0, 0, "abcde");
+    frame(&mut f, &s);
+    let mut s = blank(5, 2);
+    put(&mut s, 0, 0, "ab");
+    put(&mut s, 1, 0, "c");
+    assert_eq!(rebuilt(&mut f, &s), [0, 1], "it tries again, and it fits");
+    s.cells[5].fg = RED;
+    assert_eq!(rebuilt(&mut f, &s), [1], "and starts over no more");
+}
+
+#[test]
 fn a_glyph_too_big_for_any_atlas_draws_nothing_and_costs_no_restart() {
     let mut f = small();
     let mut s = blank(4, 1);

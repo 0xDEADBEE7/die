@@ -424,7 +424,7 @@ fn a_grid_is_its_cells_and_nothing_around_them() {
 }
 
 #[test]
-fn term_names_its_four_files_in_the_order_the_styles_use_and_dies_rules() {
+fn term_names_its_four_files_in_the_order_the_styles_use() {
     let c = Config::term(16.0, 2.0);
     assert_eq!((c.points, c.scale), (16.0, 2.0));
     assert_eq!(c.rules, RangeRule::defaults());

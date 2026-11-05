@@ -285,7 +285,7 @@ pub struct Source {
     /// draws single characters only, so a character with a mark has none. If it
     /// doesn't draw this one either, the faces do.
     pub sprite: Option<char>,
-    /// The rule that decided, as an index into the rules.
+    /// The rule that decided, as an index into the rules, if any covers it.
     pub rule: Option<usize>,
 }
 
