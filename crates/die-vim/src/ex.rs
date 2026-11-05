@@ -5,10 +5,14 @@ use crate::{substitute, visual, window};
 use die_core::{Args, BufferId, Ctx, Error, PromptSpec, Result, ShowIn};
 use std::path::{Path, PathBuf};
 
-/// `:`: read a line and run it. `<BS>` on an empty line leaves it, as in your Evil. From a
-/// selection, the selection ends and the line starts with its range.
+/// `:`: read a line and run it, with your Evil's line keys. `<BS>` on an empty line leaves it,
+/// as your Evil's `evil-ex-delete-backward-char` does. From a selection, the selection ends and
+/// the line starts with its range.
 pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
-    let mut spec = PromptSpec::new(":").history("ex").backspace_cancels();
+    let mut spec = PromptSpec::new(":")
+        .history("ex")
+        .backspace_cancels()
+        .evil_keys();
     if ctx.focused_buffer().is_some_and(|b| visual::is_on(ctx, b)) {
         visual::escape(ctx, a)?;
         spec = spec.initial(substitute::VISUAL);
@@ -24,14 +28,14 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
 /// rest of the line as its [`Args::text`]. Any command in the registry can be called this way
 /// (contract §6).
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
-    let text = text.trim().trim_start_matches(':');
+    let text = text.trim().trim_start_matches(':').trim_start();
     if let Some((range, rest)) = substitute::parse(text) {
         return substitute::run(ctx, range, rest);
     }
     if let Some(done) = window::ex(ctx, text) {
         return done;
     }
-    let (name, rest) = text.split_once(' ').unwrap_or((text, ""));
+    let (name, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
     let rest = rest.trim();
     if name.is_empty() {
         return Ok(());

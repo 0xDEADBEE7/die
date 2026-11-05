@@ -369,7 +369,7 @@ impl Extension for Vim {
             command(reg, name, doc, move |ctx, a| {
                 let (b, _) = buffer_window(ctx, a)?;
                 let mut s = insert::begin(ctx, a, entry)?;
-                s.repeat = Some(Change::of(a));
+                s.repeat = Change::of(a).typed();
                 ctx.with_ext(|v: &mut Vim, _| v.inserts.insert(b, s))?;
                 Ok(())
             });

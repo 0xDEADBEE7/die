@@ -123,7 +123,10 @@ pub fn open(ctx: &mut Ctx, a: &Args, forward: bool) -> Result {
     let n = a.count.unwrap_or(1);
     let spec = PromptSpec::new(if forward { "/" } else { "?" })
         .history("search")
+        // `<BS>` on an empty line leaves it, as in Vim. Your Evil's `/` is isearch, which stays
+        // (scope §10).
         .backspace_cancels()
+        .evil_keys()
         .on_change(move |ctx, text| {
             back(ctx)?;
             let pat = compile(text).ok().filter(|_| !text.is_empty());

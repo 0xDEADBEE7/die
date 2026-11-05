@@ -1,4 +1,4 @@
-//! F4a: DIE.app, launched as you'd launch it, with `open -g` so that it takes no focus.
+//! F4a and K12: DIE.app, launched as you'd launch it, with `open -g` so that it takes no focus.
 //! Each test uses a bundle of its own under a test bundle id and a state directory of its
 //! own, so your DIE.app and its lock aren't touched, and quits what it started. They bundle
 //! the dev build, which `cargo test` mostly has already; `cargo xtask app` bundles release.
@@ -13,7 +13,13 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use xtask::util::root;
 
-/// A stub restart's limit: the plan's first check on the 1 s that a real one has.
+/// A session with text that's on no disk. It's compact, so a copy of it that DIE wrote, which is
+/// pretty-printed, can be told from this one.
+const SESSION: &str = r#"{"version":1,"focus":0,"buffers":[
+    {"name":"*notes*","text":"unsaved words","modified":true,"cursor":3}
+]}"#;
+
+/// A restart's limit here: the plan's first check on the 1 s it has.
 const RESTART_MS: f64 = 500.0;
 
 /// One DIE at a time: LaunchServices may join up two apps with the same bundle id.
@@ -34,6 +40,7 @@ impl App {
         let app = dir.join("DIE.app");
         let profile = xtask::app::Profile::Dev;
         xtask::app::build(&root(), &app, "dev.die.DIE.test", profile).unwrap();
+        std::fs::create_dir_all(dir.join("state")).unwrap();
         App {
             state: dir.join("state"),
             stderr: dir.join("stderr"),
@@ -65,6 +72,16 @@ impl App {
         let out = Command::new("pgrep").arg("-f").arg(exe).output().unwrap();
         let out = String::from_utf8(out.stdout).unwrap();
         out.lines().map(|l| l.parse().unwrap()).collect()
+    }
+
+    /// Wait for a write after the handover's: the previous copy is then the handover's own,
+    /// which DIE wrote, rather than the session the test started with.
+    fn wait_for_a_second_write(&self) -> String {
+        let previous = self.state.join("session.prev.json");
+        self.wait_for("a write after the handover", || {
+            std::fs::read_to_string(&previous).is_ok_and(|p| p.contains("\"modified\": true"))
+        });
+        std::fs::read_to_string(self.state.join("session.json")).unwrap()
     }
 
     fn holder(&self) -> Option<u32> {
@@ -136,8 +153,48 @@ fn two_launches_leave_one_instance() {
     assert_eq!(app.holder(), Some(first));
 }
 
+/// The new instance restores the session, takes the lock, and then writes the same text itself.
 #[test]
-fn a_stub_restart_hands_over_in_time() {
+fn a_restart_carries_unsaved_text_across() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let app = App::build("carry");
+    std::fs::write(app.state.join("session.json"), SESSION).unwrap();
+    app.open(&[], &["--restart-after-frame"]);
+    app.wait_for("restart", || app.state.join("restart.log").exists());
+    app.wait_for("old instance gone", || app.pids().len() == 1);
+    let new = app.pids()[0];
+    app.wait_for("lock handed over", || app.holder() == Some(new));
+    let text = app.wait_for_a_second_write();
+    assert!(text.contains("unsaved words"), "{text}");
+    assert!(text.contains("\"modified\": true"), "{text}");
+    assert_eq!(app.pids(), [new]);
+}
+
+/// A new build that panics before its first frame leaves the old one running, lock and all, and
+/// costs no unsaved text. The old one writes again by itself.
+#[test]
+fn a_build_that_panics_before_its_first_frame_leaves_the_old_one_running() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let app = App::build("panics");
+    std::fs::write(app.state.join("session.json"), SESSION).unwrap();
+    app.open(
+        &["--env", "DIE_PANIC_ON_RESTART=1"],
+        &["--restart-after-frame"],
+    );
+    app.wait_for("the failure", || {
+        app.stderr().contains("died before its first frame")
+    });
+    let old = app.holder().unwrap();
+    app.wait_for("the new instance gone", || app.pids() == [old]);
+    assert!(!app.state.join("restart.log").exists());
+    let text = app.wait_for_a_second_write();
+    assert!(text.contains("unsaved words"), "{text}");
+    assert_eq!(app.pids(), [old]);
+    assert_eq!(app.holder(), Some(old));
+}
+
+#[test]
+fn a_restart_hands_over_in_time() {
     let _one = ONE_AT_A_TIME.lock().unwrap();
     let app = App::build("restart");
     app.open(&[], &["--restart-after-frame"]);
