@@ -219,6 +219,10 @@ The last column is my proposal for die-vim. "Evil" means keep Evil's behaviour, 
 | 24 | A string that never closes | `di"` deletes from the quote, or the character before it, to the end of the text less one character, or fails, depending on what's earlier in the text | Fails | 2 | **Vim** (Evil bug) |
 | 25 | A register before a failed motion | `"a` before an `h`, `l` or `f` that fails stays named for the next command | The failed command uses it up | 1 | **Vim** (Evil bug) |
 | 26 | `R`'s `<BS>` over a newline it typed | Deletes it and inserts the next character a second time: `Rx<CR><BS><BS>` on `abc` gives `abbc` | Puts back what the key took: `abc` | 1 | **Vim** (Evil bug) |
+| 27 | `u` typed after a macro's `u` | Emacs's undo counts the first as an edit, so `xx`, `@a` holding `u`, then `u` on `abcd` gives `cd` | Each `u` goes back one step: `abcd` | 1 | **DIE** (Emacs artifact) |
+| 28 | A block's `I` replayed by a macro | Reaches only the first line, since macros run without hooks: `XXab`, `Xcd` | Every line: `XXab`, `XXcd` | 1 | **Vim** (Evil bug) |
+| 29 | `gv` after undoing what took its text | Emacs's undo moves markers back, so `vjdugv` ends on the old head | Markers stay where the delete put them, so it ends at the start | 1 | **DIE** (Emacs artifact) |
+| 30 | A second `i(` on a one-character selection | On `((a))` it fails with `(` selected; from an opening bracket it takes the outer pair | Finds what the first did | 2 | **DIE** (Evil bug) |
 
 Rows 1–4 and 8 affect everyday editing most. Row 1 is also a question for core, not only die-vim: should a file that ends in a newline show an empty last line?
 

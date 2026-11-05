@@ -96,16 +96,16 @@ pub struct How {
     no_column: bool,
     /// `~` leaves the cursor past what it changed, not at the start.
     past_end: bool,
-    /// The column a linewise `d` goes back to, if it isn't the cursor's: visual state moves
-    /// the cursor to the selection's start first.
-    col: Option<usize>,
+    /// A shift from visual state: how many, and where it lands, since the cursor stays on the
+    /// selection's head until the edit is made (call 7).
+    shift: Option<(usize, usize)>,
 }
 
 impl How {
-    /// From visual state, where the cursor was in this column.
-    pub fn from_col(col: usize) -> How {
+    /// From visual state: a shift does this many, and lands as if from `from`.
+    pub fn from_visual(count: Option<usize>, from: usize) -> How {
         How {
-            col: Some(col),
+            shift: Some((count.unwrap_or(1).max(1), from)),
             ..How::default()
         }
     }
@@ -172,10 +172,10 @@ pub fn on_motion(
 }
 
 /// A text object, with an operator waiting. One that finds nothing stops the operator.
-pub fn on_object(ctx: &mut Ctx, a: &Args, object: Object) -> Result {
+pub fn on_object(ctx: &mut Ctx, a: &Args, object: Object, shape: visual::ObjectShape) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     if visual::is_on(ctx, b) {
-        return visual::object(ctx, a, object);
+        return visual::object(ctx, a, object, shape);
     }
     let Some(p) = take(ctx, b)? else {
         return Ok(());
@@ -356,8 +356,8 @@ pub fn apply(
         Operator::Delete => delete(ctx, b, w, register, span, how),
         Operator::Change => change(ctx, a, b, w, register, span, session),
         Operator::Yank => yank(ctx, b, w, register, span),
-        Operator::ShiftLeft => shift(ctx.text_mut(b)?, w, span, false),
-        Operator::ShiftRight => shift(ctx.text_mut(b)?, w, span, true),
+        Operator::ShiftLeft => shift(ctx.text_mut(b)?, w, span, false, how.shift),
+        Operator::ShiftRight => shift(ctx.text_mut(b)?, w, span, true, how.shift),
         Operator::InvertCase | Operator::Upcase | Operator::Downcase => {
             recase(ctx.text_mut(b)?, w, op, span, how.past_end)
         }
@@ -424,7 +424,7 @@ fn delete(
 ) -> Result {
     let t = ctx.text(b)?;
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
-    let col = how.col.unwrap_or_else(|| t.display_col(sel.head));
+    let col = t.display_col(sel.head);
     let goal = Goal::decode(sel.goal);
     if how.typed && !span.lines {
         let (first, last) = (t.line_of(span.beg), t.line_of(span.end));
@@ -498,11 +498,22 @@ const SHIFT_WIDTH: usize = 4;
 /// `>` and `<`: each line moves to the next multiple of 4 columns that way. Lines of
 /// nothing but spaces end up empty, and empty lines stay empty. The cursor stays in its
 /// column, or at the line's end after `$`. It stays on its line with `>`, and with `<`
-/// goes to the first line shifted, as in Evil, where only `>` says not to move.
-fn shift(t: &mut TextBuf, w: WindowId, span: Span, right: bool) -> Result {
+/// goes to the first line shifted, as in Evil, where only `>` says not to move. From visual
+/// state a count is how many shifts, and it lands from where `visual` says.
+fn shift(
+    t: &mut TextBuf,
+    w: WindowId,
+    span: Span,
+    right: bool,
+    visual: Option<(usize, usize)>,
+) -> Result {
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
-    let here = t.line_of(if right { sel.head } else { span.beg });
-    let (col, goal) = (t.display_col(sel.head), Goal::decode(sel.goal));
+    let (n, from) = visual.unwrap_or((1, sel.head));
+    if n.saturating_mul(SHIFT_WIDTH) > MAX_REPEAT {
+        return Err(Error::Msg("Count too large".into()));
+    }
+    let here = t.line_of(if right { from } else { span.beg });
+    let (col, goal) = (t.display_col(from), Goal::decode(sel.goal));
     let mut tx_ops: Vec<(std::ops::Range<usize>, String)> = vec![];
     let mut line = t.line_of(span.beg);
     while line < t.line_count() && t.line_start(line) < span.end {
@@ -510,16 +521,16 @@ fn shift(t: &mut TextBuf, w: WindowId, span: Span, right: bool) -> Result {
         let has_text = end < line_end(t, line);
         let indent = t.display_col(end);
         let new = if right {
-            (indent / SHIFT_WIDTH + 1) * SHIFT_WIDTH
+            (indent / SHIFT_WIDTH + n) * SHIFT_WIDTH
         } else {
-            indent.div_ceil(SHIFT_WIDTH).saturating_sub(1) * SHIFT_WIDTH
+            indent.div_ceil(SHIFT_WIDTH).saturating_sub(n) * SHIFT_WIDTH
         };
         tx_ops.push((start..end, " ".repeat(if has_text { new } else { 0 })));
         line += 1;
     }
     // The empty last line, or an empty text, has no line to shift, so `>` indents it.
     if span.beg == span.end && right {
-        tx_ops.push((span.beg..span.beg, " ".repeat(SHIFT_WIDTH)));
+        tx_ops.push((span.beg..span.beg, " ".repeat(n * SHIFT_WIDTH)));
     }
     // A first change that only takes away a line's indentation, with the cursor at its start:
     // Evil's `u` goes to the end of the indentation it puts back.
@@ -566,17 +577,21 @@ pub fn cased(op: Operator, old: &str) -> String {
     }
 }
 
+/// As the first change since the buffer was last unmodified, Evil's `u` after `gU` and `gu`
+/// goes to the change's start. An unchanged revision is the nearest die-vim can ask until
+/// K6's modified flag, so it gets this wrong after an undone edit, and will after a save.
+pub fn undo_at_first_change(t: &mut TextBuf, w: WindowId, op: Operator, at: usize) {
+    if op != Operator::InvertCase && t.rev() == 0 {
+        t.set_cursor(w, at);
+    }
+}
+
 /// `g~`, `gU` and `gu`. The cursor goes to the start, or with `~`, past what it changed.
 fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, past_end: bool) -> Result {
     let old = t.rope().byte_slice(span.beg..span.end).to_string();
     let new = cased(op, &old);
     let end = span.beg + new.len();
-    // As the first change since the buffer was last unmodified, Evil's `u` after `gU` and `gu`
-    // goes to the change's start. An unchanged revision is the nearest die-vim can ask until
-    // K6's modified flag, so it gets this wrong after an undone edit, and will after a save.
-    if op != Operator::InvertCase && t.rev() == 0 {
-        t.set_cursor(w, span.beg);
-    }
+    undo_at_first_change(t, w, op, span.beg);
     // Text replaced by itself is still an undo step, as in Evil, so `u` takes it back.
     t.tx(Origin::User)
         .replace(span.beg..span.end, new)
@@ -714,8 +729,14 @@ pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
     if visual::is_on(ctx, b) {
         return visual::join(ctx, a);
     }
+    let start = cursor(ctx.text(b)?, w)?;
+    join_from(ctx, a, start)
+}
+
+/// `J` as if from `start`, with the cursor left where it is until the edit is made (call 7).
+pub fn join_from(ctx: &mut Ctx, a: &Args, start: usize) -> Result {
+    let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
-    let start = cursor(t, w)?;
     let here = t.line_of(start);
     if on_last_empty_line(t, start) {
         forget_goal(t, w);
