@@ -14,6 +14,7 @@ use std::hint::black_box;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio, exit};
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -373,6 +374,51 @@ fn a_refused_allocation_can_be_handled_and_says_so_once() {
             // The refused blocks aren't counted any more, so a block that fits is still fine.
             v.resize(LIMIT / 4, 1);
             black_box((held, v));
+        },
+    )
+    .lived_with(LINE);
+}
+
+/// Each thread counts its block, then looks at the total. If each could miss the other's
+/// count, both would get a block only one has room for. Even with no fence in `fits` that
+/// happens only on some runs, so this often misses a broken cap, but it never fails a sound
+/// one. None of these blocks is touched, so they cost almost nothing.
+#[test]
+fn of_two_threads_asking_for_the_last_room_at_once_only_one_gets_it() {
+    const ROUNDS: usize = 100_000;
+    in_child(
+        "of_two_threads_asking_for_the_last_room_at_once_only_one_gets_it",
+        || {
+            set_limit(LIMIT);
+            let arrived = AtomicUsize::new(0);
+            let got = AtomicUsize::new(0);
+            let meet = |met: &mut usize| {
+                *met += 2;
+                arrived.fetch_add(1, SeqCst);
+                while arrived.load(SeqCst) < *met {
+                    std::hint::spin_loop();
+                }
+            };
+            thread::scope(|threads| {
+                for _ in 0..2 {
+                    threads.spawn(|| {
+                        let mut met = 0;
+                        for _ in 0..ROUNDS {
+                            meet(&mut met);
+                            let mut block: Vec<u8> = Vec::new();
+                            if block.try_reserve_exact(LIMIT / 4 * 3).is_ok() {
+                                got.fetch_add(1, SeqCst);
+                            }
+                            meet(&mut met);
+                            assert!(got.load(SeqCst) <= 1, "both got the block");
+                            drop(block);
+                            meet(&mut met);
+                            got.store(0, SeqCst);
+                            meet(&mut met);
+                        }
+                    });
+                }
+            });
         },
     )
     .lived_with(LINE);

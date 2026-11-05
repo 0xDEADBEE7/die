@@ -363,12 +363,13 @@ fn from_root(meta: &serde_json::Value, path: &str) -> Result<String> {
 
 /// Whether cargo can build `target` as a test binary. Only a build script can't. `test =
 /// false` only leaves a target out of a plain `cargo test`, and that's a usual way to mark
-/// an expensive test: `cargo test --test x` still runs it. An example isn't run unless it
-/// says `test = true`. Helper modules, such as `tests/support/mod.rs`, aren't targets.
+/// an expensive test: `cargo test --test x` still runs it, and `cargo test --example x` or
+/// `--all-targets` runs an example's tests. Helper modules, such as `tests/support/mod.rs`,
+/// aren't targets.
 fn is_test_root(target: &serde_json::Value) -> bool {
-    let kinds = json_list(target, "kind");
-    let is = |kind: &str| kinds.iter().any(|k| k == kind);
-    !is("custom-build") && (!is("example") || target["test"] == true)
+    !json_list(target, "kind")
+        .iter()
+        .any(|k| k == "custom-build")
 }
 
 /// die-test-cap may be a dev-dependency only, on every target and under any name, and a
@@ -1384,6 +1385,7 @@ mod tests {
                 "crates/a/tests/dir/main.rs",
                 "crates/a/checks/named.rs",
                 "crates/a/benches/b.rs",
+                "crates/a/examples/e.rs",
                 "crates/a/examples/tested.rs",
                 "crates/b/src/m.rs",
                 "crates/b/src/lib.rs",
@@ -1460,7 +1462,7 @@ mod tests {
         };
         let target = |kind: &str| serde_json::json!({"kind": [kind], "test": false});
         // `mod die_test_cap {}` satisfies the line, and only this catches it.
-        for kind in ["lib", "bin", "test", "bench"] {
+        for kind in ["lib", "bin", "test", "bench", "example"] {
             let e = check("m", serde_json::json!([target(kind)]));
             assert_eq!(e.len(), 1, "{kind}: {e:?}");
             assert!(
@@ -1469,7 +1471,6 @@ mod tests {
             );
         }
         let none = Vec::<String>::new();
-        assert_eq!(check("m", serde_json::json!([target("example")])), none);
         assert_eq!(
             check("m", serde_json::json!([target("custom-build")])),
             none
