@@ -359,15 +359,12 @@ fn a_repeat_that_fell_behind_skips_what_it_missed() {
     let mut c = with_clock(Clock::real());
     let (n, f) = counter();
     let t = c.every(20 * MS, f);
-    sleep(220 * MS);
+    sleep(400 * MS);
+    let woke = c.now();
     while c.step() {}
-    // The old catch-up fired 11 times here. A stall in this test may let a second one through.
-    assert!(n.get() <= 2, "{} firings", n.get());
-    assert!(n.get() >= 1);
-    assert!(
-        c.next_timer().unwrap() > c.now() - 20 * MS,
-        "and it's on time again"
-    );
+    // Catching up in full fires 20 times here. A stall in this test may let a few through.
+    assert!((1..=5).contains(&n.get()), "{} firings", n.get());
+    assert!(c.next_timer().unwrap() > woke, "and it's on time again");
     drop(t);
 }
 

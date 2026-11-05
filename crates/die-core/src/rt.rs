@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 /// Where the runtime reads the time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Clock {
-    /// Real time, counted from this instant. `die::run` uses it.
+    /// Real time, counted from this instant. DIE runs on this one (F3's `die::run`).
     Real(Instant),
     /// Time that moves only when [`Ctx::advance`] moves it, so timer-driven code runs instantly
     /// in tests (contract §16). This is the time it stands at.

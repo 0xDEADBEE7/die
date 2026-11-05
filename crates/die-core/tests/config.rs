@@ -8,6 +8,7 @@
 //! - `a_prefix_conflict_with_an_extension_is_still_a_startup_error`: bind without the unbind.
 //! - `config_commands_belong_to_config`: `command_doc` and a panic's attribution.
 //! - `a_command_name_config_takes_from_an_extension_is_a_startup_error`: C8's rule on duplicates.
+//! - `config_can_declare_faces`: a theme can style them, with no message.
 //! - `every_missing_name_is_reported_at_once_and_nothing_inits`: the extension's and config's.
 //! - `the_leader_config_sets_applies_to_every_keymap`: including what extensions bound first.
 //! - `a_panic_in_the_config_step_is_a_startup_error`: with its message, and nothing inits.
@@ -199,6 +200,19 @@ fn a_command_name_config_takes_from_an_extension_is_a_startup_error() {
     let cfg = config(&log, |reg| reg.command("a-cmd", "", |_, _| Ok(())));
     let errs = Ctx::with_config(exts(&log), cfg).err().unwrap();
     assert_eq!(errs, ["command a-cmd registered twice"]);
+}
+
+#[test]
+fn config_can_declare_faces() {
+    let log: Log = Rc::default();
+    let red = Rgb::hex("#ff0000");
+    let mut cfg = config(&log, |reg| {
+        reg.face("my.face", None, Style::new());
+    });
+    cfg.theme = Some(dark_theme().face("my.face", Style::new().fg(red)));
+    let ctx = Ctx::with_config(exts(&log), cfg).unwrap();
+    assert_eq!(ctx.face_style("my.face").unwrap().fg, Some(red));
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
 }
 
 #[test]
