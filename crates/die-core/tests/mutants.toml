@@ -472,3 +472,42 @@ old = '''
         self.silent_since_saved = true;'''
 new = '''
 '''
+
+[[mutant]]
+name = "M54 :w overwrites a file that changed on disk"
+file = "src/files.rs"
+old = '''
+            if disk != known {'''
+new = '''
+            if false && disk != known {'''
+
+[[mutant]]
+name = "M55 a hard-linked file is replaced, which cuts the link"
+file = "src/files.rs"
+old = '''
+    if old.nlink() == 1'''
+new = '''
+    if old.nlink() >= 1'''
+
+[[mutant]]
+name = "M56 a replaced file loses its mode"
+file = "src/files.rs"
+old = '''
+        .and_then(|()| f.set_permissions(old.permissions()))'''
+new = ''
+
+[[mutant]]
+name = "M57 a reload goes over unsaved changes"
+file = "src/files.rs"
+old = '''
+        } else if self.unsaved(buf).ok()? {'''
+new = '''
+        } else if false && self.unsaved(buf).ok()? {'''
+
+[[mutant]]
+name = "M58 a save replaces a symlink instead of following it"
+file = "src/files.rs"
+old = '''
+    let real = resolve(path)?;'''
+new = '''
+    let real = resolve(path).map(|_| path.to_path_buf())?;'''
