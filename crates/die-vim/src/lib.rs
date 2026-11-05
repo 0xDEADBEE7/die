@@ -3,9 +3,9 @@
 //! (`tests/oracle.rs`), except the deviations named in `tests/oracle/deviations.json`.
 //!
 //! `grammar.rs` says how counts, motions, operators and insert sessions fit
-//! together. So far (V1, V3, V4): motions, counts, insert and replace sessions with their
-//! undo, operators, registers, text objects, visual state (`visual.rs`), and `.` and macros
-//! (`repeat.rs`). `registers.rs` is the one place that touches registers, for K6.
+//! together. So far (V1 to V4): motions, counts, insert and replace sessions with their
+//! undo, operators, registers, text objects, visual state (`visual.rs`), `.` and macros
+//! (`repeat.rs`), search (`search.rs`), and `:e`, `:b` and `:N` (`ex.rs`). `registers.rs` is the one place that touches registers, for K6.
 
 #[cfg(test)]
 use die_test_cap as _;
@@ -19,6 +19,7 @@ mod operators;
 mod registers;
 mod repeat;
 mod scripts;
+mod search;
 mod text;
 mod visual;
 
@@ -44,6 +45,8 @@ pub struct Vim {
     pending: HashMap<BufferId, Pending>,
     /// The last `f`, `F`, `t` or `T`, which `;` and `,` repeat.
     find: Option<Find>,
+    /// The last search, which `n` and `N` repeat.
+    search: Option<search::Last>,
     /// Each buffer's last selection, for `gv`.
     last_visual: HashMap<BufferId, visual::Last>,
     /// The register named before a selection began: its operator uses it, as your Evil's does.
@@ -113,8 +116,12 @@ type Body = fn(&mut Ctx, &Args) -> Result;
 #[rustfmt::skip]
 const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-ex", ":: read a line and run it.", ex::open),
-    ("vim-search-forward", "/: read a pattern to search forward for.", ex::search_forward),
-    ("vim-search-backward", "?: read a pattern to search backward for.", ex::search_backward),
+    ("vim-search-forward", "/: read a pattern to search forward for.", |ctx, a| search::open(ctx, a, true)),
+    ("vim-search-backward", "?: read a pattern to search backward for.", |ctx, a| search::open(ctx, a, false)),
+    ("vim-search-next", "n: the last search again.", |ctx, a| search::again(ctx, a, false)),
+    ("vim-search-previous", "N: the last search again, the other way.", |ctx, a| search::again(ctx, a, true)),
+    ("vim-search-word-forward", "*: search forward for the word under the cursor.", |ctx, a| search::word(ctx, a, true)),
+    ("vim-search-word-backward", "#: search backward for the word under the cursor.", |ctx, a| search::word(ctx, a, false)),
     ("vim-cancel", "Escape after a key that waits for another: only the operator, the count and the goal column go.", operators::cancel),
     ("vim-replace", "r: replace count characters with the next key.", operators::replace),
     ("vim-join", "J: join count lines.", operators::join),
@@ -251,9 +258,15 @@ impl Extension for Vim {
                 .bind(state, "@<any>", "vim-execute-macro");
         }
         for state in [Normal, Visual] {
-            k.bind(state, ":", "vim-ex")
-                .bind(state, "/", "vim-search-forward")
-                .bind(state, "?", "vim-search-backward");
+            k.bind(state, ":", "vim-ex");
+        }
+        for state in [Normal, OperatorPending, Visual] {
+            k.bind(state, "/", "vim-search-forward")
+                .bind(state, "?", "vim-search-backward")
+                .bind(state, "n", "vim-search-next")
+                .bind(state, "N", "vim-search-previous")
+                .bind(state, "*", "vim-search-word-forward")
+                .bind(state, "#", "vim-search-word-backward");
         }
         k.bind(Normal, ".", "vim-repeat")
             .bind(CommandLine, "<any>", "vim-record-macro-into");
