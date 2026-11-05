@@ -302,8 +302,10 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
             want.clipboard.text
         ));
     }
+    // Naming `"1`-`"9` overwrites the ring, so it no longer holds every kill.
+    let overwritten = ('1'..='9').any(|d| case.keys.contains(&format!("\"{d}")));
     let writes = want.clipboard.writes.iter().rev();
-    for (write, name) in writes.zip('1'..='9') {
+    for (write, name) in writes.zip('1'..='9').filter(|_| !overwritten) {
         let got = ctx.register(name).map(|r| r.text.as_str());
         if got != Some(write.as_str()) {
             diffs.push(format!(

@@ -17,7 +17,7 @@ mod scripts;
 mod text;
 
 use die_core::{Args, BufferId, Ctx, Dir, Error, Extension, Registry, Result, State};
-use grammar::{Kind, Operator, buffer_window, count_digit, forget_goal, run_motion};
+use grammar::{Kind, Operator, buffer_window, char_key, count_digit, forget_goal, run_motion};
 use insert::{Edit, Entry, Session};
 use motions::{Find, MOTIONS};
 use objects::OBJECTS;
@@ -100,9 +100,12 @@ impl Extension for Vim {
             for m in MOTIONS {
                 k.bind(state, m.keys, m.name);
             }
-            // Escape while a key waits for another.
-            for key in ["f", "F", "t", "T"] {
-                k.bind(state, &format!("{key}<Esc>"), "vim-cancel");
+            // Escape while a key waits for another, and Tab is a character to search for.
+            for m in MOTIONS {
+                if let Some(key) = m.keys.strip_suffix("<char>") {
+                    k.bind(state, &format!("{key}<Esc>"), "vim-cancel");
+                    k.bind(state, &format!("{key}<Tab>"), m.name);
+                }
             }
             for (keys, cmd) in [
                 ("<Left>", "h"),
@@ -142,7 +145,9 @@ impl Extension for Vim {
         }
         // Anything else cancels an operator, and so does a key that fails under a prefix,
         // which core wouldn't try against <any> (contract §7).
-        for keys in ["<Esc>", "<any>", "i<any>", "a<any>", "g<any>"] {
+        for keys in [
+            "<Esc>", "<any>", "i<any>", "a<any>", "g<any>", "f<any>", "F<any>", "t<any>", "T<any>",
+        ] {
             k.bind(OperatorPending, keys, "vim-cancel");
         }
         k.bind(Normal, "x", "vim-delete-char")
@@ -170,9 +175,9 @@ impl Extension for Vim {
                 Some(key) => {
                     let key = key.chars().next().expect("a key");
                     reg.command(m.name, m.doc, move |ctx, a| {
-                        let find = Find::new(key, a.char());
+                        let find = Find::new(key, char_key(a));
                         ctx.with_ext(|v: &mut Vim, _| v.find = Some(find))?;
-                        run_motion(ctx, a, m.kind, a.char(), m.run)
+                        run_motion(ctx, a, m.kind, char_key(a), m.run)
                     });
                 }
                 None => reg.command(m.name, m.doc, move |ctx, a| {

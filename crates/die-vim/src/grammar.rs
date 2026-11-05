@@ -25,7 +25,9 @@
 
 use crate::operators;
 use crate::text::{normal_pos, on_last_empty_line};
-use die_core::{Args, BufferId, Ctx, Error, Prefix, Result, Selection, State, TextBuf, WindowId};
+use die_core::{
+    Args, BufferId, Ctx, Error, Key, Prefix, Result, Selection, State, TextBuf, WindowId,
+};
 
 /// The column vertical motions aim for, kept across a run of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +192,15 @@ pub fn forget_goal(t: &mut TextBuf, w: WindowId) {
     if let Some(sel) = t.selection(w) {
         t.set_selection(w, sel.with_goal(None));
     }
+}
+
+/// The character a key stands for where a command takes one, as `f` does: what it types,
+/// or a tab for Tab.
+pub fn char_key(a: &Args) -> Option<char> {
+    a.char().or_else(|| {
+        let tab = a.keys.last().is_some_and(|k| k.chord().key == Key::Tab);
+        tab.then_some('\t')
+    })
 }
 
 /// A count digit: `1`-`9`, and `0` after another digit. The count stays core's
