@@ -519,7 +519,7 @@ fn assert_partition(a: char, b: char, w: u32, h: u32) {
         "{a} and {b} at {w}x{h}"
     );
     assert!(
-        la.iter().all(|p| !lb.contains(p)),
+        !la.iter().any(|p| lb.contains(p)),
         "{a} and {b} overlap at {w}x{h}"
     );
 }
@@ -666,7 +666,7 @@ fn a_character_the_renderer_does_not_draw_is_none() {
 fn rows_lit(px: &[u8], w: usize) -> Vec<usize> {
     px.chunks(w)
         .enumerate()
-        .filter(|(_, r)| r.iter().any(|&p| p == 255))
+        .filter(|(_, r)| r.contains(&255))
         .map(|(y, _)| y)
         .collect()
 }

@@ -96,10 +96,7 @@ fn glyphs_keep_a_pixel_apart_and_never_overlap_or_leave_the_plane() {
             "{p:?} leaves the plane"
         );
         for q in &placed[..i] {
-            let apart = p.x >= q.x + q.w + 1
-                || q.x >= p.x + p.w + 1
-                || p.y >= q.y + q.h + 1
-                || q.y >= p.y + p.h + 1;
+            let apart = p.x > q.x + q.w || q.x > p.x + p.w || p.y > q.y + q.h || q.y > p.y + p.h;
             assert!(apart, "{p:?} and {q:?} touch");
         }
     }
@@ -224,7 +221,7 @@ fn keys_tell_styles_spans_and_lines_apart() {
     ];
     for (i, k) in keys.iter().enumerate() {
         assert_eq!(a.get(k), None, "{k:?} has a slot of its own");
-        a.insert(&k, Some(bitmap(2 + i as u32, 2, Plane::Gray)))
+        a.insert(k, Some(bitmap(2 + i as u32, 2, Plane::Gray)))
             .unwrap();
     }
 }

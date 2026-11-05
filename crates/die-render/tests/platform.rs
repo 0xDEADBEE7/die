@@ -2,9 +2,12 @@
 //! the fonts from `cargo xtask fonts`.
 #![cfg(target_os = "macos")]
 
+use die_render::font::{CellMetrics, fit};
 use die_render::font_dir;
+use die_render::frame::{Plane, Quad, Upload};
 use die_render::platform::backend::metal::Gpu;
 use die_render::platform::backend::text::Face;
+use std::mem::{offset_of, size_of};
 use std::path::Path;
 
 fn regular() -> Face {
@@ -70,4 +73,123 @@ fn a_font_size_must_be_positive() {
         let e = Face::from_file(&path, px).err().expect("an error");
         assert_eq!(e, format!("font size {px} isn't a positive size"));
     }
+}
+
+#[test]
+fn the_compiled_shader_lays_out_its_instance_as_quad_does() {
+    let gpu = Gpu::system_default().expect("a Metal device");
+    let (size, members) = gpu.instance_layout().expect("the shader's reflection");
+    assert_eq!(size, size_of::<Quad>());
+    let member = |name: &str| members.iter().find(|m| m.0 == name).map(|m| m.1);
+    assert_eq!(members.len(), 5, "{members:?}");
+    assert_eq!(member("rect"), Some(offset_of!(Quad, rect)), "{members:?}");
+    assert_eq!(member("uv"), Some(offset_of!(Quad, uv)), "{members:?}");
+    assert_eq!(
+        member("color"),
+        Some(offset_of!(Quad, color)),
+        "{members:?}"
+    );
+    assert_eq!(member("kind"), Some(offset_of!(Quad, kind)), "{members:?}");
+    assert_eq!(member("pad"), Some(offset_of!(Quad, pad)), "{members:?}");
+}
+
+#[test]
+fn an_upload_that_does_not_fit_its_atlas_is_refused() {
+    let gpu = Gpu::system_default().expect("a Metal device");
+    let p = gpu.pipeline(8, 8).expect("a pipeline");
+    let upload = |x, w, h, bytes| Upload {
+        plane: Plane::Gray,
+        x,
+        y: 0,
+        w,
+        h,
+        data: vec![255; bytes],
+    };
+    assert_eq!(p.upload(&upload(4, 4, 8, 32)), Ok(()), "up to the edge");
+    assert!(p.upload(&upload(5, 4, 8, 32)).is_err(), "past the edge");
+    assert!(p.upload(&upload(0, 4, 8, 31)).is_err(), "too few bytes");
+    assert!(p.upload(&upload(0, 4, 8, 33)).is_err(), "too many bytes");
+    let color = Upload {
+        plane: Plane::Color,
+        ..upload(0, 2, 2, 4)
+    };
+    assert!(p.upload(&color).is_err(), "a color pixel is 4 bytes");
+}
+
+#[test]
+fn the_system_finds_a_face_for_what_the_font_lacks() {
+    let f = regular();
+    assert_eq!(f.glyph('中'), None);
+    let cjk = f.fallback_for("中");
+    assert!(cjk.glyph('中').is_some(), "{}", cjk.postscript_name());
+    assert_ne!(cjk.postscript_name(), f.postscript_name());
+    let emoji = f.fallback_for("😀");
+    assert!(emoji.is_color(), "{}", emoji.postscript_name());
+}
+
+#[test]
+fn shaping_gives_a_cluster_one_advance_with_its_mark_on_the_base() {
+    let f = regular();
+    let (e, mark) = (f.shape("e"), f.shape("e\u{301}"));
+    assert_eq!(e.advance, f.advance(f.glyph('e').unwrap()));
+    assert_eq!(mark.advance, e.advance, "the mark takes no room");
+    assert!(
+        mark.ink.h > e.ink.h + 2.0,
+        "and rises above: {:?} {:?}",
+        mark.ink,
+        e.ink
+    );
+    assert_eq!(mark.ink.y, e.ink.y);
+    assert_eq!(e.plane, Plane::Gray);
+    assert!(f.shape(" ").ink.is_empty(), "a space has no ink");
+    assert!(f.shape("").ink.is_empty());
+}
+
+#[test]
+fn shaping_finds_a_face_for_a_character_on_its_own_and_says_when_it_is_in_color() {
+    let f = regular();
+    let cjk = f.shape("中");
+    assert!(!cjk.ink.is_empty(), "the system's face draws it");
+    assert_eq!(cjk.plane, Plane::Gray);
+    assert_eq!(f.shape("😀").plane, Plane::Color);
+    assert_eq!(f.fallback_for("😀").shape("😀").plane, Plane::Color);
+}
+
+#[test]
+fn a_drawn_glyph_is_coverage_where_its_fit_says_and_an_emoji_is_premultiplied_color() {
+    let f = regular();
+    let cell = CellMetrics::new(f.metrics(), f.advance(f.glyph('M').unwrap()), 2.0);
+    let shaped = f.shape("H");
+    let at = fit(shaped.ink, shaped.advance, 1, &cell, false).unwrap();
+    let b = shaped.draw(&at).unwrap();
+    assert_eq!((b.w, b.h, b.left, b.top), (at.w, at.h, at.left, at.top));
+    assert_eq!(b.data.len(), (b.w * b.h) as usize);
+    // A margin of nothing on all sides, and solid stems inside it.
+    let w = b.w as usize;
+    assert!(b.data[..w].iter().all(|&v| v == 0), "the top row");
+    assert!(
+        b.data[b.data.len() - w..].iter().all(|&v| v == 0),
+        "the bottom row"
+    );
+    assert!(
+        b.data.chunks(w).all(|r| r[0] == 0 && r[w - 1] == 0),
+        "the sides"
+    );
+    assert!(b.data.contains(&255), "solid ink");
+
+    let emoji = f.fallback_for("😀").shape("😀");
+    let at = fit(emoji.ink, emoji.advance, 2, &cell, true).unwrap();
+    let b = emoji.draw(&at).unwrap();
+    assert_eq!(b.plane, Plane::Color);
+    assert_eq!(b.data.len(), (b.w * b.h * 4) as usize);
+    assert!(
+        b.data
+            .chunks(4)
+            .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]),
+        "no channel over its alpha: premultiplied"
+    );
+    assert!(
+        b.data.chunks(4).any(|p| p[2] > p[0] + 60),
+        "more red than blue: BGRA, in that order"
+    );
 }
