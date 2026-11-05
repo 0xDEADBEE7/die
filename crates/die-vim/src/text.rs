@@ -234,8 +234,8 @@ pub fn normal_pos(t: &TextBuf, pos: usize) -> usize {
 }
 
 /// Whether `pos` is on the empty line after a final newline, or in an empty text.
-/// Motions never take the cursor there, but an insert session or an undo can leave
-/// it there, and motions along that line keep it.
+/// Only a search takes the cursor there, but an insert session or an undo can leave
+/// it there too, and motions along that line keep it.
 pub fn on_last_empty_line(t: &TextBuf, pos: usize) -> bool {
     pos == t.len() && t.line_start(t.line_of(pos)) == pos
 }
