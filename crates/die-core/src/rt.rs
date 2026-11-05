@@ -42,6 +42,13 @@ impl Drop for Sub {
     }
 }
 
+/// What a job's thread sends: its id, who spawned it, and its value or its panic.
+pub(crate) type JobMsg = (
+    u64,
+    ExtIdx,
+    std::result::Result<Box<dyn Any + Send>, Caught>,
+);
+
 pub(crate) type Callback = Box<dyn FnOnce(&mut Ctx) -> Result>;
 type JobDone = Box<dyn FnOnce(&mut Ctx, Box<dyn Any + Send>) -> Result>;
 
@@ -59,7 +66,7 @@ pub(crate) enum SubKind {
     Killed(KilledFn),
     Job {
         id: u64,
-        f: RefCell<Option<JobDone>>,
+        f: JobDone,
     },
     Keys(KeysFn),
 }
@@ -141,17 +148,14 @@ impl Ctx {
         self.next_id += 1;
         let id = self.next_id;
         let f: JobDone = Box::new(move |ctx, v| done(ctx, *v.downcast::<T>().expect("job type")));
-        let sub = self.new_sub(SubKind::Job {
-            id,
-            f: RefCell::new(Some(f)),
-        });
+        let ext = self.cur_ext();
         let tx = self.jobs_tx.clone();
-        self.outstanding += 1;
         std::thread::spawn(move || {
-            let v = work();
-            let _ = tx.send((id, Box::new(v)));
+            let v = catch(work).map(|v| Box::new(v) as Box<dyn Any + Send>);
+            let _ = tx.send((id, ext, v));
         });
-        sub
+        self.outstanding += 1;
+        self.new_sub(SubKind::Job { id, f })
     }
     /// See every key before dispatch. No Ctx, so it runs synchronously (C3). For `q` recording.
     pub fn observe_keys(&mut self, f: impl FnMut(&KeyEvent, KeySource) + 'static) -> Sub {
@@ -166,25 +170,37 @@ impl Ctx {
         self.run_until_idle();
     }
 
-    fn collect_due(&mut self) {
-        while let Ok((id, v)) = self.jobs_rx.try_recv() {
-            self.outstanding -= 1;
-            let mut v = Some(v);
-            for e in &self.subs {
-                if let SubKind::Job { id: jid, f } = &e.kind
-                    && *jid == id
-                    && e.inner.alive.get()
-                    && let Some(f) = f.borrow_mut().take()
-                {
-                    let v = v.take().unwrap();
-                    let ext = e.inner.ext;
-                    self.queue.push_back(Queued {
-                        ext,
-                        alive: Some(e.inner.clone()),
-                        f: Box::new(move |ctx| f(ctx, v)),
-                    });
-                }
+    /// A job's thread is done: queue its `done`, unless it was cancelled or panicked.
+    fn accept_job(&mut self, (id, ext, result): JobMsg) {
+        self.outstanding -= 1;
+        let i = self
+            .subs
+            .iter()
+            .position(|e| matches!(&e.kind, SubKind::Job { id: j, .. } if *j == id));
+        let entry = i.map(|i| self.subs.remove(i));
+        match (result, entry) {
+            (Err(c), _) => {
+                self.panicked(ext, c);
             }
+            (
+                Ok(v),
+                Some(SubEntry {
+                    inner,
+                    kind: SubKind::Job { f, .. },
+                }),
+            ) if inner.alive.get() => self.queue.push_back(Queued {
+                ext: inner.ext,
+                alive: Some(inner),
+                f: Box::new(move |ctx| f(ctx, v)),
+            }),
+            _ => {}
+        }
+    }
+
+    fn collect_due(&mut self) {
+        self.log_noticed();
+        while let Ok(m) = self.jobs_rx.try_recv() {
+            self.accept_job(m);
         }
         for e in &self.subs {
             if let SubKind::Timer {
@@ -250,15 +266,12 @@ impl Ctx {
                 return;
             }
             match self.jobs_rx.recv_timeout(Duration::from_secs(5)) {
-                Ok((id, v)) => {
-                    // Put it back through the normal path.
-                    let tx = self.jobs_tx.clone();
-                    let _ = tx.send((id, v));
-                }
+                Ok(m) => self.accept_job(m),
                 Err(_) => return,
             }
         }
-        panic!("loop never went idle");
+        self.messages
+            .push("The loop never went idle in 1,000,000 turns, so this run stopped".into());
     }
 
     /// Shut extensions down in reverse order and cancel what they detached (C4).

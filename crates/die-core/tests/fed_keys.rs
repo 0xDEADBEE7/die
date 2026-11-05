@@ -219,7 +219,7 @@ fn the_keys_a_drop_removes_are_never_observed() {
     let (mut ctx, _) = setup();
     let seen = Rc::new(RefCell::new(vec![]));
     let s = seen.clone();
-    let sub = ctx.observe_keys(move |ev, src| s.borrow_mut().push((ev.key.clone(), src)));
+    let sub = ctx.observe_keys(move |ev, src| s.borrow_mut().push((ev.key, src)));
     run_fed(&mut ctx, "aeb");
     assert_eq!(
         *seen.borrow(),
