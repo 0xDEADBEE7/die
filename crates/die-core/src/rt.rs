@@ -1,0 +1,268 @@
+//! The runtime (contract §12, C3, C4): subscription handles, the queue of calls that receive
+//! `Ctx`, timers, jobs and the loop.
+use crate::dispatch::*;
+use crate::error::*;
+use crate::ext::*;
+use crate::ids::*;
+use crate::keys::*;
+use std::any::Any;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::time::Duration;
+
+// ------------------------------------------------------------------ subscriptions (C4)
+
+pub(crate) struct SubInner {
+    pub(crate) alive: Cell<bool>,
+    detached: Cell<bool>,
+    pub(crate) ext: ExtIdx,
+}
+
+/// A subscription handle. Dropping it cancels the subscription; `detach` ties it to the extension.
+#[must_use = "dropping a Sub cancels it; call .detach() to keep it for the extension's lifetime"]
+pub struct Sub(Rc<SubInner>);
+
+impl Sub {
+    pub fn detach(self) {
+        self.0.detached.set(true);
+    }
+    pub fn is_active(&self) -> bool {
+        self.0.alive.get()
+    }
+}
+
+impl Drop for Sub {
+    fn drop(&mut self) {
+        if !self.0.detached.get() {
+            self.0.alive.set(false);
+        }
+    }
+}
+
+pub(crate) type Callback = Box<dyn FnOnce(&mut Ctx) -> Result>;
+type JobDone = Box<dyn FnOnce(&mut Ctx, Box<dyn Any + Send>) -> Result>;
+
+pub(crate) enum SubKind {
+    Timer {
+        at: Cell<Duration>,
+        every: Option<Duration>,
+        fired: Cell<bool>,
+        f: Rc<RefCell<dyn FnMut(&mut Ctx) -> Result>>,
+    },
+    Killed(Rc<RefCell<dyn FnMut(&mut Ctx, BufferId) -> Result>>),
+    Job {
+        id: u64,
+        f: RefCell<Option<JobDone>>,
+    },
+    Keys(RefCell<Box<dyn FnMut(&KeyEvent, KeySource)>>),
+}
+
+pub(crate) struct SubEntry {
+    pub(crate) inner: Rc<SubInner>,
+    pub(crate) kind: SubKind,
+}
+
+/// A call that receives Ctx, waiting for the top of the loop (C3).
+pub(crate) struct Queued {
+    pub(crate) ext: ExtIdx,
+    pub(crate) alive: Option<Rc<SubInner>>,
+    pub(crate) f: Callback,
+}
+
+impl Ctx {
+    // -------------------------------------------------------------- async (C3, C4)
+
+    pub(crate) fn defer_as(&mut self, ext: ExtIdx, f: impl FnOnce(&mut Ctx) -> Result + 'static) {
+        self.queue.push_back(Queued {
+            ext,
+            alive: None,
+            f: Box::new(f),
+        });
+    }
+    /// Queue a call for the top of the loop.
+    pub fn defer(&mut self, f: impl FnOnce(&mut Ctx) -> Result + 'static) {
+        self.defer_as(self.cur_ext(), f);
+    }
+    fn new_sub(&mut self, kind: SubKind) -> Sub {
+        let inner = Rc::new(SubInner {
+            alive: Cell::new(true),
+            detached: Cell::new(false),
+            ext: self.cur_ext(),
+        });
+        self.subs.push(SubEntry {
+            inner: inner.clone(),
+            kind,
+        });
+        Sub(inner)
+    }
+    pub fn after(&mut self, d: Duration, f: impl FnOnce(&mut Ctx) -> Result + 'static) -> Sub {
+        let mut f = Some(f);
+        self.timer(d, None, move |ctx| f.take().map_or(Ok(()), |f| f(ctx)))
+    }
+    pub fn every(&mut self, d: Duration, f: impl FnMut(&mut Ctx) -> Result + 'static) -> Sub {
+        self.timer(d, Some(d), f)
+    }
+    fn timer(
+        &mut self,
+        d: Duration,
+        every: Option<Duration>,
+        f: impl FnMut(&mut Ctx) -> Result + 'static,
+    ) -> Sub {
+        let at = Cell::new(self.clock + d);
+        self.new_sub(SubKind::Timer {
+            at,
+            every,
+            fired: Cell::new(false),
+            f: Rc::new(RefCell::new(f)),
+        })
+    }
+    pub fn on_buffer_killed(
+        &mut self,
+        f: impl FnMut(&mut Ctx, BufferId) -> Result + 'static,
+    ) -> Sub {
+        self.new_sub(SubKind::Killed(Rc::new(RefCell::new(f))))
+    }
+    /// `work` runs on a thread; `done` runs on the main thread from the top of the loop.
+    pub fn spawn<T: Send + 'static>(
+        &mut self,
+        work: impl FnOnce() -> T + Send + 'static,
+        done: impl FnOnce(&mut Ctx, T) -> Result + 'static,
+    ) -> Sub {
+        self.next_id += 1;
+        let id = self.next_id;
+        let f: JobDone = Box::new(move |ctx, v| done(ctx, *v.downcast::<T>().expect("job type")));
+        let sub = self.new_sub(SubKind::Job {
+            id,
+            f: RefCell::new(Some(f)),
+        });
+        let tx = self.jobs_tx.clone();
+        self.outstanding += 1;
+        std::thread::spawn(move || {
+            let v = work();
+            let _ = tx.send((id, Box::new(v)));
+        });
+        sub
+    }
+    /// See every key before dispatch. No Ctx, so it runs synchronously (C3). For `q` recording.
+    pub fn observe_keys(&mut self, f: impl FnMut(&KeyEvent, KeySource) + 'static) -> Sub {
+        self.new_sub(SubKind::Keys(RefCell::new(Box::new(f))))
+    }
+
+    // -------------------------------------------------------------- the loop
+
+    /// Harness: advance the fake clock, then run until idle.
+    pub fn advance(&mut self, d: Duration) {
+        self.clock += d;
+        self.run_until_idle();
+    }
+
+    fn collect_due(&mut self) {
+        while let Ok((id, v)) = self.jobs_rx.try_recv() {
+            self.outstanding -= 1;
+            let mut v = Some(v);
+            for e in &self.subs {
+                if let SubKind::Job { id: jid, f } = &e.kind {
+                    if *jid == id && e.inner.alive.get() {
+                        if let Some(f) = f.borrow_mut().take() {
+                            let v = v.take().unwrap();
+                            let ext = e.inner.ext;
+                            self.queue.push_back(Queued {
+                                ext,
+                                alive: Some(e.inner.clone()),
+                                f: Box::new(move |ctx| f(ctx, v)),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        for e in &self.subs {
+            if let SubKind::Timer {
+                at,
+                every,
+                fired,
+                f,
+            } = &e.kind
+            {
+                while e.inner.alive.get() && !fired.get() && at.get() <= self.clock {
+                    let f = f.clone();
+                    let inner = e.inner.clone();
+                    self.queue.push_back(Queued {
+                        ext: inner.ext,
+                        alive: Some(inner),
+                        f: Box::new(move |ctx| (f.borrow_mut())(ctx)),
+                    });
+                    match every {
+                        Some(d) => at.set(at.get() + *d),
+                        None => fired.set(true),
+                    }
+                }
+            }
+        }
+        self.subs.retain(|e| {
+            e.inner.alive.get() && !matches!(&e.kind, SubKind::Timer { fired, .. } if fired.get())
+        });
+    }
+
+    /// One turn of the loop: queued calls first (C3), then one key (fed keys before typed ones).
+    pub fn step(&mut self) -> bool {
+        self.collect_due();
+        if let Some(q) = self.queue.pop_front() {
+            if q.alive.as_ref().is_none_or(|a| a.alive.get()) {
+                self.cmd_seq += 1;
+                let r = self.guarded(q.ext, q.f);
+                self.report(r);
+                // Code that runs between units (the host, a harness) gets a number of its own.
+                self.cmd_seq += 1;
+            }
+            return true;
+        }
+        if let Some(ev) = self.fed.pop_front() {
+            self.dispatch(ev, KeySource::Fed);
+            self.cmd_seq += 1;
+            return true;
+        }
+        if let Some(ev) = self.typed.pop_front() {
+            self.dispatch(ev, KeySource::Typed);
+            self.cmd_seq += 1;
+            return true;
+        }
+        false
+    }
+
+    pub fn run_until_idle(&mut self) {
+        for _ in 0..1_000_000 {
+            if self.step() {
+                continue;
+            }
+            if self.outstanding == 0 {
+                return;
+            }
+            match self.jobs_rx.recv_timeout(Duration::from_secs(5)) {
+                Ok((id, v)) => {
+                    // Put it back through the normal path.
+                    let tx = self.jobs_tx.clone();
+                    let _ = tx.send((id, v));
+                }
+                Err(_) => return,
+            }
+        }
+        panic!("loop never went idle");
+    }
+
+    /// Shut extensions down in reverse order and cancel what they detached (C4).
+    pub fn shutdown(&mut self) {
+        for i in (0..self.exts.len()).rev() {
+            let r = self.guarded(i, |ctx| {
+                ctx.with_ext_idx(i, |e, ctx| e.shutdown(ctx))?;
+                Ok(())
+            });
+            self.report(r);
+            for e in &self.subs {
+                if e.inner.ext == i {
+                    e.inner.alive.set(false);
+                }
+            }
+        }
+    }
+}

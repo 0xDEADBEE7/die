@@ -10,7 +10,7 @@
 //! Settings by path are a stopgap until file-type modes (M1), which extensions
 //! will declare at Register.
 
-use crate::ctx::panic_msg;
+use crate::ext::panic_msg;
 use crate::{BufferId, Ctx, Error, Result, Settings};
 use std::collections::HashMap;
 use std::fs;

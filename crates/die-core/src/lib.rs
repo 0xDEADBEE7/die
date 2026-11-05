@@ -14,31 +14,36 @@ compile_error!("DIE requires panic = \"unwind\" (C9). Set it in the config crate
 // these modules and drop the allows.
 #[allow(
     clippy::collapsible_if,
-    clippy::type_complexity,
-    clippy::large_enum_variant
+    clippy::cloned_ref_to_slice_refs,
+    clippy::type_complexity
 )]
-#[allow(clippy::cloned_ref_to_slice_refs)]
-mod ctx;
+mod dispatch;
 mod error;
+#[allow(clippy::type_complexity, clippy::large_enum_variant)]
+mod ext;
 mod faces;
 mod files;
 mod ids;
 mod keymap;
 mod keys;
 mod layout;
+#[allow(clippy::collapsible_if, clippy::type_complexity)]
+mod rt;
 mod scene;
 #[allow(clippy::collapsible_if, clippy::if_same_then_else)]
 mod text;
 #[allow(clippy::collapsible_if)]
 mod undo;
 
-pub use ctx::*;
+pub use dispatch::*;
 pub use error::*;
+pub use ext::*;
 pub use faces::{BASE_FACES, Rgb, Style, Theme, UI_FACES, Underline};
 pub use files::{FileInfo, Fingerprint, Uneditable};
 pub use ids::*;
 pub use keymap::*;
 pub use keys::*;
 pub use layout::{CellKind, Dir, DisplayLine, Geometry, LayoutCell, Stop, ViewRow, Viewport};
+pub use rt::*;
 pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
 pub use text::*;
