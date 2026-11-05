@@ -284,6 +284,22 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
     if want.visual.is_some() {
         diffs.push("can't compare a visual selection yet (V4 defines the mapping)".into());
     }
+    // Your Evil lists every register the keys changed, so the others must be as they were.
+    let names = ('0'..='9').chain('a'..='z').chain(['-']);
+    for name in names.filter(|c| !want.registers.contains_key(&c.to_string())) {
+        let preset = input
+            .registers
+            .iter()
+            .flatten()
+            .find(|(n, _)| **n == name.to_string());
+        let want = preset.map(|(_, r)| r.text.as_str());
+        let got = ctx.register(name).map(|r| r.text.as_str());
+        if got != want {
+            diffs.push(format!(
+                "register {name} is {got:?}, and your Evil left it {want:?}"
+            ));
+        }
+    }
     for (name, r) in &want.registers {
         let got = ctx.register(reg_char(name)?);
         let want = r.as_ref().map(|r| Register {
@@ -431,6 +447,19 @@ fn a_kill_must_be_what_the_clipboard_should_have_been_sent() {
         .insert(0, "an older kill".into());
     let why = run_case(&case, run).expect_err("the kill ring is one short");
     assert!(why.contains("should have been sent"), "{why}");
+}
+
+/// Your Evil lists the registers the keys changed, so a register it doesn't list must not
+/// have changed in die-vim either.
+#[test]
+fn a_register_the_keys_didnt_change_must_stay_as_it_was() {
+    let (case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    assert_eq!(run_case(&case, run), Ok(()), "the committed case");
+
+    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    case.expected.registers.remove("-");
+    let why = run_case(&case, run).expect_err("dw did change -");
+    assert!(why.contains("your Evil left it"), "{why}");
 }
 
 /// A case about the clipboard itself can't pass until there's one to check.

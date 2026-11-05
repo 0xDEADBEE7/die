@@ -439,6 +439,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn killing_a_buffer_with_an_operator_waiting_drops_it() {
+        let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers");
+        let b = ctx.create_text("t", "a\n");
+        let w = ctx.open_window(b, 80, 24).expect("a window");
+        ctx.focus(w);
+        ctx.type_keys("d");
+        let waiting = |ctx: &mut Ctx| ctx.with_ext(|v: &mut Vim, _| v.pending.len()).unwrap();
+        assert_eq!(waiting(&mut ctx), 1);
+        assert!(ctx.kill(b));
+        ctx.run_until_idle();
+        assert_eq!(waiting(&mut ctx), 0);
+    }
+
+    #[test]
     fn killing_a_buffer_in_insert_state_drops_its_session() {
         let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers");
         let b = ctx.create_text("t", "a\n");
