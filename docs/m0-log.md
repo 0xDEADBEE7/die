@@ -12,7 +12,7 @@ So until you say otherwise:
 
 **Waiting on you: nothing.** The deviations review and S1's key check, listed below as waiting on you, are both closed. You can overturn any call in this entry at any time.
 
-**Merged since 20 October:** only this entry and its record. `main`'s code hasn't changed. `cargo xtask ci` and `ci --linux` passed on 3 November, on the same code.
+**Merged:** PRs #6–#9: this entry and its record, then the three fix branches below. `cargo xtask ci` passes on a fresh clone at each merge. `mutate` catches 26 of 26, `ci --linux` passes on aarch64, and the oracle's fixtures regenerate byte for byte from your Evil.
 
 **The reviews.** Four reviews stood in for your read, each checked by a second agent trying to refute it. The findings are in [records/deferred-reviews.md](records/deferred-reviews.md).
 
@@ -26,7 +26,35 @@ So until you say otherwise:
 
 None was refuted. The second agent revised the proposed fix on 32 of them.
 
-**The fix round.** 69 findings get fixed now, on `m0/review-core`, `m0/review-scene` and `m0/review-vim`, each with a fixer, an independent reviewer and a finisher. The first attempt ran into the weekly usage limit on 3 November, about 10 minutes in, before anything was committed. I restarted it today, and it starts from the first attempt's partial scene edits. The other 13 findings wait for the packages that rebuild their code (below).
+**The fix round.** 66 of the 69 findings due now are fixed. The other three (WRAP-2, LAYOUT-3 and dev-4) are done in the contract, and K4 builds their code by call. The other 13 findings wait for the packages that rebuild their code (below). Each branch had a fixer, an independent reviewer who reverted the fixes one at a time to see tests fail, and a finisher. The first attempt ran into the weekly usage limit on 3 November, about 10 minutes in, so I restarted it today from its partial scene edits.
+
+| PR | Branch | Findings | The review then found | Biggest change |
+|---|---|---|---|---|
+| #7 | core | 26 | 15 more (no majors), all but one fixed; the last was a merge step, done in #9 | `u` restores the cursor from before the step's first change. Contract §9's wrap, row and gutter rules, whole, checked against about 90 tty Emacs cases |
+| #8 | scene | 19 | 5 more (1 major: another route round the `unsafe` lint), all fixed | Composing a dense 300×100 frame with every search match and 11,039 faces fell from 99.5 ms to 0.89 ms. A plain frame costs about 12–15 % more |
+| #9 | die-vim | 24 | 6 more (1 major: a regression in word classes), all fixed | Every deviation has a hand-written fixture, written before its code: 37 cases under 10 rules |
+
+**Oracle:** 248 of 523 cases pass, and V1's pending list is empty. The count grew from 346 for two reasons. The reviews added 159 cases, 116 of them motions (the goal column and words across scripts). And all 37 deviations now run against hand-written fixtures, where 18 used to sit out.
+
+**Budget:**
+
+| Crate | Lines |
+|---|---|
+| die-core | 4,665 of 14k |
+| text and undo | 1,120 of 1,250 |
+| keys, keymaps, describe | 598 of 650 |
+| faces and scene | 900 of 950 |
+| die-render | 123 (macOS build 120, Linux build 19) |
+| `platform::macos` | 104 of 900, down from 1,600 (call 16) |
+| die-vim | 1,332 of 5k |
+| product code | 6,167 |
+| xtask (dev) | 3,480, up from 3,035: the `unsafe` lint and `sources` step |
+
+**API changes, for your later review.**
+- **Added:** `Ctx::state_of`, `Ctx::set_state_of`, `Pattern::word`, `Cell::new`, `WindowPlacement` (replaces `Placement`), `Style::{bold_is, italic_is, strike_is, underline_color}`, and in die-render `platform::backend::ready()`.
+- **Changed:** `State` gains `Replace`, `CursorShape` gains `Underline`, `Key` gains `Unidentified`, `KeyEvent` gains `num_lock`, `Decoration` gains `seq`, and `Cell` is `#[non_exhaustive]`. `add_marker` returns `Result<MarkerId>`, `remove_marker` returns `Option<usize>`, and `set_sticky` returns `Option<()>`.
+- **Behaviour with the same signature:** an undefined key clears the prefix. Empty changes make no revision or undo step. Edits between units are their own undo step. Undo and redo leave an open group open. `undo` can return `UndoConflict`. `C-[`, `C-i` and `C-m` fold. A multi-character cluster can't be bound. `printable()` is `None` with Ctrl, Alt or Super held.
+- **die-vim's grammar:** adds `Target::short(pos, err)` and `forget_goal(t, w)`. A `Fail` from a motion now clears the goal column.
 
 **S1's key check is partly done.** You pressed 13 of the 50 chords on real hardware, and every field mapped correctly. `results/interactive-keys.md` reports 7 failures, but all 7 fail only the modifier-event check, because Ctrl stayed held from `C-a` through `C-S-a`. The event log shows it. R4 covers the rest with an automated test.
 
@@ -62,7 +90,7 @@ The IDs are the findings in the record. Where a finding's verifier gave a better
 
 17. **dev-3: rule 1 means "Evil without the final newline",** for the cursor and for failures. It's what die-vim's `}` already does. Each rule-1 fixture comes from running the oracle on the text without its final newline, then putting the newline back.
 18. **dev-8: inside a macro, `.` does what Vim does. After `@a`, `.` replays the macro,** as Evil does, without Evil's "No previous macro" error. An oracle case that tells the two models apart pins it.
-19. **dev-10: three behaviours stay Evil's, though Vim differs:** `N%` goes N percent through the characters, `e` on empty lines, and Esc resetting the goal column. They come from Evil's and Emacs's design, V1 already passes them, and moving them would add deviations for things rarely noticed.
+19. **dev-10: three behaviours stay Evil's, though Vim differs:** `N%` goes N percent through the characters, `e` stops on empty lines, and Esc or a failed motion resets the goal column. They come from Evil's and Emacs's design, V1 already passes them, and moving them would add deviations for things rarely noticed.
 20. **dev-12: all the remaining hand-written fixtures get written now,** once the rule texts settle, and go on the pending list. Expectations written before the code can't be fitted to it.
 21. **dev-13: `:s` replacement templates are Rust's** (`$N`, `${N}`, `$name`, `$$`). So `$1x` names a group called `1x`, and a group followed by a letter needs `${1}x`. The rule says so.
 22. **DR-11: `e` on "café" with a combining mark lands on the é, as in Vim,** mid-line and at a line's end. Evil's position comes from Emacs's command loop pushing point out of a composition, not from Evil's grammar. **This changes one of your fixtures:** `motions/combining-mark-e` becomes a deviation with a hand-written fixture.
@@ -79,7 +107,61 @@ The IDs are the findings in the record. Where a finding's verifier gave a better
 | V5 | SEARCH-2 | `Pattern` gets captures for `:s` |
 | R4 | KEYS-8 | The rest of S1's key check, as a test that posts layout-derived events to DIE's own window with `CGEventPostToPid` |
 
-**Next:** merge the fix round, then K4, K5, R2, and V2 then V3. The naive layout for K4's property test gets written first, by a different agent, from contract §9's text alone.
+### More calls, from the fix round (veto any)
+
+**Layout rules in contract §9.** K4 builds these.
+
+24. **No number on any display line that starts at the end of the text,** so an empty buffer's only row has none either, as in tty Emacs. It still counts for other rows' distances.
+25. **Filler cells don't count toward tab stops,** so display columns don't depend on the width. In `aaaaaaaaa中<Tab>b` at 10 cells, `b` lands at column 7 here and 6 in tty Emacs. It's named as a deliberate difference.
+26. **Control characters split across rows the way a tab does,** unless they're a break point, when they move whole. U+0080 to U+009F draw as `\ooo` in four cells.
+27. **A cluster wider than a whole row stays at the row's start and runs past its end.** This is DIE's own rule, because Emacs gave no evidence. Any cluster wider than the row reaches it.
+28. **Replacement and virtual text break like text.** Where virtual text shows at a `Hide` comes from S4's code: before a replacement, not at all at the start of a `Hide` with no replacement, and shown at a `Hide`'s end.
+29. **With a fold joining lines,** the cursor's row in Relative and Visual shows the display line's first line's number. Emacs may show point's own line, but no probe confirmed that.
+
+**Core.**
+
+30. **`state_of` on a dead buffer reads `Normal`, and `set_state_of` ignores it.** That's softer than C4. Veto if you'd rather have `Option` here too.
+31. **A running command that moves the focus or opens a window goes on acting for that window,** and its nested callers keep their own. Outside a command, the focused window acts.
+32. **A surface's `event()` no longer sees the count,** because DR-03 clears the prefix before calling it. Nothing needs it yet.
+33. **`Decoration::seq` is public now,** so the naive layout can read the order. It's the one layout change ahead of K4.
+34. **`LOG_CAP` stays a constant.** A8 recommended a setting, but nothing needs one.
+35. **`Pattern::word` accepts empty text.** One known limit: with `ignore_case` and a literal whose folded forms differ in length, backward search can skip a match enclosing a rejected shorter one.
+
+**Scene and the `unsafe` confinement.**
+
+36. **`cargo xtask sources` is a new ci step.** Every file the compiler read must be one the lint reads, and a crate may compile only `.rs` files in its own directory. So the first `include_str!` of a non-`.rs` file, likely R2's shaders, has to name an exception there.
+37. **The lint is stricter than the review asked.** It rejects `global_asm!` outside `platform::macos`, and any attribute that starts with a macro fragment, so the `$(#[$m:meta])*` idiom isn't available. The workspace has no `macro_rules!` today. It also rejects `NonNull::from(&mut x[0])` and `from_ref(&a[0])` in `platform::macos`. Known false positives: a format argument named `path`, and a variable named `restriction`. Rename to avoid them.
+38. **Two limits stay.** A macro-built `allow(warnings)` goes unseen, though it can only hide warnings. And a proc-macro crate added as a workspace member could emit `unsafe` from a string. There's none today, and one would be a new member you'd see.
+39. **`platform::backend::ready()` is the stub's one item,** so the cross-check can prove the alias.
+40. **A cell past a row's end maps across the whole of `room`,** including a centered window's right margin. Rows below the buffer's last line stay `None`, for K14 to decide.
+41. **A linewise selection draws the newline's cell on every selected line,** following mono-dark's region. Nobody checked what Vim draws there. A provider's `visible` range now includes a drawn newline, one byte more than before.
+42. **xtask gains `serde_json`** to read cargo's messages. The oracle already pins it, so the lockfile adds no package.
+43. **The speed tests get three tries each,** so a busy machine doesn't fail them. A return to the per-cell scan misses by far more than that.
+
+**die-vim.**
+
+44. **`$` and `%` are word characters,** so `foo$bar` is one word, as in your fundamental-mode Evil. V2 should pass die-vim's word test to `Pattern::word`, so `*` agrees.
+45. **Word classes have known gaps.** `class()` still uses Rust's `is_alphanumeric`, not Emacs's word syntax. So marks like virama and Thai tone marks split words, and emoji count as punctuation, as on `main` before. One small regression is new: a mark outside the main blocks next to a letter of a different script now splits (`a` + U+0902 + `b c` with `w`: Evil 6, here 4). Fixing all of it means about 343 more table ranges, and I left it for text you rarely meet.
+46. **A count past the caps fails with "Count too large",** keeping the session's first copy, where your Evil would freeze.
+47. **A deviation with no hand-written fixture now fails the oracle test,** so none can sit silently out of the comparison.
+48. **Insert-state Up and Down onto a tab or wide character land before it,** as your tty Evil does. Normal `j` and `k` land after it, as Evil's do. The two differ on purpose.
+49. **`$j` on the last line no longer fails.** `j` and `k` with no line to go to signal only if the goal column wouldn't move the cursor, as in Evil. `gj`, `+` and `C-d` are unchanged, and V6 checks them.
+50. **`f<Esc>` and a failed Left, Right, Backspace or `C-w` in insert state forget the goal column,** as Evil's do. `f<Esc>` comes from reading Evil's source, because a quit ends the oracle's macro. A plain die-vim test pins it.
+51. **`f` or `t` forward from a line's last character says "End of line",** Evil's message. Messages aren't compared (call 23).
+52. **Rule 1's macro fixtures take their registers from the run without the final newline.** With it, Evil's macro runs one more `x` on the empty line. This refines call 17's recipe.
+53. **DR-11's rule is a new row in S5's table, row 22,** because D4 says each exception is listed there.
+
+### Notes for the next packages
+
+- **K4:** the code half of WRAP-2, LAYOUT-3 and dev-4 is listed in its plan row. Contract §9 disagrees with `layout.rs` on purpose until then. `snap` must cost the same whatever the line's length: today `normalize_views`, `snap` and `dl(pos)` lay out the whole logical line on every commit, and `set_selection` does it twice more. `MAX_REPEAT` and `MAX_REPLAY` can rise after that. K4 also decides whether the newline's cell still draws at `col == text_w` in a centered window, and keeps or replaces `TextBuf::line_end_on`.
+- **K7:** state whether `run_until_idle` waits for outstanding jobs before the next key, as the oracle's runner now does. Separate errors from informational messages (call 23).
+- **K9:** the positions rule moves with the pointer map, and so do `tests/scene.rs`'s position tests.
+- **R2:** build on `platform::backend`. Shaders in their own file need an exception in `sources` (call 36).
+- **V2:** pass die-vim's word test to `Pattern::word` (call 44).
+- **V3:** bind `i<any>` and `a<any>` (contract §7), and `<Esc>` in `OperatorPending` to `vim-cancel`. Extend inclusive ranges to a grapheme's end. Operators go on after End of line or End of buffer and stop after any other signal, which isn't the same split as which failed motions keep the goal. Commands that move and edit make their edit first (call 7).
+- **V6:** the `wrapped/*` cases need K4's word wrap as well as K7. Check `gj`, `+` and `C-d` against `j`'s goal-column rule (call 49).
+
+**Next:** K4, K5 and R2, with V3's operators alongside them. V2 waits, because its search prompt needs K11a, which needs K6 and K9, which need K5. So V2 can't come before V3, as I said earlier. K4's naive layout gets written first, by a different agent, from contract §9's text alone.
 
 ## 2026-10-20: phase 0's first API merged; Linux joins ci
 

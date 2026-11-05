@@ -1,6 +1,0 @@
-[package]
-name = "b"
-version = "0.0.0"
-edition = "2024"
-[lints.rust]
-unsafe_code = "deny"

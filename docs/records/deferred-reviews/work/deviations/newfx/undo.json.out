@@ -1,3 +1,0 @@
-{"vim":{"registers":{"\"":null},"cursor":{"col":2,"line":0},"state":"normal","text":"abc\n","error":""},"id":"2u-ends-where-the-last-step-starts","topic":"undo","differs":[]}
-{"vim":{"registers":{"\"":null},"cursor":{"col":0,"line":0},"state":"normal","text":"abc\n","error":""},"id":"2u-last-step-is-the-earlier-one","topic":"undo","differs":[]}
-{"vim":{"registers":{"\"":null},"cursor":{"col":2,"line":1},"state":"normal","text":"abc\ndef\n","error":""},"id":"2u-across-lines","topic":"undo","differs":[]}

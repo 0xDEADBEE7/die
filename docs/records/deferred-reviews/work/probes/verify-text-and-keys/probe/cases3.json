@@ -1,1 +1,0 @@
-[{"id": "tab_after_break", "text": "aa bbbbbb\tcc", "tty_width": 11, "tab": 8}, {"id": "tab_ws_overflow", "text": "aaaa bbbb\tcc", "tty_width": 11, "tab": 8}, {"id": "ws_first_on_row", "text": "aaaaaaaaaa  bb cc", "tty_width": 11, "tab": 8}, {"id": "lnum_text", "text": "aaaa bbbb cccc dddd eeee", "tty_width": 21, "tab": 8}]

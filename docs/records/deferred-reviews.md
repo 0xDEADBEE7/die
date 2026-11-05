@@ -114,4 +114,4 @@ Each line is a finding's first sentence. The full claim, evidence, proposed fix 
 - `findings-core.json`, `findings-scene.json` and `findings-vim.json`: the findings for each branch, with their verifier's verdict.
 - `findings-later.json`: the 13 for later packages, keyed by package.
 - `reviews.json`: each review's summary and how it checked things, with its verdict on each surface it read.
-- `work/`: the reviewers' working material, which the fix round reuses. It holds the deep read's validated patch and tests, the proposed deviations and 20 drafted fixtures, the Vim and Evil runs, the probes the findings cite, and the first fix round's partial edits. It goes once the fix round has merged; git history keeps it.
+- The reviewers' working material, which the fix round reused, was removed once it merged. It's in git history under `docs/records/deferred-reviews/work/`, at commit 41ec7ef.
