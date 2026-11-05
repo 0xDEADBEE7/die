@@ -255,15 +255,7 @@ fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
         }
     }
     let p = t.cursor(w).unwrap_or(0);
-    let on_last_empty_line = p == t.len() && t.line_start(t.line_of(p)) == p;
-    t.set_cursor(
-        w,
-        if on_last_empty_line {
-            p
-        } else {
-            text::normal_pos(t, p)
-        },
-    );
+    t.set_cursor(w, text::rest_pos(t, p));
     stopped
 }
 

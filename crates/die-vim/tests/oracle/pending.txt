@@ -1,9 +1,6 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
 
-# V1 (1)
-V1 undo/u-back-to-last-empty-line
-
 # V2 (16)
 V2 ex/goto-line
 V2 hand-written/search/count-slash
