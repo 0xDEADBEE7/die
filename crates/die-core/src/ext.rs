@@ -1,23 +1,31 @@
 //! The extension machinery (contract §2, §4, §8, §10; C1, C2, C9): the traits extensions
 //! implement, the registry they declare into, `Ctx` and its startup, checkout, modes and the guard
-//! around every call into extension code. Buffers and windows are here until K6 moves them.
+//! around every call into extension code. Buffers and registers are in `workspace`, and windows in
+//! `windows`.
 #![warn(missing_docs)]
+use crate::app::Input;
 use crate::dispatch::*;
 use crate::error::*;
 use crate::faces::{Faces, Style, Theme};
 use crate::files::SettingsFn;
+use crate::harness::FakeClipboard;
 use crate::ids::*;
 use crate::keymap::*;
 use crate::keys::*;
+use crate::pointer::Drawn;
 use crate::prompt::Prompt;
 use crate::rt::*;
 use crate::text::*;
+use crate::windows::Window;
+use crate::workspace::tree::Tree;
+use crate::workspace::{Clip, Clipboard, Register};
 use slotmap::SlotMap;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind, set_hook, take_hook};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Once, mpsc};
 
@@ -46,6 +54,8 @@ pub struct Config {
     pub file_settings: Option<SettingsFn>,
     /// The clock. The default is a fake one, as tests want, so a real DIE passes [`Clock::real`].
     pub clock: Clock,
+    /// The system clipboard. The default is one in memory, as tests want.
+    pub clipboard: Option<Box<dyn Clipboard>>,
     /// Runs once every extension has initialized, and the session is restored (K12), with
     /// `Ctx`. An error or a panic is logged, and the editor still starts.
     pub startup: Option<StartupFn>,
@@ -241,26 +251,6 @@ impl Registry {
     }
 }
 
-/// A register's shape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RegKind {
-    /// Characters.
-    Char,
-    /// Whole lines.
-    Line,
-    /// A rectangle.
-    Block,
-}
-
-/// What a register holds.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Register {
-    /// Its shape.
-    pub kind: RegKind,
-    /// Its text.
-    pub text: String,
-}
-
 pub(crate) struct ExtSlot {
     name: &'static str,
     type_id: TypeId,
@@ -287,16 +277,13 @@ pub(crate) struct ModeSlot {
 
 pub(crate) struct Buffer {
     pub name: String,
+    pub directory: PathBuf,
+    /// When it was made or last shown or focused.
+    pub used: u64,
     pub content: Content,
     pub modes: Vec<ModeSlot>,
     pub local: Keymap,
     pub state: State,
-}
-
-pub(crate) struct Window {
-    pub buffer: BufferId,
-    pub cols: usize,
-    pub rows: usize,
 }
 
 /// The workspace, passed mutably to every command, callback and hook (C1).
@@ -318,7 +305,7 @@ pub struct Ctx {
     pub(crate) jobs_tx: mpsc::Sender<JobMsg>,
     pub(crate) jobs_rx: mpsc::Receiver<JobMsg>,
     pub(crate) outstanding: usize,
-    pub(crate) typed: VecDeque<KeyEvent>,
+    pub(crate) typed: VecDeque<Input>,
     pub(crate) fed: VecDeque<KeyEvent>,
     /// Where the next key fed from inside a call goes. Each turn starts it at the front.
     pub(crate) fed_at: usize,
@@ -338,6 +325,17 @@ pub struct Ctx {
     /// The window the running command acts for. With none, the focused window acts.
     pub(crate) cur_window: Option<WindowId>,
     pub(crate) registers: HashMap<char, Register>,
+    pub(crate) clip: Clip,
+    /// The split tree and the frame it divides.
+    pub(crate) tree: Tree,
+    /// The last number given out for when a window or buffer was used.
+    pub(crate) tick: u64,
+    /// DIE's OS window has the keyboard focus (K9).
+    pub(crate) app_focused: bool,
+    /// What the last composed frame's cells showed.
+    pub(crate) drawn: Drawn,
+    /// `run_ready` hit its turn limit and has said so.
+    pub(crate) over_limit: bool,
     pub(crate) files: crate::files::Files,
     /// The log: errors, panics and messages, oldest first (K11a's `*messages*` shows it).
     pub messages: Vec<String>,
@@ -483,6 +481,16 @@ impl Ctx {
             cmd_seq: 0,
             cur_window: None,
             registers: HashMap::new(),
+            clip: Clip::new(
+                config
+                    .clipboard
+                    .unwrap_or_else(|| Box::new(FakeClipboard::default())),
+            ),
+            tree: Tree::default(),
+            tick: 0,
+            app_focused: true,
+            drawn: Drawn::default(),
+            over_limit: false,
             files: Default::default(),
             messages: vec![],
             faces,
@@ -747,192 +755,6 @@ impl Ctx {
         Ok(r.unwrap_or_else(|p| resume_unwind(p)))
     }
 
-    // -------------------------------------------------------------- buffers and windows
-
-    fn unique_name(&self, name: &str) -> String {
-        let taken = |n: &str| self.buffers.values().any(|b| b.name == n);
-        if !taken(name) {
-            return name.into();
-        }
-        (2..)
-            .map(|i| format!("{name}<{i}>"))
-            .find(|n| !taken(n))
-            .unwrap()
-    }
-    /// Create a text buffer. Its name is made unique, as in Emacs (`term<2>`).
-    pub fn create_text(&mut self, name: &str, text: &str) -> BufferId {
-        let name = self.unique_name(name);
-        let mut t = Box::new(TextBuf::new(text));
-        *t.settings_mut() = self.text_defaults.clone();
-        let b = Buffer {
-            name,
-            content: Content::Text(t),
-            modes: vec![],
-            local: Keymap::with_leader(self.leader),
-            state: State::Normal,
-        };
-        self.buffers.insert(b)
-    }
-    /// Create a buffer showing a custom surface. Its name is made unique.
-    pub fn create_surface<S: Surface>(&mut self, name: &str, s: S) -> BufferId {
-        let name = self.unique_name(name);
-        let (kind, state) = (s.kind(), s.initial_state());
-        let content = Content::Custom {
-            type_id: TypeId::of::<S>(),
-            kind,
-            owner: self.cur_ext(),
-            obj: Some(Box::new(s)),
-        };
-        self.buffers.insert(Buffer {
-            name,
-            content,
-            modes: vec![],
-            local: Keymap::with_leader(self.leader),
-            state,
-        })
-    }
-    /// The buffer with this name.
-    pub fn find_buffer(&self, name: &str) -> Option<BufferId> {
-        self.buffers
-            .iter()
-            .find(|(_, b)| b.name == name)
-            .map(|(id, _)| id)
-    }
-    /// A buffer's name. None if it's dead.
-    pub fn buffer_name(&self, buf: BufferId) -> Option<&str> {
-        self.buffers.get(buf).map(|b| b.name.as_str())
-    }
-    /// Whether a buffer is still alive.
-    pub fn is_live(&self, buf: BufferId) -> bool {
-        self.buffers.contains_key(buf)
-    }
-    /// Kill a buffer. It is dead at once; a checked-out surface or mode drops at check-in.
-    /// Dropping its modes drops the `Sub` handles they hold, which cancels them (C4).
-    pub fn kill(&mut self, buf: BufferId) -> bool {
-        let Some(b) = self.buffers.remove(buf) else {
-            return false;
-        };
-        self.cleanup(|_| drop(b));
-        self.files.forget(buf);
-        let hooks: Vec<_> = self
-            .subs
-            .iter()
-            .filter_map(|e| match &e.kind {
-                SubKind::Killed(f) if e.inner.alive.get() => Some((e.inner.clone(), f.clone())),
-                _ => None,
-            })
-            .collect();
-        for (inner, f) in hooks {
-            let ext = inner.ext;
-            self.queue.push_back(Queued {
-                ext,
-                alive: Some(inner),
-                keyed: false,
-                f: Box::new(move |ctx| (f.borrow_mut())(ctx, buf)),
-            });
-        }
-        true
-    }
-
-    /// A buffer's text, for reading (C2).
-    pub fn text(&self, buf: BufferId) -> Result<&TextBuf> {
-        match &self.buffers.get(buf).ok_or(Checkout::Gone)?.content {
-            Content::Text(t) => Ok(t),
-            _ => Err(Error::NotText),
-        }
-    }
-    /// Core-owned text is borrowed by id, never checked out (C2).
-    pub fn text_mut(&mut self, buf: BufferId) -> Result<&mut TextBuf> {
-        let actor = self
-            .cur_window
-            .or(self.focused)
-            .filter(|w| self.windows.get(*w).is_some_and(|w| w.buffer == buf));
-        let cmd = self.cmd_seq;
-        match &mut self.buffers.get_mut(buf).ok_or(Checkout::Gone)?.content {
-            Content::Text(t) => {
-                t.cmd = cmd;
-                t.actor = actor;
-                Ok(t)
-            }
-            _ => Err(Error::NotText),
-        }
-    }
-
-    /// Open a window on a buffer and focus it.
-    pub fn open_window(&mut self, buf: BufferId, cols: usize, rows: usize) -> Result<WindowId> {
-        let b = self.buffers.get(buf).ok_or(Checkout::Gone)?;
-        let _ = b;
-        let w = self.windows.insert(Window {
-            buffer: buf,
-            cols,
-            rows,
-        });
-        if let Content::Text(t) = &mut self.buffers[buf].content {
-            t.add_view(w, cols, rows);
-        }
-        self.focus(w);
-        Ok(w)
-    }
-    /// Focus a window. A running command goes on acting for it (contract §9).
-    pub fn focus(&mut self, w: WindowId) {
-        if self.windows.contains_key(w) {
-            self.focused = Some(w);
-            // A running command goes on acting for the window it moved the focus to.
-            self.cur_window = self.cur_window.and(Some(w));
-        }
-    }
-    /// The focused window.
-    pub fn focused(&self) -> Option<WindowId> {
-        self.focused
-    }
-    /// The buffer the focused window shows.
-    pub fn focused_buffer(&self) -> Option<BufferId> {
-        self.focused
-            .and_then(|w| self.windows.get(w))
-            .map(|w| w.buffer)
-    }
-    /// The buffer a window shows.
-    pub fn window_buffer(&self, w: WindowId) -> Option<BufferId> {
-        self.windows.get(w).map(|w| w.buffer)
-    }
-    /// A window's columns and rows.
-    pub fn window_size(&self, w: WindowId) -> Option<(usize, usize)> {
-        self.windows.get(w).map(|w| (w.cols, w.rows))
-    }
-    /// Resize a window. Each mode's `on_resize` and the surface's Resize event are queued (C3).
-    pub fn resize(&mut self, w: WindowId, cols: usize, rows: usize) -> Result {
-        let win = self.windows.get_mut(w).ok_or(Checkout::Gone)?;
-        win.cols = cols;
-        win.rows = rows;
-        let buf = win.buffer;
-        let Some(b) = self.buffers.get_mut(buf) else {
-            return Ok(());
-        };
-        match &mut b.content {
-            Content::Text(t) => t.resize_view(w, cols, rows),
-            Content::Custom { owner, .. } => {
-                let owner = *owner;
-                self.defer_as(owner, move |ctx| {
-                    let ev = Event::Resize { cols, rows };
-                    ctx.checkout_surface(buf, |s, ctx| s.event(&ev, ctx))?;
-                    Ok(())
-                });
-            }
-        }
-        let modes: Vec<(TypeId, ExtIdx)> = self.buffers[buf]
-            .modes
-            .iter()
-            .map(|m| (m.type_id, self.modes[m.spec].owner))
-            .collect();
-        for (tid, owner) in modes {
-            self.defer_as(owner, move |ctx| {
-                ctx.checkout_mode(buf, tid, |m, ctx| m.on_resize(w, cols, rows, ctx))?;
-                Ok(())
-            });
-        }
-        Ok(())
-    }
-
     // -------------------------------------------------------------- modes
 
     /// Enable a registered mode on a text buffer (C17). Its `on_enable` is queued (C3).
@@ -989,16 +811,5 @@ impl Ctx {
             });
         }
         Ok(())
-    }
-
-    // -------------------------------------------------------------- registers
-
-    /// What a register holds.
-    pub fn register(&self, c: char) -> Option<&Register> {
-        self.registers.get(&c)
-    }
-    /// Set a register.
-    pub fn set_register(&mut self, c: char, r: Register) {
-        self.registers.insert(c, r);
     }
 }

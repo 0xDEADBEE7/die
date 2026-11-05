@@ -1993,3 +1993,245 @@ fn run_history(init: String, steps_cap: usize, bytes_cap: usize, hs: Vec<H>) {
         assert_eq!(replayed, text_of(&ctx, b), "the log replays to the text");
     }
 }
+
+// ---------------------------------------------------------------- K6: windows and the modified flag
+
+#[derive(Clone, Debug)]
+enum WinOp {
+    Split(u8, Side),
+    Close(u8),
+    Only(u8),
+    Resize(u8, u8, u8),
+    Frame(u8, u8),
+    Balance(u8),
+    Show(u8, u8),
+    Focus(u8),
+    Dir(Side),
+}
+
+fn side() -> impl Strategy<Value = Side> {
+    prop_oneof![
+        Just(Side::Left),
+        Just(Side::Right),
+        Just(Side::Above),
+        Just(Side::Below)
+    ]
+}
+
+fn win_op() -> impl Strategy<Value = WinOp> {
+    prop_oneof![
+        5 => (any::<u8>(), side()).prop_map(|(w, s)| WinOp::Split(w, s)),
+        3 => any::<u8>().prop_map(WinOp::Close),
+        1 => any::<u8>().prop_map(WinOp::Only),
+        4 => (any::<u8>(), any::<u8>(), any::<u8>()).prop_map(|(w, c, r)| WinOp::Resize(w, c, r)),
+        2 => (0u8..120, 0u8..60).prop_map(|(c, r)| WinOp::Frame(c, r)),
+        1 => any::<u8>().prop_map(WinOp::Balance),
+        2 => (any::<u8>(), any::<u8>()).prop_map(|(w, b)| WinOp::Show(w, b)),
+        2 => any::<u8>().prop_map(WinOp::Focus),
+        2 => side().prop_map(WinOp::Dir),
+    ]
+}
+
+/// Whatever was done to them, the windows divide the frame above the command line: every cell is
+/// in exactly one window's text, status line or divider, and the frame's right edge has no divider.
+/// In a frame too small for them they can't all fit, and they still don't overlap.
+fn check_tiling(ctx: &mut Ctx) -> Result<(), TestCaseError> {
+    let (cols, rows) = ctx.frame_size();
+    let area = rows.saturating_sub(1);
+    let mut owner = vec![0u8; cols * area];
+    let list = ctx.window_list();
+    let placed = ctx.placements();
+    for p in &placed {
+        let (c, r) = ctx.window_size(p.window).unwrap();
+        prop_assert!(c > 0 && r > 0);
+        let reach = if p.col + c == cols { c } else { c + 1 };
+        prop_assert!(p.col + reach <= cols, "{p:?} {c}x{r} in {cols}x{rows}");
+        prop_assert!(p.row + r < area, "{p:?} {c}x{r} in {cols}x{rows}");
+        for y in p.row..=p.row + r {
+            for x in p.col..p.col + reach {
+                owner[y * cols + x] += 1;
+                prop_assert_eq!(owner[y * cols + x], 1, "({}, {}) twice", x, y);
+            }
+        }
+    }
+    // A frame with room for every window at its minimum is covered, with nothing left over.
+    let room = list.len() * 2;
+    if cols >= room && area >= room {
+        prop_assert_eq!(placed.len(), list.len(), "every window is placed");
+        prop_assert!(owner.iter().all(|n| *n == 1), "a cell has no window");
+    }
+    for w in &list {
+        // Each view is the window's size.
+        let b = ctx.window_buffer(*w).unwrap();
+        let (c, r) = ctx.window_size(*w).unwrap();
+        let g = ctx.text(b).unwrap().geometry(*w).unwrap();
+        prop_assert_eq!((g.cols, g.rows), (c, r));
+    }
+    prop_assert!(
+        list.contains(&ctx.focused().unwrap()),
+        "the focus is on a live window"
+    );
+    let s = ctx.scene();
+    prop_assert_eq!((s.cols, s.rows), (cols, rows));
+    Ok(())
+}
+
+fn run_windows(ops: Vec<WinOp>) -> Result<(), TestCaseError> {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    ctx.set_frame_size(100, 40);
+    let bufs: Vec<BufferId> = ["a\nb\nc\n", "", "long line here\n"]
+        .iter()
+        .map(|t| ctx.create_text("t", t))
+        .collect();
+    ctx.show(bufs[0], ShowIn::Current).unwrap();
+    let pick = |ctx: &Ctx, i: u8| {
+        let l = ctx.window_list();
+        l[i as usize % l.len()]
+    };
+    for op in ops {
+        match op {
+            WinOp::Split(w, s) => {
+                let w = pick(&ctx, w);
+                let _ = ctx.split_window(w, s);
+            }
+            WinOp::Close(w) => {
+                let w = pick(&ctx, w);
+                let sole = ctx.window_list().len() == 1;
+                prop_assert_eq!(ctx.close_window(w).is_err(), sole);
+            }
+            WinOp::Only(w) => {
+                let w = pick(&ctx, w);
+                ctx.only_window(w).unwrap();
+                prop_assert_eq!(ctx.window_list(), [w]);
+            }
+            WinOp::Resize(w, c, r) => {
+                let w = pick(&ctx, w);
+                ctx.resize(w, c as usize, r as usize).unwrap();
+            }
+            WinOp::Frame(c, r) => ctx.set_frame_size(c as usize, r as usize),
+            WinOp::Balance(w) => {
+                let w = pick(&ctx, w);
+                ctx.balance_windows(w);
+            }
+            WinOp::Show(w, b) => {
+                let w = pick(&ctx, w);
+                ctx.focus(w);
+                ctx.show(bufs[b as usize % bufs.len()], ShowIn::Current)
+                    .unwrap();
+            }
+            WinOp::Focus(w) => {
+                let w = pick(&ctx, w);
+                ctx.focus(w);
+            }
+            WinOp::Dir(s) => {
+                if let Some(next) = ctx.focus_direction(s) {
+                    prop_assert_eq!(ctx.focused(), Some(next));
+                }
+            }
+        }
+        check_tiling(&mut ctx)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum ModOp {
+    Insert(u8, bool),
+    Delete(u8),
+    Silent(u8),
+    Undo,
+    Redo,
+    Save,
+    Boundary,
+    Group(bool),
+}
+
+fn mod_op() -> impl Strategy<Value = ModOp> {
+    prop_oneof![
+        5 => (any::<u8>(), any::<bool>()).prop_map(|(a, s)| ModOp::Insert(a, s)),
+        3 => any::<u8>().prop_map(ModOp::Delete),
+        1 => any::<u8>().prop_map(ModOp::Silent),
+        4 => Just(ModOp::Undo),
+        3 => Just(ModOp::Redo),
+        2 => Just(ModOp::Save),
+        3 => Just(ModOp::Boundary),
+        1 => any::<bool>().prop_map(ModOp::Group),
+    ]
+}
+
+/// The flag is clear only when the text is what was saved. The other way round, an edit and its
+/// inverse leave the same text with the flag set, as in Emacs.
+fn run_modified(ops: Vec<ModOp>) -> Result<(), TestCaseError> {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "start");
+    let w = ctx.open_window(b, 20, 5).unwrap();
+    ctx.focus(w);
+    let mut saved = "start".to_string();
+    for op in ops {
+        // Each op is a command of its own.
+        ctx.run_until_idle();
+        let t = ctx.text_mut(b).unwrap();
+        match op {
+            ModOp::Insert(at, end_step) => {
+                let n = t.rope().len_chars();
+                let at = t.rope().char_to_byte(at as usize % (n + 1));
+                t.tx(Origin::User).insert(at, "xy").commit().unwrap();
+                if end_step {
+                    t.undo_boundary();
+                }
+            }
+            ModOp::Delete(at) => {
+                let n = t.rope().len_chars();
+                if n > 0 {
+                    let at = at as usize % n;
+                    let (s, e) = (t.rope().char_to_byte(at), t.rope().char_to_byte(at + 1));
+                    t.tx(Origin::User).delete(s..e).commit().unwrap();
+                }
+            }
+            ModOp::Silent(at) => {
+                let n = t.rope().len_chars();
+                let at = t.rope().char_to_byte(at as usize % (n + 1));
+                t.tx(Origin::Extension)
+                    .silent()
+                    .insert(at, "S")
+                    .commit()
+                    .unwrap();
+            }
+            ModOp::Undo => {
+                let _ = t.undo();
+            }
+            ModOp::Redo => {
+                let _ = t.redo();
+            }
+            ModOp::Save => {
+                t.set_modified(false);
+                saved = t.rope().to_string();
+            }
+            ModOp::Boundary => t.undo_boundary(),
+            ModOp::Group(open) => {
+                if open {
+                    t.begin_undo_group();
+                } else {
+                    t.end_undo_group();
+                }
+            }
+        }
+        let t = ctx.text(b).unwrap();
+        if !t.modified() {
+            prop_assert_eq!(t.rope().to_string(), saved.clone(), "unmodified");
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: prop_cases().unwrap_or(2_000), max_shrink_iters: 5_000, ..ProptestConfig::default() })]
+    #[test]
+    fn windows_tile_the_frame(ops in prop::collection::vec(win_op(), 1..30)) {
+        run_windows(ops)?;
+    }
+    #[test]
+    fn unmodified_means_the_saved_text(ops in prop::collection::vec(mod_op(), 1..40)) {
+        run_modified(ops)?;
+    }
+}
