@@ -20,6 +20,12 @@
 //! The runner uses die-core's spike-era API until the public harness (K7) lands.
 //! What it can't set up or check yet fails the case with a reason, so a case
 //! never passes on something unchecked.
+//!
+//! The clipboard waits for K6. Your Evil writes every kill to it, so nearly every case
+//! expects clipboard writes. Until K6 the runner holds those against the kill ring: the
+//! clipboard's text must be the newest kill, and its writes must be `"1`, `"2` and so on.
+//! That checks what would be sent, and not that it arrives. A case about the clipboard
+//! itself, one that names it or `"+`, or starts with text on it, stays pending for K6.
 
 use die_core::{Ctx, RegKind, Register, State, parse_keys};
 use die_vim::Vim;
@@ -204,7 +210,7 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
     if input.visual.is_some() {
         return Err("can't start a case in visual state yet (the harness, K7)".into());
     }
-    if input.clipboard.is_some() {
+    if input.clipboard.is_some() || case.id.contains("clipboard") || case.keys.contains("\"+") {
         return Err("no clipboard yet (K6)".into());
     }
     if run == Run::Tty || input.window.is_some() {
@@ -288,8 +294,22 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
             diffs.push(format!("register {name} is {got:?}, want {want:?}"));
         }
     }
-    if want.clipboard.text.is_some() || !want.clipboard.writes.is_empty() {
-        diffs.push("can't check the clipboard yet (K6)".into());
+    // Until K6, what would reach the clipboard is what's in the kill ring (see above).
+    let newest = ctx.register('"').map(|r| r.text.as_str());
+    if want.clipboard.text.as_deref() != newest {
+        diffs.push(format!(
+            "the newest kill is {newest:?}, but the clipboard should hold {:?}",
+            want.clipboard.text
+        ));
+    }
+    let writes = want.clipboard.writes.iter().rev();
+    for (write, name) in writes.zip('1'..='9') {
+        let got = ctx.register(name).map(|r| r.text.as_str());
+        if got != Some(write.as_str()) {
+            diffs.push(format!(
+                "register {name} is {got:?}, but the clipboard should have been sent {write:?}"
+            ));
+        }
     }
     // A key die-vim doesn't bind is never the error Evil signalled, even when it
     // comes after the same key.
@@ -383,6 +403,50 @@ fn insert_state_arrows_match_the_tty_run() {
         let size = c.input.window.as_ref().expect("a tty case's window");
         run_in_window(c, size.width, size.height)
             .unwrap_or_else(|why| panic!("insert-tty/{}: {why}", c.id));
+    }
+}
+
+/// Until K6 the kill ring stands in for the clipboard, and it does check something.
+#[test]
+fn a_kill_must_be_what_the_clipboard_should_have_been_sent() {
+    let (case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    assert_eq!(run_case(&case, run), Ok(()), "the committed case");
+
+    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    case.expected.clipboard.text = Some("something else".into());
+    let why = run_case(&case, run).expect_err("the newest kill is another text");
+    assert!(why.contains("the clipboard should hold"), "{why}");
+
+    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    case.expected.clipboard.writes[0] = "something else".into();
+    let why = run_case(&case, run).expect_err("the kill ring holds another text");
+    assert!(why.contains("should have been sent"), "{why}");
+
+    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    case.expected
+        .clipboard
+        .writes
+        .insert(0, "an older kill".into());
+    let why = run_case(&case, run).expect_err("the kill ring is one short");
+    assert!(why.contains("should have been sent"), "{why}");
+}
+
+/// A case about the clipboard itself can't pass until there's one to check.
+#[test]
+fn a_case_about_the_clipboard_waits_for_k6() {
+    for id in [
+        "clipboard-paste-from-other-app",
+        "clipboard-written-on-yank-and-delete",
+        "black-hole-skips-clipboard",
+        "plus-register-yank",
+        "plus-register-paste",
+    ] {
+        let (case, run) = fixture_case(&fixtures_dir(), "registers", id);
+        assert_eq!(
+            run_case(&case, run),
+            Err("no clipboard yet (K6)".into()),
+            "{id}"
+        );
     }
 }
 

@@ -3,18 +3,25 @@
 //! (`tests/oracle.rs`), except the deviations named in `tests/oracle/deviations.json`.
 //!
 //! `grammar.rs` says how counts, motions, operators and insert sessions fit
-//! together. So far (V1): motions, counts, and insert sessions with their undo.
+//! together. So far (V1, V3): motions, counts, insert sessions with their undo,
+//! operators, registers and text objects. `registers.rs` is the one place that touches
+//! registers, for K6.
 
 mod grammar;
 mod insert;
 mod motions;
+mod objects;
+mod operators;
+mod registers;
 mod scripts;
 mod text;
 
 use die_core::{Args, BufferId, Ctx, Dir, Error, Extension, Registry, Result, State};
-use grammar::{Kind, buffer_window, count_digit, forget_goal, run_motion};
+use grammar::{Kind, Operator, buffer_window, count_digit, forget_goal, run_motion};
 use insert::{Edit, Entry, Session};
 use motions::{Find, MOTIONS};
+use objects::OBJECTS;
+use operators::Pending;
 use std::collections::HashMap;
 
 /// The die-vim extension.
@@ -23,6 +30,8 @@ pub struct Vim {
     /// Each buffer's insert session. Core keeps insert state per buffer, and
     /// Evil keeps a session's count and keys per buffer too.
     inserts: HashMap<BufferId, Session>,
+    /// Each buffer's operator waiting for its motion. Core keeps that state per buffer too.
+    pending: HashMap<BufferId, Pending>,
     /// The last `f`, `F`, `t` or `T`, which `;` and `,` repeat.
     find: Option<Find>,
 }
@@ -35,6 +44,20 @@ const INSERTS: &[(&str, &str, Entry, &str)] = &[
     ("A", "vim-append-line", Entry::AppendLine, "Insert at the end of the line."),
     ("o", "vim-open-below", Entry::OpenBelow, "Open a line below, indented like this one."),
     ("O", "vim-open-above", Entry::OpenAbove, "Open a line above, indented like the one above it."),
+];
+
+/// The operators: their keys in normal state, the last key again in operator-pending
+/// state meaning whole lines (`dd`, `g~~`, and `g~g~` too), and their commands.
+#[rustfmt::skip]
+const OPERATORS: &[(&str, &str, &str, Operator, &str)] = &[
+    ("d", "d", "vim-delete", Operator::Delete, "Delete what a motion covers."),
+    ("c", "c", "vim-change", Operator::Change, "Delete what a motion covers, and insert."),
+    ("y", "y", "vim-yank", Operator::Yank, "Yank what a motion covers."),
+    ("<lt>", "<lt>", "vim-shift-left", Operator::ShiftLeft, "Shift lines left."),
+    (">", ">", "vim-shift-right", Operator::ShiftRight, "Shift lines right."),
+    ("g~", "~", "vim-invert-case", Operator::InvertCase, "Invert the case of what a motion covers."),
+    ("gU", "U", "vim-upcase", Operator::Upcase, "Upper-case what a motion covers."),
+    ("gu", "u", "vim-downcase", Operator::Downcase, "Lower-case what a motion covers."),
 ];
 
 #[rustfmt::skip]
@@ -55,9 +78,13 @@ impl Extension for Vim {
     }
 
     fn init(&mut self, ctx: &mut Ctx) -> Result {
-        // A buffer killed in insert state never gets its Escape.
+        // A buffer killed in insert state never gets its Escape, nor one with an
+        // operator waiting its motion.
         ctx.on_buffer_killed(|ctx, b| {
-            ctx.with_ext(|v: &mut Vim, _| v.inserts.remove(&b))?;
+            ctx.with_ext(|v: &mut Vim, _| {
+                v.inserts.remove(&b);
+                v.pending.remove(&b);
+            })?;
             Ok(())
         })
         .detach();
@@ -65,40 +92,72 @@ impl Extension for Vim {
     }
 
     fn register(&mut self, reg: &mut Registry) {
-        use State::{Insert, Normal};
+        use State::{Insert, Normal, OperatorPending};
         let k = reg.kind_keymap("text");
-        for m in MOTIONS {
-            k.bind(Normal, m.keys, m.name);
+        // Motions work the same in normal and operator-pending state: `run_motion` looks
+        // for a waiting operator.
+        for state in [Normal, OperatorPending] {
+            for m in MOTIONS {
+                k.bind(state, m.keys, m.name);
+            }
+            // Escape while a key waits for another.
+            for key in ["f", "F", "t", "T"] {
+                k.bind(state, &format!("{key}<Esc>"), "vim-cancel");
+            }
+            for (keys, cmd) in [
+                ("<Left>", "h"),
+                ("<Right>", "l"),
+                ("<Up>", "k"),
+                ("<Down>", "j"),
+            ] {
+                let m = MOTIONS
+                    .iter()
+                    .find(|m| m.keys == cmd)
+                    .expect("bound motion");
+                k.bind(state, keys, m.name);
+            }
+            for d in '1'..='9' {
+                k.bind(state, &d.to_string(), "vim-digit-argument");
+            }
+            k.bind(state, "0", "vim-beginning-of-line")
+                .bind(state, ";", "vim-repeat-find-char")
+                .bind(state, ",", "vim-repeat-find-char-reverse")
+                .bind(state, "<C-a>", "vim-line-beginning");
         }
-        // Escape while a key waits for another. V3 binds it in OperatorPending too.
-        for key in ["f", "F", "t", "T"] {
-            k.bind(Normal, &format!("{key}<Esc>"), "vim-cancel");
-        }
-        for (keys, cmd) in [
-            ("<Left>", "h"),
-            ("<Right>", "l"),
-            ("<Up>", "k"),
-            ("<Down>", "j"),
-        ] {
-            let m = MOTIONS
-                .iter()
-                .find(|m| m.keys == cmd)
-                .expect("bound motion");
-            k.bind(Normal, keys, m.name);
-        }
-        for d in '1'..='9' {
-            k.bind(Normal, &d.to_string(), "vim-digit-argument");
-        }
-        k.bind(Normal, "0", "vim-beginning-of-line")
-            .bind(Normal, ";", "vim-repeat-find-char")
-            .bind(Normal, ",", "vim-repeat-find-char-reverse")
-            .bind(Normal, "u", "vim-undo")
+        k.bind(Normal, "u", "vim-undo")
             .bind(Normal, "<C-r>", "vim-redo")
-            .bind(Normal, "<C-a>", "vim-line-beginning")
             .bind(Normal, "<Esc>", "vim-force-normal-state");
         for (keys, name, ..) in INSERTS {
             k.bind(Normal, keys, name);
         }
+        for (keys, again, name, ..) in OPERATORS {
+            k.bind(Normal, keys, name)
+                .bind(OperatorPending, again, name);
+            if keys != again {
+                k.bind(OperatorPending, keys, name);
+            }
+        }
+        for (keys, name, ..) in OBJECTS {
+            k.bind(OperatorPending, keys, name);
+        }
+        // Anything else cancels an operator, and so does a key that fails under a prefix,
+        // which core wouldn't try against <any> (contract §7).
+        for keys in ["<Esc>", "<any>", "i<any>", "a<any>", "g<any>"] {
+            k.bind(OperatorPending, keys, "vim-cancel");
+        }
+        k.bind(Normal, "x", "vim-delete-char")
+            .bind(Normal, "X", "vim-delete-char-before")
+            .bind(Normal, "s", "vim-substitute")
+            .bind(Normal, "S", "vim-change-whole-line")
+            .bind(Normal, "D", "vim-delete-line")
+            .bind(Normal, "C", "vim-change-line")
+            .bind(Normal, "Y", "vim-yank-line")
+            .bind(Normal, "~", "vim-invert-char")
+            .bind(Normal, "r<any>", "vim-replace")
+            .bind(Normal, "J", "vim-join")
+            .bind(Normal, "p", "vim-paste-after")
+            .bind(Normal, "P", "vim-paste-before")
+            .bind(Normal, "\"<any>", "vim-use-register");
         k.bind(Insert, "<char>", "vim-insert-char")
             .bind(Insert, "<Esc>", "vim-normal-state");
         for (keys, name, ..) in EDITS {
@@ -123,12 +182,124 @@ impl Extension for Vim {
         }
         reg.command(
             "vim-cancel",
-            "Escape after a key that waits for another: only the count and the goal column go.",
+            "Escape after a key that waits for another: only the operator, the count and the goal column go.",
+            operators::cancel,
+        );
+        for &(_, _, name, op, doc) in OPERATORS {
+            reg.command(name, doc, move |ctx, a| operators::on_key(ctx, a, op));
+        }
+        let mut objects: Vec<&str> = vec![];
+        for &(_, name, object, doc) in OBJECTS {
+            // Several keys can name one object, as `i(`, `i)` and `ib` do.
+            if !objects.contains(&name) {
+                objects.push(name);
+                reg.command(name, doc, move |ctx, a| {
+                    operators::on_object(ctx, a, object)
+                });
+            }
+        }
+        reg.command(
+            "vim-delete-char",
+            "x: delete count characters.",
             |ctx, a| {
-                let (b, w) = buffer_window(ctx, a)?;
-                forget_goal(ctx.text_mut(b)?, w);
-                Ok(())
+                operators::with_motion(
+                    ctx,
+                    a,
+                    Operator::Delete,
+                    Kind::Exclusive,
+                    motions::forward_char,
+                )
             },
+        );
+        reg.command(
+            "vim-delete-char-before",
+            "X: delete count characters before the cursor.",
+            |ctx, a| {
+                operators::with_motion(
+                    ctx,
+                    a,
+                    Operator::Delete,
+                    Kind::Exclusive,
+                    motions::backward_char,
+                )
+            },
+        );
+        reg.command("vim-substitute", "s: change count characters.", |ctx, a| {
+            operators::with_motion(
+                ctx,
+                a,
+                Operator::Change,
+                Kind::Exclusive,
+                motions::forward_char,
+            )
+        });
+        reg.command(
+            "vim-change-whole-line",
+            "S: change count lines.",
+            |ctx, a| operators::with_lines(ctx, a, Operator::Change),
+        );
+        reg.command(
+            "vim-delete-line",
+            "D: delete to the end of the line.",
+            |ctx, a| {
+                operators::with_motion(
+                    ctx,
+                    a,
+                    Operator::Delete,
+                    Kind::Inclusive,
+                    motions::end_of_line,
+                )
+            },
+        );
+        reg.command(
+            "vim-change-line",
+            "C: change to the end of the line.",
+            |ctx, a| {
+                operators::with_motion(
+                    ctx,
+                    a,
+                    Operator::Change,
+                    Kind::Inclusive,
+                    motions::end_of_line,
+                )
+            },
+        );
+        reg.command("vim-yank-line", "Y: yank count lines.", |ctx, a| {
+            operators::with_lines(ctx, a, Operator::Yank)
+        });
+        reg.command(
+            "vim-invert-char",
+            "~: invert the case of count characters.",
+            |ctx, a| {
+                operators::with_motion(
+                    ctx,
+                    a,
+                    Operator::InvertCase,
+                    Kind::Exclusive,
+                    motions::forward_char,
+                )
+            },
+        );
+        reg.command(
+            "vim-replace",
+            "r: replace count characters with the next key.",
+            operators::replace,
+        );
+        reg.command("vim-join", "J: join count lines.", operators::join);
+        reg.command(
+            "vim-paste-after",
+            "p: paste after the cursor, or below this line.",
+            |ctx, a| operators::paste(ctx, a, false),
+        );
+        reg.command(
+            "vim-paste-before",
+            "P: paste before the cursor, or above this line.",
+            |ctx, a| operators::paste(ctx, a, true),
+        );
+        reg.command(
+            "vim-use-register",
+            "\"x: use a register for the next command.",
+            operators::name_register,
         );
         reg.command("vim-digit-argument", "A count digit.", |ctx, a| {
             let d = a.char().and_then(|c| c.to_digit(10)).unwrap_or(0) as usize;

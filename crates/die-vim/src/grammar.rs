@@ -2,20 +2,20 @@
 //!
 //! Normal state reads `[count] command`. A count is a prefix that core holds for
 //! the next command (D9: [`Ctx::set_prefix`], delivered in [`Args::count`]); so
-//! is a register (`"x`, V3). A command is a motion, an operator or an action:
+//! is a register (`"x`). A command is a motion, an operator or an action:
 //!
 //! - A **motion** ([`Motion`]) is a plain function from where it starts
 //!   ([`Start`]) to where it lands ([`Target`]). It reads the text, layout queries
 //!   and its count, never other editor state, so M2's copy state can reuse it on
 //!   a terminal's text. Its [`Kind`] says how an operator treats the range.
-//! - An **operator** (V3) waits for a motion or text object: core's state is
-//!   `OperatorPending`, and die-vim keeps the operator with its count and
-//!   register. [`run_motion`] is where a motion meets it: with an operator
-//!   pending, the range from the cursor to the motion's target goes to the
+//! - An **operator** ([`Operator`], `operators.rs`) waits for a motion or text
+//!   object: core's state is `OperatorPending`, and die-vim keeps the operator with
+//!   its count and register. [`run_motion`] is where a motion meets it: with an
+//!   operator pending, the range from the cursor to the motion's target goes to the
 //!   operator instead of moving the cursor, and the two counts multiply.
-//! - An **action** is anything else: entering insert state, undo. Insert sessions
-//!   are one undo step each and record their keys, so a count (and `.`, V4) can
-//!   replay them (`insert.rs`).
+//! - An **action** is anything else: entering insert state, undo, `p`. Insert
+//!   sessions are one undo step each and record their keys, so a count (and `.`, V4)
+//!   can replay them (`insert.rs`).
 //!
 //! In normal state the cursor rests on a character, never on a line's newline
 //! unless the line is empty, and motions never take it past the last line
@@ -23,8 +23,9 @@
 //! line after a final newline, as in Evil and Vim (`text::rest_pos`). Motions along
 //! that line (`0`, `^`, `$`, `C-a`) keep it there, and `}` from it fails.
 
+use crate::operators;
 use crate::text::{normal_pos, on_last_empty_line};
-use die_core::{Args, BufferId, Ctx, Error, Prefix, Result, Selection, TextBuf, WindowId};
+use die_core::{Args, BufferId, Ctx, Error, Prefix, Result, Selection, State, TextBuf, WindowId};
 
 /// The column vertical motions aim for, kept across a run of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,16 +56,37 @@ impl Goal {
     }
 }
 
-/// How an operator treats the range a motion covers (V3).
+/// How an operator treats the range a motion covers (`operators::covered`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// The range stops before the target (`w`, `b`, `h`).
     Exclusive,
     /// The range includes the target (`e`, `f`, `$`). The target is a grapheme's start,
-    /// so V3 extends the range to the grapheme's end.
+    /// so the range runs to the grapheme's end.
     Inclusive,
     /// Whole lines, from the start's line to the target's (`j`, `k`, `G`).
     Linewise,
+}
+
+/// An operator: what it does to the range its motion or text object covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operator {
+    /// `d`
+    Delete,
+    /// `c`
+    Change,
+    /// `y`
+    Yank,
+    /// `<`
+    ShiftLeft,
+    /// `>`
+    ShiftRight,
+    /// `g~`
+    InvertCase,
+    /// `gU`
+    Upcase,
+    /// `gu`
+    Downcase,
 }
 
 /// Where a motion starts, and what it may read.
@@ -79,6 +101,9 @@ pub struct Start<'a> {
     pub goal: Option<Goal>,
     /// The character argument of `f`, `F`, `t` and `T`.
     pub arg: Option<char>,
+    /// The operator waiting for this motion. Some motions land elsewhere for one: they
+    /// may stop on a newline or at the end of the text, and `cw` stops at the word's end.
+    pub op: Option<Operator>,
 }
 
 impl Start<'_> {
@@ -97,6 +122,12 @@ pub struct Target {
     pub goal: Option<Goal>,
     /// Signal this, as Evil does, and keep the goal column ([`Target::short()`]).
     pub short: Option<&'static str>,
+    /// How an operator takes this landing, if not as the motion's own [`Kind`] says:
+    /// `N%` is linewise, and `$` on an empty line is exclusive.
+    pub kind: Option<Kind>,
+    /// `w` and `W`: if a `d` ends up taking whole lines, the cursor goes to the first
+    /// non-blank, not to the column it started in.
+    pub no_column: bool,
 }
 
 impl Target {
@@ -106,6 +137,8 @@ impl Target {
             pos,
             goal: None,
             short: None,
+            kind: None,
+            no_column: false,
         }
     }
     /// `pos`, signalling `err` but keeping the goal column. For a motion that fell short
@@ -170,18 +203,19 @@ pub fn count_digit(ctx: &mut Ctx, a: &Args, d: usize) -> Result {
 }
 
 /// Run a motion from the cursor with the command's count. `arg` is the argument
-/// of `f`, `F`, `t` and `T`. V3: a pending operator takes the range from the
-/// cursor to the target here, treated as `kind` says, instead of the cursor moving.
-/// Evil's operators go on after a motion signals End of line or End of buffer, and
-/// stop after any other signal, whether or not the goal column stays.
+/// of `f`, `F`, `t` and `T`. A pending operator takes the range from the cursor to the
+/// target here, treated as `kind` says, instead of the cursor moving.
 pub fn run_motion(
     ctx: &mut Ctx,
     a: &Args,
-    _kind: Kind,
+    kind: Kind,
     arg: Option<char>,
     motion: impl Fn(&Start) -> std::result::Result<Target, Fail>,
 ) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    if ctx.state_of(b) == State::OperatorPending {
+        return operators::on_motion(ctx, a, kind, arg, motion);
+    }
     let t = ctx.text_mut(b)?;
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
     let start = Start {
@@ -190,6 +224,7 @@ pub fn run_motion(
         count: a.count,
         goal: Goal::decode(sel.goal),
         arg,
+        op: None,
     };
     let to = match motion(&start) {
         Ok(to) => to,
