@@ -13,7 +13,8 @@
 //! that named none, and `a`-`z` what was yanked into them. Naming `A`-`Z` appends to
 //! `a`-`z`, and then `"` holds only the new text (S5 row 9).
 
-use die_core::{Ctx, Error, RegKind, Register, Result};
+use crate::repeat::keys_of;
+use die_core::{Ctx, Error, Key, RegKind, Register, Result, key_notation, parse_keys};
 
 /// How many kills can be read back: `"1` to `"9`. Emacs keeps more, out of reach.
 const RING: usize = 9;
@@ -62,9 +63,25 @@ fn overwrite(ctx: &mut Ctx, digit: u32, r: Register) {
     }
 }
 
-/// Append to a register. Text of two kinds, or linewise text, ends up as whole lines.
+/// Append to a register. Text of two kinds, or linewise text, ends up as whole lines. A
+/// recording appended to anything is keys, and anything else appended to one is text.
 fn append(ctx: &mut Ctx, c: char, r: Register) {
-    let joined = match ctx.register(c) {
+    let old = ctx.register(c).cloned();
+    let old = match (&r.kind, old) {
+        (RegKind::Macro, Some(old)) => {
+            let text = keys_of(&old) + &r.text;
+            ctx.set_register(
+                c,
+                Register {
+                    kind: RegKind::Macro,
+                    text,
+                },
+            );
+            return;
+        }
+        (_, old) => old.map(plain),
+    };
+    let joined = match &old {
         None => r,
         Some(old) if old.kind == RegKind::Char && r.kind == RegKind::Char => Register {
             kind: RegKind::Char,
@@ -159,7 +176,55 @@ pub fn read(ctx: &mut Ctx, name: Option<char>) -> Result<Register> {
         _ => ctx.register(c.to_lowercase().next().unwrap_or(c)),
     };
     held.cloned()
+        .map(plain)
         .ok_or_else(|| Error::Msg(format!("Register {c} is empty")))
+}
+
+/// A recording as text: what its keys would type, as your Evil holds it. Keys with no
+/// character stay in notation.
+fn plain(r: Register) -> Register {
+    if r.kind != RegKind::Macro {
+        return r;
+    }
+    let mut text = String::new();
+    for ev in parse_keys(&r.text).unwrap_or_default() {
+        let c = ev.chord();
+        match (ev.printable(), c.key) {
+            (Some(s), _) => text.push_str(&s),
+            (_, Key::Esc) => text.push('\x1b'),
+            (_, Key::Enter) => text.push('\r'),
+            (_, Key::Tab) => text.push('\t'),
+            (_, Key::Backspace) => text.push('\x7f'),
+            (_, Key::Char(k)) if c.mods.ctrl && k.is_ascii_alphabetic() => {
+                text.push(char::from(k.to_ascii_lowercase() as u8 - b'`'));
+            }
+            _ => text.push_str(&key_notation(std::slice::from_ref(&ev))),
+        }
+    }
+    Register {
+        kind: RegKind::Char,
+        text,
+    }
+}
+
+/// `q` stopped: keep the keys in this register. Recording nothing into a register that's
+/// empty leaves it empty.
+pub fn record(ctx: &mut Ctx, name: char, keys: String) -> Result {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let r = Register {
+        kind: RegKind::Macro,
+        text: keys,
+    };
+    set(ctx, name, r)
+}
+
+/// The keys `@` would type from this register, or none if it's empty.
+pub fn macro_keys(ctx: &Ctx, name: char) -> String {
+    let c = name.to_lowercase().next().unwrap_or(name);
+    let held = if c == '1' { '"' } else { c };
+    ctx.register(held).map(keys_of).unwrap_or_default()
 }
 
 #[cfg(test)]

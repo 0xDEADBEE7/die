@@ -738,6 +738,7 @@ mod tests {
             goal: None,
             arg: None,
             op: None,
+            visual: false,
         }
     }
 

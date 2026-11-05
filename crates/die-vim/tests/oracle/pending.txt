@@ -23,74 +23,9 @@ V2 search/star-whole-word
 V3 search/d-slash
 V3 search/not-found
 
-# V4 (67)
-V4 hand-written/macros/dot-after-macro
-V4 hand-written/macros/error-stops-macro
-V4 hand-written/macros/macro-records-count
-V4 hand-written/macros/macro-with-dot
-V4 hand-written/macros/preset-macro-with-dot
-V4 hand-written/macros/recursive
-V4 hand-written/visual/V-P-last-line
-V4 hand-written/visual/V-j-p-last-two-lines
-V4 hand-written/visual/V-p-linewise
-V4 insert/R-backspace-restores
-V4 insert/R-count
-V4 insert/R-ends-in-replace-state
-V4 insert/R-past-eol
-V4 insert/R-replace
-V4 macros/at-at
-V4 macros/count-play
-V4 macros/dot-after-motion-macro
-V4 macros/dot-in-macro-repeats-earlier-change
-V4 macros/dot-replays-macro
-V4 macros/error-in-nested-macro-ends-both
+# V4 (2)
 V4 macros/macro-with-search
-V4 macros/nested-macro-runs-first
-V4 macros/paste-macro-register
-V4 macros/preset-macro
-V4 macros/record-and-play
-V4 repeat/3ia-dot
-V4 repeat/3x-dot
-V4 repeat/A-dot
-V4 repeat/R-dot
-V4 repeat/ciw-dot
-V4 repeat/cw-dot-on-shorter-word
-V4 repeat/dd-j-dot
-V4 repeat/dw-3dot-count-replaces
-V4 repeat/dw-dot
-V4 repeat/o-dot
-V4 repeat/p-dot
-V4 repeat/shift-dot
-V4 repeat/visual-delete-dot
-V4 repeat/visual-shift-dot
-V4 repeat/x-undo-dot
 V4 search/v-slash-d
-V4 undo/R-one-step
-V4 undo/block-insert-one-step
-V4 undo/u-then-dot
-V4 visual/V-J
-V4 visual/V-j-d
-V4 visual/V-shift
-V4 visual/V-stays-visual
-V4 visual/block-append-ragged-eol
-V4 visual/block-change
-V4 visual/block-delete
-V4 visual/block-insert
-V4 visual/block-stays-visual
-V4 visual/block-yank-paste
-V4 visual/gv-reselects
-V4 visual/preset-char-selection-d
-V4 visual/preset-line-selection-y
-V4 visual/v-U
-V4 visual/v-c
-V4 visual/v-e-y-cursor-to-start
-V4 visual/v-escape
-V4 visual/v-iw-d
-V4 visual/v-j-d
-V4 visual/v-o-swaps-ends
-V4 visual/v-p-replaces-and-swaps
-V4 visual/v-stays-visual
-V4 visual/v-tilde
 
 # V5 (13)
 V5 ex/s-cursor-after-percent
@@ -107,7 +42,7 @@ V5 ex/s-visual-range
 V5 hand-written/ex/s-group-before-letter
 V5 hand-written/ex/s-groups
 
-# V6 (66)
+# V6 (72)
 V6 geometry/3L
 V6 geometry/H
 V6 geometry/H-after-jump
@@ -141,6 +76,7 @@ V6 hand-written/geometry/L-short-buffer
 V6 hand-written/geometry/M-short-buffer
 V6 hand-written/geometry/ctrl-d-at-end
 V6 hand-written/wrapped/gj-at-last-visual-line
+V6 insert-tty/dot-fails-in-insert
 V6 insert-tty/down-down-keeps-column
 V6 insert-tty/down-into-a-tab
 V6 insert-tty/down-into-a-wide-char
@@ -155,6 +91,11 @@ V6 insert-tty/failed-ctrl-w-clears-the-column
 V6 insert-tty/failed-left-clears-the-column
 V6 insert-tty/failed-right-clears-the-column
 V6 insert-tty/goal-starts-at-the-session
+V6 insert-tty/replace-down
+V6 insert-tty/replace-down-bs
+V6 insert-tty/replace-up
+V6 insert-tty/replace-up-at-top-in-macro
+V6 insert-tty/replace-up-dot
 V6 insert-tty/typing-resets-the-goal
 V6 insert-tty/up-past-the-start-fails
 V6 insert-tty/up-up-keeps-column
