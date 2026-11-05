@@ -1,6 +1,7 @@
 //! Commands and key dispatch (contract §5-§7): `Args`, the prefix argument, modal state, `run`,
 //! `feed_keys` and the lookup order.
 #![warn(missing_docs)]
+use crate::app::Input;
 use crate::error::*;
 use crate::ext::*;
 use crate::ids::*;
@@ -172,12 +173,12 @@ impl Ctx {
     }
     /// Harness: one key event from the OS.
     pub fn input(&mut self, ev: KeyEvent) {
-        self.typed.push_back(ev);
+        self.typed.push_back(Input::Key(ev));
     }
     /// Harness: type keys in notation, then run until idle.
     pub fn type_keys(&mut self, keys: &str) {
         for ev in typed(keys, Some(self.leader)).expect("bad key notation") {
-            self.typed.push_back(ev);
+            self.typed.push_back(Input::Key(ev));
         }
         self.run_until_idle();
     }

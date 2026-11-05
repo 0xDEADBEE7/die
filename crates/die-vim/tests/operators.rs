@@ -32,6 +32,28 @@ fn run(start: &str, cursor: usize, keys: &str) -> (String, usize, Vec<String>, S
     (text(&ctx, b), at, ctx.messages.clone(), ctx.state())
 }
 
+/// `u` after `gU` goes to the change's start when it was the first change since the buffer was
+/// last unmodified, and a save moves what counts. No oracle case saves.
+#[test]
+fn undoing_a_gu_goes_to_its_start_only_after_a_clean_buffer() {
+    let mut ctx = editor();
+    let (b, w) = open(&mut ctx, "ab cd ef\n");
+    ctx.focus(w);
+    ctx.text_mut(b).unwrap().set_cursor(w, 4);
+    ctx.type_keys("gUiwu");
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(3), "a clean buffer");
+
+    ctx.text_mut(b).unwrap().set_cursor(w, 7);
+    ctx.type_keys("x");
+    ctx.text_mut(b).unwrap().set_cursor(w, 4);
+    ctx.type_keys("gUiwu");
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(4), "a modified one");
+
+    ctx.text_mut(b).unwrap().set_modified(false);
+    ctx.type_keys("gUiwu");
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(3), "saved");
+}
+
 /// Each of these leaves everything as it was, and normal state, with the count gone: the
 /// `l` after moves once. None of them says anything.
 #[test]

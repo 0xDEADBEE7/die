@@ -140,6 +140,9 @@ impl Ctx {
         }
         let buf = self.create_text(&name, &text);
         *self.text_mut(buf)?.settings_mut() = settings;
+        if let Some(dir) = path.parent() {
+            self.set_directory(buf, dir);
+        }
         self.files.by_buffer.insert(
             buf,
             FileInfo {

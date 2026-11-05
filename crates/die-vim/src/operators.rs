@@ -513,9 +513,8 @@ fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, past_end: bool
     };
     let end = span.beg + new.len();
     // As the first change since the buffer was last unmodified, Evil's `u` after `gU` and `gu`
-    // goes to the change's start. An unchanged revision is the nearest die-vim can ask until
-    // K6's modified flag, so it gets this wrong after an undone edit, and will after a save.
-    if op != Operator::InvertCase && t.rev() == 0 {
+    // goes to the change's start.
+    if op != Operator::InvertCase && !t.modified() {
         t.set_cursor(w, span.beg);
     }
     // Text replaced by itself is still an undo step, as in Evil, so `u` takes it back.
