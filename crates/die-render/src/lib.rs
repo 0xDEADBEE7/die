@@ -9,7 +9,8 @@
 //! A frame goes `Scene`, `rows::Frames`, then `frame::Quad`s and `frame::Upload`s.
 //! All of that is data in and data out, with glyph bitmaps and metrics as values, so
 //! its tests run on any platform. `driver::Renderer` is the only code that calls the
-//! backend: it asks the faces for bitmaps and hands the frame to the GPU.
+//! backend: it asks the faces for bitmaps and hands the frame to the GPU. `window`
+//! is the loop around it, and `check` holds that loop to S1's rules.
 //!
 //! That code is neutral: it doesn't branch on the platform (`cargo xtask lint`).
 //! It calls the platform through `platform::backend` (see `platform`). Until
@@ -23,12 +24,14 @@
 use die_test_cap as _;
 
 pub mod atlas;
+pub mod check;
 pub mod driver;
 pub mod font;
 pub mod frame;
 pub mod platform;
 pub mod rows;
 pub mod sprite;
+pub mod window;
 
 use std::path::PathBuf;
 

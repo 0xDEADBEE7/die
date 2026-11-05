@@ -2,14 +2,15 @@
 //! (docs/records/platforms.md §5.2). It asks the faces for what `rows::Frames` wants,
 //! with `font` deciding where each glyph goes, and hands the frame's data to the GPU.
 //!
-//! R2 draws offscreen: a scene to a texture, read back. There's no window here, and
-//! R3 gives this a drawable to present.
+//! A frame goes to a texture, read back, or to a window's drawable (`Renderer::present`).
+//! The loop itself is `window`, which reaches the platform's window through what's
+//! re-exported here.
 #![warn(missing_docs)]
 
 use crate::atlas::GlyphKey;
 use crate::font::{self, CellMetrics, RangeRule};
 use crate::font_dir;
-use crate::frame::{GlyphBitmap, Image};
+use crate::frame::{GlyphBitmap, Image, Presented};
 use crate::platform::backend::{
     self,
     metal::{Gpu, Pipeline},
@@ -19,6 +20,12 @@ use crate::rows::Frames;
 use crate::sprite;
 use die_core::Scene;
 use std::path::{Path, PathBuf};
+use winit::window::Window;
+
+pub use crate::platform::backend::appkit::{
+    Surface, option_as_alt, prepare_loop, window_attributes,
+};
+pub use crate::platform::backend::ready;
 
 /// The gray atlas's side, in pixels: about 2,500 glyphs of a 19×40 cell.
 const GRAY_ATLAS: u32 = 2048;
@@ -58,8 +65,25 @@ fn family(dir: &Path, prefix: &str) -> [PathBuf; PRIMARY_FACES] {
     ["Regular", "Bold", "Italic", "BoldItalic"].map(|s| dir.join(format!("{prefix}-{s}.ttf")))
 }
 
+/// The faces `config` names, the rules' after the primary family's, and the cell they make.
+fn load(config: &Config) -> Result<(Vec<Face>, CellMetrics), String> {
+    let px = config.points * config.scale;
+    let mut faces = vec![];
+    for path in &config.faces {
+        faces.push(Face::from_file(path, px)?);
+    }
+    for path in config.rules.iter().flat_map(RangeRule::files) {
+        faces.push(Face::from_file(path, px)?);
+    }
+    let regular = &faces[0];
+    let m = regular.glyph('M').ok_or("the font has no M")?;
+    let cell = CellMetrics::new(regular.metrics(), regular.advance(m), config.scale);
+    Ok((faces, cell))
+}
+
 /// Draws scenes: the fonts, the GPU's pipeline and the row cache.
 pub struct Renderer {
+    config: Config,
     pipeline: Pipeline,
     /// The primary family, then the faces the rules name.
     faces: Vec<Face>,
@@ -74,25 +98,37 @@ impl Renderer {
     /// (`backend::ready`'s message) or a font doesn't load.
     pub fn new(config: &Config) -> Result<Renderer, String> {
         backend::ready()?;
-        let px = config.points * config.scale;
-        let mut faces = vec![];
-        for path in &config.faces {
-            faces.push(Face::from_file(path, px)?);
-        }
-        for path in config.rules.iter().flat_map(RangeRule::files) {
-            faces.push(Face::from_file(path, px)?);
-        }
-        let regular = &faces[0];
-        let m = regular.glyph('M').ok_or("the font has no M")?;
-        let cell = CellMetrics::new(regular.metrics(), regular.advance(m), config.scale);
+        let (faces, cell) = load(config)?;
         let gpu = Gpu::system_default().ok_or("no Metal device")?;
         Ok(Renderer {
+            config: config.clone(),
             pipeline: gpu.pipeline(GRAY_ATLAS, COLOR_ATLAS)?,
             faces,
             pinned: font::pins(&config.rules, PRIMARY_FACES),
             rules: config.rules.clone(),
             frames: Frames::new(cell, GRAY_ATLAS, COLOR_ATLAS),
         })
+    }
+
+    /// Draw at a new scale: the fonts load again at their new size, and the cell and the row
+    /// cache start over. The atlases' textures stay, since only what's placed in them again
+    /// gets sampled. If a font doesn't load, nothing changes.
+    pub fn set_scale(&mut self, scale: f64) -> Result<(), String> {
+        let config = Config {
+            scale,
+            ..self.config.clone()
+        };
+        let (faces, cell) = load(&config)?;
+        self.faces = faces;
+        self.frames = Frames::new(cell, GRAY_ATLAS, COLOR_ATLAS);
+        self.config = config;
+        Ok(())
+    }
+
+    /// Give `window` a surface this renderer can present on. With `readable`, its frames can
+    /// be read back (`Surface::read_next_frame`), at some cost.
+    pub fn attach(&self, window: &Window, readable: bool) -> Result<Surface, String> {
+        Surface::attach(window, &self.pipeline, readable)
     }
 
     /// The cell's geometry.
@@ -108,14 +144,7 @@ impl Renderer {
     /// Draw `scene` on a `w` × `h` target and read it back, with the grid at the top
     /// left and `scene.background` around it. With no pixels, there's nothing to draw.
     pub fn render(&mut self, scene: &Scene, w: u32, h: u32) -> Result<Image, String> {
-        let mut wanted = self.frames.diff(scene);
-        while !wanted.is_empty() {
-            for key in &wanted {
-                let bitmap = self.bitmap(key);
-                self.frames.supply(key, bitmap);
-            }
-            wanted = self.frames.wanted();
-        }
+        self.supply_glyphs(scene);
         let frame = self.frames.build(scene);
         for upload in &frame.uploads {
             self.pipeline.upload(upload)?;
@@ -125,6 +154,36 @@ impl Renderer {
             return Ok(Image { w, h, bgra });
         }
         self.pipeline.render(frame.quads, frame.clear, w, h)
+    }
+
+    /// Draw `scene` on `surface`'s next drawable, as `render` does, and show it. With `sync`
+    /// it goes on screen with the Core Animation transaction, as a resize needs. `Ok(None)`
+    /// means there was no drawable.
+    pub fn present(
+        &mut self,
+        scene: &Scene,
+        surface: &Surface,
+        sync: bool,
+    ) -> Result<Option<Presented>, String> {
+        self.supply_glyphs(scene);
+        let frame = self.frames.build(scene);
+        for upload in &frame.uploads {
+            self.pipeline.upload(upload)?;
+        }
+        self.pipeline
+            .present(frame.quads, frame.clear, surface, sync)
+    }
+
+    /// Give the row cache every glyph `scene` needs.
+    fn supply_glyphs(&mut self, scene: &Scene) {
+        let mut wanted = self.frames.diff(scene);
+        while !wanted.is_empty() {
+            for key in &wanted {
+                let bitmap = self.bitmap(key);
+                self.frames.supply(key, bitmap);
+            }
+            wanted = self.frames.wanted();
+        }
     }
 
     /// `key`'s pixels: a sprite if the rules give it to the renderer and the renderer
