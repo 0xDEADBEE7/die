@@ -225,8 +225,7 @@ pub fn paint(frames: &mut Frames, gpu: &mut SoftGpu, scene: &Scene) -> Image {
     for u in &uploads {
         gpu.upload(u);
     }
-    let cell = frames.cell();
-    let (w, h) = (scene.cols as u32 * cell.w, scene.rows as u32 * cell.h);
+    let (w, h) = frames.cell().grid(scene.cols, scene.rows);
     gpu.draw(&quads, clear, w, h)
 }
 

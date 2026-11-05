@@ -123,6 +123,11 @@ impl CellMetrics {
         }
     }
 
+    /// The pixels a grid of `cols` × `rows` of these cells takes, and no more.
+    pub fn grid(&self, cols: usize, rows: usize) -> (u32, u32) {
+        (cols as u32 * self.w, rows as u32 * self.h)
+    }
+
     /// The bitmap for a line over a cell.
     pub fn line_bitmap(&self, l: Line) -> GlyphBitmap {
         let y = match l {
@@ -215,8 +220,8 @@ pub enum Draw {
     Renderer,
     /// The primary font: a range handed back, as braille is by default.
     Primary,
-    /// This font file's face first, then the primary font.
-    File(PathBuf),
+    /// These font files' faces first, in this order, then the primary font.
+    Files(Vec<PathBuf>),
 }
 
 /// A per-range override (scope §5.11). The first rule whose range holds a cluster's
@@ -244,11 +249,51 @@ impl RangeRule {
             RangeRule::new('\u{2800}'..='\u{28FF}', Draw::Primary),
         ]
     }
+
+    /// The font files it pins, in the order to try them.
+    pub fn files(&self) -> &[PathBuf] {
+        match &self.draw {
+            Draw::Files(files) => files,
+            Draw::Renderer | Draw::Primary => &[],
+        }
+    }
 }
 
-/// The first of `rules` that covers `ch`.
-pub fn rule_for(rules: &[RangeRule], ch: char) -> Option<&RangeRule> {
-    rules.iter().find(|r| r.range.contains(&ch))
+/// Where a cluster's pixels come from, as the rules say.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Source {
+    /// The character for the renderer to draw, if the rules give it this cluster. It
+    /// draws single characters only, so a character with a mark has none. If it
+    /// doesn't draw this one either, the faces do.
+    pub sprite: Option<char>,
+    /// The rule that decided, as an index into the rules.
+    pub rule: Option<usize>,
+}
+
+/// What `rules` say about `text`: the first rule whose range holds its first character
+/// decides.
+pub fn source(rules: &[RangeRule], text: &str) -> Source {
+    let mut chars = text.chars();
+    let first = chars.next();
+    let alone = chars.next().is_none();
+    let rule = first.and_then(|f| rules.iter().position(|r| r.range.contains(&f)));
+    let drawn = rule.is_some_and(|r| rules[r].draw == Draw::Renderer);
+    Source {
+        sprite: first.filter(|_| alone && drawn),
+        rule,
+    }
+}
+
+/// The faces each of `rules` pins, as indexes, with the rules' files loaded in order
+/// after the first `first` faces.
+pub fn pins(rules: &[RangeRule], first: usize) -> Vec<Vec<usize>> {
+    let mut next = first;
+    let pinned = |rule: &RangeRule| {
+        let faces = (next..next + rule.files().len()).collect();
+        next += rule.files().len();
+        faces
+    };
+    rules.iter().map(pinned).collect()
 }
 
 /// Which of the primary family's four faces draws a style: regular, bold, italic,
@@ -257,11 +302,10 @@ pub fn styled_face(bold: bool, italic: bool) -> usize {
     usize::from(bold) + 2 * usize::from(italic)
 }
 
-/// The order to try faces in, as indexes: a pinned face if there is one, then the
-/// styled face, then the regular one. The system's fallback comes after these.
-pub fn chain(pinned: Option<usize>, styled: usize) -> Vec<usize> {
-    let mut out = Vec::with_capacity(3);
-    out.extend(pinned);
+/// The order to try faces in, as indexes: the faces a rule pins, then the styled face,
+/// then the regular one. The system's fallback comes after these.
+pub fn chain(pinned: &[usize], styled: usize) -> Vec<usize> {
+    let mut out = pinned.to_vec();
     out.push(styled);
     if styled != 0 {
         out.push(0);

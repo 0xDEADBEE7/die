@@ -262,10 +262,10 @@ The rule: neutral code is safe Rust and never branches on `target_os`. It may us
 
 **The boundary, as R2 built it.** A frame takes three steps, each of them data:
 1. `rows::Frames::diff` compares the scene with the last frame's cells, and names the glyphs the changed rows need that the atlas doesn't have.
-2. The driver gets each one as a `GlyphBitmap`: a sprite, or a face's bitmap, with `font::fit` saying where it goes from the ink and advance the face reports. `Frames::supply` puts it in the atlas.
+2. The driver gets each one as a `GlyphBitmap`: a sprite, or a face's bitmap. `font::source` says which from the rules, `font::chain` gives the order to try faces in, and `font::fit` says where the glyph goes from the ink and advance the face reports. `Frames::supply` puts it in the atlas.
 3. `Frames::build` gives back the `Quad`s and the atlas `Upload`s, and the driver hands them to the GPU.
 
-Only the driver names `platform::backend`. So the first and third steps run under `ci --linux`, with a stand-in for the second, and the driver's tests skip there. macOS's last resort is Core Text's: `CTFontCreateForString`, then its own cascade while shaping. The coverage scan comes with fontique, on Linux.
+Only the driver names `platform::backend`. So the first and third steps run under `ci --linux`, with a stand-in for the second, and the driver's tests skip there. A per-range rule pins any number of font files, in order, then the styled face, then the regular one. macOS's last resort is Core Text's: `CTFontCreateForString`, then its own cascade while shaping. The coverage scan comes with fontique, on Linux.
 
 ### 5.4 Terminal, holder and helper per platform
 

@@ -5,7 +5,7 @@
 //! `DIE_RENDER_PNG_DIR` to have them write the pictures they measure.
 
 use die_core::{Cell, Cursor, CursorShape, Glyph, Rgb, Scene, Underline};
-use die_render::driver::{Config, Renderer, grid_pixels};
+use die_render::driver::{Config, Renderer};
 use die_render::font::{Draw, RangeRule};
 use die_render::font_dir;
 use die_render::frame::{GlyphBitmap, Image, Plane};
@@ -65,7 +65,7 @@ fn line(s: &mut Scene, row: usize, col: usize, line: &str) {
 }
 
 fn draw(r: &mut Renderer, s: &Scene) -> Image {
-    let (w, h) = grid_pixels(s, r.cell());
+    let (w, h) = r.cell().grid(s.cols, s.rows);
     r.render(s, w, h).unwrap()
 }
 
@@ -492,8 +492,8 @@ fn a_face_the_rules_pin_goes_first_and_one_without_the_glyph_falls_through() {
     let italic = font_dir().join("IoskeleyMonoTerm-Italic.ttf");
     let mut config = Config::term(16.0, 2.0);
     config.rules = vec![
-        RangeRule::new('A'..='A', Draw::File(italic.clone())),
-        RangeRule::new('中'..='中', Draw::File(italic)),
+        RangeRule::new('A'..='A', Draw::Files(vec![italic.clone()])),
+        RangeRule::new('中'..='中', Draw::Files(vec![italic])),
     ];
     let Some(mut pinned) = renderer(&config) else {
         return;
@@ -523,6 +523,67 @@ fn a_face_the_rules_pin_goes_first_and_one_without_the_glyph_falls_through() {
     );
 }
 
+/// Each letter in its own style, drawn by a renderer with no rules.
+fn styled_letters(letters: &[(&str, bool, bool)]) -> Image {
+    let mut plain = renderer(&Config::term(16.0, 2.0)).unwrap();
+    let mut s = page(letters.len() * 2, 1);
+    for (i, &(letter, bold, italic)) in letters.iter().enumerate() {
+        put_with(&mut s, 0, i * 2, &[letter], |c| {
+            c.fg = WHITE;
+            c.bg = BLACK;
+            c.bold = bold;
+            c.italic = italic;
+        });
+    }
+    draw(&mut plain, &s)
+}
+
+#[test]
+fn each_rule_draws_with_the_files_it_pins_and_no_other_rule_s() {
+    let (italic, bold) = (
+        font_dir().join("IoskeleyMonoTerm-Italic.ttf"),
+        font_dir().join("IoskeleyMonoTerm-Bold.ttf"),
+    );
+    let mut config = Config::term(16.0, 2.0);
+    config.rules = vec![
+        RangeRule::new('A'..='A', Draw::Files(vec![italic])),
+        RangeRule::new('B'..='B', Draw::Files(vec![bold])),
+    ];
+    let Some(mut pinned) = renderer(&config) else {
+        return;
+    };
+    let mut s = page(6, 1);
+    line(&mut s, 0, 0, "A");
+    line(&mut s, 0, 2, "B");
+    line(&mut s, 0, 4, "C");
+    let want = styled_letters(&[("A", false, true), ("B", true, false), ("C", false, false)]);
+    assert!(draw(&mut pinned, &s) == want);
+}
+
+#[test]
+fn a_rule_tries_its_files_in_order_and_goes_on_past_one_without_the_glyph() {
+    let (italic, bold) = (
+        font_dir().join("IoskeleyMonoTerm-Italic.ttf"),
+        font_dir().join("IoskeleyMonoTerm-Bold.ttf"),
+    );
+    let emoji = PathBuf::from("/System/Library/Fonts/Apple Color Emoji.ttc");
+    let mut config = Config::term(16.0, 2.0);
+    config.rules = vec![
+        RangeRule::new('A'..='A', Draw::Files(vec![bold.clone(), italic.clone()])),
+        RangeRule::new('B'..='B', Draw::Files(vec![italic.clone(), bold])),
+        RangeRule::new('C'..='C', Draw::Files(vec![emoji, italic])),
+    ];
+    let Some(mut pinned) = renderer(&config) else {
+        return;
+    };
+    let mut s = page(6, 1);
+    line(&mut s, 0, 0, "A");
+    line(&mut s, 0, 2, "B");
+    line(&mut s, 0, 4, "C");
+    let want = styled_letters(&[("A", true, false), ("B", false, true), ("C", false, true)]);
+    assert!(draw(&mut pinned, &s) == want);
+}
+
 #[test]
 fn a_face_the_rules_pin_is_centered_in_its_cell_as_a_fallback_is() {
     let avenir = PathBuf::from("/System/Library/Fonts/Avenir.ttc");
@@ -531,7 +592,7 @@ fn a_face_the_rules_pin_is_centered_in_its_cell_as_a_fallback_is() {
         return;
     }
     let mut config = Config::term(16.0, 2.0);
-    config.rules = vec![RangeRule::new('i'..='i', Draw::File(avenir))];
+    config.rules = vec![RangeRule::new('i'..='i', Draw::Files(vec![avenir]))];
     let Some(mut r) = renderer(&config) else {
         return;
     };
@@ -1253,7 +1314,7 @@ fn the_shader_blends_as_the_written_rules_say() {
         pipeline.upload(u).unwrap();
         soft.upload(u);
     }
-    let (w, h) = grid_pixels(&s, &cell);
+    let (w, h) = cell.grid(s.cols, s.rows);
     let got = pipeline.render(f.quads, f.clear, w, h).unwrap();
     let want = soft.draw(f.quads, f.clear, w, h);
     write_png(&got, "shader-gpu.png");
