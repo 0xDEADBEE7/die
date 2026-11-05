@@ -374,10 +374,11 @@ pub fn host_checks(root: &Path) -> Result {
         let mut c = Command::new(cargo());
         c.current_dir(root)
             .args(["test", "--locked", "--offline", "--quiet"])
-            .args(args);
+            .args(args)
+            .env("DIE_SLOW_HOST", "1");
         c
     };
-    let exit_f = ["die-core", "die-vim", "evil-oracle"];
+    let exit_f = ["die-core", "die-vim", "evil-oracle", "die-test-cap"];
     let steps: Vec<Step> = vec![
         (
             "tests (f)",
@@ -415,7 +416,7 @@ pub fn host_checks(root: &Path) -> Result {
     ];
     run_steps("linux-host", &steps)?;
     println!(
-        "\nlinux-host: die-core, die-vim and the oracle pass on {host} (exit test (f), with ci's cross-check)"
+        "\nlinux-host: die-core, die-vim, the oracle and the memory limit pass on {host} (exit test (f), with ci's cross-check)"
     );
     Ok(())
 }
