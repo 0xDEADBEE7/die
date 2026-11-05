@@ -297,20 +297,35 @@ fn open_below(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
     indent_from_above(t, w, line + 1)
 }
 
-/// Give `line` the indentation of the line above it, in spaces, or none if that
-/// line is blank or there is none (Emacs's `indent-according-to-mode` in
-/// fundamental-mode). The cursor goes to the end of the indentation.
+/// Give `line` the indentation of the line above it, or none if that line is blank or
+/// there is none (Emacs's `indent-according-to-mode` in fundamental-mode). As Emacs's
+/// `indent-line-to` does, it only changes what it must: an indentation of the right width
+/// stays as it is, tabs and all. Too little gains spaces, and too much loses what's past the
+/// column. The cursor goes to the end of the indentation.
 pub fn indent_from_above(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
     let col = match line.checked_sub(1) {
         Some(above) if !blank_line(t, above) => indentation(t, above),
         _ => 0,
     };
-    let (s, end) = (t.line_start(line), indent_end(t, line));
-    let indent = " ".repeat(col);
-    if t.rope().byte_slice(s..end) != indent.as_str() {
-        t.tx(Origin::User).replace(s..end, indent).commit()?;
+    let end = indent_end(t, line);
+    let now = t.display_col(end);
+    if now < col {
+        let spaces = " ".repeat(col - now);
+        t.tx(Origin::User).insert(end, spaces).commit()?;
+    } else if now > col {
+        // What fits stays. A tab past the column becomes the spaces that reach it.
+        let s = t.line_start(line);
+        let keep = t
+            .display_line(s)
+            .stops
+            .iter()
+            .filter(|st| st.pos >= s && st.pos <= end)
+            .rfind(|st| st.vcol <= col)
+            .map_or(s, |st| st.pos);
+        let spaces = " ".repeat(col - t.display_col(keep));
+        t.tx(Origin::User).replace(keep..end, spaces).commit()?;
     }
-    t.set_cursor(w, s + col);
+    t.set_cursor(w, indent_end(t, line));
     Ok(())
 }
 
