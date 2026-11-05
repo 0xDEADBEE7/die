@@ -2,10 +2,14 @@
 //! through winit and, on macOS, draws die-core's scene with Metal and shapes text
 //! with Core Text.
 //!
-//! R1 is the crate and its boundary: `platform`'s per-platform modules are the
-//! only code allowed `unsafe` (scope §12), and they hold thin wrappers only. The
-//! glyph atlas, row cache and instance building (R2), the window and loop (R3) and
-//! input (R4) live outside them.
+//! `platform`'s per-platform modules are the only code allowed `unsafe` (scope §12),
+//! and they hold thin wrappers only. The glyph atlas, row cache and instance building
+//! (R2), the window and loop (R3) and input (R4) live outside them.
+//!
+//! A frame goes `Scene`, `rows::Frames`, then `frame::Quad`s and `frame::Upload`s.
+//! All of that is data in and data out, with glyph bitmaps and metrics as values, so
+//! its tests run on any platform. `driver::Renderer` is the only code that calls the
+//! backend: it asks the faces for bitmaps and hands the frame to the GPU.
 //!
 //! That code is neutral: it doesn't branch on the platform (`cargo xtask lint`).
 //! It calls the platform through `platform::backend` (see `platform`). Until
@@ -18,7 +22,13 @@
 #[cfg(test)]
 use die_test_cap as _;
 
+pub mod atlas;
+pub mod driver;
+pub mod font;
+pub mod frame;
 pub mod platform;
+pub mod rows;
+pub mod sprite;
 
 use std::path::PathBuf;
 

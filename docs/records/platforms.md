@@ -260,6 +260,13 @@ The rule: neutral code is safe Rust and never branches on `target_os`. It may us
 
 **The same on both:** the 19×40 px cell and baseline, box, block, braille and powerline glyphs drawn by neutral code, squeeze-to-fit, and the frame-data boundary.
 
+**The boundary, as R2 built it.** A frame takes three steps, each of them data:
+1. `rows::Frames::diff` compares the scene with the last frame's cells, and names the glyphs the changed rows need that the atlas doesn't have.
+2. The driver gets each one as a `GlyphBitmap`: a sprite, or a face's bitmap. `font::source` says which from the rules, `font::chain` gives the order to try faces in, and `font::fit` says where the glyph goes from the ink and advance the face reports. `Frames::supply` puts it in the atlas.
+3. `Frames::build` gives back the `Quad`s and the atlas `Upload`s, and the driver hands them to the GPU.
+
+Only the driver names `platform::backend`. So the first and third steps run under `ci --linux`, with a stand-in for the second, and the driver's tests skip there. A per-range rule pins any number of font files, in order, then the styled face, then the regular one. macOS's last resort is Core Text's: `CTFontCreateForString`, then its own cascade while shaping. The coverage scan comes with fontique, on Linux.
+
 ### 5.4 Terminal, holder and helper per platform
 
 | Concern | macOS (S2, S3) | Linux (M2) | FreeBSD |
@@ -316,7 +323,7 @@ colima's limits are in §2.6. The two that matter most: it has no GPU or display
 | `platform::linux` | – | 0.4k |
 | **macOS build / Linux build / total** | 3.2k / – / 3.2k | 5.0k / 5.0k / 7.0k |
 
-The estimates are macOS 4.1–5.25k, Linux 3.85–5.05k and 5.35–7.15k in total, so both builds are tight. The M0 split of S1's estimate into neutral and macOS parts is unmeasured; R2's first count resets it. macOS's M0 ratchet was 1.6k until 2026-11-05. It's now 0.9k, the size your `unsafe` review was planned for ([m0-plan.md](../m0-plan.md) §3), so `platform` going past that fails `cargo xtask budget`. That's below §2.1's estimate of 1.5–2.1k macOS-only lines, which nothing has measured. If R2–R4 do need more, raising the ratchet is when the thin-wrapper question gets asked, with a count in hand, and the review's hours get resized then. The cut list gains, after its current entries: the Linux presentation-time log, X11 occlusion handling (an unhandled occlusion only wastes frames), then the COLRv1 painter (emoji then come from a CBDT or sbix font, or show as tofu).
+The estimates are macOS 4.1–5.25k, Linux 3.85–5.05k and 5.35–7.15k in total, so both builds are tight. R2's first count, on 2026-11-05, is the first measure of the M0 split: neutral 1,189 lines (the atlas, row cache, font policy, sprites and driver), `platform::macos` 523 (Metal and Core Text, with R1's 104 among them) and the stub 64, whose limit went from 50 to 70. That leaves 1,111 neutral lines and 377 macOS lines for the window, loop, input and clipboard (R3–R5). macOS's M0 ratchet was 1.6k until 2026-11-05. It's now 0.9k, the size your `unsafe` review was planned for ([m0-plan.md](../m0-plan.md) §3), so `platform` going past that fails `cargo xtask budget`. That's below §2.1's estimate of 1.5–2.1k macOS-only lines, which nothing has measured. If R2–R4 do need more, raising the ratchet is when the thin-wrapper question gets asked, with a count in hand, and the review's hours get resized then. The cut list gains, after its current entries: the Linux presentation-time log, X11 occlusion handling (an unhandled occlusion only wastes frames), then the COLRv1 painter (emoji then come from a CBDT or sbix font, or show as tofu).
 
 **Elsewhere:**
 - die-core: ≤ 14k, unchanged. A new `sys` ratchet of 0.2k from M2. Linux adds about 0.1–0.15k.

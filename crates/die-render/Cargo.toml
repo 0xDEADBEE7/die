@@ -51,6 +51,7 @@ objc2-metal = { version = "=0.3.2", default-features = false, features = [
     "std",
     "block2",
     "MTLAllocation",
+    "MTLArgument",
     "MTLBuffer",
     "MTLCommandBuffer",
     "MTLCommandEncoder",
@@ -82,6 +83,9 @@ objc2-core-text = { version = "=0.3.2", default-features = false, features = [
     "CTFontDescriptor",
     "CTFontManager",
     "CTFontTraits",
+    "CTLine",
+    "CTRun",
+    "CTStringAttributes",
 ] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = [
     "std",
@@ -93,8 +97,10 @@ objc2-core-graphics = { version = "=0.3.2", default-features = false, features =
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = [
     "std",
     "CFArray",
+    "CFAttributedString",
     "CFBase",
     "CFCGTypes",
+    "CFDictionary",
     "CFString",
     "CFURL",
 ] }
