@@ -413,7 +413,7 @@ fn a_hand_written_fixture_must_keep_its_oracle_cases_input() {
 
 /// Every tty case waits for K7, which can set a window's top line. These don't
 /// scroll or wrap, so their text, cursor, state and errors can be held to your
-/// Evil now. `wrapped/` needs K4's word wrap as well.
+/// Evil now.
 #[test]
 fn insert_state_arrows_match_the_tty_run() {
     let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
@@ -423,6 +423,27 @@ fn insert_state_arrows_match_the_tty_run() {
         let size = c.input.window.as_ref().expect("a tty case's window");
         run_in_window(c, size.width, size.height)
             .unwrap_or_else(|why| panic!("insert-tty/{}: {why}", c.id));
+    }
+}
+
+/// The same for the wrapped cases that K4's word wrap passes, which is all that nothing
+/// holds it to your Evil until K7. What's left is V6's: `gj` and `gk`, which die-vim doesn't
+/// bind yet, and the cursor after `<Esc>` at a wrapped row's start.
+#[test]
+fn wrapped_rows_without_gj_match_the_tty_run() {
+    let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
+    let fx = fixtures.iter().find(|f| f.topic == "wrapped").unwrap();
+    let held: Vec<_> = fx
+        .cases
+        .iter()
+        .filter(|c| !c.keys.contains("gj") && !c.keys.contains("gk"))
+        .filter(|c| c.id != "esc-at-a-wrapped-rows-start")
+        .collect();
+    assert_eq!(held.len(), 8);
+    for c in held {
+        let size = c.input.window.as_ref().expect("a tty case's window");
+        run_in_window(c, size.width, size.height)
+            .unwrap_or_else(|why| panic!("wrapped/{}: {why}", c.id));
     }
 }
 

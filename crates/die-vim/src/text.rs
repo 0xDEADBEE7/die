@@ -183,9 +183,34 @@ pub fn indent_end(t: &TextBuf, line: usize) -> usize {
     s + ws
 }
 
+/// Where `line`'s indentation can be cut: the position and column at its start, after each
+/// of its leading spaces and tabs in turn, and so last at its end. Columns come from the text
+/// alone. A Hide can join a line to the one before or cover its indentation, and it has the
+/// same indentation then, where `display_col` would count from the joined line's start.
+pub fn indent_stops(t: &TextBuf, line: usize) -> Vec<(usize, usize)> {
+    let s = t.line_start(line);
+    let tab = t.settings().tab_width.max(1);
+    let mut col = 0;
+    let mut stops = vec![(s, 0)];
+    for (i, b) in t
+        .rope()
+        .byte_slice(s..indent_end(t, line))
+        .bytes()
+        .enumerate()
+    {
+        col = if b == b'\t' {
+            (col / tab + 1) * tab
+        } else {
+            col + 1
+        };
+        stops.push((s + i + 1, col));
+    }
+    stops
+}
+
 /// The width of `line`'s leading spaces and tabs, in display columns.
 pub fn indentation(t: &TextBuf, line: usize) -> usize {
-    t.display_col(indent_end(t, line))
+    indent_stops(t, line).last().map_or(0, |&(_, col)| col)
 }
 
 /// The first cursor position on `line`'s display line at or after display column

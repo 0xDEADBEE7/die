@@ -531,7 +531,12 @@ fn quoted(s: &Start, quote: char, outer: bool) -> Result<Span, Fail> {
     }
     let mut c = Chars::at(t, end);
     c.back();
-    Ok(Span::chars(next_stop(t, beg).unwrap_or(beg), c.pos()))
+    // The next stop can be past the closing quote, if a Hide covers it.
+    let inner = c.pos();
+    Ok(Span::chars(
+        next_stop(t, beg).unwrap_or(beg).min(inner),
+        inner,
+    ))
 }
 
 // ---------------------------------------------------------------- brackets

@@ -4,7 +4,7 @@
 
 use die_test_cap as _;
 
-use die_core::{Args, BufferId, Ctx, State, WindowId};
+use die_core::{Args, BufferId, Ctx, Deco, Reveal, State, WindowId};
 use die_vim::Vim;
 
 fn editor() -> Ctx {
@@ -422,6 +422,59 @@ fn j_leaves_another_windows_cursor_on_its_text() {
     ctx.type_keys("3J");
     assert_eq!(text(&ctx, b), "aa bb cc\nd\n");
     assert_eq!(ctx.text(b).unwrap().cursor(other), Some(7), "the second c");
+}
+
+/// A Hide can join a line to the one before it, and its indentation is still its own. Counted
+/// from where the joined line starts, `cc` panicked with the line already deleted, and `o`
+/// indented 10 columns for a line of 4.
+#[test]
+fn rebuilding_indentation_on_a_joined_line_counts_from_the_lines_own_start() {
+    let joined = |keys: &str| {
+        let start = "    aaa\n  bb\n    cc\nd\n";
+        let mut ctx = editor();
+        let (b, w) = open(&mut ctx, start);
+        ctx.focus(w);
+        let t = ctx.text_mut(b).unwrap();
+        let hide = Deco::Hide {
+            replacement: None,
+            reveal: Reveal::Never,
+        };
+        t.decorate(7..17, hide).unwrap();
+        assert_eq!(t.set_cursor(w, 17), Some(17));
+        ctx.type_keys(keys);
+        assert!(ctx.messages.is_empty(), "{keys}: {:?}", ctx.messages);
+        assert_eq!(ctx.state(), State::Insert, "{keys}");
+        let at = ctx.text(b).unwrap().cursor(w).unwrap();
+        (text(&ctx, b), at)
+    };
+    // The line above has 2 columns. What fits stays, and the rest goes.
+    assert_eq!(joined("cc"), ("    aaa\n  bb\n  \nd\n".to_string(), 15));
+    assert_eq!(joined("S"), ("    aaa\n  bb\n  \nd\n".to_string(), 15));
+    // The line above has 4 columns.
+    assert_eq!(
+        joined("o"),
+        ("    aaa\n  bb\n    cc\n    \nd\n".to_string(), 24)
+    );
+}
+
+/// With the closing quote hidden, the first position past the opening one is past the closing
+/// one too. There's nothing between them, and that used to be a range that ran backwards.
+#[test]
+fn inside_quotes_with_the_closing_quote_hidden_is_empty() {
+    let start = "\"\"。\n";
+    let mut ctx = editor();
+    let (b, w) = open(&mut ctx, start);
+    ctx.focus(w);
+    let t = ctx.text_mut(b).unwrap();
+    let hide = Deco::Hide {
+        replacement: None,
+        reveal: Reveal::Never,
+    };
+    t.decorate(1..5, hide).unwrap();
+    assert_eq!(t.set_cursor(w, 0), Some(0));
+    ctx.type_keys("di\"");
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+    assert_eq!(text(&ctx, b), start);
 }
 
 fn numbered_lines(n: usize) -> String {
