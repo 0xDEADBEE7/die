@@ -405,6 +405,8 @@ mod matrix {
         Ok(())
     }
 
+    type Test = fn(&Remote) -> Result<(), String>;
+
     fn script(r: &Remote) -> i32 {
         let press_and_hold = driver::press_and_hold();
         let setup = r.call(|s, _| {
@@ -415,7 +417,7 @@ mod matrix {
             println!("{e}");
             return 1;
         }
-        let tests: [(&str, fn(&Remote) -> Result<(), String>); 2] = [
+        let tests: [(&str, Test); 2] = [
             ("the_matrix_holds", the_matrix_holds),
             (
                 "a_panic_in_the_key_monitor_is_caught",
