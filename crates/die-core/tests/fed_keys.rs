@@ -12,6 +12,21 @@
 //! - `a_callback_error_drops_nothing`: a timer failing mid-macro isn't part of the key stream.
 //! - `an_error_the_command_handles_drops_nothing`: a nested `run` that failed, then `Ok`.
 //! - `the_keys_a_drop_removes_are_never_observed`: a key observer sees only what dispatched.
+//! - `a_key_a_surface_ignores_in_passthrough_drops_nothing`: `event` returning false there.
+//!
+//! A prompt's answer is part of the key stream:
+//! - `a_failing_prompt_answer_drops_the_rest`: `/nomatch<CR>dd`'s shape.
+//! - `a_panicking_prompt_answer_drops_the_rest`.
+//! - `a_prompt_answer_that_succeeds_drops_nothing`.
+//! - `a_prompt_a_new_prompt_cancels_drops_nothing`: no key submitted that answer.
+//!
+//! The order keys run in:
+//! - `fed_keys_go_ahead_of_typed_ones`.
+//! - `a_macro_inside_a_macro_runs_before_the_rest_of_it`: `@a` with `@b` inside it, as in Evil.
+//! - `keys_fed_twice_in_one_turn_keep_their_order`: and both go ahead of what's left.
+//! - `macros_nested_three_deep_finish_innermost_first`.
+//! - `an_error_in_a_macro_inside_a_macro_ends_both`: as in Evil.
+//! - `keys_the_host_feeds_go_behind_what_is_left`: outside any call, it adds to the end.
 mod support;
 use die_core::*;
 use std::cell::{Cell, RefCell};
@@ -37,7 +52,13 @@ impl Extension for Ext {
             .bind(State::Normal, "f", "feed-then-fail")
             .bind(State::Normal, "g", "feed-b")
             .bind(State::Normal, "h", "handles-a-failure")
-            .bind(State::Normal, "zz", "note-c");
+            .bind(State::Normal, "zz", "note-c")
+            .bind(State::Normal, ":", "ask-fails")
+            .bind(State::Normal, "!", "ask-panics")
+            .bind(State::Normal, "?", "ask-succeeds")
+            .bind(State::Normal, "t", "feed-twice")
+            .bind(State::Normal, "n", "feed-a-failure")
+            .bind(State::Normal, "i", "feed-g-then-c");
         for name in ["note-a", "note-b", "note-c"] {
             let log = self.log.clone();
             reg.command(name, "", move |_, _| {
@@ -52,6 +73,29 @@ impl Extension for Ext {
             Err(Error::Msg("failed".into()))
         });
         reg.command("feed-b", "", |ctx, _| ctx.feed_keys("b"));
+        reg.command("feed-twice", "", |ctx, _| {
+            ctx.feed_keys("b")?;
+            ctx.feed_keys("c")
+        });
+        reg.command("feed-a-failure", "", |ctx, _| ctx.feed_keys("e"));
+        reg.command("feed-g-then-c", "", |ctx, _| ctx.feed_keys("gc"));
+        reg.command("ask-fails", "", |ctx, _| {
+            ctx.prompt(":", |_, _| Err(Error::Msg("no match".into())));
+            Ok(())
+        });
+        reg.command("ask-panics", "", |ctx, _| {
+            ctx.prompt(":", |_, _| panic!("answer bug"));
+            Ok(())
+        });
+        let log = self.log.clone();
+        reg.command("ask-succeeds", "", move |ctx, _| {
+            let log = log.clone();
+            ctx.prompt("?", move |_, answer| {
+                log.borrow_mut().push(format!("answer {answer:?}"));
+                Ok(())
+            });
+            Ok(())
+        });
         let log = self.log.clone();
         reg.command("handles-a-failure", "", move |ctx, a| {
             let r = ctx.run("fail", a);
@@ -227,4 +271,111 @@ fn the_keys_a_drop_removes_are_never_observed() {
         ]
     );
     drop(sub);
+}
+
+#[test]
+fn a_key_a_surface_ignores_in_passthrough_drops_nothing() {
+    struct Ignores(Rc<Cell<u32>>);
+    impl Surface for Ignores {
+        fn kind(&self) -> &'static str {
+            "ignores"
+        }
+        fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
+        fn event(&mut self, _: &Event, _: &mut Ctx) -> bool {
+            self.0.set(self.0.get() + 1);
+            false
+        }
+        fn initial_state(&self) -> State {
+            State::Passthrough
+        }
+    }
+    let (mut ctx, _) = setup();
+    let calls = Rc::new(Cell::new(0));
+    let b = ctx.create_surface("s", Ignores(calls.clone()));
+    ctx.open_window(b, 80, 24).unwrap();
+    run_fed(&mut ctx, "xyz");
+    assert_eq!(calls.get(), 3, "a terminal ignoring a key isn't a failure");
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+}
+
+#[test]
+fn a_failing_prompt_answer_drops_the_rest() {
+    let (mut ctx, log) = setup();
+    run_fed(&mut ctx, ":x<CR>b");
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+    assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
+    assert!(ctx.messages[0].contains("no match"), "{:?}", ctx.messages);
+    assert_eq!(ctx.state(), State::Normal);
+}
+
+#[test]
+fn a_panicking_prompt_answer_drops_the_rest() {
+    let (mut ctx, log) = setup();
+    run_fed(&mut ctx, "!x<CR>b");
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+    assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
+}
+
+#[test]
+fn a_prompt_answer_that_succeeds_drops_nothing() {
+    let (mut ctx, log) = setup();
+    run_fed(&mut ctx, "?x<CR>b");
+    assert_eq!(*log.borrow(), [r#"answer Some("x")"#, "note-b"]);
+}
+
+#[test]
+fn a_prompt_a_new_prompt_cancels_drops_nothing() {
+    let (mut ctx, _) = setup();
+    ctx.prompt("first", |_, _| Err(Error::Msg("cancelled".into())));
+    ctx.feed_keys("xy").unwrap();
+    ctx.prompt("second", |_, _| Ok(()));
+    ctx.run_until_idle();
+    assert_eq!(ctx.prompt_text(), Some("xy"), "{:?}", ctx.messages);
+}
+
+#[test]
+fn fed_keys_go_ahead_of_typed_ones() {
+    let (mut ctx, log) = setup();
+    ctx.input(KeyEvent::press(Key::Char('c')));
+    ctx.feed_keys("a").unwrap();
+    ctx.run_until_idle();
+    assert_eq!(*log.borrow(), ["note-a", "note-c"]);
+}
+
+#[test]
+fn a_macro_inside_a_macro_runs_before_the_rest_of_it() {
+    let (mut ctx, log) = setup();
+    run_fed(&mut ctx, "agc"); // g feeds b
+    assert_eq!(*log.borrow(), ["note-a", "note-b", "note-c"]);
+}
+
+#[test]
+fn keys_fed_twice_in_one_turn_keep_their_order() {
+    let (mut ctx, log) = setup();
+    run_fed(&mut ctx, "ta"); // t feeds b, then c
+    assert_eq!(*log.borrow(), ["note-b", "note-c", "note-a"]);
+}
+
+#[test]
+fn macros_nested_three_deep_finish_innermost_first() {
+    let (mut ctx, log) = setup();
+    run_fed(&mut ctx, "ia"); // i feeds g and c, and g feeds b
+    assert_eq!(*log.borrow(), ["note-b", "note-c", "note-a"]);
+}
+
+#[test]
+fn an_error_in_a_macro_inside_a_macro_ends_both() {
+    let (mut ctx, log) = setup();
+    run_fed(&mut ctx, "nb"); // n feeds e, which fails
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+}
+
+#[test]
+fn keys_the_host_feeds_go_behind_what_is_left() {
+    let (mut ctx, log) = setup();
+    ctx.feed_keys("ab").unwrap();
+    assert!(ctx.step(), "a's turn");
+    ctx.feed_keys("c").unwrap();
+    ctx.run_until_idle();
+    assert_eq!(*log.borrow(), ["note-a", "note-b", "note-c"]);
 }

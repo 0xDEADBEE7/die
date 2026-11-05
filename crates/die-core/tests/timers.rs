@@ -12,6 +12,7 @@
 //! - `a_repeating_timer_can_cancel_itself`.
 //! - `cancelled_timers_dont_pile_up`: what they hold is freed before their deadlines.
 //! - `a_cancelled_repeat_is_freed_when_it_comes_due`: it isn't set again.
+//! - `cancelled_timers_dont_pile_up_when_jobs_are_spawned_too`: jobs take ids as well.
 //!
 //! Limits:
 //! - `every_with_no_period_lets_the_loop_go_idle`: a zero period runs as one millisecond.
@@ -38,6 +39,24 @@
 //! - `dropping_an_idle_handle_cancels_it`, and shutdown does too.
 //! - `next_timer_counts_idle_timers`, and forgets one that has fired until the next key.
 //! - `a_panic_in_an_idle_timer_is_logged`.
+//! - `an_idle_timer_doesnt_fire_with_a_key_waiting`: typed or fed, on a real clock after a stall.
+//! - `an_idle_wait_counts_from_when_the_command_ended`: not from when its key came.
+//! - `an_idle_wait_counts_from_when_a_prompts_answer_ended`: the answer is part of its key.
+//! - `a_key_release_restarts_the_idle_wait`: any key event, press or release.
+//! - `a_cancelled_idle_timer_is_freed_at_the_next_turn`.
+//! - `deadline_order_holds_across_idle_and_heap_timers`: after a stall, the earlier one first.
+//! - `an_idle_timer_due_with_another_goes_after_it`.
+//!
+//! A repeat slower than its period, and the loop:
+//! - `a_slow_repeat_gives_keys_a_turn`: a typed key runs in the next turn, not never.
+//! - `step_hands_back_between_firings_of_a_slow_repeat`: so a host can draw and read its events,
+//!   and `next_timer` tells it not to sleep.
+//! - `a_chain_of_timers_due_now_runs_inside_one_advance`: handing back doesn't lose them.
+//!
+//! `advance`:
+//! - `advance_waits_once_for_a_job_thats_out`: a blocked job costs one wait, not one per deadline.
+//! - `work_deferred_before_advance_counts_from_before_it`: it runs at the old time.
+//! - `a_nested_advance_doesnt_move_the_clock_back`.
 use die_core::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -190,6 +209,25 @@ fn cancelled_timers_dont_pile_up() {
     }
     assert!(
         Rc::strong_count(&held) < 2_000,
+        "{} still held, an hour before any is due",
+        Rc::strong_count(&held)
+    );
+}
+
+#[test]
+fn cancelled_timers_dont_pile_up_when_jobs_are_spawned_too() {
+    let (mut ctx, _) = ctx();
+    let held = Rc::new(());
+    for _ in 0..2_100 {
+        let h = held.clone();
+        drop(ctx.after(Duration::from_secs(3600), move |_| {
+            let _ = &h;
+            Ok(())
+        }));
+        ctx.spawn(|| (), |_, _| Ok(())).detach();
+    }
+    assert!(
+        Rc::strong_count(&held) < 1_100,
         "{} still held, an hour before any is due",
         Rc::strong_count(&held)
     );
@@ -517,4 +555,251 @@ fn a_panic_in_an_idle_timer_is_logged() {
     let fired = ctx.messages.iter().filter(|m| m.contains("idle bug"));
     assert_eq!(fired.count(), 2, "it goes on: {:?}", ctx.messages);
     drop(t);
+}
+
+/// An extension with a key that logs, and keys that take time and note when they ended.
+struct Keys {
+    log: Log,
+    ended: Rc<Cell<Duration>>,
+}
+impl Extension for Keys {
+    fn name(&self) -> &'static str {
+        "keys"
+    }
+    fn register(&mut self, reg: &mut Registry) {
+        reg.kind_keymap("text")
+            .bind(State::Normal, "a", "note")
+            .bind(State::Normal, "s", "slow")
+            .bind(State::Normal, ":", "ask");
+        let log = self.log.clone();
+        reg.command("note", "", move |_, _| {
+            log.borrow_mut().push("a".into());
+            Ok(())
+        });
+        let ended = self.ended.clone();
+        reg.command("slow", "", move |ctx, _| {
+            sleep(2 * MS);
+            ended.set(ctx.now());
+            Ok(())
+        });
+        let ended = self.ended.clone();
+        reg.command("ask", "", move |ctx, _| {
+            let ended = ended.clone();
+            ctx.prompt(":", move |ctx, _| {
+                sleep(2 * MS);
+                ended.set(ctx.now());
+                Ok(())
+            });
+            Ok(())
+        });
+    }
+}
+
+fn with_keys(clock: Clock) -> (Ctx, Log, Rc<Cell<Duration>>) {
+    let log: Log = Rc::default();
+    let ended: Rc<Cell<Duration>> = Rc::default();
+    let keys = Keys {
+        log: log.clone(),
+        ended: ended.clone(),
+    };
+    let cfg = Config {
+        clock,
+        ..Default::default()
+    };
+    let mut ctx = Ctx::with_config(vec![Box::new(keys)], cfg).unwrap();
+    window(&mut ctx);
+    (ctx, log, ended)
+}
+
+#[test]
+fn an_idle_timer_doesnt_fire_with_a_key_waiting() {
+    for fed in [false, true] {
+        let (mut c, log, _) = with_keys(Clock::real());
+        let t = c.idle(MS, note(&log, "idle"));
+        sleep(3 * MS);
+        if fed {
+            c.feed_keys("a").unwrap();
+        } else {
+            c.input(KeyEvent::press(Key::Char('a')));
+        }
+        assert!(c.step());
+        assert_eq!(*log.borrow(), ["a"], "fed: {fed}");
+        drop(t);
+    }
+}
+
+#[test]
+fn an_idle_wait_counts_from_when_the_command_ended() {
+    let (mut c, _, ended) = with_keys(Clock::real());
+    let wait = Duration::from_secs(3600);
+    let (_, f) = counter();
+    let t = c.idle(wait, f);
+    c.input(KeyEvent::press(Key::Char('s')));
+    assert!(c.step());
+    assert!(ended.get() > Duration::ZERO, "the command ran");
+    assert!(c.next_timer().unwrap() >= ended.get() + wait);
+    drop(t);
+}
+
+#[test]
+fn an_idle_wait_counts_from_when_a_prompts_answer_ended() {
+    let (mut c, _, ended) = with_keys(Clock::real());
+    let wait = Duration::from_secs(3600);
+    let (_, f) = counter();
+    let t = c.idle(wait, f);
+    c.feed_keys(":<CR>").unwrap();
+    while c.step() {}
+    assert!(ended.get() > Duration::ZERO, "the answer ran");
+    assert!(c.next_timer().unwrap() >= ended.get() + wait);
+    drop(t);
+}
+
+#[test]
+fn a_key_release_restarts_the_idle_wait() {
+    let (mut c, _, _) = with_keys(Clock::default());
+    let (n, f) = counter();
+    let t = c.idle(10 * MS, f);
+    c.advance(8 * MS);
+    c.input(KeyEvent {
+        kind: KeyKind::Release,
+        ..KeyEvent::press(Key::Char('a'))
+    });
+    c.run_until_idle();
+    c.advance(8 * MS);
+    assert_eq!(n.get(), 0, "16 ms since it was set, but 8 since the release");
+    c.advance(2 * MS);
+    assert_eq!(n.get(), 1);
+    drop(t);
+}
+
+#[test]
+fn a_cancelled_idle_timer_is_freed_at_the_next_turn() {
+    let (mut c, _) = ctx();
+    let held = Rc::new(());
+    let h = held.clone();
+    let t = c.idle(Duration::from_secs(3600), move |_| {
+        let _ = &h;
+        Ok(())
+    });
+    drop(t);
+    assert_eq!(Rc::strong_count(&held), 2, "until the loop looks");
+    c.step();
+    assert_eq!(Rc::strong_count(&held), 1);
+}
+
+#[test]
+fn deadline_order_holds_across_idle_and_heap_timers() {
+    let mut c = with_clock(Clock::real());
+    let log: Log = Rc::default();
+    let i = c.idle(MS, note(&log, "idle"));
+    let a = c.after(5 * MS, note(&log, "after"));
+    sleep(10 * MS);
+    while c.step() {}
+    let names: Vec<_> = log.borrow().iter().map(|l| l[..5].to_string()).collect();
+    assert_eq!(names, ["idle@", "after"]);
+    drop((i, a));
+}
+
+#[test]
+fn an_idle_timer_due_with_another_goes_after_it() {
+    let (mut ctx, log) = ctx();
+    let i = ctx.idle(10 * MS, note(&log, "idle"));
+    let a = ctx.after(10 * MS, note(&log, "after"));
+    ctx.advance(10 * MS);
+    assert_eq!(*log.borrow(), ["after@10", "idle@10"]);
+    drop((i, a));
+}
+
+#[test]
+fn a_slow_repeat_gives_keys_a_turn() {
+    let (mut c, log, _) = with_keys(Clock::real());
+    let t = c.every(MS, |_| {
+        sleep(3 * MS);
+        Ok(())
+    });
+    sleep(2 * MS);
+    c.input(KeyEvent::press(Key::Char('a')));
+    assert!(c.step(), "the repeat's turn");
+    assert!(log.borrow().is_empty());
+    assert!(c.step(), "the key's");
+    assert_eq!(*log.borrow(), ["a"]);
+    drop(t);
+}
+
+#[test]
+fn step_hands_back_between_firings_of_a_slow_repeat() {
+    let mut c = with_clock(Clock::real());
+    let (n, mut f) = counter();
+    let t = c.every(MS, move |ctx| {
+        sleep(3 * MS);
+        f(ctx)
+    });
+    for pass in 1..=3 {
+        sleep(2 * MS);
+        assert!(c.step(), "it's due");
+        assert!(!c.step(), "so the host can draw and read its events");
+        assert_eq!(n.get(), pass);
+        let at = c.next_timer().unwrap();
+        assert!(at <= c.now(), "and it knows not to sleep");
+    }
+    drop(t);
+}
+
+#[test]
+fn a_chain_of_timers_due_now_runs_inside_one_advance() {
+    fn chain(ctx: &mut Ctx, log: Log, left: u32) -> Result {
+        log.borrow_mut()
+            .push(format!("left {left}@{}", ctx.now().as_millis()));
+        if left > 0 {
+            ctx.after(Duration::ZERO, move |ctx| chain(ctx, log, left - 1))
+                .detach();
+        }
+        Ok(())
+    }
+    let (mut ctx, log) = ctx();
+    let l = log.clone();
+    ctx.after(10 * MS, move |ctx| chain(ctx, l, 2)).detach();
+    ctx.advance(20 * MS);
+    assert_eq!(*log.borrow(), ["left 2@10", "left 1@10", "left 0@10"]);
+}
+
+#[test]
+fn advance_waits_once_for_a_job_thats_out() {
+    let (mut ctx, _) = ctx();
+    let (tx, rx) = std::sync::mpsc::channel::<u8>();
+    let job = ctx.spawn(move || rx.recv().unwrap(), |_, _| Ok(()));
+    let (n, f) = counter();
+    let t = ctx.every(10 * MS, f);
+    let start = std::time::Instant::now();
+    ctx.advance(25 * MS); // two deadlines: each used to wait, and so did both ends
+    let took = start.elapsed();
+    assert_eq!(n.get(), 2);
+    assert!(took < Duration::from_secs(10), "{took:?}");
+    tx.send(1).unwrap();
+    ctx.run_until_idle();
+    drop((job, t));
+}
+
+#[test]
+fn work_deferred_before_advance_counts_from_before_it() {
+    let (mut ctx, _) = ctx();
+    let (n, mut f) = counter();
+    ctx.defer(move |ctx| {
+        ctx.after(10 * MS, move |ctx| f(ctx)).detach();
+        Ok(())
+    });
+    ctx.advance(10 * MS);
+    assert_eq!(n.get(), 1);
+}
+
+#[test]
+fn a_nested_advance_doesnt_move_the_clock_back() {
+    let (mut ctx, _) = ctx();
+    ctx.after(10 * MS, |ctx| {
+        ctx.advance(50 * MS);
+        Ok(())
+    })
+    .detach();
+    ctx.advance(20 * MS);
+    assert_eq!(ctx.now(), 60 * MS);
 }

@@ -18,10 +18,17 @@
 //! - `file_settings_start_from_the_buffer_defaults`: settings by path (K10a-8), and their panic.
 //! - `the_startup_hook_can_use_the_editor`: it makes a buffer and queues a call, not nested.
 //! - `an_error_or_panic_in_the_startup_hook_is_logged`: the editor still starts.
+//!
+//! Shutdown (step 8):
+//! - `extensions_shut_down_in_reverse_order`.
+//! - `shutdown_cancels_what_config_detached`: its timers, idle timers and hooks.
+//! - `shutdown_cancels_what_config_sets_during_it`: an extension's `shutdown` running config's
+//!   command, so config's handles go last.
 use die_core::*;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 
 type Log = Rc<RefCell<Vec<String>>>;
 
@@ -457,4 +464,87 @@ fn an_error_or_panic_in_the_startup_hook_is_logged() {
         "{:?}",
         ctx.messages
     );
+}
+
+#[test]
+fn extensions_shut_down_in_reverse_order() {
+    struct Down<const N: usize>(Log);
+    impl<const N: usize> Extension for Down<N> {
+        fn name(&self) -> &'static str {
+            ["a", "b"][N]
+        }
+        fn register(&mut self, _: &mut Registry) {}
+        fn shutdown(&mut self, _: &mut Ctx) {
+            self.0.borrow_mut().push(self.name().into());
+        }
+    }
+    let log: Log = Rc::default();
+    let exts: Vec<Box<dyn Extension>> = vec![
+        Box::new(Down::<0>(log.clone())),
+        Box::new(Down::<1>(log.clone())),
+    ];
+    Ctx::new(exts).unwrap().shutdown();
+    assert_eq!(*log.borrow(), ["b", "a"]);
+}
+
+#[test]
+fn shutdown_cancels_what_config_detached() {
+    let log: Log = Rc::default();
+    let (l1, l2, l3) = (log.clone(), log.clone(), log.clone());
+    let cfg = Config {
+        startup: Some(Box::new(move |ctx| {
+            ctx.every(Duration::from_millis(10), move |_| {
+                l1.borrow_mut().push("timer".into());
+                Ok(())
+            })
+            .detach();
+            ctx.idle(Duration::from_millis(10), move |_| {
+                l2.borrow_mut().push("idle".into());
+                Ok(())
+            })
+            .detach();
+            ctx.on_buffer_killed(move |_, _| {
+                l3.borrow_mut().push("hook".into());
+                Ok(())
+            })
+            .detach();
+            Ok(())
+        })),
+        ..Default::default()
+    };
+    let mut ctx = Ctx::with_config(vec![], cfg).unwrap();
+    assert!(ctx.next_timer().is_some());
+    ctx.shutdown();
+    assert_eq!(ctx.next_timer(), None);
+    ctx.advance(Duration::from_millis(30));
+    let b = ctx.create_text("t", "text");
+    ctx.kill(b);
+    ctx.run_until_idle();
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+}
+
+#[test]
+fn shutdown_cancels_what_config_sets_during_it() {
+    struct RunsConfig;
+    impl Extension for RunsConfig {
+        fn name(&self) -> &'static str {
+            "runs-config"
+        }
+        fn register(&mut self, _: &mut Registry) {}
+        fn shutdown(&mut self, ctx: &mut Ctx) {
+            ctx.run("set-a-timer", &Args::default()).unwrap();
+        }
+    }
+    let cfg = Config {
+        register: Some(Box::new(|reg: &mut Registry| {
+            reg.command("set-a-timer", "", |ctx, _| {
+                ctx.every(Duration::from_millis(10), |_| Ok(())).detach();
+                Ok(())
+            });
+        })),
+        ..Default::default()
+    };
+    let mut ctx = Ctx::with_config(vec![Box::new(RunsConfig)], cfg).unwrap();
+    ctx.shutdown();
+    assert_eq!(ctx.next_timer(), None);
 }
