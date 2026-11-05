@@ -19,7 +19,6 @@ use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind, set_hook, take_hook};
 use std::rc::Rc;
 use std::sync::{Once, mpsc};
-use std::time::Duration;
 
 /// An extension's place in the startup order.
 pub type ExtIdx = usize;
@@ -44,6 +43,8 @@ pub struct Config {
     pub text_defaults: Settings,
     /// Settings by path, on top of `text_defaults` ([`Ctx::set_file_settings`]).
     pub file_settings: Option<SettingsFn>,
+    /// The clock. The default is a fake one, as tests want: `die::run` passes [`Clock::real`].
+    pub clock: Clock,
     /// Runs once every extension has initialized, and the session is restored (K12), with
     /// `Ctx`. An error or a panic is logged, and the editor still starts.
     pub startup: Option<StartupFn>,
@@ -323,7 +324,10 @@ pub struct Ctx {
     pub(crate) leader: Chord,
     pub(crate) prefix: Prefix,
     pub(crate) prompt: Option<Prompt>,
-    pub(crate) clock: Duration,
+    pub(crate) clock: Clock,
+    pub(crate) timers: Timers,
+    pub(crate) idle: Vec<Idle>,
+    pub(crate) waker: Waker,
     pub(crate) cmd_seq: u64,
     /// The window the running command acts for. With none, the focused window acts.
     pub(crate) cur_window: Option<WindowId>,
@@ -455,7 +459,10 @@ impl Ctx {
             leader: default_leader(),
             prefix: Prefix::default(),
             prompt: None,
-            clock: Duration::ZERO,
+            clock: config.clock,
+            timers: Timers::new(),
+            idle: vec![],
+            waker: Waker::default(),
             cmd_seq: 0,
             cur_window: None,
             registers: HashMap::new(),
