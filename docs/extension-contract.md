@@ -499,6 +499,8 @@ All callbacks run on the main thread, receive `Ctx`, and are queued (C3). Every 
 | `after(d, f)`, `every(d, f)`, `idle(d, f)` | Timers | `run-with-timer`, `run-at-time`, `run-with-idle-timer` |
 | `prompt(spec, f)` | A command-line prompt with optional completion candidates. `f(ctx, answer)` runs with the answer on submit, and with nothing on cancel, so a multi-step flow can clean up. | `completing-read`, `read-string` |
 
+**The prompt's spec (K11a).** A label will do. `PromptSpec` adds starting text, a named history (`<Up>` and `<Down>`; a cancel, an empty answer and a repeat of the newest add nothing), `<BS>` on an empty line cancelling, as `:` and `/` want, and `on_change(f)`, queued with the text after each key that changes it, for incremental search. An error from `on_change` drops no keys. Candidates come with K11b. A prompt takes its keys before any keymap: `prompt.rs` lists them.
+
 **Timers.**
 - They fire in deadline order, idle timers among them. Timers due together fire in the order they were set, and a repeat counts as set again each time it fires. An idle timer goes after any other timer due at the same moment.
 - A repeat counts from its last deadline, so being late doesn't shift the next one. One that has fallen a whole period behind, as after a laptop's sleep, skips what it missed instead of running it all. The shortest period is a millisecond.

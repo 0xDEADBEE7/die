@@ -782,6 +782,7 @@ fn a_chain_of_timers_due_now_runs_inside_one_advance() {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn advance_waits_once_for_a_job_thats_out() {
     let (mut ctx, _) = ctx();
     let (tx, rx) = std::sync::mpsc::channel::<u8>();

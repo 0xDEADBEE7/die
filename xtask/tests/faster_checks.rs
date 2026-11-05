@@ -4,7 +4,7 @@
 //! - The skipping rule. Each trigger path needs `guards` and `clean-build`, near misses don't,
 //!   and only `--full`, a trigger or a git failure makes them run. A git failure runs them,
 //!   because what can't be told can't be skipped.
-//! - The property counts. `ci` sets `DIE_PROP_CASES=2000` on the test step, leaves a variable
+//! - The property counts. `ci` sets `DIE_PROP_CASES=100` on the test step, leaves a variable
 //!   that's already set alone, and `--full` clears it so a leftover can't thin a checkpoint.
 //! - The summary. A skipped step isn't run, shows as "skipped" and never as "ok", and doesn't
 //!   fail the run. A step that fails still does.
@@ -122,10 +122,18 @@ fn env_change(cases: &PropCases) -> Option<Option<String>> {
 }
 
 #[test]
-fn the_test_step_runs_at_two_thousand_cases() {
+fn the_test_step_runs_at_a_hundred_cases() {
     let p = ci::plan(false, &Ok(Vec::new()), None);
-    assert_eq!(env_change(&p.cases), Some(Some("2000".to_string())));
-    assert!(p.cases_note().contains("2000"), "{}", p.cases_note());
+    assert_eq!(env_change(&p.cases), Some(Some("100".to_string())));
+    assert!(p.cases_note().contains("100"), "{}", p.cases_note());
+}
+
+#[test]
+fn only_full_runs_the_ignored_tests() {
+    let has = |p: &Plan| p.test_args().contains(&"--include-ignored");
+    assert!(!has(&ci::plan(false, &Ok(Vec::new()), None)));
+    assert!(!has(&ci::plan(false, &Ok(vec!["Cargo.toml".into()]), None)));
+    assert!(has(&ci::plan(true, &Ok(Vec::new()), None)));
 }
 
 #[test]

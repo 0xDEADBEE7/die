@@ -314,6 +314,8 @@ pub struct Ctx {
     pub(crate) leader: Chord,
     pub(crate) prefix: Prefix,
     pub(crate) prompt: Option<Prompt>,
+    /// What prompts remember, by history name (K11a).
+    pub(crate) histories: HashMap<String, Vec<String>>,
     pub(crate) clock: Clock,
     pub(crate) timers: Timers,
     pub(crate) timer_seq: u64,
@@ -336,11 +338,16 @@ pub struct Ctx {
     pub(crate) input_ran: bool,
     /// What the last composed frame's cells showed.
     pub(crate) drawn: Drawn,
+    pub(crate) pointer: crate::app::PointerState,
     /// `run_ready` hit its turn limit and has said so.
     pub(crate) over_limit: bool,
     pub(crate) files: crate::files::Files,
-    /// The log: errors, panics and messages, oldest first (K11a's `*messages*` shows it).
+    /// The log: errors, panics and messages, oldest first. `*messages*` shows it, the newest goes
+    /// on the command row, and the oldest go past 1,000.
     pub messages: Vec<String>,
+    pub(crate) log: crate::messages::Log,
+    /// The errors among them since the harness last took them. Only the harness keeps these.
+    pub(crate) errors: Option<Vec<String>>,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
 }
@@ -474,6 +481,7 @@ impl Ctx {
             leader: default_leader(),
             prefix: Prefix::default(),
             prompt: None,
+            histories: HashMap::new(),
             clock: config.clock,
             timers: Timers::new(),
             timer_seq: 0,
@@ -493,9 +501,12 @@ impl Ctx {
             app_focused: true,
             input_ran: false,
             drawn: Drawn::default(),
+            pointer: Default::default(),
             over_limit: false,
             files: Default::default(),
             messages: vec![],
+            log: Default::default(),
+            errors: None,
             faces,
             search_highlight: None,
         };
@@ -615,6 +626,9 @@ impl Ctx {
     /// is M1's.
     fn log_panic(&mut self, what: String) {
         let line = format!("{what}{RESTART}");
+        if let Some(errors) = &mut self.errors {
+            errors.push(line.clone());
+        }
         let recent = self.messages.iter().rev().take(32);
         let mut run = recent.take_while(|m| m.ends_with(RESTART));
         if !run.any(|m| *m == line) {
@@ -637,8 +651,15 @@ impl Ctx {
     pub(crate) fn report(&mut self, r: Result) {
         match r {
             Ok(()) | Err(Error::Panicked { .. }) => {}
-            Err(e) => self.messages.push(format!("{e:?}")),
+            Err(e) => self.log_error(e.to_string()),
         }
+    }
+    /// Log a key's or a call's failure, as opposed to news such as "Wrote foo".
+    pub(crate) fn log_error(&mut self, line: String) {
+        if let Some(errors) = &mut self.errors {
+            errors.push(line.clone());
+        }
+        self.messages.push(line);
     }
 
     // -------------------------------------------------------------- C2 checkout

@@ -235,6 +235,7 @@ fn no_wake_is_lost_under_load() {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn step_never_waits_for_a_job() {
     let mut ctx = Ctx::new(vec![]).unwrap();
     let (tx, rx) = mpsc::channel::<u8>();
