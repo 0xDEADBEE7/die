@@ -70,6 +70,12 @@ const ROW_EXAMPLES: &[RowExample] = &[
     row("aaaaaaaaaa bbbb", "aaaaaaaaaa bbbb", "aaaaaaaaaa|·bbbb"),
     row("aa bbbbbbbbbbbb", "aa bbbbbbbbbbbb", "aa·|bbbbbbbbbb|bb"),
     row("    bbbbbbbbbbbb", "    bbbbbbbbbbbb", "····|bbbbbbbbbb|bb"),
+    row(" bbbbbbbbbbbb", " bbbbbbbbbbbb", "·|bbbbbbbbbb|bb"),
+    row(
+        "aaaaaaaaaa bbbbbbbbbbbb",
+        "aaaaaaaaaa bbbbbbbbbbbb",
+        "aaaaaaaaaa|·|bbbbbbbbbb|bb",
+    ),
     row(
         "aaaaaaaaaaaaaa bb ccc",
         "aaaaaaaaaaaaaa bb ccc",
@@ -83,12 +89,22 @@ const ROW_EXAMPLES: &[RowExample] = &[
         "aaaaaaaaa\tbbbbb",
         "aaaaaaaaa→|→→→→→→|bbbbb",
     ),
+    row(
+        "aaaaaaaaaa→bbbbb",
+        "aaaaaaaaaa\tbbbbb",
+        "aaaaaaaaaa|→→→→→→|bbbbb",
+    ),
     row("aaaaaaaaaa→b", "aaaaaaaaaa\tb", "aaaaaaaaaa|→→→→→→b"),
     row("aaaaaaaaa中b", "aaaaaaaaa中b", "aaaaaaaaa_|中b"),
     row("aaaa bbbb中c", "aaaa bbbb中c", "aaaa·|bbbb中c"),
     row("aaaaaaaa 中b", "aaaaaaaa 中b", "aaaaaaaa·|中b"),
     row("aaaaaaaaa中→b", "aaaaaaaaa中\tb", "aaaaaaaaa_|中→→→→→b"),
     row("aaaaaaaaa^Abb", "aaaaaaaaa\u{1}bb", "aaaaaaaaa^|Abb"),
+    row(
+        "aaaaaaaaa^A + 11 b",
+        "aaaaaaaaa\u{1}bbbbbbbbbbb",
+        "aaaaaaaaa^|Abbbbbbbbb|bb",
+    ),
     row("aaaaaaaa ^Ab", "aaaaaaaa \u{1}b", "aaaaaaaa·|^Ab"),
     RowExample {
         hide: Some(7..8),

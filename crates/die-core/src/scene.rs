@@ -186,12 +186,13 @@ pub struct Scene {
     /// Row-major: row `r` is `cells[r * cols..(r + 1) * cols]`.
     pub cells: Vec<Cell>,
     /// For each cell of a window's text, the window and the buffer position of
-    /// the character it shows: every cell of a tab or a wide character maps to
-    /// it, and a line's newline has a cell of its own. Cells past the end of a
-    /// row map to its last position, and past the end of a line's last row, to
-    /// its newline (on the last line, to the end of the buffer), so a click
-    /// there lands at the line's end, as in Emacs. Other cells, such as gutters,
-    /// status lines and the rows below the buffer's last line, map to None.
+    /// the character it shows: every cell of a tab, a wide character or a Hide's
+    /// replacement maps to it, and a line's newline has a cell of its own on a
+    /// row with room for one. Cells past the end of a row map to its last
+    /// position, and past the end of a line's last row, to its newline (on the
+    /// last line, to the end of the buffer), so a click there lands at the
+    /// line's end, as in Emacs. Other cells, such as virtual text, gutters, status
+    /// lines and the rows below the buffer's last line, map to None.
     pub positions: Vec<Option<(WindowId, usize)>>,
     /// Every cursor drawn. The one that takes input (the command line's while
     /// a prompt is open, otherwise the focused window's) comes first, and it's

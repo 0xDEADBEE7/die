@@ -445,7 +445,7 @@ fn the_gutter_counts_lines_not_the_empty_last_one() {
 #[test]
 fn line_numbers_match_the_contracts_table() {
     let text = "one\na line that wraps\nthree\nfour\n";
-    let (mut ctx, b, w) = window(text, 16, 8);
+    let (mut ctx, b, w) = window(text, 16, 8); // 12 text cells, beside a gutter of 4.
     let (three, wraps, empty) = (22, 16, text.len());
     let n = |s: [usize; 5]| {
         let mut v = vec![Some(s[0]), Some(s[1]), None, Some(s[2]), Some(s[3]), None];
