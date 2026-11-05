@@ -136,6 +136,7 @@ fn launch(config: Config, script: Option<window::Script>) -> i32 {
         font,
         title: "DIE".into(),
         script,
+        hidden: false,
     };
     window::run(ctx, options).unwrap_or_else(|e| {
         eprintln!("die: {e}");

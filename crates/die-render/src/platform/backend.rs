@@ -30,6 +30,51 @@ pub mod appkit {
         false
     }
 
+    /// Holding a key repeats it.
+    pub fn press_and_hold() -> bool {
+        false
+    }
+
+    /// The usual double-click time.
+    pub fn double_click_interval() -> std::time::Duration {
+        std::time::Duration::from_millis(400)
+    }
+
+    /// A key monitor, which this target doesn't need: Caps Lock comes through winit.
+    pub struct KeyMonitor(Never);
+
+    impl KeyMonitor {
+        /// There's none.
+        pub fn install(_: impl Fn() + 'static) -> Result<KeyMonitor, String> {
+            Err("no key monitor on this platform".into())
+        }
+
+        /// Never runs.
+        pub fn take_caps(&self) -> Vec<bool> {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        pub fn caps(&self) -> bool {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        pub fn panics(&self) -> u64 {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        pub fn set_on_caps(&self, _: impl Fn() + 'static) {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        pub fn deliver_to(&self, _: &Surface) {
+            match self.0 {}
+        }
+    }
+
     /// A surface, which this target can't have.
     pub struct Surface(Never);
 

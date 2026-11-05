@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 use winit::window::Window;
 
 pub use crate::platform::backend::appkit::{
-    Surface, option_as_alt, prepare_loop, window_attributes,
+    KeyMonitor, Surface, double_click_interval, option_as_alt, prepare_loop, press_and_hold,
+    window_attributes,
 };
 pub use crate::platform::backend::ready;
 
