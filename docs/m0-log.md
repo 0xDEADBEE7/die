@@ -2,6 +2,321 @@
 
 What merged, what waits on you, what changed in die-core's API, and where the budget stands ([m0-plan.md](m0-plan.md) §3). Newest first.
 
+## 2026-11-05 (later): K4, K5, R2 and V3 merged, and every test binary has a memory limit
+
+**Waiting on you: nothing.** You can overturn any call below at any time. The one check still open is R2's: comparing a rendered page with your Emacs at 16 pt needs Emacs's window on screen, so it waits for R3 or for your eye.
+
+**Merged:**
+
+| PR | What | Review found | Major | Fixed |
+|---|---|---|---|---|
+| #11 | The memory limit, and time limits for `mutate` | 19, over two reviews | 3 | 19 |
+| #12 | K5, the runtime | 14 | 2 | 14 |
+| #13 | K4, layout | 12 | 2 | 12 |
+| #14 | R2, the offscreen renderer | 15 | 2 | 15 |
+| #15 | V3, operators | 10 | 1 | 9, and 1 waits for K6's modified flag |
+
+**A correction:** I told you the four packages' reviews found 49 problems, 48 fixed. It's 51, with 50 fixed and 1 deferred.
+
+Two of the memory limit's findings were settled by saying so in the crate's docs rather than by code (calls 169 and 173). A separate review read only what merging the four packages together changed. It found 7 more, no majors, all done at the merge. The biggest was a panic in V3 under a Hide: `cc` on a line a fold joined to the one above panicked with the line already deleted. Its fuzz failed 326 of 6,000 runs, on V3's own tip too, and five seeds now give 0 of 6,000 each.
+
+**Checks on the final `main`:** `cargo xtask ci` passed on a fresh clone at each of the five merges, and the fixtures regenerate byte for byte from your Evil. `ci --linux` passed twice on the memory limit's final commit. `mutate` on the final `main` was still running after 50 minutes, so I stopped waiting for it. K4's branch caught all 48 mutants, and a review confirmed each still applies on the merged tree. The whole run's result goes in the next entry.
+
+**You can't use it yet.** `die` still prints `die: no window yet (M0 phase 0)` and exits 2. R2 draws a scene into an offscreen image, and the window is R3.
+
+### What you have now
+
+- **K5, the runtime.** Timers, idle timers, jobs on threads, waking the loop, config at startup, and panics that log a line and leave the editor running. `ctx.rs` is split into `ext.rs`, `dispatch.rs` and `rt.rs`, and the prompt has its own file.
+- **K4, layout.** Word and character wrap, folds, tabs, wide clusters, the gutter and virtual text, all matching tty Emacs or differing as contract §9 says. A cursor position now costs the same on a line of any length. At normal priority, a keystroke on a 1 MB line takes at most 1 ms in every script tested.
+- **R2, the renderer, offscreen.** Glyph atlas, row cache, instance building, the drawn box and block glyphs, and the Metal backend. Everything before the backend is data in and data out, so it also runs on Linux.
+- **V3, operators.** Operators, text objects, registers, counts and undo. 86,000 random key sequences ran through your Evil and die-vim, with and without a final newline, and the differences are either named rows in S5 or listed below.
+
+**Oracle:** 905 of 1,075 cases pass, up from 248 of 523. 58 deviations are excluded, up from 37. The 170 still pending belong to later packages: V2 16, V3 8, V4 67, V5 13, V6 66. V3's 8 are 5 clipboard cases for K6, 2 search cases for V2 and the `gu` rule for K6. Regenerating every fixture from your Evil changed nothing, and `~/.emacs.d` wasn't touched.
+
+**Budget:**
+
+| Crate | Lines |
+|---|---|
+| die-core | 5,450 of 14k |
+| text and undo | 1,171 of 1,250 |
+| layout | 888 of 950 |
+| keys, keymaps, describe | 598 of 650 |
+| ext, dispatch, rt | **1,498 of 1,500** |
+| faces and scene | 902 of 950 |
+| die-render | 1,781 of 7k (macOS build 1,717 of 5k, Linux build 1,258 of 5k) |
+| `platform::macos` | 523 of 900 |
+| platform stub | 64 of 70 (limit raised from 50, call 129) |
+| die-vim | 3,095 of 5k |
+| product code | 10,373 |
+| xtask (dev) | 3,790 |
+| die-test-cap (dev) | 187 |
+
+`ext, dispatch, rt` has 2 lines left. K6 moves buffers and windows out of `ext.rs`, which gives it room back.
+
+### Your machine running out of memory
+
+You asked whether there was a leak. There wasn't one in DIE: nothing in a running editor grew. Agents were planting bugs in copies of the code to check that tests catch them, and some of those bugs made a test binary grow without end. The kernel log shows seven kills that day:
+
+| Time | Binary | Size | Cause |
+|---|---|---|---|
+| 12:06 | `naive_layout` | 185 GB | A planted bug in K4's own check |
+| 12:07, 12:10 | `timers` | 128 and 154 GB | Probably K5's planted timer bugs, inferred and not proven |
+| 12:18–12:45 | `prop`, four times | 230–301 GB | A real bug in K5's test path: a list of panics carried over between test cases, so shrinking never ended. Fixed in 57e29f8 |
+
+At 13:13 swap ran out, and the kernel paused Steam, Firefox and Emacs. The likely cause is a planted bug in K5's review, also not proven. You force-quit eight apps at 13:24.
+
+You asked why the test binaries didn't have limits of their own, and now they do:
+- **The count.** Every test binary's allocator counts live memory. Past 4 GiB it writes a line starting `die-test-cap:` and the process aborts. The largest real test needs 160 MiB.
+- **The kernel.** On macOS, each binary also runs itself under `taskpolicy -m 8192`, and the kernel kills it at 8 GiB, whatever is growing: Metal buffers, thread stacks, `mmap`, or the freed blocks malloc keeps. I'd said macOS couldn't enforce a process limit, because `ulimit` can't, and the first design followed that. The first review showed I was wrong.
+- **`cargo xtask lint`** fails a test binary without the limit, and fails the crate if it's anything but a dev-dependency. `die` has none of its symbols.
+- **`cargo xtask mutate`** gives each mutant a time limit, and reports which limit it hit.
+
+**What this doesn't cover:** the limit is per binary, not per machine. Eight agents at once could still reach 64 GiB, which is your RAM. Linux has only the count. Processes a test spawns, such as cargo and Emacs, aren't limited. The crate's docs give the full list.
+
+**One side effect.** Each aborted test binary leaves a crash report in `~/Library/Logs/DiagnosticReports`: 111 of the 282 there come from the limit's own tests. They take no focus, and I've left them alone.
+
+### Speed tests at background priority
+
+macOS moves this session between normal priority (PRI 31) and background (PRI 4) by itself, I think according to whether its terminal is in use, though I haven't confirmed that. The same frame takes 0.27 ms at normal priority and 0.94 ms at background. So scene's 1 ms test failed 40–44 of 100 runs on `main`, and `cargo xtask ci` often failed for no real reason. Limits in ms now allow 4 times as much at background priority, and in `ci --linux`'s VM (call 179). I didn't raise any priority, because that would compete with what you're doing.
+
+### Rare differences from your Evil
+
+S5 says this log lists these. V3's differential found them, each measured against real Evil, and none is a named deviation. They're corners of how Emacs parses strings or restores the cursor.
+
+1. `I<Esc>u`: Evil's `I` puts point on the undo list, so `u` only moves the cursor. `xI<Esc>u` on `a|bcd` keeps `acd`, and die-vim undoes the `x`. Only `I` with no typed text does this. It belongs with row 6.
+2. `<Esc>` at a wrapped row's start: Evil doesn't step back under visual-line-mode. Pending for V6.
+3. A count on `$` landing on an empty line, with a shift from mid-line, is an Evil bug. `>2$` on `ab|c\n\nde\n` gives `ab  c` in Evil, and die-vim shifts the line.
+4. `daW` from an empty first line with a whitespace-only line next: Evil takes both lines, die-vim only the newline.
+5. Read-only text: a failed `O` goes to the line's start and a failed `o` to its end in Evil. die-vim stays.
+6. Strings that never close (row 24) still differ where the odd quote comes from an apostrophe in a comment.
+
+### Web content goes to a real browser
+
+You said it's "probably better just to defer to an actual web browser for rendering web content", and asked about `.html` and `.md` files. So DIE won't embed web pages or render them into pixel buffers. It edits `.md` and `.html` as text, and a browser renders them. That matches the preview you have now, which is export to HTML plus WebKit, and a browser brings back and forward with it. The preview becomes an extension under D14, after M0.
+
+### API changes, for your later review
+
+**K5, die-core.** 14 added, nothing removed, no signature changed, and every public path through `die_core::` stays the same.
+- **Added:** `Config`, `Clock` (with `Clock::real`, `Clock::now`, and a default that's fake, at zero), `Waker` (with `Waker::wake`), `Ctx::{with_config, now, next_timer, idle, waker, set_waker}`, `Registry::mode_keymap`.
+- **Behaviour with the same signature:**
+  - `Ctx::new` is `with_config` with an empty config. The first `Ctx` installs a process-wide panic hook, chained to the one already there.
+  - A panic is logged to `messages` as well as returned, and its line reads `ext panicked: msg at file:line. Its state may be half-updated: restart if it misbehaves.` A line already among the panic lines at the log's end, up to 32 back, isn't repeated.
+  - Panics in a surface's `event`, key observers, a job's `work` and any `Drop` of what core holds no longer escape. A surface's `event` runs guarded, with `nesting()` at 1 and `cur_ext()` its owner.
+  - A failing key's command, a key nothing handles, or a prompt answer submitted by a key that fails drops the rest of the fed keys. `feed_keys` from inside a call goes ahead of what's left.
+  - `advance` runs what's queued at the old time first, stops at each deadline, waits for a blocked job at most once per move, and its clock can't go back. A repeat that fell a period behind skips what it missed, and `every(0)` runs as 1 ms.
+  - `step` returns false once what was ready has run, even with a repeat overdue, and gives keys a turn between batches of timers.
+  - `run_until_idle` logs a message after 1,000,000 turns instead of panicking. `shutdown` also cancels what config owns.
+
+**K4, die-core.**
+- **Changed:** `DisplayLine`'s fields are private. `TextBuf::display_line` returns a value, not an `Rc`. `ViewRow` loses `cells`, gains `number`, and most of its fields are private. `Cursor` gains `past_end`. `Deco::Hide` and `Deco::Virtual` take `Styled`. `LineNumbers` gains `Visual`. `Settings::wrap` is a `Wrap`, not a bool.
+- **Added:** `DisplayLine::{start, end, lines, eof, stops}`, `TextBuf::{scroll, set_scroll}`, `ViewRow::stops`, `Styled`, `Wrap`.
+- **Removed:** `CellKind` and `LayoutCell` (now `pub(crate)`), and `DisplayLine::{is_stop, stop_le}`.
+- **Behaviour with the same signature:** the default wrap is `Wrap::Word`. A full row's line end stays on its row, at column `text_w`. The empty last row has no number. Control characters take 2 or 4 cells. `pos_at_vcol` can land on a later line of a fold. There's a new core command, `toggle-max-width`.
+
+**R2.** die-core: `CursorShape`'s docs only. die-render's new public items: modules `atlas`, `driver`, `font`, `frame`, `rows` and `sprite`, plus `metal::Pipeline`, `Gpu::{pipeline, instance_layout}`, `text::Shaped` and `Face::{fallback_for, shape}`. `FaceMetrics` moved to `font` and gained `x_height`.
+
+**V3, die-vim's grammar.** Adds `Operator`, `Start.op`, `Target.kind`, `Target.no_column` and `char_key`. `run_motion` now uses `kind`, and hands off to `operators::on_motion` when an operator is waiting. Nothing removed.
+
+**Ported tests changed**, all by K4, and none by K5, R2 or V3:
+- `tests/layout.rs`, `tabs_and_wide_characters_have_correct_display_columns`: `pos_at_vcol(0,10)` goes from 3 to 6, and `pos_at_vcol(0,5)` from 1 to 2 (LAYOUT-4).
+- `tests/scene.rs`, `one_window_snapshot`: the empty last row loses its `4` (calls 3 and 24, LAYOUT-3).
+- `tests/scene.rs`, `status_line_prompt_and_surface_text_are_laid_out_like_buffer_text`: `a?b` becomes `a^Ib` (call 102).
+- `tests/prop.rs`, S4's oracle: its line-end branch is gone and its cursor-column filter changed (WRAP-2). `Op::Set` picks from 3 wraps and 4 number styles, and `Wrap::Word` reads its rows from the naive layout.
+- Others needed only to follow the API, with no asserted value changed.
+
+**One thing weaker than it looks.** K4's builder read the naive layout before writing K4, because its first steps said to. So no disagreement in 40,000 sequences is weaker evidence than two blind implementations would be. tty Emacs's fixtures and §9's worked examples are the independent checks.
+
+**Test plans:** [records/wave1-test-plans.md](records/wave1-test-plans.md).
+
+### Calls (veto any)
+
+Each package's own, as its builder and finisher made them. A number below 54 is an earlier entry's call.
+
+**K5, the runtime**
+
+54. The prompt moved to prompt.rs (K11a's budget module) as a pure move. The three planned files hit 1,501 of 1,500, and K11a rebuilds that code there anyway. Buffers, windows and registers stay in ext.rs until K6, as budget.toml now says.
+55. The timer heap is a BTreeMap keyed by (deadline, sequence), not a BinaryHeap. Same order and same log n, with no Ord impl to write. Veto if you want the literal heap, at about 12 more lines.
+56. Clock is an enum (Real, Fake), not a trait, and the default is fake, so S4's tests stay byte for byte. F3 must pass Clock::real(), or timers never fire. advance on a real clock only runs until idle.
+57. advance now stops at each deadline. S4's jumped to the end. A callback reads its own time, and a retry chain runs inside one advance. This is what lets a repeat skip missed firings without breaking S4's '3 ticks in 35 ms' test.
+58. A repeat that fell a whole period behind fires once and skips the rest, so a laptop's sleep can't queue hours of firings. Emacs instead caps catch-up at timer-max-repeats, 10. The shortest period is 1 ms.
+59. idle(d, f) arrived now, though the plan's K5 row doesn't name it: contract §12 lists it and K12's idle write needs it. It fires once per idle period, counts from when it's set, and any key event restarts it, typed or fed, press or release. K9 must also restart it for pointer input.
+60. Besides errors and panics, a key nothing handles also drops the fed keys, as Emacs's undefined does in a keyboard macro. Callback errors drop nothing, and neither does an error a command handles itself. A panic in a key observer doesn't stop the key. The contract was silent on all of this, and §6 now says it.
+61. Panics in render and decorate are logged at the next turn, through the hook, and name only the place, not the extension. Naming it means editing scene.rs, which this package was told to leave alone.
+62. A line identical to the one before it isn't logged again, so a panic on every frame can't flood the log. So a repeating panic with the same message shows as one line until something else is logged. *Replaced by call 78.*
+63. The panic hook's list is per thread, and a new Ctx clears it. A panic on a thread an extension started itself reaches only the standard error stream, not messages.
+64. spawn keeps one thread per job. The contract said a thread pool, and I changed the contract instead of building one, since nothing has measured a need.
+65. Config has public fields and closures, not a builder. Its commands are owned by 'config' for describe-command and panics. A config command reusing an extension's name is a startup error, like any duplicate. Declared overrides of core commands wait for K11b.
+66. run_until_idle gives up after 1,000,000 turns with a message and leaves the work queued. It used to panic.
+67. set_waker can connect only once; a second call returns an error. There's no public post from other threads yet, since spawn is the channel's only user until M1's process.
+68. A surface's panics are attributed to whichever extension called create_surface, or 'core' if the host did. A Drop panic during kill is attributed to 'core', with the place in the source.
+69. One edit to text.rs, against the brief's caution: map_pos's two identical branches joined, because dropping text's clippy allow needs it. It doesn't change behaviour.
+70. K5R-1 goes further than the review's fix. `step` also returns false after a batch of timers, even with a repeat overdue, so a host draws and reads its events. The review's version would still spin with no key waiting. So false now means 'what was ready has run', not 'nothing is due', and a host must ask `next_timer` before sleeping.
+71. Timers and keys alternate under a slow repeat, in a macro too. One cost: a timer a callback sets for right now runs after a key that's already waiting. S4 ran it first. `advance` and `run_until_idle` still run such chains to the end.
+72. K5R-2's hand-written fixture for a failed `/` in a macro is deferred to V2. The oracle's batch run dies on that case, die-vim has no `/` until V2, and tests/oracle.rs accepts a hand-written fixture only for a deviation, which this isn't. So V2 has to make room for this kind of case. Core's half is tested in die-core now. Veto if you want the harness changed now, though V3 also edits that file.
+73. `<Esc>` in a prompt counts as a key, so a cancel answer that returns Err also ends a macro. A prompt cancelled by a new prompt doesn't.
+74. Keys fed from any call, including a timer's, go ahead of what's left. So a timer that feeds keys mid-macro lands in the middle of it. Nothing does that today, and I didn't check it against Emacs.
+75. I added a second oracle case beyond the review's ask, macros/error-in-nested-macro-ends-both. Your Evil gives `one`, with the error after key 2.
+76. An idle timer due at the same moment as another timer goes after it, rather than tracking set order across the two. The contract says so.
+77. An idle wait counts from when a key's command or keyed prompt answer ended. Other work queued after a key, such as a hook, doesn't restart it. The restart moved to the end of the key's turn, so a command that runs a nested loop could see an idle timer fire inside it.
+78. The panic log's rule is 'already among the panic lines at the log's end, up to 32 back', not the review's 'last 8 lines of messages'. Any other message makes a panic news again. Past 32 objects panicking in turn, the log still grows until M1's disabling.
+79. K5R-7 guards each drop site rather than wrapping `collect_due`, because the wrap misses a queued call's closure and could lose timers already collected. These panics name core, not the extension, as a `Drop` during `kill` already did. This also covers `next_timer` and the sweep, which the review left as best effort.
+80. Config's handles are cancelled last, not in reverse startup order, because an extension's `shutdown` can run a config command that sets a timer. The review's reason, that config applied last, would have pointed the other way. Handles the host itself detached still aren't cancelled by `shutdown`.
+81. K5R-9 is fixed rather than documented: a callback may call `advance`, and the clock ends at the later of the two.
+82. One new test takes 5 s of real time, advance_waits_once_for_a_job_thats_out, because the job wait is a fixed 5 s. I didn't make the wait configurable just for a test.
+83. I shortened three lines of `collect_timers`, with no change in behaviour, to leave room for K4's 4 lines in `Ctx::with_config`. K6 moving buffers and windows out of ext.rs gives the module its real room back.
+
+**K4, layout**
+
+84. Newline's cell at col == text_w: it isn't drawn, in a centered window or any other. A selection doesn't highlight past a full row, so a highlight doesn't depend on whether padding happens to exist. The cursor still draws in the padding, and a click there still lands on the newline. §9 says so.
+85. TextBuf::line_end_on is replaced by a pub(crate) ViewRow::line_end, which the viewport already knows.
+86. Cursor::past_end: col is the row's last cell. A bar goes at that cell's right edge; other shapes draw on the cell as usual. The snapshot prints `past-end`.
+87. Ambiguity 1 (break point, 'that item'): reading A. tty Emacs confirms it: ` bbbbbbbbbbbb` gives `·|bbbbbbbbbb|bb`, and `\tbbbbbbbbbbbb` and `aaaaaaaaaa\tbbbbb` agree. §9's sentence is rewritten, with worked examples added.
+88. Ambiguity 2 (a control character's rest): reading A. tty Emacs confirms it: `aaaaaaaaa^A` + 11 b gives `aaaaaaaaa^|Abbbbbbbbb|bb`. §9 was at fault: 'or control character' is removed, and the opposite is stated with an example.
+89. Ambiguity 3 (a number wider than its gutter): keep the last digits, so the text doesn't move. Added to §9. This is DIE's own rule: no Emacs evidence.
+90. Ambiguity 4 (undrawn cells of an oversize cluster): they count toward tab stops. §9 adds 'drawn or not'. tty Emacs composes no cluster that wide, so there's no evidence, as with call 27.
+91. Ambiguity 5 (the empty last row with virtual text on several rows): no row of that display line has a number. §9 reworded.
+92. Ambiguity 6 (a hidden last line): it keeps its number, because the rule goes by where the display line starts, not what shows. §9 says so.
+93. Ambiguity 7 ('the fold line if there is one'): only the hidden range the cursor is in counts. §9 reworded.
+94. Ambiguity 8 (gutter size): hidden lines count, so folding the end of a file doesn't move the text. §9 adds 'hidden or not', and a test now pins it.
+95. Ambiguity 9: 'never start a row' read literally contradicted the empty-row rules. §9 now says 'a line end never moves to a new row'.
+96. Ambiguity 10: §9's number table now states its text and 12 cells, and the fold example says 'with a replacement or without one'.
+97. Ambiguity 11: a Hide showing a placement is M3's. §9 now says so; Deco::Hide has no placement field yet.
+98. §9 gains a sentence: `posn-at-point` reports a wide character that moved whole at the column it left, but the terminal's own cursor is drawn on its new row. I checked this by capturing the real cursor through term.el. It explains probe output; layout doesn't differ from Emacs here.
+99. Styled: a cluster takes the last run holding its first byte. Runs don't stack, unlike stored faces on text.
+100. Virtual text is styled as the position it stands before, with its own face over that, and still maps to no position. A click on it is K14's question.
+101. toggle-max-width turns the width off, then back on at the width it had, or 80 if it never had one. It leaves `center` alone. The remembered width is a private TextBuf field, not in Settings, so K12's session doesn't save it unless K12 adds that.
+102. Status lines, prompts and surface lines draw control characters as `^A` too (a surface's tab is `^I`), so 'laid out like buffer text' stays true. This goes past DR-12's wording.
+103. Line-number face: with Visual, only the cursor's row is 'current'. With Absolute and Relative, the cursor's display line is, including a later logical line of a fold.
+104. A Face decoration no longer empties the layout cache or runs normalize_views; only Hide and Virtual do.
+105. The 1 MB line's budget, which the plan doesn't state: 1 ms per keystroke at either end, in every wrap mode, and at most 100 ms for a first full layout.
+106. Code placement for the budget: per-window views in windows.rs, hidden ranges and display-line edges in text/hidden.rs. Cursor-position queries stay in layout.rs.
+107. LAYOUT-4: die-vim's pos_at_col now delegates to core and loses its filter to the logical line, as the verifier asked. On a fold it can land on a later line of the display line.
+108. K4-8, reverses call 29 for Visual: on a fold that joins lines, the cursor's row shows the line the cursor is on. With lines a to d and a joined to c, the cursor on c shows 3, 1, as tty Emacs does. It costs one line of code and keeps scope §8's 'Visual matches Emacs' true. Veto it and §9 names one more difference.
+109. K4-8, keeps call 29 for Relative: the cursor's display line still shows its first line's number, so that case shows 1, 1. Emacs shows 2, 1, but its 2 is a count of hidden lines, and call 4 already deviates from those. §9 gives the example.
+110. K4-8, whole text hidden: Emacs draws no number, and DIE's only row keeps one. In Visual that's the cursor's line, so `a\nb` all hidden shows 2. §9 names it as a difference. I didn't add code to follow Emacs in a case this rare.
+111. K4-6: the 1 MB budget now holds for every script tested, with the limits unchanged at 1 ms a key and 100 ms for a first layout. I took neither of the review's options, looser limits or one kept GraphemeCursor. A cluster inside a rope chunk now takes no rope walk, in about 10 more lines.
+112. K4-5: a block selects a replacement by its position's column, or not at all, as a tab's cells work. So a block whose columns start past that column takes none of it, even over cells it visually crosses. No Emacs or Vim evidence checked; it follows scene-4's 'one style' and the tab rule.
+113. K4-3: I added a test with fixed texts beside the review's 5-case property, because 5 random cases could let a mutant through by chance. It asserts that a chunk's edge really falls inside a cluster, so it can't pass with nothing to test.
+114. K4-7: the excuse count is exactly 10, not the 11 the review proposed. The excuse now never applies to a tab.
+
+**R2, the renderer**
+
+115. Cursor pixels are logical. Bar and Underline's '2 px' and Hollow's '1 px' are points, so 4 and 2 physical px at 2x, and 2 and 1 at 1x. Emacs on macOS draws `(bar . 2)` in points, and the rustdoc names Evil's `(bar . 2)`. CursorShape's rustdoc just says px, and I left that die-core text alone.
+116. On a wide character, Block, Underline, HalfBlock and Hollow cover its cells, and Bar sits at its left edge. A cursor on the right half takes the character's first cell. The rustdoc says only 'the cell'.
+117. A block cursor also redraws the cell's underline and strike in the cell's background, so they stay visible. A color emoji under it keeps its colors, since it can't be tinted.
+118. HalfBlock is half the cell's height rounded down, at the bottom, as Evil's half cursor is.
+119. The baseline stays S1's fractional ascent, not a rounded one. A font's own box glyphs tile only that way (a per-range override), and text comes out byte-identical to S1's. The cost is a baseline row that is 88 % covered, not 100 %.
+120. Renderer-drawn double lines leave their joins open, as the font's do: ╬ is four corners and ╦ has an unbroken top rail. Arcs are a quarter circle with a radius of about half a cell, plus straight runs.
+121. A double underline sits at the underline's position and two line-widths below it, where S1 straddled that position. Both keep it inside the cell. The strike sits at half the x-height, where S1 used 11/20 of the cell, so FaceMetrics gains x_height.
+122. I built the plan §4 cut-list items anyway, since the budget has room: renderer-drawn braille (off by default), dashed and diagonal box glyphs. Powerline too, as scope §5.11 lists it.
+123. Rules look at a cluster's first character, and the first matching rule wins. The renderer draws single characters only, so a box glyph with a mark comes from the font. A rule giving a range to the renderer falls through to the font for anything it doesn't draw.
+124. A face pinned with Draw::File counts as a fallback: squeezed to fit and centered. Your braille pin is Draw::Primary, which isn't affected. *Now `Draw::Files`, call 137.*
+125. A cluster stays in one face where it can: the first in the chain with all its characters. Otherwise the system picks a face for the whole cluster, not base and mark from different fonts.
+126. Marks from the primary font aren't squeezed. x + U+20DD (an enclosing circle, which Term has) runs about 9 px past each side of its cell, onto its neighbours. Stacks of marks can reach into the row above. Only fallback glyphs are squeezed to the cell. A fallback glyph too tall for the cell is now squeezed too; S1 only centered it.
+127. The atlas is fixed at 2048 px gray and 1024 px color. When full, it starts over at most once a frame and every row rebuilds. A frame needing more than a whole atlas (over about 2,500 distinct glyphs on screen) draws what fits and tries again next frame, so such a page could flicker. A bitmap bigger than its plane draws nothing. *Its "could flicker" is replaced by call 141.*
+128. A cluster with both color and gray runs goes in the color plane, and its gray run draws white, since that plane can't be tinted. This should be rare.
+129. The stub's budget limit goes from 50 to 70 (65 used). Each item the driver names needs one in the stub, so R3 will raise it again.
+130. Metal aborts the process on a texture size it can't make, so Pipeline::render and pipeline return an error for 0 or above 16384 per side. This M5 allows 32768, but I used the lower side I recalled for older Apple GPUs, without checking Apple's table. The driver returns an empty Image for a target with no pixels.
+131. A frame has three explicit steps (diff, supply, build) rather than a rasterizer closure or trait, to hold call 15's 'data in, data out' literally.
+132. `#![warn(missing_docs)]` goes on each neutral die-render module, not on the crate. `cargo xtask guards` plants an undocumented `pub fn` in platform/macos/text.rs and needs clippy to pass on it. Public items in platform have rustdoc by hand.
+133. tests/platform.rs's R1 test metal_device_and_queue still fails on a Mac with no Metal device, on purpose, so the fidelity skips can't hide a broken backend on your Mac. A hosted Mac runner without Metal would fail that one test.
+134. The fidelity tests write PNGs only when DIE_RENDER_PNG_DIR is set, with a small uncompressed PNG writer in the test file, so png isn't added as a dev-dependency.
+135. A cursor the color of its cell's background (mono-dark's current search match) changes color. Bar, Underline, HalfBlock and Hollow draw in the cell's foreground. Block fills with the foreground and keeps its glyph in the cell's background. If the foreground is that color too, it uses the scene's background, then black, then white. This follows my memory and the reviewer's of Emacs's `x_set_cursor_gc` in xterm.c, whose source isn't on this machine. From memory only, the macOS port keeps the cursor's fill and draws the glyph in the frame's background, so your Emacs may show the letter readable but no distinct cursor on a match. I couldn't check that without opening its window. I chose a visible cursor. The cost: under a block cursor, a one-letter match looks like plain text. Veto if you'd rather match the macOS port.
+136. A block cursor's redrawn glyph is cut to the cursor's cells, including a wide character's two. Overrunning ink outside those cells keeps its normal color, so x + U+20DD's ring stays visible past the block.
+137. A range rule pins any number of font files, tried in order, then the styled face, then regular: `Draw::Files(Vec<PathBuf>)`. R2's call about pinned faces counting as fallbacks now applies to all of them.
+138. A primary glyph is squeezed only past `span * (cell.w + 1)`. So 16 pt at 1x draws at full size on a 9 px pitch, where it used to be 6 % smaller. Its 9.6 px advance runs up to 0.6 px over the cell, so letters sit slightly closer. 16 pt at 2x is unchanged on S1's page.
+139. Term's 288 wide characters with a one-cell advance (☰ ⚡ ⭐ ⌚ and others) are centered across their two cells, with a fractional pen, as fallback glyphs have.
+140. A fallback glyph squeezes by its ink's width, not its right edge, then moves back into its span if its ink leaves by more than half a pixel. So a glyph that fits but sits off-center now moves rather than shrinks, and a lone mark like U+0E33 stays in its cell. The half pixel keeps an italic's small overhang where the font put it.
+141. A page with more glyphs than the atlas holds keeps its holes, stable, and tries again only when a row changes. So it doesn't flicker and costs nothing while idle or when only the cursor moves. But each change on such a page re-rasterizes the whole page in that frame: 183 ms on the reviewer's 3,896-glyph page in the test profile. This replaces R2's 'could flicker' wording. M3's eviction ends it. It is rare, needing over about 2,500 distinct glyphs on screen.
+142. `Face::fallback_for` stays in the driver and the stub, against the reviewer's first option, because it keeps clusters in one face (159 of 716 tested clusters differ without it).
+
+**V3, operators**
+
+143. Runner: until K6, a kill's clipboard expectations are checked against the kill ring. Without this nearly every yank and delete case stays pending, but a case can now pass with no clipboard behind it. Cases about the clipboard itself (id contains clipboard, keys use "+, or the case presets the clipboard) stay pending. Veto if you'd rather keep them all pending until K6.
+144. Runner: a register your Evil doesn't list must keep its preset value. This is stricter than before.
+145. Rule 1 extended: J on the last line keeps the final newline, where your Evil's takes it. A count past the last line doesn't reach the empty line after it, so 2D on the last line from column 0 takes the line's text as characters, where your Evil's takes the whole line. Five new fixtures: J-last-line, 2D-last-line, d5j-goes-as-far-as-it-can, dap-before, dap-last-paragraph.
+146. New deviation, S5 row 23: only a motion, a text object or the operator's own key can follow an operator. dA, dI and similar cancel quietly, as contract §7 says; your Evil runs them as motions. Vim also does nothing there, but beeps.
+147. New deviation, S5 row 24: a string that never closes isn't a string, so di" fails. Your Evil deletes from the quote or the character before it, or fails, depending on earlier text. Inside a " string that never closes, i' and i` still look in that string.
+148. New deviation, S5 row 25: "x lasts one command even if it fails. Your Evil keeps it after a failed h, l or f.
+149. Undo model extended, S5 row 6: each command is its own step. Emacs joins a run of ~, J, r or g~ into one, and die-vim doesn't, as in Vim. After J from an empty line onto an indented one, u goes back where it started; your Evil's lands a character on.
+150. S5 row 22 extended: h, l, x, X, s, r and ~ take a whole grapheme, as in Vim. Your Evil's split a letter from its mark.
+151. % is rewritten to Emacs's scan, which changes V1's normal-state %. Strings are skipped, any closer can be the partner (so { ] pairs), it looks only on this line for the bracket, and in a string with nothing left it retries from the string's end.
+152. f, F, t and T now take Tab as a tab character in normal state too, as your Evil does. r<Tab> replaces with a tab.
+153. p with a count over 1 MiB of text fails with Count too large, following call 46. Your Evil would just do it. A large register with no count pastes as normal.
+154. A count typed before "x is dropped, as your Evil does: 2"a3yw yanks 3 words. Vim multiplies.
+155. gU and gu as a buffer's first change follow your Evil, and u goes to the change's start. Known limit: the test is rev() == 0, so after an edit that was undone (ifoo<Esc>uguuu) die-vim returns to where the command started and your Evil goes to the start. *The rule is "the first change since the buffer was last unmodified". Deferred to K6's modified flag.*
+156. Not bound, so they cancel an operator: _ + - (not in scope §10's motion list), the v, V and C-v type modifiers (dvj), and is, as, it, at, io, ao (sentences, tags and symbols aren't in scope §10). Your Evil has all of them. Veto if you use d_ or dit.
+157. Brackets and J's no-space rule know only ( [ { ) ] } and, for i< and %, < >. Emacs's table also gives some Unicode brackets paren syntax. *Call 166 corrects this: `%` doesn't know `<` and `>`.*
+158. A count on J that would make a line over 1 MiB fails with Count too large and changes nothing, following call 46 and p. Joining two lines, with J or 2J, goes ahead at any size.
+159. J is one transaction of several small changes, not the single replace the review proposed. So rev() rises by one per join, and whatever sits between joins stays on its text.
+160. A failed operator on read-only text or a read-only register leaves the cursor at the range's start, except y and >, and J goes to the next line's start. This follows Evil as measured, and replaces the review's proposal to restore the cursor. Vim stays put. Veto if you'd rather a failed command never moved the cursor. The oracle has no read-only cases, so these numbers live in a plain test.
+161. Quote objects now port Evil's parsers, and they keep Evil's odd results because D4 says Evil wins. da' in "don't work" takes through the closing quote and leaves "don. i' there takes t work. da' with no whitespace anywhere in the string, or the text, runs to its end. Vim differs on all of these. Veto if you'd rather die-vim fail there, as row 24 does for strings that never close.
+162. Row 24 stays, with one edge moved: di' on an unclosed "a'b' now takes b. Your Evil takes a'b. It failed before, and neither result is much use.
+163. I on a line of nothing but spaces follows your Evil, inserting before the last space, so V1's behaviour changes. Vim inserts at the end of the line.
+164. $ as an operator's motion, right after a vertical motion, sets the goal column the operator goes by, as in your Evil. gg>$ and <Down>d5$ end at the line's end. l>$ keeps its column.
+165. A count on i( that gets no further than the string it started from fails, as in your Evil, and then looks for the count-th next opener. 2di( on f("ab") fails, while 2di( on f("ab", c) empties the pair.
+166. Correction to the V3 report's call on brackets: % doesn't know < and >. Only i< and a< do.
+
+**The memory limit**
+
+167. Test binaries carry two limits, a count at 4 GiB and the kernel's at 8 GiB, which is twice the count, so the line comes first even while a `realloc` holds both copies. `set_limit` doesn't change the kernel's. A test that needs more than 8 GiB must raise the constant.
+168. A second place for `unsafe` outside DIE's own code: `tools/test-cap/src/cap.rs`, about 65 lines (scope §12). A global allocator can't be written without it. It's never linked into DIE.
+169. Two environment variables, where the design said none. `DIE_TEST_CAP_UNDER_LIMIT` is the mark that stops the re-run looping. `DIE_TEST_CAP_SYSTEM_LIMIT_MIB` can only lower the kernel's limit, so the tests can prove it at 128 MiB. Neither can raise the count. Setting the mark by hand skips the kernel's limit, and a binary that runs itself with a plain `exec` loses it. No test does either.
+170. 64 counters on their own cache lines, where the design said one. One cost +49 to +55% on the scene test, and this costs about +4%. The count can pass the limit by up to 4 MiB. A fence and a second read on the rare path keep two threads from both getting the last room, and keep a healthy process from being refused.
+171. A block counts for its size plus a 16-byte header, rounded up to 16, or for its alignment if that's larger, so a leak of one-byte boxes can't reach 16 times the limit.
+172. A thread that loses the race to write the line waits up to 1 s for the winner, so its abort can't end the process before the line is out.
+173. If `exec` of `taskpolicy` itself fails, the binary carries on with the count alone and SIGPIPE at its default. Only a sandbox that denies that program has done this. If `taskpolicy` runs and then fails, the binary ends with its message. I chose a refusal that says why over a limit that's quietly off.
+174. `mutate` treats a kernel kill, an abort with no line, and a failure that names no test as hard errors. The old `<- failed` catch-all is gone. Each mutant gets 5 times the unmutated run, at least 120 s. The first run gets 30 minutes. A small `sh` watchdog in each run's group kills the group if xtask goes away, since `process_group(0)` means ^C no longer reaches cargo.
+175. Every target but a build script must carry the line, including `test = false` targets and examples. Cargo can run all of those by name.
+176. `set_limit` can raise the limit to anything, and no lint watches who calls it. Only the limit's own tests do today. Veto if you want raises reviewed.
+177. The race test for call 170's fence never fails sound code, but it often misses a missing fence: 0 of 6 runs at background priority. The evidence for the fence is the reviewer's probe, up to 13,542 of 200,000 rounds before and 0 of 300,000 after.
+178. `ci --linux` runs the limit's tests too, since the count is all Linux has.
+
+**Made at the merge**
+
+179. Limits in ms allow 4 times as much at background priority, or when `ci --linux` sets `DIE_SLOW_HOST`. The test asks `ps` only after a miss, so a healthy run spawns nothing. A limit on a ratio doesn't change. At background priority 4 ms is about 1.1 ms at normal speed, so the check keeps its strength. The factor is measured on macOS, and is a guess on Linux at nice 10 or more. A real regression under 4 times can pass at background priority, but it fails at normal priority.
+180. K4's two naive-layout properties default to 2,000 cases, not 10,000. They took about 8 minutes of each `ci` at background priority, and `DIE_PROP_CASES=40000` still runs the deep check, which K4 passed. So after changing layout, run that by hand. Veto if you'd rather have the longer `ci`.
+181. `MAX_REPEAT` and `MAX_REPLAY` stay at 1 MiB and 10,000. K4 says they can now rise, to about 16 MiB and 100,000 edits, but no one has measured memory there and nothing needs it yet. Their comments and scope §10 say so.
+182. Indentation in die-vim now comes from the text alone, not from `display_col`, so a Hide can't change it. Indentation a Hide covers still counts. From memory, Emacs's `current-indentation` skips invisible text, so it could differ there. I haven't checked, and the oracle has no Hides.
+183. The 8 wrapped cases K4 passes now run at their own window sizes, ahead of K7, so something holds K4's wrap to your Evil.
+184. Test plans go in a record of their own, because together they'd double this entry.
+
+### Notes for the next packages
+
+- **Every package:** a new `tests/*.rs` file starts with `use die_test_cap as _;`, and the lint fails one that doesn't.
+- **K6:** `windows.rs` exists, with the views in it. Move the buffers and windows blocks out of `ext.rs`, which is at 1,498 of 1,500. Change `registers.rs` alone for the clipboard, then replace the stand-in in `tests/oracle.rs`'s `run_in_window` and the "no clipboard yet" check in `run_case`, which should pass 5 cases. Replace `t.rev() == 0` in `operators::recase` with the modified flag, which should clear `undo/gU-after-an-undone-edit-then-u`.
+- **K7:** `advance` and `run_until_idle` wait for jobs, up to 5 s each. Use typed keys for the per-key error log, because `feed_keys` drops at the first error.
+- **K9:** the loop is `while ctx.step() {}`, and `next_timer` may already be past when it ends, so don't sleep then. A call that keeps queueing another needs a turn limit. Call `restart_idle` for pointer input. `run_until_idle` blocks on jobs, so the host's needs another name. With a clock in core, the plan's `now` parameter may not be needed.
+- **K11a:** all of `prompt.rs`. Keep `Queued.keyed`: it's set only from a key's Enter or Esc.
+- **K12:** `max_width_off` isn't in `Settings`, so a session doesn't save it unless K12 adds that.
+- **R3:** `Pipeline::render` makes a new target and waits for the GPU each frame, and the SAFETY comments on `fill_instances` and `upload` rely on that wait. A drawable path without it needs S1's ring of buffers. `Renderer` has no `set_scale`. The target is BGRA8Unorm with gamma-space blending, so the layer must match. The stub's limit rises with each new item the driver names.
+- **F3:** pass `Clock::real()`, or timers never fire.
+- **R6:** a throwaway probe at 159×49 cells gave 8.79 to 9.42 ms a frame, including a new 24 MB texture, the GPU wait and the readback, which a window won't do. These aren't R6's check.
+- **V2:** bind `/ ? n N * #` in `OperatorPending` too. Take `search/d-slash` and `search/not-found`, which are still tagged V3. A failed `/` must return `Err` from its answer. `tests/oracle.rs` accepts a hand-written fixture only for a deviation, so make room for the failed-`/`-in-a-macro case, whose oracle run dies.
+- **V4:** `@` should call `feed_keys` from the command. `OBJECTS` and `Operator` are ready for visual state. `paste` treats `Block` as characters. `.` isn't recorded yet.
+- **V5:** Evil's `:s` with no match doesn't stop a macro, so log it and return `Ok`.
+- **V6:** `H M L gj gk` added to `MOTIONS` take the operator path automatically, so they must check `Start.op` where they land differently. `wrapped/esc-at-a-wrapped-rows-start` is on its list.
+
+### How the work changes from here
+
+You said this was far too slow. I measured the last 27 agents' transcripts: 23.6 agent-hours and 5.1M output tokens.
+
+- **Few agents were running.** One agent writes about 150 tokens a second when it's generating, which is 43% of its time. The rest it waits on tools. Wave 1 ended by 14:30, and I started nothing new until after 21:00, because I'd made the merges wait for the memory limit, then ran them one at a time. For hours there were only 1 to 3 agents running.
+- **Checking took more than building.** Review and finishing took 56% of agent time. Hand-planted bugs alone took 19%, more than `cargo xtask ci` and `cargo test` together (15%).
+- **A small dev tool got a product's treatment.** The memory limit is 187 lines, and it took 5 hours and two reviews.
+- **Everything ran at background priority.** 466 of 658 processes are at PRI 4 while Moonlight runs at 97, which looks like macOS Game Mode, though I haven't confirmed that. A frame takes 3.6 times as long there.
+
+So these calls change how packages run, and you can veto any of them:
+
+185. **Packages run from their dependencies, with no waves.** A package starts as soon as what it needs has landed, and a queue in the workflow merges each one when it's ready. I don't gate merges, and each package's merge writes its own entry in this log.
+186. **One time-boxed review per package, and no second review.** Fixes before merging are for majors and for minors that change behaviour. Nits go on a list. Dev tooling gets no review, only its tests and `ci --full`.
+187. **No hand-planted bug sweeps.** A reviewer may plant at most 5 bugs, in the code that matters most. `mutants.toml` stays as the record.
+188. **Agents test the crate they're changing, with low property counts,** and run `ci` once at the end. `ci` skips `guards` and `clean-build` unless a manifest or xtask changed, and runs properties at 2,000 cases. `ci --full` runs everything, at each checkpoint. `mutate --changed` runs only the mutants on changed files.
+189. **K6 and K9 are one package, and R3 and F3 are another.** R3 starts now against K5's seam, not after K9, so the first window comes sooner.
+190. **The tests themselves all stay:** the oracle, the properties, the Emacs fixtures, tests first, and `ci` before every merge. What drops is how often they rerun and how much is re-verified by hand. The risk is that a rare bug reaches `main` and gets caught later, by a checkpoint or by you.
+
+**Next:** T0 (the faster checks), K6 with K9, R3 with F3, K10b and V4 all start now. Then K7, K11a, K14, R4 and F4a, then V2. That makes the Reader. Then the Editor.
+
 ## 2026-11-05: the reviews you deferred, and the calls I made on them
 
 **Your instruction, 3 November:** "for all the decisions waiting on me I am happy to defer to your own judgement. If you need me to test certain things, find ways you can test independently."
