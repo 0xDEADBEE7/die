@@ -1,4 +1,5 @@
 //! The `:`, `/` and `?` command lines. K11a gives each its input; V2 and V5 fill in what they do.
+use crate::window;
 use die_core::{Args, Ctx, Error, PromptSpec, Result};
 
 /// A command line's prompt: `<BS>` on an empty line leaves it, as in your Evil.
@@ -19,6 +20,9 @@ pub fn open(ctx: &mut Ctx, _: &Args) -> Result {
 /// command in the registry can be called this way (contract §6).
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     let text = text.trim().trim_start_matches(':');
+    if let Some(done) = window::ex(ctx, text) {
+        return done;
+    }
     let (name, rest) = text.split_once(' ').unwrap_or((text, ""));
     if name.is_empty() {
         return Ok(());
