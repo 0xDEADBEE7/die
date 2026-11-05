@@ -29,8 +29,8 @@ use die_test_cap as _;
 use die_core::{Ctx, Harness, RegKind, Register, Selection, Shape, State, TextBuf};
 use die_vim::Vim;
 use evil_oracle::{
-    Case, DeviationKind, DeviationRule, Deviations, RegisterKind, Run, SelectionKind, State as EvilState, Tranche,
-    fixtures_dir, load_fixtures, parse_pending, tranche,
+    Case, DeviationKind, DeviationRule, Deviations, RegisterKind, Run, SelectionKind,
+    State as EvilState, Tranche, fixtures_dir, load_fixtures, parse_pending, tranche,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -70,7 +70,12 @@ fn oracle() {
         .map(|d| d.case.as_str())
         .collect();
     let mut problems = Vec::new();
-    for d in deviations.rules.iter().filter(unrunnable).flat_map(|r| &r.cases) {
+    for d in deviations
+        .rules
+        .iter()
+        .filter(unrunnable)
+        .flat_map(|r| &r.cases)
+    {
         if all.contains_key(&d.case) {
             problems.push(format!("{}: the oracle does run this case", d.case));
         }
