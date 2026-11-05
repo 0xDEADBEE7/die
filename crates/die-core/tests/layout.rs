@@ -362,3 +362,374 @@ fn among_equal_hides_the_first_added_gives_the_replacement() {
     t.decorate(1..3, hide("z")).unwrap();
     assert_eq!(row_text(&mut ctx, w), "ayd");
 }
+
+// ---------------------------------------------------------------- K4
+//
+// K4's test plan: besides these, `emacs_layout.rs` holds tty Emacs's answers, `prop.rs` the
+// property against the naive layout, `naive_layout.rs` §9's worked examples, `layout_speed.rs` the
+// speed budget, and `scene.rs` what's drawn.
+
+fn window(text: &str, cols: usize, rows: usize) -> (Ctx, BufferId, WindowId) {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", text);
+    let w = ctx.open_window(b, cols, rows).unwrap();
+    ctx.focus(w);
+    (ctx, b, w)
+}
+
+fn numbers(ctx: &mut Ctx, b: BufferId, w: WindowId) -> Vec<Option<usize>> {
+    screen(ctx, w);
+    let vp = ctx.text(b).unwrap().viewport(w).unwrap();
+    vp.rows.iter().map(|r| r.number).collect()
+}
+
+/// WRAP-2: as in Emacs. S4 gave a full line a blank row after it, and `gj` stopped there.
+#[test]
+fn an_exactly_full_line_gets_no_blank_row() {
+    let (mut ctx, b, w) = window("aaaaaaaaaa\nb\n", 10, 5);
+    let f = screen(&mut ctx, w);
+    assert_eq!(f.rows[..4], ["aaaaaaaaaa", "b", "", ""]);
+    let t = ctx.text(b).unwrap();
+    assert_eq!(
+        t.screen_pos(w, 10),
+        Some((0, 10)),
+        "just past the row's last cell"
+    );
+    assert_eq!(t.move_visual(w, 0, 1, None), Some((11, 0)), "gj goes to b");
+    let vp = t.viewport(w).unwrap();
+    assert_eq!(vp.rows.len(), 3, "the full line, b and the empty last row");
+}
+
+/// dev-4: the row counts for scrolling and window positions, and it has no number.
+#[test]
+fn the_empty_line_after_a_final_newline_has_a_row_and_no_number() {
+    let (mut ctx, b, w) = window("one\ntwo\n", 10, 5);
+    ctx.text_mut(b).unwrap().settings_mut().line_numbers = LineNumbers::Absolute;
+    let t = ctx.text_mut(b).unwrap();
+    assert_eq!(t.set_cursor(w, 8), Some(8));
+    assert_eq!(
+        t.screen_pos(w, 8),
+        Some((2, 4)),
+        "the cursor can be drawn there"
+    );
+    assert_eq!(numbers(&mut ctx, b, w), [Some(1), Some(2), None]);
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().line_numbers = LineNumbers::Visual;
+    assert_eq!(
+        numbers(&mut ctx, b, w),
+        [Some(2), Some(1), None],
+        "it still counts"
+    );
+    let t = ctx.text_mut(b).unwrap();
+    t.tx(Origin::User).delete(0..8).commit().unwrap();
+    assert_eq!(numbers(&mut ctx, b, w), [None], "an empty text's only row");
+}
+
+/// LAYOUT-3: the gutter is sized by the lines that can have a number.
+#[test]
+fn the_gutter_counts_lines_not_the_empty_last_one() {
+    for (text, gutter) in [
+        (String::new(), 4),
+        ("x\n".repeat(999), 4),
+        (format!("{}x", "x\n".repeat(999)), 5),
+        ("x\n".repeat(1000), 5),
+    ] {
+        let (mut ctx, b, w) = window(&text, 20, 5);
+        ctx.text_mut(b).unwrap().settings_mut().line_numbers = LineNumbers::Relative;
+        let g = ctx.text(b).unwrap().geometry(w).unwrap();
+        assert_eq!(g.gutter, gutter, "{} bytes", text.len());
+    }
+}
+
+/// §9's table, with its text and width, in each style and with the cursor where it says.
+#[test]
+fn line_numbers_match_the_contracts_table() {
+    let text = "one\na line that wraps\nthree\nfour\n";
+    let (mut ctx, b, w) = window(text, 16, 8);
+    let (three, wraps, empty) = (22, 16, text.len());
+    let n = |s: [usize; 5]| {
+        let mut v = vec![Some(s[0]), Some(s[1]), None, Some(s[2]), Some(s[3]), None];
+        v[2] = (s[4] > 0).then_some(s[4]);
+        v
+    };
+    for (cursor, absolute, relative, visual) in [
+        (three, [1, 2, 3, 4, 0], [2, 1, 3, 1, 0], [3, 2, 3, 1, 1]),
+        (wraps, [1, 2, 3, 4, 0], [1, 2, 1, 2, 0], [2, 1, 1, 2, 2]),
+        (empty, [1, 2, 3, 4, 0], [4, 3, 2, 1, 0], [5, 4, 2, 1, 3]),
+    ] {
+        for (style, want) in [
+            (LineNumbers::Absolute, n(absolute)),
+            (LineNumbers::Relative, n(relative)),
+            (LineNumbers::Visual, n(visual)),
+        ] {
+            let t = ctx.text_mut(b).unwrap();
+            t.settings_mut().line_numbers = style;
+            t.set_cursor(w, cursor);
+            assert_eq!(
+                numbers(&mut ctx, b, w),
+                want,
+                "{style:?}, cursor at {cursor}"
+            );
+        }
+    }
+}
+
+/// §9: with lines a to e, b to d folded, and the cursor on a. A fold's row counts once.
+#[test]
+fn a_fold_counts_once_in_relative_and_visual_numbers() {
+    let (mut ctx, b, w) = window("a\nb\nc\nd\ne", 10, 5);
+    for repl in [None, Some("fold")] {
+        let t = ctx.text_mut(b).unwrap();
+        let id = t.decorate(2..7, hide(repl)).unwrap();
+        for (style, want) in [
+            (LineNumbers::Absolute, [1, 2, 5]),
+            (LineNumbers::Relative, [1, 1, 2]),
+            (LineNumbers::Visual, [1, 1, 2]),
+        ] {
+            ctx.text_mut(b).unwrap().settings_mut().line_numbers = style;
+            assert_eq!(
+                numbers(&mut ctx, b, w),
+                want.map(Some),
+                "{style:?}, {repl:?}"
+            );
+        }
+        ctx.text_mut(b).unwrap().undecorate(id);
+    }
+}
+
+#[test]
+fn numbers_for_a_cursor_off_screen_are_still_its_distance() {
+    let text = "x\n".repeat(30);
+    let (mut ctx, b, w) = window(&text, 20, 3);
+    let t = ctx.text_mut(b).unwrap();
+    t.settings_mut().line_numbers = LineNumbers::Relative;
+    t.set_scroll(w, 20, 0).unwrap(); // Line 10 is the window's first, and the cursor is on line 0.
+    let num = |t: &TextBuf| -> Vec<Option<usize>> {
+        t.viewport(w)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.number)
+            .collect()
+    };
+    assert_eq!(
+        num(t),
+        [Some(10), Some(11), Some(12)],
+        "the cursor above the window"
+    );
+    t.settings_mut().line_numbers = LineNumbers::Visual;
+    assert_eq!(num(t), [Some(10), Some(11), Some(12)]);
+    t.set_cursor(w, 40); // Line 20.
+    t.settings_mut().line_numbers = LineNumbers::Relative;
+    assert_eq!(num(t), [Some(10), Some(9), Some(8)], "the cursor below it");
+    t.settings_mut().line_numbers = LineNumbers::Visual;
+    assert_eq!(num(t), [Some(10), Some(9), Some(8)]);
+}
+
+/// LAYOUT-4: Evil's `j` and `k` land after what spans the goal, and a fold's display line counts
+/// as one, so the column can land on a later line of it.
+#[test]
+fn pos_at_vcol_lands_after_what_spans_the_goal() {
+    let (mut ctx, b, _) = window("a\tb\na中b\nab\ncdef\nxy", 20, 5);
+    let t = ctx.text_mut(b).unwrap();
+    assert_eq!(t.pos_at_vcol(0, 0), 0);
+    assert_eq!(t.pos_at_vcol(0, 1), 1, "the tab's first column");
+    assert_eq!(t.pos_at_vcol(0, 3), 2, "inside the tab: after it");
+    assert_eq!(t.pos_at_vcol(0, 99), 3, "past the line: its end");
+    assert_eq!(
+        t.pos_at_vcol(1, 2),
+        8,
+        "inside the wide character: after it"
+    );
+    t.decorate(12..13, hide(None)).unwrap(); // ab's newline.
+    assert_eq!(t.pos_at_vcol(2, 2), 13, "a joined line's column runs on");
+    assert_eq!(
+        t.pos_at_vcol(3, 0),
+        10,
+        "any line of it asks for the display line"
+    );
+}
+
+/// LAYOUT-5: Off and Char, against Word's row.
+#[test]
+fn wrap_off_word_and_char_each_break_as_they_say() {
+    let text = "aaaa bbbbb cccc\n";
+    for (wrap, want) in [
+        (Wrap::Word, vec!["aaaa", "bbbbb cccc", ""]),
+        (Wrap::Char, vec!["aaaa bbbbb", " cccc", ""]),
+        (Wrap::Off, vec!["aaaa bbbbb", ""]),
+    ] {
+        let (mut ctx, b, w) = window(text, 10, 3);
+        ctx.text_mut(b).unwrap().settings_mut().wrap = wrap;
+        let f = screen(&mut ctx, w);
+        assert_eq!(f.rows[..want.len()], want[..], "{wrap:?}");
+    }
+    assert_eq!(Settings::default().wrap, Wrap::Word);
+}
+
+/// LAYOUT-6: V6's scrolling keys read and set this.
+#[test]
+fn scroll_reads_and_sets_a_windows_first_row() {
+    let long = "x".repeat(25);
+    let (mut ctx, b, w) = window(&format!("{long}\nb\nc\nd\n"), 10, 2);
+    let t = ctx.text_mut(b).unwrap();
+    assert_eq!(t.scroll(w), Some((0, 0)));
+    assert_eq!(t.set_scroll(w, 5, 1), Some(()));
+    assert_eq!(
+        t.scroll(w),
+        Some((0, 1)),
+        "top moves to its display line's start"
+    );
+    let vp = t.viewport(w).unwrap();
+    assert_eq!((vp.top, vp.top_row, vp.rows[0].row), (0, 1, 1));
+    t.set_scroll(w, 0, 99).unwrap();
+    assert_eq!(
+        t.scroll(w),
+        Some((0, 2)),
+        "the row stops at the line's last"
+    );
+    t.set_scroll(w, 26, 0).unwrap();
+    assert_eq!(t.scroll(w), Some((26, 0)));
+    let other = WindowId::default();
+    assert_eq!(t.scroll(other), None);
+    assert_eq!(t.set_scroll(other, 0, 0), None);
+}
+
+/// §9: a command that scrolls also leaves the cursor on a visible row, or core scrolls back.
+#[test]
+fn core_scrolls_back_to_the_cursor_before_a_render() {
+    let (mut ctx, b, w) = window("a\nb\nc\nd\ne\nf\n", 10, 2);
+    let t = ctx.text_mut(b).unwrap();
+    t.set_scroll(w, 6, 0).unwrap();
+    assert_eq!(t.screen_pos(w, 0), None, "the cursor is off-screen for now");
+    let f = screen(&mut ctx, w);
+    assert_eq!(f.rows, ["a", "b"]);
+    let t = ctx.text_mut(b).unwrap();
+    t.set_scroll(w, 2, 0).unwrap();
+    t.set_cursor(w, 4);
+    let f = screen(&mut ctx, w);
+    assert_eq!(
+        f.rows,
+        ["b", "c"],
+        "the cursor's still on a visible row: it stays"
+    );
+}
+
+/// LAYOUT-7: what die-vim and H, M and L read, through methods.
+#[test]
+fn a_display_line_and_a_view_row_are_read_through_methods() {
+    let (ctx, b, w) = window("ab cd\nef\n", 3, 5);
+    let t = ctx.text(b).unwrap();
+    let d = t.display_line(1);
+    assert_eq!(
+        (d.start(), d.end(), d.lines(), d.eof()),
+        (0, 6, 0..=0, false)
+    );
+    let stops: Vec<(usize, usize, usize)> =
+        d.stops().iter().map(|s| (s.pos, s.vcol, s.col)).collect();
+    assert_eq!(stops[..3], [(0, 0, 0), (1, 1, 1), (2, 2, 2)]);
+    assert_eq!(stops[5], (5, 5, 5), "unwrapped: the newline's column");
+    let last = t.display_line(9);
+    assert_eq!((last.start(), last.end(), last.eof()), (9, 9, true));
+    let vp = t.viewport(w).unwrap();
+    let row: Vec<(usize, usize, usize)> = vp.rows[1]
+        .stops()
+        .iter()
+        .map(|s| (s.pos, s.row, s.col))
+        .collect();
+    assert_eq!(
+        row,
+        [(3, 1, 0), (4, 1, 1), (5, 1, 2)],
+        "wrapped: this row's"
+    );
+}
+
+#[test]
+fn a_tall_file_holds_more_lines_than_the_cache_does() {
+    let text: String = (0..2000)
+        .map(|i| format!("{i:04} words on a line\n"))
+        .collect();
+    let (mut ctx, b, w) = window(&text, 10, 4);
+    let t = ctx.text_mut(b).unwrap();
+    let stride = 21;
+    for line in 0..2000 {
+        assert_eq!(t.screen_pos(w, t.line_start(line)).is_some(), line < 2);
+        assert_eq!(t.display_col(t.line_start(line) + 5), 5);
+        assert_eq!(t.line_start(line), line * stride);
+    }
+    t.tx(Origin::User).insert(0, "x").commit().unwrap();
+    assert_eq!(t.display_col(t.line_start(1999) + 5), 5);
+}
+
+/// A plan row: `toggle-max-width`, your `visual-fill-column-mode` on `\z`.
+#[test]
+fn toggle_max_width_turns_the_width_off_and_back_on() {
+    let (mut ctx, b, w) = window("text\n", 120, 5);
+    let toggle = |ctx: &mut Ctx| ctx.run("toggle-max-width", &Args::default()).unwrap();
+    let width = |ctx: &Ctx| ctx.text(b).unwrap().settings().max_width;
+    let text_w = |ctx: &Ctx| ctx.text(b).unwrap().geometry(w).unwrap().text_w;
+    toggle(&mut ctx);
+    assert_eq!(
+        (width(&ctx), text_w(&ctx)),
+        (Some(80), 80),
+        "80 if it never had one"
+    );
+    ctx.text_mut(b).unwrap().settings_mut().max_width = Some(100);
+    toggle(&mut ctx);
+    assert_eq!((width(&ctx), text_w(&ctx)), (None, 120), "off");
+    toggle(&mut ctx);
+    assert_eq!(
+        (width(&ctx), text_w(&ctx)),
+        (Some(100), 100),
+        "the width it had"
+    );
+    // It acts on the window a command was run for.
+    let other = ctx.create_text("other", "");
+    let ow = ctx.open_window(other, 90, 5).unwrap();
+    ctx.focus(w);
+    let args = Args {
+        window: Some(ow),
+        ..Default::default()
+    };
+    ctx.run("toggle-max-width", &args).unwrap();
+    assert_eq!(ctx.text(other).unwrap().settings().max_width, Some(80));
+    assert_eq!(width(&ctx), Some(100), "not the focused one");
+    assert!(
+        ctx.command_doc("toggle-max-width")
+            .is_some_and(|(_, owner)| owner == "core")
+    );
+    // With nothing to act on, it says so.
+    let mut empty = Ctx::new(vec![]).unwrap();
+    assert!(matches!(
+        empty.run("toggle-max-width", &Args::default()),
+        Err(Error::Msg(_))
+    ));
+}
+
+/// A plain string stays one call, and the faces are the caller's.
+#[test]
+fn styled_text_comes_from_a_plain_string() {
+    let s: Styled = "abc".into();
+    assert_eq!((s.text.as_str(), s.faces.len()), ("abc", 0));
+    let s: Styled = String::from("def").into();
+    assert_eq!(
+        s,
+        Styled {
+            text: "def".into(),
+            faces: vec![]
+        }
+    );
+    let (mut ctx, b, w) = window("abc", 20, 2);
+    let t = ctx.text_mut(b).unwrap();
+    let styled = Styled {
+        text: "x\ty\nz".into(),
+        faces: vec![(0..1, "bold")],
+    };
+    let id = t.decorate(1..1, Deco::Virtual(styled)).unwrap();
+    let Deco::Virtual(v) = &t.decoration(id).unwrap().deco else {
+        panic!("what was stored")
+    };
+    assert_eq!(v.text, "x y z", "one line, as a replacement is");
+    assert_eq!(v.faces, [(0..1, "bold")]);
+    assert_eq!(screen(&mut ctx, w).rows[0], "ax y zbc");
+}

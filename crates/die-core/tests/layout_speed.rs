@@ -44,6 +44,7 @@ fn keystroke_ms(ctx: &mut Ctx, b: BufferId, w: WindowId, cols: usize, rows: usiz
 
 fn within_three_tries(limit: f64, mut measure: impl FnMut() -> f64) {
     let tries: Vec<f64> = (0..3).map(|_| measure()).collect();
+    println!("{tries:.3?}, limit {limit}");
     assert!(
         tries.iter().any(|&m| m <= limit),
         "{tries:.3?} are all over {limit}"
