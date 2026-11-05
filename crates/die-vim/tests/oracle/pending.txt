@@ -48,7 +48,7 @@ V5 ex/s-visual-range
 V5 hand-written/ex/s-group-before-letter
 V5 hand-written/ex/s-groups
 
-# V6 (66)
+# V6 (72)
 V6 geometry/3L
 V6 geometry/H
 V6 geometry/H-after-jump
@@ -82,6 +82,7 @@ V6 hand-written/geometry/L-short-buffer
 V6 hand-written/geometry/M-short-buffer
 V6 hand-written/geometry/ctrl-d-at-end
 V6 hand-written/wrapped/gj-at-last-visual-line
+V6 insert-tty/dot-fails-in-insert
 V6 insert-tty/down-down-keeps-column
 V6 insert-tty/down-into-a-tab
 V6 insert-tty/down-into-a-wide-char
@@ -96,6 +97,11 @@ V6 insert-tty/failed-ctrl-w-clears-the-column
 V6 insert-tty/failed-left-clears-the-column
 V6 insert-tty/failed-right-clears-the-column
 V6 insert-tty/goal-starts-at-the-session
+V6 insert-tty/replace-down
+V6 insert-tty/replace-down-bs
+V6 insert-tty/replace-up
+V6 insert-tty/replace-up-at-top-in-macro
+V6 insert-tty/replace-up-dot
 V6 insert-tty/typing-resets-the-goal
 V6 insert-tty/up-past-the-start-fails
 V6 insert-tty/up-up-keeps-column

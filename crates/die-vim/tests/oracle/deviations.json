@@ -32,6 +32,8 @@
         { "case": "macros/error-stops-macro", "note": "the macro ends one repetition earlier, where j fails on the last line", "fixture": "hand-written/macros.json" },
         { "case": "macros/recursive", "note": "the recursion ends where j fails on the last line", "fixture": "hand-written/macros.json" },
         { "case": "macros/macro-records-count", "note": "the macro's final j fails on the last line, so the cursor stays on line 2, with an error Evil's run doesn't have", "fixture": "hand-written/macros.json" },
+        { "case": "macros/q-empties-register-j", "note": "j stops on the last line, so a macro ends there", "fixture": "hand-written/macros.json" },
+        { "case": "repeat/v-D-dot", "note": "after the last lines go, the cursor is on the new last line, in the column the delete started in", "fixture": "hand-written/repeat.json" },
         { "case": "visual-corners/v-G-d", "note": "G in visual state stops on the last line, so it takes as far as the goal column there, and the newline stays", "fixture": "hand-written/visual-corners.json" }
       ]
     },
@@ -174,6 +176,38 @@
       "evil": "In replace state, <BS> over a newline typed there deletes it and inserts the character after it a second time: Rx<CR><BS><BS> on abc gives abbc.",
       "die_vim": "As in Vim: <BS> puts back what the key took, and a newline took nothing, so abc stays abc.",
       "cases": [{ "case": "visual-corners/replace-backspace-past-a-typed-newline", "fixture": "hand-written/visual-corners.json" }]
+    },
+    {
+      "rule": "u after a macro undoes more",
+      "s5_row": 27,
+      "kind": "emacs-artifact",
+      "evil": "Emacs's undo counts an undo as an edit unless the last command was also an undo, so a macro's u then a typed u gets the first one back: xx, @a holding u, then u on abcd gives cd.",
+      "die_vim": "Each u goes back one step, whatever typed or fed it: abcd.",
+      "cases": [{ "case": "macros/u-alone-in-macro", "fixture": "hand-written/macros.json" }]
+    },
+    {
+      "rule": "a block insert in a macro goes in on every line",
+      "s5_row": 28,
+      "kind": "evil-bug",
+      "evil": "What's typed in a block's I reaches the other lines by a command hook, and macros run without hooks: replaying qa<C-v>jIX<Esc>q gives XXab and Xcd.",
+      "die_vim": "As in Vim: it goes in on every line, however it was typed.",
+      "cases": [{ "case": "macros/block-insert-in-macro", "fixture": "hand-written/macros.json" }]
+    },
+    {
+      "rule": "gv after undoing what took its text",
+      "s5_row": 29,
+      "kind": "emacs-artifact",
+      "evil": "Emacs's undo moves markers back with the text: vjdu then gv ends on the old head.",
+      "die_vim": "die-core's undo doesn't move markers back, so gv's ends stay where the delete put them: at its start.",
+      "cases": [{ "case": "visual-corners/gv-after-d", "fixture": "hand-written/visual-corners.json" }]
+    },
+    {
+      "rule": "brackets around one character",
+      "s5_row": 30,
+      "kind": "evil-bug",
+      "evil": "A second i( on a selection of one character, itself inside brackets: on ((a)) it fails with (1, 2) selected, and on ((a) b) from the inner opening bracket it selects (1, 6).",
+      "die_vim": "A selection of one character counts as none, as Evil's word objects do, so the second i( finds what the first did.",
+      "cases": [{ "case": "visual-corners/v-paren-on-open", "fixture": "hand-written/visual-corners.json" }, { "case": "visual-corners/v-paren-twice", "fixture": "hand-written/visual-corners.json" }]
     }
   ]
 }

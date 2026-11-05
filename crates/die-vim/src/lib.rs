@@ -45,6 +45,8 @@ pub struct Vim {
     find: Option<Find>,
     /// Each buffer's last selection, for `gv`.
     last_visual: HashMap<BufferId, visual::Last>,
+    /// The register named before a selection began: its operator uses it, as your Evil's does.
+    visual_register: Option<char>,
     /// What `.` and macros keep, which a key observer shares.
     rec: Rc<RefCell<Recorder>>,
 }
@@ -125,6 +127,7 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-redo", "C-r: redo count changes.", |ctx, a| history(ctx, a, true)),
     ("vim-replace-char", "Type over a character.", |ctx, a| insert_edit(ctx, a, Edit::Over(a.typed().unwrap_or_default()))),
     ("vim-replace-backspace", "Back a character, and put back what typing over it took.", |ctx, a| insert_edit(ctx, a, Edit::Restore)),
+    ("vim-replace-backward-word", "Back to the start of a word, putting back what typing over it took.", |ctx, a| insert_edit(ctx, a, Edit::RestoreWord)),
     ("vim-repeat", ".: repeat the last change.", repeat::dot),
     ("vim-record-macro", "q: stop recording, or ask which register to record into.", repeat::q),
     ("vim-record-macro-into", "The key after q: start recording into that register.", repeat::start_recording),
@@ -255,8 +258,14 @@ impl Extension for Vim {
             .bind(Visual, "X", "vim-delete-line");
         k.bind(Replace, "<char>", "vim-replace-char")
             .bind(Replace, "<BS>", "vim-replace-backspace")
-            .bind(Replace, "<CR>", "vim-insert-newline")
+            .bind(Replace, "<C-w>", "vim-replace-backward-word")
             .bind(Replace, "<Esc>", "vim-normal-state");
+        // The rest of insert state's edits do the same here, as your Evil's replace state has them.
+        for (keys, name, edit, _) in EDITS {
+            if !matches!(edit, Edit::Backspace | Edit::DeleteWord) {
+                k.bind(Replace, keys, name);
+            }
+        }
         k.bind(Insert, "<char>", "vim-insert-char")
             .bind(Insert, "<Esc>", "vim-normal-state");
         for (keys, name, ..) in EDITS {
@@ -287,8 +296,9 @@ impl Extension for Vim {
             // Several keys can name one object, as `i(`, `i)` and `ib` do.
             if !objects.contains(&name) {
                 objects.push(name);
+                let shape = visual::ObjectShape::of(name);
                 command(reg, name, doc, move |ctx, a| {
-                    operators::on_object(ctx, a, object)
+                    operators::on_object(ctx, a, object, shape)
                 });
             }
         }

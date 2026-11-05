@@ -188,7 +188,7 @@ fn plain(r: Register) -> Register {
 /// `q` stopped: keep the keys in this register. Recording nothing into a register that's
 /// empty leaves it empty.
 pub fn record(ctx: &mut Ctx, name: char, keys: String) -> Result {
-    if keys.is_empty() && macro_keys(ctx, name).is_empty() {
+    if keys.is_empty() {
         return Ok(());
     }
     let r = Register {

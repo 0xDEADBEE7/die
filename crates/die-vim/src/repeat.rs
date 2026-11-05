@@ -17,6 +17,7 @@
 
 use crate::Vim;
 use crate::grammar::buffer_window;
+use crate::insert;
 use crate::motions::Find;
 use crate::registers;
 use crate::visual;
@@ -98,6 +99,8 @@ pub struct Recorder {
     runs: usize,
     /// Keys fed and not yet run. When it runs out, a macro has reached its end.
     fed: usize,
+    /// A macro or `.` is running: no key has been typed since it fed its keys.
+    replaying: bool,
     /// The state `q` was pressed in, while it waits for a register's name.
     resume: Option<State>,
 }
@@ -115,11 +118,39 @@ pub fn observe(ctx: &mut Ctx, rec: Rc<RefCell<Recorder>>) {
             return;
         }
         r.typed = true;
+        r.replaying = false;
         if let Some((_, keys)) = &mut r.recording {
             keys.push(ev.clone());
         }
     })
     .detach();
+    ctx.on_fed_dropped(end_failed_replay).detach();
+}
+
+/// A macro or `.` failed. As your Evil's `evil-execute-macro` does, the buffer goes back to
+/// normal state, before the next key is looked up. The session's keys aren't a change `.` can
+/// repeat, since they never reached their Escape.
+fn end_failed_replay(ctx: &mut Ctx) -> Result {
+    let rec = recorder(ctx)?;
+    if !std::mem::take(&mut rec.borrow_mut().replaying) {
+        return Ok(());
+    }
+    let Some(b) = ctx.focused_buffer() else {
+        return Ok(());
+    };
+    let a = Args {
+        buffer: Some(b),
+        window: ctx.focused(),
+        ..Default::default()
+    };
+    match ctx.state_of(b) {
+        State::Visual => visual::escape(ctx, &a),
+        State::Insert | State::Replace => {
+            let s = ctx.with_ext(|v: &mut Vim, _| v.inserts.remove(&b))?;
+            insert::end(ctx, &a, s)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// At the start of every command: if keys are being typed again, a macro has ended.
@@ -158,7 +189,9 @@ pub fn macro_ending(ctx: &mut Ctx) -> Result<bool> {
 fn feed(ctx: &mut Ctx, rec: &RefCell<Recorder>, keys: &str) -> Result {
     let n = parse_keys(keys).map_or(0, |k| k.len());
     ctx.feed_keys(keys)?;
-    rec.borrow_mut().fed += n;
+    let mut r = rec.borrow_mut();
+    r.fed += n;
+    r.replaying = true;
     Ok(())
 }
 
@@ -185,7 +218,9 @@ pub fn dot(ctx: &mut Ctx, a: &Args) -> Result {
         }
         c
     };
-    if a.count.is_some() {
+    // A count says how much of a selection's operator to do when it's made, and `.` has its size
+    // from the selection already, as your Evil's has.
+    if a.count.is_some() && c.visual.is_none() {
         c.count = a.count;
     }
     if let Some(e) = c.visual {
@@ -220,14 +255,21 @@ pub fn start_recording(ctx: &mut Ctx, a: &Args) -> Result {
     let mut r = rec.borrow_mut();
     ctx.set_state_of(b, r.resume.take().unwrap_or(State::Normal));
     match a.char().filter(char::is_ascii_alphanumeric) {
-        Some(c) => r.recording = Some((c, vec![])),
+        Some(c) => {
+            // As `evil-record-macro` does, so `@a` in `qa...@aq` finds nothing, until `q` stops.
+            // `qA` adds to what's there. A digit's register is the kill ring's, and stays.
+            if c.is_ascii_lowercase() {
+                ctx.clear_register(c);
+            }
+            r.recording = Some((c, vec![]));
+        }
         None => return Err(Error::Msg("Invalid register".into())),
     }
     Ok(())
 }
 
 /// `@x` and `@@`: type a register count times. An empty register is an error, except while
-/// recording, so `qaqqa...@aq` can make a macro that calls itself.
+/// recording, so `qa...@aq` can make a macro that calls itself.
 pub fn at(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, _) = buffer_window(ctx, a)?;
     let rec = recorder(ctx)?;

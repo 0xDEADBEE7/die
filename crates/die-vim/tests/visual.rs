@@ -12,6 +12,8 @@
 //! - **A macro that calls itself forever ends**, with an error. Emacs ends it when its Lisp
 //!   nesting runs out.
 //! - **`gv` follows the text** as it's edited, as your Evil's markers do.
+//! - **A replay that fails** goes back to normal state before the next key is looked up, and a
+//!   typed key that fails doesn't.
 //! - **Two buffers**: `q` stops in a buffer it didn't start in, and a selection in one
 //!   leaves the other alone.
 //! - **`.`'s own rules**: `;` keeps the search from before it, a count lasts for one `.`,
@@ -287,7 +289,7 @@ fn gv_follows_the_text() {
 }
 
 #[test]
-fn gv_with_no_selection_yet_or_in_visual_state_does_nothing() {
+fn gv_with_no_selection_yet_does_nothing_even_in_visual_state() {
     let (mut ctx, b, w) = editor("abc\n");
     ctx.type_keys("lgv");
     assert_eq!(ctx.state(), State::Normal);
@@ -385,7 +387,7 @@ fn an_operator_cancelled_isnt_what_dot_repeats() {
 // ---------------------------------------------------------------- what a block crosses
 
 #[test]
-fn a_block_takes_a_tab_it_touches_whole() {
+fn a_block_delete_takes_a_tab_it_touches_whole() {
     assert_eq!(after("a\tb\ncdefghij\n", "l<C-v>jd"), "ab\ncefghij\n");
 }
 
@@ -433,6 +435,91 @@ fn a_block_paste_leaves_a_short_line_alone_if_it_has_nothing_to_add() {
     assert_eq!(ctx.register('"').map(|r| r.text.as_str()), Some("b\n \nb"));
     ctx.type_keys("jjjllp");
     assert_eq!(text(&ctx, b), "abc\n\nabc\nxxxxb\n\nxxxxb\n");
+}
+
+// ---------------------------------------------------------------- a replay that fails
+
+#[test]
+fn a_key_typed_after_a_failed_macro_acts_in_normal_state() {
+    let (mut ctx, b, _) = editor("abc def\n");
+    let keys = |text: &str| Register {
+        kind: RegKind::Macro,
+        text: text.into(),
+    };
+    ctx.set_register('a', keys("v.x"));
+    ctx.type_keys("@a");
+    assert_eq!(ctx.state(), State::Normal, "an undefined key fails it too");
+    assert_eq!(ctx.register('"'), None);
+    ctx.set_register('a', keys("Rq<Up>x"));
+    ctx.type_keys("@a");
+    assert_eq!(ctx.state(), State::Normal, "and a session ends");
+    ctx.type_keys("x");
+    assert_eq!(
+        text(&ctx, b),
+        "bc def\n",
+        "the q it typed goes, and nothing is typed over"
+    );
+}
+
+#[test]
+fn a_typed_key_that_fails_ends_nothing() {
+    let (mut ctx, _, _) = editor("abc\n");
+    ctx.type_keys("vk");
+    assert_eq!(ctx.state(), State::Visual, "k fails, typed");
+    ctx.type_keys("<Esc>ik");
+    ctx.type_keys("<Left><Left>");
+    assert_eq!(ctx.state(), State::Insert, "Left fails, typed");
+}
+
+#[test]
+fn a_failed_dot_ends_its_session() {
+    // `<Up>` from the first line: the tty fixture holds the text, this the state after Escape.
+    let (mut ctx, b, _) = editor("ab\ncd\n");
+    ctx.type_keys("jix<Up>y<Esc>");
+    ctx.type_keys(".");
+    assert_eq!(ctx.state(), State::Normal);
+    assert_eq!(text(&ctx, b), "axyb\nxcd\n");
+}
+
+#[test]
+fn a_macro_that_ends_well_keeps_its_state_after_a_typed_failure() {
+    let (mut ctx, _, _) = editor("abc\n");
+    ctx.set_register(
+        'a',
+        Register {
+            kind: RegKind::Macro,
+            text: "v".into(),
+        },
+    );
+    ctx.type_keys("@a");
+    assert_eq!(ctx.state(), State::Visual);
+    ctx.type_keys("k");
+    assert_eq!(
+        ctx.state(),
+        State::Visual,
+        "the macro was over; k was typed"
+    );
+}
+
+#[test]
+fn q_empties_a_lower_case_register_only() {
+    let (mut ctx, _, _) = editor("x\n");
+    ctx.set_register('a', chars("z"));
+    ctx.type_keys("qa");
+    assert_eq!(ctx.register('a'), None, "from the moment it starts");
+    ctx.type_keys("q");
+    assert_eq!(ctx.register('a'), None, "and nothing recorded leaves it so");
+    ctx.set_register('a', chars("z"));
+    ctx.type_keys("qAq");
+    assert_eq!(ctx.register('a'), Some(&chars("z")));
+}
+
+#[test]
+fn a_huge_count_on_a_selections_shift_fails() {
+    let (mut ctx, b, _) = editor("a\n");
+    ctx.type_keys("V99999999999>");
+    assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
+    assert_eq!(text(&ctx, b), "a\n");
 }
 
 // ---------------------------------------------------------------- failure

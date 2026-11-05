@@ -60,6 +60,8 @@ pub enum Edit {
     /// `<BS>` in replace state. What it puts back isn't in the edit, so a count's replay only
     /// steps back, as your Evil's does when nothing was replaced there.
     Restore,
+    /// `<C-w>` in replace state: `<BS>` back to the start of a word.
+    RestoreWord,
 }
 
 /// Where on each line a session from visual state goes in.
@@ -93,8 +95,15 @@ pub struct Session {
     pub repeat: Option<Change>,
     /// The other lines it goes in on.
     pub rows: Option<Rows>,
-    /// In replace state, where each key went and what it took: `<BS>` puts it back.
-    restore: Vec<(usize, Option<String>)>,
+    /// In replace state, what each key took: `<BS>` from just past it puts it back.
+    restore: Vec<Taken>,
+}
+
+/// What a key in replace state wrote over: the bytes it now holds, and what they were.
+struct Taken {
+    at: usize,
+    end: usize,
+    old: Option<String>,
 }
 
 impl Session {
@@ -167,19 +176,27 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
-    if e == Edit::Restore
-        && let Some((at, old)) = s.restore.pop()
-    {
-        t.tx(Origin::User)
-            .replace(at..p, old.unwrap_or_default())
-            .commit()?;
-        t.set_cursor(w, at);
-    } else {
-        let taken = over_text(t, p, &e);
-        apply(t, w, &e)?;
-        if s.entry == Entry::Replace && e != Edit::Restore {
-            s.restore.push((p, taken));
+    match &e {
+        Edit::Restore => restore(t, w, s)?,
+        Edit::RestoreWord => {
+            let to = word_start(t, p).ok_or(Error::Msg("Beginning of buffer".into()))?;
+            while t.cursor(w).is_some_and(|c| c > to) {
+                restore(t, w, s)?;
+            }
         }
+        _ if s.entry == Entry::Replace => {
+            let (old, len) = (over_text(t, p, &e), t.len());
+            apply(t, w, &e)?;
+            // Your Evil notes what's at the cursor before every command, so going over a place
+            // again, or just past it, forgets what the key before took there.
+            s.restore.retain(|r| r.at != p);
+            moved_after(s, p, t.len() as isize - len as isize);
+            if matches!(e, Edit::Over(_) | Edit::Newline) {
+                let end = t.cursor(w).unwrap_or(p);
+                s.restore.push(Taken { at: p, end, old });
+            }
+        }
+        _ => apply(t, w, &e)?,
     }
     if e != Edit::Newline {
         s.drop_indent = false;
@@ -297,6 +314,60 @@ fn over_text(t: &TextBuf, p: usize, e: &Edit) -> Option<String> {
     (end > p).then(|| t.rope().byte_slice(p..end).to_string())
 }
 
+/// `<BS>` in replace state: put back what the key before the cursor took, or just step back.
+fn restore(t: &mut TextBuf, w: WindowId, s: &mut Session) -> Result {
+    let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
+    let Some(i) = s.restore.iter().rposition(|r| r.end == p && r.at <= p) else {
+        return apply(t, w, &Edit::Restore);
+    };
+    let Taken { at, old, .. } = s.restore.remove(i);
+    let len = t.len();
+    t.tx(Origin::User)
+        .replace(at..p, old.unwrap_or_default())
+        .commit()?;
+    t.set_cursor(w, at);
+    moved_after(s, at, t.len() as isize - len as isize);
+    Ok(())
+}
+
+/// The text after `p` moved by `by` bytes.
+fn moved_after(s: &mut Session, p: usize, by: isize) {
+    for r in s.restore.iter_mut().filter(|r| r.at > p) {
+        r.at = r.at.saturating_add_signed(by);
+        r.end = r.end.saturating_add_signed(by);
+    }
+}
+
+/// Where `<C-w>` goes back to: the start of a word, never past the line's start, unless it's
+/// at the line's start, when it goes over the newline.
+fn word_start(t: &TextBuf, p: usize) -> Option<usize> {
+    let ls = t.line_start(t.line_of(p));
+    if p == ls {
+        prev_char(t, p)
+    } else {
+        word_back(t, p, false).map(|q| q.max(ls))
+    }
+}
+
+/// The place for display column `col` on `line`, as `move-to-column` with its force has it: a
+/// tab the column falls inside becomes spaces, so the place is exact. A wide character it falls
+/// inside stays, and the place is after it.
+pub fn at_col_forced(t: &mut TextBuf, line: usize, col: usize) -> Result<usize> {
+    let p = pos_at_col(t, line, col).min(line_end(t, line));
+    let have = t.display_col(p);
+    let tab = prev_stop(t, p).filter(|&q| {
+        q >= t.line_start(line) && t.rope().get_byte(q) == Some(b'\t') && t.display_col(q) <= col
+    });
+    let (Some(q), true) = (tab, have > col) else {
+        return Ok(p);
+    };
+    let before = t.display_col(q);
+    t.tx(Origin::User)
+        .replace(q..p, " ".repeat(have - before))
+        .commit()?;
+    Ok(q + col - before)
+}
+
 /// Go in on the session's other lines, keeping the cursor on the first.
 fn rows(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
     let Some(rows) = s.rows else { return Ok(()) };
@@ -326,7 +397,7 @@ fn rows(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
                         .commit()?;
                     eol + col - have
                 } else {
-                    pos_at_col(t, line, col).min(eol)
+                    at_col_forced(t, line, col)?
                 }
             }
             RowAt::FirstNonBlank => indent_end(t, line),
@@ -343,8 +414,6 @@ fn rows(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
 
 fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
-    let line = t.line_of(p);
-    let ls = t.line_start(line);
     let fail = |m: &str| Err(Error::Msg(m.into()));
     // Only a run of Up and Down keeps a goal. Any other edit clears it, even one that fails.
     if !matches!(e, Edit::Up | Edit::Down) {
@@ -366,17 +435,16 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
         // At a line's start it joins the lines; otherwise it deletes back to the
         // start of a word, never past the line's start.
         Edit::DeleteWord => {
-            let q = if p == ls {
-                prev_char(t, p)
-            } else {
-                word_back(t, p, false).map(|q| q.max(ls))
-            };
-            let Some(q) = q else {
+            let Some(q) = word_start(t, p) else {
                 return fail("Beginning of buffer");
             };
             t.tx(Origin::User).delete(q..p).commit()?;
             q
         }
+        Edit::RestoreWord => match word_start(t, p) {
+            Some(q) => q,
+            None => return fail("Beginning of buffer"),
+        },
         Edit::Tab => return tab(t, w, p),
         Edit::Over(s) => {
             let (end, spaces) = over(t, p, s);

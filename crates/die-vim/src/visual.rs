@@ -6,13 +6,15 @@
 //! from its two corners, and `goal == Some(usize::MAX)` (`$`) takes each line to its end.
 //! Unlike normal state, the cursor can rest on a newline.
 //!
-//! Motions move the head (`grammar::run_motion`). Operators, as in Evil, go to the
-//! selection's upper left first, so `u` comes back there, and act on [`Take`]. `<` and `>`
-//! always take whole lines, and text objects grow the selection.
+//! Motions move the head (`grammar::run_motion`). Operators act on [`Take`], with the cursor on
+//! the head until the edit is made, so `u` comes back there as it does in Evil (call 7), and
+//! then go where they land. A paste over a selection is the exception: Evil's `u` after one
+//! ends past the text it puts back. `<` and `>` always take whole lines, and text objects grow
+//! the selection.
 
 use crate::Vim;
 use crate::grammar::{Operator, Start, buffer_window};
-use crate::insert::{self, Entry, MAX_REPEAT, RowAt, Rows};
+use crate::insert::{self, Entry, MAX_REPEAT, RowAt, Rows, at_col_forced};
 use crate::objects::Object;
 use crate::operators::{self, How, Span};
 use crate::registers;
@@ -41,6 +43,36 @@ pub struct Last {
     head: MarkerId,
     shape: Shape,
     goal: Option<usize>,
+}
+
+impl Last {
+    fn of(t: &mut TextBuf, sel: Selection) -> Result<Last> {
+        Ok(Last {
+            anchor: t.add_marker(sel.anchor, Gravity::Left)?,
+            head: t.add_marker(sel.head, Gravity::Left)?,
+            shape: sel.shape,
+            goal: sel.goal,
+        })
+    }
+}
+
+/// What kind of thing a text object is, which its selection in visual state depends on.
+#[derive(Clone, Copy)]
+pub struct ObjectShape {
+    /// A word or WORD: it stays on the head's line.
+    word: bool,
+    /// An `a` word, which takes the word before a gap when it's going back.
+    outer: bool,
+}
+
+impl ObjectShape {
+    /// From an object's command name.
+    pub fn of(name: &str) -> ObjectShape {
+        ObjectShape {
+            word: name.ends_with("-word") || name.ends_with("-WORD"),
+            outer: name.starts_with("vim-a-"),
+        }
+    }
 }
 
 pub fn is_on(ctx: &Ctx, b: BufferId) -> bool {
@@ -81,6 +113,9 @@ pub fn enter(ctx: &mut Ctx, a: &Args, shape: Shape) -> Result {
     if is_on(ctx, b) && sel.shape == shape {
         return escape(ctx, a);
     }
+    if !is_on(ctx, b) {
+        ctx.with_ext(|v: &mut Vim, _| v.visual_register = a.register)?;
+    }
     let new = if is_on(ctx, b) {
         Selection { shape, ..sel }
     } else {
@@ -103,40 +138,51 @@ pub fn escape(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
-/// Stop selecting with the cursor at the upper left, as Evil's operators do first. `gv` gets
-/// the selection that way round.
-fn leave_at_start(ctx: &mut Ctx, b: BufferId, w: WindowId, sel: Selection) -> Result {
+/// Stop selecting for an operator, with the cursor still on the head. `gv` gets a block with
+/// its head at the upper left, since Evil's operators rotate one, and anything else as it was.
+fn leave_for_operator(ctx: &mut Ctx, b: BufferId, w: WindowId, sel: Selection) -> Result {
     let t = ctx.text(b)?;
-    let (lo, hi) = ends(sel);
-    let (anchor, head) = if sel.shape == Shape::Block {
+    let kept = if sel.shape == Shape::Block {
         let blk = Block::of(t, sel, false);
         let last = pos_at_col(t, blk.last, blk.right.saturating_sub(1));
-        (last.min(line_end(t, blk.last)), blk.corner(t))
-    } else {
-        (hi, lo)
-    };
-    leave(
-        ctx,
-        b,
-        w,
         Selection {
-            anchor,
-            head,
+            anchor: last.min(line_end(t, blk.last)),
+            head: blk.corner(t),
             ..sel
-        },
-    )
+        }
+    } else {
+        sel
+    };
+    leave(ctx, b, w, kept)?;
+    let cursor = Selection::cursor(sel.head).with_goal(sel.goal);
+    ctx.text_mut(b)?.set_selection(w, cursor);
+    Ok(())
+}
+
+/// A failed edit leaves the cursor where the operator would have gone first.
+fn or_at(ctx: &mut Ctx, b: BufferId, w: WindowId, at: usize, r: Result) -> Result {
+    if r.is_err() {
+        let t = ctx.text_mut(b)?;
+        t.set_cursor(w, rest_pos(t, at));
+    }
+    r
+}
+
+/// The register an operator uses: one named just before it, or before the selection began.
+fn with_register(ctx: &mut Ctx, a: &Args) -> Result<Args> {
+    let held = ctx.with_ext(|v: &mut Vim, _| v.visual_register)?;
+    Ok(Args {
+        register: a.register.or(held),
+        ..a.clone()
+    })
 }
 
 /// Stop selecting, and keep the selection for `gv`.
 fn leave(ctx: &mut Ctx, b: BufferId, w: WindowId, sel: Selection) -> Result {
     ctx.set_state_of(b, State::Normal);
+    ctx.with_ext(|v: &mut Vim, _| v.visual_register = None)?;
     let t = ctx.text_mut(b)?;
-    let last = Last {
-        anchor: t.add_marker(sel.anchor, Gravity::Left)?,
-        head: t.add_marker(sel.head, Gravity::Left)?,
-        shape: sel.shape,
-        goal: sel.goal,
-    };
+    let last = Last::of(t, sel)?;
     // Off the selection, so the window draws a plain cursor whatever happens next.
     t.set_selection(w, Selection::cursor(sel.head).with_goal(sel.goal));
     let old = ctx.with_ext(|v: &mut Vim, _| v.last_visual.insert(b, last))?;
@@ -148,23 +194,27 @@ fn leave(ctx: &mut Ctx, b: BufferId, w: WindowId, sel: Selection) -> Result {
     Ok(())
 }
 
-/// `gv`: the last selection again. With none, or in visual state, it does nothing, as in Evil.
+/// `gv`: the last selection again. With none it does nothing. In visual state the two change
+/// places, so `gv` again comes back, as in Evil.
 pub fn restore(ctx: &mut Ctx, a: &Args) -> Result {
-    let (b, w) = buffer_window(ctx, a)?;
-    if is_on(ctx, b) {
-        return Ok(());
-    }
+    let (b, w, now) = here(ctx, a)?;
     let last = ctx.with_ext(|v: &mut Vim, _| v.last_visual.get(&b).copied())?;
     let Some(l) = last else { return Ok(()) };
+    let on = is_on(ctx, b);
     let t = ctx.text_mut(b)?;
-    let here = selection(t, w)?.head;
     let sel = Selection {
-        anchor: t.marker(l.anchor).unwrap_or(here),
-        head: t.marker(l.head).unwrap_or(here),
+        anchor: t.marker(l.anchor).unwrap_or(now.head),
+        head: t.marker(l.head).unwrap_or(now.head),
         shape: l.shape,
         goal: l.goal,
     };
     t.set_selection(w, sel);
+    if on {
+        let kept = Last::of(t, now)?;
+        t.remove_marker(l.anchor);
+        t.remove_marker(l.head);
+        ctx.with_ext(|v: &mut Vim, _| v.last_visual.insert(b, kept))?;
+    }
     ctx.set_state_of(b, State::Visual);
     Ok(())
 }
@@ -189,11 +239,17 @@ pub fn swap(ctx: &mut Ctx, a: &Args, same_line: bool) -> Result {
 /// A text object: the selection takes it in. If it has already, the selection takes in the
 /// next thing it comes to in the direction it goes, as Evil's objects do. A pair of brackets
 /// has one on either side, so the next that makes the selection bigger is an outer pair.
-pub fn object(ctx: &mut Ctx, a: &Args, object: Object) -> Result {
+///
+/// The thing at the head comes first, unless the head is on whitespace, which is never what
+/// an `a` object means there, or the selection spans lines: then the head's own thing is
+/// inside it. A word stays on the head's line, unless that's empty, so the selection ends
+/// up on that line (Evil's restricted objects narrow to it).
+pub fn object(ctx: &mut Ctx, a: &Args, object: Object, kind: ObjectShape) -> Result {
     let (b, w, sel) = here(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let (lo, hi) = ends(sel);
     let single = lo == hi && sel.shape == Shape::Char;
+    let spans = t.line_of(lo) != t.line_of(hi);
     // Whole lines count up to the last one's newline, since a word stops there.
     let (beg, past) = if sel.shape == Shape::Line {
         let span = operators::lines(t, lo, hi);
@@ -201,6 +257,7 @@ pub fn object(ctx: &mut Ctx, a: &Args, object: Object) -> Result {
     } else {
         (lo, next_stop(t, hi).unwrap_or(hi))
     };
+    let lines_end = operators::lines(t, lo, hi).end;
     let forward = sel.head >= sel.anchor;
     let at = |pos| {
         object(&Start {
@@ -213,20 +270,41 @@ pub fn object(ctx: &mut Ctx, a: &Args, object: Object) -> Result {
             visual: false,
         })
     };
-    let mut span = at(sel.head).map_err(|e| Error::Msg(e.into()))?;
-    let grows = |s: &Span| s.beg < beg || s.end > past;
-    if !single && !grows(&span) {
-        let mut from = if forward {
-            Some(past)
+    let grows = |s: &Span| {
+        let upto = if s.lines && sel.shape == Shape::Line {
+            lines_end
         } else {
-            prev_stop(t, beg)
+            past
         };
+        s.beg < beg || s.end > upto
+    };
+    // Whole lines hold all the words they could reach, as Evil's stay on a line.
+    let fits = |s: &Span| sel.shape != Shape::Line || s.lines || (kind.word && spans);
+    let space = |p: usize| matches!(t.rope().get_byte(p), Some(b' ' | b'\t' | b'\n'));
+    let mut span = at(sel.head).map_err(|e| Error::Msg(e.into()))?;
+    if !single && (space(sel.head) || (kind.word && spans) || !grows(&span)) {
+        let mut from = if !forward {
+            prev_stop(t, beg)
+        } else if sel.shape == Shape::Line && !kind.word {
+            Some(lines_end)
+        } else {
+            Some(past)
+        };
+        let head_span = span;
+        let mut found = false;
         for _ in 0..2 {
-            let Some(p) = from else { break };
+            let Some(mut p) = from else { break };
+            // Going back, an `a` word from a gap is the gap and the word before it.
+            while kind.word && kind.outer && !forward && space(p) {
+                match prev_stop(t, p) {
+                    Some(q) if t.line_of(q) == t.line_of(p) => p = q,
+                    _ => break,
+                }
+            }
             match at(p) {
-                // Whole lines hold all the words they could reach, as Evil's stay on a line.
-                Ok(s) if grows(&s) && (sel.shape != Shape::Line || s.lines) => {
+                Ok(s) if grows(&s) && fits(&s) => {
                     span = s;
+                    found = true;
                     break;
                 }
                 _ => {}
@@ -237,12 +315,20 @@ pub fn object(ctx: &mut Ctx, a: &Args, object: Object) -> Result {
                 prev_stop(t, p)
             };
         }
+        if !found {
+            span = head_span;
+        }
     }
-    let (first, end) = if single {
+    let (mut first, mut end) = if single {
         (span.beg, span.end)
     } else {
         (beg.min(span.beg), past.max(span.end))
     };
+    let line = t.line_of(sel.head);
+    if kind.word && t.line_start(line) != line_end(t, line) {
+        first = first.max(t.line_start(line));
+        end = end.min(line_end(t, line).max(sel.head + usize::from(sel.head == line_end(t, line))));
+    }
     let last = prev_stop(t, end).filter(|&p| p >= first).unwrap_or(first);
     let (anchor, head) = if forward {
         (first, last)
@@ -274,10 +360,15 @@ fn change_of(t: &TextBuf, sel: Selection, a: &Args) -> Change {
             chars: chars_to(t.line_start(t.line_of(hi))),
         },
         Shape::Line => Extent::Line { lines },
-        Shape::Block => Extent::Block {
-            lines,
-            cols: t.display_col(sel.anchor).abs_diff(t.display_col(sel.head)),
-        },
+        // As your Evil counts it, from the block's own corners. A `$` doesn't come back: a `.`
+        // reaches as far as the last line's end did from the left column.
+        Shape::Block => {
+            let blk = Block::of(t, Selection { goal: None, ..sel }, false);
+            Extent::Block {
+                lines,
+                cols: blk.right.saturating_sub(blk.left + 1),
+            }
+        }
     };
     Change {
         count: a.count,
@@ -431,32 +522,34 @@ impl Block {
 /// An operator on the selection.
 pub fn operate(ctx: &mut Ctx, a: &Args, op: Operator, take: Take) -> Result {
     let (b, w, sel) = here(ctx, a)?;
+    let a = &with_register(ctx, a)?;
     let t = ctx.text(b)?;
-    let change = change_of(t, sel, a);
-    let col = t.display_col(sel.head);
+    let mut change = change_of(t, sel, a);
     let (lo, hi) = ends(sel);
     let whole = take == Take::WholeLines || operators::takes_lines(op);
     if sel.shape == Shape::Block && !whole {
         let blk = Block::of(t, sel, take == Take::Lines && op != Operator::Yank);
         let corner = blk.corner(t);
-        leave_at_start(ctx, b, w, sel)?;
-        let t = ctx.text_mut(b)?;
-        t.set_cursor(w, corner);
-        return on_block(ctx, a, op, &blk, corner, change);
+        leave_for_operator(ctx, b, w, sel)?;
+        let r = on_block(ctx, a, op, &blk, corner, change);
+        return or_at(ctx, b, w, corner, r);
+    }
+    // Your Evil's `.` shifts once, whatever count the selection's shift had.
+    if operators::takes_lines(op) {
+        change.count = None;
     }
     let span = if whole || take == Take::Lines || sel.shape == Shape::Line {
         operators::lines(t, lo, hi)
     } else {
         Span::chars(lo, next_stop(t, hi).unwrap_or(hi))
     };
-    leave_at_start(ctx, b, w, sel)?;
-    let t = ctx.text_mut(b)?;
-    t.set_selection(w, Selection::cursor(rest_pos(t, lo)).with_goal(sel.goal));
-    operators::apply(ctx, a, op, a.register, span, How::from_col(col), change)?;
+    leave_for_operator(ctx, b, w, sel)?;
+    let how = How::from_visual(a.count, lo);
+    operators::apply(ctx, a, op, a.register, span, how, change)?;
     // Evil's case operators don't move it again, and over whole lines that isn't the span's start.
     if matches!(
         op,
-        Operator::Upcase | Operator::Downcase | Operator::InvertCase
+        Operator::Upcase | Operator::Downcase | Operator::InvertCase | Operator::Yank
     ) {
         let t = ctx.text_mut(b)?;
         t.set_cursor(w, rest_pos(t, lo));
@@ -498,6 +591,7 @@ fn on_block(
         }
         _ => {
             let t = ctx.text_mut(b)?;
+            operators::undo_at_first_change(t, w, op, corner);
             let new: Vec<String> = rows
                 .iter()
                 .map(|r| operators::cased(op, &t.rope().byte_slice(r.clone()).to_string()))
@@ -571,8 +665,8 @@ pub fn insert(ctx: &mut Ctx, a: &Args, append: bool) -> Result {
         ),
         (Shape::Line, true) => (lo, Entry::AppendLine, row(RowAt::LineEnd, false), false),
         (Shape::Block, false) => {
-            let col = t.display_col(corner);
-            (corner, Entry::Insert, row(RowAt::Col(col), true), false)
+            let at = RowAt::Col(blk.left);
+            (corner, Entry::Insert, row(at, true), false)
         }
         (Shape::Block, true) if sel.goal == Some(usize::MAX) => {
             (corner, Entry::AppendLine, row(RowAt::LineEnd, false), false)
@@ -590,9 +684,14 @@ pub fn insert(ctx: &mut Ctx, a: &Args, append: bool) -> Result {
     if append && sel.shape == Shape::Char {
         leave(ctx, b, w, sel)?;
     } else {
-        leave_at_start(ctx, b, w, sel)?;
+        leave_for_operator(ctx, b, w, sel)?;
     }
     let t = ctx.text_mut(b)?;
+    let pos = match (sel.shape, append) {
+        (Shape::Block, false) => at_col_forced(t, first, blk.left)?,
+        (Shape::Block, true) if pad => at_col_forced(t, first, blk.right)?,
+        _ => pos,
+    };
     t.set_cursor(w, pos);
     if pad {
         let col = t.display_col(pos);
@@ -611,14 +710,12 @@ pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
     let change = change_of(t, sel, a);
     let (lo, hi) = ends(sel);
     let n = t.line_of(hi) - t.line_of(lo) + 1;
-    leave_at_start(ctx, b, w, sel)?;
-    let t = ctx.text_mut(b)?;
-    t.set_cursor(w, rest_pos(t, lo));
+    leave_for_operator(ctx, b, w, sel)?;
     let lines = Args {
         count: Some(n),
         ..a.clone()
     };
-    operators::join(ctx, &lines)?;
+    operators::join_from(ctx, &lines, lo)?;
     repeat::commit(ctx, change)
 }
 
@@ -633,25 +730,15 @@ pub fn replace(ctx: &mut Ctx, a: &Args, with: Option<&str>, enter: bool) -> Resu
     if sel.shape == Shape::Block {
         let blk = Block::of(t, sel, false);
         let corner = blk.corner(t);
-        let rows = blk.rows(t);
-        leave_at_start(ctx, b, w, sel)?;
-        let t = ctx.text_mut(b)?;
-        t.set_cursor(w, rest_pos(t, corner));
-        let Some(with) = with else { return Ok(()) };
-        let new: Vec<(Range<usize>, String)> = rows
-            .into_iter()
-            .map(|r| {
-                let cols = t.display_col(r.end).saturating_sub(t.display_col(r.start));
-                let s = with.repeat(cols);
-                (r, s)
-            })
-            .collect();
-        let mut tx = t.tx(Origin::User);
-        for (r, s) in new {
-            tx = tx.replace(r, s);
-        }
-        tx.commit()?;
-        t.set_cursor(w, rest_pos(t, corner));
+        leave_for_operator(ctx, b, w, sel)?;
+        let with = if enter { Some("\n") } else { with };
+        let Some(with) = with else {
+            let t = ctx.text_mut(b)?;
+            t.set_cursor(w, rest_pos(t, corner));
+            return Ok(());
+        };
+        let r = replace_block(ctx.text_mut(b)?, w, &blk, with, corner);
+        or_at(ctx, b, w, corner, r)?;
         return repeat::commit(ctx, change);
     }
     let span = if sel.shape == Shape::Line {
@@ -659,20 +746,46 @@ pub fn replace(ctx: &mut Ctx, a: &Args, with: Option<&str>, enter: bool) -> Resu
     } else {
         Span::chars(lo, next_stop(t, hi).unwrap_or(hi))
     };
-    leave_at_start(ctx, b, w, sel)?;
+    leave_for_operator(ctx, b, w, sel)?;
     let t = ctx.text_mut(b)?;
-    t.set_cursor(w, rest_pos(t, lo));
     if with.is_none() && !enter {
+        t.set_cursor(w, rest_pos(t, lo));
         return Ok(());
     }
-    operators::replace_span(t, w, span, with, enter)?;
+    let r = operators::replace_span(t, w, span, with, enter);
+    or_at(ctx, b, w, lo, r)?;
     repeat::commit(ctx, change)
+}
+
+/// `r` on a block, as Evil's `evil-replace` has it: each line that reaches the block gets as many
+/// as the columns it covers, between the places its two sides fall (`at_col_forced`).
+fn replace_block(t: &mut TextBuf, w: WindowId, blk: &Block, with: &str, corner: usize) -> Result {
+    let mut land = corner;
+    // From the bottom, since `r<CR>` adds lines. The newline it adds is what Evil's goes past.
+    for line in (blk.first..=blk.last).rev() {
+        let reach = t.display_col(line_end(t, line));
+        if blk.left >= reach {
+            continue;
+        }
+        let right = blk.right.min(reach);
+        let beg = at_col_forced(t, line, blk.left)?;
+        let end = at_col_forced(t, line, right)?.max(beg);
+        t.tx(Origin::User)
+            .replace(beg..end, with.repeat(right - blk.left))
+            .commit()?;
+        if line == blk.first {
+            land = beg;
+        }
+    }
+    t.set_cursor(w, rest_pos(t, land));
+    Ok(())
 }
 
 /// `p` and `P` over a selection: it goes, and the register's text takes its place. `P` keeps
 /// the register as it is: the selection goes nowhere.
 pub fn paste(ctx: &mut Ctx, a: &Args, keep: bool) -> Result {
     let (b, w, sel) = here(ctx, a)?;
+    let a = &with_register(ctx, a)?;
     let r = registers::read(ctx, a.register)?;
     let n = a.count.unwrap_or(1).max(1);
     if n > 1 && r.text.len().saturating_mul(n) > MAX_REPEAT {
@@ -684,33 +797,48 @@ pub fn paste(ctx: &mut Ctx, a: &Args, keep: bool) -> Result {
     let blk = Block::of(t, sel, false);
     let corner = blk.corner(t);
     let kill = keep.then_some('_');
-    leave_at_start(ctx, b, w, sel)?;
-    let t = ctx.text_mut(b)?;
-    let rotated = if sel.shape == Shape::Block {
+    // Evil's `u` after this ends just past the last text it puts back.
+    let past = match sel.shape {
+        Shape::Block => blk.row(t, blk.last).end,
+        Shape::Line => operators::lines(t, lo, hi).end,
+        Shape::Char => next_stop(t, hi).unwrap_or(hi),
+    };
+    leave_for_operator(ctx, b, w, sel)?;
+    ctx.text_mut(b)?.set_cursor(w, past);
+    let r = match sel.shape {
+        Shape::Block => over_block(ctx, b, w, &blk, kill, &r, n),
+        Shape::Line => over_lines(ctx, b, w, lo, hi, kill, &r, n),
+        Shape::Char => over_chars(ctx, b, w, Span::chars(lo, past), kill, &r, n),
+    };
+    let start = if sel.shape == Shape::Block {
         corner
     } else {
         lo
     };
-    t.set_cursor(w, rest_pos(t, rotated));
-    match sel.shape {
-        Shape::Block => over_block(ctx, b, w, &blk, kill, &r, n)?,
-        Shape::Line => over_lines(ctx, b, w, lo, hi, kill, &r, n)?,
-        Shape::Char => {
-            let t = ctx.text(b)?;
-            let span = Span::chars(lo, next_stop(t, hi).unwrap_or(hi));
-            let at = operators::cut(ctx, b, kill, span)?;
-            let t = ctx.text_mut(b)?;
-            match r.kind {
-                RegKind::Line => put_lines_at(t, w, at, &r.text.repeat(n))?,
-                RegKind::Block => {
-                    t.set_cursor(w, at);
-                    operators::paste_block(t, w, &r.text, n, false)?;
-                }
-                _ => put_chars(t, w, at, &r.text.repeat(n))?,
-            }
-        }
-    }
+    or_at(ctx, b, w, start, r)?;
     repeat::commit(ctx, change)
+}
+
+/// Over characters.
+fn over_chars(
+    ctx: &mut Ctx,
+    b: BufferId,
+    w: WindowId,
+    span: Span,
+    kill: Option<char>,
+    r: &Register,
+    n: usize,
+) -> Result {
+    let at = operators::cut(ctx, b, kill, span)?;
+    let t = ctx.text_mut(b)?;
+    match r.kind {
+        RegKind::Line => put_lines_at(t, w, at, &r.text.repeat(n)),
+        RegKind::Block => {
+            t.set_cursor(w, at);
+            operators::paste_block(t, w, &r.text, n, false)
+        }
+        _ => put_chars(t, w, at, &r.text.repeat(n)),
+    }
 }
 
 /// Characters at `at`, and the cursor on the last of them, as `P` does.

@@ -433,3 +433,34 @@ fn keys_fed_after_a_nested_turn_emptied_the_queue_still_run() {
     ctx.type_keys("N");
     assert_eq!(*log.borrow(), ["note-c"], "{:?}", ctx.messages);
 }
+
+#[test]
+fn the_drop_hook_runs_before_the_next_key_is_looked_up() {
+    let (mut ctx, log) = setup();
+    let seen = log.clone();
+    let hook = ctx.on_fed_dropped(move |_| {
+        seen.borrow_mut().push("dropped".into());
+        Ok(())
+    });
+    ctx.feed_keys("ea").unwrap();
+    ctx.type_keys("b");
+    assert_eq!(*log.borrow(), ["dropped", "note-b"]);
+    log.borrow_mut().clear();
+    ctx.type_keys("e");
+    assert_eq!(
+        *log.borrow(),
+        ["dropped"],
+        "a key that fails, even with nothing fed"
+    );
+    log.borrow_mut().clear();
+    ctx.type_keys("a");
+    assert_eq!(
+        *log.borrow(),
+        ["note-a"],
+        "a key that doesn't fail drops nothing"
+    );
+    log.borrow_mut().clear();
+    drop(hook);
+    ctx.type_keys("e");
+    assert!(log.borrow().is_empty());
+}

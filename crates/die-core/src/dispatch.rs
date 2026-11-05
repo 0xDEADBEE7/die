@@ -154,22 +154,6 @@ impl Ctx {
 
     // -------------------------------------------------------------- the key queues
 
-    /// Queue keys as if typed (contract §6). die-vim's `@a` uses this. `keys` is notation,
-    /// as `key_notation` writes it, so plain text with a `<` in it needs `<lt>`. They run ahead
-    /// of typed keys, and a key's command failing, or a key nothing handles, drops the rest.
-    /// Fed from inside a call, they also run ahead of what's left, in the order they're fed, so
-    /// a macro inside a macro runs before the rest of it. The host's go behind what's left.
-    pub fn feed_keys(&mut self, keys: &str) -> Result {
-        let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
-        let end = self.fed.len();
-        let from = if self.nesting() > 0 { self.fed_at } else { end };
-        let at = from.min(end);
-        let rest = self.fed.split_off(at);
-        self.fed.extend(evs);
-        self.fed_at = self.fed.len();
-        self.fed.extend(rest);
-        Ok(())
-    }
     /// Harness: one key event from the OS.
     pub fn input(&mut self, ev: KeyEvent) {
         self.typed.push_back(ev);
@@ -241,7 +225,7 @@ impl Ctx {
                 let last = keys.last().cloned().unwrap();
                 let handled = self.surface_event(buf, &Event::Key(last));
                 if !matches!(handled, Ok(true)) {
-                    self.fed.clear();
+                    self.drop_fed();
                 }
                 if !matches!(handled, Ok(true) | Err(Error::Panicked { .. })) {
                     self.messages
@@ -268,7 +252,7 @@ impl Ctx {
             return self.run_key(&name, vec![ev], win, buf);
         }
         if let Err(Error::Panicked { .. }) = self.surface_event(buf, &Event::Key(ev)) {
-            self.fed.clear();
+            self.drop_fed();
         }
     }
 
@@ -296,7 +280,7 @@ impl Ctx {
         };
         let r = self.run(name, &args);
         if r.is_err() {
-            self.fed.clear(); // a macro stops where it fails (contract §6)
+            self.drop_fed(); // a macro stops where it fails (contract §6)
         }
         self.report(r);
     }

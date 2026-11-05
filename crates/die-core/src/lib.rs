@@ -16,6 +16,7 @@ mod dispatch;
 mod error;
 mod ext;
 mod faces;
+mod fed;
 mod files;
 mod ids;
 mod keymap;
