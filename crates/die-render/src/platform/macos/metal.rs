@@ -198,20 +198,26 @@ fn region(x: u32, y: u32, w: u32, h: u32) -> MTLRegion {
 }
 
 impl Pipeline {
-    /// Copy pixels into an atlas.
+    /// Copy pixels into an atlas. It's an error unless the region has pixels, is
+    /// wholly inside the atlas, and `data` is exactly its pixels.
     pub fn upload(&self, u: &Upload) -> Result<(), String> {
         let (texture, bytes) = match u.plane {
             Plane::Gray => (&self.gray, 1),
             Plane::Color => (&self.color, 4),
         };
+        // In u64, since these come from outside and a u32 sum can wrap into the texture.
+        let inside = |at: u32, len: u32, side: usize| {
+            len > 0 && u64::from(at) + u64::from(len) <= side as u64
+        };
+        let fits = inside(u.x, u.w, texture.width()) && inside(u.y, u.h, texture.height());
         let row = u.w as usize * bytes;
-        let fits = u.x + u.w <= texture.width() as u32 && u.y + u.h <= texture.height() as u32;
+        // Past `fits`, both sides are a texture's at most, so the product can't wrap.
         if !fits || u.data.len() != row * u.h as usize {
             return Err(format!("an upload that doesn't fit its atlas: {u:?}"));
         }
-        // SAFETY: the region is inside the texture and `data` holds exactly its pixels,
-        // both checked above, and Metal copies them before this returns. No frame is
-        // reading the texture, since `render` waits for each one.
+        // SAFETY: the region has pixels and is inside the texture, and `data` holds exactly
+        // those pixels, all checked above, and Metal copies them before this returns. No
+        // frame is reading the texture, since `render` waits for each one.
         unsafe {
             texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
                 region(u.x, u.y, u.w, u.h),

@@ -115,6 +115,28 @@ fn an_upload_that_does_not_fit_its_atlas_is_refused() {
         ..upload(0, 2, 2, 4)
     };
     assert!(p.upload(&color).is_err(), "a color pixel is 4 bytes");
+    // Sums that wrap to something small mustn't get past the check.
+    assert!(p.upload(&upload(u32::MAX, 2, 1, 2)).is_err(), "x + w wraps");
+    let low = Upload {
+        y: u32::MAX,
+        ..upload(0, 1, 2, 2)
+    };
+    assert!(p.upload(&low).is_err(), "y + h wraps");
+    // 2^31 is past the edge, and each sum wraps to 0, as does 2^31 × 4 bytes × 2^31.
+    let huge = 1 << 31;
+    let all = Upload {
+        plane: Plane::Color,
+        x: huge,
+        y: huge,
+        w: huge,
+        h: huge,
+        data: vec![],
+    };
+    assert!(p.upload(&all).is_err(), "the length wraps too");
+    // Metal asserts on a region with no pixels.
+    assert!(p.upload(&upload(0, 0, 8, 0)).is_err(), "no width");
+    assert!(p.upload(&upload(0, 4, 0, 0)).is_err(), "no height");
+    assert!(p.upload(&upload(8, 0, 8, 0)).is_err(), "no width, at the edge");
 }
 
 #[test]
