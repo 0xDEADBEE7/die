@@ -11,7 +11,7 @@ pub use die_core as core;
 pub use die_render as render;
 pub use die_vim as vim;
 
-use die_core::{Clock, Ctx, Extension, StatusTextFn};
+use die_core::{Clock, Ctx, Extension, ShowIn, StatusTextFn};
 use die_render::driver::Config as Font;
 use die_render::{check, driver, window};
 use die_vim::Vim;
@@ -68,10 +68,11 @@ pub fn started_dir_from(pwd: Option<&OsStr>, cwd: PathBuf) -> PathBuf {
     }
 }
 
-/// Everything before the window opens: the editor, with a window on the first file that
-/// opened. A file that won't open is logged, and the next one goes on screen instead. With
-/// none open, whatever window the startup hook opened stays on screen, and without one
-/// there's an empty buffer. Every problem with the config comes back at once (C8).
+/// Everything before the window opens: the editor, with any session restored and a window on
+/// the first file that opened. A file that won't open is logged, and the next one goes on
+/// screen instead. With none open, whatever window the session or the startup hook opened stays
+/// on screen, and without one there's an empty buffer. Every problem with the config comes back
+/// at once (C8).
 pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
     let Config {
         mut core,
@@ -101,8 +102,11 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         None => None,
     };
     if let Some(buf) = on_screen {
-        ctx.open_window(buf, 80, 24)
-            .map_err(|e| vec![e.to_string()])?;
+        let shown = match ctx.focused() {
+            Some(_) => ctx.show(buf, ShowIn::Current).map(|_| ()),
+            None => ctx.open_window(buf, 80, 24).map(|_| ()),
+        };
+        shown.map_err(|e| vec![e.to_string()])?;
     }
     Ok(ctx)
 }

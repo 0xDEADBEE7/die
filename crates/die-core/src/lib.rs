@@ -30,6 +30,7 @@ mod pointer;
 mod prompt;
 mod rt;
 mod scene;
+pub mod session;
 pub mod sys;
 mod text;
 mod undo;
