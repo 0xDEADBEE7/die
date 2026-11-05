@@ -41,13 +41,10 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
             goto_line(s, n)
         });
     }
-    if let Some(&(_, write, then)) = FILE_COMMANDS.iter().find(|f| f.0 == name) {
-        if rest.is_empty() {
-            return file_command(ctx, write, then);
-        }
-        return Err(Error::Msg(format!(":{name} with an argument isn't built")));
-    }
     match name {
+        "w" | "w!" | "q" | "q!" | "quit" | "quit!" | "wq" | "wq!" | "e!" => {
+            file_command(ctx, name, rest)
+        }
         "e" | "edit" => edit(ctx, rest),
         "b" | "buffer" => buffer(ctx, rest),
         _ => {
@@ -60,48 +57,24 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Write {
-    No,
-    Save,
-    Force,
-}
-
-/// What a file command does after its write.
-#[derive(Clone, Copy)]
-enum Then {
-    Nothing,
-    Revert,
-    Quit { force: bool },
-}
-
-const FILE_COMMANDS: &[(&str, Write, Then)] = &[
-    ("w", Write::Save, Then::Nothing),
-    ("w!", Write::Force, Then::Nothing),
-    ("q", Write::No, Then::Quit { force: false }),
-    ("q!", Write::No, Then::Quit { force: true }),
-    ("quit", Write::No, Then::Quit { force: false }),
-    ("quit!", Write::No, Then::Quit { force: true }),
-    ("wq", Write::Save, Then::Quit { force: false }),
-    ("wq!", Write::Force, Then::Quit { force: true }),
-    ("e!", Write::No, Then::Revert),
-];
-
-fn file_command(ctx: &mut Ctx, write: Write, then: Then) -> Result {
-    let no_buffer = || Error::Msg("No buffer here".into());
-    let buf = ctx.focused_buffer().ok_or_else(no_buffer)?;
-    match write {
-        Write::No => {}
-        Write::Save => ctx.save(buf)?,
-        Write::Force => ctx.save_force(buf)?,
+/// `:w`, `:q`, `:wq` and `:e!`: `!` writes over a file that changed, or leaves unsaved changes.
+fn file_command(ctx: &mut Ctx, name: &str, rest: &str) -> Result {
+    if !rest.is_empty() {
+        return Err(Error::Msg(format!(":{name} with an argument isn't built")));
     }
-    match then {
-        Then::Nothing => Ok(()),
-        Then::Revert => ctx.revert_file(buf),
-        Then::Quit { force } => {
-            let (_, w) = buffer_window(ctx, &Args::default())?;
-            window::close_or_quit(ctx, w, force)
+    let (buf, w) = buffer_window(ctx, &Args::default())?;
+    let force = name.ends_with('!');
+    if name.starts_with('w') {
+        if force {
+            ctx.save_force(buf)?;
+        } else {
+            ctx.save(buf)?;
         }
+    }
+    match name.trim_end_matches('!') {
+        "w" => Ok(()),
+        "e" => ctx.revert_file(buf),
+        _ => window::close_or_quit(ctx, w, force),
     }
 }
 

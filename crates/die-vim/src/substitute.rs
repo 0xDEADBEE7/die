@@ -1,8 +1,10 @@
 //! `:s`: its line range, its parts, and the case of what it writes. Patterns and replacements
 //! are Rust's (D4); core's [`die_core::TextBuf::substitutions`] finds and expands them.
+use crate::grammar::buffer_window;
+use crate::search::ignores_case;
 use crate::text::{indent_end, rest_pos};
 use crate::visual;
-use die_core::{BufferId, Ctx, Error, Origin, Pattern, Result, WindowId};
+use die_core::{Args, BufferId, Ctx, Error, Origin, Pattern, Result, WindowId};
 use std::ops::Range;
 
 /// What `:` puts on the line from a selection.
@@ -41,11 +43,9 @@ pub fn run(ctx: &mut Ctx, lines: Lines, rest: &str) -> Result {
     if from.is_empty() {
         return Err(Error::Msg("Reusing the last pattern isn't built".into()));
     }
-    let no_window = || Error::Msg("No window here".into());
-    let w = ctx.focused().ok_or_else(no_window)?;
-    let b = ctx.window_buffer(w).ok_or_else(no_window)?;
+    let (b, w) = buffer_window(ctx, &Args::default())?;
     let lines = line_range(ctx, b, w, lines)?;
-    let ignore_case = !has_upper(&from);
+    let ignore_case = ignores_case(&from);
     let pat = Pattern::new(&from, ignore_case)?;
     let t = ctx.text_mut(b)?;
     let mut changes = t.substitutions(&pat, lines, &to, global);
@@ -66,10 +66,10 @@ pub fn run(ctx: &mut Ctx, lines: Lines, rest: &str) -> Result {
         .sum();
     let last = changes.last().map_or(0, |(m, _)| m.end);
     let last = last.saturating_add_signed(moved);
-    let mut tx = t.tx(Origin::User);
-    for (m, new) in changes {
-        tx = tx.replace(m, new);
-    }
+    let tx = t.tx(Origin::User);
+    let tx = changes
+        .into_iter()
+        .fold(tx, |tx, (m, new)| tx.replace(m, new));
     tx.commit()?;
     let to = indent_end(t, t.line_of(last));
     t.set_cursor(w, rest_pos(t, to));
@@ -105,16 +105,15 @@ fn parts(rest: &str) -> Result<(String, String, bool)> {
         let Some(piece) = pieces.last_mut() else {
             continue;
         };
-        match (c, chars.clone().next()) {
-            ('\\', Some(next)) if next == delimiter => {
-                piece.push(next);
-                chars.next();
+        if c != '\\' {
+            piece.push(c);
+        } else if let Some(next) = chars.next() {
+            if next != delimiter {
+                piece.push('\\');
             }
-            ('\\', Some(next)) => {
-                piece.extend(['\\', next]);
-                chars.next();
-            }
-            _ => piece.push(c),
+            piece.push(next);
+        } else {
+            piece.push(c);
         }
     }
     let flags = pieces.get(2).map_or("", String::as_str);
@@ -122,22 +121,8 @@ fn parts(rest: &str) -> Result<(String, String, bool)> {
         return Err(Error::Msg(format!("Only the g flag is built: {rest}")));
     }
     let global = flags == "g";
-    let mut pieces = pieces.into_iter();
-    let from = pieces.next().unwrap_or_default();
-    Ok((from, pieces.next().unwrap_or_default(), global))
-}
-
-/// Smartcase: an upper-case letter in the pattern makes it exact. `\S` and the like don't count.
-fn has_upper(pattern: &str) -> bool {
-    let mut chars = pattern.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            chars.next();
-        } else if c.is_uppercase() {
-            return true;
-        }
-    }
-    false
+    let to = pieces.get(1).cloned().unwrap_or_default();
+    Ok((pieces.swap_remove(0), to, global))
 }
 
 /// `new` in the case of the `old` it replaces, by the rules of Emacs's `replace-match`: all caps
