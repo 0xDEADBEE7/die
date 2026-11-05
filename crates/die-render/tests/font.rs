@@ -125,6 +125,16 @@ fn a_primary_glyph_too_wide_for_its_cell_is_squeezed_and_centered() {
 }
 
 #[test]
+fn a_squeezed_primary_glyph_whose_ink_overruns_its_advance_is_centered_by_its_advance() {
+    let c = cell2x();
+    let f = fit(ink(0.0, 0.0, 40.0, 10.0), 38.0, 1, &c, false).unwrap();
+    let scale = 19.0 / 40.0;
+    assert!((f.scale - scale).abs() < 1e-9);
+    let pen = f64::from(f.left) + f.pen_x;
+    assert!((pen - (19.0 - 38.0 * scale) / 2.0).abs() < 1e-9, "{pen}");
+}
+
+#[test]
 fn a_fallback_glyph_is_centered_across_its_span_and_not_squeezed_if_it_fits() {
     let c = cell2x();
     // 中 from PingFang: 32 px across 38.

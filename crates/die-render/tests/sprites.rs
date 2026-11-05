@@ -276,6 +276,25 @@ fn heavy_arms_reach_across_a_light_line_and_a_half_line_stops_at_the_center() {
 }
 
 #[test]
+fn opposite_half_lines_meet_at_the_center_and_make_the_whole_line() {
+    for (a, b, whole) in [
+        ('╴', '╶', '─'),
+        ('╵', '╷', '│'),
+        ('╸', '╺', '━'),
+        ('╹', '╻', '┃'),
+    ] {
+        for (w, h, t) in SIZES {
+            let (pa, pb) = (draw(a, w, h, t).unwrap(), draw(b, w, h, t).unwrap());
+            let line = draw(whole, w, h, t).unwrap();
+            for i in 0..pa.len() {
+                assert!(pa[i] == 0 || pb[i] == 0, "{a} and {b} overlap at {w}x{h}");
+                assert_eq!(pa[i].max(pb[i]), line[i], "{a}{b} and {whole} at {w}x{h}");
+            }
+        }
+    }
+}
+
+#[test]
 fn double_lines_leave_their_joins_open() {
     #[rustfmt::skip]
     assert_art('╬', &[
@@ -715,14 +734,18 @@ fn a_curly_underline_waves_and_joins_itself_at_the_cell_edge() {
         (centers[0] - centers[w - 1]).abs() <= 1.5,
         "and joins: {centers:?}"
     );
-    // Near the cell's bottom it stays whole: the wave isn't cut off.
+    // Near the cell's bottom it stays whole: its trough isn't cut off by the cell.
     let low = line(Line::Under(Underline::Curly), 19, 40, 38, 2);
-    let row38: usize = low[38 * w..39 * w].iter().filter(|&&p| p > 0).count();
-    let row39: usize = low[39 * w..40 * w].iter().filter(|&&p| p > 200).count();
-    assert!(row38 > 0);
+    for x in 0..w {
+        assert!((0..h).any(|y| low[y * w + x] > 0), "ink in column {x}");
+    }
+    let lowest = (0..h)
+        .rev()
+        .find(|&y| low[y * w..(y + 1) * w].iter().any(|&p| p > 128));
+    let highest = (0..h).find(|&y| low[y * w..(y + 1) * w].iter().any(|&p| p > 128));
     assert!(
-        row39 < w / 2,
-        "the wave's trough fits, not a flat cut at the edge"
+        lowest.unwrap() - highest.unwrap() >= 5,
+        "and it still waves"
     );
 }
 

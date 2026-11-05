@@ -4,6 +4,7 @@
 //!
 //! Glyphs stay until the atlas is full, then the whole atlas starts over. Evicting
 //! one glyph at a time waits for M3.
+#![warn(missing_docs)]
 
 use crate::frame::{GlyphBitmap, Plane, Upload};
 use crate::sprite::Line;

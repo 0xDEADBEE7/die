@@ -1042,6 +1042,45 @@ fn frames_on_the_gpu_match_a_fresh_renderer_as_rows_change_and_the_buffer_grows(
     assert!(got == want, "the row that changed");
 }
 
+#[test]
+fn a_frame_that_fills_the_atlas_on_the_gpu_starts_over_and_draws_every_glyph() {
+    let Some(mut r) = term() else { return };
+    // About 2,500 of these fit: the driver has to ask again for what the atlas forgot.
+    let page_from = |first: u32| {
+        let mut s = page(100, 40);
+        for row in 0..40 {
+            for i in 0..50 {
+                let c = char::from_u32(first + (row * 50 + i) as u32).unwrap();
+                text(&mut s, row, i * 2, &[c.encode_utf8(&mut [0; 4])]);
+            }
+        }
+        s
+    };
+    draw(&mut r, &page_from(0x4E00));
+    let next = page_from(0x4E00 + 2000);
+    let got = draw(&mut r, &next);
+    assert_eq!(r.rebuilt().len(), 40);
+    assert!(
+        got == draw(&mut term().unwrap(), &next),
+        "the same as a fresh renderer's"
+    );
+}
+
+#[test]
+fn a_character_no_font_has_draws_the_system_placeholder_inside_its_cell() {
+    let Some(mut r) = term() else { return };
+    let mut s = page(5, 1);
+    text(&mut s, 0, 2, &["\u{10FFFD}"]);
+    let img = draw(&mut r, &s);
+    write_png(&img, "no-font.png");
+    let (x0, _, x1, y1) = ink_box(&img, 0, 0, 5 * CW, CH).expect("the placeholder");
+    assert!(
+        x0 >= 2 * CW && x1 <= 3 * CW && y1 <= CH,
+        "{x0}..{x1}, down to {y1}"
+    );
+    assert!(x1 - x0 > CW / 2, "squeezed, not a speck: {x0}..{x1}");
+}
+
 /// What a frame of stand-in bitmaps takes through both paints: the real GPU and the
 /// plain Rust that states the rules. A color glyph is in it, half transparent.
 #[test]
