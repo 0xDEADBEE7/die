@@ -1,5 +1,8 @@
 //! K3: keymap registration. A binding that is also a prefix is an error, a later binding
 //! for the same keys shadows the earlier one, and the leader comes from config.
+
+use die_test_cap as _;
+
 mod support;
 use die_core::*;
 use std::cell::RefCell;

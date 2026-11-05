@@ -1,6 +1,8 @@
 //! F2: the clean-environment build fails when a build script calls a C compiler
 //! or pkg-config, even when the build script carries on without it.
 
+use die_test_cap as _;
+
 use xtask::clean::{build, host};
 use xtask::util::{TempDir, write};
 

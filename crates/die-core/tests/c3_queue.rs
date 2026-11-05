@@ -1,5 +1,8 @@
 //! Criterion 3 (C3): calls that receive Ctx (hooks, callbacks, on_resize, on_enable) are queued and
 //! run from the top of the loop, never nested. `prompt` delivers None on cancel.
+
+use die_test_cap as _;
+
 mod support;
 use die_core::*;
 use std::cell::RefCell;

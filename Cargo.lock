@@ -270,6 +270,7 @@ version = "0.0.0"
 dependencies = [
  "die-core",
  "die-render",
+ "die-test-cap",
  "die-vim",
 ]
 
@@ -277,6 +278,7 @@ dependencies = [
 name = "die-core"
 version = "0.0.0"
 dependencies = [
+ "die-test-cap",
  "proptest",
  "regex-automata",
  "regex-syntax",
@@ -291,6 +293,7 @@ name = "die-dev"
 version = "0.0.0"
 dependencies = [
  "die",
+ "die-test-cap",
 ]
 
 [[package]]
@@ -299,6 +302,7 @@ version = "0.0.0"
 dependencies = [
  "block2 0.6.2",
  "die-core",
+ "die-test-cap",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -312,10 +316,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "die-test-cap"
+version = "0.0.0"
+
+[[package]]
 name = "die-vim"
 version = "0.0.0"
 dependencies = [
  "die-core",
+ "die-test-cap",
  "evil-oracle",
 ]
 
@@ -387,6 +396,7 @@ name = "evil-oracle"
 version = "0.0.0"
 dependencies = [
  "die-core",
+ "die-test-cap",
  "serde",
  "serde_json",
 ]
@@ -2078,6 +2088,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "die-test-cap",
  "prettyplease",
  "proc-macro2",
  "quote",

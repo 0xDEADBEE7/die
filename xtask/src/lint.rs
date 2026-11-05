@@ -2,18 +2,24 @@
 //! (scope §12 and D15-D17, docs/records/platforms.md §5.2).
 //!
 //! - `unsafe`: every crate inherits the workspace's `unsafe_code = "forbid"`
-//!   except die-render, which denies it and allows it on `platform::macos` only.
-//!   Nothing else lowers that level, and nothing allows `warnings` wholesale.
+//!   except two, which deny it and allow it in one module each: die-render, on
+//!   `platform::macos`, and die-test-cap, on `cap`. die-test-cap is the one exception
+//!   outside DIE's own code: a global allocator can't be written without `unsafe`, and
+//!   the crate is never linked into DIE. Nothing else lowers that level, and nothing
+//!   allows `warnings` wholesale.
 //! - The `unsafe` keyword itself appears only in those modules, since rustc's lint
 //!   misses some of it. `include!` and the `path` attribute appear nowhere, since each
 //!   can compile a file this lint doesn't read. A macro can build that attribute in
 //!   ways no token rule sees, and a manifest can point anywhere, so `cargo xtask
 //!   sources` checks what actually got compiled.
-//! - die-render's `unsafe` blocks each say why they're sound and do one unsafe
+//! - Those modules' `unsafe` blocks each say why they're sound and do one unsafe
 //!   thing, and no code changes the level of the lints that hold them to it. No
 //!   pointer is made from a reference to one element of a buffer by `NonNull::from`,
 //!   `from_mut` or `from_ref`. Nothing outside `platform` names `platform::macos`:
 //!   neutral code names `platform::backend`.
+//! - Every test binary has a memory limit: each file cargo builds one from names
+//!   die-test-cap, by the one line that does it. die-test-cap appears under
+//!   `[dev-dependencies]` only, so it can't reach a product build.
 //! - Neutral code doesn't branch on the platform: no `target_os` and the like
 //!   (in `cfg`, `cfg_attr` or `cfg_select!`, or anywhere as `target_os = "…"`),
 //!   no `std::os` module but Unix's, no `env::consts::OS`, and no build script
@@ -32,13 +38,18 @@ use toml::{Table, Value};
 
 /// The only places `allow(unsafe_code)` may appear: (file, the item it must sit on).
 /// `platform::linux` joins with the Linux backend; M2 adds die-term's engine
-/// boundary and die-core's `sys` module.
-const UNSAFE_ALLOWED: &[(&str, &str)] =
-    &[("crates/die-render/src/platform/mod.rs", "pub mod macos")];
+/// boundary and die-core's `sys` module. die-test-cap's allocator isn't linked into DIE.
+const UNSAFE_ALLOWED: &[(&str, &str)] = &[
+    ("crates/die-render/src/platform/mod.rs", "pub mod macos"),
+    ("tools/test-cap/src/lib.rs", "mod cap"),
+];
 
 /// Where the `unsafe` keyword may appear (scope §12). M2 adds die-core's `sys/` and
 /// die-term's engine boundary; `platform/linux/` joins with its code.
-const UNSAFE_DIRS: &[&str] = &["crates/die-render/src/platform/macos/"];
+const UNSAFE_DIRS: &[&str] = &[
+    "crates/die-render/src/platform/macos/",
+    "tools/test-cap/src/cap.rs",
+];
 
 /// The clippy lints a crate that allows `unsafe` must deny, so that each block says
 /// why it's sound and its SAFETY comment covers all of it.
@@ -61,6 +72,7 @@ const NEUTRAL: &[(&str, &[&str])] = &[
     ("crates/die-core", &["crates/die-core/src/sys/"]),
     ("crates/die-vim", &[]),
     ("tools/evil-oracle", &[]),
+    ("tools/test-cap", &[]),
     (
         "crates/die-render",
         &[
@@ -125,7 +137,13 @@ const PLATFORM_CRATES: &[(&str, &str)] = &[
 ];
 
 /// Crates that set their own lints instead of inheriting the workspace's.
-const OWN_LINTS: &[&str] = &["crates/die-render"];
+const OWN_LINTS: &[&str] = &["crates/die-render", "tools/test-cap"];
+
+/// The crate that gives each test binary its memory limit.
+const TEST_CAP: &str = "die-test-cap";
+
+/// The one test binary that doesn't name the cap, because the cap is its own code.
+const TEST_CAP_LIB: &str = "tools/test-cap/src/lib.rs";
 
 /// The directories of the crates this lint reads: the workspace's `members`. A path
 /// dependency inside the workspace is a member too, for cargo, but isn't listed, and
@@ -176,6 +194,7 @@ pub fn run(root: &Path) -> Result {
         for (key, deps) in dep_tables(&man) {
             check_pins(&format!("{name} [{key}]"), deps, &mut errors);
         }
+        check_cap_dependency(&name, &man, &mut errors);
         let lints = man.get("lints");
         if OWN_LINTS.contains(&m.as_str()) {
             check_own_lints(&name, lints, &mut errors);
@@ -224,6 +243,17 @@ pub fn run(root: &Path) -> Result {
                 check_platform_code(&rel, &src, &mut errors);
             }
         }
+    }
+
+    let metadata = output(Command::new(cargo()).current_dir(root).args([
+        "metadata",
+        "--no-deps",
+        "--offline",
+        "--format-version",
+        "1",
+    ]))?;
+    for rel in test_roots(&metadata)? {
+        check_test_root(&rel, &read(&root.join(&rel))?, &mut errors);
     }
 
     for krate in ["die-core", "die-vim"] {
@@ -311,6 +341,119 @@ fn check_own_lints(name: &str, lints: Option<&Value>, errors: &mut Vec<String>) 
     for lint in UNSAFE_BLOCK_LINTS.iter().filter(|l| !denied("clippy", l)) {
         errors.push(format!("{name}: must set [lints.clippy] {lint} = \"deny\""));
     }
+}
+
+/// die-test-cap may be a dev-dependency only, on every target and under any name.
+fn check_cap_dependency(name: &str, man: &Table, errors: &mut Vec<String>) {
+    for (key, deps) in dep_tables(man) {
+        if key.ends_with("dev-dependencies") {
+            continue;
+        }
+        for (dep, spec) in deps {
+            let package = spec.get("package").and_then(Value::as_str);
+            if package.unwrap_or(dep) == TEST_CAP {
+                errors.push(format!(
+                    "{name} [{key}]: depends on {TEST_CAP}, which belongs under \
+                     [dev-dependencies] only: it replaces the global allocator, and may never \
+                     reach a product build (scope §12)"
+                ));
+            }
+        }
+    }
+}
+
+/// The file each test binary is built from, as a path from the workspace's root, from
+/// `cargo metadata --no-deps`. Cargo knows them all, wherever a manifest puts them: a
+/// `tests/*.rs` file or a `tests/*/main.rs`, a crate's library and binaries, and a bench,
+/// which `cargo test --all-targets` runs. Examples aren't run. Helper modules, such as
+/// `tests/support/mod.rs`, aren't targets.
+pub fn test_roots(metadata: &str) -> Result<Vec<String>> {
+    let meta: serde_json::Value =
+        serde_json::from_str(metadata).map_err(|e| format!("lint: cargo metadata: {e}"))?;
+    let root = meta["workspace_root"].as_str().unwrap_or_default();
+    let mut roots = Vec::new();
+    for package in meta["packages"].as_array().map_or(&[][..], Vec::as_slice) {
+        for target in package["targets"].as_array().map_or(&[][..], Vec::as_slice) {
+            let kinds = target["kind"].as_array().map_or(&[][..], Vec::as_slice);
+            if target["test"] != true && !kinds.iter().any(|k| k == "bench") {
+                continue;
+            }
+            let path = target["src_path"].as_str().unwrap_or_default();
+            let rel = path
+                .strip_prefix(root)
+                .ok_or_else(|| format!("lint: {path} isn't under the workspace's root"))?;
+            roots.push(rel.trim_start_matches('/').to_string());
+        }
+    }
+    Ok(roots)
+}
+
+/// A test binary's root says `use die_test_cap as _;` at its top level, under no attribute
+/// but `#[cfg(test)]`, so a comment, a string or a `#[cfg(any())]` doesn't count. Tokens,
+/// so its layout doesn't matter. The compiler sees that the crate can be found, and that a
+/// crate root keeps the line to `cfg(test)`, since a dev-dependency is there only for tests.
+pub fn check_test_root(rel: &str, src: &str, errors: &mut Vec<String>) {
+    use crate::count::{Tok, lex};
+    if rel == TEST_CAP_LIB {
+        return;
+    }
+    let toks = lex(src);
+    let word = |i: usize, s: &str| toks.get(i).map(|t| &t.0) == Some(&Tok::Ident(s.into()));
+    let punct = |i: usize, c: char| toks.get(i).map(|t| &t.0) == Some(&Tok::Punct(c));
+    let line_at = |i: usize| {
+        word(i, "use")
+            && word(i + 1, "die_test_cap")
+            && word(i + 2, "as")
+            && word(i + 3, "_")
+            && punct(i + 4, ';')
+    };
+    // `#[cfg(test)]`, with its `]` at `end`.
+    let cfg_test = |end: usize| {
+        end >= 6
+            && punct(end - 6, '#')
+            && punct(end - 5, '[')
+            && word(end - 4, "cfg")
+            && punct(end - 3, '(')
+            && word(end - 2, "test")
+            && punct(end - 1, ')')
+    };
+    // The `[` of the attribute whose `]` is at `end`.
+    let open_of = |end: usize| {
+        let mut depth = 0;
+        (0..=end).rev().find(|&j| {
+            depth += i32::from(punct(j, ']')) - i32::from(punct(j, '['));
+            depth == 0
+        })
+    };
+    // No attribute on the line at `i` can take it away. An inner one, `#![...]`, is on the
+    // file, and says nothing about the line.
+    let kept = |i: usize| {
+        let mut at = i;
+        while at > 0 && punct(at - 1, ']') {
+            match open_of(at - 1) {
+                Some(open) if open > 0 && punct(open - 1, '!') => return true,
+                Some(open) if open > 0 && cfg_test(at - 1) => at = open - 1,
+                _ => return false,
+            }
+        }
+        true
+    };
+    let mut depth = 0;
+    for (i, tok) in toks.iter().enumerate() {
+        match tok.0 {
+            Tok::Punct('{') => depth += 1,
+            Tok::Punct('}') => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && line_at(i) && kept(i) {
+            return;
+        }
+    }
+    errors.push(format!(
+        "{rel}: this test binary has no memory limit. Add `use die_test_cap as _;` (in a crate \
+         root, under `#[cfg(test)]`) and `die-test-cap.workspace = true` under \
+         [dev-dependencies] (tools/test-cap, scope §12)"
+    ));
 }
 
 /// Cargo runs `build.rs` unless `package.build` is `false`, and runs the file
@@ -690,8 +833,8 @@ pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
                 if UNSAFE_BLOCK_LINTS.contains(&w.as_str()) || w == UNSAFE_BLOCK_GROUP =>
             {
                 format!(
-                    "`{w}`: die-render's manifest denies the unsafe-block lints, and code \
-                     may not change their level"
+                    "`{w}`: the manifest of each crate with `unsafe` denies the unsafe-block \
+                     lints, and code may not change their level"
                 )
             }
             _ => continue,
@@ -811,6 +954,18 @@ mod tests {
             check("crates/die-core/src/lib.rs", "#![allow( unsafe_code )]\n"),
             1
         );
+        // die-test-cap allows it on its allocator's module, and nowhere else.
+        let cap = "tools/test-cap/src/lib.rs";
+        assert_eq!(check(cap, "#[allow(unsafe_code)]\nmod cap;\n"), 0);
+        assert_eq!(check(cap, "#[allow(unsafe_code)]\nmod other;\n"), 1);
+        assert_eq!(check(cap, "#![allow(unsafe_code)]\n"), 1);
+        assert_eq!(
+            check(
+                "tools/test-cap/tests/cap.rs",
+                "#[allow(unsafe_code)]\nmod cap;\n"
+            ),
+            1
+        );
         assert_eq!(
             check(
                 "crates/die-core/src/x.rs",
@@ -901,13 +1056,19 @@ mod tests {
         assert_eq!(
             e,
             [format!(
-                "{core}:1: `unsafe` outside crates/die-render/src/platform/macos/ (scope §12)"
+                "{core}:1: `unsafe` outside crates/die-render/src/platform/macos/, \
+                 tools/test-cap/src/cap.rs (scope §12)"
             )]
         );
         let macos = "crates/die-render/src/platform/macos/text.rs";
         let e = check("crates/die-render/src/platform/mod.rs", "unsafe {}\n");
         assert_eq!(e.len(), 1, "platform's neutral part: {e:?}");
+        // The cap's one exception is its one file, not its crate.
+        let cap = "tools/test-cap/src/cap.rs";
+        assert_eq!(check("tools/test-cap/src/lib.rs", "unsafe {}\n").len(), 1);
+        assert_eq!(check("tools/test-cap/tests/cap.rs", "unsafe {}\n").len(), 1);
         let fine = [
+            (cap, "unsafe impl GlobalAlloc for Cap {}\n"),
             (macos, "unsafe {}\n"),
             (macos, "unsafe extern \"C\" { fn abs(x: i32) -> i32; }\n"),
             (core, "const S: &str = \"unsafe {}\";\n"),
@@ -1093,6 +1254,165 @@ mod tests {
             1
         );
         assert_eq!(check("").len(), 3);
+    }
+
+    #[test]
+    fn a_test_binary_names_the_cap() {
+        let check = |rel: &str, src: &str| {
+            let mut e = Vec::new();
+            check_test_root(rel, src, &mut e);
+            e
+        };
+        let test = "crates/die-core/tests/new.rs";
+        let e = check(test, "#[test]\nfn f() {}\n");
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(
+            e[0].starts_with(test) && e[0].contains("no memory limit"),
+            "{e:?}"
+        );
+        for src in [
+            "",
+            "// use die_test_cap as _;\n",
+            "const S: &str = \"use die_test_cap as _;\";\n",
+            // An attribute that takes it away again.
+            "#[cfg(any())]\nuse die_test_cap as _;\n",
+            "#[cfg(not(test))]\nuse die_test_cap as _;\n",
+            "#[cfg(any())]\n#[cfg(test)]\nuse die_test_cap as _;\n",
+            "#[cfg(test)]\n#[cfg(any())]\nuse die_test_cap as _;\n",
+            // Not the line.
+            "use die_test_cap;\n",
+            "use other as _;\n",
+            "use die_test_cap as cap;\n",
+            "mod m {\n    use die_test_cap as _;\n}\n",
+            "fn f() {\n    use die_test_cap as _;\n}\n",
+        ] {
+            assert_eq!(check(test, src).len(), 1, "{src}");
+        }
+        for src in [
+            "use die_test_cap as _;\n",
+            "//! Docs.\n#![allow(clippy::type_complexity)]\n\nuse die_test_cap as _;\n\nmod support;\n",
+            "#![cfg(target_os = \"macos\")]\n\nuse die_test_cap as _;\n",
+            "#[cfg(test)]\nuse die_test_cap as _;\n",
+            "#[cfg( test )] use  die_test_cap  as _ ;\n",
+            "#![forbid(unsafe_code)]\n\n#[cfg(test)]\nuse die_test_cap as _;\n",
+            "mod m {}\nuse die_test_cap as _;\n",
+            "#[derive(Debug)]\nstruct S;\nuse die_test_cap as _;\n",
+        ] {
+            assert_eq!(check(test, src), Vec::<String>::new(), "{src}");
+        }
+        // The one that can't: it's the cap. Its tests can.
+        assert_eq!(check(TEST_CAP_LIB, ""), Vec::<String>::new());
+        assert_eq!(check("tools/test-cap/tests/cap.rs", "").len(), 1);
+        assert_eq!(check("tools/test-cap/src/cap.rs", "").len(), 1);
+    }
+
+    #[test]
+    fn test_roots_are_what_cargo_tests() {
+        let target = |kind: &str, path: &str, test: bool| serde_json::json!({"kind": [kind], "src_path": path, "test": test});
+        let meta = serde_json::json!({
+            "workspace_root": "/w",
+            "packages": [
+                {"targets": [
+                    target("lib", "/w/crates/a/src/lib.rs", true),
+                    target("bin", "/w/crates/a/src/main.rs", true),
+                    target("test", "/w/crates/a/tests/new.rs", true),
+                    target("test", "/w/crates/a/tests/dir/main.rs", true),
+                    target("test", "/w/crates/a/checks/named.rs", true),
+                    target("bench", "/w/crates/a/benches/b.rs", false),
+                    target("example", "/w/crates/a/examples/e.rs", false),
+                    target("custom-build", "/w/crates/a/build.rs", false),
+                ]},
+                {"targets": [
+                    target("lib", "/w/crates/b/src/lib.rs", false),
+                    target("proc-macro", "/w/crates/b/src/m.rs", true),
+                ]},
+            ],
+        });
+        assert_eq!(
+            test_roots(&meta.to_string()).unwrap(),
+            [
+                "crates/a/src/lib.rs",
+                "crates/a/src/main.rs",
+                "crates/a/tests/new.rs",
+                "crates/a/tests/dir/main.rs",
+                "crates/a/checks/named.rs",
+                "crates/a/benches/b.rs",
+                "crates/b/src/m.rs",
+            ]
+        );
+        assert!(test_roots("not json").is_err());
+        let outside = serde_json::json!({
+            "workspace_root": "/w",
+            "packages": [{"targets": [target("test", "/x/t.rs", true)]}],
+        });
+        assert!(test_roots(&outside.to_string()).is_err());
+    }
+
+    #[test]
+    fn the_cap_is_a_dev_dependency_only() {
+        let check = |toml: &str| {
+            let man: Table = toml.parse().unwrap();
+            let mut e = Vec::new();
+            check_cap_dependency("m/Cargo.toml", &man, &mut e);
+            e
+        };
+        assert_eq!(check(""), Vec::<String>::new());
+        assert_eq!(
+            check("[dev-dependencies]\ndie-test-cap.workspace = true\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            check("[target.'cfg(unix)'.dev-dependencies]\ndie-test-cap = { workspace = true }\n"),
+            Vec::<String>::new()
+        );
+        for (toml, table) in [
+            (
+                "[dependencies]\ndie-test-cap.workspace = true\n",
+                "[dependencies]",
+            ),
+            (
+                "[build-dependencies]\ndie-test-cap.workspace = true\n",
+                "[build-dependencies]",
+            ),
+            (
+                "[target.'cfg(unix)'.dependencies]\ndie-test-cap.workspace = true\n",
+                "[target.cfg(unix).dependencies]",
+            ),
+            (
+                "[dependencies]\ncap = { package = \"die-test-cap\", path = \"../test-cap\" }\n",
+                "[dependencies]",
+            ),
+            (
+                "[dependencies]\ndie-test-cap.workspace = true\n\
+                 [dev-dependencies]\ndie-test-cap.workspace = true\n",
+                "[dependencies]",
+            ),
+        ] {
+            let e = check(toml);
+            assert_eq!(e.len(), 1, "{toml}");
+            assert!(e[0].starts_with(&format!("m/Cargo.toml {table}:")), "{e:?}");
+        }
+    }
+
+    /// The other half of the line's proof: `tools/test-cap/tests/linked.rs` shows it in a
+    /// `tests/*.rs` file, and this one in a crate root, under `#[cfg(test)]`. The block's
+    /// pages are never touched, so this costs nothing if the cap is missing.
+    #[test]
+    fn the_line_in_a_crate_root_installs_the_cap() {
+        const CHILD: &str = "XTASK_TEST_CAP_CHILD";
+        let name = "lint::tests::the_line_in_a_crate_root_installs_the_cap";
+        if std::env::var_os(CHILD).is_some() {
+            std::hint::black_box(vec![0u8; 1 << 40]);
+            std::process::exit(0);
+        }
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{out:?}");
+        assert!(stderr.contains("die-test-cap: "), "{out:?}");
     }
 
     #[test]
