@@ -508,6 +508,7 @@ fn numbered_lines(n: usize) -> String {
 /// A mistyped count mustn't freeze the editor. Joining line by line took 231 seconds here
 /// in a release build, because each edit laid the whole line out again.
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn j_with_a_huge_count_on_a_long_text_is_quick() {
     let start = numbered_lines(20_000);
     let mut ctx = editor();
