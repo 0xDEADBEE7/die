@@ -246,7 +246,7 @@ impl Ctx {
             && let Err(c) = catch(|| f(&path, &mut settings))
         {
             settings = self.text_defaults.clone();
-            self.messages.push(format!(
+            self.log_error(format!(
                 "{name}: file settings panicked ({}); opened with the defaults",
                 c.msg
             ));
@@ -510,12 +510,12 @@ impl Ctx {
         match catch(|| f(name, self.files.by_buffer.get(&buf))) {
             Ok(text) => text,
             Err(c) => {
-                let msg = c.msg;
-                self.messages.push(format!(
+                let (msg, name) = (c.msg, name.to_owned());
+                self.log_error(format!(
                     "status text panicked: {msg}. Status lines show the buffer's name now."
                 ));
                 self.files.status_text = None;
-                name.to_owned()
+                name
             }
         }
     }
