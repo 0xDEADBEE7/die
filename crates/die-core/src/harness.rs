@@ -25,6 +25,8 @@ const CHROME: usize = 2;
 pub struct Harness {
     ctx: Ctx,
     clipboard: FakeClipboard,
+    /// Errors logged outside a harness input, until [`Harness::take_errors`] reads them.
+    earlier: Vec<String>,
 }
 
 /// One typed key and what it did.
@@ -32,8 +34,8 @@ pub struct Harness {
 pub struct KeyLog {
     /// The key, in notation.
     pub key: String,
-    /// The errors and panics logged by the time everything it started had finished. News such
-    /// as "Wrote foo" is only in [`Ctx::messages`].
+    /// The errors and panics logged by the time everything it started had finished and its
+    /// frame was drawn. News such as "Wrote foo" is only in [`Ctx::messages`].
     pub errors: Vec<String>,
 }
 
@@ -43,8 +45,9 @@ impl Harness {
         Harness::with_config(exts, Config::default())
     }
 
-    /// A harness with these extensions and this config, whose real clock and clipboard, if it
-    /// names them, give way to fake ones. A fake clock it sets stays.
+    /// A harness with these extensions and this config. A real clock gives way to a fake one,
+    /// and a fake clock it sets stays. Any clipboard it names gives way too, even a
+    /// [`FakeClipboard`], so use [`Harness::fake_clipboard`] or [`Harness::set_clipboard`].
     pub fn with_config(
         exts: Vec<Box<dyn Extension>>,
         mut config: Config,
@@ -57,12 +60,23 @@ impl Harness {
         let mut ctx = Ctx::with_config(exts, config)?;
         ctx.errors = Some(vec![]);
         ctx.set_frame_size(COLS, ROWS + CHROME);
-        Ok(Harness { ctx, clipboard })
+        Ok(Harness {
+            ctx,
+            clipboard,
+            earlier: vec![],
+        })
     }
 
-    /// The clipboard core is using.
+    /// The clipboard core is using, unless a test went round [`Harness::set_clipboard`] to give
+    /// it another kind with [`Ctx::set_clipboard`].
     pub fn fake_clipboard(&self) -> &FakeClipboard {
         &self.clipboard
+    }
+
+    /// Use this clipboard from now on, and [`Harness::fake_clipboard`] with it.
+    pub fn set_clipboard(&mut self, fake: FakeClipboard) {
+        self.clipboard = fake.clone();
+        self.ctx.set_clipboard(fake);
     }
 
     /// A new text buffer, shown in the focused window or in the first window if there's none.
@@ -93,15 +107,19 @@ impl Harness {
     }
 
     /// Type `keys`, in notation, one at a time, each run until idle and followed by a frame.
-    /// Unlike [`Ctx::feed_keys`], a key that fails doesn't drop the ones after it. Err if the
-    /// notation doesn't parse, and then none are typed.
+    /// Unlike [`Ctx::feed_keys`], a key that fails doesn't drop the ones after it. If a job
+    /// outlasts its wait, the rest of the keys don't wait for it again, as with
+    /// [`Ctx::advance`]. Err if the notation doesn't parse, and then none are typed.
     pub fn type_keys(&mut self, keys: &str) -> std::result::Result<Vec<KeyLog>, String> {
         let events = typed(keys, Some(self.ctx.leader))?;
+        let mut wait = true;
         Ok(events
             .into_iter()
-            .map(|ev| KeyLog {
-                key: key_notation(std::slice::from_ref(&ev)),
-                errors: self.send(Input::Key(ev)),
+            .map(|ev| {
+                let key = key_notation(std::slice::from_ref(&ev));
+                let (errors, waited) = self.run_input(Input::Key(ev), wait);
+                wait = waited;
+                KeyLog { key, errors }
             })
             .collect())
     }
@@ -121,20 +139,25 @@ impl Harness {
 
     /// Any input, run until idle and followed by a frame. Returns the errors it caused.
     pub fn send(&mut self, input: Input) -> Vec<String> {
-        self.take_errors();
+        self.run_input(input, true).0
+    }
+
+    /// One input and its frame: the errors it caused, and whether to go on waiting for jobs.
+    fn run_input(&mut self, input: Input, wait: bool) -> (Vec<String>, bool) {
+        self.set_errors_aside();
         self.ctx.handle(input);
-        self.ctx.run_until_idle();
+        let wait = self.ctx.drain(wait);
         self.redisplay();
-        self.take_errors()
+        (self.new_errors(), wait)
     }
 
     /// Move the fake clock on, as [`Ctx::advance`] does, then draw a frame. Returns the errors
     /// that came of it.
     pub fn advance(&mut self, d: Duration) -> Vec<String> {
-        self.take_errors();
+        self.set_errors_aside();
         self.ctx.advance(d);
         self.redisplay();
-        self.take_errors()
+        self.new_errors()
     }
 
     /// The buffer line at the window's top on screen, from 0.
@@ -170,7 +193,20 @@ impl Harness {
         self.ctx.scene();
     }
 
-    fn take_errors(&mut self) -> Vec<String> {
+    /// The errors and panics no harness input has returned, oldest first: those logged outside
+    /// one, such as by [`Ctx::feed_keys`] and [`Ctx::run_until_idle`] for a macro, or
+    /// [`Ctx::open_file`].
+    pub fn take_errors(&mut self) -> Vec<String> {
+        self.set_errors_aside();
+        std::mem::take(&mut self.earlier)
+    }
+
+    fn set_errors_aside(&mut self) {
+        let errors = self.new_errors();
+        self.earlier.extend(errors);
+    }
+
+    fn new_errors(&mut self) -> Vec<String> {
         self.ctx
             .errors
             .as_mut()
@@ -199,7 +235,8 @@ struct FakeState {
     writes: Vec<Register>,
 }
 
-/// A clipboard in memory, shared by its clones, so a test keeps one and gives core the other.
+/// A clipboard in memory, shared by its clones, so a test keeps one and gives core the other
+/// with [`Harness::set_clipboard`].
 /// Every workspace starts with its own until the host connects the real one, as it does with
 /// the clock ([`Ctx::set_clipboard`]).
 #[derive(Clone, Default)]
