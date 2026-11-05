@@ -1,7 +1,8 @@
 //! The font policy, as data: no font is opened, so these run under `ci --linux`.
 
 use die_render::font::{
-    CellMetrics, Draw, FaceMetrics, Fit, Ink, RangeRule, chain, fit, rule_for, styled_face,
+    CellMetrics, Draw, FaceMetrics, Fit, Ink, RangeRule, chain, covering, fit, rule_for,
+    styled_face,
 };
 use die_render::frame::Plane;
 use die_render::sprite::Line;
@@ -254,4 +255,21 @@ fn faces_are_tried_pinned_then_styled_then_regular() {
     assert_eq!(chain(None, 3), [3, 0]);
     assert_eq!(chain(Some(4), 0), [4, 0]);
     assert_eq!(chain(Some(5), 1), [5, 1, 0]);
+}
+
+#[test]
+fn a_cluster_stays_in_the_first_face_that_has_all_of_it() {
+    // Face 1 has the base only, face 2 has both, and face 3 has the mark only.
+    let has = |face: usize, c: char| match c {
+        'a' => face <= 2,
+        _ => face >= 2,
+    };
+    assert_eq!(covering(&[1, 2, 3], "a\u{301}", has), Some(2));
+    assert_eq!(
+        covering(&[1, 3], "a\u{301}", has),
+        None,
+        "no face has it whole"
+    );
+    assert_eq!(covering(&[1, 2], "a", has), Some(1), "the order decides");
+    assert_eq!(covering(&[], "a", has), None);
 }

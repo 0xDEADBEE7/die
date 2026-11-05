@@ -200,6 +200,13 @@ pub fn fit(ink: Ink, advance: f64, span: u32, cell: &CellMetrics, fallback: bool
     })
 }
 
+/// The first face in `chain` that has every character of `text`, as `has` reports.
+/// A cluster stays in one face where it can, so its marks fit its base.
+pub fn covering(chain: &[usize], text: &str, has: impl Fn(usize, char) -> bool) -> Option<usize> {
+    let all = |&i: &usize| text.chars().all(|c| has(i, c));
+    chain.iter().copied().find(all)
+}
+
 /// Who draws a range of characters.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Draw {
