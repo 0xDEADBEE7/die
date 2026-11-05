@@ -1188,7 +1188,7 @@ fn the_gutter_agrees_with_the_naive_layout_where_it_grows() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: naive_layout_cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: naive_layout_cases(), max_shrink_iters: shrink_iters(), ..ProptestConfig::default() })]
     /// K4's second check: rows, positions, numbers and queries match the naive layout, across edits
     /// and decoration changes, so a stale cache shows too.
     #[test]
@@ -1310,8 +1310,17 @@ fn prop_cases() -> Option<u32> {
     std::env::var("DIE_PROP_CASES").ok()?.parse().ok()
 }
 
+/// `cargo xtask mutate` sets `DIE_PROP_SHRINK=0`: a planted bug needs catching, not explaining,
+/// and shrinking a failure took longer than finding it.
+fn shrink_iters() -> u32 {
+    std::env::var("DIE_PROP_SHRINK")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(20_000)
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: shrink_iters(), ..ProptestConfig::default() })]
     #[test]
     fn cursor_never_hidden_and_render_agrees_with_motions(init in text_s(80), ops in prop::collection::vec(op(), 1..40)) {
         run(init, ops);
@@ -1526,7 +1535,7 @@ fn text_of(ctx: &Ctx, b: BufferId) -> String {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: shrink_iters(), ..ProptestConfig::default() })]
     #[test]
     fn undo_is_exact_around_silent_edits(init in text_s(30), start in any::<u16>(), del_len in 0u8..5, deletion in any::<bool>(),
                                          shape in 0u8..3, steps in prop::collection::vec(u_step(), 1..20)) {

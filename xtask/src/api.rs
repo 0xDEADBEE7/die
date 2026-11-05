@@ -4,7 +4,7 @@
 //! Every `pub` item in die-core's source counts, reachable or not, so the list
 //! errs toward showing too much. Doc-only changes are listed apart.
 
-use crate::util::{Result, git, output, read, rust_files};
+use crate::util::{Result, git, merge_base, output, read, rust_files};
 use quote::ToTokens;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -26,10 +26,12 @@ struct Entry {
 pub fn run(root: &Path, base: Option<&str>) -> Result {
     let base = match base {
         Some(b) => b.to_string(),
-        None => output(git(root).args(["merge-base", "HEAD", "main"]))
-            .or_else(|_| output(git(root).args(["rev-parse", "HEAD"])))?
-            .trim()
-            .to_string(),
+        None => match merge_base(root, "HEAD") {
+            Ok(base) => base,
+            Err(_) => output(git(root).args(["rev-parse", "HEAD"]))?
+                .trim()
+                .to_string(),
+        },
     };
     let short = output(git(root).args(["rev-parse", "--short", &base]))?
         .trim()

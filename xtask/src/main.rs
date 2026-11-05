@@ -1,7 +1,7 @@
 #[cfg(test)]
 use die_test_cap as _;
 
-use xtask::util::{Result, root};
+use xtask::util::{Result, root, task_dir};
 use xtask::{api, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, sources};
 
 const USAGE: &str = "usage: cargo xtask <task>
@@ -24,11 +24,17 @@ const USAGE: &str = "usage: cargo xtask <task>
                        pkg-config, which no build script calls unless allowlisted (D16)
   cross-check          clippy -D warnings (so cargo check) of the workspace for
                        x86_64 and aarch64 Linux, with no C compiler or pkg-config
-  mutate [--cases N]   die-core's planted bugs; the property tests must catch each, by
-                       a named test, the memory limit or the time limit
-  ci [--worktree | --rev R]
-                       every check in a fresh clone of HEAD (or R), or of the
-                       working tree as git would commit it
+  mutate [--changed] [--cases N]
+                       die-core's planted bugs; the property tests must catch each, by
+                       a named test, the memory limit or the time limit. --changed runs
+                       only those whose file changed since the merge base with main
+  ci [--full] [--worktree | --rev R]
+                       the checks in a fresh clone of HEAD (or R), or of the working
+                       tree as git would commit it. guards and clean-build are skipped
+                       unless the diff from the merge base with main touches Cargo.toml,
+                       Cargo.lock, .cargo/, rust-toolchain.toml, a build script, xtask/
+                       or tools/test-cap/, and the tests run at DIE_PROP_CASES=2000 unless
+                       it's set. --full runs every step at the old property counts
   ci --linux [--worktree | --rev R]
                        the tests, the oracle and the Linux clean-build on aarch64
                        Linux, in a container on colima (exit test (f))
@@ -48,23 +54,26 @@ fn dispatch(args: &[String]) -> Result {
     match a.as_slice() {
         ["budget"] => budget::run(&root),
         ["lint"] => lint::run(&root),
-        ["sources"] => sources::run(&root, &root.join("target/xtask/sources")),
-        ["guards"] => guards::run(&root, &root.join("target/xtask/guards")),
+        ["sources"] => sources::run(&root, &task_dir(&root, "sources")),
+        ["guards"] => guards::run(&root, &task_dir(&root, "guards")),
         ["api-diff"] => api::run(&root, None),
         ["api-diff", "--base", b] => api::run(&root, Some(b)),
         ["fonts"] => fonts::run_fonts(&root),
         ["clean-build"] => clean::run(&root, false),
         ["clean-build", "--keep"] => clean::run(&root, true),
-        ["cross-check"] => cross::run(&root, &root.join("target/xtask/cross")),
-        ["mutate"] => mutate::run(&root, 2000),
-        ["mutate", "--cases", n] => mutate::run(
-            &root,
-            n.parse()
-                .map_err(|_| format!("--cases {n}: not a number"))?,
-        ),
+        ["cross-check"] => cross::run(&root, &task_dir(&root, "cross")),
+        ["mutate", rest @ ..] => match mutate::Options::parse(rest) {
+            Some(options) => mutate::run(&root, options),
+            None => Err(USAGE.into()),
+        },
         ["ci", rest @ ..] => {
             let linux = rest.contains(&"--linux");
-            let rest: Vec<&str> = rest.iter().copied().filter(|a| *a != "--linux").collect();
+            let full = rest.contains(&"--full");
+            let rest: Vec<&str> = rest
+                .iter()
+                .copied()
+                .filter(|a| !matches!(*a, "--linux" | "--full"))
+                .collect();
             let source = match rest.as_slice() {
                 [] => ci::Source::Rev("HEAD".into()),
                 ["--rev", r] => ci::Source::Rev(r.to_string()),
@@ -72,9 +81,10 @@ fn dispatch(args: &[String]) -> Result {
                 _ => return Err(USAGE.into()),
             };
             if linux {
+                // Its container runs everything, at the tests' own counts.
                 linux::run(&root, source)
             } else {
-                ci::run(&root, source)
+                ci::run(&root, source, full)
             }
         }
         ["linux-host"] => linux::host_checks(&root),
