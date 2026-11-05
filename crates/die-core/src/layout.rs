@@ -1,13 +1,24 @@
-//! The one layout function (C16). Render and motions both call `layout`, through one cache.
-//! It handles soft wrap, centered maximum width, the gutter, tabs, wide characters,
-//! stored Hide decorations (with or without replacement text) and virtual text.
+//! The one layout function (C16). Render and motions both read it, through one cache. Contract §9
+//! is the rule, from "How text becomes rows" on.
+//!
+//! A display line is never laid out whole unless something asks for its end. `Walker` steps along
+//! it item by item from any row's start, `Src::place` makes one row, and `Line` keeps where each
+//! row starts, so a row's cells are made again when they're drawn and hold no memory. An edit keeps
+//! the rows it can't have changed. Cursor positions need no layout at all: they read the rope around
+//! them, so they cost the same whatever the line's length.
 #![warn(missing_docs)]
+
+use crate::Registry;
+use crate::error::*;
 use crate::ids::*;
+use crate::scene::Glyph;
 use crate::text::*;
-use ropey::Rope;
-use std::collections::HashMap;
+use ropey::RopeSlice;
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::ops::{Range, RangeInclusive};
 use std::rc::Rc;
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete, UnicodeSegmentation};
 use unicode_width::UnicodeWidthStr;
 
 /// A direction along the text.
@@ -19,61 +30,10 @@ pub enum Dir {
     Backward,
 }
 
-/// A merged hidden range. With a replacement, `start` is a cursor position ("the fold line").
-#[derive(Clone, Debug)]
-pub(crate) struct Span {
-    pub start: usize,
-    pub end: usize,
-    pub repl: Option<String>,
-    pub seq: u64,
-}
-
-#[derive(Default, Debug)]
-pub(crate) struct Hidden {
-    spans: Vec<Span>, // sorted, non-overlapping
-}
-
-impl Hidden {
-    /// Overlapping hides merge. The first-starting one wins, preferring one with a replacement,
-    /// then the longest, then the one added first.
-    pub fn build(mut v: Vec<Span>) -> Hidden {
-        v.retain(|s| s.start < s.end);
-        v.sort_by_key(|s| (s.start, s.repl.is_none(), std::cmp::Reverse(s.end), s.seq));
-        let mut out: Vec<Span> = vec![];
-        for s in v {
-            match out.last_mut() {
-                Some(l) if s.start < l.end => l.end = l.end.max(s.end),
-                _ => out.push(s),
-            }
-        }
-        Hidden { spans: out }
-    }
-    fn last_le(&self, q: usize) -> Option<&Span> {
-        let i = self.spans.partition_point(|s| s.start <= q);
-        i.checked_sub(1).map(|i| &self.spans[i])
-    }
-    /// Is the character at `q` hidden?
-    pub fn covers(&self, q: usize) -> bool {
-        self.last_le(q).is_some_and(|s| q < s.end)
-    }
-    fn starting_at(&self, p: usize) -> Option<&Span> {
-        self.last_le(p).filter(|s| s.start == p)
-    }
-    fn next_start_after(&self, p: usize) -> Option<usize> {
-        let i = self.spans.partition_point(|s| s.start <= p);
-        self.spans.get(i).map(|s| s.start)
-    }
-    fn anchor_containing(&self, p: usize) -> Option<usize> {
-        self.last_le(p)
-            .filter(|s| s.repl.is_some() && s.start < p && p < s.end)
-            .map(|s| s.start)
-    }
-}
-
 /// What a laid-out cell shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CellKind {
-    /// A cell of the buffer's text.
+pub(crate) enum CellKind {
+    /// A cell of the buffer's text, or of a control character's drawing.
     Text,
     /// A cell of a tab.
     Tab,
@@ -81,19 +41,23 @@ pub enum CellKind {
     Replacement,
     /// A cell of virtual text.
     Virtual,
-    /// Padding where a wide character didn't fit at the end of a row.
+    /// Blank, where a wider item moved to the next row. It has no position.
     Filler,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-/// One cell of a laid-out row: what layout and motions agree is on screen.
-pub struct LayoutCell {
-    /// The grapheme drawn here; "" for the second cell of a wide character.
-    pub text: String,
-    /// The buffer position this cell starts, if any.
-    pub pos: Option<usize>,
-    /// What the cell shows.
+/// One cell of a laid-out row. Rows are made again when they're drawn, so these aren't kept.
+#[derive(Clone, Debug)]
+pub(crate) struct LayoutCell {
+    /// What it draws.
+    pub glyph: Glyph,
+    /// The position it shows, or for virtual text the position it stands before.
+    pub pos: usize,
+    /// The display column of the item it belongs to.
+    pub vcol: usize,
+    /// What it shows.
     pub kind: CellKind,
+    /// The face its `Styled` text gives it.
+    pub face: Option<&'static str>,
 }
 
 /// A position the cursor can occupy, and where it is drawn. `vcol` counts cells from the
@@ -113,210 +77,942 @@ pub struct Stop {
 /// One display line: a logical line, joined with the lines after it when a Hide covers its newline.
 #[derive(Clone, Debug)]
 pub struct DisplayLine {
-    /// Where it starts in the buffer, in bytes.
-    pub start: usize,
-    /// Where the next display line starts, or the end of the text for the last one.
-    pub end: usize,
-    /// The first logical line it holds, from 0.
-    pub first_line: usize,
-    /// The last logical line it holds, from 0.
-    pub last_line: usize,
-    /// Whether this is the last display line of the text.
-    pub eof: bool,
-    /// Its rows, for the width it was laid out at. Without wrapping, one row.
-    pub rows: Vec<Vec<LayoutCell>>,
-    /// Its cursor positions, in order. There's always at least one.
-    pub stops: Vec<Stop>,
-}
-
-impl DisplayLine {
-    /// The last stop at or before `pos` (or the first stop).
-    pub fn stop_le(&self, pos: usize) -> Stop {
-        let i = self.stops.partition_point(|s| s.pos <= pos);
-        self.stops[i.saturating_sub(1)]
-    }
-    /// Whether `pos` is a cursor position on this line.
-    pub fn is_stop(&self, pos: usize) -> bool {
-        self.stops.binary_search_by_key(&pos, |s| s.pos).is_ok()
-    }
-}
-
-struct Builder {
-    width: Option<usize>,
-    tab: usize,
-    rows: Vec<Vec<LayoutCell>>,
-    col: usize,
-    vcol: usize,
+    start: usize,
+    end: usize,
+    lines: RangeInclusive<usize>,
+    eof: bool,
     stops: Vec<Stop>,
 }
 
-impl Builder {
-    fn fits(&self, n: usize) -> bool {
-        self.width.is_none_or(|w| self.col + n <= w)
+impl DisplayLine {
+    /// Where it starts in the buffer, in bytes.
+    pub fn start(&self) -> usize {
+        self.start
     }
-    fn newrow(&mut self) {
-        self.rows.push(vec![]);
-        self.col = 0;
+    /// Where the next display line starts, or the end of the text for the last one.
+    pub fn end(&self) -> usize {
+        self.end
     }
-    fn push(&mut self, text: &str, pos: Option<usize>, kind: CellKind) {
-        if !self.fits(1) {
-            self.newrow();
-        }
-        self.rows.last_mut().unwrap().push(LayoutCell {
-            text: text.into(),
-            pos,
-            kind,
-        });
-        self.col += 1;
+    /// The logical lines it holds, from 0.
+    pub fn lines(&self) -> RangeInclusive<usize> {
+        self.lines.clone()
     }
-    /// Place one grapheme. Returns the (row, col) of its first cell.
-    fn put(&mut self, g: &str, pos: Option<usize>, kind: CellKind) -> (usize, usize) {
-        if g == "\t" && kind == CellKind::Text {
-            let n = self.tab - self.vcol % self.tab;
-            if !self.fits(1) {
-                self.newrow();
-            }
-            let at = (self.rows.len() - 1, self.col);
-            for i in 0..n {
-                self.push(" ", if i == 0 { pos } else { None }, CellKind::Tab);
-            }
-            self.vcol += n;
-            return at;
-        }
-        let (g, w) = if g.chars().any(char::is_control) {
-            ("?", 1)
-        } else {
-            (g, g.width().max(1))
-        };
-        if w > 1 && !self.fits(w) && self.col > 0 {
-            while self.fits(1) {
-                self.push(" ", None, CellKind::Filler);
-            }
-        }
-        if !self.fits(1) {
-            self.newrow();
-        }
-        let at = (self.rows.len() - 1, self.col);
-        self.push(g, pos, kind);
-        for _ in 1..w {
-            self.rows.last_mut().unwrap().push(LayoutCell {
-                text: String::new(),
-                pos: None,
-                kind,
-            });
-            self.col += 1;
-        }
-        self.vcol += w;
-        at
+    /// Whether this is the last display line of the text.
+    pub fn eof(&self) -> bool {
+        self.eof
     }
-    fn stop(&mut self, pos: usize, vcol: usize, at: (usize, usize)) {
-        self.stops.push(Stop {
-            pos,
-            vcol,
-            row: at.0,
-            col: at.1,
-        });
-    }
-    /// A stop with no cell of its own: end of line or end of buffer.
-    fn stop_here(&mut self, pos: usize) {
-        if !self.fits(1) {
-            self.newrow();
-        }
-        let at = (self.rows.len() - 1, self.col);
-        self.stop(pos, self.vcol, at);
+    /// Its cursor positions, in order, unwrapped: each on row 0 at its display column. There's
+    /// always at least one.
+    pub fn stops(&self) -> &[Stop] {
+        &self.stops
     }
 }
 
-/// THE layout function. Lays out the display line that starts at `start`.
-pub(crate) fn layout(
-    rope: &Rope,
-    hidden: &Hidden,
-    virt: &[(usize, String)],
-    start: usize,
-    width: Option<usize>,
-    tab: usize,
-) -> DisplayLine {
-    let len = rope.len_bytes();
-    let mut b = Builder {
-        width,
-        tab: tab.max(1),
-        rows: vec![vec![]],
-        col: 0,
-        vcol: 0,
-        stops: vec![],
-    };
-    let mut vi = virt.partition_point(|v| v.0 < start);
-    let mut p = start;
-    let emit_virt = |b: &mut Builder, vi: &mut usize, p: usize, show: bool| {
-        while *vi < virt.len() && virt[*vi].0 <= p {
-            if show && virt[*vi].0 == p {
-                for g in virt[*vi].1.graphemes(true) {
-                    b.put(g, None, CellKind::Virtual);
-                }
-            }
-            *vi += 1;
+// ---------------------------------------------------------------- the items of a display line
+
+/// `Walk::virt` once a position's virtual text is behind it.
+const PAST: u32 = u32::MAX;
+
+/// Where layout stands on a display line: everything it needs to carry on from here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Walk {
+    pos: usize,
+    /// The display column of the item here.
+    vcol: usize,
+    /// Which of the virtual texts at `pos` comes next.
+    virt: u32,
+    /// How far into that virtual text, or into the replacement at `pos`, in bytes.
+    off: u32,
+    /// The cells of the item here that earlier rows hold: a split tab or control character.
+    skip: u32,
+}
+
+impl Walk {
+    fn at(pos: usize, vcol: usize) -> Walk {
+        let (virt, off, skip) = (0, 0, 0);
+        Walk {
+            pos,
+            vcol,
+            virt,
+            off,
+            skip,
         }
-    };
-    let (end, eof) = loop {
-        if let Some(sp) = hidden.starting_at(p) {
-            if let Some(r) = &sp.repl {
-                emit_virt(&mut b, &mut vi, p, true);
-                let v = b.vcol;
-                let mut first = None;
-                for g in r.graphemes(true) {
-                    let at = b.put(
-                        g,
-                        if first.is_none() { Some(p) } else { None },
-                        CellKind::Replacement,
-                    );
-                    first.get_or_insert(at);
-                }
-                b.stop(p, v, first.unwrap());
-            } else {
-                emit_virt(&mut b, &mut vi, p, false);
-            }
-            p = sp.end;
-            continue;
-        }
-        emit_virt(&mut b, &mut vi, p, true);
-        if p >= len {
-            b.stop_here(p);
-            break (len, true);
-        }
-        if rope.byte(p) == b'\n' {
-            b.stop_here(p);
-            break (p + 1, false);
-        }
-        let line = rope.byte_to_line(p);
-        let line_end = if line + 1 < rope.len_lines() {
-            rope.line_to_byte(line + 1) - 1
-        } else {
-            len
-        };
-        let run_end = hidden
-            .next_start_after(p)
-            .map_or(line_end, |s| s.min(line_end));
-        let run = rope.byte_slice(p..run_end).to_string();
-        for (off, g) in run.grapheme_indices(true) {
-            let q = p + off;
-            if off > 0 {
-                emit_virt(&mut b, &mut vi, q, true);
-            }
-            let v = b.vcol;
-            let at = b.put(g, Some(q), CellKind::Text);
-            b.stop(q, v, at);
-        }
-        p = run_end;
-    };
-    DisplayLine {
-        start,
-        end,
-        first_line: rope.byte_to_line(start),
-        last_line: rope.byte_to_line(if eof { len } else { end - 1 }),
-        eof,
-        rows: b.rows,
-        stops: b.stops,
     }
+    /// Whether the first cell of what's at `pos` is behind it.
+    fn past_first(&self) -> bool {
+        self.virt == PAST && (self.off > 0 || self.skip > 0)
+    }
+    fn moved(self, from: usize, to: usize) -> Walk {
+        let pos = self.pos - from + to;
+        Walk { pos, ..self }
+    }
+}
+
+/// One item (contract §9, "Items"), with what layout needs to know about it.
+struct Item {
+    /// Its first cell.
+    first: LayoutCell,
+    /// Whether that's a cursor position.
+    stop: bool,
+    /// All its cells.
+    width: usize,
+    whitespace: bool,
+    /// A control character, drawn as a cell per character. A tab's kind says so instead.
+    control: Option<char>,
+    /// Where it started: to place it again from, on another row.
+    at: Walk,
+}
+
+impl Item {
+    fn splits(&self) -> bool {
+        self.first.kind == CellKind::Tab || self.control.is_some()
+    }
+    fn cell(&self, i: usize) -> LayoutCell {
+        let glyph = match self.control {
+            Some(c) => Glyph::Char(control_cells(c)[i]),
+            None if self.first.kind == CellKind::Tab => Glyph::Char(' '),
+            None if i == 0 => self.first.glyph.clone(),
+            None => Glyph::Continuation,
+        };
+        let first = self.first.clone();
+        LayoutCell { glyph, ..first }
+    }
+}
+
+/// How a control character is drawn: Emacs's `^A`, `^?` and `\200`, a cell per character.
+pub(crate) fn control_cells(c: char) -> Vec<char> {
+    let code = c as u32;
+    match code {
+        0..=0x1F => vec!['^', char::from_u32(code + 0x40).unwrap_or('?')],
+        0x7F => vec!['^', '?'],
+        _ => format!("\\{code:03o}").chars().collect(),
+    }
+}
+
+/// What a walk reads, gathered so it can run while the cache is borrowed.
+struct Src<'a> {
+    t: &'a TextBuf,
+    h: Rc<Hidden>,
+    tab: usize,
+}
+
+/// Steps along a display line, one item at a time.
+struct Walker<'a> {
+    src: &'a Src<'a>,
+    w: Walk,
+    /// The end of the visible run it's in: a newline, or a hidden range's start.
+    run_end: usize,
+    /// The rope's chunk holding `w.pos`, and where it starts.
+    chunk: (&'a str, usize),
+    /// How far along the text the last item depends on.
+    read_to: usize,
+}
+
+impl Walker<'_> {
+    /// The next item, or None at the line's end.
+    fn next(&mut self) -> Option<Item> {
+        loop {
+            let p = self.w.pos;
+            let span = self.src.h.starting_at(p);
+            if let Some(s) = span.filter(|s| s.repl.is_none()) {
+                self.w = Walk::at(s.end, self.w.vcol);
+                continue;
+            }
+            if self.w.virt != PAST {
+                let virt = &self.src.h.virt;
+                let i = virt.partition_point(|x| x.0 < p) + self.w.virt as usize;
+                if let Some(&(_, id)) = virt.get(i).filter(|x| x.0 == p) {
+                    self.read_to = p;
+                    if let Some(item) = self.styled_item(id, CellKind::Virtual) {
+                        return Some(item);
+                    }
+                    (self.w.virt, self.w.off) = (self.w.virt + 1, 0);
+                    continue;
+                }
+                self.w.virt = PAST;
+            }
+            if let Some(s) = span {
+                self.read_to = s.end;
+                let item = s
+                    .repl
+                    .and_then(|id| self.styled_item(id, CellKind::Replacement));
+                if item.is_some() {
+                    return item;
+                }
+                self.w = Walk::at(s.end, self.w.vcol);
+                continue;
+            }
+            let t = self.src.t;
+            if p >= self.run_end {
+                if p >= t.len() || t.rope().byte(p) == b'\n' {
+                    self.read_to = p;
+                    return None;
+                }
+                self.run_end = t.run_bounds(&self.src.h, p).1;
+            }
+            return Some(self.text_item(p));
+        }
+    }
+
+    fn item(&self, text: &str, kind: CellKind, face: Option<&'static str>) -> Item {
+        let (c, at) = (text.chars().next().unwrap_or(' '), self.w);
+        let tab = c == '\t' && kind == CellKind::Text;
+        let control = (c.is_control() && !tab).then_some(c);
+        let width = match control {
+            Some(c) => control_cells(c).len(),
+            None if tab => self.src.tab - at.vcol % self.src.tab,
+            None => text.width().max(1),
+        };
+        let first = LayoutCell {
+            glyph: Glyph::of(text),
+            pos: at.pos,
+            vcol: at.vcol,
+            kind: if tab { CellKind::Tab } else { kind },
+            face,
+        };
+        Item {
+            first,
+            stop: kind == CellKind::Text || (kind == CellKind::Replacement && at.off == 0),
+            width,
+            whitespace: tab || c == ' ',
+            control,
+            at,
+        }
+    }
+
+    /// The next cluster of a virtual text or replacement, if any is left.
+    fn styled_item(&mut self, id: DecorationId, kind: CellKind) -> Option<Item> {
+        let s = match &self.src.t.decoration(id)?.deco {
+            Deco::Virtual(s)
+            | Deco::Hide {
+                replacement: Some(s),
+                ..
+            } => s,
+            _ => return None,
+        };
+        let off = self.w.off as usize;
+        let text = s.text.get(off..)?.graphemes(true).next()?;
+        let run = s.faces.iter().rev().find(|(r, _)| r.contains(&off));
+        let item = self.item(text, kind, run.map(|(_, f)| *f));
+        self.w.off += text.len() as u32;
+        self.w.vcol += item.width;
+        self.w.skip = 0;
+        Some(item)
+    }
+
+    /// The cluster of visible text at `p`, which is a cluster's start.
+    fn text_item(&mut self, p: usize) -> Item {
+        let rope = self.src.t.rope();
+        if p < self.chunk.1 || p - self.chunk.1 >= self.chunk.0.len() {
+            (self.chunk.0, self.chunk.1, ..) = rope.chunk_at_byte(p);
+        }
+        let (i, b) = (p - self.chunk.1, self.chunk.0.as_bytes());
+        // Two ASCII characters in a run are two clusters: only CR LF would join, and a run stops
+        // at a newline.
+        let ascii =
+            b[i] < 0x80 && (p + 1 == self.run_end || b.get(i + 1).is_some_and(|c| *c < 0x80));
+        let (e, text): (usize, Cow<str>) = if ascii {
+            (p + 1, self.chunk.0[i..=i].into())
+        } else {
+            let run = rope.byte_slice(p..self.run_end);
+            let e = p + grapheme(run, 0, Step::Next).unwrap_or(run.len_bytes());
+            (e, rope.byte_slice(p..e).into())
+        };
+        let item = self.item(&text, CellKind::Text, None);
+        self.w = Walk::at(e, self.w.vcol + item.width);
+        self.read_to = e;
+        item
+    }
+}
+
+/// What to ask a grapheme cursor.
+#[derive(Clone, Copy)]
+pub(crate) enum Step {
+    Next,
+    Prev,
+    Is,
+}
+
+/// The next or previous cluster boundary from `at` in a run, or `at` if it is one.
+pub(crate) fn grapheme(run: RopeSlice, at: usize, step: Step) -> Option<usize> {
+    let (mut chunk, mut chunk_at, ..) = run.chunk_at_byte(at);
+    let mut gc = GraphemeCursor::new(at, run.len_bytes(), true);
+    loop {
+        let r = match step {
+            Step::Next => gc.next_boundary(chunk, chunk_at),
+            Step::Prev => gc.prev_boundary(chunk, chunk_at),
+            Step::Is => gc.is_boundary(chunk, chunk_at).map(|b| b.then_some(at)),
+        };
+        match r {
+            Ok(b) => return b,
+            Err(GraphemeIncomplete::NextChunk) => {
+                chunk_at += chunk.len();
+                chunk = run.chunk_at_byte(chunk_at).0;
+            }
+            Err(GraphemeIncomplete::PrevChunk) => {
+                (chunk, chunk_at, ..) = run.chunk_at_byte(chunk_at - 1);
+            }
+            Err(GraphemeIncomplete::PreContext(n)) => {
+                let (c, s, ..) = run.chunk_at_byte(n - 1);
+                gc.provide_context(c, s);
+            }
+            Err(GraphemeIncomplete::InvalidOffset) => return None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------- one row
+
+/// How a display line breaks into rows: whether at word boundaries, and how wide they are.
+type Mode = (bool, usize);
+/// Rows at this width find a display column or an unwrapped position in a few steps, whatever the
+/// wrap setting: a line's columns don't depend on the width they're found at.
+const CHECKPOINTS: Mode = (false, 256);
+/// One row, however long.
+const UNBROKEN: Mode = (false, usize::MAX);
+
+/// What `Src::place` reports about a row.
+struct RowOut {
+    row: usize,
+    want_stops: bool,
+    want_cells: bool,
+    cells: Vec<LayoutCell>,
+    stops: Vec<Stop>,
+    line_end: Option<Stop>,
+}
+
+impl RowOut {
+    fn new(row: usize, want_stops: bool, want_cells: bool) -> Self {
+        let (cells, stops, line_end) = (vec![], vec![], None);
+        RowOut {
+            row,
+            want_stops,
+            want_cells,
+            cells,
+            stops,
+            line_end,
+        }
+    }
+    fn stop(&mut self, pos: usize, vcol: usize, col: usize) -> Stop {
+        let row = self.row;
+        let s = Stop {
+            pos,
+            vcol,
+            row,
+            col,
+        };
+        if self.want_stops {
+            self.stops.push(s);
+        }
+        s
+    }
+    fn put(&mut self, it: &Item, cells: Range<usize>, col: usize) {
+        if cells.start == 0 && it.stop && !cells.is_empty() {
+            self.stop(it.first.pos, it.at.vcol, col);
+        }
+        if self.want_cells {
+            self.cells.extend(cells.map(|i| it.cell(i)));
+        }
+    }
+    fn filler(&mut self, it: &Item, n: usize) {
+        if self.want_cells {
+            let mut cell = it.cell(0);
+            (cell.glyph, cell.kind) = (Glyph::Char(' '), CellKind::Filler);
+            self.cells.resize(self.cells.len() + n, cell);
+        }
+    }
+    /// Take back everything from column `col` on.
+    fn rewind(&mut self, col: usize) {
+        self.cells.truncate(col);
+        self.stops
+            .truncate(self.stops.partition_point(|s| s.col < col));
+    }
+}
+
+impl Src<'_> {
+    /// Place one row from `start`, by "Where soft wrap breaks". Returns where the next row starts
+    /// (None if the line ends on this one) and how far along the text that decision read.
+    fn place(
+        &self,
+        start: Walk,
+        (word, width): Mode,
+        limit: usize,
+        out: &mut RowOut,
+    ) -> (Option<Walk>, usize) {
+        let mut wk = Walker {
+            src: self,
+            w: start,
+            run_end: 0,
+            chunk: ("", 0),
+            read_to: start.pos,
+        };
+        let (mut col, mut after_ws, mut brk) = (0, false, None);
+        loop {
+            let Some(it) = wk.next() else {
+                out.line_end = Some(out.stop(wk.w.pos, wk.w.vcol, col));
+                return (None, wk.read_to);
+            };
+            if col >= limit {
+                return (None, wk.read_to);
+            }
+            let skip = it.at.skip as usize;
+            if word && after_ws && !it.whitespace && col > 0 {
+                brk = Some((it.at, col));
+            }
+            if col + it.width - skip <= width {
+                out.put(&it, skip..it.width, col);
+                col += it.width - skip;
+                after_ws = it.whitespace;
+            } else if let Some((at, c)) = brk {
+                out.rewind(c);
+                return (Some(at), wk.read_to);
+            } else if it.splits() {
+                let done = skip + width - col;
+                out.put(&it, skip..done, col);
+                let skip = done as u32;
+                return (Some(Walk { skip, ..it.at }), wk.read_to);
+            } else if col == 0 {
+                // Wider than a row: it stays, and the row counts as full.
+                out.put(&it, 0..width, 0);
+                (col, after_ws) = (width, it.whitespace);
+            } else {
+                out.filler(&it, width - col);
+                return (Some(it.at), wk.read_to);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- the cache
+
+/// A display line's rows, as far as they've been asked for. Each row is where it starts and how far
+/// along the text its end was decided from: an edit before there can change it. Positions count
+/// from the line's start, so a line moved along by an edit before it stays good.
+#[derive(Debug)]
+struct Line {
+    rows: Vec<(Walk, usize)>,
+    /// Where the line ends, once its rows reach there.
+    end: Option<usize>,
+}
+
+/// How many rows start at or before the first cell at `rel`.
+fn rows_to_stop(rows: &[(Walk, usize)], rel: usize) -> usize {
+    rows.partition_point(|(w, _)| w.pos < rel || (w.pos == rel && !w.past_first()))
+}
+
+/// Past this many display lines, the cache starts again. An edit moves every line after it, so a
+/// bound on them bounds the edit's cost.
+const CACHED_LINES: usize = 512;
+
+/// The per-line cache. Text edits keep what they can (`edited`). A change to a Hide or virtual
+/// text empties it, and so does a new tab width.
+#[derive(Default)]
+pub(crate) struct LayoutCache {
+    tab: usize,
+    pub(crate) hidden: Option<Rc<Hidden>>,
+    lines: BTreeMap<(usize, Mode), Line>,
+}
+
+impl LayoutCache {
+    /// Bytes `a..b` were replaced by text ending at `c`.
+    pub(crate) fn edited(&mut self, a: usize, b: usize, c: usize) {
+        self.hidden = None;
+        let tail = self.lines.split_off(&(b + 1, (false, 0)));
+        self.lines.retain(|&(s, _), l| {
+            if s <= a && l.end.is_none_or(|e| s + e >= a) {
+                let i = l.rows.partition_point(|(_, read_to)| *read_to < a - s);
+                l.rows.truncate(i + 1);
+                l.end = None;
+            }
+            s <= a
+        });
+        self.lines
+            .extend(tail.into_iter().map(|((s, m), l)| ((s - b + c, m), l)));
+    }
+    /// A Hide or virtual text changed.
+    pub(crate) fn clear(&mut self) {
+        *self = LayoutCache::default();
+    }
+}
+
+impl TextBuf {
+    fn src(&self) -> Src<'_> {
+        let tab = self.settings.tab_width.max(1);
+        Src {
+            t: self,
+            h: self.hidden(),
+            tab,
+        }
+    }
+
+    /// Run `f` on a display line's rows, laid out until `enough` says that will do.
+    fn with_rows<R>(
+        &self,
+        s: usize,
+        mode: Mode,
+        enough: impl Fn(&[(Walk, usize)]) -> bool,
+        f: impl FnOnce(&Line) -> R,
+    ) -> R {
+        let src = self.src();
+        let mut c = self.cache.borrow_mut();
+        if c.tab != self.settings.tab_width {
+            c.tab = self.settings.tab_width;
+            c.lines.clear();
+        }
+        if c.lines.len() >= CACHED_LINES && !c.lines.contains_key(&(s, mode)) {
+            c.lines.clear();
+        }
+        let line = c.lines.entry((s, mode)).or_insert_with(|| Line {
+            rows: vec![(Walk::at(0, 0), usize::MAX)],
+            end: None,
+        });
+        while line.end.is_none() && !enough(&line.rows) {
+            let last = line.rows.len() - 1;
+            let from = line.rows[last].0.moved(0, s);
+            match src.place(from, mode, usize::MAX, &mut RowOut::new(0, false, false)) {
+                (Some(n), read_to) => {
+                    line.rows[last].1 = read_to - s;
+                    line.rows.push((n.moved(s, 0), usize::MAX));
+                }
+                (None, read_to) => line.end = Some(read_to - s),
+            }
+        }
+        f(line)
+    }
+    /// Where row `r` starts, if the display line has that many.
+    fn row_walk(&self, s: usize, mode: Mode, r: usize) -> Option<Walk> {
+        let found = |l: &Line| l.rows.get(r).map(|x| x.0.moved(0, s));
+        self.with_rows(s, mode, |rows| rows.len() > r, found)
+    }
+    /// The cursor positions on a row, and whether another row follows it.
+    fn stops_of(&self, s: usize, mode: Mode, r: usize) -> (Vec<Stop>, bool) {
+        let mut out = RowOut::new(r, true, false);
+        let from = self.row_walk(s, mode, r);
+        let next = from.and_then(|w| self.src().place(w, mode, usize::MAX, &mut out).0);
+        (out.stops, next.is_some())
+    }
+
+    // ---- cursor positions: none of these lay anything out
+
+    /// Is `pos` a position the cursor can occupy (contract §9, "Cursor positions")?
+    pub fn is_stop(&self, pos: usize) -> bool {
+        if !self.is_boundary(pos) {
+            return false;
+        }
+        let h = self.hidden();
+        match h.covering(pos) {
+            Some(s) => s.start == pos && s.repl.is_some(),
+            None => pos == self.len() || self.rope().byte(pos) == b'\n' || self.is_cluster(&h, pos),
+        }
+    }
+    fn is_cluster(&self, h: &Hidden, pos: usize) -> bool {
+        let (rs, re) = self.run_bounds(h, pos);
+        let run = self.rope().byte_slice(rs..re);
+        pos == rs || grapheme(run, pos - rs, Step::Is).is_some()
+    }
+    /// The first cursor position at or after `p`, which is on a character boundary. There's
+    /// always one on `p`'s display line.
+    fn stop_after(&self, h: &Hidden, mut p: usize) -> usize {
+        loop {
+            if let Some(s) = h.covering(p) {
+                if s.start == p && s.repl.is_some() {
+                    return p;
+                }
+                p = s.end;
+            } else if p == self.len() || self.rope().byte(p) == b'\n' || self.is_cluster(h, p) {
+                return p;
+            } else {
+                let (rs, re) = self.run_bounds(h, p);
+                let run = self.rope().byte_slice(rs..re);
+                p = rs + grapheme(run, p - rs, Step::Next).unwrap_or(re - rs);
+            }
+        }
+    }
+    /// The last cursor position before `c` on its display line, if there is one.
+    pub(crate) fn stop_before(&self, h: &Hidden, mut c: usize) -> Option<usize> {
+        let first = self.dline_start(c);
+        while c > first {
+            match h.last_le(c - 1).filter(|s| c <= s.end) {
+                Some(s) if s.repl.is_some() => return Some(s.start),
+                Some(s) => c = s.start,
+                None => {
+                    let (rs, re) = self.run_bounds(h, c - 1);
+                    let run = self.rope().byte_slice(rs..re);
+                    return grapheme(run, c - rs, Step::Prev).map(|b| rs + b);
+                }
+            }
+        }
+        None
+    }
+    /// The nearest cursor position. With no direction: the fold line if inside a Hide with a
+    /// replacement, else the next visible position. Going back, it stays on the position's display
+    /// line, and if that has none before it, takes its first.
+    pub fn snap(&self, pos: usize, dir: Option<Dir>) -> usize {
+        let pos = pos.min(self.len());
+        if self.is_stop(pos) {
+            return pos;
+        }
+        // The next character boundary: `pos` may be inside a character.
+        let r = self.rope();
+        let c = r.byte_to_char(pos);
+        let c = r.char_to_byte(c + usize::from(r.char_to_byte(c) != pos));
+        let h = self.hidden();
+        match dir {
+            Some(Dir::Backward) => self.stop_before(&h, c),
+            Some(Dir::Forward) => None,
+            None => h
+                .covering(pos)
+                .filter(|s| s.repl.is_some())
+                .map(|s| s.start),
+        }
+        .unwrap_or_else(|| self.stop_after(&h, c))
+    }
+    /// The next line that isn't hidden: the first logical line of the next (or previous) display line.
+    pub fn next_visible(&self, line: usize, dir: Dir) -> Option<usize> {
+        let s = self.dline_start(self.line_start(line));
+        let e = self.line_end_of(&self.hidden(), s);
+        match dir {
+            Dir::Forward => (e < self.len()).then(|| self.line_of(e + 1)),
+            Dir::Backward => (s > 0).then(|| self.line_of(self.dline_start(s - 1))),
+        }
+    }
+
+    // ---- queries
+
+    /// The display line containing `pos`, unwrapped. Getting its cursor positions walks all of it,
+    /// so `is_stop`, `snap`, `display_col` and `pos_at_vcol` are cheaper for what they answer.
+    pub fn display_line(&self, pos: usize) -> DisplayLine {
+        let start = self.dline_start(pos);
+        let e = self.line_end_of(&self.hidden(), start);
+        let mut out = RowOut::new(0, true, false);
+        self.src()
+            .place(Walk::at(start, 0), UNBROKEN, usize::MAX, &mut out);
+        DisplayLine {
+            start,
+            end: e + usize::from(e < self.len()),
+            lines: self.line_of(start)..=self.line_of(e),
+            eof: e == self.len(),
+            stops: out.stops,
+        }
+    }
+    /// Where the cursor position at or before `pos` is, in this mode: its row and stop.
+    fn locate(&self, pos: usize, m: Option<Mode>) -> (Row, Stop) {
+        let pos = self.snap(pos, Some(Dir::Backward));
+        let s = self.dline_start(pos);
+        let mode = m.unwrap_or(CHECKPOINTS);
+        let (r, w) = self.with_rows(
+            s,
+            mode,
+            |rows| rows_to_stop(rows, pos - s) < rows.len(),
+            |l| {
+                let r = rows_to_stop(&l.rows, pos - s).saturating_sub(1);
+                (r, l.rows[r].0.moved(0, s))
+            },
+        );
+        let mut out = RowOut::new(r, true, false);
+        self.src().place(w, mode, usize::MAX, &mut out);
+        let i = out
+            .stops
+            .partition_point(|st| st.pos <= pos)
+            .saturating_sub(1);
+        let st = out.stops.get(i).copied();
+        let st = st.unwrap_or_else(|| out.stop(pos, w.vcol, 0));
+        match m {
+            Some(_) => ((s, r), st),
+            None => (
+                (s, 0),
+                Stop {
+                    row: 0,
+                    col: st.vcol,
+                    ..st
+                },
+            ),
+        }
+    }
+    /// The display column of `pos`, independent of wrapping (for `j`/`k` goals and block selections).
+    pub fn display_col(&self, pos: usize) -> usize {
+        self.locate(pos, None).1.vcol
+    }
+    /// The first cursor position at or after display column `vcol` on the display line holding
+    /// `line`, or else that display line's last. A column inside a tab, a wide character or a
+    /// replacement lands after it, as Emacs's `move-to-column` does for Evil's `j` and `k`.
+    pub fn pos_at_vcol(&self, line: usize, vcol: usize) -> usize {
+        self.first_stop_from(self.dline_start(self.line_start(line)), vcol)
+    }
+    fn first_stop_from(&self, s: usize, vcol: usize) -> usize {
+        let past = |rows: &[(Walk, usize)]| rows.partition_point(|(w, _)| w.vcol <= vcol);
+        let mut r = self.with_rows(
+            s,
+            CHECKPOINTS,
+            |rows| past(rows) < rows.len(),
+            |l| past(&l.rows).saturating_sub(1),
+        );
+        loop {
+            let (stops, more) = self.stops_of(s, CHECKPOINTS, r);
+            if let Some(st) = stops.iter().find(|st| st.vcol >= vcol) {
+                return st.pos;
+            }
+            if !more {
+                return stops.last().map_or(s, |st| st.pos);
+            }
+            r += 1;
+        }
+    }
+
+    /// Where window `w`'s text goes, or None if `w` doesn't show this buffer.
+    pub fn geometry(&self, w: WindowId) -> Option<Geometry> {
+        let v = self.views.get(&w)?;
+        let empty_last = self.is_empty() || self.rope().byte(self.len() - 1) == b'\n';
+        let numbered = self.line_count() - usize::from(empty_last);
+        let gutter = match self.settings.line_numbers {
+            LineNumbers::Off => 0,
+            _ => numbered.to_string().len().max(3) + 1,
+        };
+        let avail = v.cols.saturating_sub(gutter).max(2);
+        let text_w = self.settings.max_width.map_or(avail, |m| m.clamp(2, avail));
+        let pad = if self.settings.center {
+            (avail - text_w) / 2
+        } else {
+            0
+        };
+        Some(Geometry {
+            cols: v.cols,
+            rows: v.rows,
+            pad,
+            gutter,
+            text_x: pad + gutter,
+            text_w,
+        })
+    }
+    fn mode(&self, g: &Geometry) -> Option<Mode> {
+        let wrap = self.settings.wrap;
+        (wrap != Wrap::Off).then_some((wrap == Wrap::Word, g.text_w))
+    }
+    fn next_row(&self, (s, r): Row, m: Option<Mode>) -> Option<Row> {
+        if m.is_some_and(|m| self.row_walk(s, m, r + 1).is_some()) {
+            return Some((s, r + 1));
+        }
+        let e = self.line_end_of(&self.hidden(), s);
+        (e < self.len()).then_some((e + 1, 0))
+    }
+    fn prev_row(&self, (s, r): Row, m: Option<Mode>) -> Option<Row> {
+        if r > 0 {
+            return Some((s, r - 1));
+        }
+        let p = self.dline_start(s.checked_sub(1)?);
+        let last = |mode| self.with_rows(p, mode, |_| false, |l| l.rows.len() - 1);
+        Some((p, m.map_or(0, last)))
+    }
+    fn top(&self, w: WindowId, m: Option<Mode>) -> Row {
+        let v = self.views[&w];
+        let want = v.top_row;
+        let last = |l: &Line| want.min(l.rows.len() - 1);
+        let r = m.map_or(0, |mode| {
+            self.with_rows(v.top, mode, |r| r.len() > want, last)
+        });
+        (v.top, r)
+    }
+    /// Row `b`'s distance below row `a`, if it isn't above it and is within `limit`.
+    fn rows_between(&self, a: Row, b: Row, m: Option<Mode>, limit: usize) -> Option<usize> {
+        if b < a {
+            return None;
+        }
+        if a.0 == b.0 {
+            return Some(b.1 - a.1);
+        }
+        let (mut cur, mut n) = (a, 0);
+        while cur != b && n <= limit {
+            cur = self.next_row(cur, m)?;
+            n += 1;
+        }
+        Some(n)
+    }
+
+    /// Move by screen rows, for `gj`/`gk`. Returns the new position and the goal column used.
+    pub fn move_visual(
+        &self,
+        w: WindowId,
+        pos: usize,
+        dy: isize,
+        goal: Option<usize>,
+    ) -> Option<(usize, usize)> {
+        let g = self.geometry(w)?;
+        let m = self.mode(&g);
+        let (mut cur, st) = self.locate(pos, m);
+        let goal = goal.unwrap_or(st.col);
+        let (mut best, mut n) = (None, dy.unsigned_abs());
+        while n > 0 {
+            let next = if dy > 0 {
+                self.next_row(cur, m)
+            } else {
+                self.prev_row(cur, m)
+            };
+            let Some(r) = next else { break };
+            cur = r;
+            // Rows with no cursor position (a wrapped replacement's tail) are skipped, not counted.
+            if m.is_none_or(|mode| !self.stops_of(cur.0, mode, cur.1).0.is_empty()) {
+                best = Some(cur);
+                n -= 1;
+            }
+        }
+        let Some((s, r)) = best else {
+            return Some((pos, goal));
+        };
+        let Some(mode) = m else {
+            // The stop before the first one past the goal, if it's past.
+            let q = self.first_stop_from(s, goal + 1);
+            let left = (self.display_col(q) > goal).then(|| self.stop_before(&self.hidden(), q));
+            return Some((left.flatten().unwrap_or(q), goal));
+        };
+        let (stops, _) = self.stops_of(s, mode, r);
+        let st = stops
+            .iter()
+            .rev()
+            .find(|st| st.col <= goal)
+            .or(stops.first());
+        Some((st.map_or(pos, |st| st.pos), goal))
+    }
+
+    /// Screen (row, col) of `pos` in a window, or None if it is scrolled out of view.
+    pub fn screen_pos(&self, w: WindowId, pos: usize) -> Option<(usize, usize)> {
+        let g = self.geometry(w)?;
+        let m = self.mode(&g);
+        let (row, st) = self.locate(pos, m);
+        let n = self.rows_between(self.top(w, m), row, m, g.rows)?;
+        (n < g.rows).then_some((n, g.text_x + st.col))
+    }
+
+    /// The rows a window shows: what render draws, and what H/M/L and scrolling read.
+    pub fn viewport(&self, w: WindowId) -> Option<Viewport> {
+        let g = self.geometry(w)?;
+        let m = self.mode(&g);
+        let (top, src) = (self.top(w, m), self.src());
+        let (mut cur, mut rows) = (top, vec![]);
+        loop {
+            let (s, r) = cur;
+            let (mode, limit, from) = match m {
+                Some(mode) => (mode, usize::MAX, self.row_walk(s, mode, r)),
+                None => (UNBROKEN, g.cols, Some(Walk::at(s, 0))),
+            };
+            let mut out = RowOut::new(r, true, true);
+            if let Some(from) = from {
+                src.place(from, mode, limit, &mut out);
+            }
+            rows.push(ViewRow {
+                dline_start: s,
+                row: r,
+                first_line: self.line_of(s),
+                number: None,
+                current: false,
+                cells: out.cells,
+                line_end: out.line_end,
+                stops: out.stops,
+            });
+            match self.next_row(cur, m).filter(|_| rows.len() < g.rows) {
+                Some(n) => cur = n,
+                None => break,
+            }
+        }
+        self.number_rows(w, m, top, &mut rows);
+        let (top, top_row) = top;
+        Some(Viewport {
+            geometry: g,
+            top,
+            top_row,
+            rows,
+        })
+    }
+
+    /// Contract §9, "Line numbers". The cursor's distances are counted from the first row shown,
+    /// so a cursor off-screen costs a walk to it.
+    fn number_rows(&self, w: WindowId, m: Option<Mode>, top: Row, rows: &mut [ViewRow]) {
+        use LineNumbers::*;
+        let style = self.settings.line_numbers;
+        if style == Off {
+            return;
+        }
+        let (cur, _) = self.locate(self.views[&w].sel.head, m);
+        let cur_row = match self.rows_between(top, cur, m, usize::MAX) {
+            Some(n) => n as isize,
+            None => -(self.rows_between(cur, top, m, usize::MAX).unwrap_or(0) as isize),
+        };
+        // Display lines from the top one to the cursor's, negative if it's above.
+        let (lo, hi) = (top.0.min(cur.0), top.0.max(cur.0));
+        let (mut p, mut cur_line) = (lo, 0isize);
+        while style == Relative && p < hi {
+            p = self.line_end_of(&self.hidden(), p) + 1;
+            cur_line += if cur.0 > top.0 { 1 } else { -1 };
+        }
+        let mut line = 0isize;
+        for (i, vr) in rows.iter_mut().enumerate() {
+            line += isize::from(i > 0 && vr.row == 0);
+            let (own, on_cursor) = (vr.first_line + 1, i as isize == cur_row);
+            vr.current = vr.dline_start == cur.0 && (style != Visual || on_cursor);
+            vr.number = match style {
+                _ if vr.dline_start == self.len() => None,
+                Off => None,
+                Absolute => (vr.row == 0).then_some(own),
+                Relative if line == cur_line => (vr.row == 0).then_some(own),
+                Relative => (vr.row == 0).then_some(line.abs_diff(cur_line)),
+                Visual if on_cursor => Some(own),
+                Visual => Some((i as isize).abs_diff(cur_row)),
+            };
+        }
+    }
+
+    /// Where the display line at a window's top starts, and which of its rows is first on screen.
+    /// None if `w` doesn't show this buffer.
+    pub fn scroll(&self, w: WindowId) -> Option<(usize, usize)> {
+        let g = self.geometry(w)?;
+        Some(self.top(w, self.mode(&g)))
+    }
+    /// Show `top`'s display line from its row `row` first: `top` moves to its display line's start,
+    /// and `row` stops at the line's last row. Core scrolls back to the cursor before the next
+    /// render (C5), so a command that scrolls also leaves the cursor on a visible row. None if `w`
+    /// doesn't show this buffer.
+    pub fn set_scroll(&mut self, w: WindowId, top: usize, row: usize) -> Option<()> {
+        let top = self.dline_start(top);
+        let v = self.views.get_mut(&w)?;
+        (v.top, v.top_row) = (top, row);
+        self.views.get_mut(&w)?.top_row = self.scroll(w)?.1;
+        Some(())
+    }
+
+    /// Scroll so the cursor is visible. Core does this before every render (C5).
+    pub(crate) fn scroll_to_cursor(&mut self, w: WindowId) {
+        let Some(g) = self.geometry(w) else { return };
+        let m = self.mode(&g);
+        let (cur, _) = self.locate(self.views[&w].sel.head, m);
+        let top = self.top(w, m);
+        let new_top = match self.rows_between(top, cur, m, g.rows) {
+            None => cur,
+            Some(n) if n >= g.rows => {
+                let up = |t: Row, _| self.prev_row(t, m).unwrap_or(t);
+                (1..g.rows.max(1)).fold(cur, up)
+            }
+            Some(_) => top,
+        };
+        if let Some(v) = self.views.get_mut(&w) {
+            (v.top, v.top_row) = new_top;
+        }
+    }
+}
+
+/// Core's layout commands.
+pub(crate) fn register_commands(reg: &mut Registry) {
+    let doc =
+        "Turn the buffer's maximum text width off, or back on at the width it had (80 if none)";
+    reg.command("toggle-max-width", doc, |ctx, a| {
+        let w = a.window.or(ctx.focused());
+        let b = a.buffer.or(w.and_then(|w| ctx.window_buffer(w)));
+        let b = b.ok_or_else(|| Error::Msg("No buffer".into()))?;
+        let t = ctx.text_mut(b)?;
+        match t.settings.max_width.take() {
+            Some(m) => t.max_width_off = Some(m),
+            None => t.settings.max_width = Some(t.max_width_off.unwrap_or(80)),
+        }
+        Ok(())
+    });
 }
 
 /// Where a window's text goes: centered maximum width, gutter, text area.
@@ -336,32 +1032,6 @@ pub struct Geometry {
     pub text_w: usize,
 }
 
-pub(crate) fn geometry(s: &Settings, line_count: usize, cols: usize, rows: usize) -> Geometry {
-    let gutter = match s.line_numbers {
-        LineNumbers::Off => 0,
-        _ => line_count.to_string().len().max(3) + 1,
-    };
-    let avail = cols.saturating_sub(gutter).max(2);
-    let text_w = s.max_width.map_or(avail, |m| m.clamp(2, avail));
-    let pad = if s.center { (avail - text_w) / 2 } else { 0 };
-    Geometry {
-        cols,
-        rows,
-        pad,
-        gutter,
-        text_x: pad + gutter,
-        text_w,
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct LayoutCache {
-    key: (u64, u64, usize),
-    hidden: Option<Rc<Hidden>>,
-    virt: Option<Rc<Vec<(usize, String)>>>,
-    lines: HashMap<(Option<usize>, usize), Rc<DisplayLine>>,
-}
-
 /// One row a window shows.
 #[derive(Clone, Debug)]
 pub struct ViewRow {
@@ -371,8 +1041,21 @@ pub struct ViewRow {
     pub row: usize,
     /// That display line's first logical line, from 0.
     pub first_line: usize,
-    /// The row's cells, left to right.
-    pub cells: Vec<LayoutCell>,
+    /// The number its gutter draws (contract §9, "Line numbers"), whole: the gutter may show only
+    /// its last digits.
+    pub number: Option<usize>,
+    pub(crate) current: bool,
+    pub(crate) cells: Vec<LayoutCell>,
+    pub(crate) line_end: Option<Stop>,
+    stops: Vec<Stop>,
+}
+
+impl ViewRow {
+    /// The cursor positions on this row, left to right, where they're drawn. An unwrapped row
+    /// lists only those up to the window's edge.
+    pub fn stops(&self) -> &[Stop] {
+        &self.stops
+    }
 }
 
 /// What a window shows: what render draws, and what `H`, `M`, `L` and scrolling read.
@@ -388,303 +1071,4 @@ pub struct Viewport {
     pub rows: Vec<ViewRow>,
 }
 
-type Row = (Rc<DisplayLine>, usize);
-
-impl TextBuf {
-    fn cache(&self) -> std::cell::RefMut<'_, LayoutCache> {
-        let key = (self.rev(), self.deco_gen, self.settings.tab_width);
-        let mut c = self.cache.borrow_mut();
-        if c.key != key {
-            *c = LayoutCache {
-                key,
-                ..Default::default()
-            };
-        }
-        c
-    }
-    pub(crate) fn hidden(&self) -> Rc<Hidden> {
-        if let Some(h) = &self.cache().hidden {
-            return h.clone();
-        }
-        let spans = self
-            .decorations()
-            .filter_map(|(_, d)| match &d.deco {
-                Deco::Hide { replacement, .. } => Some(Span {
-                    start: d.range.start,
-                    end: d.range.end,
-                    repl: replacement.clone(),
-                    seq: d.seq,
-                }),
-                _ => None,
-            })
-            .collect();
-        let h = Rc::new(Hidden::build(spans));
-        self.cache().hidden = Some(h.clone());
-        h
-    }
-    fn virt(&self) -> Rc<Vec<(usize, String)>> {
-        if let Some(v) = &self.cache().virt {
-            return v.clone();
-        }
-        let mut v: Vec<(u64, usize, String)> = self
-            .decorations()
-            .filter_map(|(_, d)| match &d.deco {
-                Deco::Virtual(t) => Some((d.seq, d.range.start, t.clone())),
-                _ => None,
-            })
-            .collect();
-        v.sort_by_key(|x| (x.1, x.0));
-        let v = Rc::new(v.into_iter().map(|x| (x.1, x.2)).collect::<Vec<_>>());
-        self.cache().virt = Some(v.clone());
-        v
-    }
-
-    /// The start of the display line containing `pos`.
-    pub(crate) fn dline_start(&self, pos: usize) -> usize {
-        let h = self.hidden();
-        let mut l = self.line_of(pos);
-        loop {
-            let ls = self.rope().line_to_byte(l);
-            if l == 0 || !h.covers(ls - 1) {
-                return ls;
-            }
-            l -= 1;
-        }
-    }
-    fn dl_at(&self, start: usize, width: Option<usize>) -> Rc<DisplayLine> {
-        if let Some(d) = self.cache().lines.get(&(width, start)) {
-            return d.clone();
-        }
-        let (h, v) = (self.hidden(), self.virt());
-        let d = Rc::new(layout(
-            self.rope(),
-            &h,
-            &v,
-            start,
-            width,
-            self.settings.tab_width,
-        ));
-        self.cache().lines.insert((width, start), d.clone());
-        d
-    }
-    fn dl(&self, pos: usize, width: Option<usize>) -> Rc<DisplayLine> {
-        self.dl_at(self.dline_start(pos.min(self.len())), width)
-    }
-
-    /// The unwrapped display line containing `pos` (width-independent).
-    pub fn display_line(&self, pos: usize) -> Rc<DisplayLine> {
-        self.dl(pos, None)
-    }
-    /// Is `pos` a position the cursor can occupy (not inside hidden text)?
-    pub fn is_stop(&self, pos: usize) -> bool {
-        pos <= self.len() && self.dl(pos, None).is_stop(pos)
-    }
-    /// The nearest cursor position. With no direction: the fold line if inside a Hide with a
-    /// replacement, else the next visible position.
-    pub fn snap(&self, pos: usize, dir: Option<Dir>) -> usize {
-        let pos = pos.min(self.len());
-        let dl = self.dl(pos, None);
-        if dl.is_stop(pos) {
-            return pos;
-        }
-        let i = dl.stops.partition_point(|s| s.pos < pos);
-        let after = dl.stops.get(i).map(|s| s.pos);
-        let before = i.checked_sub(1).map(|i| dl.stops[i].pos);
-        let r = match dir {
-            Some(Dir::Backward) => before.or(after),
-            Some(Dir::Forward) => after.or(before),
-            None => self.hidden().anchor_containing(pos).or(after).or(before),
-        };
-        r.unwrap_or(pos)
-    }
-    /// The next line that isn't hidden: the first logical line of the next (or previous) display line.
-    pub fn next_visible(&self, line: usize, dir: Dir) -> Option<usize> {
-        let dl = self.dl(self.line_start(line), None);
-        match dir {
-            Dir::Forward => (!dl.eof).then(|| self.line_of(dl.end)),
-            Dir::Backward => (dl.start > 0).then(|| self.dl(dl.start - 1, None).first_line),
-        }
-    }
-    /// The display column of `pos`, independent of wrapping (for `j`/`k` goals and block selections).
-    pub fn display_col(&self, pos: usize) -> usize {
-        self.dl(pos, None).stop_le(pos).vcol
-    }
-    /// The cursor position at a display column on `line`'s display line.
-    pub fn pos_at_vcol(&self, line: usize, vcol: usize) -> usize {
-        let dl = self.dl(self.line_start(line), None);
-        let i = dl.stops.partition_point(|s| s.vcol <= vcol);
-        dl.stops[i.saturating_sub(1)].pos
-    }
-
-    /// Where window `w`'s text goes, or None if `w` doesn't show this buffer.
-    pub fn geometry(&self, w: WindowId) -> Option<Geometry> {
-        let v = self.views.get(&w)?;
-        Some(geometry(&self.settings, self.line_count(), v.cols, v.rows))
-    }
-    fn wrap(&self, g: &Geometry) -> Option<usize> {
-        self.settings.wrap.then_some(g.text_w)
-    }
-    fn next_row(&self, (d, r): &Row, w: Option<usize>) -> Option<Row> {
-        if r + 1 < d.rows.len() {
-            Some((d.clone(), r + 1))
-        } else if !d.eof {
-            Some((self.dl_at(d.end, w), 0))
-        } else {
-            None
-        }
-    }
-    fn prev_row(&self, (d, r): &Row, w: Option<usize>) -> Option<Row> {
-        if *r > 0 {
-            Some((d.clone(), r - 1))
-        } else if d.start > 0 {
-            let p = self.dl(d.start - 1, w);
-            let n = p.rows.len() - 1;
-            Some((p, n))
-        } else {
-            None
-        }
-    }
-    fn top(&self, w: WindowId, width: Option<usize>) -> Row {
-        let v = self.views[&w];
-        let d = self.dl(v.top, width);
-        let r = if d.start == v.top {
-            v.top_row.min(d.rows.len() - 1)
-        } else {
-            0
-        };
-        (d, r)
-    }
-
-    /// Move by screen rows, for `gj`/`gk`. Returns the new position and the goal column used.
-    pub fn move_visual(
-        &self,
-        w: WindowId,
-        pos: usize,
-        dy: isize,
-        goal: Option<usize>,
-    ) -> Option<(usize, usize)> {
-        let g = self.geometry(w)?;
-        let width = self.wrap(&g);
-        let d = self.dl(pos, width);
-        let st = d.stop_le(pos);
-        let goal = goal.unwrap_or(st.col);
-        let mut cur: Row = (d, st.row);
-        let mut best: Option<Row> = None;
-        let mut n = dy.unsigned_abs();
-        while n > 0 {
-            let nx = if dy > 0 {
-                self.next_row(&cur, width)
-            } else {
-                self.prev_row(&cur, width)
-            };
-            let Some(r) = nx else { break };
-            cur = r;
-            // Rows with no cursor position (a wrapped replacement's tail) are skipped, not counted.
-            if cur.0.stops.iter().any(|s| s.row == cur.1) {
-                best = Some(cur.clone());
-                n -= 1;
-            }
-        }
-        let Some((d, r)) = best else {
-            return Some((pos, goal));
-        };
-        let in_row: Vec<&Stop> = d.stops.iter().filter(|s| s.row == r).collect();
-        let s = in_row
-            .iter()
-            .rev()
-            .find(|s| s.col <= goal)
-            .unwrap_or(&in_row[0]);
-        Some((s.pos, goal))
-    }
-
-    /// Screen (row, col) of `pos` in a window, or None if it is scrolled out of view.
-    pub fn screen_pos(&self, w: WindowId, pos: usize) -> Option<(usize, usize)> {
-        let g = self.geometry(w)?;
-        let width = self.wrap(&g);
-        let d = self.dl(pos, width);
-        let st = d.stop_le(pos);
-        let n = self.rows_between(self.top(w, width), (d, st.row), width, g.rows)?;
-        (n < g.rows).then_some((n, g.text_x + st.col))
-    }
-    /// Screen rows from `a` down to `b`, if `b` is not above `a` and within `limit`.
-    fn rows_between(&self, a: Row, b: Row, w: Option<usize>, limit: usize) -> Option<usize> {
-        if (b.0.start, b.1) < (a.0.start, a.1) {
-            return None;
-        }
-        let (mut cur, mut n) = (a, 0);
-        while (cur.0.start, cur.1) != (b.0.start, b.1) {
-            cur = self.next_row(&cur, w)?;
-            n += 1;
-            if n > limit {
-                return Some(n);
-            }
-        }
-        Some(n)
-    }
-
-    /// The rows a window shows: what render draws, and what H/M/L and scrolling read.
-    pub fn viewport(&self, w: WindowId) -> Option<Viewport> {
-        let g = self.geometry(w)?;
-        let width = self.wrap(&g);
-        let mut cur = self.top(w, width);
-        let (top, top_row) = (cur.0.start, cur.1);
-        let mut rows = vec![];
-        loop {
-            let (d, r) = &cur;
-            rows.push(ViewRow {
-                dline_start: d.start,
-                row: *r,
-                first_line: d.first_line,
-                cells: d.rows[*r].clone(),
-            });
-            if rows.len() >= g.rows {
-                break;
-            }
-            match self.next_row(&cur, width) {
-                Some(n) => cur = n,
-                None => break,
-            }
-        }
-        Some(Viewport {
-            geometry: g,
-            top,
-            top_row,
-            rows,
-        })
-    }
-
-    /// Where the line a viewport row shows ends (its newline, or the buffer's end
-    /// on the last line), when that's on the row. Layout gives it a stop but no cell.
-    pub(crate) fn line_end_on(&self, g: &Geometry, row: &ViewRow) -> Option<Stop> {
-        let d = self.dl_at(row.dline_start, self.wrap(g));
-        d.stops.last().copied().filter(|s| s.row == row.row)
-    }
-
-    /// Scroll so the cursor is visible. Core does this before every render (C5).
-    pub(crate) fn scroll_to_cursor(&mut self, w: WindowId) {
-        let Some(g) = self.geometry(w) else { return };
-        let width = self.wrap(&g);
-        let head = self.views[&w].sel.head;
-        let d = self.dl(head, width);
-        let st = d.stop_le(head);
-        let cur: Row = (d, st.row);
-        let top = self.top(w, width);
-        let new_top = match self.rows_between(top.clone(), cur.clone(), width, g.rows) {
-            None => cur,
-            Some(n) if n >= g.rows => {
-                let mut t = cur;
-                for _ in 1..g.rows.max(1) {
-                    match self.prev_row(&t, width) {
-                        Some(p) => t = p,
-                        None => break,
-                    }
-                }
-                t
-            }
-            Some(_) => top,
-        };
-        let v = self.views.get_mut(&w).unwrap();
-        v.top = new_top.0.start;
-        v.top_row = new_top.1;
-    }
-}
+type Row = (usize, usize);

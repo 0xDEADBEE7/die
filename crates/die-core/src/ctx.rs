@@ -383,7 +383,11 @@ pub(crate) fn panic_msg(p: &(dyn Any + Send)) -> String {
 impl Ctx {
     /// Register extensions in order, apply bindings, check every bound name exists (C8), then init.
     pub fn new(exts: Vec<Box<dyn Extension>>) -> std::result::Result<Ctx, Vec<String>> {
-        let mut reg = Registry::default();
+        let mut reg = Registry {
+            cur: CORE,
+            ..Default::default()
+        };
+        crate::layout::register_commands(&mut reg);
         let mut errors = vec![];
         let mut slots: Vec<ExtSlot> = vec![];
         for mut e in exts {

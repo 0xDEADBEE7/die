@@ -31,6 +31,7 @@ mod scene;
 mod text;
 #[allow(clippy::collapsible_if)]
 mod undo;
+mod windows;
 
 pub use ctx::*;
 pub use error::*;
@@ -39,6 +40,6 @@ pub use files::{FileInfo, Fingerprint, Uneditable};
 pub use ids::*;
 pub use keymap::*;
 pub use keys::*;
-pub use layout::{CellKind, Dir, DisplayLine, Geometry, LayoutCell, Stop, ViewRow, Viewport};
+pub use layout::{Dir, DisplayLine, Geometry, Stop, ViewRow, Viewport};
 pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
 pub use text::*;
