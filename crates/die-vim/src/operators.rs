@@ -509,7 +509,7 @@ fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, past_end: bool
 // ---------------------------------------------------------------- commands with their own motion
 
 /// The motion a command brings with it.
-type Own = fn(&Start) -> std::result::Result<Target, Fail>;
+pub type Own = fn(&Start) -> std::result::Result<Target, Fail>;
 
 /// `x`, `X`, `s`, `D`, `C`, `~`: an operator over a motion of its own, without `d`'s habits.
 pub fn with_motion(ctx: &mut Ctx, a: &Args, op: Operator, kind: Kind, motion: Own) -> Result {
