@@ -7,7 +7,7 @@
 #![warn(missing_docs)]
 
 use crate::atlas::GlyphKey;
-use crate::font::{self, CellMetrics, Draw, RangeRule};
+use crate::font::{self, CellMetrics, RangeRule};
 use crate::font_dir;
 use crate::frame::{GlyphBitmap, Image};
 use crate::platform::backend::{
@@ -58,18 +58,13 @@ fn family(dir: &Path, prefix: &str) -> [PathBuf; PRIMARY_FACES] {
     ["Regular", "Bold", "Italic", "BoldItalic"].map(|s| dir.join(format!("{prefix}-{s}.ttf")))
 }
 
-/// A scene's size on the GPU: every cell, and nothing around them.
-pub fn grid_pixels(scene: &Scene, cell: &CellMetrics) -> (u32, u32) {
-    (scene.cols as u32 * cell.w, scene.rows as u32 * cell.h)
-}
-
 /// Draws scenes: the fonts, the GPU's pipeline and the row cache.
 pub struct Renderer {
     pipeline: Pipeline,
     /// The primary family, then the faces the rules name.
     faces: Vec<Face>,
-    /// Beside `rules`: the face each rule pins, if it pins one.
-    pinned: Vec<Option<usize>>,
+    /// Beside `rules`: the faces each rule pins.
+    pinned: Vec<Vec<usize>>,
     rules: Vec<RangeRule>,
     frames: Frames,
 }
@@ -84,15 +79,8 @@ impl Renderer {
         for path in &config.faces {
             faces.push(Face::from_file(path, px)?);
         }
-        let mut pinned = vec![];
-        for rule in &config.rules {
-            pinned.push(match &rule.draw {
-                Draw::File(path) => {
-                    faces.push(Face::from_file(path, px)?);
-                    Some(faces.len() - 1)
-                }
-                Draw::Renderer | Draw::Primary => None,
-            });
+        for path in config.rules.iter().flat_map(RangeRule::files) {
+            faces.push(Face::from_file(path, px)?);
         }
         let regular = &faces[0];
         let m = regular.glyph('M').ok_or("the font has no M")?;
@@ -101,7 +89,7 @@ impl Renderer {
         Ok(Renderer {
             pipeline: gpu.pipeline(GRAY_ATLAS, COLOR_ATLAS)?,
             faces,
-            pinned,
+            pinned: font::pins(&config.rules, PRIMARY_FACES),
             rules: config.rules.clone(),
             frames: Frames::new(cell, GRAY_ATLAS, COLOR_ATLAS),
         })
@@ -154,17 +142,14 @@ impl Renderer {
             } => (glyph, *bold, *italic, *span),
         };
         let text = glyph.to_string();
-        let mut chars = text.chars();
-        let first = chars.next()?;
-        let alone = chars.next().is_none();
-        let rule = self.rules.iter().position(|r| r.range.contains(&first));
-        if alone && rule.is_some_and(|r| self.rules[r].draw == Draw::Renderer) {
-            let drawn = sprite::draw(first, cell.w, cell.h, cell.thin);
-            if let Some(drawn) = drawn {
-                return Some(cell.cell_bitmap(drawn));
-            }
+        let source = font::source(&self.rules, &text);
+        let drawn = source
+            .sprite
+            .and_then(|c| sprite::draw(c, cell.w, cell.h, cell.thin));
+        if let Some(drawn) = drawn {
+            return Some(cell.cell_bitmap(drawn));
         }
-        let pinned = rule.and_then(|r| self.pinned[r]);
+        let pinned = source.rule.map_or(&[][..], |r| &self.pinned[r]);
         let styled = font::styled_face(bold, italic);
         let chain = font::chain(pinned, styled);
         let has = |i: usize, c: char| self.faces[i].glyph(c).is_some();

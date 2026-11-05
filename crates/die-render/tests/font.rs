@@ -1,9 +1,11 @@
 //! The font policy, as data: no font is opened, so these run under `ci --linux`.
 
+use die_render::driver::Config;
 use die_render::font::{
-    CellMetrics, Draw, FaceMetrics, Fit, Ink, RangeRule, chain, covering, fit, rule_for,
-    styled_face,
+    CellMetrics, Draw, FaceMetrics, Fit, Ink, RangeRule, Source, chain, covering, fit, pins,
+    source, styled_face,
 };
+use die_render::font_dir;
 use die_render::frame::Plane;
 use die_render::sprite::Line;
 use std::path::PathBuf;
@@ -230,29 +232,77 @@ fn a_union_of_ink_covers_both_and_ignores_empty_ink() {
 #[test]
 fn by_default_the_renderer_draws_boxes_blocks_and_powerline_and_the_font_draws_braille() {
     let rules = RangeRule::defaults();
-    let draw = |c: char| rule_for(&rules, c).map(|r| r.draw.clone());
+    let of = |c: char| source(&rules, c.encode_utf8(&mut [0; 4]));
     for c in ['─', '╬', '█', '▟', '\u{E0B0}', '\u{E0B6}'] {
-        assert_eq!(draw(c), Some(Draw::Renderer), "{c:?}");
+        assert_eq!(of(c).sprite, Some(c), "{c:?}");
     }
-    assert_eq!(draw('⣿'), Some(Draw::Primary));
+    let braille = of('⣿');
+    assert_eq!(braille.sprite, None);
+    assert_eq!(rules[braille.rule.unwrap()].draw, Draw::Primary);
     for c in ['a', '中', '😀', '→'] {
-        assert_eq!(draw(c), None, "{c:?}");
+        let none = Source {
+            sprite: None,
+            rule: None,
+        };
+        assert_eq!(of(c), none, "{c:?}");
     }
 }
 
 #[test]
 fn the_first_rule_that_covers_a_character_decides_it() {
-    let file = PathBuf::from("/fonts/other.ttf");
     let rules = vec![
-        RangeRule::new('a'..='f', Draw::File(file.clone())),
+        RangeRule::new(
+            'a'..='f',
+            Draw::Files(vec![PathBuf::from("/fonts/other.ttf")]),
+        ),
+        RangeRule::new('a'..='z', Draw::Renderer),
         RangeRule::new('a'..='z', Draw::Primary),
     ];
+    assert_eq!(source(&rules, "c").rule, Some(0));
     assert_eq!(
-        rule_for(&rules, 'c').map(|r| &r.draw),
-        Some(&Draw::File(file))
+        source(&rules, "c").sprite,
+        None,
+        "the first rule pins a file"
     );
-    assert_eq!(rule_for(&rules, 'g').map(|r| &r.draw), Some(&Draw::Primary));
-    assert_eq!(rule_for(&rules, 'A'), None);
+    assert_eq!(source(&rules, "g").rule, Some(1));
+    assert_eq!(
+        source(&rules, "g").sprite,
+        Some('g'),
+        "the second gives it away"
+    );
+    assert_eq!(source(&rules, "A").rule, None);
+}
+
+#[test]
+fn a_cluster_goes_by_its_first_character_and_only_a_lone_one_goes_to_the_renderer() {
+    let rules = RangeRule::defaults();
+    let boxed = source(&rules, "─");
+    assert_eq!(boxed.sprite, Some('─'));
+    let marked = source(&rules, "─\u{301}");
+    assert_eq!(marked.sprite, None, "the renderer draws no marks");
+    assert_eq!(marked.rule, boxed.rule, "and the same rule decides it");
+    let after = source(&rules, "a─");
+    assert_eq!((after.sprite, after.rule), (None, None));
+    let empty = source(&rules, "");
+    assert_eq!((empty.sprite, empty.rule), (None, None));
+}
+
+#[test]
+fn each_rule_pins_its_own_files_in_order_after_the_faces_before_them() {
+    let file = |name: &str| PathBuf::from(format!("/fonts/{name}.ttf"));
+    let rules = vec![
+        RangeRule::new('a'..='b', Draw::Files(vec![file("one"), file("two")])),
+        RangeRule::new('c'..='d', Draw::Primary),
+        RangeRule::new('e'..='f', Draw::Files(vec![file("three")])),
+        RangeRule::new('g'..='h', Draw::Renderer),
+        RangeRule::new('i'..='j', Draw::Files(vec![])),
+    ];
+    assert_eq!(rules[0].files(), [file("one"), file("two")]);
+    assert_eq!(rules[1].files(), [] as [PathBuf; 0]);
+    assert_eq!(rules[3].files(), [] as [PathBuf; 0]);
+    let pinned = pins(&rules, 4);
+    assert_eq!(pinned, [vec![4, 5], vec![], vec![6], vec![], vec![]]);
+    assert_eq!(pins(&[], 4), [] as [Vec<usize>; 0]);
 }
 
 #[test]
@@ -261,10 +311,31 @@ fn faces_are_tried_pinned_then_styled_then_regular() {
     assert_eq!(styled_face(true, false), 1);
     assert_eq!(styled_face(false, true), 2);
     assert_eq!(styled_face(true, true), 3);
-    assert_eq!(chain(None, 0), [0]);
-    assert_eq!(chain(None, 3), [3, 0]);
-    assert_eq!(chain(Some(4), 0), [4, 0]);
-    assert_eq!(chain(Some(5), 1), [5, 1, 0]);
+    assert_eq!(chain(&[], 0), [0]);
+    assert_eq!(chain(&[], 3), [3, 0]);
+    assert_eq!(chain(&[4], 0), [4, 0]);
+    assert_eq!(chain(&[5], 1), [5, 1, 0]);
+    assert_eq!(chain(&[6, 4], 2), [6, 4, 2, 0], "in the rule's order");
+}
+
+#[test]
+fn a_grid_is_its_cells_and_nothing_around_them() {
+    let c = cell2x();
+    assert_eq!(c.grid(159, 49), (159 * 19, 49 * 40));
+    assert_eq!(c.grid(1, 1), (19, 40));
+    assert_eq!(c.grid(0, 3), (0, 120));
+}
+
+#[test]
+fn term_names_its_four_files_in_the_order_the_styles_use_and_dies_rules() {
+    let c = Config::term(16.0, 2.0);
+    assert_eq!((c.points, c.scale), (16.0, 2.0));
+    assert_eq!(c.rules, RangeRule::defaults());
+    let file = |s: &str| font_dir().join(format!("IoskeleyMonoTerm-{s}.ttf"));
+    assert_eq!(c.faces[styled_face(false, false)], file("Regular"));
+    assert_eq!(c.faces[styled_face(true, false)], file("Bold"));
+    assert_eq!(c.faces[styled_face(false, true)], file("Italic"));
+    assert_eq!(c.faces[styled_face(true, true)], file("BoldItalic"));
 }
 
 #[test]
