@@ -53,5 +53,9 @@ pub fn mono_dark() -> Theme {
         .face("bracket-match", s().fg(FG_BRIGHT).bg(BG_HL).bold())
         // minibuffer-prompt
         .face("prompt", s().fg(FG_BRIGHT).bold())
+        // vertico-current
+        .face("prompt-current", s().fg(FG_BRIGHT).bg(BG_HL))
+        // completions-common-part
+        .face("prompt-match", s().fg(FG_BRIGHT).bold())
         .face("cursor", s().bg(FG))
 }

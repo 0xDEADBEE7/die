@@ -10,9 +10,23 @@
 //! - History: `<Up>` `<C-p>` for older, `<Down>` `<C-n>` for newer. Going past the newest brings
 //!   back what you were typing.
 //!
+//! A prompt with candidates shows up to 20 of them under its line, flex matched against what's
+//! typed, and some keys change:
+//! - `<CR>` answers with the chosen candidate, or the typed text if none matches. `<M-CR>` answers
+//!   with the typed text whatever matches. With [`PromptSpec::descends`], a candidate ending in
+//!   `/` goes on the line instead of answering.
+//! - `<Tab>` puts the chosen candidate on the line.
+//! - `<Down>` `<C-n>` and `<Up>` `<C-p>` choose the next and last row, stopping at the ends, and
+//!   `<PageDown>` `<C-v>` and `<PageUp>` `<M-v>` go a screenful.
+//! - History is on `<M-p>` and `<M-n>`, which also work with no candidates.
+//!
 //! The cursor moves by what the scene draws as one glyph, a grapheme cluster. A word is a run of
 //! alphanumerics and `_`, or a run of other non-blanks, as in Vim, so `<C-w>` on `a/b` takes `b`.
 #![warn(missing_docs)]
+mod draw;
+mod flex;
+pub use flex::flex_rank;
+
 use crate::error::*;
 use crate::ext::*;
 use crate::keymap::*;
@@ -25,9 +39,12 @@ use unicode_segmentation::UnicodeSegmentation;
 
 type PromptFn = Box<dyn FnOnce(&mut Ctx, Option<String>) -> Result>;
 type ChangeFn = Rc<RefCell<dyn FnMut(&mut Ctx, &str) -> Result>>;
+type LiveFn = Rc<RefCell<dyn FnMut(&str) -> (usize, Vec<String>)>>;
 
 /// How many answers a history keeps.
 const HISTORY: usize = 100;
+/// How many candidates show at once, as the owner's `vertico-count`.
+const ROWS: usize = 20;
 
 /// What a prompt shows and remembers. A plain `&str` is a label and nothing else.
 pub struct PromptSpec {
@@ -36,6 +53,13 @@ pub struct PromptSpec {
     history: Option<String>,
     backspace_cancels: bool,
     on_change: Option<ChangeFn>,
+    source: Option<Source>,
+    descends: bool,
+}
+
+enum Source {
+    Fixed(Vec<String>),
+    Live(LiveFn),
 }
 
 impl PromptSpec {
@@ -47,6 +71,8 @@ impl PromptSpec {
             history: None,
             backspace_cancels: false,
             on_change: None,
+            source: None,
+            descends: false,
         }
     }
     /// Start with this text, the cursor at its end.
@@ -72,11 +98,86 @@ impl PromptSpec {
         self.on_change = Some(Rc::new(RefCell::new(f)));
         self
     }
+    /// Offer these, flex matched against the text. With nothing typed they show in this order, so
+    /// put the likeliest first.
+    pub fn candidates<S: Into<String>>(mut self, items: impl IntoIterator<Item = S>) -> Self {
+        let items = items.into_iter().map(Into::into).collect();
+        self.source = Some(Source::Fixed(items));
+        self
+    }
+    /// Work out the candidates from the text, each time a key changes it. `f` returns how many
+    /// bytes at the start of the text aren't part of the match, and the candidates for the rest:
+    /// for `src/ma`, `(4, entries_of("src/"))`, and choosing `main.rs` makes the line
+    /// `src/main.rs`. It runs on the main thread with each change, so keep what's slow to get.
+    pub fn candidates_from(
+        mut self,
+        f: impl FnMut(&str) -> (usize, Vec<String>) + 'static,
+    ) -> Self {
+        self.source = Some(Source::Live(Rc::new(RefCell::new(f))));
+        self
+    }
+    /// A candidate ending in `/` goes on the line instead of answering, as a directory does in
+    /// `find-file`.
+    pub fn descends(mut self) -> Self {
+        self.descends = true;
+        self
+    }
 }
 
 impl From<&str> for PromptSpec {
     fn from(label: &str) -> Self {
         PromptSpec::new(label)
+    }
+}
+
+/// A prompt's candidates, and which of them match the text now.
+struct List {
+    live: Option<LiveFn>,
+    items: Vec<String>,
+    /// How many bytes of the text aren't matched against `items`.
+    base: usize,
+    /// Indices into `items`, best first.
+    matches: Vec<usize>,
+    /// An index into `matches`.
+    chosen: usize,
+    /// The first of `matches` showing.
+    top: usize,
+    /// The rows taken so far. Like the owner's minibuffer, the list grows and doesn't shrink.
+    height: usize,
+}
+
+impl List {
+    fn new(source: Source) -> List {
+        let (live, items) = match source {
+            Source::Fixed(items) => (None, items),
+            Source::Live(f) => (Some(f), vec![]),
+        };
+        List {
+            live,
+            items,
+            base: 0,
+            matches: vec![],
+            chosen: 0,
+            top: 0,
+            height: 0,
+        }
+    }
+    fn query<'a>(&self, text: &'a str) -> &'a str {
+        text.get(self.base..).unwrap_or(text)
+    }
+    fn filter(&mut self, text: &str) {
+        let query = self.query(text);
+        self.matches = flex::rank(query, self.items.iter().map(String::as_str));
+        (self.chosen, self.top) = (0, 0);
+        self.height = self.height.max(self.matches.len().min(ROWS));
+    }
+    fn chosen_item(&self) -> Option<&str> {
+        let i = *self.matches.get(self.chosen)?;
+        Some(&self.items[i])
+    }
+    fn step(&mut self, by: isize) {
+        let last = self.matches.len().saturating_sub(1);
+        self.chosen = self.chosen.saturating_add_signed(by).min(last);
     }
 }
 
@@ -89,6 +190,7 @@ pub(crate) struct Prompt {
     recalled: Option<usize>,
     /// What was typed before going back in the history.
     draft: String,
+    list: Option<List>,
     ext: ExtIdx,
     prev: State,
     f: PromptFn,
@@ -137,6 +239,22 @@ impl Prompt {
         self.cursor = s.len();
         self.text = s;
     }
+    /// The line choosing the chosen candidate would make, and whether it ends in `/`.
+    fn chosen_line(&self) -> Option<(String, bool)> {
+        let l = self.list.as_ref()?;
+        let item = l.chosen_item()?;
+        let fixed = self.text.get(..l.base).unwrap_or_default();
+        Some((format!("{fixed}{item}"), item.ends_with('/')))
+    }
+    fn step(&mut self, by: isize) {
+        if let Some(l) = self.list.as_mut() {
+            l.step(by);
+        }
+    }
+    /// A screenful of rows, for paging.
+    fn page(&self) -> isize {
+        self.list.as_ref().map_or(0, |l| l.height.max(1) as isize)
+    }
     /// Go older or newer in `past`, which is oldest first. Past the oldest, nothing happens.
     fn recall(&mut self, past: &[String], older: bool) {
         let at = match (self.recalled, older) {
@@ -175,7 +293,8 @@ impl Ctx {
         }
         let prev = self.state();
         self.set_state(State::CommandLine);
-        let spec = spec.into();
+        let mut spec: PromptSpec = spec.into();
+        let list = spec.source.take().map(List::new);
         let text = spec.initial.clone();
         self.prompt = Some(Prompt {
             cursor: text.len(),
@@ -183,17 +302,68 @@ impl Ctx {
             spec,
             recalled: None,
             draft: String::new(),
+            list,
             ext: self.cur_ext(),
             prev,
             f: Box::new(f),
         });
+        self.prompt_refilter();
     }
     /// The text typed into the open prompt, if there is one.
     pub fn prompt_text(&self) -> Option<&str> {
         self.prompt.as_ref().map(|p| p.text.as_str())
     }
-    pub(crate) fn prompt_label(&self) -> Option<&str> {
-        self.prompt.as_ref().map(|p| p.spec.label.as_str())
+    /// The candidates that match the open prompt's text, best first.
+    pub fn prompt_candidates(&self) -> Vec<&str> {
+        let list = self.prompt.as_ref().and_then(|p| p.list.as_ref());
+        list.map_or(vec![], |l| {
+            l.matches.iter().map(|&i| l.items[i].as_str()).collect()
+        })
+    }
+    /// The chosen candidate of the open prompt, if any matches.
+    pub fn prompt_chosen(&self) -> Option<&str> {
+        self.prompt.as_ref()?.list.as_ref()?.chosen_item()
+    }
+    /// The rows the open prompt's list has taken.
+    pub(crate) fn prompt_list_height(&self) -> usize {
+        let list = self.prompt.as_ref().and_then(|p| p.list.as_ref());
+        list.map_or(0, |l| l.height)
+    }
+    /// What the prompt's line starts with: how far through the candidates you are, as vertico
+    /// shows it, and the label.
+    pub(crate) fn prompt_lead(&self) -> Option<String> {
+        let p = self.prompt.as_ref()?;
+        let label = &p.spec.label;
+        Some(match &p.list {
+            Some(l) if l.matches.is_empty() => format!("{:<6} {label}", "*/0"),
+            Some(l) => {
+                let at = format!("{}/{}", l.chosen + 1, l.matches.len());
+                format!("{at:<6} {label}")
+            }
+            None => label.clone(),
+        })
+    }
+    /// The list's rows, `room` at most, scrolled to the chosen one: each candidate, the characters
+    /// of it that matched, and whether it's chosen.
+    pub(crate) fn prompt_rows(&mut self, room: usize) -> Vec<(String, Vec<usize>, bool)> {
+        let Some(p) = self.prompt.as_mut() else {
+            return vec![];
+        };
+        let Some(l) = p.list.as_mut() else {
+            return vec![];
+        };
+        if room == 0 {
+            return vec![];
+        }
+        l.top = l.top.min(l.chosen).max((l.chosen + 1).saturating_sub(room));
+        let query = l.query(&p.text);
+        let shown = l.matches.iter().enumerate().skip(l.top).take(room);
+        shown
+            .map(|(at, &i)| {
+                let item = &l.items[i];
+                (item.clone(), flex::positions(query, item), at == l.chosen)
+            })
+            .collect()
     }
     /// The text before the prompt's cursor.
     pub(crate) fn prompt_before_cursor(&self) -> Option<&str> {
@@ -234,8 +404,19 @@ impl Ctx {
         };
         let (at, end) = (p.cursor, p.text.len());
         let before = p.text.clone();
+        let listed = p.list.is_some();
         match c.key {
-            Key::Enter => return self.finish_prompt(Some(before), true),
+            Key::Enter if alt => return self.finish_prompt(Some(before), true),
+            Key::Enter => match p.chosen_line() {
+                Some((line, true)) if p.spec.descends => p.set_line(line),
+                Some((line, _)) => return self.finish_prompt(Some(line), true),
+                None => return self.finish_prompt(Some(before), true),
+            },
+            Key::Tab => {
+                if let Some((line, _)) = p.chosen_line() {
+                    p.set_line(line);
+                }
+            }
             Key::Esc => return self.finish_prompt(None, true),
             Key::Char('g' | 'c') if ctrl => return self.finish_prompt(None, true),
             Key::Backspace if end == 0 && p.spec.backspace_cancels => {
@@ -250,6 +431,10 @@ impl Ctx {
             Key::Backspace if alt => p.replace(p.word_before()..at, ""),
             Key::Backspace => p.replace(p.before()..at, ""),
             Key::Delete => p.replace(at..p.after(), ""),
+            Key::Up if listed => p.step(-1),
+            Key::Down if listed => p.step(1),
+            Key::PageUp => p.step(-p.page()),
+            Key::PageDown => p.step(p.page()),
             Key::Up => self.prompt_recall(true),
             Key::Down => self.prompt_recall(false),
             Key::Char(k) if ctrl => match k {
@@ -262,6 +447,9 @@ impl Ctx {
                 'w' => p.replace(p.word_before()..at, ""),
                 'u' => p.replace(0..at, ""),
                 'k' => p.replace(at..end, ""),
+                'p' if listed => p.step(-1),
+                'n' if listed => p.step(1),
+                'v' => p.step(p.page()),
                 'p' => self.prompt_recall(true),
                 'n' => self.prompt_recall(false),
                 _ => {}
@@ -270,6 +458,9 @@ impl Ctx {
                 'b' => p.cursor = p.word_before(),
                 'f' => p.cursor = p.word_after(),
                 'd' => p.replace(at..p.word_after(), ""),
+                'v' => p.step(-p.page()),
+                'p' => self.prompt_recall(true),
+                'n' => self.prompt_recall(false),
                 _ => {}
             },
             _ => {
@@ -290,12 +481,39 @@ impl Ctx {
         self.prompt = Some(p);
     }
 
-    /// Queue the `on_change` call, if the key changed the text.
-    fn prompt_changed(&mut self, before: &str) {
+    /// Match the candidates against the text, asking for them again if they depend on it. The
+    /// asking is extension code, so it's guarded, and if it panics the list is empty.
+    fn prompt_refilter(&mut self) {
         let Some(p) = self.prompt.as_ref() else {
             return;
         };
-        let Some(f) = p.spec.on_change.clone().filter(|_| p.text != before) else {
+        let Some(l) = p.list.as_ref() else {
+            return;
+        };
+        let text = p.text.clone();
+        let (ext, live) = (p.ext, l.live.clone());
+        let asked = live.map(|f| self.guarded(ext, |_| Ok((f.borrow_mut())(&text))));
+        let Some(l) = self.prompt.as_mut().and_then(|p| p.list.as_mut()) else {
+            return;
+        };
+        match asked {
+            Some(Ok((base, items))) => (l.base, l.items) = (base, items),
+            Some(Err(_)) => (l.base, l.items) = (0, vec![]),
+            None => {}
+        }
+        l.filter(&text);
+    }
+
+    /// Match the candidates again and queue the `on_change` call, if the key changed the text.
+    fn prompt_changed(&mut self, before: &str) {
+        if self.prompt.as_ref().is_none_or(|p| p.text == before) {
+            return;
+        }
+        self.prompt_refilter();
+        let Some(p) = self.prompt.as_ref() else {
+            return;
+        };
+        let Some(f) = p.spec.on_change.clone() else {
             return;
         };
         let (ext, text) = (p.ext, p.text.clone());
