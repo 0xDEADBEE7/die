@@ -9,6 +9,7 @@ use crate::files::SettingsFn;
 use crate::ids::*;
 use crate::keymap::*;
 use crate::keys::*;
+use crate::prompt::Prompt;
 use crate::rt::*;
 use crate::text::*;
 use slotmap::SlotMap;
