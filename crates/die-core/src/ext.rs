@@ -314,6 +314,8 @@ pub struct Ctx {
     pub(crate) leader: Chord,
     pub(crate) prefix: Prefix,
     pub(crate) prompt: Option<Prompt>,
+    /// What prompts remember, by history name (K11a).
+    pub(crate) histories: HashMap<String, Vec<String>>,
     pub(crate) clock: Clock,
     pub(crate) timers: Timers,
     pub(crate) timer_seq: u64,
@@ -339,8 +341,10 @@ pub struct Ctx {
     /// `run_ready` hit its turn limit and has said so.
     pub(crate) over_limit: bool,
     pub(crate) files: crate::files::Files,
-    /// The log: errors, panics and messages, oldest first (K11a's `*messages*` shows it).
+    /// The log: errors, panics and messages, oldest first. `*messages*` shows it, the newest goes
+    /// on the command row, and the oldest go past 1,000.
     pub messages: Vec<String>,
+    pub(crate) log: crate::messages::Log,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
 }
@@ -474,6 +478,7 @@ impl Ctx {
             leader: default_leader(),
             prefix: Prefix::default(),
             prompt: None,
+            histories: HashMap::new(),
             clock: config.clock,
             timers: Timers::new(),
             timer_seq: 0,
@@ -496,6 +501,7 @@ impl Ctx {
             over_limit: false,
             files: Default::default(),
             messages: vec![],
+            log: Default::default(),
             faces,
             search_highlight: None,
         };
@@ -637,7 +643,7 @@ impl Ctx {
     pub(crate) fn report(&mut self, r: Result) {
         match r {
             Ok(()) | Err(Error::Panicked { .. }) => {}
-            Err(e) => self.messages.push(format!("{e:?}")),
+            Err(e) => self.messages.push(e.to_string()),
         }
     }
 

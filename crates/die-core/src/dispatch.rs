@@ -171,6 +171,10 @@ impl Ctx {
 
     pub(crate) fn dispatch(&mut self, ev: KeyEvent, src: KeySource) {
         self.cmd_seq += 1;
+        if ev.kind != KeyKind::Release && !matches!(ev.key, Key::Modifier(_)) {
+            self.sync_messages();
+            self.log.echo = None;
+        }
         // A key DIE took in passthrough swallows its own repeat and release.
         if let Some(i) = self.swallow.iter().position(|k| *k == ev.key) {
             match ev.kind {

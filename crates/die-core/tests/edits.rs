@@ -21,7 +21,7 @@ fn c14_user_dd_fails_in_read_only_but_silent_extension_append_succeeds() {
         .decorate(0..19, Deco::ReadOnly)
         .unwrap();
     ctx.type_keys("jdd");
-    assert!(has_msg(&ctx, "ReadOnly"), "{:?}", ctx.messages);
+    assert!(has_msg(&ctx, "read-only"), "{:?}", ctx.messages);
     assert_eq!(
         text(&ctx, b),
         "you: hi\nbot: hello\n> ",
@@ -149,7 +149,7 @@ fn undo_refuses_when_an_extension_rewrote_the_users_text() {
         .commit()
         .unwrap();
     ctx.type_keys("u");
-    assert!(has_msg(&ctx, "UndoConflict"), "{:?}", ctx.messages);
+    assert!(has_msg(&ctx, "undo history was cut short"), "{:?}", ctx.messages);
     assert_eq!(text(&ctx, b), "you: hi\n> heLLo", "nothing half-undone");
 }
 
@@ -162,7 +162,7 @@ fn insert_session_is_one_step_and_restores_cursor() {
     assert_eq!(text(&ctx, b), "abc\n");
     assert_eq!(cursor(&ctx, b, w), 1);
     ctx.type_keys("u");
-    assert!(has_msg(&ctx, "NothingToUndo"));
+    assert!(has_msg(&ctx, "nothing to undo"));
 }
 
 #[test]
