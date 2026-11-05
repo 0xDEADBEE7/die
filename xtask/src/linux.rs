@@ -374,7 +374,8 @@ pub fn host_checks(root: &Path) -> Result {
         let mut c = Command::new(cargo());
         c.current_dir(root)
             .args(["test", "--locked", "--offline", "--quiet"])
-            .args(args);
+            .args(args)
+            .env("DIE_SLOW_HOST", "1");
         c
     };
     let exit_f = ["die-core", "die-vim", "evil-oracle", "die-test-cap"];
