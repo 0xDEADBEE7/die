@@ -1,7 +1,7 @@
 //! The `:` command line. K11a gives it its input; V2 and V5 fill in what it does.
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
-use crate::{substitute, visual};
+use crate::{substitute, visual, window};
 use die_core::{Args, BufferId, Ctx, Error, PromptSpec, Result, ShowIn};
 use std::path::{Path, PathBuf};
 
@@ -27,6 +27,9 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     let text = text.trim().trim_start_matches(':');
     if let Some((range, rest)) = substitute::parse(text) {
         return substitute::run(ctx, range, rest);
+    }
+    if let Some(done) = window::ex(ctx, text) {
+        return done;
     }
     let (name, rest) = text.split_once(' ').unwrap_or((text, ""));
     let rest = rest.trim();
@@ -77,6 +80,8 @@ const FILE_COMMANDS: &[(&str, Write, Then)] = &[
     ("w!", Write::Force, Then::Nothing),
     ("q", Write::No, Then::Quit { force: false }),
     ("q!", Write::No, Then::Quit { force: true }),
+    ("quit", Write::No, Then::Quit { force: false }),
+    ("quit!", Write::No, Then::Quit { force: true }),
     ("wq", Write::Save, Then::Quit { force: false }),
     ("wq!", Write::Force, Then::Quit { force: true }),
     ("e!", Write::No, Then::Revert),
@@ -93,30 +98,11 @@ fn file_command(ctx: &mut Ctx, write: Write, then: Then) -> Result {
     match then {
         Then::Nothing => Ok(()),
         Then::Revert => ctx.revert_file(buf),
-        Then::Quit { force } => quit(ctx, force),
+        Then::Quit { force } => {
+            let (_, w) = buffer_window(ctx, &Args::default())?;
+            window::close_or_quit(ctx, w, force)
+        }
     }
-}
-
-/// `:q`: close the window, and from the only one, quit. That refuses while a file has unsaved
-/// changes, unless `force`.
-fn quit(ctx: &mut Ctx, force: bool) -> Result {
-    if let Some(w) = ctx.focused()
-        && ctx.close_window(w).is_ok()
-    {
-        return Ok(());
-    }
-    let unsaved = ctx
-        .buffer_list()
-        .into_iter()
-        .find(|&b| ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified()));
-    if let Some(b) = unsaved.filter(|_| !force) {
-        let name = ctx.buffer_name(b).unwrap_or_default();
-        return Err(Error::Msg(format!(
-            "{name} has unsaved changes; :w saves them, :q! drops them"
-        )));
-    }
-    ctx.quit();
-    Ok(())
 }
 
 /// `:e path`: a path is taken from the buffer's directory, as your Evil's is, or else from
