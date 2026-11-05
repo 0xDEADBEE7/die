@@ -227,6 +227,44 @@ impl TextBuf {
         out
     }
 
+    /// What `:s` changes in the whole lines `lines`: each match and its replacement, in order and
+    /// without overlaps. With `global` that's every match, otherwise the first of each line. `$1`,
+    /// `${1}`, `$name`, `$0` and `$$` in `template` expand as in Rust's regex crate. An empty match
+    /// at `lines.end` belongs to the next line, so it doesn't count unless `lines` is empty.
+    pub fn substitutions(
+        &self,
+        pat: &Pattern,
+        lines: Range<usize>,
+        template: &str,
+        global: bool,
+    ) -> Vec<(Range<usize>, String)> {
+        let text = self.flat();
+        let text = &*text;
+        let mut out = vec![];
+        let mut next_line = lines.start;
+        let input = Input::new(text).range(lines.clone());
+        for caps in pat.re.captures_iter(input) {
+            let Some(m) = caps.get_match().map(|m| m.range()) else {
+                continue;
+            };
+            if m.start == lines.end && !lines.is_empty() {
+                break;
+            }
+            if m.start < next_line || !pat.stands_alone(text, &m) {
+                continue;
+            }
+            out.push((m.clone(), caps.interpolate_string(text, template)));
+            if !global {
+                next_line = if text[m.clone()].ends_with('\n') {
+                    m.end
+                } else {
+                    self.line_start(self.line_of(m.end) + 1)
+                };
+            }
+        }
+        out
+    }
+
     /// The match that starts at `pos`, seeing only its line as `matches` does. The scene
     /// draws it as the current match.
     pub(crate) fn match_at(&self, pat: &Pattern, pos: usize) -> Option<Range<usize>> {
