@@ -15,6 +15,15 @@
 //! - Modes: the factory, `on_enable`, `on_disable`, `on_resize`, and `decorate`.
 //! - Key observers: the key still dispatches.
 //! - `Drop`: a buffer's object panicking as `kill` drops it. The buffer is dead and hooks still run.
+//!   What a cancelled job, timer, idle timer or hook holds, wherever core comes to drop it: a
+//!   job's value, its `done` when its work panicked, at the deadline, while queued, in the sweep,
+//!   when `next_timer` looks, and when a turn tidies up.
+//! - Who a panic names: `a_key_observers_panic_names_its_extension` and
+//!   `a_prompts_answer_panic_names_the_extension_that_asked`.
+//! - `panics_taking_turns_dont_flood_the_log`: two objects panicking on every frame, and what
+//!   logging something else does.
+//! - `a_render_panic_keeps_its_line_when_a_command_panics_next`: the hook's list and the guard
+//!   match panics by message, including a panic that comes with no hook call.
 //! - `a_message_names_the_extension_the_place_and_restarting`: what the line says.
 //! - `a_panic_only_the_host_caught_is_logged_at_the_next_turn`: the hook catches what no guard saw.
 //! - `a_new_ctx_doesnt_log_a_panic_from_before_it_existed`: as when a property test shrinks, one
@@ -61,6 +70,17 @@ impl Extension for Ext {
                 .detach();
             Ok(())
         });
+        reg.command("observe-from-ext", "", |ctx, _| {
+            ctx.observe_keys(|_, _| panic!("observer bug")).detach();
+            Ok(())
+        });
+        reg.command("ask-from-ext", "", |ctx, _| {
+            ctx.prompt("q", |_, _| panic!("answer bug"));
+            Ok(())
+        });
+        reg.command("rethrows", "", |_, _| {
+            std::panic::resume_unwind(Box::new("rethrown"))
+        });
         reg.mode::<Bad>("bad", Bad::default);
         reg.mode::<BadFactory>("bad-factory", || panic!("factory bug"));
         let k = reg.kind_keymap("text");
@@ -68,7 +88,10 @@ impl Extension for Ext {
             .bind(State::Normal, "P", "boom")
             .bind(State::Normal, "N", "passes-it-on")
             .bind(State::Normal, "S", "make-surface")
-            .bind(State::Normal, "J", "job-from-ext");
+            .bind(State::Normal, "J", "job-from-ext")
+            .bind(State::Normal, "O", "observe-from-ext")
+            .bind(State::Normal, "A", "ask-from-ext")
+            .bind(State::Normal, "R", "rethrows");
         let k = reg.kind_keymap("surf");
         k.bind(State::Normal, "z", "ok");
     }
@@ -704,4 +727,185 @@ fn a_panicked_observer_can_run_again() {
     w.ctx.type_keys("zz");
     assert_eq!(seen.get(), 2);
     drop(sub);
+}
+
+/// A callback that panics when it's dropped, not when it's called.
+fn drops_badly() -> impl FnMut(&mut Ctx) -> Result + 'static {
+    let d = BadDrop;
+    move |_| {
+        let _ = &d;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_panic_dropping_a_cancelled_jobs_value() {
+    let mut w = world();
+    drop(w.ctx.spawn(|| BadDrop, |_, _| Ok(())));
+    w.logged_once_and_usable("drop bug");
+}
+
+#[test]
+fn a_panic_dropping_the_done_of_a_job_whose_work_panicked() {
+    let mut w = world();
+    let d = BadDrop;
+    let job = w.ctx.spawn(
+        || -> u8 { panic!("work bug") },
+        move |_, _| {
+            let _ = &d;
+            Ok(())
+        },
+    );
+    w.ctx.run_until_idle();
+    w.logged_once_and_usable("work bug");
+    w.logged_once_and_usable("drop bug");
+    drop(job);
+}
+
+#[test]
+fn a_panic_dropping_a_cancelled_timers_closure_at_its_deadline() {
+    let mut w = world();
+    drop(w.ctx.after(Duration::ZERO, drops_badly()));
+    assert!(!w.ctx.step(), "nothing else was ready");
+    w.logged_once_and_usable("drop bug");
+}
+
+#[test]
+fn a_panic_dropping_a_closure_cancelled_while_it_was_queued() {
+    let mut w = world();
+    let victim: Rc<std::cell::RefCell<Option<Sub>>> = Rc::default();
+    let v = victim.clone();
+    let first = w.ctx.after(Duration::ZERO, move |_| {
+        v.borrow_mut().take();
+        Ok(())
+    });
+    let mut f = drops_badly();
+    *victim.borrow_mut() = Some(w.ctx.after(Duration::ZERO, move |ctx| f(ctx)));
+    while w.ctx.step() {}
+    w.logged_once_and_usable("drop bug");
+    drop(first);
+}
+
+#[test]
+fn a_panic_dropping_a_closure_in_the_sweep() {
+    let mut w = world();
+    drop(w.ctx.after(Duration::from_secs(3600), drops_badly()));
+    for _ in 0..1_024 {
+        drop(w.ctx.after(Duration::from_secs(3600), |_| Ok(())));
+    }
+    w.logged_once_and_usable("drop bug");
+}
+
+#[test]
+fn a_panic_dropping_a_closure_when_next_timer_looks() {
+    let mut w = world();
+    let last = w.ctx.after(Duration::from_secs(3600), |_| Ok(()));
+    drop(w.ctx.after(MS, drops_badly()));
+    assert_eq!(w.ctx.next_timer(), Some(Duration::from_secs(3600)));
+    w.logged_once_and_usable("drop bug");
+    drop(last);
+}
+
+#[test]
+fn a_panic_dropping_a_cancelled_idle_timers_closure() {
+    let mut w = world();
+    drop(w.ctx.idle(Duration::from_secs(3600), drops_badly()));
+    assert!(!w.ctx.step());
+    w.logged_once_and_usable("drop bug");
+}
+
+#[test]
+fn a_panic_dropping_a_cancelled_hook() {
+    let mut w = world();
+    let mut f = drops_badly();
+    drop(w.ctx.on_buffer_killed(move |ctx, _| f(ctx)));
+    assert!(!w.ctx.step());
+    w.logged_once_and_usable("drop bug");
+}
+
+#[test]
+fn a_key_observers_panic_names_its_extension() {
+    let mut w = world();
+    w.ctx.type_keys("Oz");
+    let line = w.ctx.messages.iter().find(|m| m.contains("observer bug"));
+    assert!(
+        line.is_some_and(|l| l.starts_with("ext panicked: observer bug")),
+        "{:?}",
+        w.ctx.messages
+    );
+}
+
+#[test]
+fn a_prompts_answer_panic_names_the_extension_that_asked() {
+    let mut w = world();
+    w.ctx.type_keys("A<CR>");
+    let line = w.ctx.messages.last().unwrap();
+    assert!(line.starts_with("ext panicked: answer bug"), "{line}");
+}
+
+#[test]
+fn panics_taking_turns_dont_flood_the_log() {
+    struct Bad(&'static str);
+    impl Surface for Bad {
+        fn kind(&self) -> &'static str {
+            "bad"
+        }
+        fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {
+            panic!("{}", self.0);
+        }
+    }
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let mut place = |name, row| {
+        let s = ctx.create_surface(name, Bad(name));
+        let window = ctx.open_window(s, 20, 2).unwrap();
+        WindowPlacement {
+            window,
+            col: 0,
+            row,
+        }
+    };
+    let p = [place("bug one", 0), place("bug two", 2)];
+    let frames = |ctx: &mut Ctx, n| {
+        for _ in 0..n {
+            let _ = ctx.compose(20, 6, &p);
+            ctx.step();
+        }
+    };
+    frames(&mut ctx, 100);
+    assert_eq!(ctx.messages.len(), 2, "{:?}", ctx.messages);
+    ctx.messages.push("something else".into());
+    frames(&mut ctx, 100);
+    assert_eq!(
+        ctx.messages.len(),
+        5,
+        "they're news again after it: {:?}",
+        ctx.messages
+    );
+}
+
+#[test]
+fn a_render_panic_keeps_its_line_when_a_command_panics_next() {
+    for (key, command_line) in [('P', "ext panicked: boom"), ('R', "ext panicked: rethrown")] {
+        let mut w = world();
+        let s = w.ctx.create_surface(
+            "s",
+            Surf {
+                fail_render: Rc::new(Cell::new(true)),
+                ..Default::default()
+            },
+        );
+        let window = w.ctx.open_window(s, 20, 2).unwrap();
+        let place = WindowPlacement {
+            window,
+            col: 0,
+            row: 0,
+        };
+        let _ = w.ctx.compose(20, 4, &[place]);
+        w.ctx.focus(w.win);
+        w.ctx.input(KeyEvent::press(Key::Char(key)));
+        w.ctx.run_until_idle();
+        let has = |what: &str| w.ctx.messages.iter().filter(|m| m.contains(what)).count();
+        assert_eq!(has("render bug"), 1, "{:?}", w.ctx.messages);
+        assert_eq!(has(command_line), 1, "{:?}", w.ctx.messages);
+    }
 }
