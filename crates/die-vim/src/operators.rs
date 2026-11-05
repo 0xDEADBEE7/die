@@ -10,8 +10,7 @@
 //! 2. [`apply`] gives the span to the operator.
 //!
 //! A command that moves the cursor and edits makes its edit first, so `u` puts the cursor
-//! back where the command started (m0-log's call 7). `gU` and `gu` move first, because
-//! Evil's `u` goes to the start of what they changed.
+//! back where the command started (m0-log's call 7).
 
 use crate::Vim;
 use crate::grammar::{Fail, Goal, Kind, Operator, Start, Target, buffer_window, forget_goal};
@@ -431,11 +430,12 @@ fn yank(ctx: &mut Ctx, b: BufferId, w: WindowId, register: Option<char>, span: S
 const SHIFT_WIDTH: usize = 4;
 
 /// `>` and `<`: each line moves to the next multiple of 4 columns that way. Lines of
-/// nothing but spaces end up empty, and empty lines stay empty. The cursor stays on its
-/// line in the same column, or at the end after `$`.
+/// nothing but spaces end up empty, and empty lines stay empty. The cursor stays in its
+/// column, or at the line's end after `$`. It stays on its line with `>`, and with `<`
+/// goes to the first line shifted, as in Evil, where only `>` says not to move.
 fn shift(t: &mut TextBuf, w: WindowId, span: Span, right: bool) -> Result {
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
-    let here = t.line_of(sel.head);
+    let here = t.line_of(if right { sel.head } else { span.beg });
     let (col, goal) = (t.display_col(sel.head), Goal::decode(sel.goal));
     let mut tx_ops: Vec<(std::ops::Range<usize>, String)> = vec![];
     let mut line = t.line_of(span.beg);
@@ -454,6 +454,15 @@ fn shift(t: &mut TextBuf, w: WindowId, span: Span, right: bool) -> Result {
     // The empty last line, or an empty text, has no line to shift, so `>` indents it.
     if span.beg == span.end && right {
         tx_ops.push((span.beg..span.beg, " ".repeat(SHIFT_WIDTH)));
+    }
+    // A first line that only loses its indentation, with the cursor at its start: Evil's
+    // `u` goes to the end of the indentation it puts back.
+    if let Some((range, spaces)) = tx_ops.first()
+        && sel.head == range.start
+        && spaces.is_empty()
+    {
+        let to = rest_pos(t, range.end);
+        t.set_cursor(w, to);
     }
     let mut tx = t.tx(Origin::User);
     for (range, spaces) in tx_ops {
@@ -489,17 +498,8 @@ fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, cursor_to_end:
         Operator::Downcase => old.to_lowercase(),
         _ => old.chars().map(inverted).collect(),
     };
-    // Evil's `u` after `gU` and `gu` goes to the start of the change, not back to where
-    // the command started, and text that didn't change makes no undo step.
-    if op != Operator::InvertCase {
-        t.set_cursor(w, span.beg);
-        if new == old {
-            let pos = rest_pos(t, span.beg);
-            t.set_cursor(w, pos);
-            return Ok(());
-        }
-    }
     let end = span.beg + new.len();
+    // Text replaced by itself is still an undo step, as in Evil, so `u` takes it back.
     t.tx(Origin::User)
         .replace(span.beg..span.end, new)
         .commit()?;
@@ -573,8 +573,13 @@ pub fn replace(ctx: &mut Ctx, a: &Args) -> Result {
         motion,
     )?;
     if enter {
-        t.tx(Origin::User).delete(span.beg..span.end).commit()?;
-        return insert::newline(t, w, span.beg);
+        t.tx(Origin::User)
+            .replace(span.beg..span.end, "\n")
+            .commit()?;
+        insert::indent_from_above(t, w, t.line_of(span.beg) + 1)?;
+        let pos = rest_pos(t, cursor(t, w)?);
+        t.set_cursor(w, pos);
+        return Ok(());
     }
     let with = with.unwrap_or_default();
     let (mut n, mut p) = (0, span.beg);
@@ -609,7 +614,6 @@ pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
         line_was_blank = crate::text::blank_line(t, here);
         if here >= last_line(t) {
             pos = line_end(t, here);
-            line_was_blank = false;
             break;
         }
         let newline = line_end(t, here);

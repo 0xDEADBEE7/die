@@ -3,8 +3,8 @@
 
 use crate::grammar::{Fail, Goal, Kind, Motion, Operator, Start, Target};
 use crate::text::{
-    Chars, Class, blank_line, class, indent_end, last_line, line_end, next_stop, normal_pos,
-    pos_at_col, prev_stop, same_word,
+    Chars, Class, Lists, blank_line, class, indent_end, last_line, line_end, next_stop, normal_pos,
+    pos_at_col, prev_stop, same_word, string_around,
 };
 use die_core::{Dir, TextBuf, WindowId};
 
@@ -520,57 +520,47 @@ pub fn find(s: &Start, search: Find) -> Result<Target, Fail> {
 
 // ---------------------------------------------------------------- %, { and }
 
-const BRACKETS: [(char, char); 3] = [('(', ')'), ('[', ']'), ('{', '}')];
-
-/// `%`: from the first bracket at or after the cursor on its line, to its match.
-/// With a count, `N%`.
+/// `%`: to the partner of the first bracket on the line at or after the cursor, by
+/// Emacs's scan, so it skips strings, and any closer can be a partner. A cursor in a string
+/// with no bracket left in it tries again from the string's end. With a count, `N%`.
 fn jump_item(s: &Start) -> Result<Target, Fail> {
     if let Some(n) = s.count {
         return percent(s, n);
     }
-    let t = s.text;
-    let end = line_end(t, t.line_of(s.pos));
-    let mut c = Chars::at(t, s.pos);
-    let (open, close, dir) = loop {
-        let ch = c
-            .ch()
-            .filter(|_| c.pos() < end)
-            .ok_or("No bracket on this line")?;
-        if let Some(&(o, cl)) = BRACKETS.iter().find(|(o, cl)| ch == *o || ch == *cl) {
-            break (o, cl, if ch == o { Dir::Forward } else { Dir::Backward });
-        }
-        c.fwd();
+    match bracket_partner(s.text, s.pos) {
+        Some(q) => Ok(Target::at(q)),
+        None => string_around(s.text, s.pos)
+            .and_then(|(_, end)| bracket_partner(s.text, end))
+            .map(Target::at)
+            .ok_or("No matching item on this line"),
+    }
+}
+
+/// The bracket `%` goes to from `p`: whichever comes first, the next opener's closer or
+/// the closer that's next at this depth's opener. It looks on `p`'s line for that bracket,
+/// but its partner can be anywhere.
+fn bracket_partner(t: &TextBuf, p: usize) -> Option<usize> {
+    let lists = Lists::new(t, '(', ')');
+    let eol = line_end(t, t.line_of(p));
+    let open = lists.down(p);
+    let closer_at = |after: usize| {
+        let mut c = Chars::at(t, after);
+        c.back();
+        c.pos()
     };
-    let mut depth = 0usize;
-    loop {
-        match c.ch() {
-            Some(ch) if ch == open => {
-                depth = if dir == Dir::Forward {
-                    depth + 1
-                } else {
-                    depth - 1
-                }
-            }
-            Some(ch) if ch == close => {
-                depth = if dir == Dir::Forward {
-                    depth - 1
-                } else {
-                    depth + 1
-                }
-            }
-            _ => {}
-        }
-        if depth == 0 {
-            return Ok(Target::at(c.pos()));
-        }
-        let moved = if dir == Dir::Forward {
-            c.fwd()
-        } else {
-            c.back()
-        };
-        if !moved || c.ch().is_none() {
-            return Err("No matching bracket");
-        }
+    let close = lists.up_forward(p).map(closer_at);
+    let open_partner = open.filter(|&o| o < eol).and_then(|o| {
+        let mut c = Chars::at(t, o);
+        c.fwd();
+        lists.up_forward(c.pos()).map(closer_at)
+    });
+    let close_partner = close
+        .filter(|&c| c < eol)
+        .and_then(|c| lists.up_backward(c));
+    if open.unwrap_or(usize::MAX) < close.unwrap_or(usize::MAX) {
+        open_partner
+    } else {
+        close_partner
     }
 }
 

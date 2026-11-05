@@ -6,7 +6,10 @@
 
 use crate::grammar::{Fail, Start};
 use crate::operators::Span;
-use crate::text::{Chars, Class, blank_line, class, indent_end, line_end, next_stop, same_word};
+use crate::text::{
+    Chars, Class, Lists, blank_line, class, indent_end, line_end, next_stop, same_word,
+    string_after, string_around,
+};
 use die_core::TextBuf;
 
 /// A text object: what it covers from where a motion would start.
@@ -63,12 +66,22 @@ trait Things {
     fn next(&self, p: usize) -> Option<(usize, usize)>;
     /// The last thing ending at or before `p`.
     fn prev(&self, p: usize) -> Option<(usize, usize)>;
+    /// The gap after a thing ending at `p`, which `a` takes.
+    fn gap_after(&self, p: usize) -> Option<(usize, usize)> {
+        gap_from(self, p, self.bounds().0)
+    }
 }
 
 /// The gap `p` is in or touches, with `lo` as the lower bound when no thing is before it.
-fn gap_from(x: &impl Things, p: usize, lo: usize) -> Option<(usize, usize)> {
-    let beg = x.prev(p).map_or(lo, |t| t.1).max(lo);
-    let end = x.next(p).map_or(x.bounds().1, |t| t.0);
+/// A range with no things at all is one gap, but Evil doesn't find it from either end.
+fn gap_from(x: &(impl Things + ?Sized), p: usize, lo: usize) -> Option<(usize, usize)> {
+    let hi = x.bounds().1;
+    let (before, after) = (x.prev(p), x.next(p));
+    if before.is_none() && after.is_none() && (p <= lo || p >= hi) {
+        return None;
+    }
+    let beg = before.map_or(lo, |t| t.1).max(lo);
+    let end = after.map_or(hi, |t| t.0);
     (beg <= p && p <= end && beg < end).then_some((beg, end))
 }
 
@@ -104,7 +117,7 @@ fn around(x: &impl Things, pos: usize, n: usize, floor: usize) -> (usize, usize)
     let (mut beg, mut end);
     if let Some(thing) = x.at(pos) {
         (beg, end) = thing;
-        match gap(x, end) {
+        match x.gap_after(end) {
             Some((_, e)) => end = e,
             None => {
                 if let Some((b, _)) = gap_from(x, beg, floor) {
@@ -221,6 +234,16 @@ impl Things for Words<'_> {
         }
         None
     }
+    /// Only on `p`'s line, even from an empty line, which searches further for its things.
+    fn gap_after(&self, p: usize) -> Option<(usize, usize)> {
+        let line = self.t.line_of(p);
+        let here = Words {
+            lo: self.t.line_start(line),
+            hi: line_end(self.t, line),
+            ..*self
+        };
+        gap(&here, p)
+    }
 }
 
 fn inner_word(s: &Start, big: bool) -> Result<Span, Fail> {
@@ -321,37 +344,6 @@ fn a_paragraph(s: &Start) -> Result<Span, Fail> {
 
 // ---------------------------------------------------------------- quotes
 
-/// A string as Emacs's parser sees it: its delimiter, and its range with both quotes.
-type Quoted = (char, usize, usize);
-
-/// The first string that ends after `p`, parsing from the start of the text. `"` and
-/// `quote` delimit strings, and `\` escapes the next character, in a string or out.
-fn string_after(t: &TextBuf, p: usize, quote: char) -> Option<Quoted> {
-    let mut c = Chars::at(t, 0);
-    let mut open: Option<(char, usize)> = None;
-    while let Some(ch) = c.ch() {
-        let at = c.pos();
-        match open {
-            _ if ch == '\\' => {
-                c.fwd();
-            }
-            None if ch == quote || ch == '"' => open = Some((ch, at)),
-            Some((q, start)) if ch == q => {
-                c.fwd();
-                let end = c.pos();
-                if end > p {
-                    return Some((q, start, end));
-                }
-                open = None;
-                continue;
-            }
-            _ => {}
-        }
-        c.fwd();
-    }
-    open.map(|(q, start)| (q, start, t.len()))
-}
-
 /// `quote`'s pair in a line of `string`, which `"` delimits: the pair at `p`, else the
 /// next one, a last unpaired quote pairing with the string's end. With neither, the whole
 /// string, as Evil's narrow search gives. Pairs are counted from the line's start.
@@ -379,18 +371,18 @@ fn pair_in_string(t: &TextBuf, p: usize, quote: char, string: (usize, usize)) ->
 }
 
 /// The whitespace around a string that `a"` takes, newlines included: after it, or else
-/// before it.
-fn space_around(t: &TextBuf, beg: usize, end: usize) -> (usize, usize) {
+/// before it. It stays in `lo..hi`.
+fn space_around(t: &TextBuf, beg: usize, end: usize, lo: usize, hi: usize) -> (usize, usize) {
     let is_space = |c: Option<char>| matches!(c, Some(' ' | '\t' | '\n' | '\r' | '\u{c}'));
     let mut c = Chars::at(t, end);
-    if is_space(c.ch()) {
-        while is_space(c.ch()) {
+    if c.pos() < hi && is_space(c.ch()) {
+        while c.pos() < hi && is_space(c.ch()) {
             c.fwd();
         }
         return (beg, c.pos());
     }
     let mut c = Chars::at(t, beg);
-    while is_space(c.prev_ch()) {
+    while c.pos() > lo && is_space(c.prev_ch()) {
         c.back();
     }
     (c.pos(), end)
@@ -401,15 +393,17 @@ fn quoted(s: &Start, quote: char, outer: bool) -> Result<Span, Fail> {
     let t = s.text;
     let pos = s.pos;
     let (q, mut beg, mut end) = string_after(t, pos, quote).ok_or(NONE)?;
-    // Inside a string of another delimiter.
+    let (mut lo, mut hi) = (0, t.len());
+    // Inside a string of another delimiter, which it doesn't look outside of.
     if q != quote {
-        if beg > pos {
+        if beg >= pos {
             return Err(NONE);
         }
+        (lo, hi) = (beg, end);
         (beg, end) = pair_in_string(t, pos, quote, (beg, end));
     }
     if outer {
-        let (b, e) = space_around(t, beg, end);
+        let (b, e) = space_around(t, beg, end, lo, hi);
         return Ok(Span::chars(b, e));
     }
     // `2i"` takes the quotes too, with no spaces.
@@ -423,139 +417,44 @@ fn quoted(s: &Start, quote: char, outer: bool) -> Result<Span, Fail> {
 
 // ---------------------------------------------------------------- brackets
 
-/// What a bracket search can see: `(`, `[`, `{` and their closers always, and `<` and `>`
-/// when they're what it's after. They all count toward depth, so `(a [b) c]` nests by
-/// position, not by kind. It stays in `lo..hi`, and `"` strings are skipped whole.
-struct Brackets<'a> {
-    t: &'a TextBuf,
-    open: char,
-    close: char,
-    lo: usize,
-    hi: usize,
+/// The `n`th `close` out from `p`, as far as there are: the last one's range.
+fn closer(x: &Lists, p: usize, n: usize) -> Option<(usize, usize)> {
+    let (mut p, mut last) = (p, None);
+    for _ in 0..n {
+        loop {
+            let Some(q) = x.up_forward(p) else {
+                return last;
+            };
+            p = q;
+            let mut c = Chars::at(x.t, p);
+            c.back();
+            if c.ch() == Some(x.close) {
+                last = Some((c.pos(), p));
+                break;
+            }
+        }
+    }
+    last
 }
 
-impl Brackets<'_> {
-    fn opens(&self, c: char) -> bool {
-        matches!(c, '(' | '[' | '{') || c == self.open
-    }
-    fn closes(&self, c: char) -> bool {
-        matches!(c, ')' | ']' | '}') || c == self.close
-    }
-    /// Whether the character at `c` follows an odd number of backslashes.
-    fn escaped(&self, c: &Chars) -> bool {
-        let mut b = Chars::at(self.t, c.pos());
-        let mut n = 0;
-        while b.pos() > self.lo && b.prev_ch() == Some('\\') {
-            b.back();
-            n += 1;
-        }
-        n % 2 == 1
-    }
-    /// Out of one level forward: just past the closer, of any kind.
-    fn up_forward(&self, p: usize) -> Option<usize> {
-        let mut c = Chars::at(self.t, p);
-        let mut depth = 0usize;
-        while c.pos() < self.hi {
-            let ch = c.ch()?;
-            if ch == '\\' {
+/// The `n`th `open` out from `p`, as far as there are: the last one's range.
+fn opener(x: &Lists, p: usize, n: usize) -> Option<(usize, usize)> {
+    let (mut p, mut last) = (p, None);
+    for _ in 0..n {
+        loop {
+            let Some(q) = x.up_backward(p) else {
+                return last;
+            };
+            p = q;
+            let mut c = Chars::at(x.t, p);
+            if c.ch() == Some(x.open) {
                 c.fwd();
-            } else if ch == '"' {
-                c.fwd();
-                loop {
-                    if c.pos() >= self.hi {
-                        return None;
-                    }
-                    match c.ch()? {
-                        '\\' => {
-                            c.fwd();
-                        }
-                        '"' => break,
-                        _ => {}
-                    }
-                    c.fwd();
-                }
-            } else if self.opens(ch) {
-                depth += 1;
-            } else if self.closes(ch) {
-                if depth == 0 {
-                    c.fwd();
-                    return Some(c.pos());
-                }
-                depth -= 1;
-            }
-            c.fwd();
-        }
-        None
-    }
-    /// Out of one level backward: on the opener, of any kind.
-    fn up_backward(&self, p: usize) -> Option<usize> {
-        let mut c = Chars::at(self.t, p);
-        let mut depth = 0usize;
-        while c.pos() > self.lo {
-            c.back();
-            let ch = c.ch()?;
-            if self.escaped(&c) {
-                continue;
-            }
-            if ch == '"' {
-                loop {
-                    if c.pos() <= self.lo {
-                        return None;
-                    }
-                    c.back();
-                    if c.ch() == Some('"') && !self.escaped(&c) {
-                        break;
-                    }
-                }
-            } else if self.closes(ch) {
-                depth += 1;
-            } else if self.opens(ch) {
-                if depth == 0 {
-                    return Some(c.pos());
-                }
-                depth -= 1;
+                last = Some((p, c.pos()));
+                break;
             }
         }
-        None
     }
-    /// The `n`th `close` out from `p`, as far as there are: the last one's range.
-    fn closer(&self, p: usize, n: usize) -> Option<(usize, usize)> {
-        let (mut p, mut last) = (p, None);
-        for _ in 0..n {
-            loop {
-                let Some(q) = self.up_forward(p) else {
-                    return last;
-                };
-                p = q;
-                let mut c = Chars::at(self.t, p);
-                c.back();
-                if c.ch() == Some(self.close) {
-                    last = Some((c.pos(), p));
-                    break;
-                }
-            }
-        }
-        last
-    }
-    /// The `n`th `open` out from `p`, as far as there are: the last one's range.
-    fn opener(&self, p: usize, n: usize) -> Option<(usize, usize)> {
-        let (mut p, mut last) = (p, None);
-        for _ in 0..n {
-            loop {
-                let Some(q) = self.up_backward(p) else {
-                    return last;
-                };
-                p = q;
-                let mut c = Chars::at(self.t, p);
-                if c.ch() == Some(self.open) {
-                    c.fwd();
-                    last = Some((p, c.pos()));
-                    break;
-                }
-            }
-        }
-        last
-    }
+    last
 }
 
 /// `i` leaves out the brackets, and if a line holds nothing else, that line. A result of
@@ -585,7 +484,7 @@ fn inside(t: &TextBuf, op: (usize, usize), cl: (usize, usize)) -> Span {
 /// and takes the tighter pair that still contains the range, as Evil's `evil-select-block`
 /// does, so a cursor on a bracket means that bracket's pair.
 fn around_range(
-    x: &Brackets,
+    x: &Lists,
     beg: usize,
     end: usize,
     n: usize,
@@ -611,10 +510,10 @@ fn around_range(
         c.back();
         c.pos()
     };
-    let cl1 = x.closer(inner_beg, 1);
-    let op1 = cl1.and_then(|c| x.opener(c.0, 1));
-    let op2 = x.opener(inner_end, 1);
-    let cl2 = op2.and_then(|o| x.closer(o.1, 1));
+    let cl1 = closer(x, inner_beg, 1);
+    let op1 = cl1.and_then(|c| opener(x, c.0, 1));
+    let op2 = opener(x, inner_end, 1);
+    let cl2 = op2.and_then(|o| closer(x, o.1, 1));
     if op1.is_none() && cl2.is_none() {
         return None;
     }
@@ -631,39 +530,27 @@ fn around_range(
     let (op, cl) = (op?, cl?);
     Some(if n > 1 {
         (
-            x.opener(op.0, n - 1).unwrap_or(op),
-            x.closer(cl.1, n - 1).unwrap_or(cl),
+            opener(x, op.0, n - 1).unwrap_or(op),
+            closer(x, cl.1, n - 1).unwrap_or(cl),
         )
     } else {
         (op, cl)
     })
 }
 
-fn string_of(t: &TextBuf, p: usize) -> Option<(usize, usize)> {
-    string_after(t, p, '"')
-        .filter(|&(_, beg, _)| beg < p)
-        .map(|(_, beg, end)| (beg, end))
-}
-
 /// The brackets round the cursor. In a string it looks in that string first, and then
 /// round the string.
 fn around_cursor(t: &TextBuf, pos: usize, open: char, close: char, n: usize) -> Option<Pair> {
-    let whole = Brackets {
-        t,
-        open,
-        close,
-        lo: 0,
-        hi: t.len(),
-    };
+    let whole = Lists::new(t, open, close);
     let mut c = Chars::at(t, pos);
     c.fwd();
-    let Some((beg, end)) = string_of(t, pos).or_else(|| string_of(t, c.pos())) else {
+    let Some((beg, end)) = string_around(t, pos).or_else(|| string_around(t, c.pos())) else {
         return around_range(&whole, pos, pos, n, false);
     };
-    let narrow = Brackets {
+    let narrow = Lists {
         lo: beg,
         hi: end,
-        ..whole
+        ..Lists::new(t, open, close)
     };
     around_range(&narrow, pos, pos, n, false).or_else(|| around_range(&whole, beg, end, n, true))
 }
@@ -674,15 +561,25 @@ fn bracket(s: &Start, open: char, close: char, outer: bool) -> Result<Span, Fail
     const NONE: Fail = "No surrounding delimiters found";
     let (t, pos) = (s.text, s.pos);
     let pair = around_cursor(t, pos, open, close, s.n()).or_else(|| {
-        // Not in a pair: the next one, wherever it is, if the cursor isn't on an opener.
-        if Chars::at(t, pos).ch() == Some(open) {
+        // Not in a pair: the count-th next opener's, wherever it is, unless the cursor's
+        // on one.
+        let mut c = Chars::at(t, pos);
+        if c.ch() == Some(open) {
             return None;
         }
-        let mut c = Chars::at(t, pos);
-        while c.ch().is_some_and(|ch| ch != open) {
+        let mut seen = 0;
+        while seen < s.n() {
+            match c.ch()? {
+                ch if ch == open => {
+                    seen += 1;
+                    if seen == s.n() {
+                        break;
+                    }
+                }
+                _ => {}
+            }
             c.fwd();
         }
-        c.ch()?;
         around_cursor(t, c.pos(), open, close, 1).filter(|p| p.0.0 >= c.pos())
     });
     let (op, cl) = pair.ok_or(NONE)?;
