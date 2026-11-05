@@ -4,14 +4,18 @@
 
 use die_test_cap as _;
 
-use die_core::Rgb;
+use die_core::{Clipboard, Ctx, RegKind, Register, Rgb};
 use die_render::font::{CellMetrics, fit};
 use die_render::font_dir;
 use die_render::frame::{Plane, Quad, Upload};
+use die_render::platform::backend::clipboard::Pasteboard;
 use die_render::platform::backend::metal::Gpu;
 use die_render::platform::backend::text::Face;
+use objc2_app_kit::NSPasteboard;
+use objc2_foundation::NSString;
 use std::mem::{offset_of, size_of};
 use std::path::Path;
+use std::process::Command;
 
 fn regular() -> Face {
     let path = font_dir().join("IoskeleyMonoTerm-Regular.ttf");
@@ -346,4 +350,58 @@ fn a_drawn_glyph_is_coverage_where_its_fit_says_and_an_emoji_is_premultiplied_co
         b.data.chunks(4).any(|p| p[2] > p[0] + 60),
         "more red than blue: BGRA, in that order"
     );
+}
+
+fn reg(kind: RegKind, text: &str) -> Register {
+    Register {
+        kind,
+        text: text.into(),
+    }
+}
+
+#[test]
+fn a_round_trip_keeps_text_and_kind() {
+    let mut board = Pasteboard::unique();
+    assert_eq!(board.read(), None, "a new pasteboard holds nothing");
+    for kind in [RegKind::Char, RegKind::Line, RegKind::Block, RegKind::Macro] {
+        let before = board.change_count();
+        let r = reg(kind, "héllo\nwörld\n");
+        board.write(&r);
+        assert_eq!(board.read(), Some(r));
+        assert_ne!(board.change_count(), before, "{kind:?}");
+    }
+}
+
+/// Run by `an_outside_copy_is_detected`, in a process of its own, as another app.
+#[test]
+#[ignore = "the other app in an_outside_copy_is_detected"]
+fn other_app() {
+    let name = std::env::var("DIE_TEST_PASTEBOARD").unwrap();
+    let board = NSPasteboard::pasteboardWithName(&NSString::from_str(&name));
+    board.clearContents();
+    let text_type = NSString::from_str("public.utf8-plain-text");
+    assert!(board.setString_forType(&NSString::from_str("outside"), &text_type));
+}
+
+#[test]
+fn an_outside_copy_is_detected() {
+    let board = Pasteboard::unique();
+    let name = board.name();
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    ctx.set_clipboard(board);
+    ctx.write_clipboard(&reg(RegKind::Line, "mine\n"));
+    assert_eq!(ctx.clipboard_news(), None, "DIE's own write isn't news");
+    assert_eq!(ctx.clipboard(), Some(reg(RegKind::Line, "mine\n")));
+
+    let other = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "other_app", "--ignored"])
+        .env("DIE_TEST_PASTEBOARD", name)
+        .output()
+        .unwrap();
+    assert!(other.status.success(), "{other:?}");
+
+    let outside = reg(RegKind::Char, "outside");
+    assert_eq!(ctx.clipboard_news(), Some(outside.clone()));
+    assert_eq!(ctx.clipboard_news(), None, "once");
+    assert_eq!(ctx.clipboard(), Some(outside));
 }

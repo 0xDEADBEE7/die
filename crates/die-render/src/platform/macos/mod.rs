@@ -3,10 +3,14 @@
 
 /// AppKit.
 pub mod appkit;
+/// The system clipboard.
+pub mod clipboard;
 /// Metal.
 pub mod metal;
 /// Core Text.
 pub mod text;
+
+pub use clipboard::system_clipboard;
 
 /// Whether DIE can draw here: a Mac without Metal can't.
 pub fn ready() -> Result<(), String> {
