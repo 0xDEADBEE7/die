@@ -11,7 +11,7 @@ use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, Wind
 
 /// The most typed text a count may replay at once, K4's budget for one line. Until
 /// K4's compact cells, a longer line costs about 160 bytes of layout per character.
-const MAX_REPEAT: usize = 1 << 20;
+pub const MAX_REPEAT: usize = 1 << 20;
 /// The most edits a count may replay one by one. Until K4, each lays the whole line
 /// out again, so a mistyped count would freeze the editor.
 const MAX_REPLAY: usize = 10_000;
@@ -280,7 +280,7 @@ fn prev_char(t: &TextBuf, p: usize) -> Option<usize> {
 /// `<CR>`, as Emacs's `newline` with `electric-indent-mode` in fundamental-mode:
 /// the line left behind loses its trailing whitespace, and the new line takes the
 /// indentation of the line above it.
-fn newline(t: &mut TextBuf, w: WindowId, p: usize) -> Result {
+pub fn newline(t: &mut TextBuf, w: WindowId, p: usize) -> Result {
     let mut c = Chars::at(t, p);
     while matches!(c.prev_ch(), Some(' ' | '\t')) {
         c.back();
@@ -300,7 +300,7 @@ fn open_below(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
 /// Give `line` the indentation of the line above it, in spaces, or none if that
 /// line is blank or there is none (Emacs's `indent-according-to-mode` in
 /// fundamental-mode). The cursor goes to the end of the indentation.
-fn indent_from_above(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
+pub fn indent_from_above(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
     let col = match line.checked_sub(1) {
         Some(above) if !blank_line(t, above) => indentation(t, above),
         _ => 0,

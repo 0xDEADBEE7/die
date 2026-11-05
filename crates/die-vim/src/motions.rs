@@ -1,7 +1,7 @@
 //! Motions (scope §10): plain functions over the text and layout queries. Each
 //! follows your Evil, except where deviations.json says otherwise.
 
-use crate::grammar::{Fail, Goal, Kind, Motion, Start, Target};
+use crate::grammar::{Fail, Goal, Kind, Motion, Operator, Start, Target};
 use crate::text::{
     Chars, Class, blank_line, class, indent_end, last_line, line_end, next_stop, normal_pos,
     pos_at_col, prev_stop, same_word,
@@ -80,17 +80,19 @@ pub fn row_beginning(s: &Start, w: WindowId) -> Result<Target, Fail> {
 
 // ---------------------------------------------------------------- characters and lines
 
-fn backward_char(s: &Start) -> Result<Target, Fail> {
+pub fn backward_char(s: &Start) -> Result<Target, Fail> {
     let start = s.text.line_start(s.text.line_of(s.pos));
     steps(s, "Beginning of line", |p| {
         prev_stop(s.text, p).filter(|&q| q >= start)
     })
 }
 
-fn forward_char(s: &Start) -> Result<Target, Fail> {
+pub fn forward_char(s: &Start) -> Result<Target, Fail> {
     let end = line_end(s.text, s.text.line_of(s.pos));
+    // For an operator `l` can land on the newline, so `dl` takes a line's last character.
+    let room = if s.op.is_some() { end + 1 } else { end };
     steps(s, "End of line", |p| {
-        next_stop(s.text, p).filter(|&q| q < end)
+        next_stop(s.text, p).filter(|&q| q < room)
     })
 }
 
@@ -153,13 +155,26 @@ fn first_non_blank(s: &Start) -> Result<Target, Fail> {
     Ok(Target::at(indent_end(s.text, s.text.line_of(s.pos))))
 }
 
-fn end_of_line(s: &Start) -> Result<Target, Fail> {
+pub fn end_of_line(s: &Start) -> Result<Target, Fail> {
     let t = s.text;
     let here = t.line_of(s.pos);
     let line = here.saturating_add(s.n() - 1).min(last_line(t).max(here));
+    let end = line_end(t, line);
+    if s.op.is_some() {
+        // An operator takes through the line's last character. On an empty line there's
+        // nothing to take, not even the newline.
+        return Ok(if end == t.line_start(line) {
+            Target {
+                kind: Some(Kind::Exclusive),
+                ..Target::at(end)
+            }
+        } else {
+            Target::at(normal_pos(t, end))
+        });
+    }
     Ok(Target {
         goal: Some(Goal::Eol),
-        ..Target::at(line_end(t, line))
+        ..Target::at(end)
     })
 }
 
@@ -187,6 +202,11 @@ enum Word {
 /// `w`, `e`, `b` and their WORD forms. Past the last word, `w` and `e` stop on the
 /// text's last character, as in Vim; Evil goes on to the line after a final newline.
 fn words(s: &Start, which: Word, big: bool) -> Result<Target, Fail> {
+    match which {
+        Word::Begin if s.op.is_some() => return operator_word_begin(s, big),
+        Word::End if s.op.is_some() => return operator_word_end(s, big),
+        _ => {}
+    }
     let t = s.text;
     let mut p = s.pos;
     for _ in 0..s.n() {
@@ -215,6 +235,131 @@ fn words(s: &Start, which: Word, big: bool) -> Result<Target, Fail> {
         });
     }
     Ok(Target::at(p))
+}
+
+/// `w` for an operator. It stops before the word it reaches, and if that word starts a
+/// later line, at the end of the line before, so `dw` on a line's last word leaves the
+/// newline. `cw` on a word acts like `ce`, as in Vim.
+fn operator_word_begin(s: &Start, big: bool) -> Result<Target, Fail> {
+    let t = s.text;
+    if at_text_end(t, s.pos) {
+        return Err("End of buffer");
+    }
+    if s.op == Some(Operator::Change) && on_thing(t, s.pos, big) {
+        return Ok(Target::at(thing_ends(t, s.pos, big, s.n())));
+    }
+    let mut p = s.pos;
+    for _ in 0..s.n() {
+        match word_begin(t, p, big) {
+            Some(q) => p = q,
+            None => {
+                p = t.len();
+                break;
+            }
+        }
+    }
+    let mut line = t.line_of(p);
+    let on_later_line = t.line_start(line) > s.pos;
+    if on_later_line && indent_end(t, line) >= p {
+        // Back over any lines of nothing but spaces, unless that's where it started.
+        line -= 1;
+        while line_end(t, line) > t.line_start(line)
+            && blank_line(t, line)
+            && t.line_start(line) > s.pos
+        {
+            line -= 1;
+        }
+        p = line_end(t, line);
+        // An empty line above: an operator takes that line, newline and all.
+        if p == t.line_start(line) {
+            p += 1;
+        }
+    }
+    Ok(Target {
+        no_column: true,
+        ..Target::at(p)
+    })
+}
+
+/// `e` for an operator. On a one-letter word it stays, so `de` takes just that letter.
+fn operator_word_end(s: &Start, big: bool) -> Result<Target, Fail> {
+    let t = s.text;
+    if at_text_end(t, s.pos) {
+        return Err("End of buffer");
+    }
+    if s.n() == 1 && one_letter_word(t, s.pos, big) {
+        return Ok(Target::at(s.pos));
+    }
+    let mut c = Chars::at(t, s.pos);
+    c.fwd();
+    let mut c = Chars::at(t, thing_ends(t, c.pos(), big, s.n()));
+    c.back();
+    Ok(Target::at(c.pos()))
+}
+
+/// Whether a forward motion can't start from `p`, as Evil checks first: at the text's
+/// end, or on the last character of a last line with no newline.
+fn at_text_end(t: &TextBuf, p: usize) -> bool {
+    match next_stop(t, p) {
+        None => true,
+        Some(q) => q == t.len() && t.rope().byte(p) != b'\n',
+    }
+}
+
+/// Whether `p` is on a word, a run of punctuation or an empty line: Evil's `evil-word`.
+fn on_thing(t: &TextBuf, p: usize, big: bool) -> bool {
+    let c = Chars::at(t, p);
+    match c.ch().map(|ch| class(ch, big)) {
+        None | Some(Class::Blank) => false,
+        Some(Class::Newline) => empty_line(&c),
+        Some(_) => true,
+    }
+}
+
+/// Just past the `n`th word, run of punctuation or empty line from `p`, else the text's end.
+fn thing_ends(t: &TextBuf, p: usize, big: bool, n: usize) -> usize {
+    let mut p = p;
+    for _ in 0..n {
+        match thing_end(t, p, big) {
+            Some(q) => p = q,
+            None => return t.len(),
+        }
+    }
+    p
+}
+
+fn thing_end(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
+    let mut c = Chars::at(t, p);
+    loop {
+        let mut a = c.ch()?;
+        match class(a, big) {
+            Class::Blank => {}
+            Class::Newline if empty_line(&c) => {
+                c.fwd();
+                return Some(c.pos());
+            }
+            Class::Newline => {}
+            _ => {
+                c.fwd();
+                while let Some(b) = c.ch().filter(|&b| same_word(a, b, big)) {
+                    a = b;
+                    c.fwd();
+                }
+                return Some(c.pos());
+            }
+        }
+        c.fwd();
+    }
+}
+
+fn one_letter_word(t: &TextBuf, p: usize, big: bool) -> bool {
+    let mut c = Chars::at(t, p);
+    let Some(a) = c.ch() else { return false };
+    if class(a, false) != Class::Word || c.prev_ch().is_some_and(|b| same_word(b, a, big)) {
+        return false;
+    }
+    c.fwd();
+    !c.ch().is_some_and(|b| same_word(a, b, big))
 }
 
 /// An empty line counts as a word: Evil's `w`, `e` and `b` all stop on one.
@@ -362,7 +507,12 @@ pub fn find(s: &Start, search: Find) -> Result<Target, Fail> {
             }
         }
     }
-    if search.dir == Dir::Forward && next_stop(t, s.pos).is_none_or(|q| q >= end) {
+    // For an operator that `l` can land on the newline, so it fails only on an empty line.
+    let stuck = match s.op {
+        Some(_) => s.pos >= end,
+        None => next_stop(t, s.pos).is_none_or(|q| q >= end),
+    };
+    if search.dir == Dir::Forward && stuck {
         return Ok(Target::short(s.pos, "End of line"));
     }
     Err("Can't find the character")
@@ -425,8 +575,8 @@ fn jump_item(s: &Start) -> Result<Target, Fail> {
 }
 
 /// `N%`: to the line holding the character N percent of the way through the
-/// text, with Evil's arithmetic, keeping the goal column as `G` does. V3: unlike
-/// `%`, an operator takes it linewise.
+/// text, with Evil's arithmetic, keeping the goal column as `G` does. Unlike `%`, an
+/// operator takes it linewise.
 fn percent(s: &Start, n: usize) -> Result<Target, Fail> {
     let size = s.text.rope().len_chars();
     let ch = if size > 80_000 {
@@ -435,14 +585,17 @@ fn percent(s: &Start, n: usize) -> Result<Target, Fail> {
         n.saturating_mul(size) / 100
     };
     let pos = s.text.rope().char_to_byte(ch.min(size));
-    goto_line(s, s.text.line_of(pos) + 1)
+    Ok(Target {
+        kind: Some(Kind::Linewise),
+        ..goto_line(s, s.text.line_of(pos) + 1)?
+    })
 }
 
 /// `}`: past this paragraph to the next blank line (spaces count as blank, as in
 /// Evil). With no blank line after, to the end of the last line, as in Vim.
 fn forward_paragraph(s: &Start) -> Result<Target, Fail> {
     let t = s.text;
-    if s.pos == t.len() {
+    if s.pos == t.len() || (s.op.is_some() && at_text_end(t, s.pos)) {
         return Err("End of buffer");
     }
     let (last, mut line) = (last_line(t), t.line_of(s.pos));
@@ -455,7 +608,12 @@ fn forward_paragraph(s: &Start) -> Result<Target, Fail> {
             line += 1;
         }
         if line > last {
-            pos = Some(normal_pos(t, t.len()));
+            // An operator takes all of the last line, its newline too.
+            pos = Some(if s.op.is_some() {
+                t.len()
+            } else {
+                normal_pos(t, t.len())
+            });
             break;
         }
     }
@@ -499,6 +657,7 @@ mod tests {
             count: Some(count),
             goal: None,
             arg: None,
+            op: None,
         }
     }
 
