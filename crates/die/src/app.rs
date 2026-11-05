@@ -1,6 +1,11 @@
-//! DIE.app: one instance, and a stub `restart` that K12 fills in. The new instance comes up
-//! through LaunchServices, with `open -g`, so it takes no focus. Whether it's up is said over
-//! a Unix socket (`die_core::instance`), since LaunchServices can't say that.
+//! DIE.app: one instance, its session, and `restart`. The new instance comes up through
+//! LaunchServices, with `open -g`, so it takes no focus. Whether it's up is said over a Unix
+//! socket (`die_core::instance`), since LaunchServices can't say that.
+//!
+//! A restart writes the session and stops writing, starts the new instance, which restores what
+//! was written, and exits at its first frame. If the new one dies or takes too long, the old
+//! one writes again and carries on, and a new one that was only slow finds the lock held and
+//! goes. Only the lock's holder writes the session.
 
 use crate::{Config, launch};
 use die_core::instance::{Handover, Instance, Successor};
@@ -16,6 +21,10 @@ use std::time::{Duration, Instant};
 
 /// How long the old instance waits for the new one's first frame.
 const RESTART_LIMIT: Duration = Duration::from_secs(10);
+/// How long the old instance's lock may outlast its handover.
+const LOCK_PATIENCE: Duration = Duration::from_secs(2);
+/// Set, a restart's new instance panics before its first frame: how a test gets a bad build.
+pub const PANIC_ON_RESTART: &str = "DIE_PANIC_ON_RESTART";
 /// Each restart's time in ms goes in this file in the state directory, a line each.
 pub const RESTART_LOG: &str = "restart.log";
 
@@ -42,6 +51,9 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
     };
     // An old instance that won't take the connection has gone, so this is a plain launch.
     let successor = asked.handover.and_then(|s| Successor::connect(&s).ok());
+    if successor.is_some() && std::env::var_os(PANIC_ON_RESTART).is_some() {
+        panic!("{PANIC_ON_RESTART} is set");
+    }
     let instance = match successor {
         Some(_) => None,
         None => match Instance::try_lock(&dir) {
@@ -56,6 +68,7 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
             }
         },
     };
+    config.core.session = Some(dir.clone());
     let (restart, wanted) = channel();
     if asked.restart_after_frame {
         let _ = restart.send(());
@@ -73,7 +86,11 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
     let first_frame = Box::new(move |remote: &Remote| {
         let remote = remote.clone();
         thread::spawn(move || {
-            let held = settle(successor, instance, &dir);
+            let Some(held) = settle(successor, instance, &dir) else {
+                remote.exit(0);
+                return;
+            };
+            let _ = remote.call(|shell, _| shell.ctx().resume_session());
             serve(&wanted, &bundle, &dir, &remote);
             drop(held);
         });
@@ -81,7 +98,8 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
     launch(config, None, Some(first_frame))
 }
 
-/// The first frame is up, so end up holding the lock, after any old instance has gone.
+/// The first frame is up, so end up holding the lock, after any old instance has gone. None if
+/// an old instance kept it, as it does when it gave up on this one, or a third took it.
 fn settle(
     successor: Option<Successor>,
     instance: Option<Instance>,
@@ -90,16 +108,36 @@ fn settle(
     let Some(successor) = successor else {
         return instance;
     };
-    let locked = successor.first_frame().and_then(|()| Instance::lock(dir));
-    locked
-        .inspect_err(|e| eprintln!("die: taking over: {e}"))
-        .ok()
+    // However this ends, the handover has closed, and the lock says what that means.
+    let _ = successor.first_frame();
+    match Instance::take_over(dir, LOCK_PATIENCE) {
+        Ok(Some(held)) => Some(held),
+        Ok(None) => {
+            eprintln!("die: another instance has the lock, so this one goes");
+            None
+        }
+        Err(e) => {
+            eprintln!("die: taking over: {e}");
+            None
+        }
+    }
 }
 
 /// Run each `restart` as it's asked for, until one takes. The handover stays open, and the
 /// caller keeps the lock, until this process exits: the new instance waits for both.
 fn serve(wanted: &Receiver<()>, bundle: &Path, dir: &Path, remote: &Remote) {
     for () in wanted {
+        // Text that can't be saved stays in this instance, which keeps running.
+        let saved =
+            remote.call(|shell, _| shell.ctx().hand_over_session().map_err(|e| e.to_string()));
+        match saved {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                report(remote, e);
+                continue;
+            }
+            Err(_) => return,
+        }
         match restart(bundle, dir) {
             Ok((handover, took)) => {
                 if let Err(e) = log_restart(dir, took) {
@@ -111,9 +149,18 @@ fn serve(wanted: &Receiver<()>, bundle: &Path, dir: &Path, remote: &Remote) {
                     thread::park();
                 }
             }
-            Err(e) => eprintln!("die: restart: {e}"),
+            Err(e) => {
+                let _ = remote.call(|shell, _| shell.ctx().resume_session());
+                report(remote, e);
+            }
         }
     }
+}
+
+/// A restart didn't happen: say why on stderr and in `*messages*`.
+fn report(remote: &Remote, e: String) {
+    eprintln!("die: restart: {e}");
+    let _ = remote.call(move |shell, _| shell.ctx().messages.push(format!("restart: {e}")));
 }
 
 /// Launch the new instance and wait for its first frame, which is how long it took.
@@ -122,10 +169,13 @@ fn restart(bundle: &Path, dir: &Path) -> Result<(Handover, Duration), String> {
     let mut handover = Handover::bind(dir).map_err(|e| e.to_string())?;
     let mut open = Command::new("open");
     open.args(["-g", "-n"]);
-    if let Some(dir) = std::env::var_os("DIE_STATE_DIR") {
-        let mut env = std::ffi::OsString::from("DIE_STATE_DIR=");
-        env.push(dir);
-        open.arg("--env").arg(env);
+    for name in ["DIE_STATE_DIR", PANIC_ON_RESTART] {
+        if let Some(value) = std::env::var_os(name) {
+            let mut env = std::ffi::OsString::from(name);
+            env.push("=");
+            env.push(value);
+            open.arg("--env").arg(env);
+        }
     }
     open.arg(bundle).args(["--args", "--handover"]);
     let status = open.arg(handover.path()).status();
