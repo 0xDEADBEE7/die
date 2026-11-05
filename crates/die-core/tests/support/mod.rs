@@ -457,7 +457,7 @@ pub fn screen(ctx: &mut Ctx, w: WindowId) -> Screen {
     let scene = ctx.compose(
         cols,
         rows + 2,
-        &[Placement {
+        &[WindowPlacement {
             window: w,
             col: 0,
             row: 0,

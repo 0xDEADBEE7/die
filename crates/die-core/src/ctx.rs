@@ -364,6 +364,7 @@ pub struct Ctx {
     prompt: Option<Prompt>,
     clock: Duration,
     cmd_seq: u64,
+    /// The window the running command acts for. With none, the focused window acts.
     cur_window: Option<WindowId>,
     registers: HashMap<char, Register>,
     pub(crate) files: crate::files::Files,
@@ -732,6 +733,7 @@ impl Ctx {
     pub fn text_mut(&mut self, buf: BufferId) -> Result<&mut TextBuf> {
         let actor = self
             .cur_window
+            .or(self.focused)
             .filter(|w| self.windows.get(*w).is_some_and(|w| w.buffer == buf));
         let cmd = self.cmd_seq;
         match &mut self.buffers.get_mut(buf).ok_or(Checkout::Gone)?.content {
@@ -755,13 +757,14 @@ impl Ctx {
         if let Content::Text(t) = &mut self.buffers[buf].content {
             t.add_view(w, cols, rows);
         }
-        self.focused = Some(w);
-        self.cur_window = Some(w);
+        self.focus(w);
         Ok(w)
     }
     pub fn focus(&mut self, w: WindowId) {
         if self.windows.contains_key(w) {
             self.focused = Some(w);
+            // A running command goes on acting for the window it moved the focus to.
+            self.cur_window = self.cur_window.and(Some(w));
         }
     }
     pub fn focused(&self) -> Option<WindowId> {
@@ -866,13 +869,25 @@ impl Ctx {
 
     // -------------------------------------------------------------- modal state, prefix, registers
 
+    /// The focused buffer's modal state, or `Normal` with nothing focused. Modal state is per
+    /// buffer: use `state_of` for a command's `Args` buffer, which may not be the focused one.
     pub fn state(&self) -> State {
         self.focused_buffer()
-            .and_then(|b| self.buffers.get(b))
-            .map_or(State::Normal, |b| b.state)
+            .map_or(State::Normal, |b| self.state_of(b))
     }
+    /// Set the focused buffer's modal state.
     pub fn set_state(&mut self, s: State) {
-        if let Some(b) = self.focused_buffer().and_then(|b| self.buffers.get_mut(b)) {
+        if let Some(b) = self.focused_buffer() {
+            self.set_state_of(b, s);
+        }
+    }
+    /// `buf`'s modal state. A dead buffer reads as `Normal`.
+    pub fn state_of(&self, buf: BufferId) -> State {
+        self.buffers.get(buf).map_or(State::Normal, |b| b.state)
+    }
+    /// Set `buf`'s modal state. A dead buffer is ignored.
+    pub fn set_state_of(&mut self, buf: BufferId, s: State) {
+        if let Some(b) = self.buffers.get_mut(buf) {
             b.state = s;
         }
     }
@@ -892,7 +907,8 @@ impl Ctx {
 
     // -------------------------------------------------------------- commands
 
-    /// Run a command now. The one explicit way to nest extension calls (C3).
+    /// Run a command now. The one explicit way to nest extension calls (C3). It acts for
+    /// `args.window`, or with none, for whichever window its caller acts for (contract §9).
     pub fn run(&mut self, name: &str, args: &Args) -> Result {
         let (f, owner) = {
             let c = self
@@ -901,7 +917,11 @@ impl Ctx {
                 .ok_or_else(|| Error::NoCommand(name.into()))?;
             (c.f.clone(), c.owner)
         };
-        self.guarded(owner, |ctx| f(ctx, args))
+        let outer = self.cur_window;
+        self.cur_window = args.window.or(outer);
+        let r = self.guarded(owner, |ctx| f(ctx, args));
+        self.cur_window = outer;
+        r
     }
 
     /// Run a Hide's reveal policy for every Hide covering `pos`. Returns whether `pos` is visible.
@@ -1127,18 +1147,21 @@ impl Ctx {
         if let Some(q) = self.queue.pop_front() {
             if q.alive.as_ref().is_none_or(|a| a.alive.get()) {
                 self.cmd_seq += 1;
-                self.cur_window = self.focused;
                 let r = self.guarded(q.ext, q.f);
                 self.report(r);
+                // Code that runs between units (the host, a harness) gets a number of its own.
+                self.cmd_seq += 1;
             }
             return true;
         }
         if let Some(ev) = self.fed.pop_front() {
             self.dispatch(ev, KeySource::Fed);
+            self.cmd_seq += 1;
             return true;
         }
         if let Some(ev) = self.typed.pop_front() {
             self.dispatch(ev, KeySource::Typed);
+            self.cmd_seq += 1;
             return true;
         }
         false
@@ -1207,8 +1230,8 @@ impl Ctx {
         if state == State::Passthrough {
             return self.dispatch_passthrough(win, buf, ev);
         }
-        if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_)) {
-            return; // release events and lone modifier keys never reach keymaps
+        if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_) | Key::Unidentified) {
+            return; // release events, lone modifier keys and unnamed keys never reach keymaps
         }
         for e in &self.subs {
             if let SubKind::Keys(f) = &e.kind {
@@ -1228,6 +1251,8 @@ impl Ctx {
                 self.run_key(&name, keys, win, buf);
             }
             Lookup::None => {
+                // An undefined key ends the command it began, count and register too.
+                self.prefix = Prefix::default();
                 let keys = std::mem::take(&mut self.pending);
                 let last = keys.last().cloned().unwrap();
                 let handled = self
@@ -1247,7 +1272,8 @@ impl Ctx {
             self.swallow.push(Key::Esc);
             return;
         }
-        if ev.mods.super_ && ev.kind != KeyKind::Release {
+        let named = !matches!(ev.key, Key::Modifier(_) | Key::Unidentified);
+        if named && ev.mods.super_ && ev.kind != KeyKind::Release {
             if let Lookup::Command(name) =
                 self.layers_lookup(buf, State::Passthrough, &[ev.clone()])
             {
@@ -1268,7 +1294,6 @@ impl Ctx {
             buffer: Some(buf),
             ..Default::default()
         };
-        self.cur_window = Some(win);
         let r = self.run(name, &args);
         self.report(r);
     }
@@ -1311,7 +1336,7 @@ impl Ctx {
     }
 
     fn prompt_key(&mut self, ev: KeyEvent) {
-        match ev.key {
+        match ev.chord().key {
             Key::Enter => {
                 let t = self.prompt.as_ref().map(|p| p.text.clone());
                 self.finish_prompt(t);

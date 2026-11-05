@@ -1,0 +1,10 @@
+{"topic": "undo-cursor",
+ "cases": [
+  {"id": "o-from-col-0", "keys": "ox<Esc>u", "text": ["|abc"]},
+  {"id": "o-from-col-1", "keys": "ox<Esc>u", "text": ["a|bc", "def"]},
+  {"id": "O-from-col-1", "keys": "Ox<Esc>u", "text": ["abc", "d|ef"]},
+  {"id": "3o-from-col-1", "keys": "3ox<Esc>u", "text": ["a|bc"]},
+  {"id": "later-change-to-the-left", "keys": "jAx<Up>y<Esc>u", "text": ["|ab", "cd"]},
+  {"id": "later-change-to-the-left-eol", "keys": "jAx<Up>y<Esc>u", "text": ["|abcd", "ef"]},
+  {"id": "moved-after-the-session-began", "keys": "i<Right>x<Esc>u", "text": ["|abc"]}
+ ]}
