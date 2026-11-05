@@ -130,10 +130,13 @@ fn around(x: &impl Things, pos: usize, n: usize, floor: usize) -> (usize, usize)
         end = forward_thing(x, end);
     }
     for _ in 1..n {
-        let at_gap = gap(x, end).is_some_and(|g| g.1 != end);
+        let (was, at_gap) = (end, gap(x, end).is_some_and(|g| g.1 != end));
         end = forward_thing(x, end);
         if !at_gap && let Some((_, e)) = gap(x, end) {
             end = e;
+        }
+        if end == was {
+            break;
         }
     }
     (beg, end)
