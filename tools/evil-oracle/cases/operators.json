@@ -272,5 +272,15 @@
   {"id": "P-char-register-ending-in-newline", "vim": "differs in errors 0 vs 1, register \"", "keys": "diwP", "text": ["|", "bc", "d"]},
   {"id": "dw-over-a-spaces-line", "keys": "dw", "text": ["a |b", "   ", "c"]},
   {"id": "d50-percent-mid-line", "vim": "Vim leaves \"ef\\ngh\\n\", Evil \"gh\\n\"; Vim's cursor is at line 0 col 0, Evil's at line 0 col 1", "keys": "d50%", "text": ["a|b", "cd", "ef", "gh"]},
-  {"id": "percent-in-a-string-that-never-closes", "vim": "Vim's cursor is at line 0 col 3, Evil's at line 1 col 0", "keys": "%", "text": "\"a |{\n(x)"}
+  {"id": "percent-in-a-string-that-never-closes", "vim": "Vim's cursor is at line 0 col 3, Evil's at line 1 col 0", "keys": "%", "text": "\"a |{\n(x)"},
+  {"id": "percent-closer-on-a-later-line", "keys": "%x", "text": ["(", "|a", ")"]},
+  {"id": "percent-opener-on-a-later-line", "keys": "%x", "text": ["|a", "(b)"]},
+  {"id": "r-enter-keeps-a-tab-that-fits", "vim": "Vim leaves \"\\t[1\\n        < {\\n\", Evil \"\\t[1\\n\\t< {\\n\"; Vim's cursor is at line 1 col 7, Evil's at line 1 col 1", "keys": "r<CR>", "text": ["\t[1|]\t< {"]},
+  {"id": "r-enter-too-far-right", "vim": "Vim's cursor is at line 1 col 3, Evil's at line 1 col 4", "keys": "r<CR>", "text": ["    a| \tb"]},
+  {"id": "r-enter-too-little", "vim": "Vim's cursor is at line 1 col 7, Evil's at line 1 col 8", "keys": "r<CR>", "text": ["        a| b"]},
+  {"id": "r-enter-tab-then-spaces", "vim": "Vim leaves \"            a\\n            b\\n\", Evil \"            a\\n\\t    b\\n\"; Vim's cursor is at line 1 col 11, Evil's at line 1 col 5", "keys": "r<CR>", "text": ["            a| \tb"]},
+  {"id": "r-enter-after-a-blank-line", "keys": "r<CR>", "text": ["   ", "|a\tb"]},
+  {"id": "J-on-empty-line-keeps-a-tab-that-fits", "vim": "Vim leaves \"\\tx\\ny\\n\", Evil \"\\tx\\n        y\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 8", "keys": "J", "text": ["\tx", "|", "\ty"]},
+  {"id": "J-on-empty-line-too-far-right", "vim": "Vim leaves \"  x\\ny\\n\", Evil \"  x\\n  y\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 2", "keys": "J", "text": ["  x", "|", "\ty"]},
+  {"id": "J-on-empty-line-too-little", "vim": "Vim leaves \"        x\\ny\\n\", Evil \"        x\\n        y\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 1 col 8", "keys": "J", "text": ["        x", "|", "  y"]}
  ]}
