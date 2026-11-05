@@ -11,6 +11,9 @@
 //! counts characters (Unicode scalar values) from the start of its line,
 //! and `byte` is the UTF-8 offset from the start of the text.
 
+#[cfg(test)]
+use die_test_cap as _;
+
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;

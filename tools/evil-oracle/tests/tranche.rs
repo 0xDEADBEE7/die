@@ -1,5 +1,7 @@
 //! Which die-vim work package a case lands with: the last feature its keys need.
 
+use die_test_cap as _;
+
 use die_core::{key_notation, parse_keys};
 use evil_oracle::{Case, Run, Tranche, parse_pending, tranche};
 

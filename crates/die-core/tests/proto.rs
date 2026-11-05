@@ -1,5 +1,8 @@
 //! The 8 tests from the review's prototype (dieproto/tests/contract.rs), ported to the S4 API.
 //! Same intent; test 4 changed from push `on_edit` to pull `edits_since` (C15).
+
+use die_test_cap as _;
+
 mod support;
 use die_core::*;
 use std::cell::{Cell, RefCell};

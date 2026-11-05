@@ -66,6 +66,8 @@
 //!   and `faces_and_search_cost_at_most_twice_a_plain_frame`: K15's speed.
 //! - `rgb_hex_and_display`
 
+use die_test_cap as _;
+
 use die_core::*;
 use proptest::prelude::*;
 use std::ops::Range;

@@ -1,6 +1,8 @@
 //! K10a, files read side: opening a file into a buffer, the UTF-8 check, the
 //! fingerprint, and per-path settings. Each test works in its own temporary directory.
 
+use die_test_cap as _;
+
 use die_core::*;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};

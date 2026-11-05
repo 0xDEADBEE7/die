@@ -2,6 +2,8 @@
 //! the fonts from `cargo xtask fonts`.
 #![cfg(target_os = "macos")]
 
+use die_test_cap as _;
+
 use die_render::font_dir;
 use die_render::platform::backend::metal::Gpu;
 use die_render::platform::backend::text::Face;

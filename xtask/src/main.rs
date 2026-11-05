@@ -1,12 +1,16 @@
+#[cfg(test)]
+use die_test_cap as _;
+
 use xtask::util::{Result, root};
 use xtask::{api, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, sources};
 
 const USAGE: &str = "usage: cargo xtask <task>
 
   budget               line counts against guard 7 and budget.toml
-  lint                 unsafe only in platform modules, no target_os in neutral code,
-                       no window or GPU crates under die-core and die-vim, exact pins,
-                       D15, lockfile, licenses
+  lint                 unsafe only in platform modules and the test cap, no target_os in
+                       neutral code, no window or GPU crates under die-core and die-vim,
+                       exact pins, D15, a memory limit in every test binary, lockfile,
+                       licenses
   sources              every file the compiler read is one the lint reads, and every
                        local crate is a listed member
   guards               unsafe outside platform and -Cpanic=abort fail to build; what

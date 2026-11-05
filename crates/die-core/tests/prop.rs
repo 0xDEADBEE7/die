@@ -4,6 +4,9 @@
 //! - the set of cursor positions matches that definition exactly,
 //! - render, the motion queries and an independent naive layout oracle agree on every row and stop.
 #![allow(clippy::nonminimal_bool)] // S4's test as ported (K1)
+
+use die_test_cap as _;
+
 use die_core::*;
 use proptest::prelude::*;
 use std::cell::RefCell;
