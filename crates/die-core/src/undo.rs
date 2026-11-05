@@ -291,12 +291,11 @@ impl History {
             return;
         }
         // An edit made earlier in the same command (die-vim's `o`) joins the session.
-        if let (Some(i), _) = top_group(&self.undo) {
-            if let Entry::Group(g) = &mut self.undo[i] {
-                if g.cmd == cmd {
-                    g.open = true;
-                }
-            }
+        if let (Some(i), _) = top_group(&self.undo)
+            && let Entry::Group(g) = &mut self.undo[i]
+            && g.cmd == cmd
+        {
+            g.open = true;
         }
     }
 
@@ -306,12 +305,11 @@ impl History {
             return;
         }
         self.depth -= 1;
-        if self.depth == 0 {
-            if let (Some(i), _) = top_group(&self.undo) {
-                if let Entry::Group(g) = &mut self.undo[i] {
-                    g.open = false;
-                }
-            }
+        if self.depth == 0
+            && let (Some(i), _) = top_group(&self.undo)
+            && let Entry::Group(g) = &mut self.undo[i]
+        {
+            g.open = false;
         }
     }
 

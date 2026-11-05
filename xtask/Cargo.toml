@@ -17,5 +17,8 @@ proc-macro2 = "=1.0.106"
 prettyplease = "=0.2.37"
 sha2 = { version = "=0.10.9", default-features = false }
 
+[dev-dependencies]
+die-test-cap.workspace = true
+
 [lints]
 workspace = true

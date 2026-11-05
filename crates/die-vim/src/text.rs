@@ -188,17 +188,11 @@ pub fn indentation(t: &TextBuf, line: usize) -> usize {
     t.display_col(indent_end(t, line))
 }
 
-/// The first cursor position on `line` at or after display column `col`, else the
-/// line's end. A column inside a tab or a wide character lands after it, as
-/// Emacs's `move-to-column` does.
+/// The first cursor position on `line`'s display line at or after display column
+/// `col`, or else that display line's last. A column inside a tab or a wide
+/// character lands after it, as Emacs's `move-to-column` does.
 pub fn pos_at_col(t: &TextBuf, line: usize, col: usize) -> usize {
-    let (s, e) = (t.line_start(line), line_end(t, line));
-    t.display_line(s)
-        .stops
-        .iter()
-        .filter(|st| st.pos >= s && st.pos <= e)
-        .find(|st| st.vcol >= col)
-        .map_or(e, |st| st.pos)
+    t.pos_at_vcol(line, col)
 }
 
 /// The nearest place the cursor may rest in normal state: on a character of a

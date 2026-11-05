@@ -2,6 +2,8 @@
 //! ends batch Emacs's keyboard macro. And two buffers, read-only text, huge counts, and a
 //! window that isn't focused have no oracle case. Everything else is in the oracle.
 
+use die_test_cap as _;
+
 use die_core::{Args, BufferId, Ctx, State, WindowId};
 use die_vim::Vim;
 
