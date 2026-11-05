@@ -72,7 +72,7 @@ pub enum Source {
     HandWritten,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
     pub text: String,
@@ -109,7 +109,7 @@ pub struct Pos {
     pub byte: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
     #[serde(rename = "type")]
@@ -166,7 +166,7 @@ pub struct Clipboard {
     pub writes: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Window {
     pub width: usize,
@@ -636,7 +636,8 @@ pub struct DeviationRule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeviationKind {
-    /// A behaviour of how Emacs buffers end, not a choice anyone made.
+    /// A behaviour of Emacs itself, not a choice anyone made: how its buffers end, or
+    /// its command loop moving point out of a composition.
     EmacsArtifact,
     EvilBug,
     /// Vim has it; your Evil doesn't.
@@ -655,7 +656,7 @@ pub struct DeviationCase {
     /// `topic/id`.
     pub case: String,
     pub note: Option<String>,
-    /// The hand-written fixture's file, once it's written (by V7 at the latest).
+    /// The hand-written fixture's file. die-vim's oracle test fails without one.
     pub fixture: Option<String>,
 }
 

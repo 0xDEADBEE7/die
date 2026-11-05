@@ -8,7 +8,9 @@
 " Vim runs with -u NONE and only the options below, which match the
 " user's Evil where an option exists (shiftwidth 4, spaces, autoindent,
 " smartcase).  Each case writes one JSON line: Vim's result, and the
-" fields where it differs from Evil's.
+" fields where it differs from Evil's.  Errors are compared by count:
+" Vim's v:errmsg (at most one per case) plus its beeps (debug=beep),
+" against the length of Evil's errors.
 
 set nocompatible
 set shiftwidth=4 softtabstop=0 expandtab autoindent
@@ -17,6 +19,7 @@ set backspace=indent,eol,start
 set clipboard=
 set nomore noswapfile
 set laststatus=0 noruler noshowcmd
+set debug=beep
 
 function! s:Keys(tokens) abort
   let keys = ''
@@ -60,10 +63,11 @@ function! s:Reg(name) abort
 endfunction
 
 function! CompareCapture() abort
-  let pos = getcursorcharpos()
+  " Evil's column counts characters, and it counts a combining mark as one.
+  let col = strchars(strpart(getline('.'), 0, col('.') - 1))
   let s:res = {
         \ 'text': join(getline(1, '$'), "\n") . "\n",
-        \ 'cursor': {'line': pos[1] - 1, 'col': pos[2] - 1},
+        \ 'cursor': {'line': line('.') - 1, 'col': col},
         \ 'state': s:State(mode(1)),
         \ 'registers': {'"': s:Reg('"')}}
   for r in keys(s:want)
@@ -129,6 +133,7 @@ function! s:RunCase(c) abort
   " The result is captured by a <Cmd> key after the case's keys, so it
   " sees the state the keys left (insert, visual...) without leaving it.
   let v:errmsg = ''
+  messages clear
   let s:res = {}
   let s:want = a:c.expected.registers
   try
@@ -143,6 +148,7 @@ function! s:RunCase(c) abort
   endif
   let res = s:res
   let res.error = v:errmsg
+  let res.beeps = len(filter(split(execute('messages'), "\n"), 'v:val =~# "Beep!"'))
   if mode() !=# 'n'
     call feedkeys("\<Esc>\<Esc>", 'tx')
   endif
@@ -150,15 +156,26 @@ function! s:RunCase(c) abort
 endfunction
 
 " Fields where Vim's result R differs from Evil's expected E.
-function! s:Diff(e, r) abort
+function! s:Diff(input, e, r) abort
   let d = []
-  " Vim always ends the last line with a newline.
-  let etext = a:e.text =~# '\n$' ? a:e.text : a:e.text . "\n"
-  if etext !=# a:r.text | call add(d, 'text') | endif
+  " Vim always ends the last line with a newline, so when the case's text
+  " has none, Vim's can't say how many newlines end Evil's.
+  if a:input =~# '\n$'
+    let etext = a:e.text =~# '\n$' ? a:e.text : a:e.text . "\n"
+    let vtext = a:r.text
+  else
+    let etext = substitute(a:e.text, '\n\+$', '', '')
+    let vtext = substitute(a:r.text, '\n\+$', '', '')
+  endif
+  if etext !=# vtext | call add(d, 'text') | endif
   if a:e.cursor.line != a:r.cursor.line || a:e.cursor.col != a:r.cursor.col
     call add(d, 'cursor')
   endif
   if a:e.state !=# a:r.state | call add(d, 'state') | endif
+  let ee = get(a:e, 'errors', v:null)
+  let ne = type(ee) == v:t_list ? len(ee) : 0
+  let nv = a:r.beeps + (a:r.error !=# '' ? 1 : 0)
+  if ne != nv | call add(d, 'errors ' . ne . ' vs ' . nv) | endif
   for [name, val] in items(a:r.registers)
     let ev = get(a:e.registers, name, v:null)
     if type(ev) == v:t_dict && ev.type ==# 'macro'
@@ -189,7 +206,7 @@ function! CompareFixture(path, out) abort
     endif
     let r = s:RunCase(c)
     call add(rows, json_encode({'topic': fx.topic, 'id': c.id,
-          \ 'differs': s:Diff(c.expected, r), 'vim': r}))
+          \ 'differs': s:Diff(c.input.text, c.expected, r), 'vim': r}))
   endfor
   call writefile(rows, a:out)
 endfunction

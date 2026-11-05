@@ -12,5 +12,9 @@
   {"id": "gj-at-last-visual-line", "vim": "end-line: Vim's gj fails on the last screen line; Evil moves past the final newline (not compared by the harness)", "keys": "gj", "text": ["|short"]},
   {"id": "dgj", "keys": "dgj", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm", "next"]},
   {"id": "dollar-is-logical", "keys": "$", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm"]},
-  {"id": "zero-is-logical", "keys": "gj0", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm"]}
+  {"id": "zero-is-logical", "keys": "gj0", "text": ["|aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm"]},
+  {"id": "ctrl-a-wrapped", "keys": "$<C-a>", "window": {"width": 80, "height": 24}, "text": ["|word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23", "next"]},
+  {"id": "count-ctrl-a-wrapped", "keys": "2<C-a>", "window": {"width": 80, "height": 24}, "text": ["|word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23", "next"]},
+  {"id": "insert-down-wrapped", "keys": "i<Down>X<Esc>", "window": {"width": 80, "height": 24}, "text": ["|word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23", "next"]},
+  {"id": "insert-up-wrapped", "keys": "$i<Up>X<Esc>", "window": {"width": 80, "height": 24}, "text": ["|word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23", "next"]}
  ]}

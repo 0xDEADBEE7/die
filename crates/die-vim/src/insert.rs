@@ -2,13 +2,19 @@
 //! undo step, it records its edits so a count can replay them, and it indents new
 //! lines the way your Evil does in text buffers (like the line above).
 
-use crate::grammar::buffer_window;
+use crate::grammar::{buffer_window, forget_goal};
 use crate::motions::word_back;
 use crate::text::{
-    Chars, blank_line, indent_end, indentation, line_end, next_stop, normal_pos, pos_at_col,
-    prev_stop,
+    Chars, blank_line, indent_end, indentation, line_end, next_stop, prev_stop, rest_pos,
 };
-use die_core::{Args, Ctx, Error, Origin, Result, State, TextBuf, WindowId};
+use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, WindowId};
+
+/// The most typed text a count may replay at once, K4's budget for one line. Until
+/// K4's compact cells, a longer line costs about 160 bytes of layout per character.
+const MAX_REPEAT: usize = 1 << 20;
+/// The most edits a count may replay one by one. Until K4, each lays the whole line
+/// out again, so a mistyped count would freeze the editor.
+const MAX_REPLAY: usize = 10_000;
 
 /// How a session started. A count repeats the session, opening a line first
 /// when it opened one.
@@ -94,6 +100,8 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
             indent_from_above(t, w, line)?;
         }
     }
+    // A goal column from normal state doesn't carry into insert state's <Up>.
+    forget_goal(t, w);
     // Only now, so that a failed `o` or `O` leaves no group open. The line it
     // opened joins the group: core adds an earlier edit by the same command.
     t.begin_undo_group();
@@ -127,13 +135,7 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
     let cursor = |t: &TextBuf| t.cursor(w).unwrap_or(0);
     let mut r = Ok(());
     if let Some(s) = s {
-        r = (1..s.count).try_for_each(|_| {
-            if matches!(s.entry, Entry::OpenBelow | Entry::OpenAbove) {
-                let line = t.line_of(cursor(t));
-                open_below(t, w, line)?;
-            }
-            s.edits.iter().try_for_each(|e| apply(t, w, e))
-        });
+        r = replay(t, w, &s);
         let line = t.line_of(cursor(t));
         let (ls, le) = (t.line_start(line), line_end(t, line));
         if s.drop_indent && le > ls && blank_line(t, line) {
@@ -151,17 +153,51 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
     // A session that ends on the empty line after a final newline leaves the
     // cursor there, as Evil and Vim do, so the next `i` types on that line. Only
     // motions keep off it (scope §10).
-    let after_final_newline = back == t.len() && t.line_start(t.line_of(back)) == back;
-    t.set_cursor(
-        w,
-        if after_final_newline {
-            back
-        } else {
-            normal_pos(t, back)
-        },
-    );
+    t.set_cursor(w, rest_pos(t, back));
     ctx.set_state_of(b, State::Normal);
     r
+}
+
+/// Replay the session count-1 more times. Typed text alone goes in at once; anything
+/// else goes key by key. A count too large to do either fails, with the session's
+/// first copy kept: more is an error, not a hang.
+fn replay(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
+    let more = s.count - 1;
+    let opens = matches!(s.entry, Entry::OpenBelow | Entry::OpenAbove);
+    let too_large = || Error::Msg("Count too large".into());
+    let text: Option<String> = s
+        .edits
+        .iter()
+        .map(|e| match e {
+            Edit::Text(x) => Some(x.as_str()),
+            _ => None,
+        })
+        .collect();
+    if let (Some(one), false) = (text, opens) {
+        if more == 0 || one.is_empty() {
+            return Ok(());
+        }
+        let n = one
+            .len()
+            .checked_mul(more)
+            .filter(|&n| n <= MAX_REPEAT)
+            .ok_or_else(too_large)?;
+        let p = t.cursor(w).unwrap_or(0);
+        t.tx(Origin::User).insert(p, one.repeat(more)).commit()?;
+        t.set_cursor(w, p + n);
+        return Ok(());
+    }
+    (s.edits.len() + usize::from(opens))
+        .checked_mul(more)
+        .filter(|&n| n <= MAX_REPLAY)
+        .ok_or_else(too_large)?;
+    (0..more).try_for_each(|_| {
+        if opens {
+            let line = t.line_of(t.cursor(w).unwrap_or(0));
+            open_below(t, w, line)?;
+        }
+        s.edits.iter().try_for_each(|e| apply(t, w, e))
+    })
 }
 
 fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
@@ -169,6 +205,10 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
     let line = t.line_of(p);
     let ls = t.line_start(line);
     let fail = |m: &str| Err(Error::Msg(m.into()));
+    // Only a run of Up and Down keeps a goal. Any other edit clears it, even one that fails.
+    if !matches!(e, Edit::Up | Edit::Down) {
+        forget_goal(t, w);
+    }
     let pos = match e {
         Edit::Text(s) => {
             t.tx(Origin::User).insert(p, s.as_str()).commit()?;
@@ -205,16 +245,27 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
             Some(q) => q,
             None => return fail("End of buffer"),
         },
+        // By screen row, as next-line does under your line-move-visual, and a run of
+        // them keeps the column it started at. Down on the last row goes to the end of
+        // the text before it fails, as next-line does, and the column stays for an Up.
         Edit::Up | Edit::Down => {
-            let next = if *e == Edit::Up {
-                line.checked_sub(1)
+            let (dy, none) = if *e == Edit::Up {
+                (-1, "Beginning of buffer")
             } else {
-                Some(line + 1)
+                (1, "End of buffer")
             };
-            let Some(l) = next.filter(|&l| l < t.line_count()) else {
-                return fail("No line there");
+            let goal = t.selection(w).and_then(|s| s.goal);
+            return match t.move_visual(w, p, dy, goal) {
+                Some((q, goal)) if q != p => {
+                    t.set_selection(w, Selection::cursor(q).with_goal(Some(goal)));
+                    Ok(())
+                }
+                Some((_, goal)) if dy > 0 => {
+                    t.set_selection(w, Selection::cursor(t.len()).with_goal(Some(goal)));
+                    fail(none)
+                }
+                _ => fail(none),
             };
-            pos_at_col(t, l, t.display_col(p))
         }
     };
     t.set_cursor(w, pos);

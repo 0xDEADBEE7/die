@@ -8,10 +8,11 @@
 mod grammar;
 mod insert;
 mod motions;
+mod scripts;
 mod text;
 
 use die_core::{Args, BufferId, Ctx, Dir, Error, Extension, Registry, Result, State};
-use grammar::{Kind, buffer_window, count_digit, run_motion};
+use grammar::{Kind, buffer_window, count_digit, forget_goal, run_motion};
 use insert::{Edit, Entry, Session};
 use motions::{Find, MOTIONS};
 use std::collections::HashMap;
@@ -53,11 +54,25 @@ impl Extension for Vim {
         "die-vim"
     }
 
+    fn init(&mut self, ctx: &mut Ctx) -> Result {
+        // A buffer killed in insert state never gets its Escape.
+        ctx.on_buffer_killed(|ctx, b| {
+            ctx.with_ext(|v: &mut Vim, _| v.inserts.remove(&b))?;
+            Ok(())
+        })
+        .detach();
+        Ok(())
+    }
+
     fn register(&mut self, reg: &mut Registry) {
         use State::{Insert, Normal};
         let k = reg.kind_keymap("text");
         for m in MOTIONS {
             k.bind(Normal, m.keys, m.name);
+        }
+        // Escape while a key waits for another. V3 binds it in OperatorPending too.
+        for key in ["f", "F", "t", "T"] {
+            k.bind(Normal, &format!("{key}<Esc>"), "vim-cancel");
         }
         for (keys, cmd) in [
             ("<Left>", "h"),
@@ -106,6 +121,15 @@ impl Extension for Vim {
                 }),
             }
         }
+        reg.command(
+            "vim-cancel",
+            "Escape after a key that waits for another: only the count and the goal column go.",
+            |ctx, a| {
+                let (b, w) = buffer_window(ctx, a)?;
+                forget_goal(ctx.text_mut(b)?, w);
+                Ok(())
+            },
+        );
         reg.command("vim-digit-argument", "A count digit.", |ctx, a| {
             let d = a.char().and_then(|c| c.to_digit(10)).unwrap_or(0) as usize;
             count_digit(ctx, a, d)
@@ -120,8 +144,13 @@ impl Extension for Vim {
         );
         reg.command(
             "vim-line-beginning",
-            "C-a: to the start of the line, as Emacs's global C-a does under your Evil.",
-            |ctx, a| run_motion(ctx, a, Kind::Exclusive, None, motions::beginning_of_line),
+            "C-a: to the start of the screen row, as Emacs's global C-a does under your Evil.",
+            |ctx, a| {
+                let (_, w) = buffer_window(ctx, a)?;
+                run_motion(ctx, a, Kind::Exclusive, None, move |s| {
+                    motions::row_beginning(s, w)
+                })
+            },
         );
         reg.command(
             "vim-repeat-find-char",
@@ -138,10 +167,7 @@ impl Extension for Vim {
             "Escape in normal state: forget the goal column, as Evil does.",
             |ctx, a| {
                 let (b, w) = buffer_window(ctx, a)?;
-                let t = ctx.text_mut(b)?;
-                if let Some(sel) = t.selection(w) {
-                    t.set_selection(w, sel.with_goal(None));
-                }
+                forget_goal(ctx.text_mut(b)?, w);
                 Ok(())
             },
         );
@@ -191,7 +217,11 @@ fn insert_edit(ctx: &mut Ctx, a: &Args, e: Edit) -> Result {
 
 fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
     let last = ctx.with_ext(|v: &mut Vim, _| v.find)?;
-    let mut find = last.ok_or(Error::Msg("No previous f, F, t or T".into()))?;
+    let Some(mut find) = last else {
+        let (b, w) = buffer_window(ctx, a)?;
+        forget_goal(ctx.text_mut(b)?, w);
+        return Err(Error::Msg("No previous f, F, t or T".into()));
+    };
     if reverse {
         find = find.reversed();
     }
@@ -225,14 +255,25 @@ fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
         }
     }
     let p = t.cursor(w).unwrap_or(0);
-    let on_last_empty_line = p == t.len() && t.line_start(t.line_of(p)) == p;
-    t.set_cursor(
-        w,
-        if on_last_empty_line {
-            p
-        } else {
-            text::normal_pos(t, p)
-        },
-    );
+    t.set_cursor(w, text::rest_pos(t, p));
     stopped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn killing_a_buffer_in_insert_state_drops_its_session() {
+        let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers");
+        let b = ctx.create_text("t", "a\n");
+        let w = ctx.open_window(b, 80, 24).expect("a window");
+        ctx.focus(w);
+        ctx.type_keys("ifoo");
+        let sessions = |ctx: &mut Ctx| ctx.with_ext(|v: &mut Vim, _| v.inserts.len()).unwrap();
+        assert_eq!(sessions(&mut ctx), 1);
+        assert!(ctx.kill(b));
+        ctx.run_until_idle();
+        assert_eq!(sessions(&mut ctx), 0);
+    }
 }
