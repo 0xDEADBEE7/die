@@ -152,5 +152,11 @@
   {"id": "di-paren-on-inner-open", "keys": "di(", "text": ["(x |(a) y)"]},
   {"id": "di-paren-on-inner-close", "keys": "di(", "text": ["(x (a|) y)"]},
   {"id": "2di-paren-next-in-a-string", "keys": "2di(x", "text": ["|prova ( verder \"((testo)\" )"]},
-  {"id": "di-paren-escaped-forward", "keys": "di(", "text": ["f(|a\\), b)"]}
+  {"id": "di-paren-escaped-forward", "keys": "di(", "text": ["f(|a\\), b)"]},
+  {"id": "di-squote-in-dquote-never-closes", "vim": "Vim leaves \"\\\"a b\\n\", Evil \"\\\"\\n\"; Vim's cursor is at line 0 col 3, Evil's at line 0 col 0", "keys": "di'", "text": "\"a |b\n"},
+  {"id": "di-squote-pair-after-dquote-never-closes", "keys": "di'", "text": ["\"a", "'b|c' d"]},
+  {"id": "di-squote-after-one-in-dquote-never-closes", "vim": "Vim leaves \"'' d\\n\", Evil \"'a \\\"\\n\"; Vim's cursor is at line 0 col 1, Evil's at line 0 col 3", "keys": "di'", "text": ["'a \"b |c' d"]},
+  {"id": "di-squote-across-lines-in-dquote", "vim": "Vim leaves \"\\\"a\\nb\\\" c\\n\", Evil \"\\\"\\\" c\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 0 col 1", "keys": "di'", "text": ["\"a", "|b\" c"]},
+  {"id": "da-squote-across-lines-in-dquote", "vim": "Vim leaves \"\\\"a\\nb\\\" c\\n\", Evil \" c\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 0 col 0", "keys": "da'", "text": ["\"a", "|b\" c"]},
+  {"id": "di-bquote-in-dquote-after-a-pair", "vim": "Vim leaves \"\\\"a `x` b\\\" d\\n\", Evil \"\\\"\\\" d\\n\"; Vim's cursor is at line 0 col 7, Evil's at line 0 col 1", "keys": "di`", "text": ["\"a `x` |b\" d"]}
  ]}
