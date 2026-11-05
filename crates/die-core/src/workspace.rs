@@ -200,7 +200,7 @@ impl Ctx {
     }
     /// The buffer a window goes to when its own dies.
     fn other_buffer(&mut self) -> BufferId {
-        let all = self.buffer_list();
+        let all = self.fallback_buffers();
         let unseen = all.iter().find(|b| self.windows_showing(**b).is_empty());
         match unseen.or(all.first()) {
             Some(b) => *b,

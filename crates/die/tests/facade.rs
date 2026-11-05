@@ -235,3 +235,21 @@ fn by_default_the_status_line_shows_the_buffers_name() {
     let mut ctx = start(Config::default()).unwrap();
     assert!(screen(&mut ctx).iter().any(|l| l == " *scratch*"));
 }
+
+#[test]
+fn a_bundle_uses_its_own_fonts_unless_told_otherwise() {
+    use die::render::{bundle_of, font_dir_from};
+    let exe = PathBuf::from("/Apps/DIE.app/Contents/MacOS/die");
+    assert_eq!(bundle_of(&exe), Some(PathBuf::from("/Apps/DIE.app")));
+    assert_eq!(
+        font_dir_from(None, Some(&exe)),
+        PathBuf::from("/Apps/DIE.app/Contents/Resources/fonts")
+    );
+    assert_eq!(
+        font_dir_from(Some("/elsewhere".into()), Some(&exe)),
+        PathBuf::from("/elsewhere")
+    );
+    let plain = PathBuf::from("/repo/target/debug/die");
+    assert_eq!(bundle_of(&plain), None);
+    assert!(font_dir_from(None, Some(&plain)).ends_with("fonts"));
+}

@@ -33,13 +33,30 @@ pub mod rows;
 pub mod sprite;
 pub mod window;
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
-/// Where DIE's fonts are: `$DIE_FONT_DIR`, else `fonts/` at the workspace root,
-/// which `cargo xtask fonts` fills.
+/// Where DIE's fonts are: `$DIE_FONT_DIR`, else the app bundle's, else `fonts/` at the
+/// workspace root, which `cargo xtask fonts` fills.
 pub fn font_dir() -> PathBuf {
-    match std::env::var_os("DIE_FONT_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts")),
+    let exe = std::env::current_exe().ok();
+    font_dir_from(std::env::var_os("DIE_FONT_DIR"), exe.as_deref())
+}
+
+/// [`font_dir`], given `$DIE_FONT_DIR` and this executable's path.
+pub fn font_dir_from(var: Option<OsString>, exe: Option<&Path>) -> PathBuf {
+    match (var, exe.and_then(bundle_of)) {
+        (Some(d), _) => PathBuf::from(d),
+        (None, Some(bundle)) => bundle.join("Contents/Resources/fonts"),
+        (None, None) => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts")),
     }
+}
+
+/// The app bundle holding this executable, if it's at `<name>.app/Contents/MacOS/<exe>`.
+pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let named = macos.ends_with("MacOS") && contents.ends_with("Contents");
+    (named && bundle.extension()? == "app").then(|| bundle.to_path_buf())
 }
