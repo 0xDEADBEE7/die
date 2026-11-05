@@ -148,9 +148,9 @@ fn shaping_counts_each_glyph_where_the_font_puts_it() {
         "the second glyph's ink is past the first's advance"
     );
     assert!(
-        top("E\u{301}") > top("e\u{301}") + 3.0,
-        "a mark rides higher on a capital: {} {}",
-        top("E\u{301}"),
+        top("e\u{301}\u{301}") > top("e\u{301}") + 3.0,
+        "a second mark stacks on the first: {} {}",
+        top("e\u{301}\u{301}"),
         top("e\u{301}")
     );
 }
