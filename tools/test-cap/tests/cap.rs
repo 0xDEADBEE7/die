@@ -2,7 +2,8 @@
 //! die there, quickly and saying why, with its memory near the limit. Others stay under
 //! the limit by freeing as they go, and must not die, which shows the count goes down.
 //!
-//! No case can hurt the machine if the cap is broken: each stops itself at `MOST`.
+//! No case can hurt the machine if the cap is broken: each stops itself at `MOST`, or at
+//! worst holds 2 GiB of freed blocks.
 
 use die_test_cap as _;
 
@@ -10,13 +11,20 @@ mod support;
 
 use die_test_cap::set_limit;
 use std::hint::black_box;
-use std::process::exit;
-use std::sync::{Arc, Barrier};
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio, exit};
+use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
-use support::{NOT_STOPPED, Run, in_child, sample_memory};
+use std::time::{Duration, Instant};
+use support::{NOT_STOPPED, Run, in_child, in_child_under, note, sample_memory};
 
 const LIMIT: usize = 64 << 20;
 const LINE: &str = "die-test-cap: over the memory limit of 67108864 bytes (64 MiB)";
+
+/// The program behind the kernel's limit. Where it's missing, as on Linux, there's no such
+/// limit to test.
+const TASKPOLICY: &str = "/usr/sbin/taskpolicy";
 
 /// How much a growing case adds between samples of its memory.
 const STEP: usize = LIMIT / 32;
@@ -139,6 +147,60 @@ fn growth_from_several_threads() {
 }
 
 #[test]
+fn what_a_finished_thread_leaked_still_counts() {
+    let run = capped("what_a_finished_thread_leaked_still_counts", || {
+        for _ in 0..MOST / STEP {
+            let _ = thread::spawn(|| {
+                vec![1u8; STEP].leak();
+            })
+            .join();
+            sample_memory();
+        }
+        exit(NOT_STOPPED);
+    });
+    died_near_the_limit(&run, LIMIT / 1024 / 4);
+}
+
+#[test]
+fn what_one_thread_frees_of_anothers_goes_off_the_count() {
+    let run = capped(
+        "what_one_thread_frees_of_anothers_goes_off_the_count",
+        || {
+            let (send, receive) = mpsc::sync_channel::<Vec<u8>>(0);
+            let freer = thread::spawn(move || receive.iter().for_each(drop));
+            // Far more than the limit in all, in big blocks and in small ones, and little of it
+            // live at any moment. This must live.
+            for _ in 0..8 * LIMIT / STEP {
+                send.send(vec![1u8; STEP]).unwrap();
+            }
+            for _ in 0..4 * LIMIT / 1024 {
+                send.send(vec![1u8; 1024]).unwrap();
+            }
+            drop(send);
+            freer.join().unwrap();
+            note("all freed");
+            // The count is still whole, so this must not.
+            let mut kept = Vec::new();
+            for _ in 0..MOST / STEP {
+                kept.push(vec![1u8; STEP]);
+            }
+            exit(NOT_STOPPED);
+        },
+    );
+    run.died_with(LINE);
+    assert!(run.stdout().contains("all freed\n"), "{run:#?}");
+}
+
+#[test]
+fn a_block_too_big_to_count_still_says_so() {
+    capped("a_block_too_big_to_count_still_says_so", || {
+        let mut v: Vec<u8> = Vec::new();
+        assert!(v.try_reserve_exact(isize::MAX as usize).is_err());
+    })
+    .lived_with(LINE);
+}
+
+#[test]
 fn threads_that_reach_the_limit_together_write_one_line() {
     for _ in 0..8 {
         let run = capped(
@@ -215,26 +277,84 @@ fn a_realloc_that_grows_counts_only_the_growth() {
 }
 
 #[test]
-fn big_blocks_that_grow_and_go_dont_pile_up() {
-    // Left alone, malloc on macOS keeps each of these when it's freed, for a request of that
-    // size, which never comes: about 1 GiB by the end, with half the limit counted.
-    // `.cargo/config.toml` turns that off for what cargo runs.
-    let run = capped("big_blocks_that_grow_and_go_dont_pile_up", || {
-        for _ in 0..32 {
-            let mut v = vec![1u8; LIMIT / 4];
-            v.reserve_exact(LIMIT / 4);
-            v.resize(LIMIT / 2, 1);
-            black_box(v);
-            sample_memory();
+fn big_blocks_that_grow_and_go_stay_within_the_kernels_limit() {
+    // On macOS, malloc keeps each of these when it's freed, for a request of that size,
+    // which never comes: 2 GiB by the end, with half of `LIMIT` counted. Under the kernel's
+    // limit it keeps fewer, and the process lives.
+    const MIB: usize = 512;
+    let run = in_child_under(
+        "big_blocks_that_grow_and_go_stay_within_the_kernels_limit",
+        MIB,
+        || {
+            set_limit(LIMIT);
+            for _ in 0..80 {
+                let mut v = vec![1u8; LIMIT / 4];
+                v.reserve_exact(LIMIT / 4);
+                v.resize(LIMIT / 2, 1);
+                black_box(v);
+                sample_memory();
+            }
+        },
+    );
+    run.lived();
+    let peak = run.peak_kib();
+    assert!(peak <= MIB * 1024, "{peak} KiB: {run:#?}");
+}
+
+#[test]
+fn growth_the_count_cant_see_dies_at_the_kernels_limit() {
+    if !Path::new(TASKPOLICY).exists() {
+        return;
+    }
+    // A thread's stack doesn't come through Rust's allocator.
+    fn touch_stack(frames: usize) {
+        let frame = black_box([1u8; 1 << 16]);
+        if frames > 0 {
+            touch_stack(frames - 1);
         }
+        black_box(frame);
+    }
+    const FRAMES: usize = (8 * LIMIT) >> 16;
+    in_child_under(
+        "growth_the_count_cant_see_dies_at_the_kernels_limit",
+        (2 * LIMIT) >> 20,
+        || {
+            let _ = thread::Builder::new()
+                .stack_size(10 * LIMIT)
+                .spawn(|| touch_stack(FRAMES))
+                .unwrap()
+                .join();
+            exit(NOT_STOPPED);
+        },
+    )
+    .killed_by_the_kernel();
+}
+
+#[test]
+fn going_under_the_kernels_limit_keeps_the_pid() {
+    let run = in_child("going_under_the_kernels_limit_keeps_the_pid", || {
+        note(&format!("pid {}", std::process::id()));
     });
     run.lived();
-    let (peak, most) = (run.peak_kib(), LIMIT / 1024 * 3 / 2);
-    assert!(
-        peak <= most,
-        "{peak} KiB is over {most}, so malloc kept what was freed. Did this run through \
-         cargo, with MallocLargeCache from .cargo/config.toml? {run:#?}"
-    );
+    let line = format!("pid {}\n", run.pid());
+    assert!(run.stdout().contains(&line), "{run:#?}");
+}
+
+#[test]
+fn a_closed_pipe_is_an_error_and_no_signal() {
+    // If going under the kernel's limit is tried and fails, SIGPIPE is left to kill this. It's
+    // in a child because a process another test is starting holds the pipe open for a moment.
+    in_child("a_closed_pipe_is_an_error_and_no_signal", || {
+        let mut child = Command::new("true")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        child.wait().unwrap();
+        assert!(stdin.write_all(b"x").is_err());
+    })
+    .lived();
 }
 
 #[test]
@@ -242,15 +362,44 @@ fn a_refused_allocation_can_be_handled_and_says_so_once() {
     capped(
         "a_refused_allocation_can_be_handled_and_says_so_once",
         || {
+            let held = vec![1u8; LIMIT / 2];
             let mut v: Vec<u8> = Vec::new();
-            assert!(v.try_reserve_exact(LIMIT).is_err());
-            assert!(v.try_reserve_exact(LIMIT).is_err());
-            // The refused blocks were never counted, so a block that fits is still fine.
-            v.resize(LIMIT / 2, 1);
-            black_box(v);
+            let start = Instant::now();
+            assert!(v.try_reserve_exact(LIMIT / 4 * 3).is_err());
+            assert!(v.try_reserve_exact(LIMIT / 4 * 3).is_err());
+            // A second refusal would wait a full second if the first had left the line
+            // looking unfinished.
+            assert!(start.elapsed() < Duration::from_millis(900));
+            // The refused blocks aren't counted any more, so a block that fits is still fine.
+            v.resize(LIMIT / 4, 1);
+            black_box((held, v));
         },
     )
     .lived_with(LINE);
+}
+
+#[test]
+fn a_block_the_system_refuses_counts_for_nothing() {
+    in_child("a_block_the_system_refuses_counts_for_nothing", || {
+        const HUGE: usize = 1 << 62;
+        set_limit(usize::MAX);
+        let mut empty: Vec<u8> = Vec::new();
+        assert!(empty.try_reserve_exact(HUGE).is_err());
+        let mut live = vec![1u8; 16];
+        assert!(live.try_reserve_exact(HUGE).is_err());
+        // Neither refusal is still counted, so a block that fits is still fine.
+        set_limit(LIMIT);
+        black_box(vec![1u8; LIMIT / 2]);
+    })
+    .lived();
+}
+
+/// A child whose test has changed its name runs no test, and exits 0. Without this, the
+/// cases that must live could stop testing anything, and no one would know.
+#[test]
+#[should_panic(expected = "left: Some(0)")]
+fn a_case_whose_body_never_ran_did_not_live() {
+    in_child("no test has this name", || {}).lived();
 }
 
 #[test]

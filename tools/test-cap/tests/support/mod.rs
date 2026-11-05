@@ -12,8 +12,15 @@ use std::time::Duration;
 /// Set in the child, which is how a test knows to run its body.
 const CHILD: &str = "DIE_TEST_CAP_CHILD";
 
+/// Lowers the kernel's limit in a child, which goes under it at its start.
+const LOWER_LIMIT: &str = "DIE_TEST_CAP_SYSTEM_LIMIT_MIB";
+
 /// Every case ends well within this, or fails. A cap that held would have stopped it.
 const DEADLINE: Duration = Duration::from_secs(60);
+
+/// A child exits with this when its body has run to the end. If no test has the name it
+/// was given, it runs nothing and exits 0, and that mustn't pass for a case that lived.
+const BODY_RAN: i32 = 7;
 
 /// A case that grows this far past its limit has shown that the cap doesn't hold. It stops
 /// here with this exit code, to spare the machine.
@@ -22,8 +29,12 @@ pub const NOT_STOPPED: i32 = 3;
 /// `abort()` raises it, on every Unix.
 const SIGABRT: i32 = 6;
 
+/// How the kernel ends a process at its limit.
+const SIGKILL: i32 = 9;
+
 #[derive(Debug)]
 pub struct Run {
+    pid: u32,
     status: ExitStatus,
     stderr: String,
     stdout: String,
@@ -32,12 +43,25 @@ pub struct Run {
 /// Run `body` in a child of this test binary, then return how the child went. `name` is
 /// the test that's calling, which is how the child finds its way back here.
 pub fn in_child(name: &str, body: impl FnOnce()) -> Run {
+    run_body(name, None, body)
+}
+
+/// The same, with the kernel's limit on the child lowered to `mib`.
+pub fn in_child_under(name: &str, mib: usize, body: impl FnOnce()) -> Run {
+    run_body(name, Some(mib), body)
+}
+
+fn run_body(name: &str, mib: Option<usize>, body: impl FnOnce()) -> Run {
     if std::env::var_os(CHILD).is_some() {
         body();
-        exit(0);
+        exit(BODY_RAN);
     }
     let exe = std::env::current_exe().unwrap();
-    let child = Command::new(exe)
+    let mut cmd = Command::new(exe);
+    if let Some(mib) = mib {
+        cmd.env(LOWER_LIMIT, mib.to_string());
+    }
+    let child = cmd
         .args([name, "--exact"])
         .env(CHILD, "1")
         .stdin(Stdio::null())
@@ -45,33 +69,44 @@ pub fn in_child(name: &str, body: impl FnOnce()) -> Run {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let pid = child.id().to_string();
+    let pid = child.id();
     let (done, finished) = mpsc::channel();
     thread::spawn(move || done.send(child.wait_with_output()));
     let Ok(out) = finished.recv_timeout(DEADLINE) else {
-        let _ = Command::new("kill").args(["-s", "KILL", &pid]).status();
+        let _ = Command::new("kill")
+            .args(["-s", "KILL", &pid.to_string()])
+            .status();
         panic!("{name} was still running after {DEADLINE:?}");
     };
     let out = out.unwrap();
     Run {
+        pid,
         status: out.status,
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
     }
 }
 
-/// In a child: note this process's resident memory now. It goes straight to stdout, past
-/// the harness's capture, for `Run::peak_kib`. `ps` is the one way std can ask, on both
-/// macOS and Linux.
-pub fn sample_memory() {
+/// In a child: write `line` straight to stdout, past the harness's capture.
+pub fn note(line: &str) {
     use std::io::Write;
+    std::io::stdout()
+        .write_all(format!("{line}\n").as_bytes())
+        .unwrap();
+}
+
+/// In a child: note this process's resident memory now, for `Run::peak_kib`. `ps` is the
+/// one way std can ask, on both macOS and Linux.
+pub fn sample_memory() {
     let pid = std::process::id().to_string();
     let ps = Command::new("ps")
         .args(["-o", "rss=", "-p", &pid])
         .output()
         .expect("ps runs");
-    let line = format!("rss {}\n", String::from_utf8_lossy(&ps.stdout).trim());
-    std::io::stdout().write_all(line.as_bytes()).unwrap();
+    note(&format!(
+        "rss {}",
+        String::from_utf8_lossy(&ps.stdout).trim()
+    ));
 }
 
 impl Run {
@@ -82,17 +117,24 @@ impl Run {
         self.wrote(&[line]);
     }
 
-    /// The child finished by itself.
+    /// The kernel killed the child, with no line from the cap.
     #[track_caller]
-    pub fn lived(&self) {
-        assert!(self.status.success(), "{self:#?}");
+    pub fn killed_by_the_kernel(&self) {
+        assert_eq!(self.status.signal(), Some(SIGKILL), "{self:#?}");
         self.wrote(&[]);
     }
 
-    /// The child finished by itself, having written `line` once.
+    /// The child's body ran to its end.
+    #[track_caller]
+    pub fn lived(&self) {
+        assert_eq!(self.status.code(), Some(BODY_RAN), "{self:#?}");
+        self.wrote(&[]);
+    }
+
+    /// The child's body ran to its end, having written `line` once.
     #[track_caller]
     pub fn lived_with(&self, line: &str) {
-        assert!(self.status.success(), "{self:#?}");
+        assert_eq!(self.status.code(), Some(BODY_RAN), "{self:#?}");
         self.wrote(&[line]);
     }
 
@@ -105,6 +147,16 @@ impl Run {
             .filter(|l| l.contains("die-test-cap:"))
             .collect();
         assert_eq!(found, lines, "{self:#?}");
+    }
+
+    /// The child's pid, as it was when it started.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// What the child wrote to stdout, with the harness's output and all.
+    pub fn stdout(&self) -> &str {
+        &self.stdout
     }
 
     /// The most memory the child was seen to hold, in KiB.

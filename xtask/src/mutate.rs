@@ -5,8 +5,8 @@
 //! There are three ways to catch one, and the report names which: tests that fail by
 //! name, the test binary reaching its memory limit (`die-test-cap`'s line), or the run
 //! reaching its time limit. A run that ends any other way catches nothing. A kernel kill,
-//! say, means the machine ran out of memory while the mutant ran, and passing that off as
-//! a catch once hid it, so it's an error that stops the run.
+//! say, means memory the count can't see grew to the kernel's limit, or the machine ran
+//! out, and passing that off as a catch once hid it, so it's an error that stops the run.
 //!
 //! A run has a process group of its own. On expiry the whole group is killed, because
 //! killing cargo alone leaves the test binary running. That group doesn't get a terminal's
