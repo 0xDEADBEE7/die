@@ -214,7 +214,7 @@ pub struct Frames {
     rebuilt: Vec<usize>,
     /// Whether this frame has already started the atlas over.
     started_over: bool,
-    /// Whether a glyph was dropped for lack of room, to try again next frame.
+    /// Whether a glyph was dropped for lack of room, to try again when a row changes.
     dropped: bool,
 }
 
@@ -255,10 +255,6 @@ impl Frames {
     /// color has no instance. Returns the glyphs those rows need.
     pub fn diff(&mut self, scene: &Scene) -> Vec<GlyphKey> {
         self.started_over = false;
-        if std::mem::take(&mut self.dropped) {
-            self.start_over();
-            self.started_over = true;
-        }
         let resized = self.cols != scene.cols || self.rows.len() != scene.rows;
         if resized {
             self.cols = scene.cols;
@@ -273,6 +269,13 @@ impl Frames {
                 self.rows[r].dirty = true;
                 self.cells[at.clone()].clone_from_slice(&scene.cells[at]);
             }
+        }
+        // A page that didn't fit would drop the same glyphs if it tried again, so it
+        // waits until a row changes, and a frame that changes none costs nothing.
+        if self.dropped && self.rows.iter().any(|r| r.dirty) {
+            self.dropped = false;
+            self.start_over();
+            self.started_over = true;
         }
         self.wanted()
     }
@@ -298,7 +301,7 @@ impl Frames {
     ///
     /// If the atlas is full, it starts over once a frame, and the rows want their
     /// glyphs again. A frame that needs more than a whole atlas drops the rest, and
-    /// the next frame tries again.
+    /// the next frame that changes a row tries again.
     pub fn supply(&mut self, key: &GlyphKey, bitmap: Option<GlyphBitmap>) {
         let Err(Full(bitmap)) = self.atlas.insert(key, bitmap) else {
             return;

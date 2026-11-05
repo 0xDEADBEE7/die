@@ -765,6 +765,35 @@ fn a_frame_that_needs_more_than_a_whole_atlas_drops_the_rest_and_the_next_frame_
 }
 
 #[test]
+fn a_page_with_more_glyphs_than_the_atlas_costs_nothing_until_it_changes() {
+    let mut f = small();
+    let mut s = blank(5, 2);
+    put(&mut s, 0, 0, "abcde");
+    let (first, ..) = frame(&mut f, &s);
+    assert_eq!(of_kind(&first, kind::GRAY).len(), 3, "as many as fit");
+    // Trying again would drop the same glyphs, so an unchanged page doesn't.
+    let (again, _, uploads) = frame(&mut f, &s);
+    assert_eq!(f.rebuilt(), [] as [usize; 0], "the same page");
+    assert_eq!(again, first, "and its picture");
+    assert!(uploads.is_empty(), "and no glyph drawn again");
+    assert!(f.diff(&s).is_empty());
+    // Nor does a cursor moving over it.
+    s.cursors = vec![cursor(1, 2, CursorShape::Bar)];
+    let (moved, _, uploads) = frame(&mut f, &s);
+    assert_eq!(f.rebuilt(), [] as [usize; 0], "a cursor");
+    assert_eq!(moved[..first.len()], first[..]);
+    assert!(uploads.is_empty());
+    // A change anywhere on it tries again, and every row comes with it.
+    put(&mut s, 1, 4, "z");
+    let (_, _, uploads) = frame(&mut f, &s);
+    assert_eq!(f.rebuilt(), [0, 1], "a change");
+    assert_eq!(uploads.len(), 3, "the atlas started over");
+    // That page still doesn't fit, so the frame after it costs nothing either.
+    frame(&mut f, &s);
+    assert_eq!(f.rebuilt(), [] as [usize; 0]);
+}
+
+#[test]
 fn a_glyph_too_big_for_any_atlas_draws_nothing_and_costs_no_restart() {
     let mut f = small();
     let mut s = blank(4, 1);
