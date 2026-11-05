@@ -1,10 +1,2 @@
 [alias]
 xtask = "run --quiet --package xtask --"
-
-# malloc on macOS keeps up to 64 big blocks after they're freed, for a request that fits,
-# and when none does they stay in memory. So a test can hold far more than die-test-cap's
-# limit, in blocks it has freed. This turns that cache off for all that cargo runs, `cargo
-# run` included. Linux ignores it. Apple doesn't document it, but if it ever stops working,
-# `big_blocks_that_grow_and_go_dont_pile_up` in tools/test-cap fails.
-[env]
-MallocLargeCache = "0"

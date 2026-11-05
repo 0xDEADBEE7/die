@@ -139,7 +139,7 @@ The five scheduled reviews each read a whole surface at once. The other three ru
 | die-vim | none yet; proposed ≤ about 5k | 3.6–4.6k | small: copy state (M2) | 3.7–4.7k |
 | die | – | about 0.2k | registering die-term, the holder and helper modes (M2) | |
 | apps/die-dev | – (your config) | about 0.15k | | |
-| xtask, tools/evil-oracle, tools/test-cap | dev-only: counted, not capped | about 0.7k, 0.3k and 0.1k | `ghostty bump` (M2) | |
+| xtask, tools/evil-oracle, tools/test-cap | dev-only: counted, not capped | about 0.7k, 0.3k and 0.2k | `ghostty bump` (M2) | |
 | **Product code** | | **about 15–19k** | | |
 
 die-render's M0 figure is S1's 4.1–5.0k minus what M3 adds. The platforms record puts the macOS build at 4.1–5.25k, up to 0.25k above S1's figure, and all platforms at 5.35–7.15k ([records/platforms.md](records/platforms.md) §5.7). Tests come on top: about 5–6k in core (2.6k of it from S4), 1.5k in die-vim and 0.5k in the renderer.
