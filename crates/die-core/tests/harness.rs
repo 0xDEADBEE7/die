@@ -151,7 +151,11 @@ fn the_window_has_the_size_asked_for_and_the_frame_fits_it() {
     h.set_window_size(20, 5);
     assert_eq!(h.window_size(w), Some((20, 5)));
     assert_eq!(h.frame_size(), (20, 7));
-    assert_eq!(h.screen().split('\n').count(), 7, "text, status, command line");
+    assert_eq!(
+        h.screen().split('\n').count(),
+        7,
+        "text, status, command line"
+    );
 }
 
 #[test]
@@ -166,7 +170,11 @@ fn the_top_line_can_be_set_and_follows_the_cursor_after_each_key() {
     h.type_keys("jj").unwrap();
     assert_eq!(h.top_line(w), Some(5), "the second j scrolled");
     h.set_top_line(w, 0).unwrap();
-    assert_eq!(h.top_line(w), Some(5), "a frame goes back to the cursor (C5)");
+    assert_eq!(
+        h.top_line(w),
+        Some(5),
+        "a frame goes back to the cursor (C5)"
+    );
     h.set_top_line(w, 99).unwrap();
     h.text_mut(b).unwrap().set_cursor(w, 0);
     assert_eq!(h.top_line(w), Some(0));
@@ -178,6 +186,9 @@ fn the_style_dump_shows_what_the_screen_does_and_its_styles() {
     h.set_window_size(10, 1);
     let dump = h.style_dump();
     assert!(dump.starts_with("scene 10x3\ntext\n|line 0"), "{dump}");
-    assert!(dump.contains("\nstyle\n") && dump.contains("\nlegend\n"), "{dump}");
+    assert!(
+        dump.contains("\nstyle\n") && dump.contains("\nlegend\n"),
+        "{dump}"
+    );
     assert!(h.screen().starts_with("line 0\n"));
 }
