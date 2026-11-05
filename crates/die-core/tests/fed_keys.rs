@@ -30,6 +30,9 @@
 //! - `an_error_in_a_macro_inside_a_macro_ends_both`: as in Evil.
 //! - `keys_the_host_feeds_go_behind_what_is_left`: outside any call, it adds to the end.
 //! - `keys_fed_after_a_nested_turn_emptied_the_queue_still_run`: where they go is kept in range.
+
+use die_test_cap as _;
+
 mod support;
 use die_core::*;
 use std::cell::{Cell, RefCell};

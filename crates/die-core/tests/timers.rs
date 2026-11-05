@@ -58,6 +58,9 @@
 //! - `advance_waits_for_a_job_that_finishes`: its `done` has run when it returns.
 //! - `work_deferred_before_advance_counts_from_before_it`: it runs at the old time.
 //! - `a_nested_advance_doesnt_move_the_clock_back`.
+
+use die_test_cap as _;
+
 use die_core::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

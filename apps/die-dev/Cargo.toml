@@ -17,5 +17,8 @@ path = "src/main.rs"
 [dependencies]
 die.workspace = true
 
+[dev-dependencies]
+die-test-cap.workspace = true
+
 [lints]
 workspace = true

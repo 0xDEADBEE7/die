@@ -1,6 +1,9 @@
 //! DIE's dev tasks, run as `cargo xtask <task>`. Dev-only: nothing here is in
 //! DIE's build, and `cargo build` and `cargo test` don't need it.
 
+#[cfg(test)]
+use die_test_cap as _;
+
 pub mod api;
 pub mod budget;
 pub mod ci;

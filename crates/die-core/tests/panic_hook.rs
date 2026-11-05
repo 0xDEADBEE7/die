@@ -4,6 +4,9 @@
 //! - `the_hook_keeps_the_one_before_it`: a hook set before the first `Ctx` still runs, and the
 //!   line in `*messages*` gets the place from core's. A hook set after it replaces core's: the
 //!   line is still logged, from the panic's own message, without the place.
+
+use die_test_cap as _;
+
 use die_core::*;
 use std::panic::set_hook;
 use std::sync::Arc;

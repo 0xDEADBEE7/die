@@ -11,6 +11,9 @@
 //! - `a_waker_works_from_any_thread_and_outlives_the_ctx`: it's `Send`, `Sync` and `Clone`.
 //! - `no_wake_is_lost_under_load`: a host that sleeps until woken sees every job finish.
 //! - `step_never_waits_for_a_job`: what K9's loop builds on. `run_until_idle` still waits.
+
+use die_test_cap as _;
+
 use die_core::*;
 use std::cell::Cell;
 use std::rc::Rc;

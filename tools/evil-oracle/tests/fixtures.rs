@@ -1,6 +1,8 @@
 //! Loads every fixture the oracle wrote and checks it parses into the
 //! schema and is self-consistent: the harness die-vim's tests will use.
 
+use die_test_cap as _;
+
 use evil_oracle::{Case, Fixture, Pos, Run, Source, State, pos_of_byte};
 use std::fs;
 use std::path::Path;
