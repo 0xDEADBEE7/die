@@ -11,6 +11,7 @@
 //! - `a_timer_cancelled_when_already_due_doesnt_fire`: by an earlier callback in the same turn.
 //! - `a_repeating_timer_can_cancel_itself`.
 //! - `cancelled_timers_dont_pile_up`: what they hold is freed before their deadlines.
+//! - `a_cancelled_repeat_is_freed_when_it_comes_due`: it isn't set again.
 //!
 //! Limits:
 //! - `every_with_no_period_lets_the_loop_go_idle`: a zero period runs as one millisecond.
@@ -195,6 +196,21 @@ fn cancelled_timers_dont_pile_up() {
 }
 
 #[test]
+fn a_cancelled_repeat_is_freed_when_it_comes_due() {
+    let mut c = with_clock(Clock::real());
+    let held = Rc::new(());
+    let h = held.clone();
+    let t = c.every(MS, move |_| {
+        let _ = &h;
+        Ok(())
+    });
+    drop(t);
+    sleep(5 * MS);
+    while c.step() {}
+    assert_eq!(Rc::strong_count(&held), 1);
+}
+
+#[test]
 fn every_with_no_period_lets_the_loop_go_idle() {
     let (mut ctx, _) = ctx();
     let (n, f) = counter();
@@ -207,12 +223,17 @@ fn every_with_no_period_lets_the_loop_go_idle() {
 #[test]
 fn a_huge_delay_doesnt_overflow() {
     let (mut ctx, _) = ctx();
+    ctx.advance(Duration::from_secs(1));
     let (n, f) = counter();
     let a = ctx.after(Duration::MAX, f);
     let (m, g) = counter();
     let b = ctx.every(Duration::MAX, g);
+    let (k, h) = counter();
+    let c = ctx.idle(Duration::MAX, h);
     ctx.advance(Duration::from_secs(1));
-    assert_eq!((n.get(), m.get()), (0, 0));
+    assert_eq!((n.get(), m.get(), k.get()), (0, 0, 0));
+    ctx.input(KeyEvent::press(Key::Char('z'))); // restarts the idle wait
+    ctx.run_until_idle();
     assert!(ctx.next_timer().is_some());
     ctx.advance(Duration::MAX);
     assert_eq!(
@@ -220,10 +241,14 @@ fn a_huge_delay_doesnt_overflow() {
         Duration::MAX,
         "the clock stops at the end of time"
     );
-    assert_eq!((n.get(), m.get()), (1, 1));
+    assert_eq!((n.get(), m.get(), k.get()), (1, 1, 1));
     ctx.advance(Duration::from_secs(1));
-    assert_eq!((n.get(), m.get()), (1, 1), "and doesn't fire them forever");
-    drop((a, b));
+    assert_eq!(
+        (n.get(), m.get(), k.get()),
+        (1, 1, 1),
+        "and doesn't fire them forever"
+    );
+    drop((a, b, c));
 }
 
 #[test]
