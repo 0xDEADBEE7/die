@@ -34,8 +34,8 @@ struct Row {
 }
 
 /// The cells a row's glyph takes: its width, but no more than the continuation
-/// cells after it. A padding cell at a row's end is a continuation too, with no
-/// wide character before it, so the width has to agree.
+/// cells after it, so a wide character with no room is fitted to what it has, and
+/// a continuation after a narrow glyph doesn't widen it.
 fn span_at(row: &[Cell], col: usize) -> u16 {
     let width = match &row[col].glyph {
         Glyph::Char(c) => c.width().unwrap_or(1),

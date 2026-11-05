@@ -265,8 +265,8 @@ fn a_wide_glyph_is_fitted_to_its_cells_and_its_right_half_draws_nothing() {
 
 #[test]
 fn a_padding_cell_after_a_narrow_glyph_does_not_widen_it() {
-    // Layout pads a row where a wide character didn't fit with an empty cell, which
-    // the scene shows as a continuation with no wide character before it.
+    // A continuation with no wide character before it. Layout's own padding is a
+    // space, so this comes only from another producer.
     let mut s = blank(3, 1);
     put(&mut s, 0, 1, "a");
     s.cells[2].glyph = Glyph::Continuation;
@@ -375,13 +375,15 @@ fn a_wide_glyph_lines_cover_both_of_its_cells() {
     let mut f = frames();
     let mut s = blank(4, 1);
     put_with(&mut s, 0, 0, &["中"], |c| c.underline = Underline::Single);
-    let quads = f_quads(&mut f, &s);
-    let lines: Vec<f32> = quads
-        .iter()
-        .filter(|q| q.rect[2] == 19.0)
-        .map(|q| q.rect[0])
-        .collect();
-    assert_eq!(lines, [0.0, 19.0]);
+    let lines = |quads: &[Quad]| -> Vec<f32> {
+        let lines = quads.iter().filter(|q| q.rect[2] == 19.0);
+        lines.map(|q| q.rect[0]).collect()
+    };
+    assert_eq!(lines(&f_quads(&mut f, &s)), [0.0, 19.0], "an underline");
+    let mut f = frames();
+    let mut s = blank(4, 1);
+    put_with(&mut s, 0, 0, &["中"], |c| c.strike = true);
+    assert_eq!(lines(&f_quads(&mut f, &s)), [0.0, 19.0], "a strike-through");
 }
 
 /// A frame of a cursor on an "x" at (1, 1), and just its instances.
@@ -484,6 +486,37 @@ fn a_hollow_cursor_is_a_1_logical_px_outline_and_leaves_the_glyph() {
             [17.0, 21.0, 1.0, 18.0],
         ]
     );
+}
+
+#[test]
+fn a_cursor_stays_in_a_cell_too_small_for_its_lines() {
+    // 4 physical px of bar and 2 of outline at 2x, in a cell of less than that.
+    let (x, y) = (1.0, 1.0);
+    for (w, h) in [(1, 1), (3, 3), (1, 40), (19, 1)] {
+        let cell = CellMetrics { w, h, ..cell2x() };
+        for shape in [
+            CursorShape::Block,
+            CursorShape::Bar,
+            CursorShape::Underline,
+            CursorShape::HalfBlock,
+            CursorShape::Hollow,
+        ] {
+            let mut f = Frames::new(cell, ATLAS, ATLAS);
+            let mut s = blank(3, 3);
+            let without = frame(&mut f, &s).0.len();
+            s.cursors = vec![cursor(1, 1, shape)];
+            let (quads, ..) = frame(&mut f, &s);
+            let (w, h) = (w as f32, h as f32);
+            for q in &quads[without..] {
+                let [qx, qy, qw, qh] = q.rect;
+                let inside = qx >= x * w
+                    && qy >= y * h
+                    && qx + qw <= (x + 1.0) * w
+                    && qy + qh <= (y + 1.0) * h;
+                assert!(inside, "{shape:?} in a {w}x{h} cell: {:?}", q.rect);
+            }
+        }
+    }
 }
 
 /// Term's cell at another scale: half the pixels at 1x.

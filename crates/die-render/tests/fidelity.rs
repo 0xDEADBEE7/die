@@ -6,10 +6,11 @@
 
 use die_core::{Cell, Cursor, CursorShape, Glyph, Rgb, Scene, Underline};
 use die_render::driver::{Config, Renderer};
-use die_render::font::{Draw, RangeRule};
+use die_render::font::{Draw, RangeRule, fit};
 use die_render::font_dir;
 use die_render::frame::{GlyphBitmap, Image, Plane};
 use die_render::platform::backend::metal::Gpu;
+use die_render::platform::backend::text::Face;
 use die_render::rows::Frames;
 use std::path::PathBuf;
 
@@ -509,6 +510,54 @@ fn clusters_the_primary_font_lacks_come_from_the_system_whole() {
         );
         assert!(colored(col), "col {col} is in color");
     }
+}
+
+#[test]
+fn a_cluster_no_face_has_whole_comes_from_the_one_face_the_system_picks() {
+    let Some(mut r) = term() else { return };
+    // Term has the a and not the mark. Asked for the whole cluster, the system picks one
+    // face for both, and it isn't Term's a with a mark from somewhere else.
+    let cluster = "a\u{616}";
+    let mut s = page(3, 1);
+    text(&mut s, 0, 1, &[cluster]);
+    let img = draw(&mut r, &s);
+    let regular = Face::from_file(&Config::term(16.0, 2.0).faces[0], 32.0).unwrap();
+    let shaped = regular.fallback_for(cluster).shape(cluster);
+    let at = fit(shaped.ink, shaped.advance, 1, r.cell(), true).unwrap();
+    let want = shaped.draw(&at).unwrap();
+    for (i, &v) in want.data.iter().enumerate() {
+        let (px, py) = ((i as u32 % want.w) as i32, (i as u32 / want.w) as i32);
+        let (x, y) = (CW as i32 + want.left + px, want.top + py);
+        if y >= 0 && (y as u32) < CH {
+            let got = img.rgb(x as u32, y as u32)[0];
+            assert!(got.abs_diff(v) <= 1, "at {x},{y}: {got} and {v}");
+        }
+    }
+}
+
+#[test]
+fn a_style_reaches_the_face_the_system_picks() {
+    let Some(mut r) = term() else { return };
+    let mut s = page(4, 1);
+    text(&mut s, 0, 0, &["中"]);
+    put_with(&mut s, 0, 2, &["中"], |c| {
+        c.fg = WHITE;
+        c.bg = BLACK;
+        c.bold = true;
+    });
+    let img = draw(&mut r, &s);
+    let total = |col: u32| -> f64 {
+        (0..CH)
+            .flat_map(|y| (col * CW..(col + 2) * CW).map(move |x| (x, y)))
+            .map(|(x, y)| cov(&img, x, y))
+            .sum()
+    };
+    assert!(
+        total(2) > total(0) * 1.1,
+        "bold 中 has more ink: {} {}",
+        total(2),
+        total(0)
+    );
 }
 
 #[test]
@@ -1199,6 +1248,18 @@ fn a_target_with_no_pixels_is_an_empty_image() {
     assert_eq!((img.w, img.h, img.bgra.len()), (0, 40, 0));
     let img = r.render(&page(2, 1), 40, 0).unwrap();
     assert_eq!((img.w, img.h, img.bgra.len()), (40, 0, 0));
+}
+
+#[test]
+fn a_frame_after_a_target_with_no_pixels_still_has_that_frame_s_glyphs() {
+    let Some(mut r) = term() else { return };
+    let mut s = page(4, 1);
+    line(&mut s, 0, 0, "abc");
+    // As a minimized window would: the atlas has these now, and the GPU has to as well.
+    r.render(&s, 0, 0).unwrap();
+    let got = draw(&mut r, &s);
+    assert_eq!(r.rebuilt(), [] as [usize; 0]);
+    assert!(got == draw(&mut term().unwrap(), &s), "the text, not holes");
 }
 
 #[test]

@@ -204,6 +204,70 @@ fn a_squeezed_glyph_is_drawn_smaller_and_keeps_its_margin() {
     );
 }
 
+/// Term's cell at 16 pt on a 2x display, for a face at 32 px.
+fn cell_of(f: &Face) -> CellMetrics {
+    CellMetrics::new(f.metrics(), f.advance(f.glyph('M').unwrap()), 2.0)
+}
+
+#[test]
+fn a_drawn_glyph_is_antialiased_so_a_curve_has_levels_between_none_and_full() {
+    let f = regular();
+    let shaped = f.shape("S");
+    let at = fit(shaped.ink, shaped.advance, 1, &cell_of(&f), false).unwrap();
+    let b = shaped.draw(&at).unwrap();
+    let between = b.data.iter().filter(|&&v| v > 0 && v < 255).count();
+    assert!(
+        between > b.data.len() / 10,
+        "{between} of {} pixels",
+        b.data.len()
+    );
+}
+
+#[test]
+fn the_baseline_stays_fractional_so_a_stem_covers_88_percent_of_its_last_row() {
+    let f = regular();
+    let cell = cell_of(&f);
+    assert_eq!(cell.baseline.floor(), 30.0);
+    assert!(
+        (cell.baseline.fract() - 0.88).abs() < 0.01,
+        "{}",
+        cell.baseline
+    );
+    let shaped = f.shape("H");
+    let at = fit(shaped.ink, shaped.advance, 1, &cell, false).unwrap();
+    let b = shaped.draw(&at).unwrap();
+    let w = b.w as usize;
+    let row = |cell_row: i32| {
+        let from = (cell_row - b.top) as usize * w;
+        &b.data[from..from + w]
+    };
+    let stem = row(29)
+        .iter()
+        .position(|&v| v == 255)
+        .expect("a solid stem");
+    let last = i32::from(row(30)[stem]);
+    assert!(
+        (last - 224).abs() <= 3,
+        "row 30 of the cell, 224 of 255: {last}"
+    );
+    assert_eq!(row(31)[stem], 0, "and nothing under the baseline");
+}
+
+#[test]
+fn a_cluster_of_gray_and_color_runs_goes_in_the_color_plane_with_its_gray_run_white() {
+    let f = regular();
+    let shaped = f.shape("a\u{200D}😀");
+    assert_eq!(shaped.plane, Plane::Color);
+    let at = fit(shaped.ink, shaped.advance, 2, &cell_of(&f), true).unwrap();
+    let b = shaped.draw(&at).unwrap();
+    assert_eq!(b.plane, Plane::Color);
+    // The a is on the left, ahead of the emoji, and nothing in it can be tinted.
+    let row = b.w as usize * 4;
+    let left = b.data.chunks(row).flat_map(|r| r[..row / 3].chunks(4));
+    let white = left.filter(|p| p.iter().all(|&v| v > 200)).count();
+    assert!(white > 10, "{white} white pixels");
+}
+
 #[test]
 fn the_system_finds_a_face_for_what_the_font_lacks() {
     let f = regular();
