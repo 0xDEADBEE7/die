@@ -349,7 +349,7 @@ fn indent_point(t: &TextBuf, line: usize, col: usize) -> Option<usize> {
     let (s, e) = (t.line_start(line), line_end(t, line));
     let p = t
         .display_line(s)
-        .stops
+        .stops()
         .iter()
         .rfind(|st| st.pos >= s && st.pos <= e && st.vcol <= col)
         .map_or(s, |st| st.pos);
