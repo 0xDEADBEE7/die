@@ -317,5 +317,8 @@
   {"id": "dl-combining-mark", "vim": "Vim leaves \" x\\n\", Evil \"\\u0301 x\\n\"; Vim's registers differ", "keys": "dl", "text": ["|e\u0301 x"]},
   {"id": "yl-combining-mark", "vim": "Vim's registers differ", "keys": "yl", "text": ["|e\u0301 x"]},
   {"id": "dh-combining-mark", "vim": "Vim leaves \"x\\n\", Evil \"ex\\n\"; Vim's cursor is at line 0 col 0, Evil's at line 0 col 1; Vim's registers differ", "keys": "dh", "text": ["e\u0301|x"]},
-  {"id": "2x-combining-mark", "vim": "Vim leaves \"e\\u0301y\\n\", Evil \"xe\\u0301y\\n\"; Vim's registers differ", "keys": "2x", "text": ["|e\u0301xe\u0301y"]}
+  {"id": "2x-combining-mark", "vim": "Vim leaves \"e\\u0301y\\n\", Evil \"xe\\u0301y\\n\"; Vim's registers differ", "keys": "2x", "text": ["|e\u0301xe\u0301y"]},
+  {"id": "r-enter-keeps-the-first-of-two-tabs", "vim": "Vim leaves \"        a\\n        b\\n\", Evil \"        a\\n\\tb\\n\"; Vim's cursor is at line 1 col 7, Evil's at line 1 col 1", "keys": "r<CR>", "text": ["        a|x\t\tb"]},
+  {"id": "r-enter-replaces-two-tabs-too-far-right", "vim": "Vim's cursor is at line 1 col 3, Evil's at line 1 col 4", "keys": "r<CR>", "text": ["    a|x\t\tb"]},
+  {"id": "J-on-the-empty-line-at-the-end-forgets-the-goal", "vim": "Vim's cursor is at line 0 col 2, Evil's at line 0 col 0", "keys": "$Jk", "text": "abc\n|"}
  ]}

@@ -317,9 +317,11 @@
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":4,"line":0},"state":"normal","text":"मैं x\n","error":""},"id":"script-w-devanagari-word-end","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":5,"line":0},"state":"normal","text":"हँसी x\n","error":""},"id":"script-w-devanagari-candrabindu","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":4,"line":0},"state":"normal","text":"കഁക x\n","error":""},"id":"script-w-malayalam-candrabindu","topic":"motions","differs":[]}
-{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":0},"state":"normal","text":"xaxzxa\n","error":""},"id":"failed-f-is-still-the-last-find","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":0},"state":"normal","text":"xaxzxa\n","error":""},"id":"second-f-is-the-one-that-repeats","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"éx\n","error":""},"id":"l-over-a-combining-mark","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"éx\n","error":""},"id":"h-over-a-combining-mark","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":2,"cursor":{"col":1,"line":0},"state":"normal","text":"xaxzxa\n","error":""},"id":"failed-f-is-the-one-that-repeats","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":2,"cursor":{"col":1,"line":0},"state":"normal","text":"xaxzxa\n","error":""},"id":"failed-f-is-the-one-that-repeats-reversed","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"foo "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"bar baz\n","error":""},"id":"dw","topic":"operators","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"one two "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"three four\n","error":""},"id":"2dw","topic":"operators","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"a b c d e f "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"g h\n","error":""},"id":"2d3w-counts-multiply","topic":"operators","differs":[]}
@@ -638,6 +640,9 @@
 {"vim":{"registers":{"0":{"type":"char","text":"é"},"\"":{"type":"char","text":"é"}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"é x\n","error":""},"id":"yl-combining-mark","topic":"operators","differs":["register 0","register \""]}
 {"vim":{"registers":{"\"":{"type":"char","text":"é"}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"x\n","error":""},"id":"dh-combining-mark","topic":"operators","differs":["text","cursor","register \""]}
 {"vim":{"registers":{"\"":{"type":"char","text":"éx"}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"éy\n","error":""},"id":"2x-combining-mark","topic":"operators","differs":["text","register \""]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":7,"line":1},"state":"normal","text":"        a\n        b\n","error":""},"id":"r-enter-keeps-the-first-of-two-tabs","topic":"operators","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":3,"line":1},"state":"normal","text":"    a\n    b\n","error":""},"id":"r-enter-replaces-two-tabs-too-far-right","topic":"operators","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":2,"cursor":{"col":2,"line":0},"state":"normal","text":"abc\n","error":""},"id":"J-on-the-empty-line-at-the-end-forgets-the-goal","topic":"operators","differs":["cursor","errors 0 vs 2"]}
 {"vim":{"registers":{"a":{"type":"line","text":"one\n"},"\"":{"type":"line","text":"one\n"}},"beeps":0,"cursor":{"col":0,"line":2},"state":"normal","text":"one\ntwo\none\n","error":""},"id":"named-yank-paste","topic":"registers","differs":[]}
 {"vim":{"registers":{"a":{"type":"line","text":"one\n"},"\"":{"type":"line","text":"one\n"}},"beeps":0,"cursor":{"col":0,"line":2},"state":"normal","text":"one\ntwo\none\n","error":""},"id":"named-yank-also-sets-unnamed","topic":"registers","differs":[]}
 {"vim":{"registers":{"a":{"type":"char","text":"foobar"},"\"":{"type":"char","text":"foobar"}},"beeps":0,"cursor":{"col":9,"line":0},"state":"normal","text":"foo foobarbar\n","error":""},"id":"uppercase-appends-charwise","topic":"registers","differs":["register \""]}
@@ -925,6 +930,9 @@
 {"vim":{"registers":{"\"":{"type":"char","text":"g(\"ab\")"}},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"f()\n","error":""},"id":"2di-paren-string-in-two-pairs","topic":"textobjects","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":6,"line":0},"state":"normal","text":"f(g(\"ab\"))\n","error":""},"id":"3di-paren-string-in-two-pairs","topic":"textobjects","differs":["text","cursor","errors 0 vs 1","register \""]}
 {"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":4,"line":0},"state":"normal","text":"f(\"ab\") (c) (d)\n","error":""},"id":"2di-paren-string-then-goes-to-the-next-pairs","topic":"textobjects","differs":["text","cursor","errors 0 vs 1","register \""]}
+{"vim":{"registers":{"\"":{"type":"char","text":"c"}},"beeps":0,"cursor":{"col":3,"line":1},"state":"normal","text":"\"'a'\nb '' d\ne\"\n","error":""},"id":"di-squote-before-a-pair-under-a-pair-on-the-first-line","topic":"textobjects","differs":["text","cursor","register \""]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":0},"state":"normal","text":"\"ab\"\n","error":""},"id":"di-squote-on-a-dquote-with-nothing-after","topic":"textobjects","differs":[]}
+{"vim":{"registers":{"\"":{"type":"char","text":"\"ab\""}},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"f()\n","error":""},"id":"di-paren-string-directly-in-the-pair","topic":"textobjects","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"abc\n","error":""},"id":"o-from-col-0","topic":"undo-cursor","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":1,"line":0},"state":"normal","text":"abc\ndef\n","error":""},"id":"o-from-col-1","topic":"undo-cursor","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":1,"line":1},"state":"normal","text":"abc\ndef\n","error":""},"id":"O-from-col-1","topic":"undo-cursor","differs":[]}
