@@ -123,6 +123,8 @@ struct Group {
     cmd: u64,               // the top-level command that created it
     open: bool,             // an explicit group (insert session) still collecting
     bytes: usize,           // text held by its ops, for the cap
+    before: u64,            // the history's state before its first op
+    after: u64,             // the history's state after its last op
 }
 
 /// No command has this number, so a group closed by a boundary takes no more edits.
@@ -154,7 +156,18 @@ pub(crate) struct History {
     depth: u32,
     /// A conflict while a group was collecting dropped the history, and no undo has said so.
     dropped: bool,
+    /// Which text this is. Each recorded edit makes a new number, and undo and redo return to
+    /// the number their step started or ended on, so the same text has the same number.
+    state: u64,
+    last_state: u64,
+    /// The state last marked saved, or `NEVER` if no state matches what was saved.
+    saved: u64,
+    /// A silent edit since then. Undo can't take one back, so only a save clears this.
+    silent_since_saved: bool,
 }
+
+/// No state has this number.
+const NEVER: u64 = u64::MAX;
 
 /// How much history a buffer keeps: at most `steps` steps holding at most `bytes` of text.
 #[derive(Clone, Copy)]
@@ -211,6 +224,9 @@ impl History {
     pub fn record(&mut self, op: Op, sel_before: Option<Selection>, cmd: u64, limit: Limit) {
         self.redo.clear();
         let bytes = op.removed.len() + op.inserted.len();
+        let before = self.state;
+        self.last_state += 1;
+        self.state = self.last_state;
         let (gi, pending) = top_group(&self.undo);
         let appendable =
             gi.is_some_and(|i| matches!(&self.undo[i], Entry::Group(g) if g.open || g.cmd == cmd));
@@ -237,6 +253,7 @@ impl History {
             if let Some(Entry::Group(g)) = self.undo.last_mut() {
                 g.ops.push(op);
                 g.bytes += bytes;
+                g.after = self.state;
                 self.trim(limit);
                 return;
             }
@@ -247,6 +264,8 @@ impl History {
             cmd,
             open: self.depth > 0,
             bytes,
+            before,
+            after: self.state,
         }));
         self.trim(limit);
     }
@@ -281,8 +300,20 @@ impl History {
         }
     }
 
+    /// Whether the text differs from what was last marked saved, as far as history can tell.
+    pub fn modified(&self) -> bool {
+        self.state != self.saved || self.silent_since_saved
+    }
+
+    /// Mark the text as saved, or as differing from what was.
+    pub fn set_modified(&mut self, modified: bool) {
+        self.saved = if modified { NEVER } else { self.state };
+        self.silent_since_saved = false;
+    }
+
     /// Note a silent edit, which later undos and redos rebase over.
     pub fn silent(&mut self, s: Shift) {
+        self.silent_since_saved = true;
         push_silent(&mut self.undo, s);
         push_silent(&mut self.redo, s);
     }
@@ -346,6 +377,8 @@ impl History {
                     cmd: CLOSED,
                     open: false,
                     bytes: g.bytes,
+                    before: g.before,
+                    after: g.after,
                 },
             )
         } else {
@@ -358,6 +391,8 @@ impl History {
                     cmd: CLOSED,
                     open: false,
                     bytes: g.bytes,
+                    before: g.before,
+                    after: g.after,
                 },
             )
         };
@@ -379,6 +414,11 @@ impl History {
             (&mut self.undo, &mut self.redo)
         };
         from.truncate(p.keep);
+        self.state = if p.redo {
+            p.other.after
+        } else {
+            p.other.before
+        };
         if !p.pending.is_empty() && !from.is_empty() {
             from.push(Entry::Silent(p.pending));
         }
@@ -423,6 +463,8 @@ mod tests {
                         cmd: 0,
                         open: false,
                         bytes: 0,
+                        before: 0,
+                        after: 0,
                     })
                 };
                 let mut stack = vec![group()];
