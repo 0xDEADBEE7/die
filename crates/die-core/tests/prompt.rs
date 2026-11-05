@@ -3,7 +3,8 @@
 use die_test_cap as _;
 
 use die_core::{
-    Args, Ctx, CursorShape, Error, Extension, PromptSpec, Registry, Rgb, State, Style, Theme,
+    Args, Ctx, CursorShape, Error, Extension, PromptSpec, Registry, Rgb, ShowIn, State, Style,
+    Theme,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -593,5 +594,116 @@ fn command_palette_runs_what_is_chosen_with_its_count() {
         ctx.messages.len(),
         before + 1,
         "a name that isn't one says so"
+    );
+}
+
+#[test]
+fn switch_buffer_goes_to_the_chosen_buffer_and_makes_a_new_one() {
+    let mut ctx = ctx();
+    let t = ctx.focused_buffer().unwrap();
+    let a = ctx.create_text("alpha", "");
+    let b = ctx.create_text("beta", "");
+    ctx.show(a, ShowIn::Current).unwrap();
+    ctx.show(t, ShowIn::Current).unwrap();
+    let w = ctx.focused().unwrap();
+
+    ctx.run("switch-buffer", &Args::default()).unwrap();
+    assert_eq!(
+        ctx.prompt_candidates(),
+        ["alpha", "beta", "t"],
+        "the last buffer first, this one last"
+    );
+    ctx.type_keys("<CR>");
+    assert_eq!(ctx.focused_buffer(), Some(a), "<CR> goes back");
+
+    ctx.run("switch-buffer", &Args::default()).unwrap();
+    ctx.type_keys("bt<CR>");
+    assert_eq!(ctx.focused_buffer(), Some(b));
+    assert_eq!(ctx.focused(), Some(w), "in this window");
+
+    ctx.run("switch-buffer", &Args::default()).unwrap();
+    ctx.type_keys("<Esc>");
+    assert_eq!(ctx.focused_buffer(), Some(b), "a cancel stays");
+
+    ctx.run("switch-buffer", &Args::default()).unwrap();
+    ctx.type_keys("new<CR>");
+    let new = ctx
+        .find_buffer("new")
+        .expect("a name no buffer has makes one");
+    assert_eq!(ctx.focused_buffer(), Some(new));
+}
+
+#[test]
+fn kill_buffer_kills_this_one_by_default_or_the_chosen_one() {
+    let mut ctx = ctx();
+    let t = ctx.focused_buffer().unwrap();
+    let a = ctx.create_text("alpha", "");
+    let b = ctx.create_text("beta", "");
+    ctx.show(t, ShowIn::Current).unwrap();
+
+    ctx.run("kill-buffer", &Args::default()).unwrap();
+    assert_eq!(ctx.prompt_candidates(), ["t", "beta", "alpha"]);
+    ctx.type_keys("<Esc>");
+    assert!(ctx.is_live(t), "a cancel kills nothing");
+
+    ctx.run("kill-buffer", &Args::default()).unwrap();
+    ctx.type_keys("alp<CR>");
+    assert!(!ctx.is_live(a));
+    assert_eq!(
+        ctx.focused_buffer(),
+        Some(t),
+        "another's kill leaves this window"
+    );
+
+    let before = ctx.messages.len();
+    ctx.run("kill-buffer", &Args::default()).unwrap();
+    ctx.type_keys("zzzz<CR>");
+    assert_eq!(
+        ctx.messages.len(),
+        before + 1,
+        "a name that isn't one says so"
+    );
+
+    ctx.run("kill-buffer", &Args::default()).unwrap();
+    ctx.type_keys("<CR>");
+    assert!(!ctx.is_live(t));
+    assert_eq!(ctx.focused_buffer(), Some(b), "the window moves on");
+}
+
+/// Only a modified buffer with a file asks, and only `yes` kills it, as in Emacs.
+#[test]
+fn kill_buffer_asks_before_losing_changes_to_a_file() {
+    let path = std::env::temp_dir().join(format!("die-kill-buffer-{}", std::process::id()));
+    std::fs::write(&path, "text").unwrap();
+    let mut ctx = ctx();
+    let f = ctx.open_file(&path).unwrap();
+    ctx.show(f, ShowIn::Current).unwrap();
+    let name = ctx.buffer_name(f).unwrap().to_string();
+    ctx.text_mut(f).unwrap().set_modified(true);
+
+    ctx.run("kill-buffer", &Args::default()).unwrap();
+    ctx.type_keys("<CR>");
+    assert_eq!(ctx.prompt_text(), Some(""), "asks");
+    ctx.type_keys("no<CR>");
+    assert!(ctx.is_live(f));
+    assert_eq!(ctx.state(), State::Normal);
+
+    ctx.run("kill-buffer", &Args::default()).unwrap();
+    ctx.type_keys("<CR><Esc>");
+    assert!(ctx.is_live(f), "a cancel keeps it");
+
+    ctx.run("kill-buffer", &Args::default()).unwrap();
+    ctx.type_keys(&format!("{name}<CR>yes<CR>"));
+    assert!(!ctx.is_live(f));
+    std::fs::remove_file(&path).unwrap();
+
+    let scratch = ctx.create_text("scratch", "");
+    ctx.show(scratch, ShowIn::Current).unwrap();
+    ctx.text_mut(scratch).unwrap().set_modified(true);
+    ctx.run("kill-buffer", &Args::default()).unwrap();
+    ctx.type_keys("<CR>");
+    assert!(
+        !ctx.is_live(scratch),
+        "no file, nothing to lose by Emacs's rule"
     );
 }
