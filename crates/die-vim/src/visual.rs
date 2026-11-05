@@ -645,7 +645,7 @@ fn begin_session(
     let once = Args { count, ..a.clone() };
     let mut s = insert::begin(ctx, &once, entry)?;
     s.rows = Some(rows);
-    s.repeat = Some(change);
+    s.repeat = change.typed();
     ctx.with_ext(|v: &mut Vim, _| v.inserts.insert(b, s))?;
     Ok(())
 }

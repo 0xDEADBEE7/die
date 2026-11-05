@@ -203,6 +203,13 @@ pub struct Shell {
     recorded: Option<Vec<KeyEvent>>,
 }
 
+impl Shell {
+    /// The editor, for what a [`Remote`] call does there.
+    pub fn ctx(&mut self) -> &mut Ctx {
+        &mut self.host.ctx
+    }
+}
+
 /// What wakes the loop.
 pub(crate) enum Wake {
     /// Core's waker.

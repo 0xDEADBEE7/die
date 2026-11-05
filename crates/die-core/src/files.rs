@@ -42,6 +42,7 @@
 use crate::ext::catch;
 use crate::{BufferId, Ctx, Error, Origin, Result, Settings, Sub};
 use ropey::Rope;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, ErrorKind, Read, Seek, Write};
@@ -84,6 +85,19 @@ pub struct Fingerprint {
 }
 
 impl Fingerprint {
+    /// Modification time, size and inode, for the session.
+    pub(crate) fn parts(&self) -> (SystemTime, u64, u64) {
+        (self.modified, self.len, self.inode)
+    }
+
+    pub(crate) fn from_parts(modified: SystemTime, len: u64, inode: u64) -> Fingerprint {
+        Fingerprint {
+            modified,
+            len,
+            inode,
+        }
+    }
+
     fn from_metadata(m: &fs::Metadata) -> io::Result<Fingerprint> {
         Ok(Fingerprint {
             modified: m.modified()?,
@@ -94,7 +108,7 @@ impl Fingerprint {
 }
 
 /// Why a file can't be edited safely, so it opened read-only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Uneditable {
     /// Not valid UTF-8. The text shows U+FFFD where bytes are invalid.
     NotUtf8,
@@ -134,6 +148,20 @@ pub struct FileInfo {
     read_only_before: bool,
     /// A message has said the file changed under unsaved text.
     told: bool,
+}
+
+impl FileInfo {
+    pub(crate) fn read_only_before(&self) -> bool {
+        self.read_only_before
+    }
+}
+
+/// What the session remembers of a file, beyond its path and text.
+pub(crate) struct FileState {
+    pub(crate) fingerprint: Option<Fingerprint>,
+    pub(crate) bom: bool,
+    pub(crate) read_only: Option<Uneditable>,
+    pub(crate) read_only_before: bool,
 }
 
 /// Settings by path, as [`crate::Config`] and [`Ctx::set_file_settings`] take them.
@@ -187,6 +215,28 @@ impl Ctx {
             Err(e) if e.kind() == ErrorKind::NotFound => (String::new(), None, false, None),
             Err(e) => return Err(Error::Msg(format!("{}: {e}", path.display()))),
         };
+        let state = FileState {
+            fingerprint,
+            bom,
+            read_only,
+            read_only_before: false,
+        };
+        self.attach_file(path, &text, state)
+    }
+
+    /// A new buffer with this text, visiting `path`: a file just read, or one from the session,
+    /// whose text may differ from the file's. It's for the session to say it's unsaved. The
+    /// settings by path apply, then read-only for a file that can't be edited safely.
+    pub(crate) fn attach_file(
+        &mut self,
+        path: PathBuf,
+        text: &str,
+        state: FileState,
+    ) -> Result<BufferId> {
+        if !path.is_absolute() {
+            let line = format!("{}: not an absolute path", path.display());
+            return Err(Error::Msg(line));
+        }
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
@@ -201,13 +251,13 @@ impl Ctx {
                 c.msg
             ));
         }
-        let read_only_before = settings.read_only;
-        if let Some(why) = read_only {
+        let read_only_before = settings.read_only || state.read_only_before;
+        if let Some(why) = state.read_only {
             settings.read_only = true;
             self.messages
                 .push(format!("{name} {}; opened read-only", why.describe()));
         }
-        let buf = self.create_text(&name, &text);
+        let buf = self.create_text(&name, text);
         *self.text_mut(buf)?.settings_mut() = settings;
         if let Some(dir) = path.parent() {
             self.set_directory(buf, dir);
@@ -216,9 +266,9 @@ impl Ctx {
             buf,
             FileInfo {
                 path,
-                fingerprint,
-                bom,
-                read_only,
+                fingerprint: state.fingerprint,
+                bom: state.bom,
+                read_only: state.read_only,
                 read_only_before,
                 told: false,
             },
@@ -421,7 +471,7 @@ impl Ctx {
 
     /// The buffer visiting `path`, which is absolute and normalized: the one with
     /// that path, or else one reaching the same file another way.
-    fn find_file_buffer(&self, path: &Path) -> Option<BufferId> {
+    pub(crate) fn find_file_buffer(&self, path: &Path) -> Option<BufferId> {
         let files = &self.files.by_buffer;
         let id = |p: &Path| fs::metadata(p).ok().map(|m| (m.dev(), m.ino()));
         let same_file = || {
