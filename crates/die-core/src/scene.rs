@@ -330,6 +330,7 @@ impl Ctx {
     /// status line and divider, and the command line in the last row. Each
     /// window is scrolled to show its cursor first (C5).
     pub fn compose(&mut self, cols: usize, rows: usize, placements: &[WindowPlacement]) -> Scene {
+        self.sync_messages();
         let base = self
             .faces
             .get("default")
@@ -414,13 +415,15 @@ impl Ctx {
         {
             let prompt = self.faces.get("prompt").over(base);
             let parts: Vec<_> = glyphs(label, prompt).chain(glyphs(text, base)).collect();
-            // When it doesn't fit, show the end, where the cursor is.
-            let (mut width, mut skip) = (parts.iter().map(|g| g.1).sum::<usize>(), 0);
-            while width >= cols && skip < parts.len() {
-                width -= parts[skip].1;
+            let typed = self.prompt_before_cursor().unwrap_or_default();
+            let at = glyphs(label, prompt).chain(glyphs(typed, base)).count();
+            // When it doesn't fit, leave off the start, up to where the cursor shows.
+            let (mut col, mut skip) = (parts[..at].iter().map(|g| g.1).sum::<usize>(), 0);
+            while col >= cols && skip < at {
+                col -= parts[skip].1;
                 skip += 1;
             }
-            let col = put_text(&mut scene, last, 0, cols, parts.into_iter().skip(skip));
+            put_text(&mut scene, last, 0, cols, parts.into_iter().skip(skip));
             if col < cols {
                 let bar = Cursor {
                     row: last,
@@ -435,6 +438,8 @@ impl Ctx {
                 };
                 scene.cursors.insert(0, bar);
             }
+        } else if let (Some(line), Some(last)) = (&self.log.echo, rows.checked_sub(1)) {
+            put_text(&mut scene, last, 0, cols, glyphs(line, base));
         }
         scene.cursors.extend(hollow);
         self.drawn.note(&scene, placed);
