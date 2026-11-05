@@ -347,9 +347,8 @@ fn a_paragraph(s: &Start) -> Result<Span, Fail> {
 
 // ---------------------------------------------------------------- quotes
 
-/// `quote`'s pair in a line of `string`, which `"` delimits: the pair at `p`, else the
-/// next one, a last unpaired quote pairing with the string's end. With neither, the whole
-/// string, as Evil's narrow search gives. Pairs are counted from the line's start.
+/// `quote`'s pair in a line of `string`, which `"` delimits: the pair at `p`, else the next
+/// one, counting from the line's start. With neither, the whole string.
 fn pair_in_string(t: &TextBuf, p: usize, quote: char, string: (usize, usize)) -> (usize, usize) {
     let (start, end) = string;
     let line_start = t.line_start(t.line_of(p)).max(start);
@@ -370,7 +369,7 @@ fn pair_in_string(t: &TextBuf, p: usize, quote: char, string: (usize, usize)) ->
         }
         c.fwd();
     }
-    open.map_or(string, |a| (a, end))
+    string
 }
 
 /// The whitespace around a string that `a"` takes, newlines included: after it, or else
@@ -393,30 +392,26 @@ fn space_around(t: &TextBuf, beg: usize, end: usize, lo: usize, hi: usize) -> (u
 
 fn quoted(s: &Start, quote: char, outer: bool) -> Result<Span, Fail> {
     const NONE: Fail = "No quoted string found";
-    let t = s.text;
-    let pos = s.pos;
-    // A string that never closes isn't one: Evil's range there starts a character before
-    // the quote, or it fails, and neither is any use.
-    let string = |p| string_after(t, p, quote).filter(|s| s.3);
-    let (q, mut beg, mut end, _) = string(pos).ok_or(NONE)?;
-    // A string right after the next one is the one that counts, as Evil's thing-at-point
-    // finds it from the end of the first.
-    if beg > pos
-        && let Some((nq, nb, ne, _)) = string(end).filter(|s| s.1 == end)
-    {
-        (beg, end) = (nb, ne);
-        if nq != q {
+    let (t, pos) = (s.text, s.pos);
+    let (lo, hi, beg, end);
+    // Inside a `"` string, any other quote looks only in that string, closed or not.
+    if let Some(string) = string_around(t, pos).filter(|_| quote != '"') {
+        (lo, hi) = string;
+        (beg, end) = pair_in_string(t, pos, quote, string);
+    } else {
+        // A string that never closes isn't one: Evil's range there starts a character
+        // before the quote, or it fails, and neither is any use. `"` can come first here,
+        // and then that's the next string, which isn't the one asked for.
+        let string = |p| string_after(t, p, quote).filter(|s| s.3);
+        let (q, b, e, _) = string(pos).ok_or(NONE)?;
+        // A string right after the next one is the one that counts, as Evil's
+        // thing-at-point finds it from the end of the first.
+        let right_after = string(e).filter(|n| b > pos && n.1 == e);
+        let (q, b, e) = right_after.map_or((q, b, e), |n| (n.0, n.1, n.2));
+        if q != quote {
             return Err(NONE);
         }
-    }
-    let (mut lo, mut hi) = (0, t.len());
-    // Inside a string of another delimiter, which it doesn't look outside of.
-    if q != quote {
-        if beg >= pos {
-            return Err(NONE);
-        }
-        (lo, hi) = (beg, end);
-        (beg, end) = pair_in_string(t, pos, quote, (beg, end));
+        (lo, hi, beg, end) = (0, t.len(), b, e);
     }
     if outer {
         let (b, e) = space_around(t, beg, end, lo, hi);

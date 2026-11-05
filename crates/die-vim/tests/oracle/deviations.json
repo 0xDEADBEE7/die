@@ -147,7 +147,7 @@
       "s5_row": 24,
       "kind": "evil-bug",
       "evil": "When the quotes in the text don't pair up and the cursor is in or before the last one, di\" deletes from the quote, or sometimes the character before it, to the end of the text less its last character, or fails, depending on what's earlier in the text.",
-      "die_vim": "As in Vim: it fails with No quoted string found, whichever quote it's asked for.",
+      "die_vim": "As in Vim: it fails with No quoted string found. Inside a \" string that never closes, i' and i` still look in that string, as Evil's do.",
       "cases": [
         { "case": "textobjects/di-dquote-never-closes", "fixture": "hand-written/textobjects.json" },
         { "case": "textobjects/di-dquote-never-closes-from-before", "fixture": "hand-written/textobjects.json" }
