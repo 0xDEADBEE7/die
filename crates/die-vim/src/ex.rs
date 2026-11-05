@@ -1,6 +1,7 @@
 //! The `:` command line. K11a gives it its input; V2 and V5 fill in what it does.
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
+use crate::window;
 use die_core::{Args, BufferId, Ctx, Error, PromptSpec, Result, ShowIn};
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,9 @@ pub fn open(ctx: &mut Ctx, _: &Args) -> Result {
 /// as its [`Args::text`]. Any command in the registry can be called this way (contract §6).
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     let text = text.trim().trim_start_matches(':');
+    if let Some(done) = window::ex(ctx, text) {
+        return done;
+    }
     let (name, rest) = text.split_once(' ').unwrap_or((text, ""));
     let rest = rest.trim();
     if name.is_empty() {
