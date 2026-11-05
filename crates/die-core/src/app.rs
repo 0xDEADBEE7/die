@@ -122,7 +122,7 @@ impl Ctx {
             return pos;
         };
         catch_unwind(AssertUnwindSafe(|| rule(t, pos))).unwrap_or_else(|_| {
-            self.messages.push("The cursor rest rule panicked".into());
+            self.log_error("The cursor rest rule panicked".into());
             pos
         })
     }

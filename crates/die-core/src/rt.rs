@@ -480,7 +480,7 @@ impl Ctx {
 
     /// Take turns until nothing is ready. With `wait`, go on until no job is out, and return false
     /// if one outlasts its wait.
-    fn drain(&mut self, wait: bool) -> bool {
+    pub(crate) fn drain(&mut self, wait: bool) -> bool {
         for _ in 0..1_000_000 {
             if self.step() || self.next_timer().is_some_and(|at| at <= self.now()) {
                 continue;
@@ -493,8 +493,7 @@ impl Ctx {
                 Err(_) => return false,
             }
         }
-        self.messages
-            .push("The loop never went idle in 1,000,000 turns, so this run stopped".into());
+        self.log_error("The loop never went idle in 1,000,000 turns, so this run stopped".into());
         wait
     }
 
