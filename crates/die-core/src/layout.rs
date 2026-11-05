@@ -417,7 +417,7 @@ impl RowOut {
     fn filler(&mut self, it: &Item, n: usize) {
         if self.want_cells {
             let mut cell = it.cell(0);
-            (cell.glyph, cell.kind) = (Glyph::Char(' '), CellKind::Filler);
+            (cell.glyph, cell.kind, cell.face) = (Glyph::Char(' '), CellKind::Filler, None);
             self.cells.resize(self.cells.len() + n, cell);
         }
     }
