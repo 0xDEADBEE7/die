@@ -44,7 +44,7 @@ pub struct Config {
     pub text_defaults: Settings,
     /// Settings by path, on top of `text_defaults` ([`Ctx::set_file_settings`]).
     pub file_settings: Option<SettingsFn>,
-    /// The clock. The default is a fake one, as tests want: `die::run` passes [`Clock::real`].
+    /// The clock. The default is a fake one, as tests want, so a real DIE passes [`Clock::real`].
     pub clock: Clock,
     /// Runs once every extension has initialized, and the session is restored (K12), with
     /// `Ctx`. An error or a panic is logged, and the editor still starts.
@@ -234,8 +234,8 @@ impl Registry {
         self.named.entry(name.into()).or_default()
     }
     /// Set the key `<leader>` stands for, in notation (`\`, `<Space>`, `,`). It applies to
-    /// every keymap once all extensions have registered, so your config, registered last,
-    /// decides it. The default is `\`. Anything but one key is a startup error.
+    /// every keymap once all extensions have registered, so your config, applied last, decides
+    /// it. The default is `\`. Anything but one key is a startup error.
     pub fn set_leader(&mut self, key: &str) {
         self.leader = Some(key.into());
     }
