@@ -269,8 +269,12 @@ fn a_queued_calls_error_drops_nothing() {
     assert_eq!(*log.borrow(), ["note-a"], "a deferred call");
     log.borrow_mut().clear();
 
+    let (tx, rx) = std::sync::mpsc::channel();
+    ctx.set_waker(move || tx.send(()).unwrap()).unwrap();
     let job = ctx.spawn(|| (), |ctx, _| failed(ctx));
-    run_fed(&mut ctx, "a");
+    ctx.feed_keys("a").unwrap();
+    rx.recv().unwrap(); // so its done runs ahead of the key
+    ctx.run_until_idle();
     assert_eq!(*log.borrow(), ["note-a"], "a job's done");
     log.borrow_mut().clear();
 

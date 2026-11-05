@@ -55,6 +55,7 @@
 //!
 //! `advance`:
 //! - `advance_waits_once_for_a_job_thats_out`: a blocked job costs one wait, not one per deadline.
+//! - `advance_waits_for_a_job_that_finishes`: its `done` has run when it returns.
 //! - `work_deferred_before_advance_counts_from_before_it`: it runs at the old time.
 //! - `a_nested_advance_doesnt_move_the_clock_back`.
 use die_core::*;
@@ -792,6 +793,23 @@ fn advance_waits_once_for_a_job_thats_out() {
     tx.send(1).unwrap();
     ctx.run_until_idle();
     drop((job, t));
+}
+
+#[test]
+fn advance_waits_for_a_job_that_finishes() {
+    let (mut ctx, _) = ctx();
+    let done = Rc::new(Cell::new(false));
+    let d = done.clone();
+    let job = ctx.spawn(
+        || sleep(50 * MS),
+        move |_, _| {
+            d.set(true);
+            Ok(())
+        },
+    );
+    ctx.advance(MS);
+    assert!(done.get());
+    drop(job);
 }
 
 #[test]
