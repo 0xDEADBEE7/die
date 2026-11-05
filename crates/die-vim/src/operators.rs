@@ -640,7 +640,7 @@ pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
     } else {
         let joins = a.count.unwrap_or(1).clamp(2, last_line(t) + 1 - here) - 1;
         let bytes = after_line(t, here + joins) - t.line_start(here);
-        if a.count.is_some_and(|n| n > 1) && bytes > MAX_REPEAT {
+        if joins > 1 && bytes > MAX_REPEAT {
             return Err(Error::Msg("Count too large".into()));
         }
         let (edits, pos, was_blank) = joined(t, here, joins);
