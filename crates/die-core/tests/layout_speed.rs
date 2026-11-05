@@ -97,6 +97,8 @@ fn a_keystroke_at_either_end_of_a_1_mb_line_costs_at_most_1ms() {
         ("中", Wrap::Word),
         ("e\u{301}", Wrap::Word),
         ("中文 ", Wrap::Word),
+        ("👍\u{1f3fd}", Wrap::Word),
+        ("\u{1f1e6}\u{1f1e7}", Wrap::Word),
     ] {
         let text = one_mb_line(unit);
         let (mut ctx, b, w) = editor(&text, 80, 40);
@@ -115,7 +117,14 @@ fn a_keystroke_at_either_end_of_a_1_mb_line_costs_at_most_1ms() {
 
 #[test]
 fn moving_to_the_far_end_of_a_1_mb_line_costs_at_most_100ms() {
-    for unit in ["word ", "中", "e\u{301}", "中文 "] {
+    for unit in [
+        "word ",
+        "中",
+        "e\u{301}",
+        "中文 ",
+        "👍\u{1f3fd}",
+        "\u{1f1e6}\u{1f1e7}",
+    ] {
         let text = one_mb_line(unit);
         let (mut ctx, b, w) = editor(&text, 80, 40);
         within_three_tries(100.0, || {
