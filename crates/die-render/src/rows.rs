@@ -117,6 +117,21 @@ fn cell_glyphs(
     });
 }
 
+/// `q` with whatever's outside `rect` cut off, its atlas rectangle moving with it.
+/// With nothing inside, it has no size, and draws nothing.
+fn cut_to(q: Quad, rect: [f32; 4]) -> Quad {
+    let [x, y, w, h] = q.rect;
+    let (left, top) = (x.max(rect[0]), y.max(rect[1]));
+    let right = (x + w).min(rect[0] + rect[2]).max(left);
+    let bottom = (y + h).min(rect[1] + rect[3]).max(top);
+    let (w, h) = (right - left, bottom - top);
+    Quad {
+        rect: [left, top, w, h],
+        uv: [q.uv[0] + left - x, q.uv[1] + top - y, w, h],
+        ..q
+    }
+}
+
 /// A row's backgrounds, one for each run of a color, skipping the scene's own
 /// background, which the frame is cleared to.
 fn row_backgrounds(row: &[Cell], y: f32, cell: &CellMetrics, background: Rgb, out: &mut Vec<Quad>) {
@@ -347,7 +362,8 @@ impl Frames {
         while col > 0 && row[col].glyph == Glyph::Continuation {
             col -= 1;
         }
-        let span = f32::from(span_at(row, col));
+        let cells = usize::from(span_at(row, col));
+        let span = cells as f32;
         let cell = &self.cell;
         let (x, y) = (
             col as f32 * cell.w as f32,
@@ -358,8 +374,16 @@ impl Frames {
             self.quads.push(solid(rect, color));
         }
         if cursor.shape == CursorShape::Block {
-            let ink = Some(row[col].bg);
-            cell_glyphs((row, col), y, cell, &self.atlas, ink, &mut self.quads);
+            // Its glyph and the lines of all its cells, in the cell's background and
+            // only inside the block, since a glyph can overrun its cell.
+            let (first, ink) = (self.quads.len(), Some(row[col].bg));
+            for at in col..col + cells {
+                cell_glyphs((row, at), y, cell, &self.atlas, ink, &mut self.quads);
+            }
+            let block = [x, y, span * cell.w as f32, cell.h as f32];
+            for q in &mut self.quads[first..] {
+                *q = cut_to(*q, block);
+            }
         }
     }
 }
