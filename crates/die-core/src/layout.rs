@@ -860,7 +860,7 @@ impl TextBuf {
         };
         let Some(mode) = m else {
             // The stop before the first one past the goal, if it's past.
-            let q = self.first_stop_from(s, goal + 1);
+            let q = self.first_stop_from(s, goal.saturating_add(1));
             let left = (self.display_col(q) > goal).then(|| self.stop_before(&self.hidden(), q));
             return Some((left.flatten().unwrap_or(q), goal));
         };

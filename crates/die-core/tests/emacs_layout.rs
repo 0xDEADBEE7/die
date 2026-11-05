@@ -263,7 +263,7 @@ fn every_wrap_case_matches_tty_emacs_or_differs_as_contract_9_says() {
     let cases = data("wrap.json");
     let cases = cases.at("cases").arr();
     assert!(cases.len() >= 90, "{}", cases.len());
-    let (mut compared, mut wrong) = (0, vec![]);
+    let (mut compared, mut wrong, mut named_seen, mut moved_seen) = (0, vec![], 0, 0);
     for c in cases {
         let id = c.at("id").str();
         // The tty's last column holds the continuation glyph.
@@ -291,6 +291,8 @@ fn every_wrap_case_matches_tty_emacs_or_differs_as_contract_9_says() {
                 .map_or(q, |n| t.snap(*n, Some(Dir::Forward)));
             let cluster_w = t.display_col(next) - t.display_col(q);
             let moved = got == [0, want[1] + 1] && want[0] + cluster_w > text_w;
+            named_seen += usize::from(named);
+            moved_seen += usize::from(moved);
             if !named && !moved {
                 wrong.push(format!(
                     "{id}: position {i} is at {got:?}, tty Emacs says {want:?}"
@@ -316,6 +318,12 @@ fn every_wrap_case_matches_tty_emacs_or_differs_as_contract_9_says() {
         }
     }
     assert!(compared > 1000, "{compared} positions");
+    assert_eq!(
+        named_seen,
+        DIFFERENCES.len(),
+        "a named difference no longer differs"
+    );
+    assert!(moved_seen >= 5, "{moved_seen} wide characters moved whole");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
