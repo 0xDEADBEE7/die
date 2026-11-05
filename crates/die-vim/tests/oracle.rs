@@ -21,6 +21,8 @@
 //! What it can't set up or check yet fails the case with a reason, so a case
 //! never passes on something unchecked.
 
+use die_test_cap as _;
+
 use die_core::{Ctx, RegKind, Register, State, parse_keys};
 use die_vim::Vim;
 use evil_oracle::{

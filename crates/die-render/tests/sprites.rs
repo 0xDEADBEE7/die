@@ -1,6 +1,8 @@
 //! Renderer-drawn glyphs, as coverage bitmaps. No font and no GPU, so these run
 //! under `cargo xtask ci --linux`.
 
+use die_test_cap as _;
+
 use die_core::Underline;
 use die_render::sprite::{Line, draw, line};
 

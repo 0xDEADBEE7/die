@@ -6,6 +6,7 @@ use crate::error::*;
 use crate::ids::*;
 use crate::layout::LayoutCache;
 use crate::undo::{History, Limit, Op};
+use crate::windows::View;
 use ropey::Rope;
 use slotmap::SlotMap;
 use std::any::Any;
@@ -14,7 +15,9 @@ use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::rc::Rc;
 
+mod hidden;
 mod search;
+pub(crate) use hidden::Hidden;
 pub use search::{Found, Pattern};
 
 /// How many changes `edits_since` can reach back.
@@ -130,6 +133,32 @@ pub enum Reveal {
     Command(String),
 }
 
+/// Text with faces on parts of it: a Hide's replacement, or virtual text. Each run draws its
+/// face over the faces of the text the string stands in for or before, as Emacs bases a display
+/// string on the text under it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Styled {
+    /// The text.
+    pub text: String,
+    /// Faces on byte ranges of `text`. A cluster takes the last run holding its first byte.
+    pub faces: Vec<(Range<usize>, &'static str)>,
+}
+
+impl From<String> for Styled {
+    fn from(text: String) -> Self {
+        Styled {
+            text,
+            faces: vec![],
+        }
+    }
+}
+
+impl From<&str> for Styled {
+    fn from(text: &str) -> Self {
+        text.to_string().into()
+    }
+}
+
 /// What a decoration does to its range (contract §9).
 #[derive(Clone)]
 pub enum Deco {
@@ -140,13 +169,13 @@ pub enum Deco {
     Hide {
         /// Text drawn in its place, on one line: newlines and tabs become spaces, and empty
         /// text is no replacement.
-        replacement: Option<String>,
+        replacement: Option<Styled>,
         /// What happens when search lands inside it.
         reveal: Reveal,
     },
     /// Text shown just before the position, not part of the buffer: one line, as a
     /// replacement is. The position is the range's start.
-    Virtual(String),
+    Virtual(Styled),
     /// Blocks `User` edits in the range (C14).
     ReadOnly,
     /// A named keymap, consulted first while the cursor is in the range.
@@ -169,8 +198,7 @@ pub struct Decoration {
     pub seq: u64,
 }
 
-/// The line-number gutter's style. Contract §9, "Line numbers", has the rules, and K4 adds
-/// `Visual`, the style you use.
+/// The line-number gutter's style. Contract §9, "Line numbers", has the rules.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LineNumbers {
     /// No gutter.
@@ -179,14 +207,27 @@ pub enum LineNumbers {
     Absolute,
     /// The cursor's display line shows its number, and every other its distance from it.
     Relative,
+    /// The cursor's row shows its line's number, and every other row its distance from it.
+    Visual,
+}
+
+/// How long lines break into rows (contract §9, "Where soft wrap breaks").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Wrap {
+    /// Each display line is one row, however long.
+    Off,
+    /// Break at word boundaries first, as Emacs's `visual-line-mode` does.
+    Word,
+    /// The same rule with no break points, as a terminal breaks.
+    Char,
 }
 
 /// A text buffer's settings, changeable at runtime. Their defaults come from the file-type
 /// mode and your config.
 #[derive(Clone, Debug)]
 pub struct Settings {
-    /// Soft wrap (contract §9, "Where soft wrap breaks"). K4 replaces this with `Wrap`.
-    pub wrap: bool,
+    /// Soft wrap.
+    pub wrap: Wrap,
     /// The text area's width in cells; the gutter is outside it. None fills the window.
     pub max_width: Option<usize>,
     /// Center the gutter and text in the window, the left padding rounded down.
@@ -212,7 +253,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            wrap: true,
+            wrap: Wrap::Word,
             max_width: None,
             center: false,
             line_numbers: LineNumbers::Off,
@@ -223,16 +264,6 @@ impl Default for Settings {
             undo_bytes: 16 << 20,
         }
     }
-}
-
-/// Per-window state of a text buffer (C10): selection, scroll position and size.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct View {
-    pub sel: Selection,
-    pub top: usize,
-    pub top_row: usize,
-    pub cols: usize,
-    pub rows: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -253,9 +284,10 @@ pub struct TextBuf {
     markers: SlotMap<MarkerId, (usize, Gravity)>,
     decos: SlotMap<DecorationId, Decoration>,
     next_seq: u64,
-    pub(crate) deco_gen: u64,
     pub(crate) views: HashMap<WindowId, View>,
     pub(crate) settings: Settings,
+    /// The maximum width `toggle-max-width` turned off.
+    pub(crate) max_width_off: Option<usize>,
     pub(crate) cmd: u64,
     pub(crate) actor: Option<WindowId>,
     pub(crate) cache: RefCell<LayoutCache>,
@@ -269,9 +301,7 @@ pub(crate) fn map_pos(p: usize, start: usize, old_end: usize, new_end: usize, g:
         p
     } else if p > old_end || (p == old_end && old_end > start) {
         p - old_end + new_end
-    } else if p == start && old_end > start {
-        start
-    } else if g == Gravity::Left {
+    } else if (p == start && old_end > start) || g == Gravity::Left {
         start
     } else {
         new_end
@@ -336,9 +366,9 @@ impl TextBuf {
             markers: SlotMap::with_key(),
             decos: SlotMap::with_key(),
             next_seq: 0,
-            deco_gen: 0,
             views: HashMap::new(),
             settings: Settings::default(),
+            max_width_off: None,
             cmd: 0,
             actor: None,
             cache: RefCell::default(),
@@ -514,6 +544,7 @@ impl TextBuf {
             self.log.pop_front();
         }
         self.map_all(r.start, r.end, new_end);
+        self.cache.get_mut().edited(r.start, r.end, new_end);
         let o = Op {
             pos: r.start,
             removed,
@@ -535,7 +566,6 @@ impl TextBuf {
 
     fn map_all(&mut self, start: usize, old_end: usize, new_end: usize) {
         let m = |p, g| map_pos(p, start, old_end, new_end, g);
-        let actor = self.actor;
         for (p, g) in self.markers.values_mut() {
             *p = m(*p, *g);
         }
@@ -543,39 +573,7 @@ impl TextBuf {
             let s = m(d.range.start, d.sticky.0);
             d.range = s..m(d.range.end, d.sticky.1).max(s);
         }
-        // Text inserted at a cursor goes after it in the acting window and before it in every
-        // other window, as Emacs's window points do. One gravity for both ends keeps a
-        // collapsed cursor collapsed.
-        for (w, v) in self.views.iter_mut() {
-            let g = if Some(*w) == actor {
-                Gravity::Right
-            } else {
-                Gravity::Left
-            };
-            v.sel.anchor = m(v.sel.anchor, g);
-            v.sel.head = m(v.sel.head, g);
-            v.top = m(v.top, Gravity::Left);
-        }
-    }
-
-    /// Keep every cursor on a visible position and every scroll top on a display-line start.
-    pub(crate) fn normalize_views(&mut self) {
-        let wins: Vec<WindowId> = self.views.keys().copied().collect();
-        for w in wins {
-            let v = self.views[&w];
-            let (a, h, t) = (
-                self.snap(v.sel.anchor, None),
-                self.snap(v.sel.head, None),
-                self.dline_start(v.top),
-            );
-            let v = self.views.get_mut(&w).unwrap();
-            v.sel.anchor = a;
-            v.sel.head = h;
-            if t != v.top {
-                v.top = t;
-                v.top_row = 0;
-            }
-        }
+        self.map_views(m);
     }
 
     // ---- undo
@@ -714,31 +712,36 @@ impl TextBuf {
         }
         if let Deco::Hide { replacement, .. } = &mut deco {
             // Layout text is single-line; an empty replacement is no replacement.
-            *replacement = replacement
-                .take()
-                .filter(|r| !r.is_empty())
-                .map(|r| r.replace(['\n', '\t'], " "));
+            *replacement = replacement.take().filter(|r| !r.text.is_empty());
+            if let Some(r) = replacement {
+                r.text = r.text.replace(['\n', '\t'], " ");
+            }
         }
         if let Deco::Virtual(t) = &mut deco {
-            *t = t.replace(['\n', '\t'], " ");
+            t.text = t.text.replace(['\n', '\t'], " ");
         }
         let seq = self.next_seq;
         self.next_seq += 1;
+        let shapes_rows = matches!(deco, Deco::Hide { .. } | Deco::Virtual(_));
         let id = self.decos.insert(Decoration {
             range,
             deco,
             sticky: (Gravity::Right, Gravity::Left),
             seq,
         });
-        self.deco_gen += 1;
-        self.normalize_views();
+        if shapes_rows {
+            self.cache.get_mut().clear();
+            self.normalize_views();
+        }
         Ok(id)
     }
     /// Remove a decoration and return it, or None if `id` was already dead.
     pub fn undecorate(&mut self, id: DecorationId) -> Option<Decoration> {
         let d = self.decos.remove(id)?;
-        self.deco_gen += 1;
-        self.normalize_views();
+        if matches!(d.deco, Deco::Hide { .. } | Deco::Virtual(_)) {
+            self.cache.get_mut().clear();
+            self.normalize_views();
+        }
         Some(d)
     }
     /// Set the gravity of a decoration's two ends, or None if `id` is dead.
@@ -759,48 +762,5 @@ impl TextBuf {
         self.decos
             .iter()
             .filter(move |(_, d)| d.range.start <= pos && pos < d.range.end)
-    }
-
-    // ---- per-window selections (C10)
-    pub(crate) fn add_view(&mut self, w: WindowId, cols: usize, rows: usize) {
-        let p = self.snap(0, None);
-        self.views.insert(
-            w,
-            View {
-                sel: Selection::cursor(p),
-                top: 0,
-                top_row: 0,
-                cols,
-                rows,
-            },
-        );
-    }
-    pub(crate) fn resize_view(&mut self, w: WindowId, cols: usize, rows: usize) {
-        if let Some(v) = self.views.get_mut(&w) {
-            v.cols = cols;
-            v.rows = rows;
-        }
-    }
-    /// A window's selection, or None if it doesn't show this buffer.
-    pub fn selection(&self, w: WindowId) -> Option<Selection> {
-        self.views.get(&w).map(|v| v.sel)
-    }
-    /// A window's cursor, its selection's head, or None if it doesn't show this buffer.
-    pub fn cursor(&self, w: WindowId) -> Option<usize> {
-        self.views.get(&w).map(|v| v.sel.head)
-    }
-    /// Set a selection. Positions inside hidden text are moved to a visible one.
-    pub fn set_selection(&mut self, w: WindowId, mut sel: Selection) -> Option<Selection> {
-        sel.anchor = self.snap(sel.anchor, None);
-        sel.head = self.snap(sel.head, None);
-        let v = self.views.get_mut(&w)?;
-        v.sel = sel;
-        Some(sel)
-    }
-    /// Set a window's selection to a cursor at `pos`, moved to a visible position, and return
-    /// where it went.
-    pub fn set_cursor(&mut self, w: WindowId, pos: usize) -> Option<usize> {
-        self.set_selection(w, Selection::cursor(pos))
-            .map(|s| s.head)
     }
 }

@@ -1,5 +1,7 @@
 //! The glyph atlas, as data: bitmaps in, slots and uploads out.
 
+use die_test_cap as _;
+
 use die_core::{Glyph, Underline};
 use die_render::atlas::{Atlas, GlyphKey, Slot};
 use die_render::frame::{GlyphBitmap, Plane};

@@ -2,6 +2,8 @@
 //! text, a buffer's own tab width, the changes an edit logs, and DIE's own screen
 //! rows until K4's word wrap matches the rows your Evil's fixtures record.
 
+use die_test_cap as _;
+
 use die_core::{BufferId, Ctx, State, WindowId};
 use die_vim::Vim;
 

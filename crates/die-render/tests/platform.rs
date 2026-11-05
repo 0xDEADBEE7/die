@@ -2,6 +2,8 @@
 //! the fonts from `cargo xtask fonts`.
 #![cfg(target_os = "macos")]
 
+use die_test_cap as _;
+
 use die_core::Rgb;
 use die_render::font::{CellMetrics, fit};
 use die_render::font_dir;

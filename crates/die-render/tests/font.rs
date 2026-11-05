@@ -1,5 +1,7 @@
 //! The font policy, as data: no font is opened, so these run under `ci --linux`.
 
+use die_test_cap as _;
+
 use die_render::driver::Config;
 use die_render::font::{
     CellMetrics, Draw, FaceMetrics, Fit, Ink, RangeRule, Source, chain, covering, fit, pins,

@@ -1,6 +1,8 @@
 //! The row cache, diff and instance building, as data: scenes in, instances out,
 //! with a stand-in for the faces. These run under `cargo xtask ci --linux`.
 
+use die_test_cap as _;
+
 use die_core::{Cell, Cursor, CursorShape, Glyph, Rgb, Scene, Underline};
 use die_render::atlas::GlyphKey;
 use die_render::font::{CellMetrics, FaceMetrics};
