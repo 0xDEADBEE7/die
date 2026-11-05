@@ -101,7 +101,8 @@ pub struct Selection {
     pub head: usize,
     /// How the two ends select text.
     pub shape: Shape,
-    /// Goal column for vertical motion. die-vim decides what it means.
+    /// Goal column for vertical motion. die-vim decides what it means, except that on a
+    /// `Block` selection `Some(usize::MAX)` means each line to its end, as `$` does there.
     pub goal: Option<usize>,
 }
 

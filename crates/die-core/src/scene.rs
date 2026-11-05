@@ -11,7 +11,7 @@ use crate::ext::*;
 use crate::faces::*;
 use crate::ids::*;
 use crate::keymap::State;
-use crate::layout::{CellKind, Viewport, control_cells};
+use crate::layout::{CellKind, Dir, Viewport, control_cells};
 use crate::text::*;
 use std::cmp::Reverse;
 use std::fmt::{self, Write};
@@ -605,7 +605,7 @@ fn draw_text(
     let [search_face, current_face, bracket_face, selection_face] =
         ["search", "search-current", "bracket-match", "selection"].map(|f| faces.get(f));
     let (mut next, mut on, mut in_search, mut at) = (0, Vec::<usize>::new(), 0, 0);
-    let mut style_at = |q: usize, vcol: usize| {
+    let mut style_at = |q: usize, vcol: usize, width: usize| {
         // Cells only move forward through a window; start over if one ever doesn't.
         if q < at {
             (next, in_search) = (0, 0);
@@ -633,7 +633,10 @@ fn draw_text(
             && bytes.contains(&q)
             && block_cols.as_ref().is_none_or(|v| {
                 // A block stops at a line's end, as Evil's overlays do.
-                v.contains(&vcol) && q < t.len() && t.rope().byte(q) != b'\n'
+                vcol <= *v.end()
+                    && vcol + width > *v.start()
+                    && q < t.len()
+                    && t.rope().byte(q) != b'\n'
             })
         {
             s = selection_face.over(s);
@@ -668,7 +671,16 @@ fn draw_text(
             let mut style = base;
             if c.kind != CellKind::Filler {
                 let whole = block && c.kind == CellKind::Replacement;
-                style = style_at(c.pos, if whole { t.display_col(c.pos) } else { c.vcol });
+                // A block takes a tab or a wide character it covers any part of.
+                let (vcol, width) = if whole {
+                    (t.display_col(c.pos), 1)
+                } else if block {
+                    let next = t.display_col(t.snap(c.pos + 1, Some(Dir::Forward)));
+                    (c.vcol, next.saturating_sub(c.vcol).max(1))
+                } else {
+                    (c.vcol, 1)
+                };
+                style = style_at(c.pos, vcol, width);
             }
             if let Some(f) = c.face {
                 style = faces.of_decoration(f, messages).over(style);
@@ -683,7 +695,7 @@ fn draw_text(
         // Padding where a wide character didn't fit is past the end too.
         if let Some(e) = vr.line_end {
             if has_cell(e.col) {
-                let style = style_at(e.pos, e.vcol);
+                let style = style_at(e.pos, e.vcol, 1);
                 scene.put(y, text_x + e.col, Cell::styled(Glyph::Char(' '), style));
             }
             row_end = Some(e.pos);
@@ -717,7 +729,12 @@ fn selected(t: &TextBuf, sel: Selection) -> (Range<usize>, Option<RangeInclusive
         Shape::Line => (lines, None),
         Shape::Block => {
             let (a, h) = (t.display_col(sel.anchor), t.display_col(sel.head));
-            (lines, Some(a.min(h)..=a.max(h)))
+            let right = if sel.goal == Some(usize::MAX) {
+                usize::MAX
+            } else {
+                a.max(h)
+            };
+            (lines, Some(a.min(h)..=right))
         }
     }
 }

@@ -1,12 +1,14 @@
-//! Insert state. A session runs from entering insert state to Escape: it's one
+//! Insert and replace state. A session runs from entering either to Escape: it's one
 //! undo step, it records its edits so a count can replay them, and it indents new
-//! lines the way your Evil does in text buffers (like the line above).
+//! lines the way your Evil does in text buffers (like the line above). From visual state
+//! on lines or a block, what's typed goes in on each of them when it ends ([`Rows`]).
 
 use crate::grammar::{buffer_window, forget_goal};
 use crate::motions::word_back;
+use crate::repeat::Change;
 use crate::text::{
-    Chars, blank_line, indent_end, indent_stops, indentation, line_end, next_stop, prev_stop,
-    rest_pos,
+    Chars, blank_line, indent_end, indent_stops, indentation, line_end, next_stop, pos_at_col,
+    prev_stop, rest_pos,
 };
 use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, WindowId};
 
@@ -33,6 +35,8 @@ pub enum Entry {
     OpenBelow,
     /// `O`
     OpenAbove,
+    /// `R`
+    Replace,
 }
 
 /// One edit typed in insert state.
@@ -51,6 +55,30 @@ pub enum Edit {
     Right,
     Up,
     Down,
+    /// A key in replace state: over a character, or at a line's end, in front of its newline.
+    Over(String),
+    /// `<BS>` in replace state. What it puts back isn't in the edit, so a count's replay only
+    /// steps back, as your Evil's does when nothing was replaced there.
+    Restore,
+}
+
+/// Where on each line a session from visual state goes in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowAt {
+    /// A display column.
+    Col(usize),
+    FirstNonBlank,
+    LineEnd,
+}
+
+/// The lines a session goes in on, the first being where it was typed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rows {
+    pub line: usize,
+    pub at: RowAt,
+    pub n: usize,
+    /// `I` on a block leaves a line too short for its column alone. Otherwise it's padded.
+    pub skip_short: bool,
 }
 
 pub struct Session {
@@ -61,6 +89,12 @@ pub struct Session {
     /// `o` or `O` sets it, a newline keeps it, and any other edit clears it, as
     /// Evil's `evil-maybe-remove-spaces` does.
     pub drop_indent: bool,
+    /// The keys so far, for `.`. A session die-vim didn't start has none.
+    pub repeat: Option<Change>,
+    /// The other lines it goes in on.
+    pub rows: Option<Rows>,
+    /// In replace state, where each key went and what it took: `<BS>` puts it back.
+    restore: Vec<(usize, Option<String>)>,
 }
 
 impl Session {
@@ -71,6 +105,9 @@ impl Session {
             count: 1,
             edits: vec![],
             drop_indent: false,
+            repeat: None,
+            rows: None,
+            restore: vec![],
         }
     }
 }
@@ -95,6 +132,7 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
         Entry::AppendLine => {
             t.set_cursor(w, line_end(t, line));
         }
+        Entry::Replace => {}
         Entry::OpenBelow => open_below(t, w, line)?,
         Entry::OpenAbove => {
             let s = t.line_start(line);
@@ -107,19 +145,42 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
     // Only now, so that a failed `o` or `O` leaves no group open. The line it
     // opened joins the group: core adds an earlier edit by the same command.
     t.begin_undo_group();
-    ctx.set_state_of(b, State::Insert);
+    let replacing = entry == Entry::Replace;
+    ctx.set_state_of(
+        b,
+        if replacing {
+            State::Replace
+        } else {
+            State::Insert
+        },
+    );
     Ok(Session {
         entry,
         count: a.count.unwrap_or(1).max(1),
-        edits: vec![],
-        drop_indent: entry != Entry::Insert && entry != Entry::InsertLine,
+        drop_indent: !replacing && entry != Entry::Insert && entry != Entry::InsertLine,
+        ..Session::bare()
     })
 }
 
 /// Apply one insert-state edit and record it.
 pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
-    apply(ctx.text_mut(b)?, w, &e)?;
+    let t = ctx.text_mut(b)?;
+    let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
+    if e == Edit::Restore
+        && let Some((at, old)) = s.restore.pop()
+    {
+        t.tx(Origin::User)
+            .replace(at..p, old.unwrap_or_default())
+            .commit()?;
+        t.set_cursor(w, at);
+    } else {
+        let taken = over_text(t, p, &e);
+        apply(t, w, &e)?;
+        if s.entry == Entry::Replace && e != Edit::Restore {
+            s.restore.push((p, taken));
+        }
+    }
     if e != Edit::Newline {
         s.drop_indent = false;
     }
@@ -138,6 +199,7 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
     let mut r = Ok(());
     if let Some(s) = s {
         r = replay(t, w, &s);
+        r = r.and(rows(t, w, &s));
         let line = t.line_of(cursor(t));
         let (ls, le) = (t.line_start(line), line_end(t, line));
         if s.drop_indent && le > ls && blank_line(t, line) {
@@ -202,6 +264,83 @@ fn replay(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
     })
 }
 
+/// Where typing `s` at `p` stops taking text in replace state, and how many spaces it leaves
+/// to keep what's after it in its column, as Emacs's overwrite mode does. At a line's end it
+/// takes nothing. A tab it wouldn't fill stays.
+fn over(t: &TextBuf, p: usize, s: &str) -> (usize, usize) {
+    let eol = line_end(t, t.line_of(p));
+    let width = TextBuf::new(s).display_col(s.len());
+    if width == 0 {
+        return (p, 0);
+    }
+    let target = t.display_col(p) + width;
+    let mut end = p;
+    while end < eol && t.display_col(end) < target {
+        end = next_stop(t, end).unwrap_or(eol).min(eol);
+    }
+    let reached = t.display_col(end);
+    if reached <= target {
+        return (end, 0);
+    }
+    let last = prev_stop(t, end).unwrap_or(p);
+    if t.rope().get_byte(last) == Some(b'\t') {
+        (last, 0)
+    } else {
+        (end, reached - target)
+    }
+}
+
+/// What this edit takes in replace state, for `<BS>` to put back. Nothing but a key does.
+fn over_text(t: &TextBuf, p: usize, e: &Edit) -> Option<String> {
+    let Edit::Over(s) = e else { return None };
+    let (end, _) = over(t, p, s);
+    (end > p).then(|| t.rope().byte_slice(p..end).to_string())
+}
+
+/// Go in on the session's other lines, keeping the cursor on the first.
+fn rows(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
+    let Some(rows) = s.rows else { return Ok(()) };
+    if rows.n < 2 {
+        return Ok(());
+    }
+    (s.edits.len() * s.count)
+        .checked_mul(rows.n)
+        .filter(|&n| n <= MAX_REPEAT)
+        .ok_or_else(|| Error::Msg("Count too large".into()))?;
+    let here = t.cursor(w).unwrap_or(0);
+    let mut done = Ok(());
+    for line in rows.line + 1..rows.line + rows.n {
+        if line >= t.line_count() {
+            break;
+        }
+        let eol = line_end(t, line);
+        let pos = match rows.at {
+            RowAt::Col(col) => {
+                let have = t.display_col(eol);
+                if have < col && rows.skip_short {
+                    continue;
+                }
+                if have < col {
+                    t.tx(Origin::User)
+                        .insert(eol, " ".repeat(col - have))
+                        .commit()?;
+                    eol + col - have
+                } else {
+                    pos_at_col(t, line, col).min(eol)
+                }
+            }
+            RowAt::FirstNonBlank => indent_end(t, line),
+            RowAt::LineEnd => eol,
+        };
+        t.set_cursor(w, pos);
+        for _ in 0..s.count {
+            done = done.and(s.edits.iter().try_for_each(|e| apply(t, w, e)));
+        }
+    }
+    t.set_cursor(w, here);
+    done
+}
+
 fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
     let line = t.line_of(p);
@@ -239,6 +378,17 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
             q
         }
         Edit::Tab => return tab(t, w, p),
+        Edit::Over(s) => {
+            let (end, spaces) = over(t, p, s);
+            t.tx(Origin::User)
+                .replace(p..end, format!("{s}{}", " ".repeat(spaces)))
+                .commit()?;
+            p + s.len()
+        }
+        Edit::Restore => match prev_char(t, p) {
+            Some(q) => q,
+            None => return fail("Beginning of buffer"),
+        },
         Edit::Left => match prev_stop(t, p) {
             Some(q) => q,
             None => return fail("Beginning of buffer"),
