@@ -844,6 +844,30 @@ fn a_bar_cursor_covers_4_physical_px_at_the_cell_left_edge_and_leaves_the_rest()
 }
 
 #[test]
+fn a_bar_cursor_past_a_rows_end_covers_4_physical_px_at_the_cell_right_edge() {
+    let Some(mut r) = term() else { return };
+    let mut s = page(3, 3);
+    put_with(&mut s, 1, 1, &["H"], |c| {
+        c.fg = WHITE;
+        c.bg = CELL_BG;
+    });
+    let without = draw(&mut r, &s);
+    s.cursors = vec![Cursor {
+        past_end: true,
+        ..cursor(1, 1, CursorShape::Bar)
+    }];
+    let with = draw(&mut r, &s);
+    write_png(&with, "cursor-bar-past-end.png");
+    each_pixel(&without, &with, |x, y, a, b| {
+        if x >= CW - 4 {
+            assert_eq!(b, RGB_RED, "the bar, at {x},{y}");
+        } else {
+            assert_eq!(a, b, "beside the bar, at {x},{y}");
+        }
+    });
+}
+
+#[test]
 fn an_underline_cursor_covers_4_physical_px_at_the_cell_bottom_and_leaves_the_rest() {
     let Some(mut r) = term() else { return };
     let (without, with) = cursor_frames(&mut r, CursorShape::Underline);

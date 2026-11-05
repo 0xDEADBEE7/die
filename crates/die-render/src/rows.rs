@@ -152,6 +152,7 @@ fn row_backgrounds(row: &[Cell], y: f32, cell: &CellMetrics, background: Rgb, ou
 /// rustdoc says, with its pixels logical. The bar and underline never leave the cell.
 fn cursor_rects(
     shape: CursorShape,
+    past_end: bool,
     x: f32,
     y: f32,
     span: f32,
@@ -162,7 +163,11 @@ fn cursor_rects(
     let one = (cell.logical(1.0) as f32).min(w / 2.0).min(h / 2.0);
     match shape {
         CursorShape::Block => vec![[x, y, w, h]],
-        CursorShape::Bar => vec![[x, y, two.min(w), h]],
+        CursorShape::Bar => {
+            let bar = two.min(w);
+            let left = if past_end { x + w - bar } else { x };
+            vec![[left, y, bar, h]]
+        }
         CursorShape::Underline => vec![[x, y + h - two.min(h), w, two.min(h)]],
         CursorShape::HalfBlock => {
             let half = (h / 2.0).floor();
@@ -354,8 +359,9 @@ impl Frames {
     }
 
     /// A cursor's instances. On the right half of a wide character it takes the
-    /// character's first cell, and it covers the character's cells. A cursor off the
-    /// grid draws nothing.
+    /// character's first cell, and it covers the character's cells. Just past a full
+    /// row, where the window has no cell for it, a bar sits at that character's right
+    /// edge and other shapes draw on it as usual. A cursor off the grid draws nothing.
     fn cursor(&mut self, cursor: &Cursor, background: Rgb) {
         if cursor.row >= self.rows.len() || cursor.col >= self.cols {
             return;
@@ -373,7 +379,7 @@ impl Frames {
             cursor.row as f32 * cell.h as f32,
         );
         let color = cursor_color(cursor.color, &row[col], background);
-        for rect in cursor_rects(cursor.shape, x, y, span, cell) {
+        for rect in cursor_rects(cursor.shape, cursor.past_end, x, y, span, cell) {
             self.quads.push(solid(rect, color));
         }
         if cursor.shape == CursorShape::Block {

@@ -83,6 +83,7 @@ pub fn cursor(row: usize, col: usize, shape: CursorShape) -> Cursor {
         col,
         shape,
         color: RED,
+        past_end: false,
     }
 }
 

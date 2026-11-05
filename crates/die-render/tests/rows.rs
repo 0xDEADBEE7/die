@@ -447,6 +447,48 @@ fn a_bar_cursor_is_2_logical_px_wide_at_the_cell_left_edge_over_the_glyph() {
     assert_eq!(rects(&q), [[9.0, 20.0, 2.0, 20.0]], "2 physical px at 1x");
 }
 
+/// What a cursor just past a full row adds to a frame: `col` is the row's last cell.
+fn past_end_quads(text: &str, col: usize, shape: CursorShape, past_end: bool) -> Vec<Quad> {
+    let mut f = frames();
+    let mut s = blank(3, 1);
+    put(&mut s, 0, 0, text);
+    let without = frame(&mut f, &s).0.len();
+    s.cursors = vec![Cursor {
+        past_end,
+        ..cursor(0, col, shape)
+    }];
+    frame(&mut f, &s).0[without..].to_vec()
+}
+
+#[test]
+fn a_bar_cursor_past_a_rows_end_sits_at_its_last_cells_right_edge() {
+    let q = past_end_quads("abc", 2, CursorShape::Bar, true);
+    assert_eq!(rects(&q), [[3.0 * 19.0 - 4.0, 0.0, 4.0, 40.0]]);
+    assert_eq!(q[0].color, rgba(RED));
+}
+
+#[test]
+fn a_bar_cursor_past_a_row_ending_in_a_wide_character_sits_at_its_right_edge() {
+    let q = past_end_quads("a中", 2, CursorShape::Bar, true);
+    assert_eq!(rects(&q), [[3.0 * 19.0 - 4.0, 0.0, 4.0, 40.0]]);
+}
+
+#[test]
+fn past_a_rows_end_only_a_bar_moves() {
+    for shape in [
+        CursorShape::Block,
+        CursorShape::Underline,
+        CursorShape::HalfBlock,
+        CursorShape::Hollow,
+    ] {
+        assert_eq!(
+            past_end_quads("abc", 2, shape, true),
+            past_end_quads("abc", 2, shape, false),
+            "{shape:?}"
+        );
+    }
+}
+
 #[test]
 fn an_underline_cursor_is_2_logical_px_high_at_the_cell_bottom_over_the_glyph() {
     let q = cursor_quads(cell2x(), CursorShape::Underline);
