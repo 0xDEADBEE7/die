@@ -64,15 +64,17 @@ impl Span {
     }
 }
 
-/// How a command used [`apply`]: the motion from the keys, or one of its own.
+/// What [`apply`] needs to know about how it was reached.
 #[derive(Clone, Copy, Default)]
-struct Typed {
+struct How {
     /// `d` with a motion from the keys. It has two habits that `x`, `D` and `c` don't: it
     /// turns a range from a line's start to a later line's end into whole lines, and after
     /// taking whole lines it puts the cursor in the column it started in.
-    delete: bool,
+    typed: bool,
     /// But `dw` taking whole lines goes to the first non-blank (`Target::no_column`).
     no_column: bool,
+    /// `~` leaves the cursor past what it changed, not at the start.
+    past_end: bool,
 }
 
 /// `d`, `c` and so on. Normal state starts waiting; pressed again, it means whole lines,
@@ -96,20 +98,12 @@ pub fn on_key(ctx: &mut Ctx, a: &Args, op: Operator) -> Result {
         forget_goal(ctx.text_mut(b)?, w);
         return Ok(());
     }
-    let t = ctx.text(b)?;
-    let span = this_line_and_more(t, w, counts(p.count, a.count));
-    apply(
-        ctx,
-        a,
-        p.op,
-        p.register,
-        span,
-        Typed {
-            delete: true,
-            ..Default::default()
-        },
-        false,
-    )
+    let span = this_line_and_more(ctx.text(b)?, w, counts(p.count, a.count));
+    let how = How {
+        typed: true,
+        ..How::default()
+    };
+    apply(ctx, a, p.op, p.register, span, how)
 }
 
 /// A motion from the keys, with an operator waiting (`grammar::run_motion`).
@@ -126,11 +120,12 @@ pub fn on_motion(
     };
     let t = ctx.text_mut(b)?;
     let (span, no_column) = covered(t, w, counts(p.count, a.count), p.op, kind, arg, motion)?;
-    let typed = Typed {
-        delete: true,
+    let how = How {
+        typed: true,
         no_column,
+        ..How::default()
     };
-    apply(ctx, a, p.op, p.register, span, typed, false)
+    apply(ctx, a, p.op, p.register, span, how)
 }
 
 /// A text object, with an operator waiting. One that finds nothing stops the operator.
@@ -157,11 +152,11 @@ pub fn on_object(ctx: &mut Ctx, a: &Args, object: Object) -> Result {
             return Err(Error::Msg(e.into()));
         }
     };
-    let typed = Typed {
-        delete: true,
-        no_column: false,
+    let how = How {
+        typed: true,
+        ..How::default()
     };
-    apply(ctx, a, p.op, p.register, span, typed, false)
+    apply(ctx, a, p.op, p.register, span, how)
 }
 
 /// Escape, or any key an operator can't use: the operator, its counts and the goal
@@ -296,18 +291,17 @@ fn apply(
     op: Operator,
     register: Option<char>,
     span: Span,
-    typed: Typed,
-    cursor_to_end: bool,
+    how: How,
 ) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     match op {
-        Operator::Delete => delete(ctx, b, w, register, span, typed),
+        Operator::Delete => delete(ctx, b, w, register, span, how),
         Operator::Change => change(ctx, a, b, w, register, span),
         Operator::Yank => yank(ctx, b, w, register, span),
         Operator::ShiftLeft => shift(ctx.text_mut(b)?, w, span, false),
         Operator::ShiftRight => shift(ctx.text_mut(b)?, w, span, true),
         Operator::InvertCase | Operator::Upcase | Operator::Downcase => {
-            recase(ctx.text_mut(b)?, w, op, span, cursor_to_end)
+            recase(ctx.text_mut(b)?, w, op, span, how.past_end)
         }
     }
 }
@@ -357,12 +351,12 @@ fn delete(
     w: WindowId,
     register: Option<char>,
     mut span: Span,
-    typed: Typed,
+    how: How,
 ) -> Result {
     let t = ctx.text(b)?;
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
     let (col, goal) = (t.display_col(sel.head), Goal::decode(sel.goal));
-    if typed.delete && !span.lines {
+    if how.typed && !span.lines {
         let (first, last) = (t.line_of(span.beg), t.line_of(span.end));
         if last > first && t.line_start(first) == span.beg && line_end(t, last) == span.end {
             span = lines(t, span.beg, span.end);
@@ -370,11 +364,11 @@ fn delete(
     }
     let at = cut(ctx, b, register, span)?;
     let t = ctx.text_mut(b)?;
-    let pos = if typed.delete && span.lines {
+    let pos = if how.typed && span.lines {
         // The new last line, if whole lines at the end went (rule 1).
         let line = t.line_of(at).min(last_line(t));
         let to = match goal {
-            _ if typed.no_column => indent_end(t, line),
+            _ if how.no_column => indent_end(t, line),
             Some(Goal::Eol) => line_end(t, line),
             _ => pos_at_col(t, line, col),
         };
@@ -491,7 +485,7 @@ fn single(mut it: impl Iterator<Item = char>) -> Option<char> {
 }
 
 /// `g~`, `gU` and `gu`. The cursor goes to the start, or with `~`, past what it changed.
-fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, cursor_to_end: bool) -> Result {
+fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, past_end: bool) -> Result {
     let old = t.rope().byte_slice(span.beg..span.end).to_string();
     let new: String = match op {
         Operator::Upcase => old.to_uppercase(),
@@ -503,7 +497,7 @@ fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, cursor_to_end:
     t.tx(Origin::User)
         .replace(span.beg..span.end, new)
         .commit()?;
-    let pos = if cursor_to_end { end } else { span.beg };
+    let pos = if past_end { end } else { span.beg };
     t.set_cursor(w, rest_pos(t, pos));
     Ok(())
 }
@@ -518,15 +512,18 @@ pub fn with_motion(ctx: &mut Ctx, a: &Args, op: Operator, kind: Kind, motion: Ow
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let (span, _) = covered(t, w, a.count, op, kind, None, motion)?;
-    let to_end = op == Operator::InvertCase;
-    apply(ctx, a, op, a.register, span, Typed::default(), to_end)
+    let how = How {
+        past_end: op == Operator::InvertCase,
+        ..How::default()
+    };
+    apply(ctx, a, op, a.register, span, how)
 }
 
 /// `S` and `Y`: an operator over whole lines, count of them.
 pub fn with_lines(ctx: &mut Ctx, a: &Args, op: Operator) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let span = this_line_and_more(ctx.text(b)?, w, a.count);
-    apply(ctx, a, op, a.register, span, Typed::default(), false)
+    apply(ctx, a, op, a.register, span, How::default())
 }
 
 /// `"x`: name a register for the next command. A count typed before it goes, as in Evil.
@@ -671,6 +668,7 @@ pub fn paste(ctx: &mut Ctx, a: &Args, before: bool) -> Result {
                 .commit()?;
             indent_end(t, line + 1)
         }
+        // A block register pastes as characters until V4 brings visual block.
         (_, _) => {
             let at = if before || p >= line_end(t, line) {
                 p

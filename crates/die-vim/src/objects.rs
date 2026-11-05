@@ -2,7 +2,7 @@
 //! and `a` forms. Like motions, each is a plain function over the text: it takes where the
 //! cursor is and the count, and gives the [`Span`] an operator acts on. Each follows your
 //! Evil in fundamental-mode. So quotes pair up from the start of the text, not the line,
-//! `"` is a string whichever object is asked for, and `\` escapes (S5's `evil-select-quote`).
+//! `"` makes a string whichever object is asked for, and `\` escapes.
 
 use crate::grammar::{Fail, Start};
 use crate::operators::Span;

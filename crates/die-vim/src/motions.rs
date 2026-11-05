@@ -658,6 +658,140 @@ mod tests {
         }
     }
 
+    /// Where a motion lands with an operator waiting. It reads nothing but its `Start`.
+    fn landing(
+        text: &str,
+        pos: usize,
+        op: Operator,
+        run: fn(&Start) -> Result<Target, Fail>,
+    ) -> Result<usize, Fail> {
+        let t = TextBuf::new(text);
+        let s = Start {
+            text: &t,
+            pos,
+            count: None,
+            goal: None,
+            arg: None,
+            op: Some(op),
+        };
+        run(&s).map(|to| to.pos)
+    }
+
+    #[test]
+    fn with_an_operator_w_stops_at_the_end_of_the_line_before_the_next_word() {
+        let w: fn(&Start) -> Result<Target, Fail> = |s| words(s, Word::Begin, false);
+        let d = Operator::Delete;
+        assert_eq!(
+            landing("foo bar\n", 0, d, w),
+            Ok(4),
+            "the next word on the line"
+        );
+        assert_eq!(
+            landing("foo bar\nbaz\n", 4, d, w),
+            Ok(7),
+            "not the next line's"
+        );
+        assert_eq!(
+            landing("foo\n  bar\n", 0, d, w),
+            Ok(3),
+            "nor past its indent"
+        );
+        assert_eq!(
+            landing("foo\n", 0, d, w),
+            Ok(3),
+            "the last word in the text"
+        );
+        assert_eq!(
+            landing("\nb\n", 0, d, w),
+            Ok(1),
+            "an empty line takes its newline"
+        );
+        assert_eq!(landing("  \n b\n", 1, d, w), Ok(2), "spaces it started on");
+        assert_eq!(
+            landing("ab", 1, d, w),
+            Err("End of buffer"),
+            "the last character"
+        );
+        assert_eq!(landing("ab\n", 1, d, w), Ok(2), "with a newline to stop at");
+    }
+
+    #[test]
+    fn with_c_w_stops_at_the_end_of_the_word() {
+        let w: fn(&Start) -> Result<Target, Fail> = |s| words(s, Word::Begin, false);
+        let c = Operator::Change;
+        assert_eq!(landing("foo bar\n", 0, c, w), Ok(3));
+        assert_eq!(
+            landing("foo_bar\n", 0, c, w),
+            Ok(3),
+            "_ is a word of its own"
+        );
+        assert_eq!(landing("foo   bar\n", 3, c, w), Ok(6), "on spaces, as dw");
+    }
+
+    #[test]
+    fn with_an_operator_e_stays_on_a_one_letter_word() {
+        let e: fn(&Start) -> Result<Target, Fail> = |s| words(s, Word::End, false);
+        let d = Operator::Delete;
+        assert_eq!(landing("a bc\n", 0, d, e), Ok(0));
+        assert_eq!(landing("ab c\n", 0, d, e), Ok(1));
+        assert_eq!(
+            landing(". bc\n", 0, d, e),
+            Ok(3),
+            "only on a word character"
+        );
+        assert_eq!(landing("abc", 2, d, e), Err("End of buffer"));
+    }
+
+    #[test]
+    fn with_an_operator_dollar_is_the_last_character_and_exclusive_on_an_empty_line() {
+        let t = TextBuf::new("abc\n\n");
+        let mut s = start(&t, 0, 1);
+        s.op = Some(Operator::Delete);
+        let to = end_of_line(&s).expect("it moves");
+        assert_eq!((to.pos, to.kind), (2, None));
+        s.pos = 4;
+        let to = end_of_line(&s).expect("it stays");
+        assert_eq!((to.pos, to.kind), (4, Some(Kind::Exclusive)));
+    }
+
+    #[test]
+    fn with_an_operator_l_reaches_the_newline() {
+        let d = Operator::Delete;
+        assert_eq!(landing("ab\n", 1, d, forward_char), Ok(2));
+        let t = TextBuf::new("ab\n");
+        let s = start(&t, 1, 1);
+        assert_eq!(
+            forward_char(&s).map(|to| to.short),
+            Ok(Some("End of line")),
+            "not in normal state"
+        );
+    }
+
+    #[test]
+    fn with_an_operator_close_brace_runs_to_the_end_of_the_text() {
+        let d = Operator::Delete;
+        assert_eq!(landing("a\nb\n", 0, d, forward_paragraph), Ok(4));
+        assert_eq!(landing("ab", 1, d, forward_paragraph), Err("End of buffer"));
+        let t = TextBuf::new("a\nb\n");
+        assert_eq!(
+            forward_paragraph(&start(&t, 0, 1)).map(|to| to.pos),
+            Ok(2),
+            "normal state stays on it"
+        );
+    }
+
+    #[test]
+    fn percent_finds_any_closer_and_skips_strings() {
+        let t = |text: &str, pos| bracket_partner(&TextBuf::new(text), pos);
+        assert_eq!(t("(a)\n", 0), Some(2));
+        assert_eq!(t("(a)\n", 2), Some(0));
+        assert_eq!(t("{ ]\n", 0), Some(2), "any closer");
+        assert_eq!(t("f(\"(\", b)\n", 0), Some(8), "a string is skipped");
+        assert_eq!(t("a ) (b)\n", 2), None, "a closer with nothing open");
+        assert_eq!(t("x\n(a)\n", 0), None, "only on this line");
+        assert_eq!(t("(\n)\n", 0), Some(2), "but its partner can be anywhere");
+    }
+
     #[test]
     fn a_huge_count_dollar_stops_on_the_last_line() {
         let t = TextBuf::new("a\nb\nc\nd\n");
