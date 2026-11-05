@@ -249,3 +249,74 @@ fn a_control_character_is_two_columns_wide() {
     assert_eq!(cursor_after("a\rbc\nxyzwv\n", 3, "j"), 9, "after \\r");
     assert_eq!(cursor_after("a\x01bc\nxyzwv\n", 3, "j"), 9, "after \\x01");
 }
+
+/// The text and cursor `keys` leave, and the errors they log.
+fn edited(text: &str, keys: &str) -> (String, usize, Vec<String>) {
+    let mut ctx = editor();
+    let b = ctx.create_text("t", text);
+    let w = ctx.open_window(b, 80, 24).expect("a window");
+    ctx.focus(w);
+    ctx.type_keys(keys);
+    let t = ctx.text(b).unwrap();
+    let cursor = t.cursor(w).unwrap();
+    (t.rope().to_string(), cursor, ctx.messages.clone())
+}
+
+/// A command run from `:` isn't a change `.` can type again, so the last typed one stays.
+#[test]
+fn a_change_made_from_the_command_line_leaves_dot_alone() {
+    for (keys, want) in [
+        ("x:vim-join<CR>.", "bcdef\n"),
+        ("x:vim-insert<CR>Q<Esc>.", "bc\ndef\n"),
+        ("x:vim-delete<CR>l.", "\ndef\n"),
+    ] {
+        let (text, _, messages) = edited("abc\ndef\n", keys);
+        assert_eq!(text, want, "{keys}");
+        assert!(messages.is_empty(), "{keys}: {messages:?}");
+    }
+}
+
+/// `@:` is the last ex line again, with a count, and `@@` after it does the same. As in your
+/// Evil, `.` doesn't take it up.
+#[test]
+fn at_colon_runs_the_last_ex_line_again() {
+    let (_, cursor, messages) = edited("abcdefghij\n", ":vim-forward-char<CR>@:2@:@@");
+    assert!(messages.is_empty(), "{messages:?}");
+    assert_eq!(cursor, 5);
+    let (text, _, _) = edited("abcdef\n", "x:vim-forward-char<CR>@:.");
+    assert_eq!(text, "bcef\n", "`.` is still the `x`");
+    let (_, _, messages) = edited("abc\n", "@:");
+    assert_eq!(messages, ["No previous command line"]);
+}
+
+/// Blanks after the colons don't lose the command.
+#[test]
+fn a_blank_after_a_leading_colon_is_still_the_command() {
+    let (_, cursor, messages) = edited("abc\n", ":: vim-forward-char<CR>");
+    assert!(messages.is_empty(), "{messages:?}");
+    assert_eq!(cursor, 1);
+}
+
+/// `:` and `/` take the keys of `evil-command-line-map`, where `<Up>` matches what's typed.
+#[test]
+fn the_command_line_and_search_take_evils_line_keys() {
+    for (first, again, want) in [
+        (
+            ":vim-forward-char<CR>:vim-backward-char<CR>",
+            ":vim-f",
+            "vim-forward-char",
+        ),
+        ("/foo<CR>/bar<CR>", "/f", "foo"),
+    ] {
+        let mut ctx = editor();
+        let b = ctx.create_text("t", "foo bar\n");
+        let w = ctx.open_window(b, 80, 24).expect("a window");
+        ctx.focus(w);
+        ctx.type_keys(first);
+        ctx.type_keys(again);
+        ctx.type_keys("<Up>");
+        assert_eq!(ctx.prompt_text(), Some(want), "{again}");
+        ctx.type_keys("<Left><C-u>");
+        assert_eq!(ctx.prompt_text(), Some(""), "{again}");
+    }
+}

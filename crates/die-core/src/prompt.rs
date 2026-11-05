@@ -4,11 +4,14 @@
 //! The keys, which a prompt takes before any keymap sees them:
 //! - Answer: `<CR>`. Cancel: `<Esc>`, `<C-g>` and `<C-c>`.
 //! - Move: `<Left>` `<C-b>`, `<Right>` `<C-f>`, `<Home>` `<C-a>`, `<End>` `<C-e>`, and by word
-//!   `<M-b>` `<M-Left>` `<C-Left>`, `<M-f>` `<M-Right>` `<C-Right>`.
+//!   `<M-b>` `<M-Left>` `<C-Left>` `<S-Left>`, `<M-f>` `<M-Right>` `<C-Right>` `<S-Right>`.
 //! - Delete: `<BS>` `<C-h>`, `<Del>` `<C-d>`, a word with `<C-w>` `<M-BS>` and `<M-d>`, and to
 //!   either end of the line with `<C-u>` and `<C-k>`.
-//! - History: `<Up>` `<C-p>` for older, `<Down>` `<C-n>` for newer. Going past the newest brings
-//!   back what you were typing.
+//! - History: `<Up>` `<C-p>` `<PageUp>` for older, `<Down>` `<C-n>` `<PageDown>` for newer. Going
+//!   past the newest brings back what you were typing.
+//!
+//! [`PromptSpec::evil_keys`] changes `<Up>`, `<Down>`, `<C-u>` and `<C-b>` to Evil's, for `:` and
+//! `/`. The other Emacs keys stay on those too (scope §10).
 //!
 //! The cursor moves by what the scene draws as one glyph, a grapheme cluster. A word is a run of
 //! alphanumerics and `_`, or a run of other non-blanks, as in Vim, so `<C-w>` on `a/b` takes `b`.
@@ -35,6 +38,7 @@ pub struct PromptSpec {
     initial: String,
     history: Option<String>,
     backspace_cancels: bool,
+    evil_keys: bool,
     on_change: Option<ChangeFn>,
 }
 
@@ -46,6 +50,7 @@ impl PromptSpec {
             initial: String::new(),
             history: None,
             backspace_cancels: false,
+            evil_keys: false,
             on_change: None,
         }
     }
@@ -63,6 +68,13 @@ impl PromptSpec {
     /// `<BS>` on an empty line cancels, as on Vim's command line.
     pub fn backspace_cancels(mut self) -> Self {
         self.backspace_cancels = true;
+        self
+    }
+    /// The keys of Evil's command line where they differ from Emacs's: `<Up>` and `<Down>` take
+    /// only entries that start with the text before the cursor, and the cursor stays. `<C-u>`
+    /// deletes the whole line and `<C-b>` goes to its start.
+    pub fn evil_keys(mut self) -> Self {
+        self.evil_keys = true;
         self
     }
     /// Run `f` with the text each time a key changes it, for incremental search. Each call is
@@ -137,27 +149,39 @@ impl Prompt {
         self.cursor = s.len();
         self.text = s;
     }
-    /// Go older or newer in `past`, which is oldest first. Past the oldest, nothing happens.
-    fn recall(&mut self, past: &[String], older: bool) {
-        let at = match (self.recalled, older) {
-            (None, true) => 0,
+    /// Go older or newer in `past`, which is oldest first. Past the oldest, nothing happens. With
+    /// `matching`, only entries that start with the text before the cursor count, on a grapheme
+    /// boundary, and the cursor stays.
+    fn recall(&mut self, past: &[String], older: bool, matching: bool) {
+        let at = self.cursor;
+        let back = |i: usize| past[past.len() - 1 - i].as_str();
+        let fits = |i: &usize| {
+            let e = back(*i);
+            !matching
+                || e.starts_with(&self.text[..at])
+                    && (e.len() == at || e.grapheme_indices(true).any(|(g, _)| g == at))
+        };
+        let found = match (self.recalled, older) {
             (None, false) => return,
-            (Some(0), false) => {
+            (from, true) => (from.map_or(0, |i| i + 1)..past.len()).find(fits),
+            (Some(from), false) => (0..from).rev().find(fits),
+        };
+        let Some(found) = found else {
+            if !older {
                 self.recalled = None;
                 let draft = std::mem::take(&mut self.draft);
-                return self.set_line(draft);
+                self.set_line(draft);
             }
-            (Some(i), true) => i + 1,
-            (Some(i), false) => i - 1,
-        };
-        let Some(entry) = past.iter().rev().nth(at) else {
             return;
         };
         if self.recalled.is_none() {
             self.draft = self.text.clone();
         }
-        self.recalled = Some(at);
-        self.set_line(entry.clone());
+        self.recalled = Some(found);
+        self.text = back(found).to_string();
+        if !matching {
+            self.cursor = self.text.len();
+        }
     }
 }
 
@@ -228,11 +252,12 @@ impl Ctx {
 
     pub(crate) fn prompt_key(&mut self, ev: KeyEvent) {
         let c = ev.chord();
-        let (ctrl, alt) = (c.mods.ctrl, c.mods.alt);
+        let (ctrl, alt, shift) = (c.mods.ctrl, c.mods.alt, c.mods.shift);
         let Some(p) = self.prompt.as_mut() else {
             return;
         };
         let (at, end) = (p.cursor, p.text.len());
+        let evil = p.spec.evil_keys;
         let before = p.text.clone();
         match c.key {
             Key::Enter => return self.finish_prompt(Some(before), true),
@@ -241,8 +266,8 @@ impl Ctx {
             Key::Backspace if end == 0 && p.spec.backspace_cancels => {
                 return self.finish_prompt(None, true);
             }
-            Key::Left if ctrl || alt => p.cursor = p.word_before(),
-            Key::Right if ctrl || alt => p.cursor = p.word_after(),
+            Key::Left if ctrl || alt || shift => p.cursor = p.word_before(),
+            Key::Right if ctrl || alt || shift => p.cursor = p.word_after(),
             Key::Left => p.cursor = p.before(),
             Key::Right => p.cursor = p.after(),
             Key::Home => p.cursor = 0,
@@ -250,9 +275,12 @@ impl Ctx {
             Key::Backspace if alt => p.replace(p.word_before()..at, ""),
             Key::Backspace => p.replace(p.before()..at, ""),
             Key::Delete => p.replace(at..p.after(), ""),
-            Key::Up => self.prompt_recall(true),
-            Key::Down => self.prompt_recall(false),
+            Key::Up => self.prompt_recall(true, evil),
+            Key::Down => self.prompt_recall(false, evil),
+            Key::PageUp => self.prompt_recall(true, false),
+            Key::PageDown => self.prompt_recall(false, false),
             Key::Char(k) if ctrl => match k {
+                'b' if evil => p.cursor = 0,
                 'b' => p.cursor = p.before(),
                 'f' => p.cursor = p.after(),
                 'a' => p.cursor = 0,
@@ -260,10 +288,11 @@ impl Ctx {
                 'h' => p.replace(p.before()..at, ""),
                 'd' => p.replace(at..p.after(), ""),
                 'w' => p.replace(p.word_before()..at, ""),
+                'u' if evil => p.replace(0..end, ""),
                 'u' => p.replace(0..at, ""),
                 'k' => p.replace(at..end, ""),
-                'p' => self.prompt_recall(true),
-                'n' => self.prompt_recall(false),
+                'p' => self.prompt_recall(true, false),
+                'n' => self.prompt_recall(false, false),
                 _ => {}
             },
             Key::Char(k) if alt => match k {
@@ -281,12 +310,12 @@ impl Ctx {
         self.prompt_changed(&before);
     }
 
-    fn prompt_recall(&mut self, older: bool) {
+    fn prompt_recall(&mut self, older: bool, matching: bool) {
         let Some(mut p) = self.prompt.take() else {
             return;
         };
         let name = p.spec.history.as_deref().unwrap_or_default();
-        p.recall(self.prompt_history(name), older);
+        p.recall(self.prompt_history(name), older, matching);
         self.prompt = Some(p);
     }
 
