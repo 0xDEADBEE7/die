@@ -87,13 +87,12 @@
       "s5_row": 5,
       "kind": "undo-model",
       "evil": "Your Evil has no redo (evil-undo-system is unset): C-r signals an error, and u after another command redoes, as Emacs's undo chain does.",
-      "die_vim": "Your S5 answer: u steps back and C-r steps forward, as in Vim (scope §10). C-r with nothing to redo fails, as u with nothing to undo does. Each command is its own step, so a run of ~, J, r or g~ isn't one step, as it is in Emacs. u puts the cursor back where the step's first change was made from, so these don't follow Emacs: a gU or gu that's a buffer's first change, and a J from an empty line onto an indented one.",
+      "die_vim": "Your S5 answer: u steps back and C-r steps forward, as in Vim (scope §10). C-r with nothing to redo fails, as u with nothing to undo does. Each command is its own step, so a run of ~, J, r or g~ isn't one step, as it is in Emacs. u puts the cursor back where the step's first change was made from, so a J from an empty line onto an indented one doesn't follow Emacs.",
       "cases": [
         { "case": "undo/ctrl-r-redo", "note": "S5 row 5", "fixture": "hand-written/undo.json" },
         { "case": "undo/u-after-move-redoes", "note": "S5 row 6", "fixture": "hand-written/undo.json" },
         { "case": "undo/tilde-run-u", "note": "Emacs's delete-char joins a run of the same command, up to 20 of them", "fixture": "hand-written/undo.json" },
         { "case": "undo/J-run-u", "note": "the same", "fixture": "hand-written/undo.json" },
-        { "case": "undo/gUU-first-change-u", "note": "Emacs records no boundary for a buffer's first change, and only case commands show it", "fixture": "hand-written/undo.json" },
         { "case": "undo/J-on-empty-line-u", "note": "Emacs undoes the indent, then the join, and stays there", "fixture": "hand-written/undo.json" }
       ]
     },

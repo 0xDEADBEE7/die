@@ -258,5 +258,19 @@
   {"id": "dw-empty-line-first-non-blank", "keys": "dw", "text": ["|", "  xy"]},
   {"id": "dd-after-dollar", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 0 col 5", "keys": "$dd", "text": ["ab|c", "abcdef", "q"]},
   {"id": "shift-after-dollar", "vim": "Vim's cursor is at line 0 col 4, Evil's at line 0 col 6", "keys": "$>>", "text": ["ab|c"]},
-  {"id": "cc-first-line-indented-above", "keys": "jccX<Esc>", "text": ["  a", "|", "b"]}
+  {"id": "cc-first-line-indented-above", "keys": "jccX<Esc>", "text": ["  a", "|", "b"]},
+  {"id": "d-close-brace-from-first-non-blank", "keys": "d}", "text": ["    |ab", "cd", "", "x"]},
+  {"id": "d-close-brace-inside-the-indent", "keys": "d}", "text": ["  |  ab", "cd", "", "x"]},
+  {"id": "d-close-brace-past-first-non-blank", "keys": "d}", "text": ["    a|b", "cd", "", "x"]},
+  {"id": "shift-right-empty-text", "vim": "Vim leaves \"\\n\", Evil \"    \"", "keys": ">>", "text": "|"},
+  {"id": "shift-left-empty-text", "keys": "<<", "text": "|"},
+  {"id": "cc-empty-text", "keys": "ccX<Esc>", "text": "|"},
+  {"id": "dd-empty-text", "keys": "dd", "text": "|"},
+  {"id": "yy-empty-text", "keys": "yy", "text": "|"},
+  {"id": "x-empty-text", "vim": "differs in register \"", "keys": "x", "text": "|"},
+  {"id": "p-char-register-ending-in-newline", "vim": "Vim leaves \"\\nbc\\nd\\n\", Evil \"b\\nc\\nd\\n\"; Vim's cursor is at line 0 col 0, Evil's at line 1 col 0", "keys": "diwp", "text": ["|", "bc", "d"]},
+  {"id": "P-char-register-ending-in-newline", "vim": "differs in errors 0 vs 1, register \"", "keys": "diwP", "text": ["|", "bc", "d"]},
+  {"id": "dw-over-a-spaces-line", "keys": "dw", "text": ["a |b", "   ", "c"]},
+  {"id": "d50-percent-mid-line", "vim": "Vim leaves \"ef\\ngh\\n\", Evil \"gh\\n\"; Vim's cursor is at line 0 col 0, Evil's at line 0 col 1", "keys": "d50%", "text": ["a|b", "cd", "ef", "gh"]},
+  {"id": "percent-in-a-string-that-never-closes", "vim": "Vim's cursor is at line 0 col 3, Evil's at line 1 col 0", "keys": "%", "text": "\"a |{\n(x)"}
  ]}

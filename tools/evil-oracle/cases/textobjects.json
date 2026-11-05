@@ -147,5 +147,10 @@
   {"id": "cip-last", "keys": "cipX<Esc>", "text": ["x", "", "|a", "b"]},
   {"id": "yap", "vim": "Vim's cursor is at line 1 col 0, Evil's at line 2 col 0", "keys": "yap", "text": ["x", "", "|a", "b"]},
   {"id": "shift-ap", "vim": "Vim's cursor is at line 1 col 0, Evil's at line 2 col 0", "keys": ">ap", "text": ["x", "", "|a", "b"]},
-  {"id": "gUip", "keys": "gUip", "text": ["x", "", "|a", "b"]}
+  {"id": "gUip", "keys": "gUip", "text": ["x", "", "|a", "b"]},
+  {"id": "daw-empty-line-between", "vim": "Vim leaves \"a\\n\", Evil \"a\\nb\\n\"; Vim's cursor is at line 0 col 0, Evil's at line 1 col 0", "keys": "daw", "text": ["a", "|", "b"]},
+  {"id": "di-paren-on-inner-open", "keys": "di(", "text": ["(x |(a) y)"]},
+  {"id": "di-paren-on-inner-close", "keys": "di(", "text": ["(x (a|) y)"]},
+  {"id": "2di-paren-next-in-a-string", "keys": "2di(x", "text": ["|prova ( verder \"((testo)\" )"]},
+  {"id": "di-paren-escaped-forward", "keys": "di(", "text": ["f(|a\\), b)"]}
  ]}

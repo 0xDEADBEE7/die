@@ -364,7 +364,7 @@ fn delete(
     }
     let at = cut(ctx, b, register, span)?;
     let t = ctx.text_mut(b)?;
-    let pos = if how.typed && span.lines {
+    let pos = if span.lines {
         // The new last line, if whole lines at the end went (rule 1).
         let line = t.line_of(at).min(last_line(t));
         let to = match goal {
@@ -493,6 +493,10 @@ fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, past_end: bool
         _ => old.chars().map(inverted).collect(),
     };
     let end = span.beg + new.len();
+    // As a buffer's first change, Evil's `u` after `gU` and `gu` goes to the change's start.
+    if op != Operator::InvertCase && t.rev() == 0 {
+        t.set_cursor(w, span.beg);
+    }
     // Text replaced by itself is still an undo step, as in Evil, so `u` takes it back.
     t.tx(Origin::User)
         .replace(span.beg..span.end, new)
