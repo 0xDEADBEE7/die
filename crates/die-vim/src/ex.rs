@@ -5,9 +5,13 @@ use crate::window;
 use die_core::{Args, BufferId, Ctx, Error, PromptSpec, Result, ShowIn};
 use std::path::{Path, PathBuf};
 
-/// `:`: read a line and run it. `<BS>` on an empty line leaves it, as in your Evil.
+/// `:`: read a line and run it, with your Evil's line keys. `<BS>` on an empty line leaves it,
+/// as your Evil's `evil-ex-delete-backward-char` does.
 pub fn open(ctx: &mut Ctx, _: &Args) -> Result {
-    let spec = PromptSpec::new(":").history("ex").backspace_cancels();
+    let spec = PromptSpec::new(":")
+        .history("ex")
+        .backspace_cancels()
+        .evil_keys();
     ctx.prompt(spec, |ctx, answer| match answer {
         Some(text) => run(ctx, &text),
         None => Ok(()),
@@ -18,11 +22,11 @@ pub fn open(ctx: &mut Ctx, _: &Args) -> Result {
 /// Run an ex line: `:N`, one of die-vim's own, or a command's name with the rest of the line
 /// as its [`Args::text`]. Any command in the registry can be called this way (contract §6).
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
-    let text = text.trim().trim_start_matches(':');
+    let text = text.trim().trim_start_matches(':').trim_start();
     if let Some(done) = window::ex(ctx, text) {
         return done;
     }
-    let (name, rest) = text.split_once(' ').unwrap_or((text, ""));
+    let (name, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
     let rest = rest.trim();
     if name.is_empty() {
         return Ok(());

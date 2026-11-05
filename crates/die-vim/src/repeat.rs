@@ -65,6 +65,11 @@ impl Change {
         }
     }
 
+    /// This change, if keys typed it. One run from `:` has none, and `.` can't type it again.
+    pub fn typed(self) -> Option<Change> {
+        (!self.keys.is_empty()).then_some(self)
+    }
+
     fn notation(&self) -> String {
         let mut s = String::new();
         if let Some(r) = self.register {
@@ -195,9 +200,12 @@ fn feed(ctx: &mut Ctx, rec: &RefCell<Recorder>, keys: &str) -> Result {
     Ok(())
 }
 
-/// This change is the one `.` repeats now.
+/// This change is the one `.` repeats now, unless it came from the command line: then the last
+/// typed one stays.
 pub fn commit(ctx: &mut Ctx, c: Change) -> Result {
-    recorder(ctx)?.borrow_mut().last = Some(c);
+    if let Some(c) = c.typed() {
+        recorder(ctx)?.borrow_mut().last = Some(c);
+    }
     Ok(())
 }
 
@@ -268,8 +276,20 @@ pub fn start_recording(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
+/// `@:`: the last ex line, count times. As in your Evil, `.` stays as it was.
+fn last_ex_line(ctx: &mut Ctx, a: &Args) -> Result {
+    let Some(line) = ctx.prompt_history("ex").last().cloned() else {
+        return Err(Error::Msg("No previous command line".into()));
+    };
+    let n = a.count.unwrap_or(1).max(1);
+    if n > MAX_FEED {
+        return Err(Error::Msg("Count too large".into()));
+    }
+    (0..n).try_for_each(|_| crate::ex::run(ctx, &line))
+}
+
 /// `@x` and `@@`: type a register count times. An empty register is an error, except while
-/// recording, so `qa...@aq` can make a macro that calls itself.
+/// recording, so `qa...@aq` can make a macro that calls itself. `@:` is the last ex line.
 pub fn at(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, _) = buffer_window(ctx, a)?;
     let rec = recorder(ctx)?;
@@ -281,6 +301,9 @@ pub fn at(ctx: &mut Ctx, a: &Args) -> Result {
         return Err(Error::Msg("No previously executed keyboard macro".into()));
     };
     rec.borrow_mut().last_macro = Some(name);
+    if name == ':' {
+        return last_ex_line(ctx, a);
+    }
     let keys = registers::macro_keys(ctx, name);
     if keys.is_empty() {
         if rec.borrow().recording.is_some() {
