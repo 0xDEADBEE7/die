@@ -146,6 +146,7 @@ fn launch(
         font,
         title: "DIE".into(),
         script,
+        hidden: false,
         first_frame,
     };
     window::run(ctx, options).unwrap_or_else(|e| {

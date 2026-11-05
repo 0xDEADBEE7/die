@@ -317,6 +317,13 @@ impl Ctx {
         self.tree.windows()
     }
 
+    /// The windows in the split tree, the one used last first.
+    pub fn windows_by_use(&self) -> Vec<WindowId> {
+        let mut all = self.tree.windows();
+        all.sort_by_key(|w| std::cmp::Reverse(self.windows.get(*w).map(|w| w.used)));
+        all
+    }
+
     /// Change a window's size. In the split tree, this moves its borders as far as they'll go,
     /// and the windows that gain or lose cells change with it. A sole window in a frame the
     /// host hasn't set takes the size, and the frame follows it. A window outside the tree just
@@ -459,6 +466,36 @@ impl Ctx {
         Ok(())
     }
 
+    /// [`Ctx::close_window`], then even out the split it was in if that still stands, as Evil's
+    /// `C-w c` does. A split of two goes with the window, so nothing evens out then.
+    pub fn close_window_balancing(&mut self, w: WindowId) -> Result {
+        self.windows.get(w).ok_or(Checkout::Gone)?;
+        if !self.tree.remove_balancing(w) {
+            return Err(Error::Msg("That's the only window".into()));
+        }
+        self.drop_window(w);
+        self.retile();
+        Ok(())
+    }
+
+    /// Give two windows in the tree each other's places and sizes. The focus stays on its window.
+    pub fn swap_windows(&mut self, a: WindowId, b: WindowId) -> Result {
+        self.in_tree(a)?;
+        self.in_tree(b)?;
+        self.tree.swap(a, b);
+        self.retile();
+        Ok(())
+    }
+
+    /// Move a window in the tree to run the whole length of the frame's `side`, the others keeping
+    /// their shape, and even out the frame: Evil's `C-w H`, `J`, `K` and `L`.
+    pub fn move_window(&mut self, w: WindowId, side: Side) -> Result {
+        self.in_tree(w)?;
+        self.tree.move_to_edge(w, side);
+        self.balance_frame();
+        Ok(())
+    }
+
     /// Make a window the only one in the tree, and focus it. Windows outside the tree stay.
     pub fn only_window(&mut self, w: WindowId) -> Result {
         self.in_tree(w)?;
@@ -500,6 +537,12 @@ impl Ctx {
     /// on the window's parent, as Evil does after each split and close.
     pub fn balance_windows(&mut self, w: WindowId) {
         self.tree.balance(w);
+        self.retile();
+    }
+
+    /// Even out the whole frame: Emacs's `balance-windows` with no window, Evil's `C-w =`.
+    pub fn balance_frame(&mut self) {
+        self.tree.balance_all();
         self.retile();
     }
 

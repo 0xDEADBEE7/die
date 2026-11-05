@@ -13,6 +13,7 @@ use die_test_cap as _;
 compile_error!("DIE requires panic = \"unwind\" (C9). Set it in the config crate's profile.");
 
 mod app;
+mod commands;
 mod dispatch;
 mod error;
 mod ext;
@@ -49,7 +50,7 @@ pub use keymap::*;
 pub use keys::*;
 pub use layout::{Dir, DisplayLine, Geometry, Stop, ViewRow, Viewport};
 pub use pointer::{CellHit, WindowPart};
-pub use prompt::PromptSpec;
+pub use prompt::{PromptSpec, flex_rank};
 pub use rt::*;
 pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
 pub use text::*;

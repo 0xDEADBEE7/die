@@ -142,6 +142,13 @@ impl Node {
         }
     }
 
+    fn rename(&mut self, to: &impl Fn(WindowId) -> WindowId) {
+        match self {
+            Node::Leaf(id) => *id = to(*id),
+            Node::Split(_, kids) => kids.iter_mut().for_each(|k| k.node.rename(to)),
+        }
+    }
+
     fn min_len(&self, axis: Axis) -> usize {
         match self {
             Node::Leaf(_) => MIN_CELLS,
@@ -422,6 +429,55 @@ impl Tree {
         self.root.as_mut().is_some_and(|r| r.remove(w))
     }
 
+    /// Take `w` out, and even out its split if that still stands: Evil's `C-w c`, whose
+    /// `balance-windows` on a parent that went does nothing. False if it's the only window.
+    pub fn remove_balancing(&mut self, w: WindowId) -> bool {
+        let Some(p) = self.root.as_mut().and_then(|r| r.parent_of(w)) else {
+            return false;
+        };
+        if matches!(p, Node::Split(_, kids) if kids.len() > 2) {
+            p.remove(w);
+            p.balance();
+            return true;
+        }
+        self.remove(w)
+    }
+
+    /// Give two windows each other's places, sizes included.
+    pub fn swap(&mut self, a: WindowId, b: WindowId) {
+        if let Some(r) = &mut self.root {
+            r.rename(&|id| match id {
+                id if id == a => b,
+                id if id == b => a,
+                id => id,
+            });
+        }
+    }
+
+    /// Move `w` to run the whole length of the frame's `side`, the others keeping their shape.
+    pub fn move_to_edge(&mut self, w: WindowId, side: Side) {
+        if !self.remove(w) {
+            return;
+        }
+        let Some(rest) = self.root.take() else { return };
+        let axis = side.axis();
+        let mut kids = match rest {
+            Node::Split(a, kids) if a == axis => kids,
+            node => vec![Kid {
+                node,
+                size: 1,
+                len: 1,
+            }],
+        };
+        let at = if matches!(side, Side::Left | Side::Above) {
+            0
+        } else {
+            kids.len()
+        };
+        kids.insert(at, leaf(w, 1));
+        self.root = Some(Node::Split(axis, kids));
+    }
+
     /// Make `w` the only window. Returns the ones that went.
     pub fn only(&mut self, w: WindowId) -> Vec<WindowId> {
         let mut gone = self.windows();
@@ -446,6 +502,13 @@ impl Tree {
     pub fn balance(&mut self, w: WindowId) {
         if let Some(p) = self.root.as_mut().and_then(|r| r.parent_of(w)) {
             p.balance();
+        }
+    }
+
+    /// Even out the whole frame.
+    pub fn balance_all(&mut self) {
+        if let Some(r) = &mut self.root {
+            r.balance();
         }
     }
 }

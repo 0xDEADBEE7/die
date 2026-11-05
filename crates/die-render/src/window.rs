@@ -5,17 +5,19 @@
 //! `Shell` is winit's side. Through `Remote`, a check on another thread acts in the loop.
 #![warn(missing_docs)]
 
-use crate::driver::{self, Renderer, Surface};
+use crate::driver::{self, KeyMonitor, Renderer, Surface};
 use crate::font::CellMetrics;
 use crate::frame::{Image, Presented};
-use die_core::{Ctx, KeyEvent, Scene, WindowPlacement};
+use crate::input::{Held, KeyFacts, Pointer, caps_event, key_event};
+use die_core::{Ctx, Input, KeyEvent, PointerEvent, Scene, WindowPlacement};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, Ime, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
 /// The turns one pump may take. Past it the loop draws, reads its events and comes back, so
@@ -169,6 +171,7 @@ pub struct Shell {
     font: driver::Config,
     title: String,
     script: Option<Script>,
+    hidden: bool,
     first_frame: Option<FirstFrame>,
     pub(crate) live: Option<Live>,
     remote: Remote,
@@ -191,6 +194,13 @@ pub struct Shell {
     last_error: Option<String>,
     failed: Option<String>,
     exit_code: i32,
+    held: Held,
+    pointer: Pointer,
+    monitor: Option<KeyMonitor>,
+    /// Panics the monitor caught that have been logged.
+    monitor_panics: u64,
+    /// Every key that has gone to core since `record_keys`, for a test.
+    recorded: Option<Vec<KeyEvent>>,
 }
 
 impl Shell {
@@ -256,6 +266,8 @@ pub struct Options {
     /// Run this check rather than wait for you. Then the app has no Dock icon, and the
     /// window is a small one that floats.
     pub script: Option<Script>,
+    /// Keep the window off screen, for a check that doesn't look at it.
+    pub hidden: bool,
     /// What to do when the first frame is up.
     pub first_frame: Option<FirstFrame>,
 }
@@ -278,6 +290,7 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         font: options.font,
         title: options.title,
         script: options.script,
+        hidden: options.hidden,
         first_frame: options.first_frame,
         live: None,
         remote: Remote { proxy },
@@ -292,6 +305,11 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         last_error: None,
         failed: None,
         exit_code: 0,
+        held: Held::default(),
+        pointer: Pointer::new(driver::double_click_interval()),
+        monitor: None,
+        monitor_panics: 0,
+        recorded: None,
     };
     event_loop.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.host.ctx.shutdown();
@@ -332,7 +350,9 @@ impl Shell {
         } else {
             quiet_window().with_inner_size(LogicalSize::new(SIZE.0, SIZE.1))
         };
-        let attributes = driver::window_attributes(attributes).with_title(&self.title);
+        let attributes = driver::window_attributes(attributes)
+            .with_title(&self.title)
+            .with_visible(!self.hidden);
         let window = el.create_window(attributes).map_err(|e| e.to_string())?;
         let scale = window.scale_factor();
         let font = driver::Config {
@@ -341,6 +361,14 @@ impl Shell {
         };
         let renderer = Renderer::new(&font)?;
         let surface = renderer.attach(&window, scripted)?;
+        window.set_ime_allowed(true);
+        self.host.ctx.handle(Input::Focus(window.has_focus()));
+        let wake = self.remote.proxy.clone();
+        // Where there's none to install, winit gives Caps Lock itself.
+        self.monitor = KeyMonitor::install(move || {
+            let _ = wake.send_event(Wake::Core);
+        })
+        .ok();
         self.live = Some(Live {
             window,
             surface,
@@ -351,7 +379,7 @@ impl Shell {
         });
         // A check can't choose what's on your screen, so it draws anyway unless it's
         // checking occlusion.
-        self.guard = !scripted;
+        self.guard = !scripted || self.hidden;
         self.settle();
         if let Some(script) = self.script.take() {
             let remote = self.remote.clone();
@@ -365,13 +393,87 @@ impl Shell {
 
     /// One key from the OS: it runs and draws now, in this run-loop turn.
     pub fn input(&mut self, ev: KeyEvent) {
-        self.host.ctx.input(ev);
+        self.send(ev);
         self.settle();
+    }
+
+    fn send(&mut self, ev: KeyEvent) {
+        if let Some(keys) = &mut self.recorded {
+            keys.push(ev.clone());
+        }
+        self.host.ctx.input(ev);
+    }
+
+    /// Keep every key that goes to core from now on, for `take_keys`.
+    pub fn record_keys(&mut self) {
+        self.recorded = Some(vec![]);
+    }
+
+    /// The keys kept since the last call.
+    pub fn take_keys(&mut self) -> Vec<KeyEvent> {
+        let keys = self.recorded.as_mut().map(std::mem::take);
+        keys.unwrap_or_default()
+    }
+
+    /// What's been logged so far.
+    pub fn messages(&self) -> &[String] {
+        &self.host.ctx.messages
+    }
+
+    /// The key monitor, where there is one.
+    pub fn key_monitor(&self) -> Option<&KeyMonitor> {
+        self.monitor.as_ref()
+    }
+
+    /// Have the monitor hand every key event to this window, key or not
+    /// (`KeyMonitor::deliver_to`).
+    pub fn deliver_keys_here(&self) {
+        if let (Some(monitor), Some(live)) = (&self.monitor, &self.live) {
+            monitor.deliver_to(&live.surface);
+        }
+    }
+
+    /// What the monitor saw before now, so that it stays in order with the keys.
+    fn drain_monitor(&mut self) {
+        let Some(monitor) = &self.monitor else {
+            return;
+        };
+        let (toggles, caps, panics) = (monitor.take_caps(), monitor.caps(), monitor.panics());
+        for on in toggles {
+            self.held.set_caps(on);
+            self.send(caps_event(&self.held));
+        }
+        self.held.set_caps(caps);
+        if panics > self.monitor_panics {
+            self.monitor_panics = panics;
+            let line = "the key monitor panicked, and goes on";
+            self.host.ctx.messages.push(line.to_owned());
+        }
+    }
+
+    fn key(&mut self, event: &winit::event::KeyEvent, synthetic: bool) {
+        self.drain_monitor();
+        let facts = KeyFacts::from(event);
+        if let PhysicalKey::Code(code) = facts.physical {
+            self.held.key(code, facts.down);
+        }
+        // A key held across a focus change: it counts as held, but nothing was typed.
+        if !synthetic {
+            self.input(key_event(&facts, &self.held));
+        }
+    }
+
+    fn point(&mut self, event: Option<PointerEvent>) {
+        if let Some(event) = event {
+            self.host.ctx.handle(Input::Pointer(event));
+            self.settle();
+        }
     }
 
     /// Run what's ready and draw what that changed.
     pub(crate) fn settle(&mut self) {
         let start = Instant::now();
+        self.drain_monitor();
         let pumped = self.host.pump();
         self.more = pumped.more;
         if pumped.ran > 0 {
@@ -484,6 +586,42 @@ impl ApplicationHandler<Wake> for Shell {
             WindowEvent::Occluded(false) => self.dirty = true,
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => self.set_scale(scale_factor),
             WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::Focused(on) => self.host.ctx.handle(Input::Focus(on)),
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic,
+                ..
+            } => return self.key(&event, is_synthetic),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                return self.held.sync(modifiers.state());
+            }
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                return self.input(KeyEvent {
+                    caps_lock: self.held.caps(),
+                    ..KeyEvent::committed(&text)
+                });
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let (now, mods) = (Instant::now(), self.held.mods());
+                let down = state == ElementState::Pressed;
+                let event = self.pointer.button(button, down, now, mods);
+                return self.point(event);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let Some(live) = &self.live else { return };
+                let px = (position.x, position.y);
+                let cell = live.renderer.cell();
+                let event = self
+                    .pointer
+                    .moved(px, cell, self.host.grid, self.held.mods());
+                return self.point(event);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let Some(live) = &self.live else { return };
+                let cell = live.renderer.cell();
+                let event = self.pointer.wheel(delta, cell, self.held.mods());
+                return self.point(event);
+            }
             _ => return,
         }
         self.settle();
