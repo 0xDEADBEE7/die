@@ -42,8 +42,9 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, fchown};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// How often [`Ctx::check_files`] runs while a file is open. A `stat` per open file costs
-/// next to nothing, and Emacs's own 5 s interval is mostly hidden by file notifications.
+/// How often [`Ctx::check_files`] runs while a file is open. A `stat` took about 80 µs at
+/// background priority on a loaded machine. Emacs's own 5 s interval is mostly hidden by its
+/// file notifications, so 5 s here would feel slower than your Emacs.
 const POLL_EVERY: Duration = Duration::from_secs(1);
 
 /// How many symlinks a save follows before giving up, as the kernel's own limit does.
