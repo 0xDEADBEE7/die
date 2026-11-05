@@ -474,16 +474,14 @@ impl Ctx {
 /// `text`'s graphemes in `style`, each with its width in cells, as layout
 /// draws them: a control character shows as `^A`, a cell per character.
 fn glyphs(text: &str, style: Style) -> impl Iterator<Item = (Glyph, usize, Style)> + '_ {
-    text.graphemes(true).flat_map(move |g| {
-        match g.chars().next().filter(|c| c.is_control()) {
-            Some(c) => control_cells(c),
-            None => vec![],
-        }
-        .into_iter()
-        .map(|c| (Glyph::Char(c), 1, style))
-        .chain((!g.starts_with(char::is_control)).then(|| (Glyph::of(g), g.width().max(1), style)))
-        .collect::<Vec<_>>()
-    })
+    text.graphemes(true)
+        .flat_map(move |g| match g.chars().next().filter(|c| c.is_control()) {
+            Some(c) => control_cells(c)
+                .into_iter()
+                .map(|c| (Glyph::Char(c), 1, style))
+                .collect(),
+            None => vec![(Glyph::of(g), g.width().max(1), style)],
+        })
 }
 
 /// Put glyphs on `row` from `col` and return the column after them. They

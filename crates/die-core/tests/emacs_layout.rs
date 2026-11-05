@@ -406,3 +406,27 @@ fn every_line_number_screen_matches_tty_emacs_or_differs_as_contract_9_says() {
         );
     }
 }
+
+// ---------------------------------------------------------------- `gj` and `gk`
+
+/// The oracle's `wrapped/` cases that are all about rows, in tty Evil, 40 columns wide. die-vim
+/// can't run them until V6 binds `gj` and K7 sets a window's top line, but the rows are K4's.
+#[test]
+fn move_visual_lands_where_tty_evils_gj_and_gk_do() {
+    let words = "aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm\nnext\n";
+    let tail = "aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii\n";
+    for (id, text, from, dy, want) in [
+        ("gj", words, 0, 1, 35),
+        ("gj-keeps-column", words, 3, 1, 38),
+        ("gk, after gj", words, 40, -1, 5),
+        ("2gj-into-next-line", words, 0, 2, 65),
+        ("gk-in-tail", tail, 41, -1, 6),
+        ("gj-at-last-visual-line", "short\n", 0, 1, 6),
+    ] {
+        let mut ctx = Ctx::new(vec![]).unwrap();
+        let b = ctx.create_text("t", text);
+        let w = ctx.open_window(b, 39, 10).unwrap();
+        let got = ctx.text(b).unwrap().move_visual(w, from, dy, None);
+        assert_eq!(got.map(|(p, _)| p), Some(want), "{id}");
+    }
+}
