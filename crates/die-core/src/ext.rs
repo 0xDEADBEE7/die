@@ -4,7 +4,8 @@
 #![warn(missing_docs)]
 use crate::dispatch::*;
 use crate::error::*;
-use crate::faces::{Faces, Style};
+use crate::faces::{Faces, Style, Theme};
+use crate::files::SettingsFn;
 use crate::ids::*;
 use crate::keymap::*;
 use crate::keys::*;
@@ -23,6 +24,30 @@ use std::time::Duration;
 /// An extension's place in the startup order.
 pub type ExtIdx = usize;
 pub(crate) const CORE: ExtIdx = usize::MAX;
+const CONFIG: ExtIdx = usize::MAX - 1;
+
+type ConfigRegisterFn = Box<dyn FnOnce(&mut Registry)>;
+type StartupFn = Box<dyn FnOnce(&mut Ctx) -> Result>;
+
+/// Your config, as core applies it at startup (contract §4). It comes after every extension's
+/// `register`, so it wins within each keymap it binds into, and before any extension's `init`.
+/// The environment comes with M2. The default is no config at all.
+#[derive(Default)]
+pub struct Config {
+    /// Your bindings, commands, faces and leader, declared on the [`Registry`] the extensions
+    /// used, after them. Every bound name is checked once this has run (C8). A panic here is a
+    /// startup error.
+    pub register: Option<ConfigRegisterFn>,
+    /// The theme. Faces it styles that no one declared are reported to `*messages*`.
+    pub theme: Option<Theme>,
+    /// The settings every text buffer starts with.
+    pub text_defaults: Settings,
+    /// Settings by path, on top of `text_defaults` ([`Ctx::set_file_settings`]).
+    pub file_settings: Option<SettingsFn>,
+    /// Runs once every extension has initialized, and the session is restored (K12), with
+    /// `Ctx`. An error or a panic is logged, and the editor still starts.
+    pub startup: Option<StartupFn>,
+}
 
 // ------------------------------------------------------------------ traits
 
@@ -196,6 +221,12 @@ impl Registry {
     pub fn kind_keymap(&mut self, kind: &'static str) -> &mut Keymap {
         self.kinds.entry(kind).or_default()
     }
+    /// A registered mode's keymap, so your config can bind in it (C8). None if no mode has that
+    /// name.
+    pub fn mode_keymap(&mut self, name: &str) -> Option<&mut Keymap> {
+        let spec = self.modes.iter_mut().find(|m| m.name == name)?;
+        Some(&mut spec.keymap)
+    }
     /// A named keymap, for keymap decorations on ranges.
     pub fn keymap(&mut self, name: &str) -> &mut Keymap {
         self.named.entry(name.into()).or_default()
@@ -276,6 +307,7 @@ pub struct Ctx {
     pub(crate) named: HashMap<String, Keymap>,
     pub(crate) buffers: SlotMap<BufferId, Buffer>,
     pub(crate) windows: SlotMap<WindowId, Window>,
+    pub(crate) text_defaults: Settings,
     pub(crate) focused: Option<WindowId>,
     pub(crate) ext_stack: Vec<ExtIdx>,
     pub(crate) queue: VecDeque<Queued>,
@@ -353,8 +385,18 @@ pub(crate) fn catch<R>(f: impl FnOnce() -> R) -> std::result::Result<R, Caught> 
 }
 
 impl Ctx {
-    /// Register extensions in order, apply bindings, check every bound name exists (C8), then init.
+    /// [`Ctx::with_config`] with no config.
     pub fn new(exts: Vec<Box<dyn Extension>>) -> std::result::Result<Ctx, Vec<String>> {
+        Ctx::with_config(exts, Config::default())
+    }
+
+    /// Startup, contract §4's steps 2 to 6: register extensions in order, apply your config,
+    /// check every bound name exists (C8) and report every problem at once, then init each
+    /// extension and run the startup hook. K12's restore goes between those last two.
+    pub fn with_config(
+        exts: Vec<Box<dyn Extension>>,
+        config: Config,
+    ) -> std::result::Result<Ctx, Vec<String>> {
         install_panic_hook();
         let mut reg = Registry::default();
         let mut errors = vec![];
@@ -377,6 +419,12 @@ impl Ctx {
                 panics: 0,
             });
         }
+        reg.cur = CONFIG;
+        if let Some(f) = config.register
+            && let Err(c) = catch(|| f(&mut reg))
+        {
+            errors.push(format!("config panicked: {}{}", c.msg, c.place));
+        }
         let faces = Faces::new(std::mem::take(&mut reg.faces)).unwrap_or_else(|e| {
             errors.extend(e);
             Faces::new(vec![]).expect("core's own faces are valid")
@@ -389,6 +437,7 @@ impl Ctx {
             kinds: reg.kinds,
             modes: reg.modes,
             named: reg.named,
+            text_defaults: config.text_defaults,
             buffers: SlotMap::with_key(),
             windows: SlotMap::with_key(),
             focused: None,
@@ -426,12 +475,20 @@ impl Ctx {
                 _ => errors.push(format!("the leader must be one key, not a modifier: {k:?}")),
             }
         }
+        if let Some(t) = config.theme {
+            ctx.set_theme(t);
+        }
+        ctx.files.settings = config.file_settings;
         errors.extend(ctx.check_bindings());
         if !errors.is_empty() {
             return Err(errors);
         }
         for i in 0..ctx.exts.len() {
             let r = ctx.guarded(i, |ctx| ctx.with_ext_idx(i, |e, ctx| e.init(ctx))?);
+            ctx.report(r);
+        }
+        if let Some(f) = config.startup {
+            let r = ctx.guarded(CONFIG, f);
             ctx.report(r);
         }
         Ok(ctx)
@@ -476,7 +533,10 @@ impl Ctx {
     }
 
     pub(crate) fn ext_name(&self, i: ExtIdx) -> &'static str {
-        self.exts.get(i).map_or("core", |s| s.name)
+        match i {
+            CONFIG => "config",
+            _ => self.exts.get(i).map_or("core", |s| s.name),
+        }
     }
     pub(crate) fn cur_ext(&self) -> ExtIdx {
         self.ext_stack.last().copied().unwrap_or(CORE)
@@ -668,9 +728,11 @@ impl Ctx {
     /// Create a text buffer. Its name is made unique, as in Emacs (`term<2>`).
     pub fn create_text(&mut self, name: &str, text: &str) -> BufferId {
         let name = self.unique_name(name);
+        let mut t = Box::new(TextBuf::new(text));
+        *t.settings_mut() = self.text_defaults.clone();
         let b = Buffer {
             name,
-            content: Content::Text(Box::new(TextBuf::new(text))),
+            content: Content::Text(t),
             modes: vec![],
             local: Keymap::with_leader(self.leader),
             state: State::Normal,
