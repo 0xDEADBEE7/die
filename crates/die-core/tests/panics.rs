@@ -143,7 +143,7 @@ struct Surf {
     passthrough: bool,
     fail_render: Rc<Cell<bool>>,
     seen: Rc<Cell<u32>>,
-    bad_drop: Option<BadDrop>,
+    _bad_drop: Option<BadDrop>,
 }
 impl Surface for Surf {
     fn kind(&self) -> &'static str {
@@ -613,7 +613,7 @@ fn a_panic_in_a_drop_during_kill() {
     let s = w.ctx.create_surface(
         "s",
         Surf {
-            bad_drop: Some(BadDrop),
+            _bad_drop: Some(BadDrop),
             ..Default::default()
         },
     );

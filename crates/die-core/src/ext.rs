@@ -12,11 +12,12 @@ use crate::rt::*;
 use crate::text::*;
 use slotmap::SlotMap;
 use std::any::{Any, TypeId};
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind, set_hook, take_hook};
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::{Once, mpsc};
 use std::time::Duration;
 
 /// An extension's place in the startup order.
@@ -239,6 +240,8 @@ pub(crate) enum Content {
     Custom {
         type_id: TypeId,
         kind: &'static str,
+        /// The extension that made it, for its panics.
+        owner: ExtIdx,
         obj: Option<Box<dyn Surface>>,
     },
 }
@@ -278,8 +281,8 @@ pub struct Ctx {
     pub(crate) queue: VecDeque<Queued>,
     pub(crate) subs: Vec<SubEntry>,
     pub(crate) next_id: u64,
-    pub(crate) jobs_tx: mpsc::Sender<(u64, Box<dyn Any + Send>)>,
-    pub(crate) jobs_rx: mpsc::Receiver<(u64, Box<dyn Any + Send>)>,
+    pub(crate) jobs_tx: mpsc::Sender<JobMsg>,
+    pub(crate) jobs_rx: mpsc::Receiver<JobMsg>,
     pub(crate) outstanding: usize,
     pub(crate) typed: VecDeque<KeyEvent>,
     pub(crate) fed: VecDeque<KeyEvent>,
@@ -300,16 +303,59 @@ pub struct Ctx {
     pub(crate) search_highlight: Option<Pattern>,
 }
 
-pub(crate) fn panic_msg(p: &(dyn Any + Send)) -> String {
+fn panic_msg(p: &(dyn Any + Send)) -> String {
     p.downcast_ref::<&str>()
         .map(|s| s.to_string())
         .or_else(|| p.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "<non-string panic>".into())
 }
 
+/// A panic: its message and, when the hook saw it, where it happened.
+pub(crate) struct Caught {
+    pub(crate) msg: String,
+    place: String,
+}
+
+thread_local! {
+    /// The panics the hook saw on this thread that no guard has claimed yet.
+    static NOTICED: RefCell<Vec<Caught>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The panic hook (contract §15), once per process and ahead of the hook already there. It runs
+/// on the panicking thread. Panicking in a hook would abort, so it doesn't insist on the list.
+fn install_panic_hook() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let prev = take_hook();
+        set_hook(Box::new(move |info| {
+            let seen = Caught {
+                msg: panic_msg(info.payload()),
+                place: info
+                    .location()
+                    .map_or(String::new(), |l| format!(" at {l}")),
+            };
+            let _ = NOTICED.try_with(|n| n.try_borrow_mut().map(|mut n| n.push(seen)));
+            prev(info);
+        }));
+    });
+}
+
+/// Run `f`, catching a panic and claiming what the hook saw of it.
+pub(crate) fn catch<R>(f: impl FnOnce() -> R) -> std::result::Result<R, Caught> {
+    catch_unwind(AssertUnwindSafe(f)).map_err(|p| {
+        let msg = panic_msg(&*p);
+        let seen = NOTICED.with_borrow_mut(|n| {
+            n.pop_if(|c| c.msg == msg)
+                .map_or(String::new(), |c| c.place)
+        });
+        Caught { msg, place: seen }
+    })
+}
+
 impl Ctx {
     /// Register extensions in order, apply bindings, check every bound name exists (C8), then init.
     pub fn new(exts: Vec<Box<dyn Extension>>) -> std::result::Result<Ctx, Vec<String>> {
+        install_panic_hook();
         let mut reg = Registry::default();
         let mut errors = vec![];
         let mut slots: Vec<ExtSlot> = vec![];
@@ -320,8 +366,9 @@ impl Ctx {
                 continue;
             }
             reg.cur = slots.len();
-            if catch_unwind(AssertUnwindSafe(|| e.register(&mut reg))).is_err() {
-                errors.push(format!("{} panicked in register", e.name()));
+            if let Err(c) = catch(|| e.register(&mut reg)) {
+                let name = e.name();
+                errors.push(format!("{name} panicked in register: {}{}", c.msg, c.place));
             }
             slots.push(ExtSlot {
                 name: e.name(),
@@ -452,19 +499,40 @@ impl Ctx {
         f: impl FnOnce(&mut Ctx) -> Result<R>,
     ) -> Result<R> {
         self.ext_stack.push(ext);
-        let r = catch_unwind(AssertUnwindSafe(|| f(self)));
+        let r = catch(|| f(self));
         self.ext_stack.pop();
-        r.unwrap_or_else(|p| {
-            let (name, msg) = (self.ext_name(ext), panic_msg(&*p));
-            if let Some(s) = self.exts.get_mut(ext) {
-                s.panics += 1;
-            }
-            Err(Error::Panicked { ext: name, msg })
-        })
+        r.unwrap_or_else(|c| Err(self.panicked(ext, c)))
     }
+    /// A panic caught from `ext`'s code: count it, log it, and make it an error.
+    pub(crate) fn panicked(&mut self, ext: ExtIdx, c: Caught) -> Error {
+        let name = self.ext_name(ext);
+        if let Some(s) = self.exts.get_mut(ext) {
+            s.panics += 1;
+        }
+        self.log_panic(format!("{name} panicked: {}{}", c.msg, c.place));
+        Error::Panicked {
+            ext: name,
+            msg: c.msg,
+        }
+    }
+    /// The same line twice running is one line, so a panic on every frame can't flood the log.
+    fn log_panic(&mut self, what: String) {
+        let line = format!("{what}. Its state may be half-updated: restart if it misbehaves.");
+        if self.messages.last() != Some(&line) {
+            self.messages.push(line);
+        }
+    }
+    /// Log the panics no guard claimed: `render`, `decorate`, or what the host caught itself.
+    pub(crate) fn log_noticed(&mut self) {
+        for c in NOTICED.take() {
+            self.log_panic(format!("A panic: {}{}", c.msg, c.place));
+        }
+    }
+    /// Log an error. `guarded` has already logged a panic.
     pub(crate) fn report(&mut self, r: Result) {
-        if let Err(e) = r {
-            self.messages.push(format!("{e:?}"));
+        match r {
+            Ok(()) | Err(Error::Panicked { .. }) => {}
+            Err(e) => self.messages.push(format!("{e:?}")),
         }
     }
 
@@ -616,6 +684,7 @@ impl Ctx {
         let content = Content::Custom {
             type_id: TypeId::of::<S>(),
             kind,
+            owner: self.cur_ext(),
             obj: Some(Box::new(s)),
         };
         self.buffers.insert(Buffer {
@@ -647,7 +716,9 @@ impl Ctx {
         let Some(b) = self.buffers.remove(buf) else {
             return false;
         };
-        drop(b);
+        if let Err(c) = catch(|| drop(b)) {
+            self.panicked(CORE, c);
+        }
         self.files.forget(buf);
         let hooks: Vec<_> = self
             .subs
@@ -742,13 +813,16 @@ impl Ctx {
         let Some(b) = self.buffers.get_mut(buf) else {
             return Ok(());
         };
-        if let Content::Text(t) = &mut b.content {
-            t.resize_view(w, cols, rows);
-        } else {
-            self.defer_as(CORE, move |ctx| {
-                ctx.checkout_surface(buf, |s, ctx| s.event(&Event::Resize { cols, rows }, ctx))?;
-                Ok(())
-            });
+        match &mut b.content {
+            Content::Text(t) => t.resize_view(w, cols, rows),
+            Content::Custom { owner, .. } => {
+                let owner = *owner;
+                self.defer_as(owner, move |ctx| {
+                    let ev = Event::Resize { cols, rows };
+                    ctx.checkout_surface(buf, |s, ctx| s.event(&ev, ctx))?;
+                    Ok(())
+                });
+            }
         }
         let modes: Vec<(TypeId, ExtIdx)> = self.buffers[buf]
             .modes

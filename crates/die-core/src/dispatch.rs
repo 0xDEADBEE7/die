@@ -250,12 +250,17 @@ impl Ctx {
         if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_) | Key::Unidentified) {
             return; // release events, lone modifier keys and unnamed keys never reach keymaps
         }
+        let mut caught = vec![];
         for e in &self.subs {
             if let SubKind::Keys(f) = &e.kind
                 && e.inner.alive.get()
+                && let Err(c) = catch(|| (f.borrow_mut())(&ev, src))
             {
-                (f.borrow_mut())(&ev, src);
+                caught.push((e.inner.ext, c));
             }
+        }
+        for (ext, c) in caught {
+            self.panicked(ext, c);
         }
         if self.prompt.is_some() {
             return self.prompt_key(ev);
@@ -272,10 +277,11 @@ impl Ctx {
                 self.prefix = Prefix::default();
                 let keys = std::mem::take(&mut self.pending);
                 let last = keys.last().cloned().unwrap();
-                let handled = self
-                    .checkout_surface(buf, |s, ctx| s.event(&Event::Key(last), ctx))
-                    .unwrap_or(false);
-                if !handled {
+                let handled = self.surface_event(buf, &Event::Key(last));
+                if !matches!(handled, Ok(true)) {
+                    self.fed.clear();
+                }
+                if !matches!(handled, Ok(true) | Err(Error::Panicked { .. })) {
                     self.messages
                         .push(format!("{} is undefined", key_notation(&keys)));
                 }
@@ -299,7 +305,21 @@ impl Ctx {
             self.swallow.push(ev.key);
             return self.run_key(&name, vec![ev], win, buf);
         }
-        let _ = self.checkout_surface(buf, |s, ctx| s.event(&Event::Key(ev), ctx));
+        if let Err(Error::Panicked { .. }) = self.surface_event(buf, &Event::Key(ev)) {
+            self.fed.clear();
+        }
+    }
+
+    /// Give a surface input, guarded, for the extension that made it. A text buffer has no
+    /// surface, so it handles nothing.
+    fn surface_event(&mut self, buf: BufferId, ev: &Event) -> Result<bool> {
+        let owner = match self.buffers.get(buf).map(|b| &b.content) {
+            Some(Content::Custom { owner, .. }) => *owner,
+            _ => return Ok(false),
+        };
+        self.guarded(owner, |ctx| {
+            Ok(ctx.checkout_surface(buf, |s, ctx| s.event(ev, ctx))?)
+        })
     }
 
     fn run_key(&mut self, name: &str, keys: Vec<KeyEvent>, win: WindowId, buf: BufferId) {
@@ -313,6 +333,9 @@ impl Ctx {
             ..Default::default()
         };
         let r = self.run(name, &args);
+        if r.is_err() {
+            self.fed.clear(); // a macro stops where it fails (contract §6)
+        }
         self.report(r);
     }
 

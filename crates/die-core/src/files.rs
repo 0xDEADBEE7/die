@@ -10,13 +10,12 @@
 //! Settings by path are a stopgap until file-type modes (M1), which extensions
 //! will declare at Register.
 
-use crate::ext::panic_msg;
+use crate::ext::catch;
 use crate::{BufferId, Ctx, Error, Result, Settings};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::MetadataExt;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
@@ -125,12 +124,12 @@ impl Ctx {
         );
         let mut settings = Settings::default();
         if let Some(f) = &self.files.settings
-            && let Err(p) = catch_unwind(AssertUnwindSafe(|| f(&path, &mut settings)))
+            && let Err(c) = catch(|| f(&path, &mut settings))
         {
             settings = Settings::default();
             self.messages.push(format!(
                 "{name}: file settings panicked ({}); opened with the defaults",
-                panic_msg(&*p)
+                c.msg
             ));
         }
         if let Some(why) = read_only {
