@@ -157,9 +157,21 @@ impl Ctx {
     /// Queue keys as if typed (contract §6). die-vim's `@a` uses this. `keys` is notation,
     /// as `key_notation` writes it, so plain text with a `<` in it needs `<lt>`. They run ahead
     /// of typed keys, and a key's command failing, or a key nothing handles, drops the rest.
+    /// Fed from inside a call, they also run ahead of what's left, in the order they're fed, so
+    /// a macro inside a macro runs before the rest of it. The host's go behind what's left.
     pub fn feed_keys(&mut self, keys: &str) -> Result {
         let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
-        self.fed.extend(evs);
+        let end = self.fed.len();
+        let mut at = if self.nesting() > 0 {
+            self.fed_at.min(end)
+        } else {
+            end
+        };
+        for ev in evs {
+            self.fed.insert(at, ev);
+            at += 1;
+        }
+        self.fed_at = at;
         Ok(())
     }
     /// Harness: one key event from the OS.

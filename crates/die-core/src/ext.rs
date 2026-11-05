@@ -320,6 +320,8 @@ pub struct Ctx {
     pub(crate) outstanding: usize,
     pub(crate) typed: VecDeque<KeyEvent>,
     pub(crate) fed: VecDeque<KeyEvent>,
+    /// Where the next key fed from inside a call goes. Each turn starts it at the front.
+    pub(crate) fed_at: usize,
     pub(crate) pending: Vec<KeyEvent>,
     pub(crate) swallow: Vec<Key>,
     pub(crate) leader: Chord,
@@ -456,6 +458,7 @@ impl Ctx {
             outstanding: 0,
             typed: VecDeque::new(),
             fed: VecDeque::new(),
+            fed_at: 0,
             pending: vec![],
             swallow: vec![],
             leader: default_leader(),
@@ -804,6 +807,7 @@ impl Ctx {
             self.queue.push_back(Queued {
                 ext,
                 alive: Some(inner),
+                keyed: false,
                 f: Box::new(move |ctx| (f.borrow_mut())(ctx, buf)),
             });
         }

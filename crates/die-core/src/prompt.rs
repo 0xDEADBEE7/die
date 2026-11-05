@@ -24,7 +24,7 @@ impl Ctx {
         f: impl FnOnce(&mut Ctx, Option<String>) -> Result + 'static,
     ) {
         if self.prompt.is_some() {
-            self.finish_prompt(None);
+            self.finish_prompt(None, false);
         }
         let prev = self.state();
         self.set_state(State::CommandLine);
@@ -43,13 +43,16 @@ impl Ctx {
     pub(crate) fn prompt_label(&self) -> Option<&str> {
         self.prompt.as_ref().map(|p| p.label.as_str())
     }
-    fn finish_prompt(&mut self, answer: Option<String>) {
+    /// Queue the answer. `keyed` says a key submitted it, so it's part of the key stream (contract
+    /// §6): if it fails, the rest of what was fed drops. K11a's rebuild keeps this.
+    fn finish_prompt(&mut self, answer: Option<String>, keyed: bool) {
         let Some(p) = self.prompt.take() else { return };
         self.set_state(p.prev);
         let f = p.f;
         self.queue.push_back(Queued {
             ext: p.ext,
             alive: None,
+            keyed,
             f: Box::new(move |ctx| f(ctx, answer)),
         });
     }
@@ -58,9 +61,9 @@ impl Ctx {
         match ev.chord().key {
             Key::Enter => {
                 let t = self.prompt.as_ref().map(|p| p.text.clone());
-                self.finish_prompt(t);
+                self.finish_prompt(t, true);
             }
-            Key::Esc => self.finish_prompt(None),
+            Key::Esc => self.finish_prompt(None, true),
             Key::Backspace => {
                 self.prompt.as_mut().unwrap().text.pop();
             }
