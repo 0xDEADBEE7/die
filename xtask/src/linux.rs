@@ -370,6 +370,8 @@ pub fn host_checks(root: &Path) -> Result {
         version.lines().next().unwrap_or("rustc ?")
     );
 
+    // This is a checkpoint, so it runs what `ci` leaves out.
+    const ALL_TESTS: [&str; 2] = ["--", "--include-ignored"];
     let cargo_test = |args: &[&str]| {
         let mut c = Command::new(cargo());
         c.current_dir(root)
@@ -385,7 +387,8 @@ pub fn host_checks(root: &Path) -> Result {
             Box::new(|| {
                 println!("linux-host: the tests of {}", exit_f.join(", "));
                 let packages = exit_f.iter().flat_map(|p| ["--package", p]);
-                crate::util::run(&mut cargo_test(&packages.collect::<Vec<_>>()))
+                let args: Vec<&str> = packages.chain(ALL_TESTS).collect();
+                crate::util::run(&mut cargo_test(&args))
             }),
         ),
         (
@@ -407,7 +410,11 @@ pub fn host_checks(root: &Path) -> Result {
             "other tests",
             Box::new(|| {
                 let excluded = exit_f.iter().flat_map(|p| ["--exclude", p]);
-                let args: Vec<&str> = ["--workspace"].into_iter().chain(excluded).collect();
+                let args: Vec<&str> = ["--workspace"]
+                    .into_iter()
+                    .chain(excluded)
+                    .chain(ALL_TESTS)
+                    .collect();
                 crate::util::run(&mut cargo_test(&args))
             }),
         ),
