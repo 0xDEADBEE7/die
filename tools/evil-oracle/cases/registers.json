@@ -65,5 +65,10 @@
   {"id": "S-named", "keys": "\"aSX<Esc>\"ap", "text": ["|abc"]},
   {"id": "p-named-keeps-ring", "keys": "\"ayl\"ap", "text": ["|ab"]},
   {"id": "yank-empty-range", "vim": "differs in register 0, register \"", "keys": "yw", "text": "ab|c"},
-  {"id": "register-kept-after-failed-X", "vim": "differs in errors 1 vs 0, register b", "keys": "\"bXdd", "text": ["|a", "b"]}
+  {"id": "register-kept-after-failed-X", "vim": "differs in errors 1 vs 0, register b", "keys": "\"bXdd", "text": ["|a", "b"]},
+  {"id": "P-from-the-black-hole-does-nothing", "keys": "\"_P", "text": ["ab|c"]},
+  {"id": "dd-into-a-read-only-register-fails", "keys": "\"%dd", "text": ["ab|c", "d"]},
+  {"id": "x-into-a-read-only-register-fails", "keys": "\":x", "text": ["ab|c", "d"]},
+  {"id": "yiw-into-a-read-only-register-fails", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 0 col 2", "keys": "\"%yiw", "text": ["ab|c", "d"]},
+  {"id": "p-from-the-search-register-fails", "vim": "Vim's registers differ", "keys": "\"/yl\"/p", "text": ["|abc"]}
  ]}

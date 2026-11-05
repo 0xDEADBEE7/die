@@ -358,6 +358,8 @@ fn repeat_find(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
 fn history(ctx: &mut Ctx, a: &Args, redo: bool) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
+    // Even if it fails, the goal column goes, as after any command but `j` and `k`.
+    forget_goal(t, w);
     let mut stopped = Ok(());
     for i in 0..a.count.unwrap_or(1).max(1) {
         match if redo { t.redo() } else { t.undo() } {

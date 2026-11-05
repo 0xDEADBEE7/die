@@ -37,7 +37,7 @@ fn keys_that_cancel_an_operator_do_so_quietly_and_take_the_counts() {
     for op in ["d", "c", "y", ">", "<lt>", "g~", "gU", "gu"] {
         for keys in [
             "<Esc>", "2<Esc>", "<F5>", "2<F5>", "i<Esc>", "a<Esc>", "iq", "ax", "i<F5>", "g<Esc>",
-            "gq", "f<Esc>", "F<Esc>", "t<Esc>", "T<Esc>", "f<F5>", "\"",
+            "gq", "f<Esc>", "F<Esc>", "t<Esc>", "T<Esc>", "f<F5>", "F<F5>", "t<F5>", "T<F5>", "\"",
         ] {
             let all = format!("3{op}{keys}");
             let keys = format!("{all}{}", if keys == "\"" { "<Esc>l" } else { "l" });
@@ -74,6 +74,13 @@ fn a_cancelled_operator_forgets_the_goal_column() {
         assert!(messages.is_empty(), "{keys}: {messages:?}");
         assert_eq!(at, 11, "{keys}: j goes to the column the cursor is in");
     }
+}
+
+#[test]
+fn r_with_escape_forgets_the_goal_column() {
+    let (_, at, messages, _) = run("abcdef\nab\nabcdef\n", 0, "4ljr<Esc>j");
+    assert!(messages.is_empty(), "{messages:?}");
+    assert_eq!(at, 11, "j goes to the column the cursor is in");
 }
 
 #[test]
@@ -201,6 +208,66 @@ fn operators_on_read_only_text_fail_and_change_nothing() {
         ctx.type_keys("x");
         ctx.type_keys("u");
         assert_ne!(text(&ctx, b), "abc def\nghi\n", "{keys}: u undid one x");
+    }
+}
+
+/// Where a failed command leaves the cursor on read-only text, and what `"` holds after it.
+/// These come from your Evil, through a scratch copy of the oracle that sets
+/// `buffer-read-only`, because the oracle has no read-only cases. Evil's operators go to the
+/// range's start before they act, and yank before they delete.
+#[test]
+fn a_failed_command_on_read_only_text_leaves_the_cursor_where_evils_does() {
+    const LINE: &str = "abc def\nghi\n";
+    const LINES: &str = "abc\ndef\n";
+    const INDENTED: &str = "    abc\n";
+    for (start, at, keys, want, kill) in [
+        (INDENTED, 0, "<lt><lt>", 0, "zz"),
+        (INDENTED, 2, "<lt><lt>", 0, "zz"),
+        (INDENTED, 5, ">>", 5, "zz"),
+        (LINE, 5, "gUiw", 4, "zz"),
+        (LINE, 5, "guiw", 4, "zz"),
+        (LINE, 5, "g~iw", 4, "zz"),
+        (LINE, 5, "gUU", 0, "zz"),
+        (LINE, 5, "guu", 0, "zz"),
+        (LINE, 5, "g~~", 0, "zz"),
+        (LINE, 5, "~", 5, "zz"),
+        (LINE, 5, "J", 8, "zz"),
+        (LINE, 5, "p", 5, "zz"),
+        (LINE, 5, "rx", 5, "zz"),
+        (LINE, 5, "r<CR>", 5, "zz"),
+        (LINE, 5, "dd", 0, "abc def\n"),
+        (LINE, 5, "diw", 4, "def"),
+        (LINE, 5, "db", 4, "d"),
+        (LINE, 5, "x", 5, "e"),
+        (LINE, 5, "X", 4, "d"),
+        (LINE, 5, "D", 5, "ef"),
+        (LINE, 5, "cw", 5, "ef"),
+        (LINE, 5, "cc", 0, "abc def\n"),
+        (LINE, 5, "C", 5, "ef"),
+        (LINE, 5, "s", 5, "e"),
+        (LINE, 5, "S", 0, "abc def\n"),
+        (LINES, 5, "dk", 0, "abc\ndef\n"),
+        (LINES, 5, "dip", 0, "abc\ndef\n"),
+    ] {
+        let mut ctx = editor();
+        let (b, w) = open(&mut ctx, start);
+        ctx.focus(w);
+        ctx.set_register(
+            '"',
+            die_core::Register {
+                kind: die_core::RegKind::Char,
+                text: "zz".into(),
+            },
+        );
+        let t = ctx.text_mut(b).unwrap();
+        t.set_cursor(w, at);
+        t.settings_mut().read_only = true;
+        ctx.type_keys(keys);
+        assert_eq!(text(&ctx, b), start, "{keys}");
+        assert_eq!(ctx.messages.len(), 1, "{keys}: {:?}", ctx.messages);
+        assert_eq!(ctx.text(b).unwrap().cursor(w), Some(want), "{keys}");
+        let held = ctx.register('"').map(|r| r.text.as_str());
+        assert_eq!(held, Some(kill), "{keys}");
     }
 }
 

@@ -313,6 +313,7 @@
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":4,"line":0},"state":"normal","text":"मैं x\n","error":""},"id":"script-w-devanagari-word-end","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":5,"line":0},"state":"normal","text":"हँसी x\n","error":""},"id":"script-w-devanagari-candrabindu","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":4,"line":0},"state":"normal","text":"കഁക x\n","error":""},"id":"script-w-malayalam-candrabindu","topic":"motions","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":3,"line":0},"state":"normal","text":"xaxzxa\n","error":""},"id":"failed-f-is-still-the-last-find","topic":"motions","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"foo "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"bar baz\n","error":""},"id":"dw","topic":"operators","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"one two "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"three four\n","error":""},"id":"2dw","topic":"operators","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"a b c d e f "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"g h\n","error":""},"id":"2d3w-counts-multiply","topic":"operators","differs":[]}
@@ -610,6 +611,14 @@
 {"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":0},"state":"normal","text":"    a\n","error":""},"id":"J-on-the-empty-line-at-the-end","topic":"operators","differs":["cursor","errors 0 vs 1"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"    a\n","error":""},"id":"3J-on-the-empty-line-at-the-end","topic":"operators","differs":["cursor"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"        a\nb\n","error":""},"id":"J-on-empty-line-tabs-that-reach-exactly","topic":"operators","differs":["text","cursor"]}
+{"vim":{"registers":{"\"":{"type":"line","text":"abcd\nefgh\n"}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"ijklm\nno\n","error":""},"id":"2D-from-column-0-stays-characters","topic":"operators","differs":["text","register \""]}
+{"vim":{"registers":{"\"":{"type":"char","text":"abcd\nefgh"}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"\nijklm\nno\n","error":""},"id":"2C-from-column-0-stays-characters","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":{"type":"line","text":"bc\n"}},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"a\nx\n","error":""},"id":"cc-last-line-no-final-newline","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":{"type":"line","text":"bc\n"}},"beeps":0,"cursor":{"col":0,"line":1},"state":"normal","text":"a\nx\n","error":""},"id":"S-last-line-no-final-newline","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":{"type":"char","text":"bar"}},"beeps":0,"cursor":{"col":4,"line":0},"state":"normal","text":"foo  baz\n","error":""},"id":"dB-is-exclusive","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"ABc\nd\n","error":""},"id":"g~g~","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"ABC\nd\n","error":""},"id":"gUgU","topic":"operators","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"abc\nd\n","error":""},"id":"gugu","topic":"operators","differs":[]}
 {"vim":{"registers":{"a":{"type":"line","text":"one\n"},"\"":{"type":"line","text":"one\n"}},"beeps":0,"cursor":{"col":0,"line":2},"state":"normal","text":"one\ntwo\none\n","error":""},"id":"named-yank-paste","topic":"registers","differs":[]}
 {"vim":{"registers":{"a":{"type":"line","text":"one\n"},"\"":{"type":"line","text":"one\n"}},"beeps":0,"cursor":{"col":0,"line":2},"state":"normal","text":"one\ntwo\none\n","error":""},"id":"named-yank-also-sets-unnamed","topic":"registers","differs":[]}
 {"vim":{"registers":{"a":{"type":"char","text":"foobar"},"\"":{"type":"char","text":"foobar"}},"beeps":0,"cursor":{"col":9,"line":0},"state":"normal","text":"foo foobarbar\n","error":""},"id":"uppercase-appends-charwise","topic":"registers","differs":["register \""]}
@@ -672,6 +681,11 @@
 {"vim":{"registers":{"a":{"type":"char","text":"a"},"\"":{"type":"char","text":"a"}},"beeps":0,"cursor":{"col":1,"line":0},"state":"normal","text":"aab\n","error":""},"id":"p-named-keeps-ring","topic":"registers","differs":[]}
 {"vim":{"registers":{"0":{"type":"char","text":"c"},"\"":{"type":"char","text":"c"}},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"abc\n","error":""},"id":"yank-empty-range","topic":"registers","differs":["register 0","register \""]}
 {"vim":{"registers":{"\"":{"type":"line","text":"a\n"},"b":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"b\n","error":""},"id":"register-kept-after-failed-X","topic":"registers","differs":["errors 1 vs 0","register b"]}
+{"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"abc\n","error":""},"id":"P-from-the-black-hole-does-nothing","topic":"registers","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":0},"state":"normal","text":"abc\nd\n","error":""},"id":"dd-into-a-read-only-register-fails","topic":"registers","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":2,"line":0},"state":"normal","text":"abc\nd\n","error":""},"id":"x-into-a-read-only-register-fails","topic":"registers","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":0},"state":"normal","text":"abc\nd\n","error":""},"id":"yiw-into-a-read-only-register-fails","topic":"registers","differs":["cursor"]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":0},"state":"normal","text":"abc\n","error":"Vim(call):E35: No previous regular expression"},"id":"p-from-the-search-register-fails","topic":"registers","differs":["errors 1 vs 2","register \""]}
 {"vim":{"registers":{"\"":{"type":"char","text":"b "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"c d\n","error":""},"id":"dw-dot","topic":"repeat","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"b c d "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"e f\n","error":""},"id":"dw-3dot-count-replaces","topic":"repeat","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":" c "}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"d e f\n","error":""},"id":"3x-dot","topic":"repeat","differs":[]}
@@ -864,6 +878,10 @@
 {"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":1},"state":"normal","text":"\"a\nb\" c\n","error":""},"id":"di-squote-across-lines-in-dquote","topic":"textobjects","differs":["text","cursor","errors 0 vs 1","register \""]}
 {"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":1},"state":"normal","text":"\"a\nb\" c\n","error":""},"id":"da-squote-across-lines-in-dquote","topic":"textobjects","differs":["text","cursor","errors 0 vs 1","register \""]}
 {"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":7,"line":0},"state":"normal","text":"\"a `x` b\" d\n","error":""},"id":"di-bquote-in-dquote-after-a-pair","topic":"textobjects","differs":["text","cursor","errors 0 vs 1","register \""]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":1,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-object-forgets-the-goal","topic":"textobjects","differs":[]}
+{"vim":{"registers":{"\"":{"type":"char","text":"a < b"}},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"f()\n","error":""},"id":"di-paren-ignores-angle-brackets","topic":"textobjects","differs":[]}
+{"vim":{"registers":{"\"":{"type":"char","text":"<bc>"}},"beeps":0,"cursor":{"col":2,"line":0},"state":"normal","text":"a  d\n","error":""},"id":"da-close-angle","topic":"textobjects","differs":[]}
+{"vim":{"registers":{"\"":{"type":"char","text":"e"}},"beeps":0,"cursor":{"col":4,"line":1},"state":"normal","text":"let s = \"a 'b\ncd '' f\";\n","error":""},"id":"di-squote-counts-from-the-line-in-a-dquote","topic":"textobjects","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"abc\n","error":""},"id":"o-from-col-0","topic":"undo-cursor","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":1,"line":0},"state":"normal","text":"abc\ndef\n","error":""},"id":"o-from-col-1","topic":"undo-cursor","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":1,"line":1},"state":"normal","text":"abc\ndef\n","error":""},"id":"O-from-col-1","topic":"undo-cursor","differs":[]}
@@ -950,6 +968,10 @@
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"a\n    b\n","error":""},"id":"shift-left-u-indent-gone-further-down","topic":"undo","differs":[]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"abc d\n","error":""},"id":"g~iw-first-change-u","topic":"undo","differs":["cursor"]}
 {"vim":{"registers":{"\"":null},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"abc d\n","error":""},"id":"gUiw-first-change-u","topic":"undo","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":1,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-u-forgets-the-goal","topic":"undo","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":0,"line":2},"state":"normal","text":"abcdef\n\nabcdef\n","error":""},"id":"failed-u-forgets-the-goal-at-eol","topic":"undo","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":6,"line":1},"state":"normal","text":"foo bar\nabcdefghij\n","error":""},"id":"failed-u-forgets-eol-after-dollar","topic":"undo","differs":[]}
+{"vim":{"registers":{"\"":null},"beeps":1,"cursor":{"col":1,"line":2},"state":"normal","text":"abcdef\nab\nabcdef\n","error":""},"id":"failed-redo-forgets-the-goal","topic":"undo","differs":[]}
 {"vim":{"registers":{"\"":{"type":"char","text":"bc\nde"}},"beeps":0,"cursor":{"col":1,"line":0},"state":"normal","text":"af\n","error":""},"id":"v-j-d","topic":"visual","differs":[]}
 {"vim":{"registers":{"\"":{"type":"line","text":"one\ntwo\n"}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"three\n","error":""},"id":"V-j-d","topic":"visual","differs":[]}
 {"vim":{"registers":{"\"":{"type":"block","text":"ab\nde"}},"beeps":0,"cursor":{"col":0,"line":0},"state":"normal","text":"c\nf\nghi\n","error":""},"id":"block-delete","topic":"visual","differs":[]}

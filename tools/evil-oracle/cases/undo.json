@@ -78,5 +78,9 @@
   {"id": "shift-left-u-first-line-unindented", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 1 col 4", "keys": "<ku", "text": ["a", "|    b"]},
   {"id": "shift-left-u-indent-gone-further-down", "keys": "<ju", "text": ["|a", "    b"]},
   {"id": "g~iw-first-change-u", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 0 col 2", "keys": "g~iwu", "text": ["ab|c d"]},
-  {"id": "gUiw-first-change-u", "keys": "gUiwu", "text": ["ab|c d"]}
+  {"id": "gUiw-first-change-u", "keys": "gUiwu", "text": ["ab|c d"]},
+  {"id": "failed-u-forgets-the-goal", "keys": "4ljuj", "text": ["|abcdef", "ab", "abcdef"]},
+  {"id": "failed-u-forgets-the-goal-at-eol", "keys": "$juj", "text": ["|abcdef", "", "abcdef"]},
+  {"id": "failed-u-forgets-eol-after-dollar", "keys": "$uj", "text": ["|foo bar", "abcdefghij"]},
+  {"id": "failed-redo-forgets-the-goal", "keys": "4lj<C-r>j", "text": ["|abcdef", "ab", "abcdef"]}
  ]}

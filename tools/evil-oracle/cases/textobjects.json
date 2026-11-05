@@ -158,5 +158,9 @@
   {"id": "di-squote-after-one-in-dquote-never-closes", "vim": "Vim leaves \"'' d\\n\", Evil \"'a \\\"\\n\"; Vim's cursor is at line 0 col 1, Evil's at line 0 col 3", "keys": "di'", "text": ["'a \"b |c' d"]},
   {"id": "di-squote-across-lines-in-dquote", "vim": "Vim leaves \"\\\"a\\nb\\\" c\\n\", Evil \"\\\"\\\" c\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 0 col 1", "keys": "di'", "text": ["\"a", "|b\" c"]},
   {"id": "da-squote-across-lines-in-dquote", "vim": "Vim leaves \"\\\"a\\nb\\\" c\\n\", Evil \" c\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 0 col 0", "keys": "da'", "text": ["\"a", "|b\" c"]},
-  {"id": "di-bquote-in-dquote-after-a-pair", "vim": "Vim leaves \"\\\"a `x` b\\\" d\\n\", Evil \"\\\"\\\" d\\n\"; Vim's cursor is at line 0 col 7, Evil's at line 0 col 1", "keys": "di`", "text": ["\"a `x` |b\" d"]}
+  {"id": "di-bquote-in-dquote-after-a-pair", "vim": "Vim leaves \"\\\"a `x` b\\\" d\\n\", Evil \"\\\"\\\" d\\n\"; Vim's cursor is at line 0 col 7, Evil's at line 0 col 1", "keys": "di`", "text": ["\"a `x` |b\" d"]},
+  {"id": "failed-object-forgets-the-goal", "keys": "4ljdi(j", "text": ["|abcdef", "ab", "abcdef"]},
+  {"id": "di-paren-ignores-angle-brackets", "keys": "di(", "text": ["f(|a < b)"]},
+  {"id": "da-close-angle", "keys": "da>", "text": ["a <b|c> d"]},
+  {"id": "di-squote-counts-from-the-line-in-a-dquote", "keys": "di'", "text": ["let s = \"a 'b", "c|d 'e' f\";"]}
  ]}
