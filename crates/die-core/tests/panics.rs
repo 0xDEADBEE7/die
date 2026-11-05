@@ -17,6 +17,8 @@
 //! - `Drop`: a buffer's object panicking as `kill` drops it. The buffer is dead and hooks still run.
 //! - `a_message_names_the_extension_the_place_and_restarting`: what the line says.
 //! - `a_panic_only_the_host_caught_is_logged_at_the_next_turn`: the hook catches what no guard saw.
+//! - `a_new_ctx_doesnt_log_a_panic_from_before_it_existed`: as when a property test shrinks, one
+//!   case's panic isn't the next case's.
 //! - `a_loop_that_never_goes_idle_is_reported_not_a_panic`: core's own panic on a self-feeding
 //!   callback becomes a message.
 use die_core::*;
@@ -652,6 +654,17 @@ fn a_panic_only_the_host_caught_is_logged_at_the_next_turn() {
     assert!(r.is_err(), "with_ext lets a panic go on");
     assert!(w.ctx.messages.is_empty());
     w.logged_once_and_usable("host saw it");
+}
+
+#[test]
+fn a_new_ctx_doesnt_log_a_panic_from_before_it_existed() {
+    let earlier = world(); // the hook is in place
+    let r = catch_unwind(|| panic!("before the new one"));
+    assert!(r.is_err());
+    let mut later = world();
+    later.ctx.run_until_idle();
+    assert!(later.ctx.messages.is_empty(), "{:?}", later.ctx.messages);
+    drop(earlier);
 }
 
 #[test]
