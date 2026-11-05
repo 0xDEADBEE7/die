@@ -186,14 +186,14 @@ Bug 4 got past the first property test, so I added the model-based undo test (§
   - Recommendation: keep. Otherwise a program gets a release for a press it never saw.
 - **A20. Prefix argument.** The slot is taken, and cleared, when a key-dispatched command starts, and it's handed over in `Args`. Prefix commands, such as digits and `"x`, write it back. This is Emacs's model. Core never parses Vim syntax. *(Amended 2026-11-05, DR-03: an undefined key clears it too.)*
   - Recommendation: keep.
-- **A21. `feed_keys` and the key observer.** `feed_keys` parses notation, and fed keys run before further typed keys. `observe_keys(FnMut(&KeyEvent, KeySource))` is synchronous and gets no `Ctx`. It sees presses and repeats before dispatch, each marked typed or fed.
+- **A21. `feed_keys` and the key observer.** `feed_keys` parses notation, and fed keys run before further typed keys. `observe_keys(FnMut(&KeyEvent, KeySource))` is synchronous and gets no `Ctx`. It sees presses and repeats before dispatch, each marked typed or fed. *(Amended by K5, 2026-11-05: a key's command failing, by an error or a panic, or a key nothing handles, drops the rest of the fed keys, so a macro stops where it fails. The observer never sees what's dropped, and a panic in it no longer stops the key.)*
   - Recommendation: keep.
 - **A22. Reveal.** `ctx.reveal(buf, pos)` applies each covering Hide's policy. A reveal command runs nested, as an explicit run, so the caller can place the cursor straight after. `Args` gains `deco`.
   - Alternative: queue the reveal command, and continue in a callback.
   - Recommendation: run it nested. C3 allows explicit runs.
-- **A23. Subscriptions.** `Sub` is `#[must_use]`. Dropping it cancels the subscription, and `.detach()` ties it to the extension until shutdown. It's `Rc`-based, so main thread only. Hooks are typed methods, such as `on_buffer_killed`, not one generic hook enum.
+- **A23. Subscriptions.** `Sub` is `#[must_use]`. Dropping it cancels the subscription, and `.detach()` ties it to the extension until shutdown. It's `Rc`-based, so main thread only. Hooks are typed methods, such as `on_buffer_killed`, not one generic hook enum. *(Amended by K5, 2026-11-05: timers keep their handles in a timer heap and `idle` joins `after` and `every`, with no change to what a handle does. A cancelled timer's closure is freed by a sweep, at most about a thousand timers later, or when it comes due.)*
   - Recommendation: keep.
-- **A24. C9 in the spike.** Panics are caught at every call into extension code and attributed. `with_*` puts the object back, then lets the panic continue. Panics are counted, but repeated panics don't disable anything yet.
+- **A24. C9 in the spike.** Panics are caught at every call into extension code and attributed. `with_*` puts the object back, then lets the panic continue. Panics are counted, but repeated panics don't disable anything yet. *(Amended by K5, 2026-11-05: every panic is also logged to `*messages*` once, with the place. A surface's `event`, a key observer, a job's `work` and a `Drop` during `kill` used to escape the guard or hang the loop, and are now caught. A panic hook sees what no guard catches. Contract §15 lists what it can't reach.)*
   - Recommendation: build per-object disabling in M1, as the contract says.
 
 ## 4. What was built
