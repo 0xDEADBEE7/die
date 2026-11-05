@@ -51,7 +51,7 @@ path = "tools/evil-oracle"
 dev = true
 
 # die-core's modules at M0. `ext.rs` holds S4's buffers and windows until K6
-# moves them, and `dispatch.rs` the prompt until K11a does.
+# moves them, and `prompt.rs` S4's prompt until K11a rebuilds it.
 
 [[module]]
 crate = "die-core"

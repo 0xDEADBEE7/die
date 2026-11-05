@@ -18,6 +18,7 @@ mod ids;
 mod keymap;
 mod keys;
 mod layout;
+mod prompt;
 mod rt;
 mod scene;
 mod text;
