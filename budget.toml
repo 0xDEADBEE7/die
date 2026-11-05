@@ -147,10 +147,10 @@ limit = 900
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
-# from 3 lines to 64, and R3 to 105.
+# from 3 lines to 64, R3 to 105, and R5 to 112.
 [[module]]
 crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
-limit = 110
+limit = 115
 files = ["platform/backend.rs"]

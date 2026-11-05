@@ -149,7 +149,11 @@ fn undo_refuses_when_an_extension_rewrote_the_users_text() {
         .commit()
         .unwrap();
     ctx.type_keys("u");
-    assert!(has_msg(&ctx, "undo history was cut short"), "{:?}", ctx.messages);
+    assert!(
+        has_msg(&ctx, "undo history was cut short"),
+        "{:?}",
+        ctx.messages
+    );
     assert_eq!(text(&ctx, b), "you: hi\n> heLLo", "nothing half-undone");
 }
 

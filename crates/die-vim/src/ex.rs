@@ -38,7 +38,9 @@ pub fn search_forward(ctx: &mut Ctx, _: &Args) -> Result {
 
 /// `?`: read a pattern, backward.
 pub fn search_backward(ctx: &mut Ctx, _: &Args) -> Result {
-    ctx.prompt(line("?", "search"), |ctx, answer| search(ctx, answer, false));
+    ctx.prompt(line("?", "search"), |ctx, answer| {
+        search(ctx, answer, false)
+    });
     Ok(())
 }
 
