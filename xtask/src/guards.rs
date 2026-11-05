@@ -1,5 +1,5 @@
 //! `cargo xtask guards`: proves F1's build guards in a throwaway copy of the
-//! working tree. `unsafe` outside die-render's `platform` module fails to build,
+//! working tree. `unsafe` outside the places allowed it fails to build,
 //! and so does `-Cpanic=abort`, with the guard's message. The `unsafe` rustc lets
 //! through builds, and fails `cargo xtask lint`. So does a test binary with no memory
 //! limit, and that limit in a product build. A file or crate the lint wouldn't
@@ -102,6 +102,14 @@ const UNCAPPED_TEST: (&str, &str) = (
 /// The allocator in die-dev's own build.
 const CAP_IN_A_PRODUCT: &str =
     "\n[target.'cfg(unix)'.dependencies]\ndie-test-cap.workspace = true\n";
+
+/// The same under another name, given in the workspace's manifest, so that die-dev's says
+/// nothing of what it is.
+const CAP_RENAMED: (&str, &str) = (
+    "\n[workspace.dependencies.die_test_cap]\npath = \"tools/test-cap\"\n\
+     package = \"die-test-cap\"\n",
+    "\n[dependencies.die_test_cap]\nworkspace = true\n",
+);
 
 /// What `sources` fails with for a file, and for a crate.
 const NOT_READ: &str = "compiled docs/planted.rs, which `cargo xtask lint` doesn't read";
@@ -231,6 +239,16 @@ pub fn run(root: &Path, work: &Path) -> Result {
     write(&lock, &orig_lock)?;
     res?;
     println!("guards: die-test-cap as a normal dependency fails the lint");
+
+    let res = with_plant(&tree.join("Cargo.toml"), CAP_RENAMED.0, || {
+        with_plant(&tree.join("apps/die-dev/Cargo.toml"), CAP_RENAMED.1, || {
+            update_lockfile(tree)?;
+            fails_with("the lint", lint::run(tree), &["depends on die-test-cap"])
+        })
+    });
+    write(&lock, &orig_lock)?;
+    res?;
+    println!("guards: the same, renamed in the workspace's manifest, fails the lint");
 
     let module = tree.join(TARGET_MODULE.0);
     write(&module, TARGET_MODULE.1)?;

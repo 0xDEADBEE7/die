@@ -17,9 +17,10 @@
 //!   pointer is made from a reference to one element of a buffer by `NonNull::from`,
 //!   `from_mut` or `from_ref`. Nothing outside `platform` names `platform::macos`:
 //!   neutral code names `platform::backend`.
-//! - Every test binary has a memory limit: each file cargo builds one from names
-//!   die-test-cap, by the one line that does it. die-test-cap appears under
-//!   `[dev-dependencies]` only, so it can't reach a product build.
+//! - Every test binary has a memory limit: each file cargo can build one from names
+//!   die-test-cap, by the one line that does it, and its package has the dependency.
+//!   That's a dev-dependency only, whatever a manifest calls it, so it can't reach a
+//!   product build.
 //! - Neutral code doesn't branch on the platform: no `target_os` and the like
 //!   (in `cfg`, `cfg_attr` or `cfg_select!`, or anywhere as `target_os = "…"`),
 //!   no `std::os` module but Unix's, no `env::consts::OS`, and no build script
@@ -194,7 +195,6 @@ pub fn run(root: &Path) -> Result {
         for (key, deps) in dep_tables(&man) {
             check_pins(&format!("{name} [{key}]"), deps, &mut errors);
         }
-        check_cap_dependency(&name, &man, &mut errors);
         let lints = man.get("lints");
         if OWN_LINTS.contains(&m.as_str()) {
             check_own_lints(&name, lints, &mut errors);
@@ -252,6 +252,7 @@ pub fn run(root: &Path) -> Result {
         "--format-version",
         "1",
     ]))?;
+    check_cap_dependencies(&metadata, &mut errors)?;
     for rel in test_roots(&metadata)? {
         check_test_root(&rel, &read(&root.join(&rel))?, &mut errors);
     }
@@ -343,55 +344,92 @@ fn check_own_lints(name: &str, lints: Option<&Value>, errors: &mut Vec<String>) 
     }
 }
 
-/// die-test-cap may be a dev-dependency only, on every target and under any name.
-fn check_cap_dependency(name: &str, man: &Table, errors: &mut Vec<String>) {
-    for (key, deps) in dep_tables(man) {
-        if key.ends_with("dev-dependencies") {
+/// A list in `cargo metadata`'s output, or an empty one.
+fn json_list<'a>(value: &'a serde_json::Value, key: &str) -> &'a [serde_json::Value] {
+    value[key].as_array().map_or(&[][..], Vec::as_slice)
+}
+
+/// Parse `cargo metadata`'s output.
+fn parse_metadata(metadata: &str) -> Result<serde_json::Value> {
+    serde_json::from_str(metadata).map_err(|e| format!("lint: cargo metadata: {e}"))
+}
+
+/// `path` as a path from the workspace's root.
+fn from_root(meta: &serde_json::Value, path: &str) -> Result<String> {
+    path.strip_prefix(meta["workspace_root"].as_str().unwrap_or_default())
+        .map(|rel| rel.trim_start_matches('/').to_string())
+        .ok_or_else(|| format!("lint: {path} isn't under the workspace's root"))
+}
+
+/// Whether cargo can build `target` as a test binary. Only a build script can't. `test =
+/// false` only leaves a target out of a plain `cargo test`, and that's a usual way to mark
+/// an expensive test: `cargo test --test x` still runs it. An example isn't run unless it
+/// says `test = true`. Helper modules, such as `tests/support/mod.rs`, aren't targets.
+fn is_test_root(target: &serde_json::Value) -> bool {
+    let kinds = json_list(target, "kind");
+    let is = |kind: &str| kinds.iter().any(|k| k == kind);
+    !is("custom-build") && (!is("example") || target["test"] == true)
+}
+
+/// die-test-cap may be a dev-dependency only, on every target and under any name, and a
+/// package with a test binary must have it. `cargo metadata --no-deps` gives each
+/// dependency's real name and kind, whatever the manifests say and wherever they say it,
+/// the workspace's own table included.
+pub fn check_cap_dependencies(metadata: &str, errors: &mut Vec<String>) -> Result {
+    let meta = parse_metadata(metadata)?;
+    for package in json_list(&meta, "packages") {
+        if package["name"] == TEST_CAP {
             continue;
         }
-        for (dep, spec) in deps {
-            let package = spec.get("package").and_then(Value::as_str);
-            if package.unwrap_or(dep) == TEST_CAP {
+        let manifest = from_root(&meta, package["manifest_path"].as_str().unwrap_or_default())?;
+        let mut has_it = false;
+        for dep in json_list(package, "dependencies") {
+            if dep["name"] != TEST_CAP {
+                continue;
+            }
+            if dep["kind"] == "dev" {
+                has_it = true;
+            } else {
                 errors.push(format!(
-                    "{name} [{key}]: depends on {TEST_CAP}, which belongs under \
+                    "{manifest}: depends on {TEST_CAP} as a {} dependency. It belongs under \
                      [dev-dependencies] only: it replaces the global allocator, and may never \
-                     reach a product build (scope §12)"
+                     reach a product build (scope §12)",
+                    dep["kind"].as_str().unwrap_or("normal")
                 ));
             }
         }
+        if !has_it && json_list(package, "targets").iter().any(is_test_root) {
+            errors.push(format!(
+                "{manifest}: it has test binaries, and no {TEST_CAP} under \
+                 [dev-dependencies], so they have no memory limit (tools/test-cap, scope §12)"
+            ));
+        }
     }
+    Ok(())
 }
 
 /// The file each test binary is built from, as a path from the workspace's root, from
 /// `cargo metadata --no-deps`. Cargo knows them all, wherever a manifest puts them: a
-/// `tests/*.rs` file or a `tests/*/main.rs`, a crate's library and binaries, and a bench,
-/// which `cargo test --all-targets` runs. Examples aren't run. Helper modules, such as
-/// `tests/support/mod.rs`, aren't targets.
+/// `tests/*.rs` file or a `tests/*/main.rs`, a crate's library and binaries, and a bench.
 pub fn test_roots(metadata: &str) -> Result<Vec<String>> {
-    let meta: serde_json::Value =
-        serde_json::from_str(metadata).map_err(|e| format!("lint: cargo metadata: {e}"))?;
-    let root = meta["workspace_root"].as_str().unwrap_or_default();
+    let meta = parse_metadata(metadata)?;
     let mut roots = Vec::new();
-    for package in meta["packages"].as_array().map_or(&[][..], Vec::as_slice) {
-        for target in package["targets"].as_array().map_or(&[][..], Vec::as_slice) {
-            let kinds = target["kind"].as_array().map_or(&[][..], Vec::as_slice);
-            if target["test"] != true && !kinds.iter().any(|k| k == "bench") {
-                continue;
+    for package in json_list(&meta, "packages") {
+        for target in json_list(package, "targets") {
+            if is_test_root(target) {
+                let path = target["src_path"].as_str().unwrap_or_default();
+                roots.push(from_root(&meta, path)?);
             }
-            let path = target["src_path"].as_str().unwrap_or_default();
-            let rel = path
-                .strip_prefix(root)
-                .ok_or_else(|| format!("lint: {path} isn't under the workspace's root"))?;
-            roots.push(rel.trim_start_matches('/').to_string());
         }
     }
     Ok(roots)
 }
 
 /// A test binary's root says `use die_test_cap as _;` at its top level, under no attribute
-/// but `#[cfg(test)]`, so a comment, a string or a `#[cfg(any())]` doesn't count. Tokens,
-/// so its layout doesn't matter. The compiler sees that the crate can be found, and that a
-/// crate root keeps the line to `cfg(test)`, since a dev-dependency is there only for tests.
+/// but `#[cfg(test)]`, so a comment, a string, a macro or a `#[cfg(any())]` doesn't count.
+/// Tokens, so its layout doesn't matter. `check_cap_dependencies` sees that the crate is
+/// there to be found, and the compiler that a crate root keeps the line to `cfg(test)`,
+/// since a dev-dependency is there only for tests.
 pub fn check_test_root(rel: &str, src: &str, errors: &mut Vec<String>) {
     use crate::count::{Tok, lex};
     if rel == TEST_CAP_LIB {
@@ -441,8 +479,8 @@ pub fn check_test_root(rel: &str, src: &str, errors: &mut Vec<String>) {
     let mut depth = 0;
     for (i, tok) in toks.iter().enumerate() {
         match tok.0 {
-            Tok::Punct('{') => depth += 1,
-            Tok::Punct('}') => depth -= 1,
+            Tok::Punct('{' | '(' | '[') => depth += 1,
+            Tok::Punct('}' | ')' | ']') => depth -= 1,
             _ => {}
         }
         if depth == 0 && line_at(i) && kept(i) {
@@ -1285,6 +1323,11 @@ mod tests {
             "use die_test_cap as cap;\n",
             "mod m {\n    use die_test_cap as _;\n}\n",
             "fn f() {\n    use die_test_cap as _;\n}\n",
+            // Words only, in brackets of each kind: none of these ever compiles the line.
+            "const _: &str = stringify!(use die_test_cap as _;);\n",
+            "const _: &str = stringify![use die_test_cap as _;];\n",
+            "macro_rules! unused ( () => (use die_test_cap as _;); );\n",
+            "macro_rules! unused [ () => [use die_test_cap as _;]; ];\n",
         ] {
             assert_eq!(check(test, src).len(), 1, "{src}");
         }
@@ -1320,11 +1363,15 @@ mod tests {
                     target("test", "/w/crates/a/checks/named.rs", true),
                     target("bench", "/w/crates/a/benches/b.rs", false),
                     target("example", "/w/crates/a/examples/e.rs", false),
+                    target("example", "/w/crates/a/examples/tested.rs", true),
                     target("custom-build", "/w/crates/a/build.rs", false),
                 ]},
                 {"targets": [
-                    target("lib", "/w/crates/b/src/lib.rs", false),
                     target("proc-macro", "/w/crates/b/src/m.rs", true),
+                    // `test = false` only leaves these out of a plain `cargo test`.
+                    target("lib", "/w/crates/b/src/lib.rs", false),
+                    target("bin", "/w/crates/b/src/main.rs", false),
+                    target("test", "/w/crates/b/tests/by_hand.rs", false),
                 ]},
             ],
         });
@@ -1337,7 +1384,11 @@ mod tests {
                 "crates/a/tests/dir/main.rs",
                 "crates/a/checks/named.rs",
                 "crates/a/benches/b.rs",
+                "crates/a/examples/tested.rs",
                 "crates/b/src/m.rs",
+                "crates/b/src/lib.rs",
+                "crates/b/src/main.rs",
+                "crates/b/tests/by_hand.rs",
             ]
         );
         assert!(test_roots("not json").is_err());
@@ -1350,48 +1401,81 @@ mod tests {
 
     #[test]
     fn the_cap_is_a_dev_dependency_only() {
-        let check = |toml: &str| {
-            let man: Table = toml.parse().unwrap();
+        // `cargo metadata`'s words for a dependency: its real name, however a manifest
+        // renames it, and its kind, which is null for a normal one.
+        let dep = |name: &str, kind: Option<&str>| serde_json::json!({"name": name, "kind": kind, "rename": "any", "target": "cfg(unix)"});
+        let check = |deps: Vec<serde_json::Value>| {
+            let meta = serde_json::json!({
+                "workspace_root": "/w",
+                "packages": [{
+                    "name": "m",
+                    "manifest_path": "/w/m/Cargo.toml",
+                    "dependencies": deps,
+                    "targets": [{"kind": ["lib"], "src_path": "/w/m/src/lib.rs", "test": true}],
+                }],
+            });
             let mut e = Vec::new();
-            check_cap_dependency("m/Cargo.toml", &man, &mut e);
+            check_cap_dependencies(&meta.to_string(), &mut e).unwrap();
             e
         };
-        assert_eq!(check(""), Vec::<String>::new());
+        let cap = TEST_CAP;
+        assert_eq!(check(vec![dep(cap, Some("dev"))]), Vec::<String>::new());
         assert_eq!(
-            check("[dev-dependencies]\ndie-test-cap.workspace = true\n"),
+            check(vec![dep("other", None), dep(cap, Some("dev"))]),
             Vec::<String>::new()
         );
-        assert_eq!(
-            check("[target.'cfg(unix)'.dev-dependencies]\ndie-test-cap = { workspace = true }\n"),
-            Vec::<String>::new()
-        );
-        for (toml, table) in [
+        for (deps, kind) in [
+            (vec![dep(cap, None), dep(cap, Some("dev"))], "normal"),
             (
-                "[dependencies]\ndie-test-cap.workspace = true\n",
-                "[dependencies]",
-            ),
-            (
-                "[build-dependencies]\ndie-test-cap.workspace = true\n",
-                "[build-dependencies]",
-            ),
-            (
-                "[target.'cfg(unix)'.dependencies]\ndie-test-cap.workspace = true\n",
-                "[target.cfg(unix).dependencies]",
-            ),
-            (
-                "[dependencies]\ncap = { package = \"die-test-cap\", path = \"../test-cap\" }\n",
-                "[dependencies]",
-            ),
-            (
-                "[dependencies]\ndie-test-cap.workspace = true\n\
-                 [dev-dependencies]\ndie-test-cap.workspace = true\n",
-                "[dependencies]",
+                vec![dep(cap, Some("build")), dep(cap, Some("dev"))],
+                "build",
             ),
         ] {
-            let e = check(toml);
-            assert_eq!(e.len(), 1, "{toml}");
-            assert!(e[0].starts_with(&format!("m/Cargo.toml {table}:")), "{e:?}");
+            let e = check(deps);
+            assert_eq!(e.len(), 1, "{e:?}");
+            assert!(
+                e[0].starts_with(&format!("m/Cargo.toml: depends on {cap} as a {kind} ")),
+                "{e:?}"
+            );
         }
+        // Having it only as something else fails both ways.
+        assert_eq!(check(vec![dep(cap, None)]).len(), 2);
+    }
+
+    #[test]
+    fn a_package_with_a_test_binary_needs_the_cap() {
+        let check = |name: &str, targets: serde_json::Value| {
+            let meta = serde_json::json!({
+                "workspace_root": "/w",
+                "packages": [{
+                    "name": name,
+                    "manifest_path": "/w/m/Cargo.toml",
+                    "dependencies": [{"name": "other", "kind": "dev"}],
+                    "targets": targets,
+                }],
+            });
+            let mut e = Vec::new();
+            check_cap_dependencies(&meta.to_string(), &mut e).unwrap();
+            e
+        };
+        let target = |kind: &str| serde_json::json!({"kind": [kind], "test": false});
+        // `mod die_test_cap {}` satisfies the line, and only this catches it.
+        for kind in ["lib", "bin", "test", "bench"] {
+            let e = check("m", serde_json::json!([target(kind)]));
+            assert_eq!(e.len(), 1, "{kind}: {e:?}");
+            assert!(
+                e[0].starts_with("m/Cargo.toml: ") && e[0].contains("no memory limit"),
+                "{e:?}"
+            );
+        }
+        let none = Vec::<String>::new();
+        assert_eq!(check("m", serde_json::json!([target("example")])), none);
+        assert_eq!(
+            check("m", serde_json::json!([target("custom-build")])),
+            none
+        );
+        // The cap can't depend on itself.
+        assert_eq!(check(TEST_CAP, serde_json::json!([target("lib")])), none);
     }
 
     /// The other half of the line's proof: `tools/test-cap/tests/linked.rs` shows it in a
