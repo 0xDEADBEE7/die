@@ -169,10 +169,10 @@ fn data(name: &str) -> J {
 
 /// §9: tty Emacs counts filler toward tab stops. DIE's columns don't change with the width.
 const FILLER: &str = "tty Emacs counts filler toward tab stops";
-/// §9: `posn-at-point` isn't where the cursor is drawn for a wide character that moved. `cursors`
-/// below checks that against the terminal's own cursor.
-const MOVED: &str =
-    "`posn-at-point` reports a wide character that moved whole at the column it left";
+/// §9: `posn-at-point` isn't where the cursor is drawn for a wide character that moved, or for a
+/// control character with no cell left on its row. `cursors` below checks that against the
+/// terminal's own cursor.
+const MOVED: &str = "`posn-at-point` reports a wide character that moved whole, or a control character with no cell left on its row, at the column it left";
 
 /// What a position's cell differs by, in a case with `why`.
 const DIFFERENCES: &[(&str, usize, [usize; 2], &str)] = &[
@@ -190,7 +190,7 @@ fn the_differences_are_the_contracts() {
         "/../../docs/extension-contract.md"
     );
     let contract = std::fs::read_to_string(path).unwrap();
-    for why in [FILLER, MOVED, RELATIVE] {
+    for why in [FILLER, MOVED, RELATIVE, ALL_HIDDEN] {
         assert!(contract.contains(why), "§9 doesn't say: {why}");
     }
 }
@@ -285,12 +285,14 @@ fn every_wrap_case_matches_tty_emacs_or_differs_as_contract_9_says() {
             let named = DIFFERENCES
                 .iter()
                 .any(|d| d.0 == id && d.1 == i && d.2 == got);
-            // It moved whole, leaving filler: Emacs reports the column it left.
+            // It moved whole, or a control character had no cell left on its row: Emacs reports
+            // the column it left. A tab's position is never excused this way.
             let next = bytes
                 .get(i + 1)
                 .map_or(q, |n| t.snap(*n, Some(Dir::Forward)));
             let cluster_w = t.display_col(next) - t.display_col(q);
-            let moved = got == [0, want[1] + 1] && want[0] + cluster_w > text_w;
+            let tab = c.at("text").str()[q..].starts_with('\t');
+            let moved = !tab && got == [0, want[1] + 1] && want[0] + cluster_w > text_w;
             named_seen += usize::from(named);
             moved_seen += usize::from(moved);
             if !named && !moved {
@@ -323,14 +325,17 @@ fn every_wrap_case_matches_tty_emacs_or_differs_as_contract_9_says() {
         DIFFERENCES.len(),
         "a named difference no longer differs"
     );
-    assert!(moved_seen >= 5, "{moved_seen} wide characters moved whole");
+    assert_eq!(
+        moved_seen, 10,
+        "6 wide characters and 4 control characters: an excuse that isn't needed must go"
+    );
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 // ---------------------------------------------------------------- the real cursor
 
-/// `posn-at-point` isn't the terminal's cursor for a wide character that moved. The terminal's
-/// cursor is where layout puts it.
+/// `posn-at-point` isn't the terminal's cursor for a wide character that moved or a control
+/// character with no cell left on its row. The terminal's cursor is where layout puts it.
 #[test]
 fn the_terminals_own_cursor_is_where_layout_puts_it() {
     let cases = data("cursors.json");
@@ -351,10 +356,23 @@ fn the_terminals_own_cursor_is_where_layout_puts_it() {
 
 /// §9: Relative counts display lines, so a fold counts once, and Emacs's count hidden lines.
 const RELATIVE: &str = "Emacs's count hidden lines, so this deviates from it";
+/// §9: a display line's number goes by where it starts, and Emacs's first row has none here.
+const ALL_HIDDEN: &str = "With the whole text hidden, Emacs draws no number";
+
+/// Relative's screens that differ because of `RELATIVE`: the text, the cursor, and the rows here.
+const RELATIVE_SCREENS: &[(&str, usize, &[&str])] = &[
+    // Emacs shows 1, 1, 4, 5.
+    ("a\nb\nc\nd\ne\nf\n", 0, &["  1 a", "  1", "  2 e", "  3 f"]),
+    // Emacs shows 1, 3, and with the cursor on c, 2, 1.
+    ("a\nb\nc\nd\n", 0, &["  1 ac", "  1 d"]),
+    ("a\nb\nc\nd\n", 4, &["  1 ac", "  1 d"]),
+    ("a\nb\nc\nd\n", 5, &["  1 ac", "  1 d"]),
+];
 
 #[test]
 fn every_line_number_screen_matches_tty_emacs_or_differs_as_contract_9_says() {
     let screens = data("numbers.json");
+    let (mut relative, mut all_hidden) = (0, 0);
     for s in screens.at("screens").arr() {
         // A gutter of 4, then text in all but the tty's last column.
         let cols = s.at("tty_cols").num() - 1;
@@ -370,15 +388,16 @@ fn every_line_number_screen_matches_tty_emacs_or_differs_as_contract_9_says() {
             "relative" => LineNumbers::Relative,
             _ => LineNumbers::Visual,
         };
-        if let Some(f) = s.get("fold") {
-            let f = f.arr();
+        let fold = s.get("fold").map(|f| f.arr()[0].num()..f.arr()[1].num());
+        if let Some(f) = &fold {
             let deco = Deco::Hide {
                 replacement: None,
                 reveal: Reveal::Never,
             };
-            t.decorate(f[0].num()..f[1].num(), deco).unwrap();
+            t.decorate(f.clone(), deco).unwrap();
         }
-        t.set_cursor(w, s.at("cursor").num());
+        let cursor = s.at("cursor").num();
+        t.set_cursor(w, cursor);
         let frame = ctx.compose(
             cols,
             14,
@@ -390,21 +409,33 @@ fn every_line_number_screen_matches_tty_emacs_or_differs_as_contract_9_says() {
         );
         let mut got: Vec<String> = (0..12).map(|r| frame.row_text(r)).collect();
         got.retain(|r| !r.is_empty());
-        let want: Vec<&str> = s.at("rows").arr().iter().map(J::str).collect();
-        if lnum == "relative" && s.get("fold").is_some() {
-            // Emacs shows 1, 1, 4, 5. A fold counts once here, as `j` does.
-            assert_eq!(got, ["  1 a", "  1", "  2 e", "  3 f"], "{s:?}");
-            assert_eq!(want, ["  1 a", "  1 ", "  4 e", "  5 f"], "{s:?}");
-            continue;
+        let want: Vec<&str> = s
+            .at("rows")
+            .arr()
+            .iter()
+            .map(|r| r.str().trim_end())
+            .collect();
+        let named = RELATIVE_SCREENS
+            .iter()
+            .find(|d| lnum == "relative" && d.0 == text && d.1 == cursor);
+        if let Some(d) = named {
+            assert_eq!(got, d.2, "{s:?}");
+            assert_ne!(got, want, "a named difference no longer differs: {s:?}");
+            relative += 1;
+        } else if fold == Some(0..text.len()) {
+            let shown = got.iter().map(|r| r.trim().parse::<usize>());
+            assert_eq!(shown.filter(Result::is_ok).count(), 1, "{s:?}");
+            assert!(
+                want.is_empty(),
+                "a named difference no longer differs: {s:?}"
+            );
+            all_hidden += 1;
+        } else {
+            assert_eq!(got, want, "{lnum} with the cursor at {cursor} in {text:?}");
         }
-        let want: Vec<&str> = want.iter().map(|r| r.trim_end()).collect();
-        assert_eq!(
-            got,
-            want,
-            "{lnum} with the cursor at {} in {text:?}",
-            s.at("cursor").num()
-        );
     }
+    assert_eq!(relative, RELATIVE_SCREENS.len());
+    assert_eq!(all_hidden, 9, "three texts in each style");
 }
 
 // ---------------------------------------------------------------- `gj` and `gk`

@@ -168,7 +168,6 @@ fn a_face_decoration_costs_no_layout() {
     });
 }
 
-
 /// DR-09's root cause: `normalize_views`, `snap` and `set_selection` must not lay out the line.
 #[test]
 fn a_cursor_position_costs_the_same_whatever_the_lines_length() {

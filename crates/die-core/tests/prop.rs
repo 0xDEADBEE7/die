@@ -1212,7 +1212,13 @@ proptest! {
 /// sends `grapheme` to the next chunk, the previous one and the chunks before for context.
 #[test]
 fn a_cluster_across_a_ropes_chunks_agrees_with_the_naive_layout() {
-    for unit in ["e\u{301}", "\u{1f1e6}", "👍\u{1f3fd}", "👍\u{200d}👍", "\u{1100}\u{1161}"] {
+    for unit in [
+        "e\u{301}",
+        "\u{1f1e6}",
+        "👍\u{1f3fd}",
+        "👍\u{200d}👍",
+        "\u{1100}\u{1161}",
+    ] {
         let mut crossed = 0;
         // Moving the text along puts a chunk's edge in each place inside a cluster in turn.
         for shift in 0..unit.len() {

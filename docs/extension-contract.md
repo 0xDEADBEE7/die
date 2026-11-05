@@ -341,7 +341,7 @@ aaaaaaaaaa\tb     aaaaaaaaaa|→→→→→→b       10, the tab → (1, 0)   
 (empty text)      (empty)                  0, the end → (0, 0)
 ```
 
-The Evil oracle's tty Emacs keeps its last column for the continuation glyph and otherwise breaks this way, so a fixture W columns wide is checked at W − 1 text columns. Two things differ from it on purpose: tty Emacs counts filler toward tab stops, and draws emoji clusters wider. A third is only how it's asked: `posn-at-point` reports a wide character that moved whole at the column it left, but the terminal's own cursor is drawn on its new row, where this rule puts it.
+The Evil oracle's tty Emacs keeps its last column for the continuation glyph and otherwise breaks this way, so a fixture W columns wide is checked at W − 1 text columns. Two things differ from it on purpose: tty Emacs counts filler toward tab stops, and draws emoji clusters wider. A third is only how it's asked: `posn-at-point` reports a wide character that moved whole, or a control character with no cell left on its row, at the column it left, but the terminal's own cursor is drawn on its new row, where this rule puts it.
 
 **Cursor positions.** Layout decides where the cursor can be. The cursor positions are:
 - the start of each cluster of visible text, drawn on its first cell. A position inside a cluster isn't one;
@@ -364,9 +364,9 @@ Nothing else is. A hidden range with no replacement has no cursor position at it
 **Line numbers.** A row shows at most one number:
 - *Absolute:* a display line's first row shows its first line's number, from 1.
 - *Relative:* the first row of the cursor's display line shows its first line's number. Every other display line's first row shows its distance from the cursor's display line, in display lines, so a fold counts once, as `j` does. Emacs's count hidden lines, so this deviates from it (scope §8).
-- *Visual:* the cursor's row shows the first line's number of the display line it's on. Every other row shows its distance from the cursor's row, in rows, counting rows with no cursor position.
+- *Visual:* the cursor's row shows the number of the line the cursor is on. Every other row shows its distance from the cursor's row, in rows, counting rows with no cursor position.
 - Other rows show nothing.
-- In every style, no row of a display line that starts at the end of the text has a number, as in Emacs, even with the cursor on it: that's the empty row after a final newline, and an empty text's only row. It still counts when other rows measure their distance from it. What counts is where the display line starts, not what shows: a hidden last line's row looks the same, and keeps its number.
+- In every style, no row of a display line that starts at the end of the text has a number, as in Emacs, even with the cursor on it: that's the empty row after a final newline, and an empty text's only row. It still counts when other rows measure their distance from it. What counts is where the display line starts, not what shows: a hidden last line's row looks the same, and keeps its number. With the whole text hidden, Emacs draws no number, and here the only row has one.
 
 Each column shows what that style draws for the text `one\na line that wraps\nthree\nfour\n` at 12 cells, with the cursor where the heading says:
 
@@ -382,6 +382,8 @@ four                    4         1        1          4         2        2      
 ```
 
 With lines `a` to `e`, `b` to `d` folded, with a replacement or without one, and the cursor on `a`: Absolute shows 1, 2, 5; Relative and Visual show 1, 1, 2 (Emacs's Relative shows 1, 1, 4).
+
+A Hide can join lines. With lines `a` to `d`, from the end of `a` to the start of `c` hidden, `a` and `c` share a row. With the cursor on `c`: Absolute shows 1, 4; Relative shows 1, 1 (Emacs's shows 2, 1); Visual shows 3, 1, as Emacs's does.
 
 **Motions respect hidden ranges.** Line motions skip hidden ranges through `next_visible`, and search can match inside them and reveal them (scope §8). Because core does this, manifold needs no override.
 

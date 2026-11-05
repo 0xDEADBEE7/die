@@ -10,6 +10,6 @@ one "" "aaaaaaaaa中b" 10 11 ""
 one "" "aaaaaaaaaa@b" 10 11 ""
 one "" "aaaaaaaaa	b" 9 11 ""
 for mode in t relative visual; do
-  one "$mode" "a@b@c@d@e@f@" 0 30 fold
+  one "$mode" "a@b@c@d@e@f@" 0 30 "2 7"
 done
 rm -rf "$h"

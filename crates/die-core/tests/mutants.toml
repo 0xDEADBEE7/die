@@ -315,6 +315,50 @@ l.end.is_none_or(|e| s + e >= a)'''
 new = '''
 l.end.is_some_and(|e| s + e >= a)'''
 
+# K4: a rope's chunk edges. A cluster that crosses one takes every path through `grapheme`.
+
+[[mutant]]
+name = "M43 an ASCII character at a chunk's end is a cluster alone"
+file = "src/layout.rs"
+old = '''
+b.get(i + 1).is_some_and(|c| *c < 0x80)'''
+new = '''
+b.get(i + 1).is_none_or(|c| *c < 0x80)'''
+
+[[mutant]]
+name = "M44 a cluster stops at its chunk's end"
+file = "src/layout.rs"
+old = '''
+n.filter(|n| *n < in_chunk.len() || run_ends)'''
+new = '''
+n'''
+
+[[mutant]]
+name = "M45 a cluster running into the next chunk stops there"
+file = "src/layout.rs"
+old = '''
+                chunk_at += chunk.len();
+                chunk = run.chunk_at_byte(chunk_at).0;'''
+new = '''
+                return Some(chunk_at + chunk.len());'''
+
+[[mutant]]
+name = "M46 going back into the previous chunk gives up"
+file = "src/layout.rs"
+old = '''
+                (chunk, chunk_at, ..) = run.chunk_at_byte(chunk_at - 1);'''
+new = '''
+                return Some(chunk_at);'''
+
+[[mutant]]
+name = "M47 a position at a chunk's start isn't given its context"
+file = "src/layout.rs"
+old = '''
+                let (c, s, ..) = run.chunk_at_byte(n - 1);
+                gc.provide_context(c, s);'''
+new = '''
+                return Some(n);'''
+
 # K4: the wrap rule, cursor positions and numbers.
 
 [[mutant]]
@@ -371,6 +415,14 @@ file = "src/layout.rs"
 old = '''
                 _ if vr.dline_start == self.len() => None,'''
 new = ''
+
+[[mutant]]
+name = "M48 a fold's cursor row shows its first line's number in Visual"
+file = "src/layout.rs"
+old = '''
+                Visual if on_cursor => Some(self.line_of(at.pos) + 1),'''
+new = '''
+                Visual if on_cursor => Some(own),'''
 
 [[mutant]]
 name = "M40 the gutter counts the empty last line"

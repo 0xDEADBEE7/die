@@ -1350,6 +1350,21 @@ fn visual_counts_rows_with_no_cursor_position() {
     check_numbers(input, &[Some(3), Some(2), Some(1), Some(2)]);
 }
 
+/// §9: with the cursor on `c`, where a Hide joins it to `a`.
+#[test]
+fn numbers_on_a_fold_joining_lines() {
+    use LineNumbers::*;
+    let input = Input::new("a\nb\nc\nd\n", 10).hide(1..4, None);
+    for (style, cursor, want) in [
+        (Absolute, 4, [Some(1), Some(4), None]),
+        (Relative, 4, [Some(1), Some(1), None]),
+        (Visual, 4, [Some(3), Some(1), None]),
+        (Visual, 0, [Some(1), Some(1), None]),
+    ] {
+        check_numbers(input.clone().numbers(style, cursor), &want);
+    }
+}
+
 #[test]
 fn visual_on_a_continuation_row_shows_its_display_lines_number() {
     let text = "x\naaaaaaaaaaaa";
