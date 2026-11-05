@@ -5,6 +5,7 @@
 //! - `wakes_coalesce_until_the_loop_takes_a_turn`: many wakes, one call, then it arms again.
 //! - `jobs_that_finish_between_turns_wake_once`: three jobs, one wake, and every `done` runs.
 //! - `a_wake_from_a_callback_wakes_again`: the turn it runs in has already looked.
+//! - `a_job_that_ends_as_the_loop_looks_wakes_again`: the loop arms the waker, then looks.
 //! - `a_job_finished_before_the_waker_connects_is_still_delivered`: nothing is lost at startup.
 //! - `connecting_a_second_waker_is_an_error`: and the first stays connected.
 //! - `a_waker_works_from_any_thread_and_outlives_the_ctx`: it's `Send`, `Sync` and `Clone`.
@@ -108,6 +109,26 @@ fn a_wake_from_a_callback_wakes_again() {
         Ok(())
     });
     ctx.run_until_idle();
+    assert_eq!(wakes.load(Ordering::SeqCst), 2);
+}
+
+/// If the loop looked in the channel first and armed the waker after, a job ending in between
+/// wouldn't wake the host, and its result would wait for the next event. A cancelled job's value
+/// drops while the loop is looking, which is the one place a test can act in that gap.
+#[test]
+fn a_job_that_ends_as_the_loop_looks_wakes_again() {
+    struct WakesOnDrop(Waker);
+    impl Drop for WakesOnDrop {
+        fn drop(&mut self) {
+            self.0.wake();
+        }
+    }
+    let (mut ctx, wakes) = connected();
+    let w = ctx.waker();
+    let sub = ctx.spawn(move || WakesOnDrop(w), |_, _| Ok(()));
+    drop(sub);
+    wait_for("the job's wake", || wakes.load(Ordering::SeqCst) == 1);
+    while ctx.step() {}
     assert_eq!(wakes.load(Ordering::SeqCst), 2);
 }
 

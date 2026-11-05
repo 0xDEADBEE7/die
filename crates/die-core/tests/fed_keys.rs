@@ -14,7 +14,7 @@
 //! - `the_keys_a_drop_removes_are_never_observed`: a key observer sees only what dispatched.
 mod support;
 use die_core::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -104,40 +104,38 @@ fn an_undefined_fed_key_drops_the_rest() {
 
 #[test]
 fn an_error_in_a_surfaces_event_drops_the_rest() {
-    struct Boom;
+    struct Boom {
+        calls: Rc<Cell<u32>>,
+        passthrough: bool,
+    }
     impl Surface for Boom {
         fn kind(&self) -> &'static str {
             "boom"
         }
         fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
         fn event(&mut self, _: &Event, _: &mut Ctx) -> bool {
-            panic!("event bug")
-        }
-    }
-    struct Passing;
-    impl Surface for Passing {
-        fn kind(&self) -> &'static str {
-            "passing"
-        }
-        fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
-        fn event(&mut self, _: &Event, _: &mut Ctx) -> bool {
+            self.calls.set(self.calls.get() + 1);
             panic!("event bug")
         }
         fn initial_state(&self) -> State {
-            State::Passthrough
+            if self.passthrough {
+                State::Passthrough
+            } else {
+                State::Normal
+            }
         }
     }
     for passthrough in [false, true] {
         let (mut ctx, _) = setup();
-        let b = if passthrough {
-            ctx.create_surface("s", Passing)
-        } else {
-            ctx.create_surface("s", Boom)
+        let calls = Rc::new(Cell::new(0));
+        let surface = Boom {
+            calls: calls.clone(),
+            passthrough,
         };
+        let b = ctx.create_surface("s", surface);
         ctx.open_window(b, 80, 24).unwrap();
         run_fed(&mut ctx, "xyz");
-        let panics = ctx.messages.iter().filter(|m| m.contains("event bug"));
-        assert_eq!(panics.count(), 1, "x only: {:?}", ctx.messages);
+        assert_eq!(calls.get(), 1, "x only, passthrough {passthrough}");
     }
 }
 
