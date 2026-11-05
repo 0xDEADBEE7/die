@@ -19,7 +19,8 @@ use crate::motions;
 use crate::objects::Object;
 use crate::registers;
 use crate::text::{
-    Chars, indent_end, last_line, line_end, next_stop, normal_pos, pos_at_col, prev_stop, rest_pos,
+    Chars, blank_line, indent_end, last_line, line_end, next_stop, normal_pos, on_last_empty_line,
+    pos_at_col, prev_stop, rest_pos,
 };
 use die_core::{Args, BufferId, Ctx, Error, Key, Origin, RegKind, Register, Result, State};
 use die_core::{TextBuf, WindowId};
@@ -63,6 +64,9 @@ impl Span {
         }
     }
 }
+
+/// One change in a transaction.
+type Edit = (std::ops::Range<usize>, &'static str);
 
 /// What [`apply`] needs to know about how it was reached.
 #[derive(Clone, Copy, Default)]
@@ -598,46 +602,84 @@ pub fn replace(ctx: &mut Ctx, a: &Args) -> Result {
 
 /// `J`: join count lines (at least two), as Emacs's `join-line` does. The whitespace at
 /// the join becomes one space, or none next to a closing or opening bracket or an empty
-/// line, and the cursor stays there. On the last line there's nothing to join: the final
-/// newline stays, where your Evil's would go (rule 1).
+/// line, and the cursor stays there. All of it is one edit, however many lines. On the
+/// last line there's nothing to join: the final newline stays, where your Evil's would go
+/// (rule 1). On the empty line after that newline it does nothing at all, as Evil's does.
 pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let start = cursor(t, w)?;
     let here = t.line_of(start);
-    let n = a.count.unwrap_or(1).max(1);
-    let lines = n.min(last_line(t).max(here) + 1 - here);
-    let joins = lines.saturating_sub(1).max(1);
-    let mut pos = start;
-    let mut line_was_blank = false;
-    for _ in 0..joins {
-        line_was_blank = crate::text::blank_line(t, here);
-        if here >= last_line(t) {
-            pos = line_end(t, here);
-            break;
+    if on_last_empty_line(t, start) {
+        forget_goal(t, w);
+        return Ok(());
+    }
+    let pos = if here >= last_line(t) {
+        if blank_line(t, here) {
+            insert::indent_from_above(t, w, here)?;
+            cursor(t, w)?
+        } else {
+            line_end(t, here)
         }
-        let newline = line_end(t, here);
+    } else {
+        let joins = a.count.unwrap_or(1).clamp(2, last_line(t) + 1 - here) - 1;
+        let bytes = after_line(t, here + joins) - t.line_start(here);
+        if a.count.is_some_and(|n| n > 1) && bytes > MAX_REPEAT {
+            return Err(Error::Msg("Count too large".into()));
+        }
+        let (edits, pos, was_blank) = joined(t, here, joins);
+        let mut tx = t.tx(Origin::User);
+        for (range, space) in edits {
+            tx = tx.replace(range, space);
+        }
+        tx.commit()?;
+        if was_blank {
+            insert::indent_from_above(t, w, here)?;
+            cursor(t, w)?
+        } else {
+            pos
+        }
+    };
+    t.set_cursor(w, rest_pos(t, pos));
+    Ok(())
+}
+
+/// The edits that join `joins` lines onto `here`, in the text as it is now. `.1` is where the
+/// last join lands once they're made, and `.2` says the line was blank before that join.
+fn joined(t: &TextBuf, here: usize, joins: usize) -> (Vec<Edit>, usize, bool) {
+    let mut edits: Vec<Edit> = vec![];
+    for line in here..here + joins {
+        let newline = line_end(t, line);
+        // Back over the spaces at the end of what's joined so far. A line of nothing but
+        // spaces gets as far as the last join, which this one then takes in.
+        let floor = edits.last().map_or(0, |e| e.0.end);
         let mut before = Chars::at(t, newline);
-        while matches!(before.prev_ch(), Some(' ' | '\t')) {
+        while before.pos() > floor && matches!(before.prev_ch(), Some(' ' | '\t')) {
             before.back();
         }
+        let from = match edits.last() {
+            Some(e) if e.0.end == before.pos() => {
+                let from = e.0.start;
+                edits.pop();
+                from
+            }
+            _ => before.pos(),
+        };
         let mut after = Chars::at(t, newline + 1);
         while matches!(after.ch(), Some(' ' | '\t')) {
             after.fwd();
         }
+        let before_join = Chars::at(t, from).prev_ch();
         let bare = matches!(after.ch(), None | Some('\n' | ')' | ']' | '}'))
-            || matches!(before.prev_ch(), None | Some('\n' | '(' | '[' | '{'));
-        pos = before.pos();
-        let (from, to) = (before.pos(), after.pos());
-        let space = if bare { "" } else { " " };
-        t.tx(Origin::User).replace(from..to, space).commit()?;
+            || matches!(before_join, None | Some('\n' | '(' | '[' | '{'));
+        edits.push((from..after.pos(), if bare { "" } else { " " }));
     }
-    if line_was_blank {
-        insert::indent_from_above(t, w, here)?;
-        pos = cursor(t, w)?;
-    }
-    t.set_cursor(w, rest_pos(t, pos));
-    Ok(())
+    let last = edits.last().map_or(0..0, |e| e.0.clone());
+    let pos = edits
+        .iter()
+        .filter(|e| e.0.start < last.start)
+        .fold(last.start, |p, e| p - e.0.len() + e.1.len());
+    (edits, pos, last.start == t.line_start(here))
 }
 
 /// `p` and `P`, as Evil's `evil-paste-after` and `evil-paste-before`. Lines go below or
