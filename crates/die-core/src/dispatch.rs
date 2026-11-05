@@ -155,7 +155,8 @@ impl Ctx {
     // -------------------------------------------------------------- the key queues
 
     /// Queue keys as if typed (contract §6). die-vim's `@a` uses this. `keys` is notation,
-    /// as `key_notation` writes it, so plain text with a `<` in it needs `<lt>`.
+    /// as `key_notation` writes it, so plain text with a `<` in it needs `<lt>`. They run ahead
+    /// of typed keys, and a key's command failing, or a key nothing handles, drops the rest.
     pub fn feed_keys(&mut self, keys: &str) -> Result {
         let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
         self.fed.extend(evs);
