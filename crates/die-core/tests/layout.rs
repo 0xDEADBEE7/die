@@ -236,3 +236,110 @@ fn reveal_never_and_remove() {
     assert!(ctx.text(b).unwrap().decoration(rm).is_none());
     assert_eq!(lc(&ctx, b, w), (1, 2));
 }
+
+fn row_text(t: &TextBuf) -> String {
+    let d = t.display_line(0);
+    d.rows[0].iter().map(|c| c.text.as_str()).collect()
+}
+
+/// A freed slot is reused, so a decoration's id doesn't say when it was added.
+#[test]
+fn virtual_text_at_one_position_shows_in_the_order_added() {
+    let virt = |s: &str| Deco::Virtual(s.into());
+    let mut t = TextBuf::new("abc");
+    let first = t.decorate(1..1, virt("1")).unwrap();
+    t.decorate(1..1, virt("2")).unwrap();
+    t.undecorate(first).unwrap();
+    t.decorate(1..1, virt("3")).unwrap();
+    assert_eq!(row_text(&t), "a23bc");
+}
+
+fn hide(replacement: Option<&str>) -> Deco {
+    Deco::Hide {
+        replacement: replacement.map(Into::into),
+        reveal: Reveal::Never,
+    }
+}
+
+/// Contract §9: where one hidden range ends and another starts, the start's rule applies.
+#[test]
+fn virtual_text_where_two_hides_touch_follows_the_later_ones_start() {
+    for (replacement, want) in [(None, "af"), (Some("R"), "aVRf")] {
+        let mut t = TextBuf::new("abcdef");
+        t.decorate(1..3, hide(None)).unwrap();
+        t.decorate(3..5, hide(replacement)).unwrap();
+        t.decorate(3..3, Deco::Virtual("V".into())).unwrap();
+        assert_eq!(row_text(&t), want);
+    }
+}
+
+/// Contract §9: with too few rows it goes as far as there are, and with none it stays.
+#[test]
+fn move_visual_goes_as_far_as_there_are_rows() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "abc\ndef\n");
+    let w = ctx.open_window(b, 10, 5).unwrap();
+    let t = ctx.text(b).unwrap();
+    assert_eq!(t.move_visual(w, 1, 99, None), Some((8, 1)));
+    assert_eq!(t.move_visual(w, 1, -5, None), Some((1, 1)));
+    assert_eq!(t.move_visual(w, 8, 1, None), Some((8, 0)));
+    assert_eq!(
+        t.move_visual(w, 8, 1, Some(7)),
+        Some((8, 7)),
+        "the goal it used"
+    );
+}
+
+/// Contract §9: a position that isn't a cursor position answers for the one at or before it,
+/// but a cursor left there goes on to the next.
+#[test]
+fn a_position_that_isnt_a_cursor_position_answers_for_the_one_before_it() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "aae\u{301}xx yy\nbcd");
+    let w = ctx.open_window(b, 20, 5).unwrap();
+    let t = ctx.text_mut(b).unwrap();
+    t.decorate(7..9, hide(None)).unwrap();
+    t.decorate(11..13, hide(None)).unwrap();
+    assert_eq!(t.screen_pos(w, 3), t.screen_pos(w, 2), "inside a cluster");
+    assert_eq!(t.display_col(3), t.display_col(2));
+    assert_eq!(t.screen_pos(w, 8), t.screen_pos(w, 6), "inside hidden text");
+    assert_eq!(t.display_col(8), t.display_col(6));
+    assert_eq!(
+        t.screen_pos(w, 12),
+        t.screen_pos(w, 13),
+        "that line's first"
+    );
+    assert_eq!(t.display_col(12), t.display_col(13));
+    assert_eq!(t.set_cursor(w, 3), Some(5));
+    assert_eq!(t.set_cursor(w, 8), Some(9));
+}
+
+#[test]
+fn an_empty_replacement_is_no_replacement() {
+    let mut t = TextBuf::new("abc");
+    let id = t.decorate(1..2, hide(Some(""))).unwrap();
+    assert_eq!(row_text(&t), "ac");
+    let stored = t.decoration(id).unwrap();
+    assert!(matches!(
+        &stored.deco,
+        Deco::Hide {
+            replacement: None,
+            ..
+        }
+    ));
+}
+
+/// Overlapping Hides merge, and among equals the one added first gives the replacement.
+#[test]
+fn among_equal_hides_the_first_added_gives_the_replacement() {
+    let hide = |s: &str| Deco::Hide {
+        replacement: Some(s.into()),
+        reveal: Reveal::Never,
+    };
+    let mut t = TextBuf::new("abcd");
+    let gone = t.decorate(1..3, hide("x")).unwrap();
+    t.decorate(1..3, hide("y")).unwrap();
+    t.undecorate(gone).unwrap();
+    t.decorate(1..3, hide("z")).unwrap();
+    assert_eq!(row_text(&t), "ayd");
+}

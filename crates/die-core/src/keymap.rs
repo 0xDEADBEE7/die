@@ -1,19 +1,29 @@
 //! Keymaps: per-state tries with `<char>` and `<any>`. Specificity applies within one keymap;
 //! order applies across keymaps (contract §7).
+#![warn(missing_docs)]
+
 use crate::keys::*;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// A modal state (scope §5.6), kept per buffer. Each keymap binds keys per state.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum State {
+    /// Vim's normal state.
     Normal,
+    /// Typing inserts text.
     Insert,
     /// Replace (`R`): typed text overwrites. Its cursor is `CursorShape::Underline`.
     Replace,
+    /// A selection grows with the motions.
     Visual,
+    /// An operator waits for its motion.
     OperatorPending,
+    /// A prompt has the keys.
     CommandLine,
+    /// Normal and visual over a read-only snapshot of a surface (scope D19).
     Copy,
+    /// Every key outside the DIE layer goes to the surface (scope D18).
     Passthrough,
 }
 
@@ -27,11 +37,14 @@ struct Trie {
     any: Option<Box<Trie>>,
 }
 
+/// What a key sequence means in a keymap.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Lookup {
+    /// It's bound to this command.
     Command(Rc<str>),
     /// The keys so far are a prefix of a longer binding.
     Prefix,
+    /// Nothing is bound to it here.
     None,
 }
 
@@ -135,6 +148,7 @@ impl Trie {
 /// Within a keymap, later registration wins (contract §7); `describe-key` lists what it hid.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shadowed {
+    /// The state it was bound in.
     pub state: State,
     /// The hidden binding's keys, as it was written.
     pub keys: String,
@@ -282,6 +296,9 @@ impl Keymap {
         }
     }
 
+    /// What `keys` mean in `state`. An exact key beats `<char>`, which beats `<any>`, at every
+    /// step, with no backtracking: a key that fails under a prefix isn't tried against the
+    /// root's wildcards (contract §7).
     pub fn lookup(&self, state: State, keys: &[KeyEvent]) -> Lookup {
         self.tries
             .get(&state)
