@@ -120,17 +120,24 @@ impl Cell {
 const FALLBACK_FG: Rgb = Rgb::hex("#d0d0d0");
 const FALLBACK_BG: Rgb = Rgb::hex("#101010");
 
-/// How a cursor is drawn, in its `color`. It doesn't blink (scope §8).
+/// How a cursor is drawn, in its `color`. It doesn't blink (scope §8). Its pixels
+/// are logical, as Emacs's `(bar . 2)` is: 4 physical pixels at 2x.
+///
+/// A cursor the color of its cell's background wouldn't show, and a `Block` would
+/// erase the glyph. So on such a cell, as mono-dark's current search match is, the
+/// cell's foreground takes the cursor's place, and a `Block`'s glyph stays in the
+/// cell's background, as Emacs's `x_set_cursor_gc` does.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CursorShape {
     /// Normal and visual state: the cell filled with the color, and its glyph
-    /// drawn in the cell's background color, as Emacs's box cursor does.
+    /// drawn in the cell's background color and only inside the cell, as Emacs's
+    /// box cursor does.
     Block,
-    /// Insert state and the command line: a bar 2 px wide at the cell's left
-    /// edge, over the glyph (Evil's `(bar . 2)`).
+    /// Insert state and the command line: a bar 2 logical px wide at the cell's
+    /// left edge, over the glyph (Evil's `(bar . 2)`).
     Bar,
     /// Replace state (Evil's `hbar`), and with die-term (M2) a terminal's
-    /// underline cursor (DECSCUSR 3 and 4): a bar 2 px high at the cell's
+    /// underline cursor (DECSCUSR 3 and 4): a bar 2 logical px high at the cell's
     /// bottom, over the glyph.
     Underline,
     /// Operator-pending state: the cell's lower half filled with the color,
@@ -138,8 +145,8 @@ pub enum CursorShape {
     HalfBlock,
     /// A cursor that doesn't take input: another window's, or the focused
     /// window's while the command line has a prompt, and from K9 every cursor
-    /// while DIE's window doesn't have the keyboard focus. A 1 px outline of the
-    /// cell, with the glyph drawn as it is, as Emacs draws the cursor of a
+    /// while DIE's window doesn't have the keyboard focus. A 1 logical px outline
+    /// of the cell, with the glyph drawn as it is, as Emacs draws the cursor of a
     /// window that isn't selected.
     Hollow,
 }
