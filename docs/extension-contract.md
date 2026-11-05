@@ -147,7 +147,7 @@ args
 - **An error ends what was fed.** When a key's command fails, by an error or a panic, or a key reaches nothing that handles it, the rest of the fed keys are dropped, so a macro stops where it fails, as Emacs's keyboard macros do. A prompt's answer is part of the key that submitted it, so `/nomatch<CR>dd` stops at the search. Typed keys stay. An error from a timer or another callback drops nothing, since it isn't part of the key stream, and neither does one a command handles itself. In passthrough only a panic ends what was fed: a terminal that ignores a key hasn't failed.
 - **The order of fed keys.** Fed keys run ahead of typed ones. Keys fed from inside a call also run ahead of what's left of the fed keys, in the order they're fed, so a macro inside a macro runs before the rest of it, as in Emacs, and an error in it ends both. Keys the host feeds outside any call go behind what's left.
 - **Introspection.** `describe-command` shows the doc, the owning extension and every key bound to the command. `describe-key` follows a key through the lookup order (§7) and reports where it was found, plus any bindings it shadows.
-- **Core commands** include `find-file`, `switch-buffer`, `kill-buffer`, `command-palette` and `restart`, built on the command-line prompt. A picker extension can replace them by registering its own commands under the same names and declaring them as overrides.
+- **Core commands** include `find-file`, `switch-buffer`, `kill-buffer`, `command-palette` and `restart`, built on the command-line prompt, and `toggle-max-width` (§9). A picker extension can replace them by registering its own commands under the same names and declaring them as overrides.
 - **Name collisions.** Overriding a core command is allowed only when declared explicitly. Any other duplicate name is a registration error.
 - **Your config can register commands too.** termin doesn't need to be an extension: it becomes a ten-line command in your config, using die-term's API (scope §6).
 
@@ -251,6 +251,8 @@ The text surface belongs to core. This section covers what extensions can do wit
 | Keymap | Keys pressed with the cursor in the range use this keymap first | Buttons, collapsible toggles, markdown links |
 | Tag | Attaches an extension value to a range, which can be looked up by position | "Which session, section or note is under the cursor?" |
 
+**Styled text.** A Hide's replacement and virtual text are `Styled`: text, and faces on byte ranges of it, so a plain string stays one call and manifold's fold strings keep their faces. Each cell draws its face over the faces at the position the string stands in for or before, as Emacs bases a display string on the text under it. A cluster takes the last run that holds its first byte. Styled insertion shares the shape.
+
 **Revealing hidden text.** A Hide decoration carries a reveal policy for when search lands inside it: never reveal, remove the decoration, or run a named command with the decoration's id. The command lets the owner update its own state, as Emacs's `isearch-open-invisible` does, so manifold's fold cache stays in sync.
 
 **Decoration providers.** A mode's `decorate` is called for the visible range during render and returns faces without storing them (C16). This is font-lock's model: syntax highlighting shouldn't have to store a decoration per token. Providers cache their results by revision, and use `edits_since` to update incrementally.
@@ -260,12 +262,13 @@ The text surface belongs to core. This section covers what extensions can do wit
 - `move_visual`: move by screen line, for `gj`/`gk`
 - `display_col`: the screen column of a position, for block selections
 - `next_visible`: the next line that isn't hidden
-- `display_line`: the display line holding a position, with its lines, rows and cursor positions
-- `pos_at_vcol`: the position at a display column, for `j`/`k` goals
+- `display_line`: the display line holding a position, with its lines and cursor positions
+- `pos_at_vcol`: the first cursor position at or after a display column, or else the display line's last, for `j`/`k` goals. A column inside a tab, a wide character or a replacement lands after it, as `move-to-column` does for Evil
 - `snap`: the nearest cursor position in a direction, for `h`/`l`
 - `screen_pos`: where a position is drawn in a window
+- `scroll` and `set_scroll`: which row a window shows first. A command that scrolls a window also leaves its cursor on a visible row; otherwise core scrolls back to the cursor before the next render (C5)
 
-**How text becomes rows.** The paragraphs from here to "Motions respect hidden ranges" are the whole rule. Someone reading only them can write a layout that agrees with K4's on every row and every cursor position, and K4's property test does exactly that. The rule is Emacs's `visual-line-mode` with `word-wrap` on, checked case by case against tty Emacs. K4 builds it: until then, `layout.rs` wraps by character, as S4 did.
+**How text becomes rows.** The paragraphs from here to "Motions respect hidden ranges" are the whole rule. Someone reading only them can write a layout that agrees with K4's on every row and every cursor position, and K4's property test does exactly that. The rule is Emacs's `visual-line-mode` with `word-wrap` on, checked case by case against tty Emacs (`die-core/tests/emacs_layout.rs`). A Hide that shows a placement is M3's: `Deco::Hide` has no placement yet, and its rule gets written with it.
 
 **Display lines.** A *display line* is a logical line, joined with the lines after it when a Hide covers its newline. It runs from a line's start to its first newline that isn't hidden, or to the end of the text. A newline is the byte U+000A: nothing else ends a line, so `\r` and U+2028 are characters like any other. A display line's *first line* is the line it starts on. Each display line takes one or more rows.
 
@@ -285,13 +288,13 @@ Where virtual text shows, by its position:
 - strictly inside a hidden range or strictly inside a cluster, not at all.
 
 **Widths.** Every item takes whole cells:
-- A tab in the text reaches the next multiple of `tab_width`, where 0 counts as 1. The count is in *display columns*: the cells of every item before it on the display line, whichever rows they're on. Filler cells (below) don't count, so a display line's columns don't change with the width. A display column is what `display_col` returns. A tab's cells are blank. Replacements and virtual text hold no tabs: `decorate` turns their tabs and newlines into spaces, and an empty replacement is no replacement.
+- A tab in the text reaches the next multiple of `tab_width`, where 0 counts as 1. The count is in *display columns*: the cells of every item before it on the display line, whichever rows they're on and drawn or not. Filler cells (below) don't count, so a display line's columns don't change with the width. A display column is what `display_col` returns. A tab's cells are blank. Replacements and virtual text hold no tabs: `decorate` turns their tabs and newlines into spaces, and an empty replacement is no replacement.
 - A control character (`char::is_control`, other than a tab in the text) is drawn as Emacs draws it, a cell per character. U+0000 to U+001F are `^` and the character U+0040 above them, `^@` to `^_`, two cells, so `\r` is `^M`. U+007F is `^?`, two cells. U+0080 to U+009F are `\` and three octal digits, `\200` to `\237`, four cells.
 - Any other item is `unicode-width` 0.2's `width()` of the whole cluster, and at least one cell. So `👍🏽` is 2 cells (tty Emacs draws 4), and U+200B and a lone combining mark are 1. It's drawn in its first cell, and its other cells continue it.
 
 **Where soft wrap breaks.** Rows are `text_w` cells wide (Gutter and width, below). Layout places each item at its row's next column.
 - *Whitespace* is an item whose cluster starts with U+0020 or U+0009, so a space with a combining mark on it still counts, as in tty Emacs. A no-break space, U+200B, U+3000 and `-` aren't whitespace, and nothing breaks at them.
-- A *break point* is the place before an item that isn't whitespace and directly follows a whitespace item, unless that item is the first thing on its row. The rest of a split tab or control character counts as being on the row, so the item after it can be a break point. Hidden text in between doesn't stop it: items are what count.
+- A *break point* is the place before an item that isn't whitespace and directly follows a whitespace item, unless the item after the place is the first thing on its row: breaking there would leave the row empty. A whitespace item that's first on its row still makes a break point after it. The rest of a split tab counts as being on the row, so the item after it can be a break point. A control character isn't whitespace, so the item after its rest isn't one. Hidden text in between doesn't stop it: items are what count.
 - An item *doesn't fit* if its last cell would be past the row's last cell. Then:
   1. If the row has a break point, at this item or before it, the row ends just before the last one. The whitespace before it stays at this row's end. The next row starts with the item after the break point, and the items after that are placed again.
   2. Otherwise the row ends here. A tab or control character is split: the cells that fit, which may be none, end this row, and the rest start the next, over several rows if it's wider than a row. Any other item moves to the next row whole, and the cells it leaves on this row are *filler*: blank, with no position. Only an item wider than a cell leaves any.
@@ -299,7 +302,7 @@ Where virtual text shows, by its position:
 - With `Wrap::Char` the same rule applies with no break points.
 - With `Wrap::Off` no item fails to fit, so a display line is one row, however long. M0 has no horizontal scrolling: cells and cursors past the window's edge aren't drawn.
 
-**Line ends.** The newline and the end of the text take no cell and never start a row. Each has a cursor position at its row's next column. So an exactly full line gets no blank row after it, as in Emacs. On a full row, that position is just past the row's last cell: `screen_pos` gives column `text_x + text_w`, and in a wrapped window the scene draws the cursor in the right padding when there is one, otherwise at the right edge of the row's last cell.
+**Line ends.** The newline and the end of the text take no cell, and a line end never moves to a new row. Each has a cursor position at its row's next column. So an exactly full line gets no blank row after it, as in Emacs. On a full row, that position is just past the row's last cell: `screen_pos` gives column `text_x + text_w`, and in a wrapped window the scene draws the cursor in the right padding when there is one. Otherwise it stays on the row's last cell, where a bar goes at the cell's right edge and other shapes draw on the cell. A selection doesn't draw there: a line end's cell is a place to highlight only on a row with room for it.
 
 **The empty last row.** A final newline ends the last line. The position after it is laid out as a row of its own, as in Emacs: it's where a cursor at the end of the text is drawn, and scrolling and window positions count it. Which commands may move a cursor there is the keymap's business; die-vim's motions never do (scope §10). A Hide that covers that newline joins it to the end of the text, so there's no such row. An empty text has one empty row, and so does an empty line anywhere.
 
@@ -314,17 +317,21 @@ aaaa + 8 spaces + bbbb      aaaa······|··bbbb           the 7th space do
 aaaaaaaaaa bbbb             aaaaaaaaaa|·bbbb            the space doesn't fit, with no break point
 aa bbbbbbbbbbbb             aa·|bbbbbbbbbb|bb           a long word starts its own row, then breaks anywhere
     bbbbbbbbbbbb            ····|bbbbbbbbbb|bb          the same after an indent
+ bbbbbbbbbbbb               ·|bbbbbbbbbb|bb             and after one space, first on its row
+aaaaaaaaaa bbbbbbbbbbbb     aaaaaaaaaa|·|bbbbbbbbbb|bb  the space is first on its row, and still a break point
 aaaaaaaaaaaaaa bb ccc       aaaaaaaaaa|aaaa·bb·|ccc     the last break point, not the first
 aaaa bbbb cc→dd             aaaa·bbbb·|cc→→→→dd         the tab runs from column 12 to 16, not from 2 to 8
 aaaaaaaaa→bb                aaaaaaaaa→|→→→→→→bb         a tab with no break point splits
 aa bbbbbb→cc                aa·|bbbbbb→→→→|→→→cc        a break point first, then the split
 aaaaaaaaa→bbbbb             aaaaaaaaa→|→→→→→→|bbbbb     b follows the tab's rest, so it's a break point
+aaaaaaaaaa→bbbbb            aaaaaaaaaa|→→→→→→|bbbbb     the same, with no cell of the tab on the first row
 aaaaaaaaaa→b                aaaaaaaaaa|→→→→→→b          no cell of the tab fits
 aaaaaaaaa中b                aaaaaaaaa_|中b              a wide character moves whole, leaving filler
 aaaa bbbb中c                aaaa·|bbbb中c               but a break point comes first
 aaaaaaaa 中b                aaaaaaaa·|中b               and that row is 9 cells, with no filler
 aaaaaaaaa中→b               aaaaaaaaa_|中→→→→→b         the tab runs from column 11 to 16: filler doesn't count
 aaaaaaaaa^Abb               aaaaaaaaa^|Abb              a control character splits, as a tab does
+aaaaaaaaa^A + 11 b          aaaaaaaaa^|Abbbbbbbbb|bb    it isn't whitespace, so b isn't a break point
 aaaaaaaa ^Ab                aaaaaaaa·|^Ab               unless it's a break point
 aaaaaaa[ ]bbbb              aaaaaaabbb|b                hidden text joins the words
 aaaaaaaa b, with xxxx       aaaaaaaaxx|xx·b             virtual text before the space at 8
@@ -344,34 +351,34 @@ aaaaaaaaaa\tb     aaaaaaaaaa|→→→→→→b       10, the tab → (1, 0)   
 (empty text)      (empty)                  0, the end → (0, 0)
 ```
 
-The Evil oracle's tty Emacs keeps its last column for the continuation glyph and otherwise breaks this way, so a fixture W columns wide is checked at W − 1 text columns. Two things differ from it on purpose: tty Emacs counts filler toward tab stops, and draws emoji clusters wider.
+The Evil oracle's tty Emacs keeps its last column for the continuation glyph and otherwise breaks this way, so a fixture W columns wide is checked at W − 1 text columns. Two things differ from it on purpose: tty Emacs counts filler toward tab stops, and draws emoji clusters wider. A third is only how it's asked: `posn-at-point` reports a wide character that moved whole, or a control character with no cell left on its row, at the column it left, but the terminal's own cursor is drawn on its new row, where this rule puts it.
 
 **Cursor positions.** Layout decides where the cursor can be. The cursor positions are:
 - the start of each cluster of visible text, drawn on its first cell. A position inside a cluster isn't one;
 - each newline that isn't hidden, and the end of the text, drawn as Line ends says;
 - the start of a hidden range with a replacement, drawn on the replacement's first cell: that's the fold line.
 
-Nothing else is. A hidden range with no replacement has no cursor position at its start or inside it, and virtual text and a replacement's later clusters have none. A row break adds none, so a row can have none: a tab's rest, or the end of a long replacement. After every edit or decoration change, core moves each cursor out of hidden text: to the fold line if there is one, otherwise to the next visible position. A cursor left inside a cluster goes to the next cursor position. A whole-line fold hides from the start of its first line up to the newline that ends its last line, and not that newline, so the next line keeps its own row.
+Nothing else is. A hidden range with no replacement has no cursor position at its start or inside it, and virtual text and a replacement's later clusters have none. A row break adds none, so a row can have none: a tab's rest, or the end of a long replacement. After every edit or decoration change, core moves each cursor out of hidden text: to the fold line if the hidden range it's in has a replacement, otherwise to the next visible position. A cursor left inside a cluster goes to the next cursor position. A whole-line fold hides from the start of its first line up to the newline that ends its last line, and not that newline, so the next line keeps its own row.
 
 `move_visual` counts only rows with a cursor position. Its goal is the column it's given, or else the starting position's column on its row. On the row it lands on, it takes the last cursor position at or left of the goal, or else the row's first. With fewer such rows than asked, it goes as far as there are. With none, it stays where it is. It returns the position and the goal it used.
 
 **Gutter and width.** `max_width` counts text cells only, so you get 80 columns of code. `visual-fill-column` includes the gutter, so this deviates from it (scope §8). In a window `cols` cells wide:
-- `gutter` is 0 with line numbers off. Otherwise it's `max(3, digits(n)) + 1`, where `n` is the number of lines, not counting an empty last line. A text of 999 lines with a final newline has `n` = 999, so a gutter of 4.
+- `gutter` is 0 with line numbers off. Otherwise it's `max(3, digits(n)) + 1`, where `n` is the number of lines, hidden or not, and not counting an empty last line. A text of 999 lines with a final newline has `n` = 999, so a gutter of 4.
 - `avail` is `cols − gutter`, and at least 2.
 - `text_w` is `min(max_width, avail)`, and at least 2. With no `max_width` it's `avail`.
 - `pad` is `(avail − text_w) / 2`, rounded down, when the buffer is centered, and otherwise 0. Gutter and text are centered together.
 - A row runs `pad` blank cells, the gutter, then the text, from `text_x = pad + gutter`. The rest of the window is the right padding. For example, `cols` 120 with numbers on, under 1,000 lines, `max_width` 80 and centered gives a gutter of 4, `text_w` 80, `pad` 18 and `text_x` 22.
-- The gutter draws a number right-aligned in its first `gutter − 1` cells, and its last cell is blank. In a window narrower than `text_x + text_w`, the text simply runs past the window's edge.
+- The gutter draws a number right-aligned in its first `gutter − 1` cells, and its last cell is blank. A number with more digits than those cells shows its last digits, so the text doesn't move. Only Visual can have one, since its distances count rows. In a window narrower than `text_x + text_w`, the text simply runs past the window's edge.
 - `screen_pos` gives a position's row counted from the window's top row, and `text_x` plus its column on that row. For a position that isn't a cursor position, `screen_pos` and `display_col` answer for the last cursor position at or before it on its display line, or else that line's first. `screen_pos` gives nothing if the row is scrolled out of view.
 
 **Line numbers.** A row shows at most one number:
 - *Absolute:* a display line's first row shows its first line's number, from 1.
 - *Relative:* the first row of the cursor's display line shows its first line's number. Every other display line's first row shows its distance from the cursor's display line, in display lines, so a fold counts once, as `j` does. Emacs's count hidden lines, so this deviates from it (scope §8).
-- *Visual:* the cursor's row shows the first line's number of the display line it's on. Every other row shows its distance from the cursor's row, in rows, counting rows with no cursor position.
+- *Visual:* the cursor's row shows the number of the line the cursor is on. Every other row shows its distance from the cursor's row, in rows, counting rows with no cursor position.
 - Other rows show nothing.
-- In every style, a display line that starts at the end of the text has no number, as in Emacs, even with the cursor on it: that's the empty row after a final newline, and an empty text's only row. It still counts when other rows measure their distance from it.
+- In every style, no row of a display line that starts at the end of the text has a number, as in Emacs, even with the cursor on it: that's the empty row after a final newline, and an empty text's only row. It still counts when other rows measure their distance from it. What counts is where the display line starts, not what shows: a hidden last line's row looks the same, and keeps its number. With the whole text hidden, Emacs draws no number, and here the only row has one.
 
-Each column shows what that style draws for these rows, with the cursor where the heading says:
+Each column shows what that style draws for the text `one\na line that wraps\nthree\nfour\n` at 12 cells, with the cursor where the heading says:
 
 ```
                      Cursor on three               Cursor on wraps               Cursor on the empty row
@@ -384,11 +391,13 @@ four                    4         1        1          4         2        2      
 (empty row)
 ```
 
-With lines `a` to `e`, `b` to `d` folded, and the cursor on `a`: Absolute shows 1, 2, 5; Relative and Visual show 1, 1, 2 (Emacs's Relative shows 1, 1, 4).
+With lines `a` to `e`, `b` to `d` folded, with a replacement or without one, and the cursor on `a`: Absolute shows 1, 2, 5; Relative and Visual show 1, 1, 2 (Emacs's Relative shows 1, 1, 4).
+
+A Hide can join lines. With lines `a` to `d`, from the end of `a` to the start of `c` hidden, `a` and `c` share a row. With the cursor on `c`: Absolute shows 1, 4; Relative shows 1, 1 (Emacs's shows 2, 1); Visual shows 3, 1, as Emacs's does.
 
 **Motions respect hidden ranges.** Line motions skip hidden ranges through `next_visible`, and search can match inside them and reveal them (scope §8). Because core does this, manifold needs no override.
 
-**Settings.** Soft wrap (`Wrap::Off`, `Word` or `Char`), centered maximum width, line-number style (off, absolute, relative or visual), indentation, whole-buffer read-only, and cursor visibility (scrib's browser sets `cursor-type` to nil). These can be changed at runtime per buffer. Their defaults come from the file-type mode and your config.
+**Settings.** Soft wrap (`Wrap::Off`, `Word` or `Char`), centered maximum width, line-number style (off, absolute, relative or visual), indentation, whole-buffer read-only, and cursor visibility (scrib's browser sets `cursor-type` to nil). These can be changed at runtime per buffer. Their defaults come from the file-type mode and your config. The core command `toggle-max-width` turns a buffer's maximum width off, or back on at the width it had, or at 80 if it never had one, as your `\z` does with `visual-fill-column-mode`.
 
 **Browsers rendered as text.** Here's how seek, scrib's browser and orchid's session browser would map across when you port them. `die-seek` is a placeholder name for your seek port.
 
@@ -415,7 +424,7 @@ die-vim uses only this public API (scope D15). These are the pieces it needs tha
 3. Typed registers (char, line or block), and the system clipboard
 4. The prefix-argument slot (§6)
 5. `feed_keys` and a key observer, for `q` and `@`
-6. Layout queries: `viewport`, `move_visual`, `display_col`, `next_visible`, `display_line`, `pos_at_vcol`, `snap`, `screen_pos`
+6. Layout queries: `viewport`, `move_visual`, `display_col`, `next_visible`, `display_line`, `pos_at_vcol`, `snap`, `screen_pos`, `scroll`, `set_scroll`
 7. An `<any>` binding per state (§7)
 8. `edits_since`, so dot-repeat can record text inserted by any binding, including a mode's
 9. Window commands (split, close, only, focus by direction) and a surface's `scroll_to` and `reveal`

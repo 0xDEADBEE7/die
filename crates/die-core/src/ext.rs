@@ -412,7 +412,11 @@ impl Ctx {
     ) -> std::result::Result<Ctx, Vec<String>> {
         install_panic_hook();
         NOTICED.take(); // not this workspace's: they came before it
-        let mut reg = Registry::default();
+        let mut reg = Registry {
+            cur: CORE,
+            ..Default::default()
+        };
+        crate::layout::register_commands(&mut reg);
         let mut errors = vec![];
         let mut slots: Vec<ExtSlot> = vec![];
         for mut e in exts {

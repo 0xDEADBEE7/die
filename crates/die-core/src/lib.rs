@@ -26,6 +26,7 @@ mod rt;
 mod scene;
 mod text;
 mod undo;
+mod windows;
 
 pub use dispatch::*;
 pub use error::*;
@@ -35,7 +36,7 @@ pub use files::{FileInfo, Fingerprint, Uneditable};
 pub use ids::*;
 pub use keymap::*;
 pub use keys::*;
-pub use layout::{CellKind, Dir, DisplayLine, Geometry, LayoutCell, Stop, ViewRow, Viewport};
+pub use layout::{Dir, DisplayLine, Geometry, Stop, ViewRow, Viewport};
 pub use rt::*;
 pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
 pub use text::*;
