@@ -1,10 +1,14 @@
 //! The naive layout (`support/naive_layout.rs`) against contract §9: first every worked example,
 //! then each rule the examples don't reach.
 
-#[path = "support/naive_layout.rs"]
-mod naive_layout;
+// This reaches tests/support/naive_layout.rs without tests/support/mod.rs, whose fixtures use
+// die-core's API. The layout shares nothing with die-core, and neither does this file. The lint
+// bans the `path` attribute, so a test that has `mod support;` already declares it in mod.rs.
+mod support {
+    pub mod naive_layout;
+}
 
-use naive_layout::*;
+use support::naive_layout::*;
 
 #[track_caller]
 fn check_rows(input: Input, rows: &str) {
@@ -318,8 +322,6 @@ fn tables_match_the_contract() {
             .strip_prefix(e.doc)
             .unwrap_or_else(|| panic!("{line}: {}", e.doc));
         let rest = rest.trim_start();
-        // The empty text's Rows column doesn't start with what `render` gives by accident: both
-        // are `(empty)`.
         let rest = rest
             .strip_prefix(e.rows)
             .unwrap_or_else(|| panic!("{line}: {}", e.rows));
@@ -421,6 +423,16 @@ fn overlapping_hides_merge() {
         ),
         ("nested", &[(1, 6, Some("X")), (2, 3, Some("Y"))], "aXghij"),
         (
+            "nested twice: the second is still inside the first",
+            &[(1, 8, Some("X")), (2, 3, Some("Y")), (5, 6, Some("Z"))],
+            "aXij",
+        ),
+        (
+            "past a nested one, a Hide that overlaps only the first still merges",
+            &[(1, 8, Some("X")), (2, 3, Some("Y")), (6, 10, Some("Z"))],
+            "aX",
+        ),
+        (
             "no replacement that starts first hides a later one's",
             &[(1, 4, None), (2, 5, Some("Y"))],
             "afghij",
@@ -428,6 +440,11 @@ fn overlapping_hides_merge() {
         (
             "same start: one with a replacement, though shorter",
             &[(1, 3, None), (1, 2, Some("Y"))],
+            "aYdefghij",
+        ),
+        (
+            "and whichever was added first",
+            &[(1, 2, Some("Y")), (1, 3, None)],
             "aYdefghij",
         ),
         (
@@ -779,7 +796,7 @@ fn only_a_space_or_a_tab_first_makes_whitespace() {
     // A cluster starts with what's first in it: a prepended mark before a space isn't whitespace.
     check_rows(
         Input::new("aaaa\u{600} bbbbbbbb", 12),
-        "aaaa\u{600}·bbbbbb|bb".replace('·', " ").as_str(),
+        "aaaa\u{600} bbbbbb|bb",
     );
 }
 
@@ -945,6 +962,10 @@ fn a_cluster_wider_than_a_row_stays_at_its_rows_start() {
     // Replacements and virtual text can be this wide too.
     check_rows(
         Input::new("ab", 3).hide(0..1, Some(WIDE)),
+        &format!("{WIDE}|b"),
+    );
+    check_rows(
+        Input::new("b", 3).virtual_text(0, WIDE),
         &format!("{WIDE}|b"),
     );
 }
@@ -1332,6 +1353,14 @@ fn numbers_read_where_core_moves_the_cursor() {
             .numbers(Relative, 4),
         &[Some(1), Some(2), Some(1)],
     );
+    // That's its first row, not the next visible position, which here is a row later.
+    let wide_fold = "R".repeat(12);
+    check_numbers(
+        Input::new("x\nyyyy", 10)
+            .hide(2..5, Some(&wide_fold))
+            .numbers(Visual, 3),
+        &[Some(1), Some(2), Some(1)],
+    );
     // At or inside a range with none: the next visible position.
     check_numbers(
         Input::new("a\nb\nc", 10)
@@ -1339,12 +1368,12 @@ fn numbers_read_where_core_moves_the_cursor() {
             .numbers(Visual, 2),
         &[Some(1), Some(2), Some(1)],
     );
-    // The next visible position can be on the next row: the 11th x is past the hidden run.
+    // The next visible position can be on the next row: w, past the hidden run.
     check_numbers(
-        Input::new("xxxxxxxxxxyzw", 10)
-            .hide(10..12, None)
-            .numbers(Visual, 10),
-        &[Some(1), Some(1)],
+        Input::new("a\nxxxxxxxxxxyzw", 10)
+            .hide(12..14, None)
+            .numbers(Visual, 12),
+        &[Some(2), Some(1), Some(2)],
     );
     // Inside a cluster: the next cursor position, here on the next row.
     check_numbers(

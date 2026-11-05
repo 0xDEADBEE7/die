@@ -41,6 +41,10 @@ pub enum LineNumbers {
 }
 
 /// A Hide decoration, as `decorate` is given it.
+///
+/// Reading: §9's table of decorations also offers "a placement (an image or pixel buffer)", but
+/// "How text becomes rows" says nothing of a placement's cells, and `Deco::Hide` has no such field.
+/// So a Hide here shows a replacement or nothing.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Hide {
     /// The first hidden byte.
@@ -511,11 +515,13 @@ fn place(items: &[Item], text_w: usize, wrap: Wrap) -> (Vec<Vec<Cell>>, Vec<(usi
         // break before a row's first thing would make no progress, and the next sentence reads
         // this way: "The rest of a split tab or control character counts as being on the row, so
         // the item after it can be a break point." So a space that is itself first on its row
-        // still makes a break point after it.
+        // still makes a break point after it. §9's examples don't settle this: they all pass too
+        // if "that item" is the whitespace item and it's first when it starts on this row.
         //
         // Reading: that next sentence names control characters too, but "directly follows a
         // whitespace item" still applies and a control character isn't whitespace. So the item
-        // after a control character's rest isn't a break point.
+        // after a control character's rest isn't a break point. The examples don't settle this
+        // either: they all pass if it is one.
         //
         // "Hidden text in between doesn't stop it: items are what count." `items` holds no hidden
         // text. "With `Wrap::Char` the same rule applies with no break points."
@@ -743,6 +749,10 @@ pub fn layout(input: &Input) -> Layout {
             //
             // Reading: that means all of its rows. Virtual text there can make it wider than one
             // row, and Visual's "Every other row" doesn't bring a number back.
+            //
+            // Reading: this goes by where the display line starts, not by what shows. A hidden
+            // last line's row looks like the empty last row, but it starts before the end of the
+            // text, so it keeps its number.
             None
         } else {
             match input.numbers {
