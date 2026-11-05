@@ -80,6 +80,8 @@ pub fn row_beginning(s: &Start, w: WindowId) -> Result<Target, Fail> {
 
 // ---------------------------------------------------------------- characters and lines
 
+/// `h`: back count graphemes, as far as the line's start. With an operator waiting it's the
+/// same, and the operator takes what's between, so `dh` takes the grapheme before the cursor.
 pub fn backward_char(s: &Start) -> Result<Target, Fail> {
     let start = s.text.line_start(s.text.line_of(s.pos));
     steps(s, "Beginning of line", |p| {
@@ -87,9 +89,10 @@ pub fn backward_char(s: &Start) -> Result<Target, Fail> {
     })
 }
 
+/// `l`: on count graphemes, as far as the line's last. With an operator waiting it can land on
+/// the newline, so `dl` takes a line's last character.
 pub fn forward_char(s: &Start) -> Result<Target, Fail> {
     let end = line_end(s.text, s.text.line_of(s.pos));
-    // For an operator `l` can land on the newline, so `dl` takes a line's last character.
     let room = if s.op.is_some() { end + 1 } else { end };
     steps(s, "End of line", |p| {
         next_stop(s.text, p).filter(|&q| q < room)
@@ -155,6 +158,9 @@ fn first_non_blank(s: &Start) -> Result<Target, Fail> {
     Ok(Target::at(indent_end(s.text, s.text.line_of(s.pos))))
 }
 
+/// `$`: to the end of the line, count-1 lines down, keeping the line's end as the goal column.
+/// With an operator waiting it lands on the line's last character, and on an empty line it
+/// takes nothing.
 pub fn end_of_line(s: &Start) -> Result<Target, Fail> {
     let t = s.text;
     let here = t.line_of(s.pos);

@@ -87,7 +87,7 @@
       "s5_row": 5,
       "kind": "undo-model",
       "evil": "Your Evil has no redo (evil-undo-system is unset): C-r signals an error, and u after another command redoes, as Emacs's undo chain does.",
-      "die_vim": "Your S5 answer: u steps back and C-r steps forward, as in Vim (scope §10). C-r with nothing to redo fails, as u with nothing to undo does. Each command is its own step, so a run of ~, J, r or g~ isn't one step, as it is in Emacs. u puts the cursor back where the step's first change was made from, so a J from an empty line onto an indented one doesn't follow Emacs.",
+      "die_vim": "Your S5 answer: u steps back and C-r steps forward, as in Vim (scope §10). C-r with nothing to redo fails, as u with nothing to undo does. Each command is its own step, so a run of ~, J, r or g~ isn't one step, as it is in Emacs. u puts the cursor back where the step's first change was made from, so a J from an empty line stays there, where Evil's u leaves the cursor on the next line.",
       "cases": [
         { "case": "undo/ctrl-r-redo", "note": "S5 row 5", "fixture": "hand-written/undo.json" },
         { "case": "undo/u-after-move-redoes", "note": "S5 row 6", "fixture": "hand-written/undo.json" },
@@ -123,7 +123,7 @@
       "s5_row": 22,
       "kind": "emacs-artifact",
       "evil": "e and $ onto a letter with a combining mark leave the cursor after the mark, on the space or the newline: Emacs's command loop pushes point out of a composition. It isn't Evil's grammar.",
-      "die_vim": "As in Vim: e and $ land on the letter the mark sits on, so e on café lands on the é, mid-line and at a line's end. Another e moves on from there, as Evil's does. An inclusive operator takes the whole grapheme. So do l, h, x, X, s, r and ~, which step by graphemes, where Evil's step by characters and split a letter from its mark.",
+      "die_vim": "As in Vim: e and $ land on the letter the mark sits on, so e on café lands on the é, mid-line and at a line's end. Another e moves on from there, as Evil's does. An inclusive operator takes the whole grapheme. So do x, X, s, r, ~ and an operator over h or l, where Evil's take a character and split a letter from its mark. h and l on their own step over a grapheme in both.",
       "cases": [
         { "case": "motions/combining-mark-e", "fixture": "hand-written/motions.json" },
         { "case": "motions/combining-mark-e-line-end", "fixture": "hand-written/motions.json" },
@@ -131,7 +131,12 @@
         { "case": "operators/x-combining-mark", "fixture": "hand-written/operators.json" },
         { "case": "operators/X-combining-mark", "fixture": "hand-written/operators.json" },
         { "case": "operators/r-combining-mark", "fixture": "hand-written/operators.json" },
-        { "case": "operators/tilde-combining-mark", "fixture": "hand-written/operators.json" }
+        { "case": "operators/tilde-combining-mark", "fixture": "hand-written/operators.json" },
+        { "case": "operators/s-combining-mark", "fixture": "hand-written/operators.json" },
+        { "case": "operators/dl-combining-mark", "fixture": "hand-written/operators.json" },
+        { "case": "operators/yl-combining-mark", "fixture": "hand-written/operators.json" },
+        { "case": "operators/dh-combining-mark", "fixture": "hand-written/operators.json" },
+        { "case": "operators/2x-combining-mark", "fixture": "hand-written/operators.json" }
       ]
     },
     {
