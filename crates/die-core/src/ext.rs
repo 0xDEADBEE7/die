@@ -403,6 +403,7 @@ impl Ctx {
         config: Config,
     ) -> std::result::Result<Ctx, Vec<String>> {
         install_panic_hook();
+        NOTICED.take(); // not this workspace's: they came before it
         let mut reg = Registry::default();
         let mut errors = vec![];
         let mut slots: Vec<ExtSlot> = vec![];
