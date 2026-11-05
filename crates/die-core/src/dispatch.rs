@@ -272,7 +272,13 @@ impl Ctx {
         })
     }
 
-    fn run_key(&mut self, name: &str, keys: Vec<KeyEvent>, win: WindowId, buf: BufferId) {
+    pub(crate) fn run_key(
+        &mut self,
+        name: &str,
+        keys: Vec<KeyEvent>,
+        win: WindowId,
+        buf: BufferId,
+    ) {
         let p = std::mem::take(&mut self.prefix);
         let args = Args {
             count: p.count,
@@ -294,7 +300,7 @@ impl Ctx {
     }
 
     /// Lookup order: range keymap at the cursor, buffer-local, modes (newest first), kind, global.
-    fn layers_lookup(&self, buf: BufferId, state: State, keys: &[KeyEvent]) -> Lookup {
+    pub(crate) fn layers_lookup(&self, buf: BufferId, state: State, keys: &[KeyEvent]) -> Lookup {
         let b = &self.buffers[buf];
         let mut layers: Vec<&Keymap> = vec![];
         let (kind, ranges): (&str, Vec<&Keymap>) = match &b.content {

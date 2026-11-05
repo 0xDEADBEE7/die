@@ -27,6 +27,7 @@
 use die_test_cap as _;
 
 use die_core::{BufferId, Ctx, Deco, RegKind, Register, Reveal, Shape, State, WindowId};
+use die_core::{Button, Input, Mods, PointerEvent, PointerKind};
 use die_vim::Vim;
 
 fn editor(text: &str) -> (Ctx, BufferId, WindowId) {
@@ -637,4 +638,90 @@ fn no_keys_make_it_panic_or_leave_the_text() {
             ctx.messages.clear();
         }
     }
+}
+
+// ------------------------------------------------------------------ the pointer (K14)
+
+fn pointer(ctx: &mut Ctx, kind: PointerKind, row: usize, col: usize) {
+    let (clicks, mods) = (0, Mods::default());
+    ctx.handle(Input::Pointer(PointerEvent {
+        kind,
+        row,
+        col,
+        clicks,
+        mods,
+    }));
+    ctx.run_ready();
+    ctx.scene();
+}
+
+fn click(ctx: &mut Ctx, row: usize, col: usize) {
+    pointer(ctx, PointerKind::Press(Button::Left), row, col);
+    pointer(ctx, PointerKind::Release(Button::Left), row, col);
+}
+
+fn drag(ctx: &mut Ctx, row: usize, col: usize) {
+    pointer(ctx, PointerKind::Drag(Button::Left), row, col);
+}
+
+#[test]
+fn a_click_past_a_line_rests_as_any_normal_cursor_does_and_not_in_insert_state() {
+    let (mut ctx, b, w) = editor("abc\n\n");
+    ctx.scene();
+    click(&mut ctx, 0, 10);
+    assert_eq!(cursor(&ctx, b, w), 2, "normal state: the last character");
+    click(&mut ctx, 1, 10);
+    assert_eq!(cursor(&ctx, b, w), 4, "an empty line's newline");
+    click(&mut ctx, 2, 10);
+    assert_eq!(cursor(&ctx, b, w), 5, "the empty last row");
+    ctx.type_keys("ggi");
+    click(&mut ctx, 0, 10);
+    assert_eq!(cursor(&ctx, b, w), 3, "insert state: the newline");
+    ctx.type_keys("!<Esc>");
+    assert_eq!(text(&ctx, b), "abc!\n\n");
+}
+
+#[test]
+fn a_dragged_selection_is_visual_state_for_die_vim() {
+    let (mut ctx, b, w) = editor("hello\nworld\n");
+    ctx.scene();
+    pointer(&mut ctx, PointerKind::Press(Button::Left), 0, 1);
+    drag(&mut ctx, 0, 3);
+    pointer(&mut ctx, PointerKind::Release(Button::Left), 0, 3);
+    ctx.type_keys("d");
+    assert_eq!(text(&ctx, b), "ho\nworld\n");
+    assert_eq!(ctx.state(), State::Normal);
+    assert_eq!(cursor(&ctx, b, w), 1);
+}
+
+#[test]
+fn a_click_ends_a_selection_for_gv_and_cancels_a_waiting_operator() {
+    let (mut ctx, b, w) = editor("hello\nworld\n");
+    ctx.scene();
+    ctx.type_keys("vl");
+    click(&mut ctx, 1, 2);
+    assert_eq!((ctx.state(), cursor(&ctx, b, w)), (State::Normal, 8));
+    ctx.type_keys("gv");
+    let sel = ctx.text(b).unwrap().selection(w).unwrap();
+    assert_eq!((ctx.state(), sel.anchor, sel.head), (State::Visual, 0, 1));
+    ctx.type_keys("<Esc>");
+
+    ctx.type_keys("2d");
+    click(&mut ctx, 1, 3);
+    ctx.type_keys("x");
+    assert_eq!(text(&ctx, b), "hello\nword\n");
+}
+
+#[test]
+fn a_drag_from_insert_state_ends_the_session_first() {
+    let (mut ctx, b, w) = editor("hello\n");
+    ctx.scene();
+    ctx.type_keys("ix");
+    ctx.scene();
+    pointer(&mut ctx, PointerKind::Press(Button::Left), 0, 1);
+    drag(&mut ctx, 0, 3);
+    let sel = ctx.text(b).unwrap().selection(w).unwrap();
+    assert_eq!((ctx.state(), sel.anchor, sel.head), (State::Visual, 1, 3));
+    ctx.type_keys("<Esc>u");
+    assert_eq!(text(&ctx, b), "hello\n", "the session was one undo step");
 }

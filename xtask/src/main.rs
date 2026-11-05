@@ -33,8 +33,9 @@ const USAGE: &str = "usage: cargo xtask <task>
                        tree as git would commit it. guards and clean-build are skipped
                        unless the diff from the merge base with main touches Cargo.toml,
                        Cargo.lock, .cargo/, rust-toolchain.toml, a build script, xtask/
-                       or tools/test-cap/, and the tests run at DIE_PROP_CASES=2000 unless
-                       it's set. --full runs every step at the old property counts
+                       or tools/test-cap/, and the tests run at DIE_PROP_CASES=100 unless
+                       it's set, without the #[ignore] ones. --full runs every step and
+                       every test, ignored ones too, at the old property counts
   ci --linux [--worktree | --rev R]
                        the tests, the oracle and the Linux clean-build on aarch64
                        Linux, in a container on colima (exit test (f))

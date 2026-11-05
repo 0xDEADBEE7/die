@@ -156,6 +156,7 @@ impl Extension for Vim {
 
     fn init(&mut self, ctx: &mut Ctx) -> Result {
         repeat::observe(ctx, self.rec.clone());
+        ctx.set_cursor_rest(text::rest_pos);
         // A buffer killed in insert state never gets its Escape, nor one with an
         // operator waiting its motion.
         ctx.on_buffer_killed(|ctx, b| {

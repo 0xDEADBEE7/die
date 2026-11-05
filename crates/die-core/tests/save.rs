@@ -1067,6 +1067,7 @@ fn log_lines(bytes: usize, mark: &str) -> String {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn a_line_added_to_a_large_file_reloads_quickly() {
     let d = Dir::new("append-cost");
     let mut log = log_lines(10 << 20, "same");
@@ -1084,6 +1085,7 @@ fn a_line_added_to_a_large_file_reloads_quickly() {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn many_changed_lines_are_one_change_past_the_anchor_limit() {
     let d = Dir::new("rewrite-cost");
     let first = log_lines(2 << 20, "m0");
