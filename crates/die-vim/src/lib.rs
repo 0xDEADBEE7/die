@@ -19,6 +19,7 @@ mod operators;
 mod registers;
 mod repeat;
 mod scripts;
+mod substitute;
 mod text;
 mod visual;
 

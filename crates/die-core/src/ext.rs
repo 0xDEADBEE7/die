@@ -350,6 +350,8 @@ pub struct Ctx {
     pub(crate) errors: Option<Vec<String>>,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
+    /// `Ctx::quit` was called.
+    pub(crate) quit_wanted: bool,
 }
 
 fn panic_msg(p: &(dyn Any + Send)) -> String {
@@ -509,6 +511,7 @@ impl Ctx {
             errors: None,
             faces,
             search_highlight: None,
+            quit_wanted: false,
         };
         for (name, c) in reg.commands {
             if ctx.commands.insert(name.clone(), c).is_some() {
@@ -591,6 +594,17 @@ impl Ctx {
     pub fn nesting(&self) -> usize {
         self.ext_stack.len()
     }
+    /// Ask the host to end the program when this turn's work is done, as `:q` from the last
+    /// window does. Nothing here checks for unsaved changes: that's the caller's.
+    pub fn quit(&mut self) {
+        self.quit_wanted = true;
+    }
+
+    /// Whether [`Ctx::quit`] has been called.
+    pub fn quit_wanted(&self) -> bool {
+        self.quit_wanted
+    }
+
     /// A command's doc and the name of whoever registered it.
     pub fn command_doc(&self, name: &str) -> Option<(&'static str, &'static str)> {
         self.commands

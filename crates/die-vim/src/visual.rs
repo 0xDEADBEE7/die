@@ -194,6 +194,18 @@ fn leave(ctx: &mut Ctx, b: BufferId, w: WindowId, sel: Selection) -> Result {
     Ok(())
 }
 
+/// The first and last lines of `b`'s last selection, for `'<,'>`.
+pub fn last_lines(ctx: &mut Ctx, b: BufferId) -> Result<Option<(usize, usize)>> {
+    let Some(last) = ctx.with_ext(|v: &mut Vim, _| v.last_visual.get(&b).copied())? else {
+        return Ok(None);
+    };
+    let t = ctx.text(b)?;
+    let at = |m| t.marker(m).map(|p| t.line_of(p));
+    Ok(at(last.anchor)
+        .zip(at(last.head))
+        .map(|(a, h)| (a.min(h), a.max(h))))
+}
+
 /// `gv`: the last selection again. With none it does nothing. In visual state the two change
 /// places, so `gv` again comes back, as in Evil.
 pub fn restore(ctx: &mut Ctx, a: &Args) -> Result {
