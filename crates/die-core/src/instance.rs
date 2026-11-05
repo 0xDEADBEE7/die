@@ -2,7 +2,8 @@
 //! instance; the OS drops the lock when its holder dies, however it dies. On a restart the
 //! old instance listens on a Unix socket and the new one connects as soon as it starts,
 //! says when its first frame is up, and takes the lock once the old one has gone. If the
-//! connection closes with nothing said, the new one died, and the old one carries on.
+//! connection closes with nothing said, the new one died, and the old one carries on. A new
+//! one that was too late finds the lock still held, and goes.
 
 use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Seek, Write};
@@ -48,11 +49,17 @@ impl Instance {
         }
     }
 
-    /// Take the lock in `dir`, waiting for whoever has it.
-    pub fn lock(dir: &Path) -> io::Result<Instance> {
-        let file = lock_file(dir)?;
-        file.lock()?;
-        Instance::held(file)
+    /// Take the lock in `dir` from an old instance whose handover has closed. Its lock goes
+    /// when it does, so one still held after `patience` says it chose to carry on, and None
+    /// says this instance should go.
+    pub fn take_over(dir: &Path, patience: Duration) -> io::Result<Option<Instance>> {
+        let deadline = Instant::now() + patience;
+        loop {
+            match Instance::try_lock(dir)? {
+                None if Instant::now() < deadline => sleep(POLL),
+                result => return Ok(result),
+            }
+        }
     }
 
     fn held(mut file: File) -> io::Result<Instance> {
@@ -97,6 +104,7 @@ impl Handover {
     pub fn wait(&mut self, timeout: Duration) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         let late = || "the new instance had no first frame in time".to_owned();
+        let died = || "the new instance died before its first frame".to_owned();
         let stream = loop {
             match self.listener.accept() {
                 Ok((stream, _)) => break stream,
@@ -113,14 +121,15 @@ impl Handover {
         let setup = stream
             .set_nonblocking(false)
             .and_then(|()| stream.set_read_timeout(Some(left.max(POLL))));
-        setup.map_err(|e| e.to_string())?;
+        // macOS refuses these with EINVAL on a socket whose other end has already closed.
+        setup.map_err(|_| died())?;
         let mut line = String::new();
         match BufReader::new(&stream).read_line(&mut line) {
             Ok(_) if line == FIRST_FRAME => {
                 self.successor = Some(stream);
                 Ok(())
             }
-            Ok(_) => Err("the new instance died before its first frame".to_owned()),
+            Ok(_) => Err(died()),
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 Err(late())
             }
