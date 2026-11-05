@@ -54,8 +54,8 @@ struct WakeState {
     host: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
-/// Tells whatever runs the loop that there's work on another thread's account (contract §12). Any
-/// thread can hold one and call it. It names no event loop: the host connects its own with
+/// Tells whatever runs the loop that another thread has left it work (contract §12). Any thread
+/// can hold one and call it. It names no event loop: the host connects its own with
 /// [`Ctx::set_waker`].
 #[derive(Clone, Default)]
 pub struct Waker(Arc<WakeState>);
@@ -138,6 +138,7 @@ pub(crate) struct Idle {
 /// The shortest period a repeating timer can have, so one with none can't hold the loop.
 const MIN_PERIOD: Duration = Duration::from_millis(1);
 
+/// A timer's call, for the queue. It still checks its handle when its turn comes.
 fn fire(sub: &Rc<SubInner>, f: &TimerFn) -> Queued {
     let f = f.clone();
     Queued {
