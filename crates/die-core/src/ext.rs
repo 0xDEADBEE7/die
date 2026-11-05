@@ -336,6 +336,7 @@ pub struct Ctx {
     pub(crate) input_ran: bool,
     /// What the last composed frame's cells showed.
     pub(crate) drawn: Drawn,
+    pub(crate) pointer: crate::app::PointerState,
     /// `run_ready` hit its turn limit and has said so.
     pub(crate) over_limit: bool,
     pub(crate) files: crate::files::Files,
@@ -495,6 +496,7 @@ impl Ctx {
             app_focused: true,
             input_ran: false,
             drawn: Drawn::default(),
+            pointer: Default::default(),
             over_limit: false,
             files: Default::default(),
             messages: vec![],
