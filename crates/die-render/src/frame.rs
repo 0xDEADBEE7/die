@@ -93,6 +93,17 @@ pub struct Image {
     pub bgra: Vec<u8>,
 }
 
+/// A frame on the window's drawable.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Presented {
+    /// The drawable's width in pixels.
+    pub w: u32,
+    /// The drawable's height in pixels.
+    pub h: u32,
+    /// Its pixels, if the surface was asked to read this frame back.
+    pub image: Option<Image>,
+}
+
 impl Image {
     /// The pixel at (x, y), as red, green and blue.
     pub fn rgb(&self, x: u32, y: u32) -> [u8; 3] {
