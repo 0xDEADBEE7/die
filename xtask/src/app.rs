@@ -23,7 +23,7 @@ impl Profile {
     fn flag(self) -> &'static str {
         match self {
             Profile::Release => "--release",
-            Profile::Dev => profile.flag(),
+            Profile::Dev => "--profile=dev",
         }
     }
 
@@ -51,7 +51,7 @@ pub fn build(root: &Path, app: &Path, id: &str, profile: Profile) -> Result {
     }
     run_cmd(Command::new(cargo()).current_dir(root).args([
         "build",
-        "--profile=dev",
+        profile.flag(),
         "--locked",
         "-p",
         "die-dev",
