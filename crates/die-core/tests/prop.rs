@@ -6,13 +6,17 @@
 //!
 //! `layout_agrees_with_the_naive_layout` is K4's check against `support/naive_layout.rs`, written
 //! from contract §9 alone: every row, cell, cursor position, number and query, after each of a run
-//! of edits and decoration changes on text full of clusters and control characters. S4's oracle
-//! wraps by character, so with `Wrap::Word` the sequences above read their rows from that layout.
+//! of edits and decoration changes on text full of clusters and control characters. Laying every
+//! row out after each edit would hide what lazy rows get wrong, so a second property makes only
+//! small queries between edits and compares at the end, and a third runs texts long enough to cross
+//! the rope's chunks. S4's oracle wraps by character, so with `Wrap::Word` the sequences above read
+//! their rows from that layout.
 #![allow(clippy::nonminimal_bool)] // S4's test as ported (K1)
 use die_core::*;
 use proptest::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
 mod support;
@@ -956,6 +960,7 @@ fn rich_text(max: usize) -> impl Strategy<Value = String> {
 enum N {
     Ins(u16, String),
     Del(u16, u8),
+    Replace(u16, u8, String),
     Hide(u16, u8, Option<String>),
     Unhide(u8),
     Virt(u16, String),
@@ -968,6 +973,7 @@ fn n_step() -> impl Strategy<Value = N> {
     prop_oneof![
         3 => (any::<u16>(), rich_text(5)).prop_map(|(a, s)| N::Ins(a, s)),
         3 => (any::<u16>(), 0u8..8).prop_map(|(a, n)| N::Del(a, n)),
+        3 => (any::<u16>(), 0u8..8, rich_text(5)).prop_map(|(a, n, s)| N::Replace(a, n, s)),
         2 => (any::<u16>(), 0u8..12, prop::option::of(rich_text(5))).prop_map(|(a, n, r)| N::Hide(a, n, r)),
         1 => any::<u8>().prop_map(N::Unhide),
         2 => (any::<u16>(), rich_text(5)).prop_map(|(a, s)| N::Virt(a, s)),
@@ -975,6 +981,68 @@ fn n_step() -> impl Strategy<Value = N> {
         1 => (0u8..4, prop::option::of(2u8..20), any::<bool>(), 0u8..5, 0u8..9).prop_map(|(n, m, c, wr, t)| N::Set(n, m, c, wr, t)),
         2 => any::<u16>().prop_map(N::Cursor),
     ]
+}
+
+/// One step on the text. A resize is the caller's.
+fn apply_n(t: &mut TextBuf, w: WindowId, step: &N, hides: &mut Vec<DecorationId>) {
+    match step {
+        N::Ins(a, s) => {
+            let p = at(t, *a);
+            t.tx(Origin::Extension)
+                .insert(p, s.as_str())
+                .commit()
+                .unwrap();
+        }
+        N::Del(a, n) => {
+            let p = at(t, *a);
+            let q = chars_after(t, p, *n as usize);
+            t.tx(Origin::Extension).delete(p..q).commit().unwrap();
+        }
+        N::Replace(a, n, s) => {
+            let p = at(t, *a);
+            let q = chars_after(t, p, *n as usize);
+            t.tx(Origin::Extension)
+                .replace(p..q, s.as_str())
+                .commit()
+                .unwrap();
+        }
+        N::Hide(a, n, r) => {
+            let p = at(t, *a);
+            let q = chars_after(t, p, *n as usize);
+            let deco = Deco::Hide {
+                replacement: r.clone().map(Into::into),
+                reveal: Reveal::Remove,
+            };
+            hides.push(t.decorate(p..q, deco).unwrap());
+        }
+        N::Unhide(k) => {
+            if !hides.is_empty() {
+                t.undecorate(hides.remove(*k as usize % hides.len()));
+            }
+        }
+        N::Virt(a, s) => {
+            let p = at(t, *a);
+            t.decorate(p..p, Deco::Virtual(s.clone().into())).unwrap();
+        }
+        N::Size(_) => {}
+        N::Set(nums, maxw, center, wrap, tab) => {
+            let s = t.settings_mut();
+            s.line_numbers = [
+                LineNumbers::Off,
+                LineNumbers::Absolute,
+                LineNumbers::Relative,
+                LineNumbers::Visual,
+            ][*nums as usize];
+            s.max_width = maxw.map(|m| m as usize);
+            s.center = *center;
+            s.wrap = [Wrap::Off, Wrap::Char, Wrap::Word, Wrap::Word, Wrap::Word][*wrap as usize];
+            s.tab_width = *tab as usize;
+        }
+        N::Cursor(a) => {
+            let p = at(t, *a);
+            t.set_cursor(w, p);
+        }
+    }
 }
 
 fn run_naive(init: String, width: u8, steps: Vec<N>) {
@@ -987,60 +1055,113 @@ fn run_naive(init: String, width: u8, steps: Vec<N>) {
         if let N::Size(cols) = step {
             ctx.resize(w, *cols as usize, 4).unwrap();
         }
-        let t = ctx.text_mut(b).unwrap();
-        match step {
-            N::Ins(a, s) => {
-                let p = at(t, *a);
-                t.tx(Origin::Extension)
-                    .insert(p, s.as_str())
-                    .commit()
-                    .unwrap();
-            }
-            N::Del(a, n) => {
-                let p = at(t, *a);
-                let q = chars_after(t, p, *n as usize);
-                t.tx(Origin::Extension).delete(p..q).commit().unwrap();
-            }
-            N::Hide(a, n, r) => {
-                let p = at(t, *a);
-                let q = chars_after(t, p, *n as usize);
-                let deco = Deco::Hide {
-                    replacement: r.clone().map(Into::into),
-                    reveal: Reveal::Remove,
-                };
-                hides.push(t.decorate(p..q, deco).unwrap());
-            }
-            N::Unhide(k) => {
-                if !hides.is_empty() {
-                    t.undecorate(hides.remove(*k as usize % hides.len()));
-                }
-            }
-            N::Virt(a, s) => {
-                let p = at(t, *a);
-                t.decorate(p..p, Deco::Virtual(s.clone().into())).unwrap();
-            }
-            N::Size(_) => {}
-            N::Set(nums, maxw, center, wrap, tab) => {
-                let s = t.settings_mut();
-                s.line_numbers = [
-                    LineNumbers::Off,
-                    LineNumbers::Absolute,
-                    LineNumbers::Relative,
-                    LineNumbers::Visual,
-                ][*nums as usize];
-                s.max_width = maxw.map(|m| m as usize);
-                s.center = *center;
-                s.wrap =
-                    [Wrap::Off, Wrap::Char, Wrap::Word, Wrap::Word, Wrap::Word][*wrap as usize];
-                s.tab_width = *tab as usize;
-            }
-            N::Cursor(a) => {
-                let p = at(t, *a);
-                t.set_cursor(w, p);
-            }
-        }
+        apply_n(ctx.text_mut(b).unwrap(), w, step, &mut hides);
         check_naive(&mut ctx, b, w, i + 1);
     }
+}
+
+/// What the lazy property does between edits. Each query asks about one position or one small
+/// window, as a keystroke does, so a line stays laid out only as far as they reached.
+#[derive(Debug, Clone)]
+enum Lazy {
+    N(N),
+    Undo,
+    Redo,
+    Boundary,
+    Sticky(u8, bool, bool),
+    TwoInserts(u16, u16, String),
+    Silent(u16, String),
+    Query(u16),
+    Frame,
+    Top(u16, u8),
+    OtherSize(u8),
+}
+
+fn lazy_step() -> impl Strategy<Value = Lazy> {
+    prop_oneof![
+        12 => n_step().prop_map(Lazy::N),
+        3 => Just(Lazy::Undo),
+        2 => Just(Lazy::Redo),
+        1 => Just(Lazy::Boundary),
+        2 => (any::<u8>(), any::<bool>(), any::<bool>()).prop_map(|(k, a, b)| Lazy::Sticky(k, a, b)),
+        2 => (any::<u16>(), any::<u16>(), rich_text(3)).prop_map(|(a, b, s)| Lazy::TwoInserts(a, b, s)),
+        1 => (any::<u16>(), rich_text(3)).prop_map(|(a, s)| Lazy::Silent(a, s)),
+        4 => any::<u16>().prop_map(Lazy::Query),
+        3 => Just(Lazy::Frame),
+        1 => (any::<u16>(), any::<u8>()).prop_map(|(a, r)| Lazy::Top(a, r)),
+        1 => (2u8..30).prop_map(Lazy::OtherSize),
+    ]
+}
+
+/// A cache's rows are only ever half laid out in use. So: edits with small queries between them,
+/// in two windows of different widths, and only then every row against the naive layout.
+fn run_naive_lazy(init: String, width: u8, steps: Vec<Lazy>) {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("p", &init);
+    let w = ctx.open_window(b, width as usize, 2).unwrap();
+    let other = ctx
+        .open_window(b, (width as usize / 2 + 3).max(2), 2)
+        .unwrap();
+    ctx.focus(w);
+    let mut hides = vec![];
+    for step in &steps {
+        match step {
+            Lazy::N(N::Size(cols)) => ctx.resize(w, *cols as usize, 2).unwrap(),
+            Lazy::OtherSize(cols) => ctx.resize(other, *cols as usize, 2).unwrap(),
+            Lazy::Frame => {
+                let (cols, rows) = ctx.window_size(w).unwrap();
+                let at = WindowPlacement {
+                    window: w,
+                    col: 0,
+                    row: 0,
+                };
+                ctx.compose(cols, rows + 2, &[at]);
+            }
+            _ => {}
+        }
+        let t = ctx.text_mut(b).unwrap();
+        match step {
+            Lazy::N(n) => apply_n(t, w, n, &mut hides),
+            Lazy::Undo => {
+                let _ = t.undo();
+            }
+            Lazy::Redo => {
+                let _ = t.redo();
+            }
+            Lazy::Boundary => t.undo_boundary(),
+            Lazy::Sticky(k, start, end) => {
+                if !hides.is_empty() {
+                    let g = |left| if left { Gravity::Left } else { Gravity::Right };
+                    t.set_sticky(hides[*k as usize % hides.len()], g(*start), g(*end));
+                }
+            }
+            Lazy::TwoInserts(a, c, s) => {
+                let (p, q) = (at(t, *a), at(t, *c));
+                if p != q {
+                    let (p, q) = (p.min(q), p.max(q));
+                    let tx = t.tx(Origin::Extension).insert(p, s.as_str()).insert(q, "z");
+                    tx.commit().unwrap();
+                }
+            }
+            Lazy::Silent(a, s) => {
+                let p = at(t, *a);
+                let tx = t.tx(Origin::Extension).silent().insert(p, s.as_str());
+                tx.commit().unwrap();
+            }
+            Lazy::Query(a) => {
+                let p = at(t, *a);
+                let _ = (t.screen_pos(w, p), t.display_col(p));
+                let _ = t.move_visual(other, p, 1, None);
+            }
+            Lazy::Top(a, r) => {
+                let p = at(t, *a);
+                t.set_scroll(w, p, *r as usize).unwrap();
+            }
+            Lazy::Frame | Lazy::OtherSize(_) => {}
+        }
+    }
+    check_naive(&mut ctx, b, w, steps.len());
+    check_naive(&mut ctx, b, other, steps.len());
 }
 
 /// The random texts are too short to reach a gutter's next digit.
@@ -1072,6 +1193,70 @@ proptest! {
         init in rich_text(60),
         width in 2u8..24,
         steps in prop::collection::vec(n_step(), 0..12),
+    ) {
+        run_naive(init, width, steps);
+    }
+
+    /// The same check when an edit finds a line half laid out, which is how a keystroke finds it.
+    #[test]
+    fn layout_agrees_with_the_naive_layout_after_lazy_edits(
+        init in rich_text(60),
+        width in 2u8..24,
+        steps in prop::collection::vec(lazy_step(), 0..24),
+    ) {
+        run_naive_lazy(init, width, steps);
+    }
+}
+
+/// A rope's chunks hold about 1 KB, so the short texts above never cross one. A cluster that does
+/// sends `grapheme` to the next chunk, the previous one and the chunks before for context.
+#[test]
+fn a_cluster_across_a_ropes_chunks_agrees_with_the_naive_layout() {
+    for unit in ["e\u{301}", "\u{1f1e6}", "👍\u{1f3fd}", "👍\u{200d}👍", "\u{1100}\u{1161}"] {
+        let mut crossed = 0;
+        // Moving the text along puts a chunk's edge in each place inside a cluster in turn.
+        for shift in 0..unit.len() {
+            let text = "a".repeat(shift) + &unit.repeat(1300 / unit.len());
+            let clusters: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+            let mut ctx = Ctx::new(vec![]).unwrap();
+            let b = ctx.create_text("p", &text);
+            let w = ctx.open_window(b, 17, 4).unwrap();
+            let mut edge = 0;
+            let inside = ctx.text(b).unwrap().rope().chunks().any(|c| {
+                edge += c.len();
+                edge < text.len() && clusters.binary_search(&edge).is_err()
+            });
+            if inside {
+                crossed += 1;
+                check_naive(&mut ctx, b, w, 0);
+            }
+        }
+        assert!(crossed > 0, "no chunk's edge falls inside {unit:?}");
+    }
+}
+
+/// Mixed text across a rope's chunks, with few newlines, so one display line crosses several.
+fn long_rich_text(max: usize) -> impl Strategy<Value = String> {
+    let ch = prop_oneof![
+        6 => Just('a'), 2 => Just(' '), 2 => Just('\t'),
+        4 => Just('中'), 2 => Just('é'), 3 => Just('\u{301}'), 1 => Just('\u{903}'),
+        1 => Just('\u{1}'), 1 => Just('\r'), 1 => Just('\u{85}'),
+        3 => Just('👍'), 2 => Just('\u{1f3fd}'), 4 => Just('\u{1f1e6}'), 1 => Just('\u{200b}'),
+        2 => Just('\u{200d}'), 1 => Just('\u{fe0e}'),
+        1 => Just('\u{1100}'), 1 => Just('\u{1161}'),
+        1 => Just('\n'),
+    ];
+    prop::collection::vec(ch, max / 2..max).prop_map(|v| v.into_iter().collect())
+}
+
+proptest! {
+    // About a second a case, so a fixed few however many the others run.
+    #![proptest_config(ProptestConfig { cases: 5, max_shrink_iters: 200, ..ProptestConfig::default() })]
+    #[test]
+    fn long_text_across_a_ropes_chunks_agrees_with_the_naive_layout(
+        init in long_rich_text(1600),
+        width in 2u8..40,
+        steps in prop::collection::vec(n_step(), 0..3),
     ) {
         run_naive(init, width, steps);
     }
