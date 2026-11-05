@@ -11,8 +11,9 @@
 //! its mode and owner, so a crash leaves the old bytes or the new ones. It's
 //! written in place when replacing it would change what it is: when it has other
 //! hard links, when its owner can't be kept, or when its directory can't be
-//! written. In place, a crash can leave part of each. Extended attributes and ACLs
-//! don't survive a replacement.
+//! written. In place, a crash can leave part of each. The new file starts as a copy
+//! of the old, so on macOS extended attributes and ACLs survive. `fs::copy` doesn't
+//! carry them on Linux, where they're lost.
 //!
 //! **Refusing.** [`Ctx::save`], `:w`, refuses when the file changed since DIE last
 //! read or wrote it, and when you can't write to it. [`Ctx::save_force`], `:w!`,
@@ -24,9 +25,16 @@
 //! fingerprint, and reloads a buffer with no unsaved changes. A reload is one undo
 //! step, and text it didn't change keeps its cursors and markers. With the same
 //! bytes it changes nothing. It waits while an undo group is open, as during an
-//! insert. Unsaved changes are never reloaded over: a message says the file changed,
-//! once, and [`Ctx::revert_file`], `:e!`, reloads on request. A deleted file leaves
-//! the buffer as it is, with a message.
+//! insert, and while the file's time is within 200 ms of now, because `rustfmt` and
+//! others write in place and an empty file would lose the cursor. Unsaved changes
+//! and files over 16 MiB are never reloaded by the poll: a message says the file
+//! changed, once, and [`Ctx::revert_file`], `:e!`, reloads on request. A deleted file
+//! leaves the buffer as it is, with a message.
+//!
+//! A reload into or out of a read-only state is no undo step, so `u` can't bring back
+//! text that doesn't match the file, which `:w` would then store. `:e!` refuses to
+//! replace unsaved changes with a file that can't be edited. The byte-order mark is
+//! the file's as of the last read: undoing past a reload doesn't bring one back.
 //!
 //! Settings by path are a stopgap until file-type modes (M1), which extensions
 //! will declare at Register.
@@ -38,7 +46,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, ErrorKind, Read, Seek, Write};
 use std::ops::Range;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, fchown};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, fchown};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -46,6 +54,20 @@ use std::time::{Duration, SystemTime};
 /// background priority on a loaded machine. Emacs's own 5 s interval is mostly hidden by its
 /// file notifications, so 5 s here would feel slower than your Emacs.
 const POLL_EVERY: Duration = Duration::from_secs(1);
+
+/// How long after a file's modification time the poll leaves it alone: the tool may be between
+/// truncating and writing. A time in the future isn't settling, or a skewed clock would stop
+/// reloads.
+const SETTLING: Duration = Duration::from_millis(200);
+
+/// The largest file the poll reads by itself. A change means reading all of it on the main
+/// thread, so this bounds what a growing log costs each second.
+const POLL_READS_UP_TO: u64 = 16 << 20;
+
+/// Past this much differing text, a reload is one change and doesn't look for lines to anchor.
+/// Hashing grows with it, and so do the changes to apply and undo: 2 MB with 50,000 changed lines
+/// took 1.9 s.
+const ANCHORS_UP_TO: usize = 1 << 20;
 
 /// How many symlinks a save follows before giving up, as the kernel's own limit does.
 const MAX_LINKS: usize = 40;
@@ -108,8 +130,8 @@ pub struct FileInfo {
     /// this is set: the buffer's [`Settings::read_only`] can be turned off, and
     /// blocks only `User` edits.
     pub read_only: Option<Uneditable>,
-    /// The text's revision when it last matched the file.
-    saved_rev: u64,
+    /// [`Settings::read_only`] before a file reason turned it on, to put back when that ends.
+    read_only_before: bool,
     /// A message has said the file changed under unsaved text.
     told: bool,
 }
@@ -176,6 +198,7 @@ impl Ctx {
                 c.msg
             ));
         }
+        let read_only_before = settings.read_only;
         if let Some(why) = read_only {
             settings.read_only = true;
             self.messages
@@ -183,7 +206,6 @@ impl Ctx {
         }
         let buf = self.create_text(&name, &text);
         *self.text_mut(buf)?.settings_mut() = settings;
-        let saved_rev = self.text(buf)?.rev();
         self.files.by_buffer.insert(
             buf,
             FileInfo {
@@ -191,7 +213,7 @@ impl Ctx {
                 fingerprint,
                 bom,
                 read_only,
-                saved_rev,
+                read_only_before,
                 told: false,
             },
         );
@@ -258,8 +280,11 @@ impl Ctx {
     }
 
     /// Read `buf`'s file again and replace the text, as `:e!`, unsaved changes included. It's
-    /// one undo step, so `u` brings them back. With the file gone or unreadable, it's an error
-    /// and the text stays. Text the file didn't change keeps its cursors and markers.
+    /// one undo step, so `u` brings them back. There's no step when the buffer was read-only for
+    /// the file's sake, whose text a save refused anyway. It's an error, and the text stays, with
+    /// the file gone or unreadable, or with unsaved changes and a file that can't be edited, where
+    /// `u` and `:w` couldn't get them back. Text the file didn't change keeps its cursors and
+    /// markers.
     pub fn revert_file(&mut self, buf: BufferId) -> Result {
         self.visit(buf)?;
         self.reload(buf)
@@ -275,8 +300,8 @@ impl Ctx {
         }
     }
 
-    /// One file of [`Ctx::check_files`]. What can't be read now is looked at again next time,
-    /// and what's only half written then shows as a change again.
+    /// One file of [`Ctx::check_files`]. What can't be read now, or may be mid-write, is looked
+    /// at again next time, and what's only half written after that shows as a change again.
     fn check_file(&mut self, buf: BufferId) -> Option<()> {
         let f = self.files.by_buffer.get(&buf)?;
         let known = f.fingerprint;
@@ -298,7 +323,13 @@ impl Ctx {
                     "{name} changed on disk; :w refuses, :w! overwrites it, :e! reloads it"
                 ));
             }
-        } else if !self.text(buf).ok()?.undo_group_open() {
+        } else if disk.is_some_and(|d| d.len > POLL_READS_UP_TO) {
+            let f = self.files.by_buffer.get_mut(&buf)?;
+            if !std::mem::replace(&mut f.told, true) {
+                let line = format!("{name} changed on disk and is large; :e! reloads it");
+                self.messages.push(line);
+            }
+        } else if !self.text(buf).ok()?.undo_group_open() && !disk.is_some_and(settling) {
             self.reload(buf).ok()?;
         }
         Some(())
@@ -314,15 +345,14 @@ impl Ctx {
 
     /// Whether the text differs from what the file last held, as far as this buffer knows.
     fn unsaved(&self, buf: BufferId) -> Result<bool> {
-        Ok(self.text(buf)?.rev() != self.visit(buf)?.saved_rev)
+        Ok(self.text(buf)?.modified())
     }
 
     /// The text and the file now agree, and `fingerprint` is what the file looks like.
     fn settle(&mut self, buf: BufferId, fingerprint: Fingerprint) -> Result {
-        let rev = self.text(buf)?.rev();
+        self.text_mut(buf)?.set_modified(false);
         if let Some(f) = self.files.by_buffer.get_mut(&buf) {
             f.fingerprint = Some(fingerprint);
-            f.saved_rev = rev;
             f.told = false;
         }
         Ok(())
@@ -337,6 +367,14 @@ impl Ctx {
         let (bytes, fingerprint) =
             read(&path).map_err(|e| Error::Msg(format!("{name}: {e}; not reloaded")))?;
         let (text, bom, why) = decode(bytes);
+        if let Some(why) = why
+            && self.unsaved(buf)?
+        {
+            return Err(Error::Msg(format!(
+                "{name} {} now, so :e! would lose your changes; not reloaded",
+                why.describe()
+            )));
+        }
         let t = self.text_mut(buf)?;
         let changes = line_changes(&t.rope().to_string(), &text);
         if !changes.is_empty() {
@@ -345,17 +383,27 @@ impl Ctx {
             for (r, s) in changes {
                 tx = tx.replace(r, s);
             }
+            if was.is_some() || why.is_some() {
+                tx = tx.silent();
+            }
             tx.commit()?;
             t.undo_boundary();
             self.messages.push(format!("Reverted {name}"));
         }
         match (was, why) {
             (None, Some(why)) => {
-                self.text_mut(buf)?.settings_mut().read_only = true;
+                let settings = self.text_mut(buf)?.settings_mut();
+                let before = std::mem::replace(&mut settings.read_only, true);
+                if let Some(f) = self.files.by_buffer.get_mut(&buf) {
+                    f.read_only_before = before;
+                }
                 let line = format!("{name} {}; now read-only", why.describe());
                 self.messages.push(line);
             }
-            (Some(_), None) => self.text_mut(buf)?.settings_mut().read_only = false,
+            (Some(_), None) => {
+                let before = self.visit(buf)?.read_only_before;
+                self.text_mut(buf)?.settings_mut().read_only = before;
+            }
             _ => {}
         }
         if let Some(f) = self.files.by_buffer.get_mut(&buf) {
@@ -450,6 +498,12 @@ fn on_disk(path: &Path) -> io::Result<Option<Fingerprint>> {
     }
 }
 
+/// Whether the file may still be being written.
+fn settling(f: Fingerprint) -> bool {
+    let age = SystemTime::now().duration_since(f.modified);
+    age.is_ok_and(|age| age < SETTLING)
+}
+
 /// `path` with its own symlinks followed, a dangling one too, so the result isn't a symlink.
 /// `canonicalize` fails on a dangling one, and the system follows those in directories above.
 fn resolve(path: &Path) -> io::Result<PathBuf> {
@@ -493,9 +547,10 @@ fn replace(
     text: &Rope,
     bom: bool,
 ) -> io::Result<Option<Fingerprint>> {
-    let Some((tmp, mut f)) = temp_beside(real)? else {
+    let Some(tmp) = temp_beside(real)? else {
         return Ok(None);
     };
+    let mut f = copy_for_its_attributes(real, &tmp)?;
     let mine = f.metadata()?;
     let same = (mine.uid(), mine.gid()) == (old.uid(), old.gid());
     if !same && fchown(&f, Some(old.uid()), Some(old.gid())).is_err() {
@@ -512,15 +567,31 @@ fn replace(
     done
 }
 
+/// Make `tmp`, which exists and is empty, a copy of `real` emptied again, which on macOS keeps
+/// the extended attributes and ACLs. `tmp` has to exist: for a new name, `fs::copy` makes a clone
+/// on APFS, without the ACLs. A file that can't be copied, one DIE can't read say, gives an empty
+/// `tmp` without them.
+fn copy_for_its_attributes(real: &Path, tmp: &Path) -> io::Result<File> {
+    let copied = fs::copy(real, tmp).and_then(|_| {
+        fs::set_permissions(tmp, fs::Permissions::from_mode(0o600))?;
+        File::options().write(true).truncate(true).open(tmp)
+    });
+    copied.or_else(|_| {
+        let _ = fs::remove_file(tmp);
+        let mut open = File::options();
+        open.write(true).create_new(true).mode(0o600).open(tmp)
+    })
+}
+
 /// A new empty file beside `real` that only its owner can read, until the save sets the mode.
 /// None if the directory doesn't let DIE make one.
-fn temp_beside(real: &Path) -> io::Result<Option<(PathBuf, File)>> {
+fn temp_beside(real: &Path) -> io::Result<Option<PathBuf>> {
     let dir = real.parent().unwrap_or(real);
     for n in 0..1024 {
         let tmp = dir.join(format!(".die-save-{}-{n}", std::process::id()));
         let mut open = File::options();
         match open.write(true).create_new(true).mode(0o600).open(&tmp) {
-            Ok(f) => return Ok(Some((tmp, f))),
+            Ok(_) => return Ok(Some(tmp)),
             Err(e) => match e.kind() {
                 ErrorKind::AlreadyExists => {}
                 ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => return Ok(None),
@@ -545,20 +616,59 @@ fn stamp(f: &File) -> io::Result<Fingerprint> {
 }
 
 /// The changes that turn `old` into `new`: byte ranges of `old`, in order, and what replaces
-/// them. Lines that appear exactly once in each anchor the match, in the longest run that keeps
-/// their order, as patience diff does. So `cargo fmt` changing two far apart places leaves a
-/// cursor between them where it was. It takes O(n log n) whatever the files are, and at worst
+/// them. The lines the two share at each end are left out, so an append costs no hashing. In
+/// between, lines that appear exactly once in each anchor the match, in the longest run that
+/// keeps their order, as patience diff does. So `cargo fmt` changing two far apart places leaves
+/// a cursor between them where it was. It takes O(n log n) whatever the files are, and at worst
 /// it's one change, with what the two share at its ends left out, as Emacs's revert does.
 fn line_changes(old: &str, new: &str) -> Vec<(Range<usize>, String)> {
+    let start = shared_start(old, new);
+    let end = shared_end(&old[start..], &new[start..]);
+    let (old, new) = (&old[start..old.len() - end], &new[start..new.len() - end]);
     let (a, b) = (line_starts(old), line_starts(new));
     let mut out = vec![];
     let (mut i, mut j) = (0, 0);
-    for (ai, bj) in anchors(old, &a, new, &b) {
-        push_change(&mut out, old, a[i]..a[ai], new, b[j]..b[bj]);
-        (i, j) = (ai + 1, bj + 1);
+    if old.len() + new.len() <= ANCHORS_UP_TO {
+        for (ai, bj) in anchors(old, &a, new, &b) {
+            push_change(&mut out, old, a[i]..a[ai], new, b[j]..b[bj]);
+            (i, j) = (ai + 1, bj + 1);
+        }
     }
     push_change(&mut out, old, a[i]..old.len(), new, b[j]..new.len());
+    for (r, _) in &mut out {
+        *r = r.start + start..r.end + start;
+    }
     out
+}
+
+/// How many bytes of whole lines `old` and `new` share at their start.
+fn shared_start(old: &str, new: &str) -> usize {
+    const BLOCK: usize = 4096;
+    let (x, y) = (old.as_bytes(), new.as_bytes());
+    let same = x.chunks(BLOCK).zip(y.chunks(BLOCK));
+    let blocks = same.take_while(|(p, q)| p == q).count() * BLOCK;
+    let at = blocks.min(x.len()).min(y.len());
+    let pairs = x[at..].iter().zip(&y[at..]);
+    let n = at + pairs.take_while(|(p, q)| p == q).count();
+    x[..n]
+        .iter()
+        .rposition(|c| *c == b'\n')
+        .map_or(0, |i| i + 1)
+}
+
+/// How many bytes of whole lines `old` and `new` share at their end.
+fn shared_end(old: &str, new: &str) -> usize {
+    let (x, y) = (old.as_bytes(), new.as_bytes());
+    let pairs = x.iter().rev().zip(y.iter().rev());
+    let n = pairs.take_while(|(p, q)| p == q).count();
+    let starts_a_line = |t: &[u8]| t.len() == n || t[t.len() - n - 1] == b'\n';
+    if starts_a_line(x) && starts_a_line(y) {
+        return n;
+    }
+    let tail = &x[x.len() - n..];
+    tail.iter()
+        .position(|c| *c == b'\n')
+        .map_or(0, |i| n - i - 1)
 }
 
 /// Where each line starts, then the end of the text.

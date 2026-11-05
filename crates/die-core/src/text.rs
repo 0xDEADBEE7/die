@@ -591,6 +591,17 @@ impl TextBuf {
     pub fn end_undo_group(&mut self) {
         self.history.end();
     }
+    /// Whether the text has changed since it was last saved, Emacs's `buffer-modified-p`. Undoing
+    /// or redoing back to the saved text clears it. Text replaced by itself sets it, as any undo
+    /// step does. A silent edit sets it too, and undo can't clear that: it isn't in the history.
+    pub fn modified(&self) -> bool {
+        self.history.modified()
+    }
+    /// Set the flag: `false` says the text as it is now is what's saved (a save, a revert),
+    /// `true` that it differs, until a later `false`.
+    pub fn set_modified(&mut self, modified: bool) {
+        self.history.set_modified(modified);
+    }
     /// End the current undo step here: the next edit starts a new step, even in the same
     /// command or inside an open group (which stays open, as a new step).
     pub fn undo_boundary(&mut self) {

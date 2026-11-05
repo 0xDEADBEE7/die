@@ -2022,6 +2022,7 @@ mod saves {
     #[derive(Clone, Debug)]
     enum Op {
         Type(String),
+        TypeAndUndo,
         Save,
         SaveForce,
         Revert,
@@ -2048,6 +2049,7 @@ mod saves {
     fn op() -> impl Strategy<Value = Op> {
         prop_oneof![
             text().prop_map(Op::Type),
+            Just(Op::TypeAndUndo),
             Just(Op::Save),
             Just(Op::SaveForce),
             Just(Op::Revert),
@@ -2145,6 +2147,15 @@ mod saves {
                         m.text.push_str(s);
                         m.unsaved = true;
                     }
+                    false
+                }
+                // The text is what it was, and so is whether it's saved.
+                Op::TypeAndUndo => {
+                    let end = c.text(b).unwrap().len();
+                    let t = c.text_mut(b).unwrap();
+                    t.undo_boundary();
+                    t.tx(Origin::User).insert(end, "x").commit().unwrap();
+                    t.undo().unwrap();
                     false
                 }
                 Op::Save => {
