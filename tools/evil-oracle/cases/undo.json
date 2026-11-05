@@ -74,5 +74,7 @@
   {"id": "x-h-x-u-u", "keys": "xhxuu", "text": ["a|bcd"]},
   {"id": "dw-j-dw-u-u", "keys": "dwjdwuu", "text": ["a |b c", "d e f"]},
   {"id": "yank-no-undo-step", "keys": "xylu", "text": ["a|bc"]},
-  {"id": "dw-empty-no-undo-step", "vim": "Vim leaves \"b\\n\", Evil \"ab\"", "keys": "xdwu", "text": "|ab"}
+  {"id": "dw-empty-no-undo-step", "vim": "Vim leaves \"b\\n\", Evil \"ab\"", "keys": "xdwu", "text": "|ab"},
+  {"id": "shift-left-u-first-line-unindented", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 1 col 4", "keys": "<ku", "text": ["a", "|    b"]},
+  {"id": "shift-left-u-indent-gone-further-down", "keys": "<ju", "text": ["|a", "    b"]}
  ]}

@@ -449,9 +449,10 @@ fn shift(t: &mut TextBuf, w: WindowId, span: Span, right: bool) -> Result {
     if span.beg == span.end && right {
         tx_ops.push((span.beg..span.beg, " ".repeat(SHIFT_WIDTH)));
     }
-    // A first line that only loses its indentation, with the cursor at its start: Evil's
-    // `u` goes to the end of the indentation it puts back.
-    if let Some((range, spaces)) = tx_ops.first()
+    // A first change that only takes away a line's indentation, with the cursor at its start:
+    // Evil's `u` goes to the end of the indentation it puts back.
+    let first = tx_ops.iter().find(|(r, s)| !(r.is_empty() && s.is_empty()));
+    if let Some((range, spaces)) = first
         && sel.head == range.start
         && spaces.is_empty()
     {
