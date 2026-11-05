@@ -1,8 +1,12 @@
 //! Metal: the device and its command queue, the one pipeline, its two atlas textures,
 //! and drawing a frame's instances to a texture and reading it back. What the
-//! instances are is neutral code's business. R3 adds the window's drawable.
+//! instances are is neutral code's business. A frame goes to a texture read back, or to
+//! the window's drawable, and either way `render` and `present` wait for the GPU, which
+//! the SAFETY comments on `upload` and `fill_instances` rely on. Doing without that wait
+//! takes S1's ring of buffers.
 
-use crate::frame::{Image, Plane, Quad, Upload};
+use super::appkit::Surface;
+use crate::frame::{Image, Plane, Presented, Quad, Upload};
 use die_core::Rgb;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
@@ -10,12 +14,13 @@ use objc2_foundation::NSString;
 use objc2_metal::{
     MTLBinding, MTLBindingType, MTLBlendFactor, MTLBuffer, MTLBufferBinding, MTLClearColor,
     MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
-    MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary, MTLLoadAction, MTLOrigin,
+    MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLLibrary, MTLLoadAction, MTLOrigin,
     MTLPipelineOption, MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder,
     MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState,
     MTLResourceOptions, MTLSize, MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor,
     MTLTextureUsage,
 };
+use objc2_quartz_core::{CAMetalDrawable, CATransaction};
 use std::mem::size_of_val;
 use std::ptr::NonNull;
 
@@ -48,7 +53,8 @@ fragment float4 fs(Out in [[stage_in]],
 }
 "#;
 
-const TARGET_FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm;
+/// The format of a frame's target. A window's layer has to match.
+pub(super) const TARGET_FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm;
 
 /// The longest side every Apple GPU has for a 2D texture. Some have more.
 const MAX_TEXTURE_SIDE: u32 = 16384;
@@ -198,6 +204,11 @@ fn region(x: u32, y: u32, w: u32, h: u32) -> MTLRegion {
 }
 
 impl Pipeline {
+    /// The device, which a window's layer draws with.
+    pub(super) fn device(&self) -> &ProtocolObject<dyn MTLDevice> {
+        &self.gpu.device
+    }
+
     /// Copy pixels into an atlas. It's an error unless the region has pixels, is
     /// wholly inside the atlas, and `data` is exactly its pixels.
     pub fn upload(&self, u: &Upload) -> Result<(), String> {
@@ -217,7 +228,7 @@ impl Pipeline {
         }
         // SAFETY: the region has pixels and is inside the texture, and `data` holds exactly
         // those pixels, all checked above, and Metal copies them before this returns. No
-        // frame is reading the texture, since `render` waits for each one.
+        // frame is reading the texture, since `render` and `present` wait for each one.
         unsafe {
             texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
                 region(u.x, u.y, u.w, u.h),
@@ -244,8 +255,8 @@ impl Pipeline {
         if let Some(b) = &self.instances {
             let to = b.contents().cast::<u8>();
             // SAFETY: the buffer holds at least `bytes`, made sure of above, and nothing
-            // reads it now, since `render` waits for each frame before the next. A new
-            // buffer can't overlap `quads`, which Rust owns.
+            // reads it now, since `render` and `present` wait for each frame before the
+            // next. A new buffer can't overlap `quads`, which Rust owns.
             unsafe {
                 std::ptr::copy_nonoverlapping(quads.as_ptr().cast::<u8>(), to.as_ptr(), bytes)
             };
@@ -269,10 +280,69 @@ impl Pipeline {
         self.fill_instances(quads)?;
         let usage = MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead;
         let target = self.gpu.texture((w, h), TARGET_FORMAT, usage)?;
+        let commands = self.encode(quads, clear, &target, (w, h))?;
+        commands.commit();
+        finish(&commands)?;
+        Ok(read_back(&target, w, h))
+    }
+
+    /// Draw `quads` on the surface's next drawable and show it, waiting for the GPU. With
+    /// `sync`, it goes on screen with the Core Animation transaction, which a resize needs so
+    /// that nothing stretches, and the transaction is flushed, since a second drawable in one
+    /// transaction blocks `nextDrawable` for a second (S1). `Ok(None)` means there was no
+    /// drawable to draw on.
+    pub fn present(
+        &mut self,
+        quads: &[Quad],
+        clear: Rgb,
+        surface: &Surface,
+        sync: bool,
+    ) -> Result<Option<Presented>, String> {
+        autoreleasepool(|_| self.present_in_pool(quads, clear, surface, sync))
+    }
+
+    fn present_in_pool(
+        &mut self,
+        quads: &[Quad],
+        clear: Rgb,
+        surface: &Surface,
+        sync: bool,
+    ) -> Result<Option<Presented>, String> {
+        self.fill_instances(quads)?;
+        let Some(drawable) = surface.layer.nextDrawable() else {
+            return Ok(None);
+        };
+        let target = drawable.texture();
+        let (w, h) = (target.width() as u32, target.height() as u32);
+        let commands = self.encode(quads, clear, &target, (w, h))?;
+        surface.layer.setPresentsWithTransaction(sync);
+        let show: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
+        if !sync {
+            commands.presentDrawable(show);
+        }
+        commands.commit();
+        finish(&commands)?;
+        if sync {
+            show.present();
+            CATransaction::flush();
+        }
+        let image = surface.read_next.take().then(|| read_back(&target, w, h));
+        Ok(Some(Presented { w, h, image }))
+    }
+
+    /// Encode the frame's draw on `target`: its commands, not yet committed. The instance
+    /// buffer already holds `quads`.
+    fn encode(
+        &self,
+        quads: &[Quad],
+        clear: Rgb,
+        target: &ProtocolObject<dyn MTLTexture>,
+        (w, h): (u32, u32),
+    ) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, String> {
         let pass = MTLRenderPassDescriptor::new();
         // SAFETY: attachment 0 exists: Metal has at least eight, and this is the first.
         let attachment = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
-        attachment.setTexture(Some(&target));
+        attachment.setTexture(Some(target));
         attachment.setLoadAction(MTLLoadAction::Clear);
         attachment.setStoreAction(MTLStoreAction::Store);
         let unit = |v: u8| f64::from(v) / 255.0;
@@ -315,22 +385,34 @@ impl Pipeline {
             };
         }
         encoder.endEncoding();
-        commands.commit();
-        commands.waitUntilCompleted();
-        if commands.status() != MTLCommandBufferStatus::Completed {
-            return Err(format!("the GPU failed: {:?}", commands.error()));
-        }
-        let mut bgra = vec![0u8; w as usize * h as usize * 4];
-        // SAFETY: the buffer holds the region's `w` × `h` BGRA pixels at the stride given,
-        // the texture is Shared, and the GPU has finished with it.
-        unsafe {
-            target.getBytes_bytesPerRow_fromRegion_mipmapLevel(
-                NonNull::from(&mut *bgra).cast(),
-                w as usize * 4,
-                region(0, 0, w, h),
-                0,
-            )
-        };
-        Ok(Image { w, h, bgra })
+        Ok(commands)
     }
+}
+
+/// Wait for the GPU, and say if it failed.
+fn finish(commands: &ProtocolObject<dyn MTLCommandBuffer>) -> Result<(), String> {
+    commands.waitUntilCompleted();
+    if commands.status() != MTLCommandBufferStatus::Completed {
+        return Err(format!("the GPU failed: {:?}", commands.error()));
+    }
+    Ok(())
+}
+
+/// A finished target's pixels: the offscreen target's, or a drawable's when the surface
+/// asked, which only a readable one can (`Surface::read_next_frame`).
+fn read_back(target: &ProtocolObject<dyn MTLTexture>, w: u32, h: u32) -> Image {
+    let mut bgra = vec![0u8; w as usize * h as usize * 4];
+    // SAFETY: the buffer holds the region's `w` × `h` BGRA pixels at the stride given, and
+    // the GPU has finished with the texture. It isn't framebuffer-only: the offscreen target
+    // never is, and `Surface::read_next_frame`, the one way to reach this for a drawable,
+    // refuses a surface whose layer is framebuffer-only.
+    unsafe {
+        target.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+            NonNull::from(&mut *bgra).cast(),
+            w as usize * 4,
+            region(0, 0, w, h),
+            0,
+        )
+    };
+    Image { w, h, bgra }
 }

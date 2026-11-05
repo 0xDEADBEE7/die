@@ -1,0 +1,520 @@
+//! `die --check idle,resize,scale,occlusion,show`: the window held to S1's rules, by DIE
+//! itself, on its own window. It posts no input and takes no focus. Each check prints one
+//! line, `name: ok a=1 b=2`, `name: skip why` or `name: FAIL why`, and any FAIL makes the
+//! exit code 1. R6 adds `typing` and `firstframe`.
+#![warn(missing_docs)]
+
+use crate::window::{Remote, Script, Shell, floating_window};
+use die_core::{Ctx, Key, KeyEvent, Origin, Result as CoreResult, Scene, WindowId};
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+use winit::dpi::LogicalSize;
+use winit::event_loop::ActiveEventLoop;
+
+/// The checks there are.
+pub const NAMES: [&str; 5] = ["idle", "resize", "scale", "occlusion", "show"];
+
+const IDLE: Duration = Duration::from_secs(3);
+const TICKS: u32 = 10;
+const RESIZE_STEPS: u32 = 120;
+const SCALE_CHANGES: usize = 6;
+const OCCLUSION_CYCLES: u32 = 3;
+/// How long the window server gets to report a window covered or uncovered.
+const SERVER: Duration = Duration::from_secs(3);
+/// How long an event has to come through the window server and draw.
+const SETTLE: Duration = Duration::from_millis(1000);
+/// A timer's or a job's delay, then how long a frame gets after it.
+const LATER: Duration = Duration::from_millis(30);
+const THEN: Duration = Duration::from_millis(1000);
+/// What `show` puts on screen, whatever file was named: its first line is on row 0 as it
+/// is, and `x` changes it.
+const SHOW_TEXT: &str = "the show check's own line\nand another\n";
+
+enum Verdict {
+    Ok(String),
+    Skip(String),
+}
+
+type Outcome = Result<Verdict, String>;
+
+/// The check script for these names, which must all be in `NAMES`.
+pub fn script(names: Vec<String>) -> Script {
+    Box::new(move |remote| {
+        let mut code = 0;
+        for name in names {
+            // A check that failed may have left its cover and guard behind.
+            let reset = remote.call(|s, _| {
+                s.guard = false;
+                s.cover = None;
+            });
+            if reset.is_err() {
+                return 1;
+            }
+            let outcome = match name.as_str() {
+                "idle" => idle(remote),
+                "resize" => resize(remote),
+                "scale" => scale(remote),
+                "occlusion" => occlusion(remote),
+                "show" => show(remote),
+                other => Err(format!("no such check: {other}")),
+            };
+            match outcome {
+                Ok(Verdict::Ok(numbers)) => println!("{name}: ok {numbers}"),
+                Ok(Verdict::Skip(why)) => println!("{name}: skip {why}"),
+                Err(why) => {
+                    println!("{name}: FAIL {why}");
+                    code = 1;
+                }
+            }
+        }
+        code
+    })
+}
+
+fn ensure(holds: bool, why: impl FnOnce() -> String) -> Result<(), String> {
+    if holds { Ok(()) } else { Err(why()) }
+}
+
+fn yes_no(b: bool) -> &'static str {
+    if b { "yes" } else { "no" }
+}
+
+/// Wait for the window's first frame.
+fn first_frame(r: &Remote) -> Result<(), String> {
+    let start = Instant::now();
+    while r.call(|s, _| s.stats.frames)? == 0 {
+        ensure(start.elapsed() < Duration::from_secs(10), || {
+            "no frame in 10 s".into()
+        })?;
+        sleep(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+/// Whether the window server reports the window occluded as `want`, within `SERVER`.
+fn wait_occluded(r: &Remote, want: bool) -> Result<bool, String> {
+    let start = Instant::now();
+    while start.elapsed() < SERVER {
+        if r.call(move |s, _| s.live.as_ref().map(|l| l.surface.occluded()) == Some(want))? {
+            return Ok(true);
+        }
+        sleep(Duration::from_millis(5));
+    }
+    Ok(false)
+}
+
+fn frames(r: &Remote) -> Result<u64, String> {
+    r.call(|s, _| s.stats.frames)
+}
+
+/// A change to the text that's on screen, in any buffer.
+fn edit(ctx: &mut Ctx) -> CoreResult {
+    let Some(buf) = ctx.focused_buffer() else {
+        return Ok(());
+    };
+    ctx.text_mut(buf)?
+        .tx(Origin::Extension)
+        .insert(0, "z")
+        .commit()?;
+    Ok(())
+}
+
+fn row_text(scene: &Scene, r: usize) -> String {
+    scene.row(r).iter().map(|c| c.glyph.to_string()).collect()
+}
+
+/// A repeat timer's tick, for `idle`: it changes nothing, and stops after `left` more.
+fn tick(ctx: &mut Ctx, left: u32, count: Arc<AtomicU32>) -> CoreResult {
+    count.fetch_add(1, Ordering::Relaxed);
+    if left > 0 {
+        let d = Duration::from_millis(20);
+        ctx.after(d, move |ctx| tick(ctx, left - 1, count)).detach();
+    }
+    Ok(())
+}
+
+/// Nothing happens, so nothing draws, and a timer that changes nothing draws nothing either.
+fn idle(r: &Remote) -> Outcome {
+    first_frame(r)?;
+    sleep(Duration::from_millis(300));
+    let read = |s: &mut Shell, _: &_| (s.stats.frames, s.stats.wakeups);
+    let (f0, w0) = r.call(read)?;
+    sleep(IDLE);
+    let (f1, w1) = r.call(read)?;
+    let (idle_frames, wakeups) = (f1 - f0, w1 - w0);
+    ensure(idle_frames == 0, || {
+        format!("{idle_frames} frames while idle")
+    })?;
+    let ticks = Arc::new(AtomicU32::new(0));
+    let count = ticks.clone();
+    r.call(move |s, _| {
+        let start = move |ctx: &mut Ctx| tick(ctx, TICKS - 1, count);
+        s.host.ctx.defer(start);
+    })?;
+    // No polling: only the timers can be what wakes the loop. The OS may hold a background
+    // process's timers back, so they get a while.
+    let start = Instant::now();
+    while ticks.load(Ordering::Relaxed) < TICKS && start.elapsed() < Duration::from_secs(10) {
+        sleep(Duration::from_millis(50));
+    }
+    let timer_frames = r.call(read)?.0 - f1;
+    let ticks = ticks.load(Ordering::Relaxed);
+    ensure(timer_frames == 0, || {
+        format!("{timer_frames} frames from a timer that changes nothing")
+    })?;
+    ensure(ticks == TICKS, || {
+        format!("only {ticks} of {TICKS} ticks in 10 s")
+    })?;
+    Ok(Verdict::Ok(format!(
+        "frames={idle_frames} wakeups={wakeups} seconds={} timer_frames={timer_frames} ticks={ticks}",
+        IDLE.as_secs()
+    )))
+}
+
+/// Every resize gets one frame at the view's size, half drawn in the same turn and half from
+/// winit's Resized, and the core window follows.
+fn resize(r: &Remote) -> Outcome {
+    first_frame(r)?;
+    let (mut mismatched, mut missed, mut extra) = (0, 0, 0);
+    r.call(|s, _| s.stats.frame_ms.clear())?;
+    let mut last = frames(r)?;
+    for i in 0..RESIZE_STEPS {
+        let w = 420.0 + f64::from((i + 1) % 40) * 3.0;
+        let h = 280.0 + f64::from((i + 1) % 25) * 5.0;
+        let same_turn = i % 2 == 0;
+        let f0 = r.call(move |s, _| {
+            let f0 = s.stats.frames;
+            if let Some(live) = &s.live {
+                let _ = live.window.request_inner_size(LogicalSize::new(w, h));
+            }
+            if same_turn {
+                s.draw();
+            }
+            f0
+        })?;
+        extra += f0 - last;
+        let start = Instant::now();
+        while frames(r)? == f0 && start.elapsed() < SETTLE {
+            sleep(Duration::from_millis(1));
+        }
+        last = frames(r)?;
+        if last == f0 {
+            missed += 1;
+        } else if last > f0 + 1 {
+            extra += last - f0 - 1;
+        }
+        let right = r.call(|s, _| {
+            let Some(live) = &s.live else {
+                return false;
+            };
+            let view = live.surface.size(live.scale);
+            let (cols, rows) = crate::window::grid(view, live.renderer.cell());
+            let window = s.host.ctx.focused();
+            let size = window.and_then(|w| s.host.ctx.window_size(w));
+            s.stats.drawable == view && size == Some((cols, rows - 2))
+        })?;
+        if !right {
+            mismatched += 1;
+        }
+    }
+    let mut ms = r.call(|s, _| s.stats.frame_ms.clone())?;
+    ms.sort_by(f64::total_cmp);
+    let at = |percent: usize| ms.get(ms.len() * percent / 100).copied().unwrap_or(0.0);
+    let (p50, p99) = (at(50), at(99));
+    ensure(mismatched == 0, || format!("{mismatched} stretched frames"))?;
+    ensure(missed == 0, || format!("{missed} resizes without a frame"))?;
+    ensure(extra == 0, || format!("{extra} frames too many"))?;
+    Ok(Verdict::Ok(format!(
+        "steps={RESIZE_STEPS} mismatched={mismatched} missed={missed} extra={extra} p50_ms={p50:.2} p99_ms={p99:.2}"
+    )))
+}
+
+/// What a scale change did: frames, whether the drawable, cell and grid were right, the
+/// cell, and how long it took in ms.
+struct ScaleChange {
+    frames: u64,
+    right: bool,
+    cell: (u32, u32),
+    ms: f64,
+}
+
+/// Each change's first frame has the right drawable, with the cell and grid rebuilt. It
+/// calls the scale path directly, since a real change takes a second display.
+fn scale(r: &Remote) -> Outcome {
+    first_frame(r)?;
+    let start = r.call(|s, _| s.live.as_ref().map_or(1.0, |l| l.scale))?;
+    let other = if start > 1.5 {
+        start / 2.0
+    } else {
+        start * 2.0
+    };
+    let (mut wrong, mut worst_ms) = (0, 0f64);
+    let mut cells = HashSet::new();
+    for i in 0..SCALE_CHANGES {
+        let to = if i % 2 == 0 { other } else { start };
+        let change = r.call(move |s, _| {
+            let f0 = s.stats.frames;
+            let t = Instant::now();
+            s.set_scale(to);
+            s.settle();
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            let frames = s.stats.frames - f0;
+            let Some(live) = &s.live else {
+                return None;
+            };
+            let view = live.surface.size(to);
+            let cell = live.renderer.cell();
+            let (cols, rows) = crate::window::grid(view, cell);
+            let window = s.host.ctx.focused();
+            let size = window.and_then(|w| s.host.ctx.window_size(w));
+            let right = s.stats.drawable == view
+                && size == Some((cols, rows - 2))
+                && (cell.scale - to).abs() < 1e-6
+                && live.renderer.rebuilt().len() == rows;
+            Some(ScaleChange {
+                frames,
+                right,
+                cell: (cell.w, cell.h),
+                ms,
+            })
+        })?;
+        let c = change.ok_or("no window")?;
+        if c.frames != 1 || !c.right {
+            wrong += 1;
+        }
+        cells.insert(c.cell);
+        worst_ms = worst_ms.max(c.ms);
+    }
+    ensure(wrong == 0, || format!("{wrong} wrong first frames"))?;
+    let mut cells: Vec<_> = cells.into_iter().collect();
+    cells.sort();
+    let [a, b] = cells[..] else {
+        return Err(format!("expected two cells, not {cells:?}"));
+    };
+    Ok(Verdict::Ok(format!(
+        "changes={SCALE_CHANGES} wrong={wrong} cell_a={}x{} cell_b={}x{} worst_ms={worst_ms:.1}",
+        a.0, a.1, b.0, b.1
+    )))
+}
+
+/// Put a floating window over the check's.
+fn cover(s: &mut Shell, el: &ActiveEventLoop) -> Result<(), String> {
+    let live = s.live.as_ref().ok_or("no window")?;
+    let (x, y) = live.window.outer_position().map_or((0, 0), |p| (p.x, p.y));
+    let size = live.window.outer_size();
+    let k = live.scale;
+    let at = (f64::from(x) / k - 20.0, f64::from(y) / k - 20.0);
+    let over = (
+        f64::from(size.width) / k + 40.0,
+        f64::from(size.height) / k + 40.0,
+    );
+    let window = el.create_window(floating_window(at, over));
+    s.cover = Some(window.map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+/// A window that can't be seen and has drawn nothing draws its first frame anyway, and only
+/// that one. This has the frame count start over under a cover, which is the state of a
+/// window that opened hidden. How many frames that drew.
+fn first_frame_covered(r: &Remote) -> Result<u64, String> {
+    r.call(cover)??;
+    ensure(wait_occluded(r, true)?, || {
+        "the window server never reported it covered".into()
+    })?;
+    r.call(|s, _| {
+        s.stats.frames = 0;
+        s.host.ctx.defer(edit);
+    })?;
+    sleep(Duration::from_millis(100));
+    r.call(|s, _| s.host.ctx.defer(edit))?;
+    sleep(Duration::from_millis(100));
+    let drawn = frames(r)?;
+    r.call(|s, _| s.cover = None)?;
+    Ok(drawn)
+}
+
+/// Covered, nothing draws though the text changed. Uncovered, the change draws with nothing
+/// from this check poking the loop, which is why it sleeps rather than polls.
+fn occlusion(r: &Remote) -> Outcome {
+    first_frame(r)?;
+    r.call(|s, _| {
+        s.guard = true;
+        s.stats.worst_turn_ms = 0.0;
+    })?;
+    if !wait_occluded(r, false)? {
+        return Ok(Verdict::Skip(
+            "the window server shows this window to no one, so there's nothing to cover".into(),
+        ));
+    }
+    let (mut drawn, mut missed) = (0, 0);
+    for cycle in 0..OCCLUSION_CYCLES {
+        r.call(cover)??;
+        ensure(wait_occluded(r, true)?, || {
+            format!("cycle {cycle}: the window server never reported it covered")
+        })?;
+        let (f0, skipped) = r.call(|s, _| {
+            s.host.ctx.defer(edit);
+            (s.stats.frames, s.stats.skipped)
+        })?;
+        sleep(Duration::from_millis(100));
+        let (f1, skipped_now) = r.call(|s, _| (s.stats.frames, s.stats.skipped))?;
+        drawn += f1 - f0;
+        ensure(skipped_now > skipped, || {
+            format!("cycle {cycle}: nothing tried to draw the change")
+        })?;
+        r.call(|s, _| s.cover = None)?;
+        sleep(SETTLE);
+        let f2 = frames(r)?;
+        if f2 == f1 {
+            missed += 1;
+        }
+    }
+    let stall = r.call(|s, _| s.stats.worst_turn_ms)?;
+    let first = first_frame_covered(r)?;
+    ensure(drawn == 0, || format!("{drawn} frames while covered"))?;
+    ensure(missed == 0, || format!("{missed} uncovers drew nothing"))?;
+    ensure(first == 1, || {
+        format!("a hidden window's first frame drew {first} frames, not 1")
+    })?;
+    Ok(Verdict::Ok(format!(
+        "cycles={OCCLUSION_CYCLES} frames_while_covered={drawn} missed_uncover={missed} worst_stall_ms={stall:.1} first_frame_covered={first}"
+    )))
+}
+
+/// What's on the drawable, against the offscreen path and the text.
+struct Shown {
+    differ: usize,
+    colors: usize,
+    /// What row 0 shows and the line it should, if it doesn't.
+    text: Option<(String, String)>,
+    decorated: bool,
+    option_as_alt: bool,
+    active: bool,
+    key: bool,
+}
+
+/// The frame on the drawable now, read back.
+fn what_is_shown(s: &mut Shell) -> Result<Shown, String> {
+    s.live
+        .as_ref()
+        .ok_or("no window")?
+        .surface
+        .read_next_frame()?;
+    s.stale = true;
+    s.draw();
+    let scene = s.last.clone().ok_or("no frame yet")?;
+    let buf = s.host.ctx.focused_buffer().ok_or("no buffer")?;
+    let t = s.host.ctx.text(buf).map_err(|e| e.to_string())?;
+    let first = t.rope().line(0).to_string();
+    let first = first.trim_end().to_owned();
+    let row = row_text(&scene, 0);
+    let text = (first.is_empty() || !row.contains(&first)).then_some((row, first));
+    let live = s.live.as_mut().ok_or("no window")?;
+    let image = live.image.take().ok_or("no pixels came back")?;
+    let offscreen = live.renderer.render(&scene, image.w, image.h)?;
+    let at = |p: &[u8]| [p[0], p[1], p[2]];
+    let on = image.bgra.chunks_exact(4);
+    let off = offscreen.bgra.chunks_exact(4);
+    let differ = on.clone().zip(off).filter(|(a, b)| at(a) != at(b)).count();
+    Ok(Shown {
+        differ,
+        colors: on.map(at).collect::<HashSet<_>>().len(),
+        text,
+        decorated: live.window.is_decorated(),
+        option_as_alt: crate::driver::option_as_alt(&live.window),
+        active: live.surface.app_active(),
+        key: live.window.has_focus(),
+    })
+}
+
+/// Whether a surface attached without `readable` refuses to read a frame back.
+fn unreadable_refuses(s: &mut Shell, el: &ActiveEventLoop) -> Result<bool, String> {
+    let hidden = crate::window::quiet_window().with_visible(false);
+    let window = el.create_window(hidden).map_err(|e| e.to_string())?;
+    let live = s.live.as_ref().ok_or("no window")?;
+    let surface = live.renderer.attach(&window, false)?;
+    Ok(surface.read_next_frame().is_err())
+}
+
+/// Put a window on `show`'s own buffer in front. The window that was there, to go back to.
+fn open_show_buffer(s: &mut Shell) -> Result<WindowId, String> {
+    let ctx = &mut s.host.ctx;
+    let back = ctx.focused().ok_or("no window")?;
+    let (cols, rows) = ctx.window_size(back).ok_or("no window")?;
+    let buf = ctx.create_text("*show*", SHOW_TEXT);
+    ctx.open_window(buf, cols, rows)
+        .map_err(|e| e.to_string())?;
+    Ok(back)
+}
+
+/// A buffer of its own is on the drawable, so what was named can't change the verdict: a
+/// file reaching the window is `die`'s facade tests' to hold. Input draws in its own turn. A timer and a job's wake each
+/// draw with nothing else waking the loop. The window has no border and takes no focus.
+fn show(r: &Remote) -> Outcome {
+    first_frame(r)?;
+    let refused = r.call(unreadable_refuses)??;
+    let back = r.call(|s, _| open_show_buffer(s))??;
+    let shown = r.call(|s, _| what_is_shown(s))??;
+    let (input_frames, input_shown) = r.call(|s, _| {
+        let (f0, before) = (s.stats.frames, s.last.clone());
+        s.input(KeyEvent::press(Key::Char('x')));
+        (s.stats.frames - f0, s.last != before)
+    })?;
+    let f0 = r.call(|s, _| {
+        s.host.ctx.after(LATER, edit).detach();
+        s.stats.frames
+    })?;
+    sleep(LATER + THEN);
+    let f1 = frames(r)?;
+    r.call(|s, _| {
+        s.host
+            .ctx
+            .spawn(|| sleep(LATER), |ctx, ()| edit(ctx))
+            .detach()
+    })?;
+    sleep(LATER + THEN);
+    let f2 = frames(r)?;
+    let (timer_frames, job_frames) = (f1 - f0, f2 - f1);
+    r.call(move |s, _| s.host.ctx.focus(back))?;
+    let Shown {
+        differ,
+        colors,
+        text,
+        decorated,
+        option_as_alt,
+        active,
+        key,
+    } = shown;
+    ensure(refused, || {
+        "a surface that isn't readable took a read".into()
+    })?;
+    ensure(differ == 0, || {
+        format!("{differ} pixels differ from the offscreen path")
+    })?;
+    ensure(colors >= 2, || "one flat color".into())?;
+    ensure(text.is_none(), || {
+        format!("the buffer's first line isn't on row 0: {text:?}")
+    })?;
+    ensure(input_frames == 1 && input_shown, || {
+        format!("input drew {input_frames} frames in its turn, changed: {input_shown}")
+    })?;
+    ensure(timer_frames == 1, || {
+        format!("a timer drew {timer_frames} frames")
+    })?;
+    ensure(job_frames == 1, || {
+        format!("a job's wake drew {job_frames} frames")
+    })?;
+    ensure(!decorated && option_as_alt, || {
+        format!("decorated={decorated} option_as_alt={option_as_alt}")
+    })?;
+    ensure(!active && !key, || {
+        format!("took focus: active={active} key={key}")
+    })?;
+    Ok(Verdict::Ok(format!(
+        "pixels_differ={differ} colors={colors} text=yes unreadable_refused=yes input_frames={input_frames} input_shown={} timer_frames={timer_frames} job_frames={job_frames} decorated={decorated} option_as_alt={option_as_alt} active={active} key={key}",
+        yes_no(input_shown),
+    )))
+}
