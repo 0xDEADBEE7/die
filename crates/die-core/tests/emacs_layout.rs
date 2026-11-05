@@ -6,6 +6,8 @@
 //! The tty's width convention: tty Emacs keeps its last column for the continuation glyph, so a
 //! window W wide has W - 1 text columns, as §9 says of the oracle's wrapped cases.
 
+use die_test_cap as _;
+
 use die_core::*;
 
 // ---------------------------------------------------------------- a little JSON, for the data files

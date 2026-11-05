@@ -1,6 +1,8 @@
 //! The naive layout (`support/naive_layout.rs`) against contract §9: first every worked example,
 //! then each rule the examples don't reach.
 
+use die_test_cap as _;
+
 // This reaches tests/support/naive_layout.rs without tests/support/mod.rs, whose fixtures use
 // die-core's API. The layout shares nothing with die-core, and neither does this file. The lint
 // bans the `path` attribute, so a test that has `mod support;` already declares it in mod.rs.

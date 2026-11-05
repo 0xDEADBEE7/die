@@ -1,6 +1,8 @@
 //! K2: regex search over the text (D4: Rust's regex syntax). What die-vim's `/ ? n N * #`
 //! and search highlighting need: the next or previous match, wrapping, and every match in a range.
 
+use die_test_cap as _;
+
 use die_core::*;
 
 fn buf(s: &str) -> TextBuf {

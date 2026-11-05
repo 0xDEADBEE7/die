@@ -5,6 +5,9 @@
 //! `grammar.rs` says how counts, motions, operators and insert sessions fit
 //! together. So far (V1): motions, counts, and insert sessions with their undo.
 
+#[cfg(test)]
+use die_test_cap as _;
+
 mod grammar;
 mod insert;
 mod motions;
