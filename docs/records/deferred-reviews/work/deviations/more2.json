@@ -1,8 +1,0 @@
-[
-{"name":"at-then-dot","text":"a b c d e f\n","line":0,"col":0,"keys":"@a.","registers":{"a":["dw","macro"]}},
-{"name":"recorded-then-dot","text":"a b c d e f\n","line":0,"col":0,"keys":"qadwq@a."},
-{"name":"x-then-at-then-dot","text":"a b c d e f\n","line":0,"col":0,"keys":"x@a.","registers":{"a":["w","macro"]}},
-{"name":"u-past-oldest","text":"ab\n","line":0,"col":0,"keys":"xuu"},
-{"name":"u-ctrl-r-ctrl-r","text":"ab\n","line":0,"col":0,"keys":"xu<C-r><C-r>"},
-{"name":"ctrl-r-redo-cursor-mid","text":"abcd\n","line":0,"col":2,"keys":"xu0<C-r>"}
-]

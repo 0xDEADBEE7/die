@@ -1,8 +1,0 @@
-[package]
-name = "sceneprobe"
-version = "0.0.0"
-edition = "2024"
-[dependencies]
-die-core = { path = "/Users/user/workspace/die/crates/die-core" }
-[profile.release]
-debug = "line-tables-only"

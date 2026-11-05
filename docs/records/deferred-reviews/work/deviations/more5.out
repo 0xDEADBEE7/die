@@ -1,3 +1,0 @@
-{"errmsg":"","col":0,"beeps":0,"name":"V-P-last-line","topline":0,"line":1,"mode":"n","text":"one\none\n","regs":{"0":{"type":"line","text":"one\n"},"\"":{"type":"line","text":"one\n"}}}
-{"errmsg":"","col":0,"beeps":0,"name":"V-j-p-last-two-lines","topline":0,"line":1,"mode":"n","text":"one\none\n","regs":{"0":{"type":"line","text":"one\n"},"1":{"type":"line","text":"two\nthree\n"},"\"":{"type":"line","text":"two\nthree\n"}}}
-{"errmsg":"","col":0,"beeps":1,"name":"dj-last-line","topline":0,"line":1,"mode":"n","text":"a\nb\n","regs":{}}
