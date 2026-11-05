@@ -169,6 +169,7 @@ pub struct Shell {
     font: driver::Config,
     title: String,
     script: Option<Script>,
+    first_frame: Option<FirstFrame>,
     pub(crate) live: Option<Live>,
     remote: Remote,
     /// A second window of a check's.
@@ -228,7 +229,16 @@ impl Remote {
         self.proxy.send_event(Wake::Call(call)).map_err(stopped)?;
         rx.recv().map_err(|_| "the loop stopped".to_owned())
     }
+
+    /// End the loop, so that `run` returns `code`.
+    pub fn exit(&self, code: i32) {
+        let _ = self.proxy.send_event(Wake::Exit(code));
+    }
 }
+
+/// Runs in the loop, once, when the first frame is up. Anything that may block goes on a
+/// thread of its own.
+pub type FirstFrame = Box<dyn FnOnce(&Remote)>;
 
 /// What a window opens with.
 pub struct Options {
@@ -239,6 +249,8 @@ pub struct Options {
     /// Run this check rather than wait for you. Then the app has no Dock icon, and the
     /// window is a small one that floats.
     pub script: Option<Script>,
+    /// What to do when the first frame is up.
+    pub first_frame: Option<FirstFrame>,
 }
 
 /// Open the window and run until it closes or a check ends. The exit code, or why there's
@@ -259,6 +271,7 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         font: options.font,
         title: options.title,
         script: options.script,
+        first_frame: options.first_frame,
         live: None,
         remote: Remote { proxy },
         cover: None,
@@ -337,7 +350,7 @@ impl Shell {
             let remote = self.remote.clone();
             std::thread::spawn(move || {
                 let code = catch_unwind(AssertUnwindSafe(|| script(&remote))).unwrap_or(1);
-                let _ = remote.proxy.send_event(Wake::Exit(code));
+                remote.exit(code);
             });
         }
         Ok(())
@@ -408,6 +421,9 @@ impl Shell {
                     self.stats.frame_ms.push(ms);
                 }
                 self.last = Some(scene);
+                if let Some(first_frame) = self.first_frame.take() {
+                    first_frame(&self.remote);
+                }
             }
             // The next wake tries again.
             Ok(None) => self.stale = true,

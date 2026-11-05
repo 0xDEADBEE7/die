@@ -5,6 +5,8 @@
 #[cfg(test)]
 use die_test_cap as _;
 
+pub mod app;
+
 pub use die_core as core;
 pub use die_render as render;
 pub use die_vim as vim;
@@ -108,16 +110,20 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
 /// Run DIE until its window closes. The window opens without taking focus. The exit code:
 /// 2 if it couldn't start, and it says why.
 pub fn run(config: Config) -> i32 {
-    launch(config, None)
+    launch(config, None, None)
 }
 
 /// Run `die --check`'s checks on a window of DIE's own (`die_render::check`). The exit code:
 /// 0 if they passed, 1 if one failed, and 2 if there's no window to check.
 pub fn check(config: Config, names: Vec<String>) -> i32 {
-    launch(config, Some(check::script(names)))
+    launch(config, Some(check::script(names)), None)
 }
 
-fn launch(config: Config, script: Option<window::Script>) -> i32 {
+fn launch(
+    config: Config,
+    script: Option<window::Script>,
+    first_frame: Option<window::FirstFrame>,
+) -> i32 {
     let font = config.font.clone();
     let ctx = match start(config) {
         Ok(ctx) => ctx,
@@ -136,6 +142,7 @@ fn launch(config: Config, script: Option<window::Script>) -> i32 {
         font,
         title: "DIE".into(),
         script,
+        first_frame,
     };
     window::run(ctx, options).unwrap_or_else(|e| {
         eprintln!("die: {e}");

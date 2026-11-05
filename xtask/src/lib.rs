@@ -5,6 +5,7 @@
 use die_test_cap as _;
 
 pub mod api;
+pub mod app;
 pub mod budget;
 pub mod ci;
 pub mod clean;
