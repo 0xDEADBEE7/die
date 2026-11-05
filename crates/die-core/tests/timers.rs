@@ -717,16 +717,26 @@ fn an_idle_timer_due_with_another_goes_after_it() {
 #[test]
 fn a_slow_repeat_gives_keys_a_turn() {
     let (mut c, log, _) = with_keys(Clock::real());
-    let t = c.every(MS, |_| {
+    let (n, mut f) = counter();
+    let t = c.every(MS, move |ctx| {
         sleep(3 * MS);
-        Ok(())
+        f(ctx)
     });
     sleep(2 * MS);
+    c.input(KeyEvent::press(Key::Char('a')));
     c.input(KeyEvent::press(Key::Char('a')));
     assert!(c.step(), "the repeat's turn");
     assert!(log.borrow().is_empty());
     assert!(c.step(), "the key's");
     assert_eq!(*log.borrow(), ["a"]);
+    assert_eq!(n.get(), 1);
+    assert!(
+        c.step(),
+        "and the repeat's again: a key doesn't hold it back either"
+    );
+    assert_eq!(n.get(), 2);
+    assert!(c.step());
+    assert_eq!(*log.borrow(), ["a", "a"]);
     drop(t);
 }
 

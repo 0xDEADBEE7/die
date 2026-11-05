@@ -10,6 +10,7 @@
 //! - `a_typed_key_that_fails_drops_what_it_fed`: `@a` feeding keys, then failing.
 //! - `what_a_later_command_feeds_runs_again`: the drop isn't sticky.
 //! - `a_callback_error_drops_nothing`: a timer failing mid-macro isn't part of the key stream.
+//! - `a_queued_calls_error_drops_nothing`: nor is a deferred call, a job's `done` or a hook.
 //! - `an_error_the_command_handles_drops_nothing`: a nested `run` that failed, then `Ok`.
 //! - `the_keys_a_drop_removes_are_never_observed`: a key observer sees only what dispatched.
 //! - `a_key_a_surface_ignores_in_passthrough_drops_nothing`: `event` returning false there.
@@ -18,6 +19,7 @@
 //! - `a_failing_prompt_answer_drops_the_rest`: `/nomatch<CR>dd`'s shape.
 //! - `a_panicking_prompt_answer_drops_the_rest`.
 //! - `a_prompt_answer_that_succeeds_drops_nothing`.
+//! - `a_cancelled_prompt_whose_answer_fails_drops_the_rest`: `<Esc>` submits too.
 //! - `a_prompt_a_new_prompt_cancels_drops_nothing`: no key submitted that answer.
 //!
 //! The order keys run in:
@@ -27,6 +29,7 @@
 //! - `macros_nested_three_deep_finish_innermost_first`.
 //! - `an_error_in_a_macro_inside_a_macro_ends_both`: as in Evil.
 //! - `keys_the_host_feeds_go_behind_what_is_left`: outside any call, it adds to the end.
+//! - `keys_fed_after_a_nested_turn_emptied_the_queue_still_run`: where they go is kept in range.
 mod support;
 use die_core::*;
 use std::cell::{Cell, RefCell};
@@ -58,7 +61,8 @@ impl Extension for Ext {
             .bind(State::Normal, "?", "ask-succeeds")
             .bind(State::Normal, "t", "feed-twice")
             .bind(State::Normal, "n", "feed-a-failure")
-            .bind(State::Normal, "i", "feed-g-then-c");
+            .bind(State::Normal, "i", "feed-g-then-c")
+            .bind(State::Normal, "N", "nested-turn-drops");
         for name in ["note-a", "note-b", "note-c"] {
             let log = self.log.clone();
             reg.command(name, "", move |_, _| {
@@ -79,6 +83,11 @@ impl Extension for Ext {
         });
         reg.command("feed-a-failure", "", |ctx, _| ctx.feed_keys("e"));
         reg.command("feed-g-then-c", "", |ctx, _| ctx.feed_keys("gc"));
+        reg.command("nested-turn-drops", "", |ctx, _| {
+            ctx.feed_keys("f")?;
+            ctx.step(); // f feeds b, fails, and so empties the queue
+            ctx.feed_keys("c")
+        });
         reg.command("ask-fails", "", |ctx, _| {
             ctx.prompt(":", |_, _| Err(Error::Msg("no match".into())));
             Ok(())
@@ -250,6 +259,30 @@ fn a_callback_error_drops_nothing() {
 }
 
 #[test]
+fn a_queued_calls_error_drops_nothing() {
+    fn failed(_: &mut Ctx) -> Result {
+        Err(Error::Msg("queued call failed".into()))
+    }
+    let (mut ctx, log) = setup();
+    ctx.defer(failed);
+    run_fed(&mut ctx, "a");
+    assert_eq!(*log.borrow(), ["note-a"], "a deferred call");
+    log.borrow_mut().clear();
+
+    let job = ctx.spawn(|| (), |ctx, _| failed(ctx));
+    run_fed(&mut ctx, "a");
+    assert_eq!(*log.borrow(), ["note-a"], "a job's done");
+    log.borrow_mut().clear();
+
+    let hook = ctx.on_buffer_killed(|ctx, _| failed(ctx));
+    let b = ctx.create_text("other", "text");
+    ctx.kill(b);
+    run_fed(&mut ctx, "a");
+    assert_eq!(*log.borrow(), ["note-a"], "a hook");
+    drop((job, hook));
+}
+
+#[test]
 fn an_error_the_command_handles_drops_nothing() {
     let (mut ctx, log) = setup();
     run_fed(&mut ctx, "hb");
@@ -324,6 +357,13 @@ fn a_prompt_answer_that_succeeds_drops_nothing() {
 }
 
 #[test]
+fn a_cancelled_prompt_whose_answer_fails_drops_the_rest() {
+    let (mut ctx, log) = setup();
+    run_fed(&mut ctx, ":x<Esc>b");
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+}
+
+#[test]
 fn a_prompt_a_new_prompt_cancels_drops_nothing() {
     let (mut ctx, _) = setup();
     ctx.prompt("first", |_, _| Err(Error::Msg("cancelled".into())));
@@ -378,4 +418,11 @@ fn keys_the_host_feeds_go_behind_what_is_left() {
     ctx.feed_keys("c").unwrap();
     ctx.run_until_idle();
     assert_eq!(*log.borrow(), ["note-a", "note-b", "note-c"]);
+}
+
+#[test]
+fn keys_fed_after_a_nested_turn_emptied_the_queue_still_run() {
+    let (mut ctx, log) = setup();
+    ctx.type_keys("N");
+    assert_eq!(*log.borrow(), ["note-c"], "{:?}", ctx.messages);
 }

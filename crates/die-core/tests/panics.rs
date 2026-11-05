@@ -22,6 +22,7 @@
 //!   `a_prompts_answer_panic_names_the_extension_that_asked`.
 //! - `panics_taking_turns_dont_flood_the_log`: two objects panicking on every frame, and what
 //!   logging something else does.
+//! - `a_long_run_of_panic_lines_stops_being_compared`: what that check costs has a limit.
 //! - `a_render_panic_keeps_its_line_when_a_command_panics_next`: the hook's list and the guard
 //!   match panics by message, including a panic that comes with no hook call.
 //! - `a_message_names_the_extension_the_place_and_restarting`: what the line says.
@@ -881,6 +882,22 @@ fn panics_taking_turns_dont_flood_the_log() {
         "they're news again after it: {:?}",
         ctx.messages
     );
+}
+
+#[test]
+fn a_long_run_of_panic_lines_stops_being_compared() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    for i in [0].into_iter().chain(0..100).chain([0]) {
+        ctx.defer(move |_| panic!("bug {i}"));
+        ctx.run_until_idle();
+    }
+    let lines = ctx.messages.iter().filter(|m| m.contains("bug 0 at"));
+    assert_eq!(
+        lines.count(),
+        2,
+        "the second is close enough to the first to be skipped, and the last isn't"
+    );
+    assert_eq!(ctx.messages.len(), 101);
 }
 
 #[test]
