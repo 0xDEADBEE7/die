@@ -11,7 +11,7 @@ pub use die_vim as vim;
 
 use die_core::{Clock, Ctx, Extension, StatusTextFn};
 use die_render::driver::Config as Font;
-use die_render::{check, window};
+use die_render::{check, driver, window};
 use die_vim::Vim;
 use std::ffi::OsStr;
 use std::os::unix::fs::MetadataExt;
@@ -117,7 +117,11 @@ pub fn check(config: Config, names: Vec<String>) -> i32 {
     launch(config, Some(check::script(names)))
 }
 
-fn launch(config: Config, script: Option<window::Script>) -> i32 {
+fn launch(mut config: Config, script: Option<window::Script>) -> i32 {
+    // Only a real run gets the system clipboard. A check's keys stay off the one you copy with.
+    if script.is_none() && config.core.clipboard.is_none() {
+        config.core.clipboard = driver::system_clipboard();
+    }
     let font = config.font.clone();
     let ctx = match start(config) {
         Ok(ctx) => ctx,
