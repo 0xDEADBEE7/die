@@ -19,6 +19,8 @@
 //!
 //! The runner is core's public harness (K7). A tty case also sets its window's size and top
 //! line, and is held to its top line after a frame per key, as the oracle redisplays per command.
+//! A fixture W columns wide runs at W - 1 text columns, because tty Emacs keeps its last column
+//! for the continuation glyph (contract §9), and its rows are held to the fixture's layout.
 //!
 //! The clipboard is the harness's `FakeClipboard`. Your Evil writes every kill to it, so nearly every
 //! case holds die-vim to its writes and to what it ends up holding.
@@ -204,7 +206,7 @@ fn run_case(case: &Case) -> Result<(), String> {
     let (input, want) = (&case.input, &case.expected);
     let mut ctx = Harness::new(vec![Box::new(Vim::default())]).map_err(|e| e.join("; "))?;
     if let Some(size) = &input.window {
-        ctx.set_window_size(size.width, size.height);
+        ctx.set_window_size(size.width - 1, size.height);
     }
     let (buf, w) = ctx
         .open_text("case", &input.text)
@@ -264,13 +266,19 @@ fn run_case(case: &Case) -> Result<(), String> {
     let top = ctx.top_line(w);
 
     let mut diffs = Vec::new();
+    if let (Some(size), Some(layout)) = (&input.window, &input.layout) {
+        let got = row_starts(&input.text, size.width - 1)?;
+        if got != *layout {
+            diffs.push(format!("rows start at {got:?}, want {layout:?}"));
+        }
+    }
     let text = ctx.text(buf).map_err(|e| format!("{e:?}"))?;
     let got_text = text.rope().to_string();
     if got_text != want.text {
         diffs.push(format!("text {got_text:?}, want {:?}", want.text));
     }
     if let Some(size) = &want.window {
-        let (got, wanted) = (ctx.window_size(w), Some((size.width, size.height)));
+        let (got, wanted) = (ctx.window_size(w), Some((size.width - 1, size.height)));
         if got != wanted {
             diffs.push(format!("window size {got:?}, want {wanted:?}"));
         }
@@ -360,6 +368,23 @@ fn run_case(case: &Case) -> Result<(), String> {
     } else {
         Err(diffs.join("; "))
     }
+}
+
+/// Where each screen line of `text` starts at `cols` text columns, as a fixture's layout says it,
+/// which doesn't count the empty row after a final newline.
+fn row_starts(text: &str, cols: usize) -> Result<Vec<usize>, String> {
+    let mut ctx = Harness::new(vec![Box::new(Vim::default())]).map_err(|e| e.join("; "))?;
+    ctx.set_window_size(cols, text.len() + 1);
+    let (buf, w) = ctx.open_text("rows", text).map_err(|e| format!("{e:?}"))?;
+    let t = ctx.text(buf).map_err(|e| format!("{e:?}"))?;
+    let view = t.viewport(w).ok_or("the window shows no text")?;
+    let starts = view.rows.iter().filter_map(|r| r.stops().first());
+    Ok(starts
+        .map(|s| s.pos)
+        .enumerate()
+        .filter(|&(i, pos)| i == 0 || pos < text.len())
+        .map(|(_, pos)| pos)
+        .collect())
 }
 
 /// A case's starting selection: your Evil's `start` and `end`, with the cursor on one end.
@@ -491,6 +516,7 @@ fn a_hand_written_fixture_must_keep_its_oracle_cases_input() {
 fn a_tty_case_must_end_on_evils_top_line() {
     let (mut case, _) = fixture_case(&fixtures_dir(), "motions", "count-l-past-end");
     case.input.text = "a\nb\nc\nd\ne\nf\n".into();
+    case.input.layout = None;
     case.keys = "0".into();
     case.input.cursor.byte = 6;
     case.expected.text = case.input.text.clone();
@@ -508,6 +534,20 @@ fn a_tty_case_must_end_on_evils_top_line() {
     case.expected.window = Some(window(1));
     let why = run_case(&case).expect_err("the top line differs");
     assert!(why.contains("top line Some(2), want 1"), "{why}");
+}
+
+/// §9: a fixture 40 wide runs at 39 text columns, where `wrapped/gj` has Evil's rows and 40 gives
+/// [0, 40, 65]. Any other rows don't pass.
+#[test]
+fn a_tty_case_runs_a_column_narrower_and_must_have_evils_rows() {
+    let (mut case, _) = fixture_case(&fixtures_dir(), "wrapped", "gj");
+    case.keys = "0".into();
+    case.expected.cursor = case.input.cursor;
+    assert_eq!(run_case(&case), Ok(()), "the rows at 39 columns");
+
+    case.input.layout = Some(vec![0, 40, 65]);
+    let why = run_case(&case).expect_err("Evil's rows aren't these");
+    assert!(why.contains("rows start at [0, 35, 65]"), "{why}");
 }
 
 /// What reaches the clipboard, and what it ends up holding, are held to your Evil.
