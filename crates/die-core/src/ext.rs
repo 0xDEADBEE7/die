@@ -341,6 +341,8 @@ pub struct Ctx {
     pub(crate) files: crate::files::Files,
     /// The log: errors, panics and messages, oldest first (K11a's `*messages*` shows it).
     pub messages: Vec<String>,
+    /// The errors among them since the harness last took them. Only the harness keeps these.
+    pub(crate) errors: Option<Vec<String>>,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
 }
@@ -496,6 +498,7 @@ impl Ctx {
             over_limit: false,
             files: Default::default(),
             messages: vec![],
+            errors: None,
             faces,
             search_highlight: None,
         };
@@ -615,6 +618,9 @@ impl Ctx {
     /// is M1's.
     fn log_panic(&mut self, what: String) {
         let line = format!("{what}{RESTART}");
+        if let Some(errors) = &mut self.errors {
+            errors.push(line.clone());
+        }
         let recent = self.messages.iter().rev().take(32);
         let mut run = recent.take_while(|m| m.ends_with(RESTART));
         if !run.any(|m| *m == line) {
@@ -637,8 +643,15 @@ impl Ctx {
     pub(crate) fn report(&mut self, r: Result) {
         match r {
             Ok(()) | Err(Error::Panicked { .. }) => {}
-            Err(e) => self.messages.push(format!("{e:?}")),
+            Err(e) => self.log_error(format!("{e:?}")),
         }
+    }
+    /// Log a key's or a call's failure, as opposed to news such as "Wrote foo".
+    pub(crate) fn log_error(&mut self, line: String) {
+        if let Some(errors) = &mut self.errors {
+            errors.push(line.clone());
+        }
+        self.messages.push(line);
     }
 
     // -------------------------------------------------------------- C2 checkout
