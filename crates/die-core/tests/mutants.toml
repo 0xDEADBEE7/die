@@ -1,19 +1,24 @@
 # die-core's planted bugs, run by `cargo xtask mutate` (from spike S4's mutate.sh).
 # Each replaces `old` (which must occur exactly once in `file`, relative to
 # crates/die-core) with `new`, and the property tests in tests/prop.rs must fail.
-# K2 and K4 add their own: an undo bug, a stale layout cache and a wrap bug.
+# K2 and K4 added their own: undo bugs, stale layout caches and wrap bugs.
 
 [[mutant]]
-name = "M1 layout cache key ignores decorations"
-file = "src/layout.rs"
+name = "M1 a new Hide or virtual text leaves the layout cache as it was"
+file = "src/text.rs"
 old = '''
-let key = (self.rev(), self.deco_gen, self.settings.tab_width);'''
+            self.cache.get_mut().clear();
+            self.normalize_views();
+        }
+        Ok(id)'''
 new = '''
-let key = (self.rev(), 0, self.settings.tab_width);'''
+            self.normalize_views();
+        }
+        Ok(id)'''
 
 [[mutant]]
 name = "M2 hide merge ignores the replacement preference"
-file = "src/layout.rs"
+file = "src/text/hidden.rs"
 old = '''
 v.sort_by_key(|s| (s.start, s.repl.is_none(), std::cmp::Reverse(s.end), s.seq));'''
 new = '''
@@ -23,11 +28,11 @@ v.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end), s.seq));'''
 name = "M3 no cursor fix-up after decorate"
 file = "src/text.rs"
 old = '''
-        self.deco_gen += 1;
-        self.normalize_views();
+            self.normalize_views();
+        }
         Ok(id)'''
 new = '''
-        self.deco_gen += 1;
+        }
         Ok(id)'''
 
 [[mutant]]
@@ -39,15 +44,15 @@ new = '''
 if p.pos + p.del < o.pos {'''
 
 [[mutant]]
-name = "M5 end-of-line stop on a full row doesn't wrap"
+name = "M5 a line end on a full row starts a row of its own (S4's extra row)"
 file = "src/layout.rs"
 old = '''
-    fn stop_here(&mut self, pos: usize) {
-        if !self.fits(1) {
-            self.newrow();
-        }'''
+                out.line_end = Some(out.stop(wk.w.pos, wk.w.vcol, col));'''
 new = '''
-    fn stop_here(&mut self, pos: usize) {'''
+                if width != usize::MAX && col >= width {
+                    return (Some(wk.w), wk.read_to);
+                }
+                out.line_end = Some(out.stop(wk.w.pos, wk.w.vcol, col));'''
 
 [[mutant]]
 name = "M6 open undo group not rebased over silent edits"
@@ -69,9 +74,12 @@ new = '''
 name = "M8 wide char ignores the row end (no filler)"
 file = "src/layout.rs"
 old = '''
-        if w > 1 && !self.fits(w) && self.col > 0 {'''
+                out.filler(&it, width - col);
+                return (Some(it.at), wk.read_to);'''
 new = '''
-        if false {'''
+                out.put(&it, 0..width - col, col);
+                let skip = (width - col) as u32;
+                return (Some(Walk { skip, ..it.at }), wk.read_to);'''
 
 # K2: the undo cap, selections, changed ranges and boundaries.
 
@@ -233,3 +241,192 @@ old = '''
                 l.ins = l.ins - s.del + s.ins'''
 new = '''
                 l.ins = s.ins'''
+
+# K4: stale caches. An edit keeps what it can, so these are what could go wrong with that.
+
+[[mutant]]
+name = "M27 stale cache: an edit doesn't move the lines after it"
+file = "src/layout.rs"
+old = '''
+((s - b + c, m), l)'''
+new = '''
+((s, m), l)'''
+
+[[mutant]]
+name = "M28 stale cache: an edit keeps the rows after it"
+file = "src/layout.rs"
+old = '''
+                l.rows.truncate(i + 1);'''
+new = ''
+
+[[mutant]]
+name = "M29 stale cache: an edit at a line's end leaves it finished"
+file = "src/layout.rs"
+old = '''
+l.end.is_none_or(|e| s + e >= a)'''
+new = '''
+l.end.is_none_or(|e| s + e > a)'''
+
+[[mutant]]
+name = "M30 stale cache: a new tab width keeps the lines"
+file = "src/layout.rs"
+old = '''
+        if c.tab != self.settings.tab_width {'''
+new = '''
+        if false {'''
+
+[[mutant]]
+name = "M31 stale cache: a row's end is thought to depend only on its start"
+file = "src/layout.rs"
+old = '''
+                    line.rows[last].1 = read_to - s;'''
+new = '''
+                    line.rows[last].1 = read_to.min(from.pos) - s;'''
+
+[[mutant]]
+name = "M32 stale cache: removing a Hide or virtual text leaves it as it was"
+file = "src/text.rs"
+old = '''
+            self.cache.get_mut().clear();
+            self.normalize_views();
+        }
+        Some(d)'''
+new = '''
+            self.normalize_views();
+        }
+        Some(d)'''
+
+[[mutant]]
+name = "M41 stale cache: an edit keeps the lines inside the range it replaced"
+file = "src/layout.rs"
+old = '''
+            s <= a
+        });'''
+new = '''
+            s <= b
+        });'''
+
+[[mutant]]
+name = "M42 stale cache: an edit leaves a half laid-out line's rows"
+file = "src/layout.rs"
+old = '''
+l.end.is_none_or(|e| s + e >= a)'''
+new = '''
+l.end.is_some_and(|e| s + e >= a)'''
+
+# K4: a rope's chunk edges. A cluster that crosses one takes every path through `grapheme`.
+
+[[mutant]]
+name = "M43 an ASCII character at a chunk's end is a cluster alone"
+file = "src/layout.rs"
+old = '''
+b.get(i + 1).is_some_and(|c| *c < 0x80)'''
+new = '''
+b.get(i + 1).is_none_or(|c| *c < 0x80)'''
+
+[[mutant]]
+name = "M44 a cluster stops at its chunk's end"
+file = "src/layout.rs"
+old = '''
+n.filter(|n| *n < in_chunk.len() || run_ends)'''
+new = '''
+n'''
+
+[[mutant]]
+name = "M45 a cluster running into the next chunk stops there"
+file = "src/layout.rs"
+old = '''
+                chunk_at += chunk.len();
+                chunk = run.chunk_at_byte(chunk_at).0;'''
+new = '''
+                return Some(chunk_at + chunk.len());'''
+
+[[mutant]]
+name = "M46 going back into the previous chunk gives up"
+file = "src/layout.rs"
+old = '''
+                (chunk, chunk_at, ..) = run.chunk_at_byte(chunk_at - 1);'''
+new = '''
+                return Some(chunk_at);'''
+
+[[mutant]]
+name = "M47 a position at a chunk's start isn't given its context"
+file = "src/layout.rs"
+old = '''
+                let (c, s, ..) = run.chunk_at_byte(n - 1);
+                gc.provide_context(c, s);'''
+new = '''
+                return Some(n);'''
+
+# K4: the wrap rule, cursor positions and numbers.
+
+[[mutant]]
+name = "M33 wrap: the first break point on a row, not the last"
+file = "src/layout.rs"
+old = '''
+                brk = Some((it.at, col));'''
+new = '''
+                brk = brk.or(Some((it.at, col)));'''
+
+[[mutant]]
+name = "M34 wrap: a space with a mark on it isn't whitespace"
+file = "src/layout.rs"
+old = '''
+            whitespace: tab || c == ' ','''
+new = '''
+            whitespace: tab || text == " ",'''
+
+[[mutant]]
+name = "M35 wrap: the item after a control character's rest is a break point"
+file = "src/layout.rs"
+old = '''
+            whitespace: tab || c == ' ','''
+new = '''
+            whitespace: tab || c == ' ' || c.is_control(),'''
+
+[[mutant]]
+name = "M36 wrap: a wide cluster's width counts each character"
+file = "src/layout.rs"
+old = '''
+            None => text.width().max(1),'''
+new = '''
+            None => text.chars().map(|c| c.to_string().width().max(1)).sum(),'''
+
+[[mutant]]
+name = "M37 a position inside a cluster is a cursor position"
+file = "src/layout.rs"
+old = '''
+        pos == rs || grapheme(run, pos - rs, Step::Is).is_some()'''
+new = '''
+        pos >= rs || grapheme(run, pos - rs, Step::Is).is_some()'''
+
+[[mutant]]
+name = "M38 move_visual counts rows with no cursor position"
+file = "src/layout.rs"
+old = '''
+            if m.is_none_or(|mode| !self.stops_of(cur.0, mode, cur.1).0.is_empty()) {'''
+new = '''
+            if m.is_none_or(|mode| !self.stops_of(cur.0, mode, cur.1).0.is_empty()) || n > 1 {'''
+
+[[mutant]]
+name = "M39 the empty last row has a number"
+file = "src/layout.rs"
+old = '''
+                _ if vr.dline_start == self.len() => None,'''
+new = ''
+
+[[mutant]]
+name = "M40 the gutter counts the empty last line"
+file = "src/layout.rs"
+old = '''
+self.line_count() - usize::from(empty_last)'''
+new = '''
+self.line_count() - usize::from(empty_last && false)'''
+
+[[mutant]]
+name = "M48 a fold's cursor row shows its first line's number in Visual"
+file = "src/layout.rs"
+old = '''
+                Visual if on_cursor => Some(self.line_of(at.pos) + 1),'''
+new = '''
+                Visual if on_cursor => Some(own),'''
