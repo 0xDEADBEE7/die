@@ -104,7 +104,9 @@ pub fn half_down(ctx: &mut Ctx, a: &Args) -> Result {
         let moved = t.scroll_rows(w, wanted).unwrap_or(0);
         let v = t.viewport(w).ok_or_else(no_view)?;
         let row = v.rows.get(at_row).filter(|_| moved == n);
-        let target = row.or(v.rows.last()).map_or(sel.head, |r| row_pos(t, r, goal));
+        let target = row
+            .or(v.rows.last())
+            .map_or(sel.head, |r| row_pos(t, r, goal));
         if let Some(short) = rows.checked_sub(v.rows.len()).filter(|&s| s > 0) {
             t.scroll_rows(w, -isize::try_from(short).unwrap_or(0));
         }
