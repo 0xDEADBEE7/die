@@ -5,7 +5,8 @@
 use crate::grammar::{buffer_window, forget_goal};
 use crate::motions::word_back;
 use crate::text::{
-    Chars, blank_line, indent_end, indentation, line_end, next_stop, prev_stop, rest_pos,
+    Chars, blank_line, indent_end, indent_stops, indentation, line_end, next_stop, prev_stop,
+    rest_pos,
 };
 use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, WindowId};
 
@@ -308,22 +309,16 @@ pub fn indent_from_above(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
         Some(above) if !blank_line(t, above) => indentation(t, above),
         _ => 0,
     };
-    let end = indent_end(t, line);
-    let now = t.display_col(end);
+    let stops = indent_stops(t, line);
+    let (end, now) = stops[stops.len() - 1];
     if now < col {
         let spaces = " ".repeat(col - now);
         t.tx(Origin::User).insert(end, spaces).commit()?;
     } else if now > col {
-        // What fits stays. A tab past the column becomes the spaces that reach it.
-        let s = t.line_start(line);
-        let keep = t
-            .display_line(s)
-            .stops()
-            .iter()
-            .filter(|st| st.pos >= s && st.pos <= end)
-            .rfind(|st| st.vcol <= col)
-            .map_or(s, |st| st.pos);
-        let spaces = " ".repeat(col - t.display_col(keep));
+        // What fits stays. A tab past the column becomes the spaces that reach it. The first
+        // stop is column 0, so one always fits.
+        let &(keep, at) = stops.iter().rfind(|&&(_, c)| c <= col).unwrap_or(&stops[0]);
+        let spaces = " ".repeat(col - at);
         t.tx(Origin::User).replace(keep..end, spaces).commit()?;
     }
     t.set_cursor(w, indent_end(t, line));
