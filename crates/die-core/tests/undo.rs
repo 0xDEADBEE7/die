@@ -338,3 +338,218 @@ fn undo_is_exact_around_streamed_silent_text() {
         assert_eq!(text(&ctx, b), want, "streamed at {at}, after a redo");
     }
 }
+
+/// The selection comes from just before the step's first edit, not from
+/// `begin_undo_group`: `i<Right>x<Esc>u` in your Evil returns to where x was typed.
+#[test]
+fn undo_restores_the_selection_from_before_the_groups_first_edit() {
+    let (mut ctx, b, w) = setup("abc\n");
+    step(&mut ctx, b, |t| t.begin_undo_group()); // `i`, cursor at 0
+    step(&mut ctx, b, move |t| t.set_cursor(w, 1)); // <Right>
+    insert(&mut ctx, b, 1, "x"); // x
+    step(&mut ctx, b, |t| t.end_undo_group()); // <Esc>
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(1));
+}
+
+/// `o`: an edit before the group in the same command joins it, and the selection is the one
+/// from before that edit.
+#[test]
+fn an_edit_that_joins_a_group_gives_the_step_its_selection() {
+    let (mut ctx, b, w) = setup("abc");
+    ctx.text_mut(b).unwrap().set_cursor(w, 1);
+    step(&mut ctx, b, move |t| {
+        t.tx(Origin::User).insert(3, "\n").commit().unwrap();
+        t.set_cursor(w, 4);
+        t.begin_undo_group();
+    });
+    insert(&mut ctx, b, 4, "x");
+    step(&mut ctx, b, |t| t.end_undo_group());
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(text(&ctx, b), "abc");
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(1));
+}
+
+/// A silent edit that lands before the group's first change moves the selection with it.
+#[test]
+fn a_silent_edit_before_the_groups_first_change_moves_its_selection() {
+    let (mut ctx, b, w) = setup("abc\n");
+    step(&mut ctx, b, |t| t.begin_undo_group());
+    step(&mut ctx, b, move |t| t.set_cursor(w, 1));
+    step(&mut ctx, b, |t| {
+        t.tx(Origin::Extension)
+            .silent()
+            .insert(0, ">> ")
+            .commit()
+            .unwrap()
+    });
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(4));
+    insert(&mut ctx, b, 4, "x");
+    step(&mut ctx, b, |t| t.end_undo_group());
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(text(&ctx, b), ">> abc\n");
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(4));
+}
+
+/// Code between units has no command of its own to be attributed to: it used to get the last
+/// command's number, and one `u` took back both.
+#[test]
+fn an_edit_made_outside_any_command_is_its_own_undo_step() {
+    let (mut ctx, b, _) = setup("");
+    insert(&mut ctx, b, 0, "a"); // a command
+    let host = |ctx: &mut Ctx, at, s: &str| {
+        let t = ctx.text_mut(b).unwrap();
+        t.tx(Origin::User).insert(at, s).commit().unwrap();
+    };
+    host(&mut ctx, 1, "b");
+    assert_eq!(text(&ctx, b), "ab");
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(text(&ctx, b), "a", "u took back the command's edit too");
+    // Host edits between the same two units are one step.
+    host(&mut ctx, 1, "b");
+    host(&mut ctx, 2, "c");
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(text(&ctx, b), "a");
+}
+
+/// A step put back by redo takes no later edits, even from host code that has run no unit.
+#[test]
+fn a_step_put_back_by_redo_takes_no_later_edits() {
+    let (mut ctx, b, _) = setup("");
+    let t = ctx.text_mut(b).unwrap();
+    t.tx(Origin::User).insert(0, "a").commit().unwrap();
+    t.undo().unwrap();
+    t.redo().unwrap();
+    t.tx(Origin::User).insert(1, "b").commit().unwrap();
+    t.undo().unwrap();
+    assert_eq!(t.rope().to_string(), "a");
+}
+
+/// An explicit group spans commands until it ends. Undoing inside it (Vim's `<C-o>u`, or any
+/// extension calling `undo`) leaves it open: the next edit starts a new step inside it.
+#[test]
+fn an_undo_inside_an_open_group_leaves_the_group_open() {
+    let (mut ctx, b, _) = setup("");
+    step(&mut ctx, b, |t| t.begin_undo_group());
+    insert(&mut ctx, b, 0, "x");
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(text(&ctx, b), "");
+    insert(&mut ctx, b, 0, "y");
+    insert(&mut ctx, b, 1, "z");
+    step(&mut ctx, b, |t| t.end_undo_group());
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(
+        text(&ctx, b),
+        "",
+        "the rest of the group (yz) should be one step"
+    );
+}
+
+#[test]
+fn a_redo_inside_an_open_group_leaves_the_group_open() {
+    let (mut ctx, b, _) = setup("");
+    insert(&mut ctx, b, 0, "x");
+    undo(&mut ctx, b).unwrap();
+    step(&mut ctx, b, |t| t.begin_undo_group());
+    redo(&mut ctx, b).unwrap();
+    insert(&mut ctx, b, 1, "y");
+    insert(&mut ctx, b, 2, "z");
+    step(&mut ctx, b, |t| t.end_undo_group());
+    insert(&mut ctx, b, 3, "!");
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(
+        text(&ctx, b),
+        "xyz",
+        "the group ended, so ! is its own step"
+    );
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(
+        text(&ctx, b),
+        "x",
+        "yz is one step, apart from the redone x"
+    );
+}
+
+#[test]
+fn a_group_left_open_takes_every_later_edit() {
+    let (mut ctx, b, _) = setup("");
+    step(&mut ctx, b, |t| t.begin_undo_group());
+    for (i, c) in ["a", "b", "c"].into_iter().enumerate() {
+        insert(&mut ctx, b, i, c);
+    }
+    assert_eq!(undo(&mut ctx, b), Ok(0..0));
+    assert_eq!(text(&ctx, b), "", "one step, though no one ended the group");
+}
+
+/// Contract §9: if a silent edit changed text an undo step needs, undo refuses with an error
+/// and drops the older history. When the edit lands inside a group still collecting, the
+/// history goes at the next keystroke, and the undo that reaches the gap says why, once.
+#[test]
+fn history_dropped_by_a_conflict_while_typing_is_reported_as_a_conflict() {
+    let (mut ctx, b, _) = setup("");
+    insert(&mut ctx, b, 0, "older ");
+    step(&mut ctx, b, |t| t.begin_undo_group());
+    insert(&mut ctx, b, 6, "ab");
+    step(&mut ctx, b, |t| {
+        t.tx(Origin::Extension)
+            .silent()
+            .replace(7..8, "B")
+            .commit()
+            .unwrap()
+    });
+    insert(&mut ctx, b, 8, "c");
+    step(&mut ctx, b, |t| t.end_undo_group());
+    assert_eq!(text(&ctx, b), "older aBc");
+    undo(&mut ctx, b).unwrap();
+    assert_eq!(text(&ctx, b), "older aB");
+    assert_eq!(
+        undo(&mut ctx, b),
+        Err(Error::UndoConflict),
+        "the older steps were dropped by a conflict"
+    );
+    assert_eq!(undo(&mut ctx, b), Err(Error::NothingToUndo), "said once");
+    assert_eq!(redo(&mut ctx, b), Ok(8..9), "redo was never affected");
+}
+
+/// A command bound to `g` that inserts text itself, so the step's number is the key's.
+struct InsertsOnG;
+impl Extension for InsertsOnG {
+    fn name(&self) -> &'static str {
+        "inserts-on-g"
+    }
+    fn register(&mut self, reg: &mut Registry) {
+        reg.command("ins", "", |ctx, a| {
+            let t = ctx.text_mut(a.buffer.unwrap())?;
+            t.tx(Origin::User).insert(0, "k").commit()?;
+            Ok(())
+        });
+        reg.kind_keymap("text").bind(State::Normal, "g", "ins");
+    }
+}
+
+/// DR-13: after a key, typed or fed, code outside any command gets a number of its own.
+fn host_edit_after_key(press: fn(&mut Ctx)) -> String {
+    let mut ctx = Ctx::new(vec![Box::new(InsertsOnG)]).unwrap();
+    let b = ctx.create_text("t", "abc");
+    ctx.open_window(b, 40, 5).unwrap();
+    press(&mut ctx);
+    assert_eq!(text(&ctx, b), "kabc");
+    let t = ctx.text_mut(b).unwrap();
+    t.tx(Origin::User).insert(0, "h").commit().unwrap();
+    t.undo().unwrap();
+    text(&ctx, b)
+}
+
+#[test]
+fn an_edit_made_after_a_typed_key_is_its_own_undo_step() {
+    assert_eq!(host_edit_after_key(|ctx| ctx.type_keys("g")), "kabc");
+}
+
+#[test]
+fn an_edit_made_after_a_fed_key_is_its_own_undo_step() {
+    let press = |ctx: &mut Ctx| {
+        ctx.feed_keys("g").unwrap();
+        ctx.run_until_idle();
+    };
+    assert_eq!(host_edit_after_key(press), "kabc");
+}

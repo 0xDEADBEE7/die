@@ -107,7 +107,7 @@ An extension's global state is the extension struct itself. A command reaches it
 | Text | `text(buffer)` and `text_mut(buffer)` borrow a buffer's text for reading, editing, markers, decorations, per-window cursors and selections, and layout queries (§9) |
 | Commands | `run(name, args)`; `feed_keys(keys)`, which queues keys as if typed, ahead of further typed input; a key observer that sees each key before dispatch, marked typed or fed, so die-vim can record macros (`qb@aq` records `@a`, as Vim does) |
 | Modes | enable, disable, `with_mode::<M>` |
-| Modal state | read and set the state; read and set the prefix argument (count and register) |
+| Modal state | read and set the state, which is per buffer: of the focused buffer, or of any buffer by id; read and set the prefix argument (count and register) |
 | Async | `spawn`, `process`, `pty`, `watch`, `after`, `every`, `idle`, `prompt` (§12) |
 | Hooks | subscribe to buffer lifecycle, edits (after the fact), saves, modes, focus and idle, returning a handle (C4). A save runs its write as a queued step after the before-save hooks. |
 | Pixels | create a pixel buffer, create an image (§11) |
@@ -133,7 +133,7 @@ args
   deco         for a Hide's reveal command: the decoration being revealed (§9)
 ```
 
-- **The prefix argument.** Core stores a count and a register, and doesn't parse Vim syntax. die-vim's digit and `"x` commands fill the slot, and `0` is a die-vim command (scope D9).
+- **The prefix argument.** Core stores a count and a register, and doesn't parse Vim syntax. die-vim's digit and `"x` commands fill the slot, and `0` is a die-vim command (scope D9). An undefined key clears the slot, as Emacs's `undefined` does, so a typo can't arm the next command.
 - **No `interactive`-style argument prompting.** A command that needs input calls `ctx.prompt` and continues in the callback (§12).
 - **Errors** returned from `run` are shown in the command line and logged.
 - **Introspection.** `describe-command` shows the doc, the owning extension and every key bound to the command. `describe-key` follows a key through the lookup order (§7) and reports where it was found, plus any bindings it shadows.
@@ -146,12 +146,14 @@ args
 - **States** (scope §5.6): normal, insert, visual, operator-pending, command line, copy and passthrough.
 - **Copy state** is normal and visual running over a read-only snapshot (scope D19). A window enters it when you leave passthrough with the DIE layer's Esc, and when you're in normal state on a surface without a text keymap. die-vim registers its normal and visual grammar as the copy-state keymap for every surface kind. In a terminal, `i` and `a` return to passthrough.
 - **A keymap** maps key sequences to command names, per state. The notation follows Vim: `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`.
-  - Key names match without case. A `<` that doesn't start a key name is a literal `<`. A bracketed word that isn't a key name, or modifiers followed by something that isn't a key, is a startup error. `feed_keys` and macro register text are notation too, so a literal `<` there is written `<lt>`.
+  - Key names match without case. A `<` that doesn't start a key name is a literal `<`. A bracketed word that isn't a key name, or modifiers followed by something that isn't a key or by no closing `>`, is a startup error. `feed_keys` and macro register text are notation too, so a literal `<` there is written `<lt>`. Literal characters that form one grapheme cluster (`👍🏽`, `🇦🇺`) are one key, as text committed by the OS is. A keymap can't bind one: that's a startup error, so bind `<char>` and read `args.key`.
   - Ctrl with a letter ignores the letter's case (`<C-V>` is `<C-v>`); `<C-S-v>` is Ctrl-Shift-V. Key events match the same way, so Caps Lock doesn't change what Ctrl-v matches.
+  - Shift counts on named keys and with Ctrl and a letter. Written with any other character it's a startup error, because the layout already applied it and no key sends what it says: write `<C-@>`, not `<C-S-2>`, and `<Space>`, not `<S-Space>`.
+  - `<C-[>` is `<Esc>`, `<C-i>` is `<Tab>` and `<C-m>` is `<CR>`, as in your GUI Emacs and in Vim, so they can't be bound apart. Only keymaps fold these: the raw event keeps the difference for terminals that report it.
   - `<A-…>` and `<M-…>` are Alt (Option on macOS). `<D-…>` names the DIE layer, which on macOS is scope D18's Cmd layer: `<D-v>` is Cmd-V there.
   - `<leader>` is the key your config sets, `\` by default. It applies to every keymap once all extensions have registered.
-- **`<char>` matches any printable character,** including text committed by dead keys. The command reads which character it was from `args.key`. This replaces the loops in scrib's and orchid's search modes that bind every character to a self-insert command.
-- **`<any>` matches any key** a keymap doesn't otherwise bind, printable or not. die-vim uses it to cancel operator-pending on an unbound key.
+- **`<char>` matches any printable character,** including text committed by dead keys. No key with Ctrl, Alt or Super held is printable. The command reads which character it was from `args.key`. This replaces the loops in scrib's and orchid's search modes that bind every character to a self-insert command.
+- **`<any>` matches any key** a keymap doesn't otherwise bind, printable or not. die-vim uses it to cancel operator-pending on an unbound key. `<char>` and `<any>` match one key where they're bound: a key that fails under a prefix isn't tried against the root's, so die-vim also binds `i<any>` and `a<any>` to cancel `di` followed by an unbound key.
 - **Specificity applies within one keymap; order applies across keymaps.** An exact key beats `<char>`, which beats `<any>`, inside the same keymap. Across keymaps, lookup order wins, so a seek-style mode's `<char>` beats die-vim's `j`.
 - **A binding can't also be a prefix** of a longer binding in the same keymap and state, such as `g` and `gg`. Registration reports it, along with the C8 check.
 - **Where keymaps attach:**
@@ -174,7 +176,7 @@ args
   - The rest of the DIE layer is looked up in DIE's keymaps (scope D18).
   - Every other key goes straight to the surface's `event()`.
   - A surface declares which keys it handles there, so `describe-key` can report them.
-- **Press, repeat and release.** Keymaps match press and repeat. Release events, and modifier keys pressed alone, reach only surfaces in passthrough. Binding a modifier key alone, or making one the leader, is a startup error. Any key DIE takes in passthrough, the DIE layer's Esc or a DIE-layer binding, swallows its own repeat and release, so a program never sees a release without its press.
+- **Press, repeat and release.** Keymaps match press and repeat. Release events, modifier keys pressed alone and keys DIE has no name for reach only surfaces in passthrough. Binding a modifier key alone, or making one the leader, is a startup error. Any key DIE takes in passthrough, the DIE layer's Esc or a DIE-layer binding, swallows its own repeat and release, so a program never sees a release without its press.
 - **Initial state.** A surface kind or mode can declare the state a buffer starts in, as `evil-set-initial-state` does. Text buffers start in normal, `die-term` in passthrough, and orchid's conversation mode might choose insert.
 - **Conflicts.** Within a keymap, later registration wins, and `describe-key` lists what was shadowed. Your config is applied last, and your bindings go into the keymap they name (global by default). To free a key an extension bound, your config unbinds it. That removes the binding and every longer one that starts with it, and `describe-key` lists them as shadowed. This is how config binds a key alone where an extension uses it as a prefix, or the reverse.
 
@@ -212,21 +214,21 @@ The text surface belongs to core. This section covers what extensions can do wit
 **Reading.**
 - Rope and line access. Reads go through a snapshot that exposes ropey's `RopeSlice` directly, so motions and text objects are plain functions over it.
 - Conversions between char offset, byte offset and line/column. Byte offsets are the canonical position type.
-- Regex search over a range
+- Regex search over a range, and a word pattern for `*` and `#`: a literal that matches only where the characters on either side aren't word characters, by the caller's definition. Rust's `\b` can't say this, since its word characters include `_`.
 - A **revision** number that increases with every change. manifold's caches use Emacs's modification tick for the same purpose.
 - `edits_since(rev)`: every change since a revision (C15)
 
 **Editing.**
-- Edits happen inside a **transaction**: a set of changes in the coordinates of the text before it, applied all or none. It carries an **origin**, `User` or `Extension` (C14).
-- **Undo groups** are separate from transactions. Each command or callback is one undo step by default, so `3dd` is one step. An explicit group spans commands, as an insert session does, and `undo_boundary` ends a step early. Undoing a step restores the selection from before it (shape and goal included) and returns the range it changed; redo puts a cursor at the start of that range. Each buffer keeps at most 2,000 steps or 16 MB of undone text, whichever comes first; both limits are buffer settings.
+- Edits happen inside a **transaction**: a set of changes in the coordinates of the text before it, applied all or none. It carries an **origin**, `User` or `Extension` (C14). A change with an empty range and empty text is dropped: it makes no revision, no logged change and no undo step, and redo stays available. Text replaced by itself is still a change and an undo step, as `ra` on an `a` is in Evil and Vim.
+- **Undo groups** are separate from transactions. Each command or callback is one undo step by default, so `3dd` is one step. Edits made outside any command or callback, by the host or a harness, are a step of their own. An explicit group spans commands, as an insert session does. It takes every recorded edit to its buffer until it ends, so end it on every way out. Undoing inside a group leaves it open: the next edit starts a new step inside it. `undo_boundary` ends a step early. Undoing a step restores the selection from just before its first change (shape and goal included) and returns the range it changed; redo puts a cursor at the start of that range. So a command that moves the cursor and edits in one go, such as die-vim's `p`, `J` or `dd` from mid-line, makes its edit first, or undo restores the moved cursor. Each buffer keeps at most 2,000 steps or 16 MB of undone text, whichever comes first; both limits are buffer settings.
 - **Styled insertion** inserts text together with its faces and tags in one call, the equivalent of inserting a `propertize`d string. Replacing the whole buffer is one call too, which is what seek's "erase and redraw" becomes.
-- A transaction can be **silent**, meaning it isn't recorded in undo. Streaming output, like orchid's assistant text, shouldn't fill your undo history. Undo adjusts for silent edits: if you type, an extension then appends silently above your text, and you press `u`, your text comes back exactly. If a silent edit changed the text an undo step needs, undo refuses with an error and drops the older history.
+- A transaction can be **silent**, meaning it isn't recorded in undo. Streaming output, like orchid's assistant text, shouldn't fill your undo history. Undo adjusts for silent edits: if you type, an extension then appends silently above your text, and you press `u`, your text comes back exactly. If a silent edit changed the text an undo step needs, undo refuses with an error and drops the older history. If that step is still being collected, the history goes at your next edit, and the undo that reaches the gap reports the same error, once.
 - **Read-only ranges block `User` edits only.** Edits from extension code always succeed, which replaces orchid's `inhibit-read-only` wrappers.
-- Every edit produces a **change**: the old range, the new text, and byte and line/column positions. Incremental parsers like tree-sitter need exactly this. Modes read changes with `edits_since` (§8).
+- Every edit produces a **change**: the old range, the new text, and byte and line/column positions. Incremental parsers like tree-sitter need exactly this. Modes read changes with `edits_since` (§8). They're listed as they were applied, each in the coordinates of the text after the one before it. A transaction applies its changes from the last position to the first, so two inserts at one position are listed last one first. Undo and redo log their changes too, with origin `User` and not silent.
 
 **Markers.** A marker is a position that moves with edits. Its gravity decides whether it stays before text inserted at it or moves after it. orchid's input marker and its streaming insertion point become markers.
 
-**Cursors and selections.** Each window has its own cursor and selection (C10). A selection has a shape (char, line or block) and a goal column for vertical motion. Extensions can read and set them in a given window, or in the focused one.
+**Cursors and selections.** Each window has its own cursor and selection (C10). A selection has a shape (char, line or block) and a goal column for vertical motion. Extensions can read and set them in a given window, or in the focused one. Text inserted at a window's cursor goes after it in the acting window and before it in every other window, as Emacs's window points do. The acting window is the one a command was run for (`args.window`), and otherwise the focused one: in a callback, in a command run with no window, and in code between commands. A command that moves the focus goes on acting for the window it moved to. An extension that wants a window to follow its output sets that window's cursor.
 
 **Anchored decorations.** Decorations are added and removed by id, and their ranges move with edits, the way markers do. Each end has a gravity. By default, text inserted at either edge stays outside the range.
 
@@ -243,7 +245,7 @@ The text surface belongs to core. This section covers what extensions can do wit
 
 **Decoration providers.** A mode's `decorate` is called for the visible range during render and returns faces without storing them (C16). This is font-lock's model: syntax highlighting shouldn't have to store a decoration per token. Providers cache their results by revision, and use `edits_since` to update incrementally.
 
-**Layout.** One core layout function serves both rendering and motions. It handles soft wrap, centered maximum width, the line-number gutter, tabs, wide characters and hidden ranges. Its queries are:
+**Layout.** One core layout function serves both rendering and motions. It handles soft wrap, centered maximum width, the line-number gutter, tabs, wide characters, hidden ranges and virtual text. Its queries are:
 - `viewport`: the lines and columns a window shows
 - `move_visual`: move by screen line, for `gj`/`gk`
 - `display_col`: the screen column of a position, for block selections
@@ -253,13 +255,130 @@ The text surface belongs to core. This section covers what extensions can do wit
 - `snap`: the nearest cursor position in a direction, for `h`/`l`
 - `screen_pos`: where a position is drawn in a window
 
-**Where soft wrap breaks.** At word boundaries, as Emacs's `visual-line-mode` does. A row ends after the last space or tab that fits on it, the breaking space included, and the next row starts with the next word. A word longer than a row breaks between characters. A wide character that doesn't fit moves to the next row whole, and the cell it leaves is a filler. Rows are as wide as the window's text area; the Evil oracle's tty Emacs keeps one column for its continuation glyph, so its wrapped cases are checked at their own break positions.
+**How text becomes rows.** The paragraphs from here to "Motions respect hidden ranges" are the whole rule. Someone reading only them can write a layout that agrees with K4's on every row and every cursor position, and K4's property test does exactly that. The rule is Emacs's `visual-line-mode` with `word-wrap` on, checked case by case against tty Emacs. K4 builds it: until then, `layout.rs` wraps by character, as S4 did.
 
-**Cursor positions.** Layout decides where the cursor can be. A Hide with replacement text keeps its start as a cursor position, drawn on the replacement: that's the fold line. A Hide without replacement text has no cursor position inside it. Overlapping Hides merge. After every edit or decoration change, core moves each cursor out of hidden text: to the fold line if there is one, otherwise to the next visible position. A whole-line fold hides from the start of its first line to the newline that ends its last line, so the next line keeps its own row.
+**Display lines.** A *display line* is a logical line, joined with the lines after it when a Hide covers its newline. It runs from a line's start to its first newline that isn't hidden, or to the end of the text. A newline is the byte U+000A: nothing else ends a line, so `\r` and U+2028 are characters like any other. A display line's *first line* is the line it starts on. Each display line takes one or more rows.
+
+**Hides merge first.** A Hide with an empty range hides nothing and shows nothing. Hides that overlap merge into one hidden range. It takes the replacement of the Hide that starts first; if several start there, it prefers one with a replacement, then the longest, then the one added first. So a Hide with no replacement that starts first hides a later one's replacement too. Hides that only touch don't merge.
+
+**Items.** Layout places a display line's *items* left to right, in the order they come along the text:
+- Each grapheme cluster of visible text. Clusters are `unicode-segmentation`'s extended clusters, found separately in each run of visible text. A run stops at a newline and at a hidden range's start, and the next run starts after that newline or at that range's end. So a hidden range's edge inside a cluster splits it, and the text on two sides of a hidden range never forms one cluster.
+- Each cluster of a hidden range's replacement, at the range's start.
+- Each cluster of virtual text, just before whatever is at its position, in the order the virtual texts were added. Clusters are found in each virtual text on its own.
+
+Newlines and the end of the text aren't items (Line ends, below). Hidden text with no replacement adds no items, so the text on each side of it joins into one word.
+
+Where virtual text shows, by its position:
+- before the cluster, newline or end of the text there;
+- at a hidden range's start, before the replacement if there is one, and not at all if there isn't;
+- at a hidden range's end, as at any visible position, unless another hidden range starts there, when the start rule applies;
+- strictly inside a hidden range or strictly inside a cluster, not at all.
+
+**Widths.** Every item takes whole cells:
+- A tab in the text reaches the next multiple of `tab_width`, where 0 counts as 1. The count is in *display columns*: the cells of every item before it on the display line, whichever rows they're on. Filler cells (below) don't count, so a display line's columns don't change with the width. A display column is what `display_col` returns. A tab's cells are blank. Replacements and virtual text hold no tabs: `decorate` turns their tabs and newlines into spaces, and an empty replacement is no replacement.
+- A control character (`char::is_control`, other than a tab in the text) is drawn as Emacs draws it, a cell per character. U+0000 to U+001F are `^` and the character U+0040 above them, `^@` to `^_`, two cells, so `\r` is `^M`. U+007F is `^?`, two cells. U+0080 to U+009F are `\` and three octal digits, `\200` to `\237`, four cells.
+- Any other item is `unicode-width` 0.2's `width()` of the whole cluster, and at least one cell. So `👍🏽` is 2 cells (tty Emacs draws 4), and U+200B and a lone combining mark are 1. It's drawn in its first cell, and its other cells continue it.
+
+**Where soft wrap breaks.** Rows are `text_w` cells wide (Gutter and width, below). Layout places each item at its row's next column.
+- *Whitespace* is an item whose cluster starts with U+0020 or U+0009, so a space with a combining mark on it still counts, as in tty Emacs. A no-break space, U+200B, U+3000 and `-` aren't whitespace, and nothing breaks at them.
+- A *break point* is the place before an item that isn't whitespace and directly follows a whitespace item, unless that item is the first thing on its row. The rest of a split tab or control character counts as being on the row, so the item after it can be a break point. Hidden text in between doesn't stop it: items are what count.
+- An item *doesn't fit* if its last cell would be past the row's last cell. Then:
+  1. If the row has a break point, at this item or before it, the row ends just before the last one. The whitespace before it stays at this row's end. The next row starts with the item after the break point, and the items after that are placed again.
+  2. Otherwise the row ends here. A tab or control character is split: the cells that fit, which may be none, end this row, and the rest start the next, over several rows if it's wider than a row. Any other item moves to the next row whole, and the cells it leaves on this row are *filler*: blank, with no position. Only an item wider than a cell leaves any.
+  3. A cluster wider than a whole row, once at a row's start, stays there, since moving it wouldn't help. Its cells past the row's end aren't drawn. The row then counts as full: the next item starts a new row, and a line end there is at column `text_w`.
+- With `Wrap::Char` the same rule applies with no break points.
+- With `Wrap::Off` no item fails to fit, so a display line is one row, however long. M0 has no horizontal scrolling: cells and cursors past the window's edge aren't drawn.
+
+**Line ends.** The newline and the end of the text take no cell and never start a row. Each has a cursor position at its row's next column. So an exactly full line gets no blank row after it, as in Emacs. On a full row, that position is just past the row's last cell: `screen_pos` gives column `text_x + text_w`, and in a wrapped window the scene draws the cursor in the right padding when there is one, otherwise at the right edge of the row's last cell.
+
+**The empty last row.** A final newline ends the last line. The position after it is laid out as a row of its own, as in Emacs: it's where a cursor at the end of the text is drawn, and scrolling and window positions count it. Which commands may move a cursor there is the keymap's business; die-vim's motions never do (scope §10). A Hide that covers that newline joins it to the end of the text, so there's no such row. An empty text has one empty row, and so does an empty line anywhere.
+
+**Examples,** at 10 cells with `tab_width` 8. In the text, `→` is a tab, `^A` is U+0001 and `[ ]` is hidden text. In the rows, `|` ends a row, `·` is a space, `→` is a cell of a tab and `_` is filler.
+
+```
+Text                        Rows                        Why
+aaaa bbbb cccc              aaaa·bbbb·|cccc             c doesn't fit, and it's the last break point
+aaaa bbbbb cccc             aaaa·|bbbbb·cccc            the space doesn't fit; the last break point is before b
+aaaa bbbb  cccc             aaaa·|bbbb··cccc            the second space doesn't fit; the same
+aaaa + 8 spaces + bbbb      aaaa······|··bbbb           the 7th space doesn't fit, with no break point yet
+aaaaaaaaaa bbbb             aaaaaaaaaa|·bbbb            the space doesn't fit, with no break point
+aa bbbbbbbbbbbb             aa·|bbbbbbbbbb|bb           a long word starts its own row, then breaks anywhere
+    bbbbbbbbbbbb            ····|bbbbbbbbbb|bb          the same after an indent
+aaaaaaaaaaaaaa bb ccc       aaaaaaaaaa|aaaa·bb·|ccc     the last break point, not the first
+aaaa bbbb cc→dd             aaaa·bbbb·|cc→→→→dd         the tab runs from column 12 to 16, not from 2 to 8
+aaaaaaaaa→bb                aaaaaaaaa→|→→→→→→bb         a tab with no break point splits
+aa bbbbbb→cc                aa·|bbbbbb→→→→|→→→cc        a break point first, then the split
+aaaaaaaaa→bbbbb             aaaaaaaaa→|→→→→→→|bbbbb     b follows the tab's rest, so it's a break point
+aaaaaaaaaa→b                aaaaaaaaaa|→→→→→→b          no cell of the tab fits
+aaaaaaaaa中b                aaaaaaaaa_|中b              a wide character moves whole, leaving filler
+aaaa bbbb中c                aaaa·|bbbb中c               but a break point comes first
+aaaaaaaa 中b                aaaaaaaa·|中b               and that row is 9 cells, with no filler
+aaaaaaaaa中→b               aaaaaaaaa_|中→→→→→b         the tab runs from column 11 to 16: filler doesn't count
+aaaaaaaaa^Abb               aaaaaaaaa^|Abb              a control character splits, as a tab does
+aaaaaaaa ^Ab                aaaaaaaa·|^Ab               unless it's a break point
+aaaaaaa[ ]bbbb              aaaaaaabbb|b                hidden text joins the words
+aaaaaaaa b, with xxxx       aaaaaaaaxx|xx·b             virtual text before the space at 8
+aaaa bbbb, with xx yy       aaaa·xx·|yy·bbbb            virtual text "xx yy " at 5 breaks like text
+aaaa + space+mark + bbbbbbb aaaa·|bbbbbbb               a space with a combining mark on it is whitespace
+aaaa bbbbb cccc, Char       aaaa·bbbbb|·cccc            Wrap::Char: no break points
+```
+
+Cursor positions on full rows and last rows, at 10 cells:
+
+```
+Text              Rows                     Position → (row, col)
+aaaaaaaaaa\nb\n   aaaaaaaaaa|b|(empty)     9 → (0, 9)    10, the newline → (0, 10)    11 → (1, 0)    13, the end → (2, 0)
+aaaaaaaaaa        aaaaaaaaaa               10, the end → (0, 10)
+a\tb\n            a→→→→→→→b|(empty)        1, the tab → (0, 1)    2, b → (0, 8)    3, the newline → (0, 9)    4, the end → (1, 0)
+aaaaaaaaaa\tb     aaaaaaaaaa|→→→→→→b       10, the tab → (1, 0)    11, b → (1, 6)    12, the end → (1, 7)
+(empty text)      (empty)                  0, the end → (0, 0)
+```
+
+The Evil oracle's tty Emacs keeps its last column for the continuation glyph and otherwise breaks this way, so a fixture W columns wide is checked at W − 1 text columns. Two things differ from it on purpose: tty Emacs counts filler toward tab stops, and draws emoji clusters wider.
+
+**Cursor positions.** Layout decides where the cursor can be. The cursor positions are:
+- the start of each cluster of visible text, drawn on its first cell. A position inside a cluster isn't one;
+- each newline that isn't hidden, and the end of the text, drawn as Line ends says;
+- the start of a hidden range with a replacement, drawn on the replacement's first cell: that's the fold line.
+
+Nothing else is. A hidden range with no replacement has no cursor position at its start or inside it, and virtual text and a replacement's later clusters have none. A row break adds none, so a row can have none: a tab's rest, or the end of a long replacement. After every edit or decoration change, core moves each cursor out of hidden text: to the fold line if there is one, otherwise to the next visible position. A cursor left inside a cluster goes to the next cursor position. A whole-line fold hides from the start of its first line up to the newline that ends its last line, and not that newline, so the next line keeps its own row.
+
+`move_visual` counts only rows with a cursor position. Its goal is the column it's given, or else the starting position's column on its row. On the row it lands on, it takes the last cursor position at or left of the goal, or else the row's first. With fewer such rows than asked, it goes as far as there are. With none, it stays where it is. It returns the position and the goal it used.
+
+**Gutter and width.** `max_width` counts text cells only, so you get 80 columns of code. `visual-fill-column` includes the gutter, so this deviates from it (scope §8). In a window `cols` cells wide:
+- `gutter` is 0 with line numbers off. Otherwise it's `max(3, digits(n)) + 1`, where `n` is the number of lines, not counting an empty last line. A text of 999 lines with a final newline has `n` = 999, so a gutter of 4.
+- `avail` is `cols − gutter`, and at least 2.
+- `text_w` is `min(max_width, avail)`, and at least 2. With no `max_width` it's `avail`.
+- `pad` is `(avail − text_w) / 2`, rounded down, when the buffer is centered, and otherwise 0. Gutter and text are centered together.
+- A row runs `pad` blank cells, the gutter, then the text, from `text_x = pad + gutter`. The rest of the window is the right padding. For example, `cols` 120 with numbers on, under 1,000 lines, `max_width` 80 and centered gives a gutter of 4, `text_w` 80, `pad` 18 and `text_x` 22.
+- The gutter draws a number right-aligned in its first `gutter − 1` cells, and its last cell is blank. In a window narrower than `text_x + text_w`, the text simply runs past the window's edge.
+- `screen_pos` gives a position's row counted from the window's top row, and `text_x` plus its column on that row. For a position that isn't a cursor position, `screen_pos` and `display_col` answer for the last cursor position at or before it on its display line, or else that line's first. `screen_pos` gives nothing if the row is scrolled out of view.
+
+**Line numbers.** A row shows at most one number:
+- *Absolute:* a display line's first row shows its first line's number, from 1.
+- *Relative:* the first row of the cursor's display line shows its first line's number. Every other display line's first row shows its distance from the cursor's display line, in display lines, so a fold counts once, as `j` does. Emacs's count hidden lines, so this deviates from it (scope §8).
+- *Visual:* the cursor's row shows the first line's number of the display line it's on. Every other row shows its distance from the cursor's row, in rows, counting rows with no cursor position.
+- Other rows show nothing.
+- In every style, a display line that starts at the end of the text has no number, as in Emacs, even with the cursor on it: that's the empty row after a final newline, and an empty text's only row. It still counts when other rows measure their distance from it.
+
+Each column shows what that style draws for these rows, with the cursor where the heading says:
+
+```
+                     Cursor on three               Cursor on wraps               Cursor on the empty row
+                     Absolute  Relative  Visual    Absolute  Relative  Visual    Absolute  Relative  Visual
+one                     1         2        3          1         1        2          1         4        5
+a line that             2         1        2          2         2        1          2         3        4
+wraps                                      1                             2                             3
+three                   3         3        3          3         1        1          3         2        2
+four                    4         1        1          4         2        2          4         1        1
+(empty row)
+```
+
+With lines `a` to `e`, `b` to `d` folded, and the cursor on `a`: Absolute shows 1, 2, 5; Relative and Visual show 1, 1, 2 (Emacs's Relative shows 1, 1, 4).
 
 **Motions respect hidden ranges.** Line motions skip hidden ranges through `next_visible`, and search can match inside them and reveal them (scope §8). Because core does this, manifold needs no override.
 
-**Settings.** Soft wrap, centered maximum width, line-number style, indentation, whole-buffer read-only, and cursor visibility (scrib's browser sets `cursor-type` to nil). These can be changed at runtime per buffer. Their defaults come from the file-type mode and your config.
+**Settings.** Soft wrap (`Wrap::Off`, `Word` or `Char`), centered maximum width, line-number style (off, absolute, relative or visual), indentation, whole-buffer read-only, and cursor visibility (scrib's browser sets `cursor-type` to nil). These can be changed at runtime per buffer. Their defaults come from the file-type mode and your config.
 
 **Browsers rendered as text.** Here's how seek, scrib's browser and orchid's session browser would map across when you port them. `die-seek` is a placeholder name for your seek port.
 
@@ -436,7 +555,7 @@ main
     leader   "\"
     theme    mono_dark
     font     Ioskeley Mono Term; braille pinned to Ioskeley Mono
-    buffer defaults: soft wrap, max width 80 centered, relative line numbers in code
+    buffer defaults: soft wrap, max width 80 centered, visual line numbers in code
     environment: PATH additions and an env file, as in init.el
 
     die_term options:    { shell: /bin/bash, scrollback: 10000 }   (die-vim and die-term are always registered)
