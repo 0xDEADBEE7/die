@@ -224,6 +224,7 @@ impl Ctx {
 
     pub(crate) fn dispatch(&mut self, ev: KeyEvent, src: KeySource) {
         self.cmd_seq += 1;
+        self.restart_idle();
         // A key DIE took in passthrough swallows its own repeat and release.
         if let Some(i) = self.swallow.iter().position(|k| *k == ev.key) {
             match ev.kind {
