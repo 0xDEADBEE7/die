@@ -329,6 +329,8 @@ pub struct Ctx {
     pub(crate) prompt: Option<Prompt>,
     pub(crate) clock: Clock,
     pub(crate) timers: Timers,
+    /// Timers have been queued, and no key has had a turn since nor the host been told.
+    pub(crate) timers_ran: bool,
     pub(crate) idle: Vec<Idle>,
     pub(crate) waker: Waker,
     pub(crate) cmd_seq: u64,
@@ -466,6 +468,7 @@ impl Ctx {
             prompt: None,
             clock: config.clock,
             timers: Timers::new(),
+            timers_ran: false,
             idle: vec![],
             waker: Waker::default(),
             cmd_seq: 0,

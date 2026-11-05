@@ -216,7 +216,8 @@ impl Ctx {
     }
     /// Run `f` when no key has come for `d`, once each time that happens, as Emacs's
     /// `run-with-idle-timer` does with a repeat. It counts from now, however long the editor has
-    /// already been idle.
+    /// already been idle, and then from when each key's command ended. It doesn't fire with a key
+    /// waiting.
     pub fn idle(&mut self, d: Duration, f: impl FnMut(&mut Ctx) -> Result + 'static) -> Sub {
         let sub = self.new_handle();
         self.idle.push(Idle {
@@ -268,7 +269,7 @@ impl Ctx {
     pub fn now(&self) -> Duration {
         self.clock.now()
     }
-    /// A key came: every idle timer's wait starts again.
+    /// A key's turn ended: every idle timer's wait starts again.
     pub(crate) fn restart_idle(&mut self) {
         let now = self.clock.now();
         for t in &mut self.idle {
@@ -374,13 +375,23 @@ impl Ctx {
         while let Ok(m) = self.jobs_rx.try_recv() {
             self.accept_job(m);
         }
+        if !self.timers_ran {
+            self.collect_timers();
+        }
+        self.idle.retain(|t| t.sub.alive.get());
+        self.subs.retain(|e| e.inner.alive.get());
+    }
+
+    /// Queue the timers that are due, in deadline order. Idle timers wait while a key does.
+    fn collect_timers(&mut self) {
         let now = self.clock.now();
+        let mut due = vec![];
         while let Some(e) = self.timers.first_entry().filter(|e| e.key().0 <= now) {
             let ((at, _), t) = e.remove_entry();
             if !t.sub.alive.get() {
                 continue;
             }
-            self.queue.push_back(fire(&t.sub, &t.f));
+            due.push((at, fire(&t.sub, &t.f)));
             if let Some(d) = t.every {
                 let on_time = at.saturating_add(d);
                 let next = if on_time > now {
@@ -393,18 +404,24 @@ impl Ctx {
                 }
             }
         }
-        for t in &mut self.idle {
-            if t.sub.alive.get() && t.at.is_some_and(|at| at <= now) {
-                t.at = None;
-                self.queue.push_back(fire(&t.sub, &t.f));
+        if self.fed.is_empty() && self.typed.is_empty() {
+            for t in &mut self.idle {
+                if let Some(at) = t.at.filter(|at| *at <= now && t.sub.alive.get()) {
+                    t.at = None;
+                    due.push((at, fire(&t.sub, &t.f)));
+                }
             }
         }
-        self.idle.retain(|t| t.sub.alive.get());
-        self.subs.retain(|e| e.inner.alive.get());
+        due.sort_by_key(|d| d.0); // stable: ties keep the heap's order, and idle timers go last
+        self.timers_ran = !due.is_empty();
+        self.queue.extend(due.into_iter().map(|d| d.1));
     }
 
     /// One turn of the loop: queued calls first (C3), then one key (fed keys before typed ones).
-    /// False if nothing was ready. It never waits, so a host can call it until it returns false.
+    /// False once what was ready has run. It never waits, so a host can call it until it returns
+    /// false, draw, read its events, and ask [`Ctx::next_timer`] how long to sleep. Timers get no
+    /// second batch until a key has had a turn or this has returned false, so a repeat slower
+    /// than its period can't lock out keys or the frame: `next_timer` then shows it overdue.
     pub fn step(&mut self) -> bool {
         self.fed_at = 0;
         self.collect_due();
@@ -413,8 +430,11 @@ impl Ctx {
                 self.cmd_seq += 1;
                 let keyed = q.keyed;
                 let r = self.guarded(q.ext, q.f);
-                if keyed && r.is_err() {
-                    self.fed.clear();
+                if keyed {
+                    self.restart_idle();
+                    if r.is_err() {
+                        self.fed.clear();
+                    }
                 }
                 self.report(r);
                 // Code that runs between units (the host, a harness) gets a number of its own.
@@ -422,17 +442,16 @@ impl Ctx {
             }
             return true;
         }
-        if let Some(ev) = self.fed.pop_front() {
-            self.dispatch(ev, KeySource::Fed);
-            self.cmd_seq += 1;
-            return true;
-        }
-        if let Some(ev) = self.typed.pop_front() {
-            self.dispatch(ev, KeySource::Typed);
-            self.cmd_seq += 1;
-            return true;
-        }
-        false
+        self.timers_ran = false;
+        let fed = self.fed.pop_front().map(|ev| (ev, KeySource::Fed));
+        let key = fed.or_else(|| self.typed.pop_front().map(|ev| (ev, KeySource::Typed)));
+        let Some((ev, source)) = key else {
+            return false;
+        };
+        self.dispatch(ev, source);
+        self.restart_idle();
+        self.cmd_seq += 1;
+        true
     }
 
     /// Harness: take turns until nothing is ready and no job is out, waiting for jobs, up to 5 s
@@ -440,7 +459,7 @@ impl Ctx {
     /// this stops after a million turns and says so in `*messages*`.
     pub fn run_until_idle(&mut self) {
         for _ in 0..1_000_000 {
-            if self.step() {
+            if self.step() || self.next_timer().is_some_and(|at| at <= self.clock.now()) {
                 continue;
             }
             if self.outstanding == 0 {
