@@ -866,11 +866,9 @@ fn check_moves(t: &TextBuf, w: WindowId, l: &naive::Layout, input: &naive::Input
                     p.pos
                 } else {
                     let row = rows_with_stop[to as usize];
-                    let mut there = on_row(row);
-                    let first = there.next().unwrap();
+                    let first = on_row(row).next().unwrap();
                     on_row(row)
-                        .filter(|s| col_of(s) <= used)
-                        .last()
+                        .rfind(|s| col_of(s) <= used)
                         .unwrap_or(first)
                         .pos
                 };
