@@ -297,6 +297,24 @@ new = '''
         }
         Some(d)'''
 
+[[mutant]]
+name = "M41 stale cache: an edit keeps the lines inside the range it replaced"
+file = "src/layout.rs"
+old = '''
+            s <= a
+        });'''
+new = '''
+            s <= b
+        });'''
+
+[[mutant]]
+name = "M42 stale cache: an edit leaves a half laid-out line's rows"
+file = "src/layout.rs"
+old = '''
+l.end.is_none_or(|e| s + e >= a)'''
+new = '''
+l.end.is_some_and(|e| s + e >= a)'''
+
 # K4: the wrap rule, cursor positions and numbers.
 
 [[mutant]]
