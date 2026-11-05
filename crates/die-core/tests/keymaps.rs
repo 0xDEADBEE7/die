@@ -430,3 +430,174 @@ fn os_fields_dont_change_what_a_key_matches() {
     ctx.run_until_idle();
     assert_eq!(*log.borrow(), ["c-a", "c-a", "c-s-a", "c-s-a"]);
 }
+
+/// Emacs's `undefined` resets the prefix argument, so a typo can't arm the next command.
+#[test]
+fn an_undefined_key_clears_the_prefix_argument() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text").bind(State::Normal, "ga", "a");
+    };
+    let mut ctx = typing(vec![ext(&log, &["a"], bind)], "");
+    ctx.set_prefix(Prefix {
+        count: Some(3),
+        register: Some('x'),
+    });
+    ctx.type_keys("gz");
+    assert_eq!(ctx.prefix(), Prefix::default());
+    assert_eq!(ctx.messages, ["gz is undefined"]);
+    // A prefix of a longer binding isn't undefined.
+    ctx.set_prefix(Prefix {
+        count: Some(3),
+        register: None,
+    });
+    ctx.type_keys("g");
+    assert_eq!(ctx.prefix().count, Some(3));
+}
+
+fn plain_command(ctx: &mut Ctx, keys: &[KeyEvent]) {
+    for k in keys {
+        ctx.input(k.clone());
+    }
+    ctx.run_until_idle();
+}
+
+/// A key whose OS text is a control character doesn't match `<char>`, or type it.
+#[test]
+fn a_ctrl_chord_with_os_text_doesnt_match_char() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text").bind(State::Normal, "<char>", "a");
+    };
+    let mut ctx = typing(vec![ext(&log, &["a"], bind)], "");
+    let ctrl_a = KeyEvent {
+        text: Some("\u{1}".into()),
+        ..KeyEvent::press(Key::Char('a')).mods(Mods {
+            ctrl: true,
+            ..Mods::default()
+        })
+    };
+    plain_command(&mut ctx, &[ctrl_a]);
+    assert!(log.borrow().is_empty());
+    assert_eq!(ctx.messages, ["<C-a> is undefined"]);
+}
+
+#[test]
+fn ctrl_bracket_runs_what_escape_is_bound_to() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text")
+            .bind(State::Normal, "<Esc>", "a")
+            .bind(State::Normal, "<C-i>", "b")
+            .bind(State::Normal, "<C-m>", "c");
+    };
+    let ctx = typing(
+        vec![ext(&log, &["a", "b", "c"], bind)],
+        "<C-[><Tab><CR><Esc><C-i><C-m>",
+    );
+    assert_eq!(*log.borrow(), ["a", "b", "c", "a", "b", "c"]);
+    assert_eq!(ctx.messages, Vec::<String>::new());
+}
+
+/// As the OS sends them: `[` and `m` with Ctrl held. Notation has already folded them.
+#[test]
+fn ctrl_bracket_and_ctrl_m_answer_a_prompt() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "");
+    ctx.open_window(b, 40, 5).unwrap();
+    let held = Mods {
+        ctrl: true,
+        ..Mods::default()
+    };
+    let answers = Rc::new(RefCell::new(vec![]));
+    for key in ['m', '['] {
+        let a = answers.clone();
+        ctx.prompt("?", move |_, answer| {
+            a.borrow_mut().push(answer);
+            Ok(())
+        });
+        ctx.type_keys("ab");
+        plain_command(&mut ctx, &[KeyEvent::press(Key::Char(key)).mods(held)]);
+    }
+    assert_eq!(*answers.borrow(), [Some("ab".to_string()), None]);
+}
+
+/// Keymaps never see a key with no name, not even through `<any>`. Passthrough forwards it.
+#[test]
+fn an_unnamed_key_never_reaches_a_keymap() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text").bind(State::Normal, "<any>", "a");
+    };
+    let mut ctx = typing(vec![ext(&log, &["a"], bind)], "");
+    plain_command(&mut ctx, &[KeyEvent::press(Key::Unidentified)]);
+    assert!(log.borrow().is_empty());
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let events = Rc::new(RefCell::new(vec![]));
+    let s = TermSurface {
+        events: events.clone(),
+    };
+    let b = ctx.create_surface("term", s);
+    ctx.open_window(b, 40, 5).unwrap();
+    assert_eq!(ctx.state(), State::Passthrough);
+    plain_command(&mut ctx, &[KeyEvent::press(Key::Unidentified)]);
+    assert_eq!(events.borrow().len(), 1, "passthrough forwards it");
+}
+
+/// A surface in passthrough with `<any>` bound, as the DIE layer can bind it: it takes a key
+/// with Super held from the surface, unless the key is one keymaps never see.
+#[test]
+fn with_super_held_passthrough_keeps_keys_keymaps_never_see() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("term").bind(State::Passthrough, "<any>", "a");
+    };
+    let mut ctx = Ctx::new(vec![ext(&log, &["a"], bind)]).unwrap();
+    let events = Rc::new(RefCell::new(vec![]));
+    let s = TermSurface {
+        events: events.clone(),
+    };
+    let b = ctx.create_surface("term", s);
+    ctx.open_window(b, 40, 5).unwrap();
+    let held = Mods {
+        super_: true,
+        ..Mods::default()
+    };
+    for (i, key) in [Key::Unidentified, Key::Modifier(ModifierKey::Super)]
+        .into_iter()
+        .enumerate()
+    {
+        plain_command(&mut ctx, &[KeyEvent::press(key).mods(held)]);
+        assert!(log.borrow().is_empty(), "{key:?} reached a keymap");
+        assert_eq!(events.borrow().len(), i + 1, "{key:?} went to the surface");
+    }
+    plain_command(&mut ctx, &[KeyEvent::press(Key::Char('a')).mods(held)]);
+    assert_eq!(*log.borrow(), ["a"], "a named key still does");
+}
+
+#[test]
+fn an_empty_commit_doesnt_run_a_space_binding() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text").bind(State::Normal, "<Space>", "a");
+    };
+    let mut ctx = typing(vec![ext(&log, &["a"], bind)], "");
+    plain_command(&mut ctx, &[KeyEvent::committed("")]);
+    assert!(log.borrow().is_empty());
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+}
+
+/// `🇦🇺` as a binding could never fire, and typing it would arm a prefix that takes the next key.
+#[test]
+fn binding_a_cluster_of_several_characters_is_a_startup_error() {
+    let log = Log::default();
+    let bind = |r: &mut Registry| {
+        r.kind_keymap("text")
+            .bind(State::Normal, "\u{1f1e6}\u{1f1fa}", "a");
+    };
+    let errs = errors(vec![ext(&log, &["a"], bind)]);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].contains("<char>"), "{errs:?}");
+}

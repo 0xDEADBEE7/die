@@ -12,4 +12,5 @@ pub mod guards;
 pub mod lint;
 pub mod linux;
 pub mod mutate;
+pub mod sources;
 pub mod util;

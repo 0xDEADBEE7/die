@@ -196,8 +196,16 @@ pub fn lex(src: &str) -> Vec<(Tok, usize, usize)> {
                 if c.get(i + hashes) == Some(&'"') {
                     i = raw_end(&c, i + hashes + 1, hashes, &mut line);
                     out.push((Tok::Lit, start, line));
+                } else if word == "r" && hashes == 1 {
+                    // A raw identifier, `r#match`, is that identifier: rustc reads
+                    // `#[r#path = "x"]` as `#[path = "x"]`.
+                    let s = i + 1;
+                    i = s;
+                    while i < c.len() && ident_char(c[i]) {
+                        i += 1;
+                    }
+                    out.push((Tok::Ident(c[s..i].iter().collect()), start, line));
                 } else {
-                    // A raw identifier, `r#match`.
                     out.push((Tok::Ident(word), start, line));
                 }
             } else if word == "b" && c.get(i) == Some(&'\'') {
@@ -254,7 +262,7 @@ fn raw_end(c: &[char], mut i: usize, hashes: usize, line: &mut usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::count;
+    use super::{Tok, count, lex};
 
     #[test]
     fn blank_lines_and_comments_dont_count() {
@@ -298,6 +306,24 @@ mod tests {
     fn lifetimes_and_char_literals() {
         let src = "fn f<'a>(x: &'a str) -> char {\n    let _ = '{';\n    let _ = '\\'';\n    let _ = b'}';\n    'x'\n}\n#[cfg(test)]\nmod t {\n    fn g<'a>(_: &'a ()) {}\n}\n";
         assert_eq!(count(src), 6);
+    }
+
+    #[test]
+    fn a_raw_identifier_is_that_identifier() {
+        let toks: Vec<Tok> = lex("r#path = r#\"s\"# r#a_b;")
+            .into_iter()
+            .map(|t| t.0)
+            .collect();
+        assert_eq!(
+            toks,
+            [
+                Tok::Ident("path".into()),
+                Tok::Punct('='),
+                Tok::Lit,
+                Tok::Ident("a_b".into()),
+                Tok::Punct(';'),
+            ]
+        );
     }
 
     #[test]

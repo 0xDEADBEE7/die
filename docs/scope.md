@@ -155,7 +155,7 @@ In a terminal, leaving passthrough (the DIE layer's Esc) enters copy state. Whil
 
 ### 5.6 Modal input and keymaps
 
-- **States:** normal, insert, visual (char, line, block), operator-pending, command line, copy, and **passthrough**. In passthrough, keys go straight to the surface (used by terminals).
+- **States:** normal, insert, replace, visual (char, line, block), operator-pending, command line, copy, and **passthrough**. In passthrough, keys go straight to the surface (used by terminals).
 - **Leaving passthrough.** The DIE layer's Esc (Cmd-Esc on macOS, Ctrl+Shift+Esc on Linux) always leaves and is never sent to programs. The DIE layer belongs to DIE in every buffer (D18).
 - **Lookup order** for a key is defined in [extension-contract.md](extension-contract.md) §7: the range keymap at the cursor, buffer-local, modes, surface kind, global, then the surface's `event()`.
 - **Prefix keys and a leader key.** Yours is `\`.
@@ -292,11 +292,12 @@ Rebuild-and-restart is how you extend DIE, so a restart should feel like nothing
 | Your Emacs setup | DIE requirement |
 |---|---|
 | `global-visual-line-mode`; `line-move-visual t`, which Evil overrides for `j`/`k` | Soft wrap on by default. `j`/`k` move by logical line and `gj`/`gk` by visual line, as in your Evil today (§10) |
-| `visual-fill-column`, centered at 80 columns | Optional maximum text width, centered in the window |
-| Relative/visual line numbers in programming modes | Line-number gutter (absolute, relative or visual), set per mode |
+| `visual-fill-column`, centered at 80 columns | Optional maximum text width, centered in the window. It counts text cells only, so you get 80 columns of code with or without line numbers. `visual-fill-column` counts the gutter too, and this deliberately differs. Your `.rs` files show no line numbers in Emacs, so rows still break where Emacs breaks them |
+| Relative/visual line numbers in programming modes | Line-number gutter (absolute, relative or visual), set per mode. Relative counts display lines, as `j` does, so a fold counts once. Emacs's counts hidden lines, and this deliberately differs. Visual matches Emacs. The rules are in [extension-contract.md](extension-contract.md) §9 |
 | manifold: `{{{ }}}` folds, a `▼` marker, `j`/`k` skip folded text | Decorations can hide a range and show replacement text; motions skip hidden ranges |
 | `search-invisible t` | Search matches inside hidden ranges and reveals them |
-| Two custom themes | Named faces; a theme maps faces to styles |
+| Two custom themes | Named faces; a theme maps faces to styles. Status lines have no box: mono-dark's 1 px `:box` on its mode lines is the one attribute DIE's styles lack, it would take renderer work for one face, and dividers separate the windows |
+| Evil's cursors; `blink-cursor-mode` is on | Each state's cursor shape, with replace state's underline. A cursor that isn't taking input is hollow, and from K9 that includes every cursor while DIE's window doesn't have the keyboard focus. Cursors don't blink in M0, a deliberate deviation: Emacs stops blinking after 10 blinks, so the difference is small. With die-term (M2), a cursor can carry a terminal's blinking style, and die-render owns the timer |
 | `global-auto-revert-mode`; `cargo fmt` and agents rewrite open files | Reload unmodified buffers when the file changes on disk. `:w` checks for on-disk changes first |
 | Evil copies every yank and delete to the macOS clipboard | die-vim's unnamed register syncs with the clipboard both ways (§10) |
 | Files reached through symlinks, such as `claude-session` | Saves write through symlinks and keep file permissions |
@@ -343,7 +344,7 @@ None of your existing packages need pixel buffers (scope guard 8). Pixel buffers
 - Visual mode: char, line and block
 - Insert: autoindent, and one undo step per insert session (arrow keys don't split it). Up and Down in insert state move by screen row and keep their column through a run of them, as your Evil's do. Down on the last row goes to the end of the text before it fails. A count replays a session, up to 1 MB of typed text or 10,000 other edits. Past that it fails with "Count too large", where your Evil would freeze. `o`, `O`, `cc`, `S` and Enter indent like the line above, which is what Evil does in text buffers. Indentation that depends on the language (Lisp, Python) belongs to a mode, not to die-vim.
 - Registers: unnamed, `a`–`z`, `0`, `_` and `+`. The unnamed register syncs with the system clipboard both ways, including deletes, so `p` pastes whatever you last copied anywhere. `"_` is the escape. `1`–`9` hold the last nine yanks and deletes, newest first (Evil's kill ring), and `-` the last small delete. After `"Ay`, the unnamed register holds only the appended text.
-- Search with `/ ? n N * #`: incremental, highlights every match, smartcase, including for `*` and `#`. A count before `/` or `?`, and an empty `/` or `?` that repeats the last search, work as in Vim. Evil ignores both; die-vim deliberately differs.
+- Search with `/ ? n N * #`: incremental, highlights every match, smartcase, including for `*` and `#`. `*` and `#` follow your Evil in fundamental-mode: `_` isn't a word character, so `*` on `foo` matches inside `foo_bar` but not `foobar`. A count before `/` or `?`, and an empty `/` or `?` that repeats the last search, work as in Vim. Evil ignores both; die-vim deliberately differs.
 - Macros (`q`, `@`). Inside a macro, `.` does what Vim does: a change made there becomes the last change, so a later `.` repeats it. After `@a`, `.` replays the macro, as Evil's does, without Evil's "No previous macro" error when the macro used an operator.
 - Undo and redo: `u` and `C-r`, a linear history as in Vim. Your Evil has no redo (`evil-undo-system` is unset, so its `u` walks Emacs's undo chain); this is a deliberate change. Setting `(setq evil-undo-system 'undo-redo)` would make your Emacs match while you use both. `C-r` with nothing to redo fails, as `u` with nothing to undo does.
 - Replace mode (`R`)
@@ -429,7 +430,7 @@ tools/evil-oracle          Evil in batch and tty Emacs (dev-only); fixtures are 
 xtask                      cargo xtask ghostty bump, budget report, clean-environment build check
 ```
 
-`unsafe` is denied everywhere except three small places: `die-render`'s platform modules (`macos`, and `linux` with about 10–30 lines), `die-term`'s engine boundary, and `die-core`'s `sys` module, one file per OS. On macOS, `sys` is about 80 lines of libc calls for processes and PTYs: `posix_spawn`, `getpeereid`, kqueue, `posix_openpt`, which have no safe route there. Linux adds about 30–40 lines, for the spawn flags and the `PIDFD_GET_INFO` ioctl. You review those modules by hand.
+`unsafe` is denied everywhere except three small places: `die-render`'s platform modules (`macos`, and `linux` with about 10–30 lines), `die-term`'s engine boundary, and `die-core`'s `sys` module, one file per OS. On macOS, `sys` is about 80 lines of libc calls for processes and PTYs: `posix_spawn`, `getpeereid`, kqueue, `posix_openpt`, which have no safe route there. Linux adds about 30–40 lines, for the spawn flags and the `PIDFD_GET_INFO` ioctl. You review those modules by hand. `cargo xtask lint` rejects the `unsafe` keyword itself outside them, since rustc's `unsafe_code` lint misses `#[unsafe(naked)]` and, where it's `deny`, can be lowered by a macro. It also rejects `include!` and the `path` attribute, which could compile a file it never reads. A macro can build that attribute from parts the lint can't recognise, and a manifest can point anywhere, so `cargo xtask sources` then asks the compiler, on macOS and for each Linux target: every file a local crate read must be a `.rs` file in that crate's own directory, and every local crate must be a listed workspace member. Unsafe code inside dependencies, including what their macros expand to in DIE's crates (slotmap's `new_key_type!` emits an `unsafe impl Key`), belongs to the dependency and isn't part of your review. Neither check can see a dependency macro that wraps your code in `unsafe`, so adding one is a dependency decision.
 
 ### How the work is split
 

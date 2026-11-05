@@ -3,8 +3,9 @@
 #![cfg(target_os = "macos")]
 
 use die_render::font_dir;
-use die_render::platform::macos::metal::Gpu;
-use die_render::platform::macos::text::Face;
+use die_render::platform::backend::metal::Gpu;
+use die_render::platform::backend::text::Face;
+use std::path::Path;
 
 fn regular() -> Face {
     let path = font_dir().join("IoskeleyMonoTerm-Regular.ttf");
@@ -50,4 +51,23 @@ fn missing_glyphs_and_files() {
     let f = regular();
     assert_eq!(f.glyph('\u{10FFFD}'), None);
     assert!(Face::from_file(&font_dir().join("no-such-font.ttf"), 16.0).is_err());
+}
+
+#[test]
+fn astral_characters_map() {
+    // Two UTF-16 units in, through pointers that cover both, and a color face.
+    let emoji = Path::new("/System/Library/Fonts/Apple Color Emoji.ttc");
+    let f = Face::from_file(emoji, 32.0).expect("the system's emoji font loads");
+    assert!(f.is_color());
+    assert!(f.glyph('😀').is_some());
+    assert_eq!(regular().glyph('😀'), None, "and a face without it says so");
+}
+
+#[test]
+fn a_font_size_must_be_positive() {
+    let path = font_dir().join("IoskeleyMonoTerm-Regular.ttf");
+    for px in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let e = Face::from_file(&path, px).err().expect("an error");
+        assert_eq!(e, format!("font size {px} isn't a positive size"));
+    }
 }

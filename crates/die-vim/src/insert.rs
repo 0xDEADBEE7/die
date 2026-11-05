@@ -105,7 +105,7 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
     // Only now, so that a failed `o` or `O` leaves no group open. The line it
     // opened joins the group: core adds an earlier edit by the same command.
     t.begin_undo_group();
-    ctx.set_state(State::Insert);
+    ctx.set_state_of(b, State::Insert);
     Ok(Session {
         entry,
         count: a.count.unwrap_or(1).max(1),
@@ -154,7 +154,7 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
     // cursor there, as Evil and Vim do, so the next `i` types on that line. Only
     // motions keep off it (scope §10).
     t.set_cursor(w, rest_pos(t, back));
-    ctx.set_state(State::Normal);
+    ctx.set_state_of(b, State::Normal);
     r
 }
 
