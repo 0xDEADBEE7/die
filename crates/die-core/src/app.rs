@@ -6,10 +6,20 @@
 //! function. It never waits inside core, and it reads the time from the clock core was given, so
 //! none of these takes a `now`. `Ctx::step` and `Ctx::compose` are its parts, for a host that wants
 //! them on their own.
+//!
+//! The pointer on text windows is here too (K14). A left press focuses the window under it, stops
+//! a selection or a waiting operator as the keymap's `<Esc>` does, and places the cursor. A drag
+//! that leaves that cell selects in visual state, and a scroll moves the view of the window under
+//! it, without the focus.
 #![warn(missing_docs)]
 use crate::ext::*;
-use crate::keys::{KeyEvent, Mods};
+use crate::ids::*;
+use crate::keymap::{Lookup, State};
+use crate::keys::{KeyEvent, Mods, parse_keys};
+use crate::pointer::{CellHit, WindowPart};
 use crate::scene::Scene;
+use crate::text::{Selection, Shape, TextBuf};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
 /// A pointer button.
@@ -84,7 +94,170 @@ pub enum Input {
 /// still come.
 pub const TURN_LIMIT: usize = 10_000;
 
+/// What the pointer leaves behind between its events.
+#[derive(Default)]
+pub(crate) struct PointerState {
+    /// The window a left press placed the cursor in, and where, until the release.
+    pressed: Option<(WindowId, usize)>,
+    /// How far a trackpad has scrolled short of a whole row.
+    scroll: f32,
+    /// [`Ctx::set_cursor_rest`]'s rule.
+    rest: Option<fn(&TextBuf, usize) -> usize>,
+}
+
 impl Ctx {
+    /// Say where the pointer may leave a cursor in normal state: `rule` takes a position in the
+    /// text and gives the one to use. Which positions a cursor may rest on is the keymap's
+    /// business (contract §9). With no rule, anywhere the scene maps a cell to.
+    pub fn set_cursor_rest(&mut self, rule: fn(&TextBuf, usize) -> usize) {
+        self.pointer.rest = Some(rule);
+    }
+
+    fn rested(&mut self, buf: BufferId, pos: usize) -> usize {
+        let rule = self
+            .pointer
+            .rest
+            .filter(|_| self.state_of(buf) == State::Normal);
+        let (Some(rule), Ok(t)) = (rule, self.text(buf)) else {
+            return pos;
+        };
+        catch_unwind(AssertUnwindSafe(|| rule(t, pos))).unwrap_or_else(|_| {
+            self.messages.push("The cursor rest rule panicked".into());
+            pos
+        })
+    }
+
+    /// Run what the keymap binds `<Esc>` to in the focused window, as if typed, but unseen by
+    /// key observers, so it's in no macro.
+    fn pointer_escape(&mut self) {
+        let Some((win, buf)) = self.focused.zip(self.focused_buffer()) else {
+            return;
+        };
+        let esc = parse_keys("<Esc>").expect("good notation");
+        let state = self.state_of(buf);
+        if let Lookup::Command(name) = self.layers_lookup(buf, state, &esc) {
+            self.run_key(&name, esc, win, buf);
+        }
+    }
+
+    /// End a selection or a waiting operator in the focused window. A keymap that binds no
+    /// `<Esc>` there still gets normal state.
+    fn stop_selecting(&mut self) {
+        let waiting = |c: &Ctx| matches!(c.state(), State::Visual | State::OperatorPending);
+        if waiting(self) {
+            self.pointer_escape();
+        }
+        if waiting(self) {
+            self.set_state(State::Normal);
+        }
+    }
+
+    fn pointer_press(&mut self, hit: CellHit) {
+        self.pending.clear();
+        self.prefix = Default::default();
+        self.stop_selecting();
+        self.focus(hit.window);
+        self.stop_selecting();
+        let Some(buf) = self.window_buffer(hit.window) else {
+            return;
+        };
+        let Some(pos) = hit.pos.filter(|_| hit.part == WindowPart::Text) else {
+            return;
+        };
+        let to = self.rested(buf, pos);
+        if let Ok(t) = self.text_mut(buf) {
+            let at = t.set_cursor(hit.window, to);
+            self.pointer.pressed = at.map(|at| (hit.window, at));
+        }
+    }
+
+    fn pointer_drag(&mut self, hit: CellHit) {
+        let Some((w, anchor)) = self.pointer.pressed.filter(|p| p.0 == hit.window) else {
+            return;
+        };
+        let Some(head) = hit.pos.filter(|_| hit.part == WindowPart::Text) else {
+            return;
+        };
+        let Some(buf) = self.window_buffer(w) else {
+            return;
+        };
+        let state = self.state_of(buf);
+        if state != State::Visual && head == anchor {
+            return;
+        }
+        if matches!(state, State::Insert | State::Replace) {
+            self.pointer_escape();
+        }
+        self.set_state_of(buf, State::Visual);
+        if let Ok(t) = self.text_mut(buf) {
+            let shape = Shape::Char;
+            let goal = None;
+            let sel = Selection {
+                anchor,
+                head,
+                shape,
+                goal,
+            };
+            t.set_selection(w, sel);
+        }
+    }
+
+    /// Scroll by whole rows once they add up. A cursor the view leaves behind comes to the row
+    /// it left by, at its column, since core would otherwise scroll back to it (C5).
+    fn pointer_scroll(&mut self, w: WindowId, dy: f32) {
+        if !dy.is_finite() {
+            return;
+        }
+        self.pointer.scroll += dy;
+        let rows = self.pointer.scroll.trunc();
+        self.pointer.scroll -= rows;
+        let Some(buf) = self.window_buffer(w).filter(|_| rows != 0.0) else {
+            return;
+        };
+        let Ok(t) = self.text_mut(buf) else { return };
+        t.scroll_rows(w, rows as isize);
+        let (Some(v), Some(sel)) = (t.viewport(w), t.selection(w)) else {
+            return;
+        };
+        if t.screen_pos(w, sel.head).is_some() {
+            return;
+        }
+        let row = if sel.head < v.top {
+            v.rows.first()
+        } else {
+            v.rows.last()
+        };
+        let goal = sel.goal.unwrap_or_else(|| t.display_col(sel.head));
+        let want = goal.min(v.geometry.text_w.saturating_sub(1));
+        let stops = row.map_or(&[][..], |r| r.stops());
+        let Some(stop) = stops.iter().rfind(|s| s.col <= want).or(stops.first()) else {
+            return;
+        };
+        let head = self.rested(buf, stop.pos);
+        if let Ok(t) = self.text_mut(buf) {
+            let goal = Some(goal);
+            t.set_selection(w, Selection { head, goal, ..sel });
+        }
+    }
+
+    fn run_pointer(&mut self, p: PointerEvent) {
+        let hit = self.cell_at(p.row, p.col);
+        match (p.kind, hit) {
+            (PointerKind::Release(Button::Left), _) => self.pointer.pressed = None,
+            (PointerKind::Scroll { dy, .. }, Some(hit)) => self.pointer_scroll(hit.window, dy),
+            // The prompt has the keys, and it stays on the window it opened in.
+            _ if self.prompt.is_some() => {}
+            (PointerKind::Press(Button::Left), _) => {
+                self.pointer.pressed = None;
+                if let Some(hit) = hit {
+                    self.pointer_press(hit);
+                }
+            }
+            (PointerKind::Drag(Button::Left), Some(hit)) => self.pointer_drag(hit),
+            _ => {}
+        }
+    }
+
     /// Take input from the host. It's handled by the next turn of the loop.
     pub fn handle(&mut self, input: Input) {
         self.typed.push_back(input);
@@ -95,7 +268,7 @@ impl Ctx {
         match input {
             Input::Key(_) => unreachable!("a key is dispatched in `step`"),
             Input::Pointer(p) => {
-                // What a click does is K14's. For now it's only activity.
+                self.run_pointer(p);
                 if p.kind != PointerKind::Move {
                     self.restart_idle();
                 }
