@@ -229,8 +229,7 @@ impl Ctx {
                     self.drop_fed();
                 }
                 if !matches!(handled, Ok(true) | Err(Error::Panicked { .. })) {
-                    self.messages
-                        .push(format!("{} is undefined", key_notation(&keys)));
+                    self.log_error(format!("{} is undefined", key_notation(&keys)));
                 }
             }
         }
