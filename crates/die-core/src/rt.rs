@@ -116,7 +116,7 @@ pub(crate) type JobMsg = (
 pub(crate) type Callback = Box<dyn FnOnce(&mut Ctx) -> Result>;
 type JobDone = Box<dyn FnOnce(&mut Ctx, Box<dyn Any + Send>) -> Result>;
 
-type TimerFn = Rc<RefCell<dyn FnMut(&mut Ctx) -> Result>>;
+pub(crate) type TimerFn = Rc<RefCell<dyn FnMut(&mut Ctx) -> Result>>;
 
 /// A timer waiting in the heap.
 pub(crate) struct Timer {
@@ -158,6 +158,7 @@ pub(crate) enum SubKind {
     Killed(KilledFn),
     Job { id: u64, f: JobDone },
     Keys(KeysFn),
+    Dropped(TimerFn),
 }
 
 pub(crate) struct SubEntry {
@@ -196,7 +197,7 @@ impl Ctx {
             ext: self.cur_ext(),
         })
     }
-    fn new_sub(&mut self, kind: SubKind) -> Sub {
+    pub(crate) fn new_sub(&mut self, kind: SubKind) -> Sub {
         let inner = self.new_handle();
         self.subs.push(SubEntry {
             inner: inner.clone(),
@@ -439,7 +440,7 @@ impl Ctx {
                 if keyed {
                     self.restart_idle();
                     if r.is_err() {
-                        self.fed.clear();
+                        self.drop_fed();
                     }
                 }
                 self.report(r);

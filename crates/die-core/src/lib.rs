@@ -17,6 +17,7 @@ mod dispatch;
 mod error;
 mod ext;
 mod faces;
+mod fed;
 mod files;
 mod harness;
 mod ids;

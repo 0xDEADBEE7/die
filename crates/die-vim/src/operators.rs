@@ -10,7 +10,8 @@
 //! 2. [`apply`] gives the span to the operator.
 //!
 //! A command that moves the cursor and edits makes its edit first, so `u` puts the cursor
-//! back where the command started (m0-log's call 7).
+//! back where the command started (m0-log's call 7). Each says what its keys were, so `.` can
+//! replay it (`repeat.rs`). In visual state each hands over to `visual.rs` for the span.
 
 use crate::Vim;
 use crate::grammar::{Fail, Goal, Kind, Operator, Start, Target, buffer_window, forget_goal};
@@ -18,19 +19,35 @@ use crate::insert::{self, Entry, MAX_REPEAT};
 use crate::motions;
 use crate::objects::Object;
 use crate::registers;
+use crate::repeat::{self, Change};
 use crate::text::{
     Chars, blank_line, indent_end, last_line, line_end, next_stop, normal_pos, on_last_empty_line,
     pos_at_col, prev_stop, rest_pos,
 };
+use crate::visual::{self, Take};
 use die_core::{Args, BufferId, Ctx, Error, Key, Origin, RegKind, Register, Result, State};
-use die_core::{TextBuf, WindowId};
+use die_core::{TextBuf, WindowId, key_notation};
 
 /// An operator waiting for its motion: core's state is `OperatorPending`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Pending {
     op: Operator,
     count: Option<usize>,
     register: Option<char>,
+    /// Its keys, for `.`.
+    keys: String,
+}
+
+impl Pending {
+    /// The whole command for `.`, now that its motion has come. The two counts become one.
+    fn change(&self, a: &Args) -> Change {
+        Change {
+            count: counts(self.count, a.count),
+            register: self.register,
+            keys: self.keys.clone() + &key_notation(&a.keys),
+            visual: None,
+        }
+    }
 }
 
 /// What an operator acts on: the bytes `beg..end`, and whether they're whole lines. A
@@ -70,7 +87,7 @@ type Edit = (std::ops::Range<usize>, &'static str);
 
 /// What [`apply`] needs to know about how it was reached.
 #[derive(Clone, Copy, Default)]
-struct How {
+pub struct How {
     /// `d` with a motion from the keys. It has two habits that `x`, `D` and `c` don't: it
     /// turns a range from a line's start to a later line's end into whole lines, and after
     /// taking whole lines it puts the cursor in the column it started in.
@@ -79,17 +96,39 @@ struct How {
     no_column: bool,
     /// `~` leaves the cursor past what it changed, not at the start.
     past_end: bool,
+    /// A shift from visual state: how many, and where it lands, since the cursor stays on the
+    /// selection's head until the edit is made (call 7).
+    shift: Option<(usize, usize)>,
+}
+
+impl How {
+    /// From visual state: a shift does this many, and lands as if from `from`.
+    pub fn from_visual(count: Option<usize>, from: usize) -> How {
+        How {
+            shift: Some((count.unwrap_or(1).max(1), from)),
+            ..How::default()
+        }
+    }
 }
 
 /// `d`, `c` and so on. Normal state starts waiting; pressed again, it means whole lines,
 /// and another operator's key cancels.
 pub fn on_key(ctx: &mut Ctx, a: &Args, op: Operator) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    if visual::is_on(ctx, b) {
+        return visual::operate(ctx, a, op, Take::Selection);
+    }
     if ctx.state_of(b) != State::OperatorPending {
+        if repeat::macro_ending(ctx)? {
+            return Err(Error::Msg(
+                "The macro ended with an operator waiting".into(),
+            ));
+        }
         let p = Pending {
             op,
             count: a.count,
             register: a.register,
+            keys: key_notation(&a.keys),
         };
         ctx.with_ext(|v: &mut Vim, _| v.pending.insert(b, p))?;
         ctx.set_state_of(b, State::OperatorPending);
@@ -107,7 +146,7 @@ pub fn on_key(ctx: &mut Ctx, a: &Args, op: Operator) -> Result {
         typed: true,
         ..How::default()
     };
-    apply(ctx, a, p.op, p.register, span, how)
+    apply(ctx, a, p.op, p.register, span, how, p.change(a))
 }
 
 /// A motion from the keys, with an operator waiting (`grammar::run_motion`).
@@ -129,12 +168,15 @@ pub fn on_motion(
         no_column,
         ..How::default()
     };
-    apply(ctx, a, p.op, p.register, span, how)
+    apply(ctx, a, p.op, p.register, span, how, p.change(a))
 }
 
 /// A text object, with an operator waiting. One that finds nothing stops the operator.
-pub fn on_object(ctx: &mut Ctx, a: &Args, object: Object) -> Result {
+pub fn on_object(ctx: &mut Ctx, a: &Args, object: Object, shape: visual::ObjectShape) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    if visual::is_on(ctx, b) {
+        return visual::object(ctx, a, object, shape);
+    }
     let Some(p) = take(ctx, b)? else {
         return Ok(());
     };
@@ -147,6 +189,7 @@ pub fn on_object(ctx: &mut Ctx, a: &Args, object: Object) -> Result {
         goal: None,
         arg: None,
         op: Some(p.op),
+        visual: false,
     });
     let span = match found {
         Ok(span) if takes_lines(p.op) && !span.lines => lines(t, span.beg, span.end),
@@ -160,14 +203,16 @@ pub fn on_object(ctx: &mut Ctx, a: &Args, object: Object) -> Result {
         typed: true,
         ..How::default()
     };
-    apply(ctx, a, p.op, p.register, span, how)
+    apply(ctx, a, p.op, p.register, span, how, p.change(a))
 }
 
 /// Escape, or any key an operator can't use: the operator, its counts and the goal
-/// column go, and nothing else happens. This also serves `f<Esc>` in normal state.
+/// column go, and nothing else happens. This also serves `f<Esc>` in normal and visual state.
 pub fn cancel(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
-    take(ctx, b)?;
+    if !visual::is_on(ctx, b) {
+        take(ctx, b)?;
+    }
     forget_goal(ctx.text_mut(b)?, w);
     Ok(())
 }
@@ -187,7 +232,7 @@ fn counts(op: Option<usize>, motion: Option<usize>) -> Option<usize> {
 }
 
 /// Shifts always take whole lines, whatever the motion.
-fn takes_lines(op: Operator) -> bool {
+pub fn takes_lines(op: Operator) -> bool {
     matches!(op, Operator::ShiftLeft | Operator::ShiftRight)
 }
 
@@ -215,6 +260,7 @@ fn covered(
         goal: Goal::decode(sel.goal),
         arg,
         op: Some(op),
+        visual: false,
     };
     let goes_on = |e: Fail| e == "End of line" || e == "End of buffer";
     let to = match motion(&start) {
@@ -242,7 +288,7 @@ fn covered(
 }
 
 /// Whole lines, from `beg`'s line through `end`'s.
-fn lines(t: &TextBuf, beg: usize, end: usize) -> Span {
+pub fn lines(t: &TextBuf, beg: usize, end: usize) -> Span {
     Span::whole_lines(t.line_start(t.line_of(beg)), after_line(t, t.line_of(end)))
 }
 
@@ -292,23 +338,26 @@ fn expand(t: &TextBuf, beg: usize, end: usize, kind: Kind) -> Span {
     }
 }
 
-/// Give a span to an operator.
-fn apply(
+/// Give a span to an operator. What changes the text becomes what `.` repeats; a session
+/// gets there at its Escape.
+pub fn apply(
     ctx: &mut Ctx,
     a: &Args,
     op: Operator,
     register: Option<char>,
     span: Span,
     how: How,
+    again: Change,
 ) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let head = cursor(ctx.text(b)?, w)?;
+    let session = (op == Operator::Change).then(|| again.clone());
     let done = match op {
         Operator::Delete => delete(ctx, b, w, register, span, how),
-        Operator::Change => change(ctx, a, b, w, register, span),
+        Operator::Change => change(ctx, a, b, w, register, span, session),
         Operator::Yank => yank(ctx, b, w, register, span),
-        Operator::ShiftLeft => shift(ctx.text_mut(b)?, w, span, false),
-        Operator::ShiftRight => shift(ctx.text_mut(b)?, w, span, true),
+        Operator::ShiftLeft => shift(ctx.text_mut(b)?, w, span, false, how.shift),
+        Operator::ShiftRight => shift(ctx.text_mut(b)?, w, span, true, how.shift),
         Operator::InvertCase | Operator::Upcase | Operator::Downcase => {
             recase(ctx.text_mut(b)?, w, op, span, how.past_end)
         }
@@ -320,12 +369,14 @@ fn apply(
         let stays = matches!(op, Operator::Yank | Operator::ShiftRight);
         let t = ctx.text_mut(b)?;
         t.set_cursor(w, rest_pos(t, if stays { head } else { span.beg }));
+    } else if !matches!(op, Operator::Yank | Operator::Change) {
+        repeat::commit(ctx, again)?;
     }
     done
 }
 
 /// The text of a span, as a register holds it: whole lines end in a newline.
-fn taken(t: &TextBuf, span: Span) -> Register {
+pub fn taken(t: &TextBuf, span: Span) -> Register {
     let mut text = t.rope().byte_slice(span.beg..span.end).to_string();
     if span.lines && !text.ends_with('\n') {
         text.push('\n');
@@ -343,7 +394,7 @@ fn taken(t: &TextBuf, span: Span) -> Register {
 /// What `d`, `x` and `c` share, Evil's `evil-delete`: keep the text, then delete it. The
 /// cursor doesn't move, so `u` restores it. Returns where the cursor belongs: the span's
 /// start, or the newline before it if whole lines at the end of the text had to take it.
-fn cut(ctx: &mut Ctx, b: BufferId, register: Option<char>, span: Span) -> Result<usize> {
+pub fn cut(ctx: &mut Ctx, b: BufferId, register: Option<char>, span: Span) -> Result<usize> {
     let t = ctx.text(b)?;
     let plain = t.rope().byte_slice(span.beg..span.end).to_string();
     let saved = taken(t, span);
@@ -373,7 +424,8 @@ fn delete(
 ) -> Result {
     let t = ctx.text(b)?;
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
-    let (col, goal) = (t.display_col(sel.head), Goal::decode(sel.goal));
+    let col = t.display_col(sel.head);
+    let goal = Goal::decode(sel.goal);
     if how.typed && !span.lines {
         let (first, last) = (t.line_of(span.beg), t.line_of(span.end));
         if last > first && t.line_start(first) == span.beg && line_end(t, last) == span.end {
@@ -408,6 +460,7 @@ fn change(
     w: WindowId,
     register: Option<char>,
     span: Span,
+    again: Option<Change>,
 ) -> Result {
     let at = cut(ctx, b, register, span)?;
     ctx.text_mut(b)?.set_cursor(w, at);
@@ -420,7 +473,8 @@ fn change(
         count: None,
         ..a.clone()
     };
-    let session = insert::begin(ctx, &once, entry)?;
+    let mut session = insert::begin(ctx, &once, entry)?;
+    session.repeat = again;
     ctx.with_ext(|v: &mut Vim, _| v.inserts.insert(b, session))?;
     Ok(())
 }
@@ -444,11 +498,22 @@ const SHIFT_WIDTH: usize = 4;
 /// `>` and `<`: each line moves to the next multiple of 4 columns that way. Lines of
 /// nothing but spaces end up empty, and empty lines stay empty. The cursor stays in its
 /// column, or at the line's end after `$`. It stays on its line with `>`, and with `<`
-/// goes to the first line shifted, as in Evil, where only `>` says not to move.
-fn shift(t: &mut TextBuf, w: WindowId, span: Span, right: bool) -> Result {
+/// goes to the first line shifted, as in Evil, where only `>` says not to move. From visual
+/// state a count is how many shifts, and it lands from where `visual` says.
+fn shift(
+    t: &mut TextBuf,
+    w: WindowId,
+    span: Span,
+    right: bool,
+    visual: Option<(usize, usize)>,
+) -> Result {
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
-    let here = t.line_of(if right { sel.head } else { span.beg });
-    let (col, goal) = (t.display_col(sel.head), Goal::decode(sel.goal));
+    let (n, from) = visual.unwrap_or((1, sel.head));
+    if n.saturating_mul(SHIFT_WIDTH) > MAX_REPEAT {
+        return Err(Error::Msg("Count too large".into()));
+    }
+    let here = t.line_of(if right { from } else { span.beg });
+    let (col, goal) = (t.display_col(from), Goal::decode(sel.goal));
     let mut tx_ops: Vec<(std::ops::Range<usize>, String)> = vec![];
     let mut line = t.line_of(span.beg);
     while line < t.line_count() && t.line_start(line) < span.end {
@@ -456,16 +521,16 @@ fn shift(t: &mut TextBuf, w: WindowId, span: Span, right: bool) -> Result {
         let has_text = end < line_end(t, line);
         let indent = t.display_col(end);
         let new = if right {
-            (indent / SHIFT_WIDTH + 1) * SHIFT_WIDTH
+            (indent / SHIFT_WIDTH + n) * SHIFT_WIDTH
         } else {
-            indent.div_ceil(SHIFT_WIDTH).saturating_sub(1) * SHIFT_WIDTH
+            indent.div_ceil(SHIFT_WIDTH).saturating_sub(n) * SHIFT_WIDTH
         };
         tx_ops.push((start..end, " ".repeat(if has_text { new } else { 0 })));
         line += 1;
     }
     // The empty last line, or an empty text, has no line to shift, so `>` indents it.
     if span.beg == span.end && right {
-        tx_ops.push((span.beg..span.beg, " ".repeat(SHIFT_WIDTH)));
+        tx_ops.push((span.beg..span.beg, " ".repeat(n * SHIFT_WIDTH)));
     }
     // A first change that only takes away a line's indentation, with the cursor at its start:
     // Evil's `u` goes to the end of the indentation it puts back.
@@ -503,20 +568,29 @@ fn single(mut it: impl Iterator<Item = char>) -> Option<char> {
     it.next().is_none().then_some(c)
 }
 
-/// `g~`, `gU` and `gu`. The cursor goes to the start, or with `~`, past what it changed.
-fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, past_end: bool) -> Result {
-    let old = t.rope().byte_slice(span.beg..span.end).to_string();
-    let new: String = match op {
+/// Text in the case an operator asks for.
+pub fn cased(op: Operator, old: &str) -> String {
+    match op {
         Operator::Upcase => old.to_uppercase(),
         Operator::Downcase => old.to_lowercase(),
         _ => old.chars().map(inverted).collect(),
-    };
-    let end = span.beg + new.len();
-    // As the first change since the buffer was last unmodified, Evil's `u` after `gU` and `gu`
-    // goes to the change's start.
-    if op != Operator::InvertCase && !t.modified() {
-        t.set_cursor(w, span.beg);
     }
+}
+
+/// As the first change since the buffer was last unmodified, Evil's `u` after `gU` and `gu`
+/// goes to the change's start.
+pub fn undo_at_first_change(t: &mut TextBuf, w: WindowId, op: Operator, at: usize) {
+    if op != Operator::InvertCase && !t.modified() {
+        t.set_cursor(w, at);
+    }
+}
+
+/// `g~`, `gU` and `gu`. The cursor goes to the start, or with `~`, past what it changed.
+fn recase(t: &mut TextBuf, w: WindowId, op: Operator, span: Span, past_end: bool) -> Result {
+    let old = t.rope().byte_slice(span.beg..span.end).to_string();
+    let new = cased(op, &old);
+    let end = span.beg + new.len();
+    undo_at_first_change(t, w, op, span.beg);
     // Text replaced by itself is still an undo step, as in Evil, so `u` takes it back.
     t.tx(Origin::User)
         .replace(span.beg..span.end, new)
@@ -534,20 +608,31 @@ pub type Own = fn(&Start) -> std::result::Result<Target, Fail>;
 /// `x`, `X`, `s`, `D`, `C`, `~`: an operator over a motion of its own, without `d`'s habits.
 pub fn with_motion(ctx: &mut Ctx, a: &Args, op: Operator, kind: Kind, motion: Own) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    if visual::is_on(ctx, b) {
+        // `D` and `C` are the inclusive ones.
+        let lines = kind == Kind::Inclusive;
+        let take = if lines { Take::Lines } else { Take::Selection };
+        return visual::operate(ctx, a, op, take);
+    }
     let t = ctx.text_mut(b)?;
     let (span, _) = covered(t, w, a.count, op, kind, None, motion)?;
     let how = How {
         past_end: op == Operator::InvertCase,
         ..How::default()
     };
-    apply(ctx, a, op, a.register, span, how)
+    apply(ctx, a, op, a.register, span, how, Change::of(a))
 }
 
 /// `S` and `Y`: an operator over whole lines, count of them.
 pub fn with_lines(ctx: &mut Ctx, a: &Args, op: Operator) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    if visual::is_on(ctx, b) {
+        let yank = op == Operator::Yank;
+        let take = if yank { Take::Lines } else { Take::WholeLines };
+        return visual::operate(ctx, a, op, take);
+    }
     let span = this_line_and_more(ctx.text(b)?, w, a.count);
-    apply(ctx, a, op, a.register, span, How::default())
+    apply(ctx, a, op, a.register, span, How::default(), Change::of(a))
 }
 
 /// `"x`: name a register for the next command. A count typed before it goes, as in Evil.
@@ -575,6 +660,9 @@ pub fn replace(ctx: &mut Ctx, a: &Args) -> Result {
     } else {
         a.typed()
     };
+    if visual::is_on(ctx, b) {
+        return visual::replace(ctx, a, with.as_deref(), enter);
+    }
     let t = ctx.text_mut(b)?;
     if !enter && with.is_none() {
         forget_goal(t, w);
@@ -591,6 +679,18 @@ pub fn replace(ctx: &mut Ctx, a: &Args) -> Result {
         None,
         motion,
     )?;
+    replace_span(t, w, span, with.as_deref(), enter)?;
+    repeat::commit(ctx, Change::of(a))
+}
+
+/// What `r` does to a span. A newline in it stays, and the cursor ends on what's last.
+pub fn replace_span(
+    t: &mut TextBuf,
+    w: WindowId,
+    span: Span,
+    with: Option<&str>,
+    enter: bool,
+) -> Result {
     if enter {
         t.tx(Origin::User)
             .replace(span.beg..span.end, "\n")
@@ -601,17 +701,20 @@ pub fn replace(ctx: &mut Ctx, a: &Args) -> Result {
         return Ok(());
     }
     let with = with.unwrap_or_default();
-    let (mut n, mut p) = (0, span.beg);
+    let (mut new, mut last, mut p) = (String::new(), 0, span.beg);
     while p < span.end {
+        last = new.len();
+        if t.rope().byte(p) == b'\n' {
+            new.push('\n');
+        } else {
+            new.push_str(with);
+        }
         p = next_stop(t, p).unwrap_or(span.end);
-        n += 1;
     }
-    let new = with.repeat(n);
     t.tx(Origin::User)
         .replace(span.beg..span.end, new)
         .commit()?;
-    let last = span.beg + with.len() * n.saturating_sub(1);
-    t.set_cursor(w, rest_pos(t, last));
+    t.set_cursor(w, rest_pos(t, span.beg + last));
     Ok(())
 }
 
@@ -622,8 +725,17 @@ pub fn replace(ctx: &mut Ctx, a: &Args) -> Result {
 /// (rule 1). On the empty line after that newline it does nothing at all, as Evil's does.
 pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    if visual::is_on(ctx, b) {
+        return visual::join(ctx, a);
+    }
+    let start = cursor(ctx.text(b)?, w)?;
+    join_from(ctx, a, start)
+}
+
+/// `J` as if from `start`, with the cursor left where it is until the edit is made (call 7).
+pub fn join_from(ctx: &mut Ctx, a: &Args, start: usize) -> Result {
+    let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
-    let start = cursor(t, w)?;
     let here = t.line_of(start);
     if on_last_empty_line(t, start) {
         forget_goal(t, w);
@@ -660,7 +772,7 @@ pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
         }
     };
     t.set_cursor(w, rest_pos(t, pos));
-    Ok(())
+    repeat::commit(ctx, Change::of(a))
 }
 
 /// The edits that join `joins` lines onto `here`, in the text as it is now. `.1` is where the
@@ -706,6 +818,9 @@ fn joined(t: &TextBuf, here: usize, joins: usize) -> (Vec<Edit>, usize, bool) {
 /// before the cursor, and it goes to the last one. Both are one edit, made first.
 pub fn paste(ctx: &mut Ctx, a: &Args, before: bool) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    if visual::is_on(ctx, b) {
+        return visual::paste(ctx, a, before);
+    }
     // Whatever happens next, the goal column goes, as after any command but `j` and `k`.
     forget_goal(ctx.text_mut(b)?, w);
     let r = registers::read(ctx, a.register)?;
@@ -718,6 +833,10 @@ pub fn paste(ctx: &mut Ctx, a: &Args, before: bool) -> Result {
         return Ok(());
     }
     let t = ctx.text_mut(b)?;
+    if r.kind == RegKind::Block {
+        paste_block(t, w, &r.text, n, !before)?;
+        return repeat::commit(ctx, Change::of(a));
+    }
     let p = cursor(t, w)?;
     let line = t.line_of(p);
     let pos = match (r.kind, before) {
@@ -734,7 +853,6 @@ pub fn paste(ctx: &mut Ctx, a: &Args, before: bool) -> Result {
                 .commit()?;
             indent_end(t, line + 1)
         }
-        // A block register pastes as characters until V4 brings visual block.
         (_, _) => {
             let at = if before || p >= line_end(t, line) {
                 p
@@ -750,6 +868,60 @@ pub fn paste(ctx: &mut Ctx, a: &Args, before: bool) -> Result {
                 prev_stop(t, end).unwrap_or(end)
             }
         }
+    };
+    t.set_cursor(w, rest_pos(t, pos));
+    repeat::commit(ctx, Change::of(a))
+}
+
+/// A block register, as Evil's `evil-yank-block-handler` puts it in: each of its lines at the
+/// same column, `n` times across, on this line and the ones below. Spaces at either end of a
+/// line of it go, unless something follows, and a line past the end of the text is added.
+/// A short line gets spaces up to the column, unless there's nothing to put after them.
+pub fn paste_block(t: &mut TextBuf, w: WindowId, text: &str, n: usize, after: bool) -> Result {
+    let p = cursor(t, w)?;
+    let here = t.line_of(p);
+    let shifted = after && t.line_start(here) != line_end(t, here);
+    let col = t.display_col(p) + usize::from(shifted);
+    let mut edits: Vec<(usize, String)> = vec![];
+    let mut tail = String::new();
+    for (i, row) in text.split('\n').enumerate() {
+        let (line, row) = (here + i, row.repeat(n));
+        let body = row.trim_matches(' ');
+        let before = row.len() - row.trim_start_matches(' ').len();
+        let extra = row.len() - body.len() - before;
+        if line >= t.line_count() {
+            tail.push('\n');
+            if !body.is_empty() {
+                tail.push_str(&" ".repeat(col + before));
+                tail.push_str(body);
+            }
+            continue;
+        }
+        let (eol, have) = (line_end(t, line), t.display_col(line_end(t, line)));
+        if have < col && body.is_empty() {
+            continue;
+        }
+        if have < col {
+            edits.push((eol, " ".repeat(col + before - have) + body));
+        } else {
+            let at = pos_at_col(t, line, col).min(eol);
+            let after_it = if at < eol { extra } else { 0 };
+            edits.push((at, " ".repeat(before) + body + &" ".repeat(after_it)));
+        }
+    }
+    let end = t.len();
+    let mut tx = t.tx(Origin::User);
+    for (at, s) in edits {
+        tx = tx.insert(at, s);
+    }
+    if !tail.is_empty() {
+        tx = tx.insert(end, tail);
+    }
+    tx.commit()?;
+    let pos = if shifted {
+        next_stop(t, p).unwrap_or(p)
+    } else {
+        p
     };
     t.set_cursor(w, rest_pos(t, pos));
     Ok(())

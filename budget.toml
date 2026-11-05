@@ -73,7 +73,7 @@ files = ["layout.rs", "layout/"]
 crate = "die-core"
 name = "keys, keymaps, describe"
 limit = 650
-files = ["keys.rs", "keymap.rs", "describe.rs"]
+files = ["keys.rs", "keymap.rs", "describe.rs", "fed.rs"]
 
 [[module]]
 crate = "die-core"

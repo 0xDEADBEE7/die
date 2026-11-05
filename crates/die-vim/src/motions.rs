@@ -93,7 +93,11 @@ pub fn backward_char(s: &Start) -> Result<Target, Fail> {
 /// the newline, so `dl` takes a line's last character.
 pub fn forward_char(s: &Start) -> Result<Target, Fail> {
     let end = line_end(s.text, s.text.line_of(s.pos));
-    let room = if s.op.is_some() { end + 1 } else { end };
+    let room = if s.op.is_some() || s.visual {
+        end + 1
+    } else {
+        end
+    };
     steps(s, "End of line", |p| {
         next_stop(s.text, p).filter(|&q| q < room)
     })
@@ -142,7 +146,7 @@ fn vertical(s: &Start, dir: Dir, err: Fail) -> Result<Target, Fail> {
     }
     Ok(Target {
         goal: Some(goal),
-        ..Target::at(normal_pos(t, at))
+        ..Target::at(if s.visual { at } else { normal_pos(t, at) })
     })
 }
 
@@ -193,9 +197,10 @@ fn goto_line(s: &Start, n: usize) -> Result<Target, Fail> {
     let t = s.text;
     let goal = s.goal.unwrap_or(Goal::Col(t.display_col(s.pos)));
     let line = n.saturating_sub(1).min(last_line(t));
+    let at = goal_pos(t, line, goal);
     Ok(Target {
         goal: Some(goal),
-        ..Target::at(normal_pos(t, goal_pos(t, line, goal)))
+        ..Target::at(if s.visual { at } else { normal_pos(t, at) })
     })
 }
 
@@ -664,6 +669,7 @@ mod tests {
             goal: None,
             arg: None,
             op: None,
+            visual: false,
         }
     }
 
@@ -682,6 +688,7 @@ mod tests {
             goal: None,
             arg: None,
             op: Some(op),
+            visual: false,
         };
         run(&s).map(|to| to.pos)
     }

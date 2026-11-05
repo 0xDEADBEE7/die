@@ -14,8 +14,11 @@
 //!   operator pending, the range from the cursor to the motion's target goes to the
 //!   operator instead of moving the cursor, and the two counts multiply.
 //! - An **action** is anything else: entering insert state, undo, `p`. Insert
-//!   sessions are one undo step each and record their keys, so a count (and `.`, V4)
-//!   can replay them (`insert.rs`).
+//!   sessions are one undo step each and record their edits, so a count can replay them
+//!   (`insert.rs`), and their keys, so `.` can (`repeat.rs`).
+//!
+//! In visual state ([`crate::visual`]) a motion moves the selection's head. Operators and
+//! text objects act on the selection at once.
 //!
 //! In normal state the cursor rests on a character, never on a line's newline
 //! unless the line is empty, and motions never take it past the last line
@@ -25,8 +28,9 @@
 
 use crate::operators;
 use crate::text::{normal_pos, on_last_empty_line};
+use crate::visual;
 use die_core::{
-    Args, BufferId, Ctx, Error, Key, Prefix, Result, Selection, State, TextBuf, WindowId,
+    Args, BufferId, Ctx, Error, Key, Prefix, Result, Selection, Shape, State, TextBuf, WindowId,
 };
 
 /// The column vertical motions aim for, kept across a run of them.
@@ -106,6 +110,8 @@ pub struct Start<'a> {
     /// The operator waiting for this motion. Some motions land elsewhere for one: they
     /// may stop on a newline or at the end of the text, and `cw` stops at the word's end.
     pub op: Option<Operator>,
+    /// In visual state, where `l`, `j` and `k` can land on a newline.
+    pub visual: bool,
 }
 
 impl Start<'_> {
@@ -227,6 +233,7 @@ pub fn run_motion(
     if ctx.state_of(b) == State::OperatorPending {
         return operators::on_motion(ctx, a, kind, arg, motion);
     }
+    let visual = visual::is_on(ctx, b);
     let t = ctx.text_mut(b)?;
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
     let start = Start {
@@ -236,6 +243,7 @@ pub fn run_motion(
         goal: Goal::decode(sel.goal),
         arg,
         op: None,
+        visual,
     };
     let to = match motion(&start) {
         Ok(to) => to,
@@ -246,7 +254,11 @@ pub fn run_motion(
     };
     // From the empty line after a final newline, a motion along that line stays on it.
     let stays = on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head);
-    let pos = if stays { to.pos } else { normal_pos(t, to.pos) };
+    let pos = if stays || (visual && !on_last_empty_line(t, to.pos)) {
+        to.pos
+    } else {
+        normal_pos(t, to.pos)
+    };
     // Evil's h and l signal and count as never having happened (Evil sets this-command
     // back to last-command), and its j and k are still next-line and previous-line when
     // they signal. So the goal column survives a short target, unlike any other failure.
@@ -254,7 +266,16 @@ pub fn run_motion(
         Some(_) => sel.goal,
         None => Goal::encode(to.goal),
     };
-    t.set_selection(w, Selection::cursor(pos).with_goal(goal));
+    let anchor = if visual { sel.anchor } else { pos };
+    t.set_selection(
+        w,
+        Selection {
+            anchor,
+            head: pos,
+            shape: if visual { sel.shape } else { Shape::Char },
+            goal,
+        },
+    );
     match to.short {
         Some(e) => Err(Error::Msg(e.into())),
         None => Ok(()),

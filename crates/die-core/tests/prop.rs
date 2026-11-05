@@ -2242,6 +2242,8 @@ proptest! {
     #[test]
     fn unmodified_means_the_saved_text(ops in prop::collection::vec(mod_op(), 1..40)) {
         run_modified(ops)?;
+    }
+}
 
 /// K10b: random saves, reloads and outside changes against a model of the disk. Here and not
 /// in `tests/save.rs` because `cargo xtask mutate` runs this binary.
