@@ -2,6 +2,8 @@
 //! selection with its shape, `undo_boundary` ends a step, and history is capped per buffer
 //! (2,000 steps or 16 MiB of text by default, whichever comes first).
 
+use die_test_cap as _;
+
 use die_core::*;
 use std::cell::RefCell;
 use std::rc::Rc;

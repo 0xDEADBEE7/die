@@ -12,6 +12,7 @@ publish.workspace = true
 die-core.workspace = true
 
 [dev-dependencies]
+die-test-cap.workspace = true
 evil-oracle.workspace = true
 
 [lints]

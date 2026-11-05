@@ -2,6 +2,8 @@
 //! target: this file carries no platform cfg, and `cargo xtask cross-check` builds
 //! it for Linux against the stub.
 
+use die_test_cap as _;
+
 use die_render::platform::backend;
 
 #[test]

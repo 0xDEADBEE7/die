@@ -106,6 +106,9 @@ objc2-core-foundation = { version = "=0.3.2", default-features = false, features
 [target.'cfg(target_os = "linux")'.dependencies]
 winit = { version = "=0.30.13", default-features = false, features = ["x11", "wayland", "wayland-dlopen"] }
 
+[dev-dependencies]
+die-test-cap.workspace = true
+
 # die-render may not inherit the workspace's `unsafe_code = "forbid"`: its
 # per-platform modules (`platform::macos`) need `allow`. Everything else in the
 # crate denies it, and `cargo xtask lint` checks that they are the only allows.
