@@ -231,7 +231,8 @@ impl Node {
         } else if !kids.iter_mut().any(|k| k.node.remove(w)) {
             return false;
         }
-        // A child split the same way as this one joins it.
+        // A child split the same way as this one joins it. Its children come as lengths on screen,
+        // so the others do too: the design may be in other units, or at another length.
         let same = |k: &Kid| matches!(&k.node, Node::Split(a, _) if a == axis);
         if kids.iter().any(same) {
             let old = std::mem::take(kids);
@@ -240,7 +241,11 @@ impl Node {
                     Node::Split(a, inner) if a == *axis => {
                         kids.extend(inner.into_iter().map(|i| Kid { size: i.len, ..i }));
                     }
-                    node => kids.push(Kid { node, ..k }),
+                    node => kids.push(Kid {
+                        node,
+                        size: k.len,
+                        ..k
+                    }),
                 }
             }
         }

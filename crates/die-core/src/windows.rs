@@ -111,9 +111,11 @@ impl TextBuf {
             None => self.add_view(w, cols, rows),
         }
     }
-    /// A window has closed.
+    /// A window has closed. If it was showing this buffer, it's the last to leave. If it had left
+    /// already, its view just goes.
     pub(crate) fn drop_view(&mut self, w: WindowId) {
-        if let Some(v) = self.views.remove(&w).or_else(|| self.parked.remove(&w)) {
+        self.parked.remove(&w);
+        if let Some(v) = self.views.remove(&w) {
             self.rest = Some(v);
         }
     }
@@ -186,7 +188,10 @@ impl Ctx {
     /// shown. The first window in a workspace is the split tree's root, and fills the frame:
     /// without [`Ctx::set_frame_size`], this size says what the frame is. Any other stands outside
     /// the tree, at this size, and only [`Ctx::compose`] draws it, with the placement it's given.
-    /// Windows join the tree through [`Ctx::split_window`] and [`Ctx::show`].
+    /// So it takes the focus only without a frame size, from a host that places windows itself:
+    /// once the host has set one, it draws with [`Ctx::scene`], and the focus stays in the tree
+    /// unless [`Ctx::focus`] moves it. Windows join the tree through [`Ctx::split_window`] and
+    /// [`Ctx::show`].
     pub fn open_window(&mut self, buf: BufferId, cols: usize, rows: usize) -> Result<WindowId> {
         self.buffers.get(buf).ok_or(Checkout::Gone)?;
         let used = self.next_tick();
@@ -202,14 +207,17 @@ impl Ctx {
         if let Content::Text(t) = &mut b.content {
             t.add_view(w, cols, rows);
         }
-        if self.tree.is_empty() {
+        let first = self.tree.is_empty();
+        if first {
             self.tree.set_root(w);
             if !self.tree.fixed {
                 self.tree.frame = (cols, rows + 2);
             }
             self.retile();
         }
-        self.take_focus(w);
+        if first || !self.tree.fixed {
+            self.take_focus(w);
+        }
         Ok(w)
     }
 
@@ -272,8 +280,12 @@ impl Ctx {
             b.used = used;
         }
     }
-    /// Tell a surface it gained or lost the focus (C3).
+    /// Tell a surface it gained or lost the focus (C3). While DIE's OS window doesn't have it, no
+    /// surface does, so there's nothing to tell: [`Input::Focus`] tells the one focused by then.
     pub(crate) fn focus_event(&mut self, buf: BufferId, gained: bool) {
+        if !self.app_focused {
+            return;
+        }
         if let Some(Content::Custom { owner, .. }) = self.buffers.get(buf).map(|b| &b.content) {
             let owner = *owner;
             self.defer_as(owner, move |ctx| {
@@ -434,8 +446,8 @@ impl Ctx {
         Ok(new)
     }
 
-    /// Close a window, and give its cells to its neighbour. The focus goes to the window used
-    /// last. An error for the only window in the tree, as in Emacs.
+    /// Close a window, and give its cells to its neighbour. The focus goes to the window in the
+    /// tree used last. An error for the only window in the tree, as in Emacs.
     pub fn close_window(&mut self, w: WindowId) -> Result {
         self.windows.get(w).ok_or(Checkout::Gone)?;
         if self.tree.is_sole(w) {
@@ -472,8 +484,9 @@ impl Ctx {
         if self.focused == Some(w) {
             self.focus_event(win.buffer, false);
             self.focused = None;
-            let next = self.windows.iter().max_by_key(|(_, w)| w.used);
-            match next.map(|(id, _)| id) {
+            let used = |id: &WindowId| self.windows.get(*id).map(|w| w.used);
+            let next = self.tree.windows().into_iter().max_by_key(used);
+            match next {
                 Some(next) => self.focus(next),
                 None => self.cur_window = None,
             }

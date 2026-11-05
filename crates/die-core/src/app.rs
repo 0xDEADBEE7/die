@@ -78,8 +78,9 @@ pub enum Input {
     },
 }
 
-/// How many turns one [`Ctx::run_ready`] takes before it lets the host draw. Pasted keys and timers
-/// take far fewer. Only a call that keeps queueing another reaches this, and then the frame should
+/// How many turns one [`Ctx::run_ready`] takes before it lets the host draw. A long paste or macro
+/// reaches this, a key a turn, and the rest of it comes after the frame. So do queued calls with no
+/// key between them, which usually means a call that keeps queueing another, and the frame should
 /// still come.
 pub const TURN_LIMIT: usize = 10_000;
 
@@ -101,10 +102,11 @@ impl Ctx {
             }
             Input::Focus(on) => {
                 if self.app_focused != on {
-                    self.app_focused = on;
+                    self.app_focused = true; // the one time a surface hears that it's away
                     if let Some(b) = self.focused_buffer() {
                         self.focus_event(b, on);
                     }
+                    self.app_focused = on;
                 }
             }
             Input::Resize { cols, rows } => self.set_frame_size(cols, rows),
@@ -113,10 +115,12 @@ impl Ctx {
 
     /// Take turns until nothing is ready, and return whether anything ran, which is whether
     /// there's a new frame to draw. It never waits: a job still out finishes later, and wakes the
-    /// host. A call that keeps queueing another stops after [`TURN_LIMIT`] turns, once per frame,
-    /// with one line in `*messages*`, and goes on after the next frame.
+    /// host. It stops after [`TURN_LIMIT`] turns, and what's left goes on after the next frame. If
+    /// none of those turns took a key or other input, queued calls had the loop to themselves, so
+    /// that gets one line in `*messages*`, until the loop next goes idle.
     pub fn run_ready(&mut self) -> bool {
         let mut ran = false;
+        self.input_ran = false;
         for _ in 0..TURN_LIMIT {
             if !self.step() {
                 self.over_limit = false;
@@ -124,10 +128,10 @@ impl Ctx {
             }
             ran = true;
         }
-        if !self.over_limit {
+        if !self.over_limit && !self.input_ran {
             self.over_limit = true;
             self.messages.push(format!(
-                "A call kept queueing another for {TURN_LIMIT} turns, so the frame went first"
+                "Queued calls ran for {TURN_LIMIT} turns with no key between them, so the frame went first"
             ));
         }
         true

@@ -18,7 +18,8 @@
 //! - Modified: undo back clears it, a save moves what counts, text replaced by itself sets it.
 //! - Registers and the clipboard: a kind survives, an outside copy is news once, DIE's own write
 //!   and the text it knows aren't news, and what was there at startup is.
-//! - A surface hears size and focus. S4's windows outside the tree keep their sizes.
+//! - A surface hears size and focus. S4's windows outside the tree keep their sizes, and in a frame
+//!   the host set they don't take the focus from the tree.
 
 use die_test_cap as _;
 
@@ -354,6 +355,80 @@ fn a_second_open_window_stays_out_of_the_tree_at_its_own_size() {
     assert_eq!(c.focused(), Some(first));
 }
 
+/// a | (b e / d), split in the order that leaves a nested split to dissolve.
+fn a_beside_b_e_over_d(balance: bool) -> (Ctx, [WindowId; 4]) {
+    let (mut c, _, a) = frame(80, 24, "");
+    let even = |c: &mut Ctx, w| {
+        if balance {
+            c.balance_windows(w);
+        }
+    };
+    let b = c.split_window(a, Side::Right).unwrap();
+    even(&mut c, a);
+    let d = c.split_window(b, Side::Below).unwrap();
+    even(&mut c, a);
+    let e = c.split_window(b, Side::Right).unwrap();
+    even(&mut c, a);
+    (c, [a, b, e, d])
+}
+
+#[test]
+fn a_close_that_dissolves_a_split_leaves_every_width() {
+    let widths = |c: &Ctx, ws: &[WindowId]| -> Vec<usize> {
+        ws.iter().map(|w| c.window_size(*w).unwrap().0).collect()
+    };
+
+    // After a balance, whose design counts windows and not cells.
+    let (mut c, [a, b, e, d]) = a_beside_b_e_over_d(true);
+    let had = widths(&c, &[a, b, e]);
+    c.close_window(d).unwrap();
+    assert_eq!(widths(&c, &[a, b, e]), had, "after a balance");
+    assert_eq!(c.window_size(b).unwrap().1, 22, "d's height went to b");
+    assert_eq!(c.window_size(e).unwrap().1, 22, "and to the one beside it");
+
+    // After a frame resize, either way, with the design at another length than the screen's.
+    for cols in [40, 160] {
+        let (mut c, [a, b, e, d]) = a_beside_b_e_over_d(false);
+        c.set_frame_size(cols, 24);
+        let had = widths(&c, &[a, b, e]);
+        c.close_window(d).unwrap();
+        assert_eq!(widths(&c, &[a, b, e]), had, "in a frame {cols} wide");
+        c.set_frame_size(80, 24);
+        assert_eq!(c.window_size(a).unwrap().0, 39, "a is still half of 80");
+    }
+}
+
+#[test]
+fn a_second_open_window_leaves_the_focus_in_a_frame_the_host_set() {
+    let (mut c, x, a) = frame(80, 24, "x");
+    let y = c.create_text("y", "y");
+    let outside = c.open_window(y, 20, 5).unwrap();
+    assert_eq!(c.focused(), Some(a), "scene() doesn't draw the new one");
+    assert_eq!(c.window_list(), [a]);
+    assert_eq!(c.window_size(outside), Some((20, 5)));
+    let solid = |k: &Cursor| k.shape != CursorShape::Hollow;
+    assert!(c.scene().cursors.iter().any(solid));
+    let b = c.show(x, ShowIn::Split(Side::Right)).unwrap().unwrap();
+    assert_eq!(c.window_list(), [a, b]);
+    assert_eq!(c.focus_direction(Side::Left), Some(a));
+}
+
+#[test]
+fn closing_focuses_a_window_in_the_tree_over_one_outside_it() {
+    let (mut c, _, a) = frame(80, 24, "x");
+    let y = c.create_text("y", "y");
+    let outside = c.open_window(y, 20, 5).unwrap();
+    let b = c.split_window(a, Side::Right).unwrap();
+    c.focus(outside);
+    c.focus(b);
+    c.close_window(b).unwrap();
+    assert_eq!(
+        c.focused(),
+        Some(a),
+        "outside was used later, and isn't drawn"
+    );
+}
+
 // ------------------------------------------------------------------ focus by direction
 
 /// a over b on the left, c on the right.
@@ -606,6 +681,23 @@ fn a_new_window_on_a_buffer_starts_where_the_last_one_left_it() {
     assert_eq!(c.window_buffer(right), Some(other));
     c.show(b, ShowIn::Current).unwrap();
     assert_eq!(c.text(b).unwrap().cursor(right), Some(3));
+}
+
+#[test]
+fn closing_a_window_that_left_a_buffer_long_ago_doesnt_move_where_it_rests() {
+    let (mut c, x, a) = frame(80, 24, "0123456789012345678901234");
+    let b = c.split_window(a, Side::Right).unwrap();
+    let y = c.create_text("y", "");
+    c.text_mut(x).unwrap().set_cursor(a, 5).unwrap();
+    c.show(y, ShowIn::Current).unwrap();
+    c.focus(b);
+    c.text_mut(x).unwrap().set_cursor(b, 20).unwrap();
+    c.show(y, ShowIn::Current).unwrap();
+    c.close_window(a).unwrap();
+    let new = c.split_window(b, Side::Right).unwrap();
+    c.focus(new);
+    c.show(x, ShowIn::Current).unwrap();
+    assert_eq!(c.text(x).unwrap().cursor(new), Some(20), "b left last");
 }
 
 // ------------------------------------------------------------------ names and directories
