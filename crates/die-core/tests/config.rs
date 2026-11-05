@@ -197,6 +197,11 @@ fn config_commands_belong_to_config() {
         Some(("from your config", "config"))
     );
     assert_eq!(ctx.command_doc("a-cmd").map(|d| d.1), Some("a"));
+    // Core's own commands are core's, with an extension in the first slot.
+    assert_eq!(
+        ctx.command_doc("toggle-max-width").map(|d| d.1),
+        Some("core")
+    );
     let r = ctx.run("config-boom", &Args::default());
     assert!(
         matches!(r, Err(Error::Panicked { ext: "config", .. })),
