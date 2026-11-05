@@ -3,6 +3,11 @@
 //! - the cursor is never inside a hidden range (checked against a naive definition),
 //! - the set of cursor positions matches that definition exactly,
 //! - render, the motion queries and an independent naive layout oracle agree on every row and stop.
+//!
+//! `layout_agrees_with_the_naive_layout` is K4's check against `support/naive_layout.rs`, written
+//! from contract §9 alone: every row, cell, cursor position, number and query, after each of a run
+//! of edits and decoration changes on text full of clusters and control characters. S4's oracle
+//! wraps by character, so with `Wrap::Word` the sequences above read their rows from that layout.
 #![allow(clippy::nonminimal_bool)] // S4's test as ported (K1)
 use die_core::*;
 use proptest::prelude::*;
@@ -908,7 +913,8 @@ fn rich_text(max: usize) -> impl Strategy<Value = String> {
         2 => Just('中'), 1 => Just('é'), 1 => Just('\u{301}'), 1 => Just('\u{903}'),
         1 => Just('\u{1}'), 1 => Just('\r'), 1 => Just('\u{7f}'), 1 => Just('\u{85}'),
         1 => Just('👍'), 1 => Just('\u{1f3fd}'), 1 => Just('\u{1f1e6}'), 1 => Just('\u{200b}'),
-        1 => Just('\u{200d}'), 1 => Just('\u{a0}'), 1 => Just('-'),
+        1 => Just('\u{200d}'), 1 => Just('\u{a0}'), 1 => Just('-'), 1 => Just('\u{fe0e}'),
+        1 => Just('\u{1100}'), 1 => Just('\u{1161}'),
     ];
     prop::collection::vec(ch, 0..max).prop_map(|v| v.into_iter().collect())
 }

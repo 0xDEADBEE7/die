@@ -1,6 +1,7 @@
 //! What a buffer's decorations do to its text before any layout: hidden ranges and display-line
 //! edges (contract §9). None of this lays anything out, so it costs the same whatever a line's
 //! length: it reads the rope around a position.
+#![warn(missing_docs)]
 use super::*;
 
 /// A merged hidden range. With a replacement, `start` is a cursor position ("the fold line").
