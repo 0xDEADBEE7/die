@@ -41,7 +41,7 @@ pub use error::*;
 pub use ext::*;
 pub use faces::{BASE_FACES, Rgb, Style, Theme, UI_FACES, Underline};
 pub use files::{FileInfo, Fingerprint, StatusTextFn, Uneditable};
-pub use harness::FakeClipboard;
+pub use harness::{FakeClipboard, Harness, KeyLog};
 pub use ids::*;
 pub use keymap::*;
 pub use keys::*;
