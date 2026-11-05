@@ -138,6 +138,69 @@ fn history_goes_back_and_forward_and_keeps_what_was_typed() {
     );
 }
 
+/// Evil's `<Up>` and `<Down>`: only entries that start with what's before the cursor, which
+/// stays where it is. `<C-p>`, `<C-n>` and the page keys walk every entry, on any prompt.
+#[test]
+fn evil_keys_recall_by_what_is_before_the_cursor() {
+    let mut ctx = ctx();
+    for answer in ["foo", "bar", "fig"] {
+        ask(&mut ctx, PromptSpec::new("?").history("h"));
+        ctx.type_keys(answer);
+        ctx.type_keys("<CR>");
+    }
+    ask(&mut ctx, PromptSpec::new("?").history("h").evil_keys());
+    ctx.type_keys("f");
+    for (key, want) in [
+        ("<Up>", "fig"),
+        ("<Up>", "foo"),
+        ("<Up>", "foo"),
+        ("<Down>", "fig"),
+        ("<Down>", "f"),
+        ("<C-p>", "fig"),
+        ("<C-p>", "bar"),
+        ("<PageUp>", "foo"),
+        ("<PageDown>", "bar"),
+        ("<C-n>", "fig"),
+    ] {
+        ctx.type_keys(key);
+        assert_eq!(ctx.prompt_text(), Some(want), "{key}");
+    }
+    ctx.type_keys("<Esc>");
+    ask(&mut ctx, PromptSpec::new("?").history("h").evil_keys());
+    ctx.type_keys("f<Up>X");
+    assert_eq!(ctx.prompt_text(), Some("fXig"), "the cursor stays");
+    ctx.type_keys("<Esc>");
+    ask(&mut ctx, PromptSpec::new("?").history("h"));
+    ctx.type_keys("f<Up><Up>");
+    assert_eq!(
+        ctx.prompt_text(),
+        Some("bar"),
+        "a plain prompt walks every entry"
+    );
+    ctx.type_keys("<PageDown>");
+    assert_eq!(ctx.prompt_text(), Some("fig"), "and has the page keys");
+}
+
+/// `evil-command-line-map`'s line keys, and the Shift word moves every prompt has.
+#[test]
+fn evil_keys_take_the_whole_line_and_shift_moves_by_word() {
+    for (evil, keys, want) in [
+        (true, "<Left><C-u>X", "X"),
+        (true, "<C-b>X", "Xabc def"),
+        (true, "<S-Left>X", "abc Xdef"),
+        (true, "<Home><S-Right>X", "abcX def"),
+        (false, "<S-Left>X", "abc Xdef"),
+        (false, "<Home><S-Right>X", "abcX def"),
+    ] {
+        let mut ctx = ctx();
+        let spec = PromptSpec::new("?");
+        ask(&mut ctx, if evil { spec.evil_keys() } else { spec });
+        ctx.type_keys("abc def");
+        ctx.type_keys(keys);
+        assert_eq!(ctx.prompt_text(), Some(want), "{keys}");
+    }
+}
+
 #[test]
 fn backspace_on_an_empty_line_cancels_only_when_asked() {
     let mut ctx = ctx();
