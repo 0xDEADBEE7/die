@@ -76,5 +76,7 @@
   {"id": "yank-no-undo-step", "keys": "xylu", "text": ["a|bc"]},
   {"id": "dw-empty-no-undo-step", "vim": "Vim leaves \"b\\n\", Evil \"ab\"", "keys": "xdwu", "text": "|ab"},
   {"id": "shift-left-u-first-line-unindented", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 1 col 4", "keys": "<ku", "text": ["a", "|    b"]},
-  {"id": "shift-left-u-indent-gone-further-down", "keys": "<ju", "text": ["|a", "    b"]}
+  {"id": "shift-left-u-indent-gone-further-down", "keys": "<ju", "text": ["|a", "    b"]},
+  {"id": "g~iw-first-change-u", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 0 col 2", "keys": "g~iwu", "text": ["ab|c d"]},
+  {"id": "gUiw-first-change-u", "keys": "gUiwu", "text": ["ab|c d"]}
  ]}
