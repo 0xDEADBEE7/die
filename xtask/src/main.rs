@@ -24,7 +24,8 @@ const USAGE: &str = "usage: cargo xtask <task>
                        pkg-config, which no build script calls unless allowlisted (D16)
   cross-check          clippy -D warnings (so cargo check) of the workspace for
                        x86_64 and aarch64 Linux, with no C compiler or pkg-config
-  mutate [--cases N]   die-core's planted bugs; the property tests must catch each
+  mutate [--cases N]   die-core's planted bugs; the property tests must catch each, by
+                       a named test, the memory limit or the time limit
   ci [--worktree | --rev R]
                        every check in a fresh clone of HEAD (or R), or of the
                        working tree as git would commit it
