@@ -185,9 +185,9 @@ fn cursor_color(color: Rgb, cell: &Cell, background: Rgb) -> Rgb {
     if color != cell.bg {
         return color;
     }
-    let last = [Rgb(0, 0, 0), Rgb(255, 255, 255)];
-    let others = [cell.fg, background].into_iter().chain(last);
-    others.into_iter().find(|&c| c != color).unwrap_or(color)
+    let others = [cell.fg, background, Rgb(0, 0, 0)];
+    let shows = others.into_iter().find(|&c| c != color);
+    shows.unwrap_or(Rgb(255, 255, 255))
 }
 
 /// A frame's data for the backend.
