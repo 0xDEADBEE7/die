@@ -1,6 +1,10 @@
 //! Registers, as your Evil keeps them. Everything die-vim reads or writes goes through
-//! this module, so K6 can bring in typed registers and the clipboard by changing it alone.
-//! Until K6, `+` and `*` are registers like any other, and nothing reaches the clipboard.
+//! this module.
+//!
+//! The clipboard works as Emacs's does. Every new kill goes to it, whether or not a register was
+//! named. Reading the newest kill first takes in what another app copied since, as a new kill
+//! that isn't written back. `+` is the clipboard itself, and reading it leaves the ring alone.
+//! `*` is your Evil's primary selection, which only DIE reaches, so it's a register like any other.
 //!
 //! Evil's unnamed register and `1`-`9` are one thing, Emacs's kill ring. Every yank and
 //! delete pushes onto it unless the register is `_`, whether or not a register was named.
@@ -29,8 +33,14 @@ fn set_slot(ctx: &mut Ctx, i: usize, r: Register) {
     ctx.set_register(slot(i), r);
 }
 
-/// A new kill, Emacs's `kill-new`: the ring moves down one, and the oldest goes.
+/// A new kill, Emacs's `kill-new`: the ring moves down one, the oldest goes, and the clipboard
+/// gets it.
 fn push(ctx: &mut Ctx, r: Register) {
+    ctx.write_clipboard(&r);
+    ring_push(ctx, r);
+}
+
+fn ring_push(ctx: &mut Ctx, r: Register) {
     for i in (1..RING).rev() {
         if let Some(older) = ctx.register(slot(i - 1)).cloned() {
             set_slot(ctx, i, older);
@@ -80,6 +90,7 @@ fn set(ctx: &mut Ctx, c: char, r: Register) -> Result {
         ':' | '.' | '%' => return Err(Error::Msg("Can't modify read-only register".into())),
         '"' => push(ctx, r),
         '_' => {}
+        '+' => ctx.write_clipboard(&r),
         'A'..='Z' => append(ctx, c.to_ascii_lowercase(), r),
         _ => match c.to_digit(10) {
             Some(d @ 1..=9) => overwrite(ctx, d, r),
@@ -117,13 +128,20 @@ pub fn small_delete(ctx: &mut Ctx, text: &str) {
 
 /// What `p` and `P` would paste from `name`, or from the newest kill with none. An empty
 /// register is an error, and so are the ones die-vim has no text for.
-pub fn read(ctx: &Ctx, name: Option<char>) -> Result<Register> {
+pub fn read(ctx: &mut Ctx, name: Option<char>) -> Result<Register> {
+    // Only the newest kill looks at the clipboard, as Emacs's `current-kill` with 0.
+    if matches!(name, None | Some('"' | '1'))
+        && let Some(r) = ctx.clipboard_news()
+    {
+        ring_push(ctx, r);
+    }
     let Some(c) = name else {
         return ctx
             .register('"')
             .cloned()
             .ok_or_else(|| Error::Msg("Kill ring is empty".into()));
     };
+    let from_clipboard;
     let held = match c {
         '_' => {
             return Ok(Register {
@@ -134,6 +152,10 @@ pub fn read(ctx: &Ctx, name: Option<char>) -> Result<Register> {
         // `1` is read from `"`, which is the ring's head even if only `"` was ever set.
         '1' => ctx.register('"'),
         ':' | '.' | '%' | '#' | '/' | '=' => None,
+        '+' => {
+            from_clipboard = ctx.clipboard();
+            from_clipboard.as_ref()
+        }
         _ => ctx.register(c.to_lowercase().next().unwrap_or(c)),
     };
     held.cloned()
@@ -144,6 +166,7 @@ pub fn read(ctx: &Ctx, name: Option<char>) -> Result<Register> {
 mod tests {
     use super::*;
     use crate::Vim;
+    use die_core::FakeClipboard;
 
     fn ctx() -> Ctx {
         Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers")
@@ -165,6 +188,68 @@ mod tests {
     }
 
     #[test]
+    fn every_kill_reaches_the_clipboard_but_not_what_only_names_a_register() {
+        let mut ctx = ctx();
+        let board = FakeClipboard::default();
+        ctx.set_clipboard(board.clone());
+        save(&mut ctx, None, chars("one"), false).unwrap();
+        save(&mut ctx, Some('a'), chars("two"), true).unwrap();
+        save(&mut ctx, Some('_'), chars("gone"), true).unwrap();
+        small_delete(&mut ctx, "small");
+        let written: Vec<String> = board.take_writes().into_iter().map(|r| r.text).collect();
+        assert_eq!(written, ["one", "two"]);
+    }
+
+    #[test]
+    fn only_the_newest_kill_takes_in_another_apps_copy() {
+        let mut ctx = ctx();
+        let board = FakeClipboard::default();
+        ctx.set_clipboard(board.clone());
+        save(&mut ctx, None, chars("kill"), false).unwrap();
+        board.take_writes();
+
+        board.copy_from_outside("copied");
+        ctx.set_register('a', chars("named"));
+        assert_eq!(
+            read(&mut ctx, Some('a')).map(|r| r.text),
+            Ok("named".into())
+        );
+        assert_eq!(text(&ctx, '"'), Some("kill"), "not for another register");
+        assert_eq!(
+            read(&mut ctx, Some('+')).map(|r| r.text),
+            Ok("copied".into())
+        );
+        assert_eq!(text(&ctx, '"'), Some("kill"), "nor for reading it as `+`");
+
+        assert_eq!(read(&mut ctx, None).map(|r| r.text), Ok("copied".into()));
+        assert_eq!(text(&ctx, '1'), Some("copied"));
+        assert_eq!(text(&ctx, '2'), Some("kill"));
+        assert_eq!(board.take_writes(), [], "and it isn't written back");
+
+        board.copy_from_outside("again");
+        assert_eq!(
+            read(&mut ctx, Some('1')).map(|r| r.text),
+            Ok("again".into())
+        );
+    }
+
+    #[test]
+    fn plus_writes_the_clipboard_and_star_is_a_register() {
+        let mut ctx = ctx();
+        let board = FakeClipboard::default();
+        ctx.set_clipboard(board.clone());
+        ctx.set_register('*', chars("primary"));
+        assert_eq!(
+            read(&mut ctx, Some('*')).map(|r| r.text),
+            Ok("primary".into())
+        );
+        assert_eq!(board.held(), None);
+        set(&mut ctx, '+', chars("board")).unwrap();
+        assert_eq!(board.held(), Some(chars("board")));
+        assert_eq!(text(&ctx, '+'), None, "it holds no copy");
+    }
+
+    #[test]
     fn the_ring_keeps_nine_kills_newest_first() {
         let mut ctx = ctx();
         for n in 0..11 {
@@ -180,7 +265,7 @@ mod tests {
     fn a_preset_unnamed_register_is_the_rings_head() {
         let mut ctx = ctx();
         ctx.set_register('"', chars("mine"));
-        assert_eq!(read(&ctx, Some('1')).map(|r| r.text), Ok("mine".into()));
+        assert_eq!(read(&mut ctx, Some('1')).map(|r| r.text), Ok("mine".into()));
         save(&mut ctx, None, chars("new"), false).unwrap();
         assert_eq!(text(&ctx, '2'), Some("mine"));
     }
@@ -202,7 +287,7 @@ mod tests {
         save(&mut ctx, Some('_'), chars("gone"), true).unwrap();
         assert_eq!(text(&ctx, '"'), None);
         assert_eq!(text(&ctx, '0'), None);
-        assert_eq!(read(&ctx, Some('_')).map(|r| r.text), Ok(String::new()));
+        assert_eq!(read(&mut ctx, Some('_')).map(|r| r.text), Ok(String::new()));
     }
 
     #[test]
@@ -244,10 +329,11 @@ mod tests {
 
     #[test]
     fn an_empty_register_is_an_error() {
-        let ctx = ctx();
-        assert!(read(&ctx, None).is_err());
-        assert!(read(&ctx, Some('q')).is_err());
-        assert!(read(&ctx, Some('Q')).is_err());
+        let mut ctx = ctx();
+        assert!(read(&mut ctx, None).is_err());
+        assert!(read(&mut ctx, Some('q')).is_err());
+        assert!(read(&mut ctx, Some('Q')).is_err());
+        assert!(read(&mut ctx, Some('+')).is_err());
     }
 
     #[test]
