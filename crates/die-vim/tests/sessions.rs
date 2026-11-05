@@ -1,6 +1,6 @@
 //! Insert sessions where the Evil oracle can't reach: two buffers, read-only
 //! text, a buffer's own tab width, the changes an edit logs, and DIE's own screen
-//! rows until K4's word wrap matches the rows your Evil's fixtures record.
+//! rows, until K7 lets the rows your Evil's fixtures record be compared.
 
 use die_test_cap as _;
 

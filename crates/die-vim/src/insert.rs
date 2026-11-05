@@ -5,13 +5,14 @@
 use crate::grammar::{buffer_window, forget_goal};
 use crate::motions::word_back;
 use crate::text::{
-    Chars, blank_line, indent_end, indentation, line_end, next_stop, prev_stop, rest_pos,
+    Chars, blank_line, indent_end, indent_stops, indentation, line_end, next_stop, prev_stop,
+    rest_pos,
 };
 use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, WindowId};
 
 /// The most typed text a count may replay at once, K4's budget for one line. K4 took
 /// away the layout memory this guarded, so it can rise, and it stands until it does.
-const MAX_REPEAT: usize = 1 << 20;
+pub const MAX_REPEAT: usize = 1 << 20;
 /// The most edits a count may replay one by one, so a mistyped count can't freeze the
 /// editor. K4 made an edit cost the same on any line, so this can rise too.
 const MAX_REPLAY: usize = 10_000;
@@ -87,8 +88,9 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
             t.set_cursor(w, q);
         }
         Entry::Append => {}
+        // On a line of nothing but spaces that's the last one, where `^` lands, as in Evil.
         Entry::InsertLine => {
-            t.set_cursor(w, indent_end(t, line));
+            t.set_cursor(w, rest_pos(t, indent_end(t, line)));
         }
         Entry::AppendLine => {
             t.set_cursor(w, line_end(t, line));
@@ -297,20 +299,29 @@ fn open_below(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
     indent_from_above(t, w, line + 1)
 }
 
-/// Give `line` the indentation of the line above it, in spaces, or none if that
-/// line is blank or there is none (Emacs's `indent-according-to-mode` in
-/// fundamental-mode). The cursor goes to the end of the indentation.
-fn indent_from_above(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
+/// Give `line` the indentation of the line above it, or none if that line is blank or
+/// there is none (Emacs's `indent-according-to-mode` in fundamental-mode). As Emacs's
+/// `indent-line-to` does, it only changes what it must: an indentation of the right width
+/// stays as it is, tabs and all. Too little gains spaces, and too much loses what's past the
+/// column. The cursor goes to the end of the indentation.
+pub fn indent_from_above(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
     let col = match line.checked_sub(1) {
         Some(above) if !blank_line(t, above) => indentation(t, above),
         _ => 0,
     };
-    let (s, end) = (t.line_start(line), indent_end(t, line));
-    let indent = " ".repeat(col);
-    if t.rope().byte_slice(s..end) != indent.as_str() {
-        t.tx(Origin::User).replace(s..end, indent).commit()?;
+    let stops = indent_stops(t, line);
+    let (end, now) = stops[stops.len() - 1];
+    if now < col {
+        let spaces = " ".repeat(col - now);
+        t.tx(Origin::User).insert(end, spaces).commit()?;
+    } else if now > col {
+        // What fits stays. A tab past the column becomes the spaces that reach it. The first
+        // stop is column 0, so one always fits.
+        let &(keep, at) = stops.iter().rfind(|&&(_, c)| c <= col).unwrap_or(&stops[0]);
+        let spaces = " ".repeat(col - at);
+        t.tx(Origin::User).replace(keep..end, spaces).commit()?;
     }
-    t.set_cursor(w, s + col);
+    t.set_cursor(w, indent_end(t, line));
     Ok(())
 }
 

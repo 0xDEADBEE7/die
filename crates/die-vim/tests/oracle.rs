@@ -20,6 +20,12 @@
 //! The runner uses die-core's spike-era API until the public harness (K7) lands.
 //! What it can't set up or check yet fails the case with a reason, so a case
 //! never passes on something unchecked.
+//!
+//! The clipboard waits for K6. Your Evil writes every kill to it, so nearly every case
+//! expects clipboard writes. Until K6 the runner holds those against the kill ring: the
+//! clipboard's text must be the newest kill, and its writes must be `"1`, `"2` and so on.
+//! That checks what would be sent, and not that it arrives. A case about the clipboard
+//! itself, one that names it or `"+`, or starts with text on it, stays pending for K6.
 
 use die_test_cap as _;
 
@@ -206,7 +212,7 @@ fn run_case(case: &Case, run: Run) -> Result<(), String> {
     if input.visual.is_some() {
         return Err("can't start a case in visual state yet (the harness, K7)".into());
     }
-    if input.clipboard.is_some() {
+    if input.clipboard.is_some() || case.id.contains("clipboard") || case.keys.contains("\"+") {
         return Err("no clipboard yet (K6)".into());
     }
     if run == Run::Tty || input.window.is_some() {
@@ -280,6 +286,22 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
     if want.visual.is_some() {
         diffs.push("can't compare a visual selection yet (V4 defines the mapping)".into());
     }
+    // Your Evil lists every register the keys changed, so the others must be as they were.
+    let names = ('0'..='9').chain('a'..='z').chain(['-']);
+    for name in names.filter(|c| !want.registers.contains_key(&c.to_string())) {
+        let preset = input
+            .registers
+            .iter()
+            .flatten()
+            .find(|(n, _)| **n == name.to_string());
+        let want = preset.map(|(_, r)| r.text.as_str());
+        let got = ctx.register(name).map(|r| r.text.as_str());
+        if got != want {
+            diffs.push(format!(
+                "register {name} is {got:?}, and your Evil left it {want:?}"
+            ));
+        }
+    }
     for (name, r) in &want.registers {
         let got = ctx.register(reg_char(name)?);
         let want = r.as_ref().map(|r| Register {
@@ -290,8 +312,24 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
             diffs.push(format!("register {name} is {got:?}, want {want:?}"));
         }
     }
-    if want.clipboard.text.is_some() || !want.clipboard.writes.is_empty() {
-        diffs.push("can't check the clipboard yet (K6)".into());
+    // Until K6, what would reach the clipboard is what's in the kill ring (see above).
+    let newest = ctx.register('"').map(|r| r.text.as_str());
+    if want.clipboard.text.as_deref() != newest {
+        diffs.push(format!(
+            "the newest kill is {newest:?}, but the clipboard should hold {:?}",
+            want.clipboard.text
+        ));
+    }
+    // Naming `"1`-`"9` overwrites the ring, so it no longer holds every kill.
+    let overwritten = ('1'..='9').any(|d| case.keys.contains(&format!("\"{d}")));
+    let writes = want.clipboard.writes.iter().rev();
+    for (write, name) in writes.zip('1'..='9').filter(|_| !overwritten) {
+        let got = ctx.register(name).map(|r| r.text.as_str());
+        if got != Some(write.as_str()) {
+            diffs.push(format!(
+                "register {name} is {got:?}, but the clipboard should have been sent {write:?}"
+            ));
+        }
     }
     // A key die-vim doesn't bind is never the error Evil signalled, even when it
     // comes after the same key.
@@ -375,7 +413,7 @@ fn a_hand_written_fixture_must_keep_its_oracle_cases_input() {
 
 /// Every tty case waits for K7, which can set a window's top line. These don't
 /// scroll or wrap, so their text, cursor, state and errors can be held to your
-/// Evil now. `wrapped/` needs K4's word wrap as well.
+/// Evil now.
 #[test]
 fn insert_state_arrows_match_the_tty_run() {
     let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
@@ -385,6 +423,84 @@ fn insert_state_arrows_match_the_tty_run() {
         let size = c.input.window.as_ref().expect("a tty case's window");
         run_in_window(c, size.width, size.height)
             .unwrap_or_else(|why| panic!("insert-tty/{}: {why}", c.id));
+    }
+}
+
+/// The same for the wrapped cases that K4's word wrap passes, which is all that nothing
+/// holds it to your Evil until K7. What's left is V6's: `gj` and `gk`, which die-vim doesn't
+/// bind yet, and the cursor after `<Esc>` at a wrapped row's start.
+#[test]
+fn wrapped_rows_without_gj_match_the_tty_run() {
+    let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
+    let fx = fixtures.iter().find(|f| f.topic == "wrapped").unwrap();
+    let held: Vec<_> = fx
+        .cases
+        .iter()
+        .filter(|c| !c.keys.contains("gj") && !c.keys.contains("gk"))
+        .filter(|c| c.id != "esc-at-a-wrapped-rows-start")
+        .collect();
+    assert_eq!(held.len(), 8);
+    for c in held {
+        let size = c.input.window.as_ref().expect("a tty case's window");
+        run_in_window(c, size.width, size.height)
+            .unwrap_or_else(|why| panic!("wrapped/{}: {why}", c.id));
+    }
+}
+
+/// Until K6 the kill ring stands in for the clipboard, and it does check something.
+#[test]
+fn a_kill_must_be_what_the_clipboard_should_have_been_sent() {
+    let (case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    assert_eq!(run_case(&case, run), Ok(()), "the committed case");
+
+    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    case.expected.clipboard.text = Some("something else".into());
+    let why = run_case(&case, run).expect_err("the newest kill is another text");
+    assert!(why.contains("the clipboard should hold"), "{why}");
+
+    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    case.expected.clipboard.writes[0] = "something else".into();
+    let why = run_case(&case, run).expect_err("the kill ring holds another text");
+    assert!(why.contains("should have been sent"), "{why}");
+
+    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    case.expected
+        .clipboard
+        .writes
+        .insert(0, "an older kill".into());
+    let why = run_case(&case, run).expect_err("the kill ring is one short");
+    assert!(why.contains("should have been sent"), "{why}");
+}
+
+/// Your Evil lists the registers the keys changed, so a register it doesn't list must not
+/// have changed in die-vim either.
+#[test]
+fn a_register_the_keys_didnt_change_must_stay_as_it_was() {
+    let (case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    assert_eq!(run_case(&case, run), Ok(()), "the committed case");
+
+    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    case.expected.registers.remove("-");
+    let why = run_case(&case, run).expect_err("dw did change -");
+    assert!(why.contains("your Evil left it"), "{why}");
+}
+
+/// A case about the clipboard itself can't pass until there's one to check.
+#[test]
+fn a_case_about_the_clipboard_waits_for_k6() {
+    for id in [
+        "clipboard-paste-from-other-app",
+        "clipboard-written-on-yank-and-delete",
+        "black-hole-skips-clipboard",
+        "plus-register-yank",
+        "plus-register-paste",
+    ] {
+        let (case, run) = fixture_case(&fixtures_dir(), "registers", id);
+        assert_eq!(
+            run_case(&case, run),
+            Err("no clipboard yet (K6)".into()),
+            "{id}"
+        );
     }
 }
 

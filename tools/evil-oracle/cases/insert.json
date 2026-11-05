@@ -39,5 +39,9 @@
   {"id": "tab-indent-relative-trailing-space-above", "vim": "indent: Vim's Tab goes to the next tab stop; Evil's goes to the next indent point of the line above (indent-relative)", "keys": "i<Tab><Esc>", "text": ["foo   ", "|x"]},
   {"id": "cr-esc-i-without-final-newline", "description": "Escape on the line a newline at the end of the text made, then insert there", "keys": "ifoo<CR><Esc>ibar<Esc>", "text": "|"},
   {"id": "o-esc-i-without-final-newline", "keys": "o<Esc>ix<Esc>", "text": "|a"},
-  {"id": "A-cr-esc-without-final-newline", "keys": "A<CR><Esc>", "text": "fo|o"}
+  {"id": "A-cr-esc-without-final-newline", "keys": "A<CR><Esc>", "text": "fo|o"},
+  {"id": "I-on-a-spaces-only-line", "vim": "Vim leaves \"a\\n    x\\nb\\n\", Evil \"a\\n   x \\nb\\n\"; Vim's cursor is at line 1 col 4, Evil's at line 1 col 3", "keys": "Ix<Esc>", "text": ["a", "    |", "b"]},
+  {"id": "I-on-a-spaces-only-line-from-its-start", "vim": "Vim leaves \"a\\n    x\\nb\\n\", Evil \"a\\n   x \\nb\\n\"; Vim's cursor is at line 1 col 4, Evil's at line 1 col 3", "keys": "Ix<Esc>", "text": ["a", "|    ", "b"]},
+  {"id": "I-on-a-tab-only-line", "vim": "Vim leaves \"a\\n\\tx\\nb\\n\", Evil \"a\\nx\\t\\nb\\n\"; Vim's cursor is at line 1 col 1, Evil's at line 1 col 0", "keys": "Ix<Esc>", "text": ["a", "\t|", "b"]},
+  {"id": "I-on-an-empty-line", "keys": "Ix<Esc>", "text": ["a", "|", "b"]}
  ]}
