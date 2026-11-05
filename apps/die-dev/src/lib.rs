@@ -7,6 +7,7 @@ use die_test_cap as _;
 
 pub mod theme;
 
+use die::app::Launch;
 use die::core::{FileInfo, LineNumbers, Registry, Settings, State, Wrap};
 use die::render::check;
 use die::render::driver::Config as Font;
@@ -29,13 +30,16 @@ pub struct Args {
     pub check: Option<Vec<String>>,
     /// The files named.
     pub files: Vec<PathBuf>,
+    /// What a launch of DIE.app was asked to do.
+    pub launch: Launch,
 }
 
-/// `die [--check a,b] [--] [file...]`.
+/// `die [--check a,b] [--handover socket] [--restart-after-frame] [--] [file...]`.
 pub fn parse_args(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Args, String> {
     let mut parsed = Args {
         check: None,
         files: vec![],
+        launch: Launch::default(),
     };
     let mut args = args.into_iter().map(Into::into);
     let mut only_files = false;
@@ -54,6 +58,11 @@ pub fn parse_args(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result
                 ));
             }
             parsed.check = Some(names);
+        } else if !only_files && name == "--handover" {
+            let socket = args.next().ok_or("--handover needs a socket")?;
+            parsed.launch.handover = Some(PathBuf::from(socket));
+        } else if !only_files && name == "--restart-after-frame" {
+            parsed.launch.restart_after_frame = true;
         } else if !only_files && name.starts_with('-') && name != "-" {
             return Err(format!("no option {name}"));
         } else {

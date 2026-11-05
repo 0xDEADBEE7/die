@@ -109,7 +109,7 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 crate = "die-core"
 name = "session"
 limit = 1000
-files = ["session.rs", "session/"]
+files = ["session.rs", "session/", "instance.rs", "sys/"]
 
 [[module]]
 crate = "die-core"

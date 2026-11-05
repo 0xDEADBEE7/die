@@ -2,7 +2,7 @@
 use die_test_cap as _;
 
 use xtask::util::{Result, root, task_dir};
-use xtask::{api, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, sources};
+use xtask::{api, app, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, sources};
 
 const USAGE: &str = "usage: cargo xtask <task>
 
@@ -18,6 +18,8 @@ const USAGE: &str = "usage: cargo xtask <task>
                        on Linux and a build script that calls cc fail the cross-check
   api-diff [--base R]  die-core's public API and die-vim's grammar, R -> working tree
                        (R defaults to the merge base with main)
+  app                  build ~/Applications/DIE.app, with the release build and the fonts;
+                       open -g launches it without taking focus
   fonts                fetch Ioskeley Mono Term into fonts/, checked by SHA-256
   clean-build [--keep] no C builders in each target's build graph but the allowlist's,
                        and a build from an empty environment with no C compiler or
@@ -58,6 +60,7 @@ fn dispatch(args: &[String]) -> Result {
         ["guards"] => guards::run(&root, &task_dir(&root, "guards")),
         ["api-diff"] => api::run(&root, None),
         ["api-diff", "--base", b] => api::run(&root, Some(b)),
+        ["app"] => app::run(&root),
         ["fonts"] => fonts::run_fonts(&root),
         ["clean-build"] => clean::run(&root, false),
         ["clean-build", "--keep"] => clean::run(&root, true),
