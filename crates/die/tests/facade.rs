@@ -6,6 +6,7 @@ use die_test_cap as _;
 
 use die::core::{Clock, Ctx, Registry, State, WindowPlacement};
 use die::{Config, start};
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -164,6 +165,59 @@ fn a_file_that_wont_open_is_logged_and_the_editor_starts() {
     let name = dir.display().to_string();
     let logged = ctx.messages.iter().any(|m| m.contains(&name));
     assert!(logged, "{:?}", ctx.messages);
+    let plain = format!("{name}: not a regular file");
+    assert_eq!(ctx.messages, [plain], "for a person, not Rust's Debug");
+}
+
+fn hook_opens_a_term() -> Config {
+    let mut config = Config::default();
+    config.core.startup = Some(Box::new(|ctx: &mut Ctx| {
+        let term = ctx.create_text("*term*", "");
+        ctx.open_window(term, 80, 24)?;
+        Ok(())
+    }));
+    config
+}
+
+#[test]
+fn with_no_files_a_window_the_startup_hook_opened_stays_on_screen() {
+    let ctx = start(hook_opens_a_term()).unwrap();
+    let b = ctx.focused_buffer().unwrap();
+    assert_eq!(ctx.buffer_name(b), Some("*term*"));
+    assert!(
+        ctx.find_buffer("*scratch*").is_none(),
+        "nothing asked for it"
+    );
+}
+
+#[test]
+fn a_file_named_takes_the_screen_from_the_startup_hooks_window() {
+    let d = Dir::new("hook");
+    let config = Config {
+        files: vec![d.file("a.txt", "named\n")],
+        ..hook_opens_a_term()
+    };
+    let mut ctx = start(config).unwrap();
+    assert_eq!(screen(&mut ctx)[0], "named", "as after `after-init-hook`");
+    assert!(ctx.find_buffer("*term*").is_some());
+}
+
+#[test]
+fn where_die_started_is_pwd_when_that_names_the_real_directory() {
+    let d = Dir::new("pwd");
+    let real = d.0.join("real");
+    let other = d.0.join("other");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    let link = d.0.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let from = |pwd: Option<&OsStr>| die::started_dir_from(pwd, real.clone());
+    assert_eq!(from(Some(link.as_os_str())), link, "through a symlink");
+    assert_eq!(from(Some(real.as_os_str())), real);
+    assert_eq!(from(None), real);
+    assert_eq!(from(Some(other.as_os_str())), real, "a stale $PWD");
+    assert_eq!(from(Some(OsStr::new("real"))), real, "a relative one");
+    assert_eq!(from(Some(OsStr::new("/no/such/dir"))), real);
 }
 
 #[test]

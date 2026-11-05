@@ -8,6 +8,7 @@ use die::core::{Ctx, LineNumbers, Rgb, Settings, WindowPlacement, Wrap};
 use die::render::font::{Draw, RangeRule};
 use die_dev::{Args, config, directory, parse_args, status_text};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 fn dir(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("die-dev-config-{name}-{}", std::process::id()));
@@ -33,7 +34,12 @@ fn screen(ctx: &mut Ctx, cols: usize, rows: usize) -> Vec<String> {
 }
 
 fn settings(file: &str) -> Settings {
-    let d = dir(&format!("settings-{file}"));
+    // Two tests ask about the same name at once, and each gets a directory of its own.
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let d = dir(&format!(
+        "settings-{}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     let path = d.join(file);
     std::fs::write(&path, "x\n").unwrap();
     let ctx = die::start(config(vec![path])).unwrap();
@@ -109,11 +115,20 @@ fn text_wraps_at_80_centered_everywhere_as_visual_fill_column_does() {
 #[test]
 fn line_numbers_are_on_for_the_modes_your_init_el_turns_them_on_for() {
     for file in [
-        "a.py", "a.c", "a.h", "a.cc", "a.cpp", "a.hpp", "a.el", "a.js", "a.html", "a.htm", "a.css",
+        // `set-auto-mode` under `emacs -Q` (30.2) for the modes `init.el` hooks, and those
+        // derived from them, as `derived-mode-p` has it. It folds case when nothing matches
+        // exactly.
+        "a.py", "a.pyi", "a.pyw", "a.c", "a.h", "a.i", "a.lex", "a.y", "a.C", "a.H", "a.cc",
+        "a.cpp", "a.cxx", "a.c++", "a.hh", "a.hpp", "a.hxx", "a.h++", "a.ii", "a.el", "a.js",
+        "a.jsx", "a.html", "a.htm", "a.xhtml", "a.shtml", "a.shtm", "a.css", "a.scss", "a.less",
+        "a.PY", "a.Html", "a.JS",
     ] {
         assert_eq!(settings(file).line_numbers, LineNumbers::Visual, "{file}");
     }
-    for file in ["a.txt", "a.md", "a.rs", "Makefile", "py", "a.PY.bak"] {
+    for file in [
+        "a.txt", "a.md", "a.rs", "Makefile", "py", "a.PY.bak", "a.mjs", "a.cjs", "a.json", "a.ts",
+        "a.xml", "a.xht", "a.sass", "a.inl", "a.m",
+    ] {
         assert_eq!(settings(file).line_numbers, LineNumbers::Off, "{file}");
     }
 }
@@ -193,4 +208,45 @@ fn arguments_are_files_and_checks() {
     assert!(parse(&["--check", "nope"]).unwrap_err().contains("nope"));
     assert!(parse(&["--wat"]).unwrap_err().contains("--wat"));
     assert_eq!(parse(&["--", "--wat"]), Ok(args(None, &["--wat"])));
+    assert!(parse(&["-h"]).unwrap_err().contains("-h"));
+    assert!(parse(&["-x", "a.txt"]).unwrap_err().contains("-x"));
+    assert_eq!(parse(&["-"]), Ok(args(None, &["-"])), "a file named -");
+    assert_eq!(parse(&["--", "-h"]), Ok(args(None, &["-h"])));
+}
+
+/// Started through a symlink: the status line and a relative file keep the path you came
+/// by, as Emacs's `default-directory` does. In a child, which can have its own directory.
+#[test]
+fn starting_through_a_symlink_shows_the_path_you_came_by() {
+    if std::env::var_os("DIE_SYMLINK_CHILD").is_some() {
+        let link = std::env::var_os("PWD").map(PathBuf::from).unwrap();
+        let shown = format!(" {}/", directory(&link, std::env::home_dir().as_deref()));
+        let mut ctx = die::start(config(vec![])).unwrap();
+        assert_eq!(screen(&mut ctx, 300, 6)[4], shown, "a buffer with no file");
+        let mut ctx = die::start(config(vec![PathBuf::from("f.txt")])).unwrap();
+        assert_eq!(screen(&mut ctx, 300, 6)[4], shown, "a relative file");
+        let file = ctx.file(ctx.focused_buffer().unwrap()).unwrap();
+        assert_eq!(file.path, link.join("f.txt"));
+        return;
+    }
+    let d = dir("symlink");
+    let real = d.join("real");
+    let link = d.join("link");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("f.txt"), "x\n").unwrap();
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "starting_through_a_symlink_shows_the_path_you_came_by",
+        ])
+        .current_dir(&link)
+        .env("PWD", &link)
+        .env("DIE_SYMLINK_CHILD", "1")
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&d).unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}");
 }

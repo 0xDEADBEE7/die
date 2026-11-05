@@ -50,7 +50,7 @@ pub mod appkit {
         }
 
         /// Never runs.
-        pub fn read_next_frame(&self) {
+        pub fn read_next_frame(&self) -> Result<(), String> {
             match self.0 {}
         }
 
