@@ -189,5 +189,6 @@
   {"id": "2di-paren-string-then-goes-to-the-next-pairs", "vim": "Vim leaves \"f(\\\"ab\\\") (c) (d)\\n\", Evil \"f(\\\"ab\\\") (c) ()\\n\"; Vim's cursor is at line 0 col 4, Evil's at line 0 col 13; Vim's registers differ", "keys": "2di(", "text": ["f(\"a|b\") (c) (d)"]},
   {"id": "di-squote-before-a-pair-under-a-pair-on-the-first-line", "vim": "Vim leaves \"\\\"'a'\\nb '' d\\ne\\\"\\n\", Evil \"\\\"\\\"\\n\"; Vim's cursor is at line 1 col 3, Evil's at line 0 col 1; Vim's registers differ", "keys": "di'", "text": ["\"'a'", "b| 'c' d", "e\""]},
   {"id": "di-squote-on-a-dquote-with-nothing-after", "keys": "di'", "text": ["|\"ab\""]},
-  {"id": "di-paren-string-directly-in-the-pair", "keys": "di(", "text": ["f(\"a|b\")"]}
+  {"id": "di-paren-string-directly-in-the-pair", "keys": "di(", "text": ["f(\"a|b\")"]},
+  {"id": "da-squote-whole-string-keeps-the-space-before", "vim": "Vim leaves \"x \\\"a\\nb\\\"y\\n\", Evil \"x y\\n\"; Vim's cursor is at line 1 col 0, Evil's at line 0 col 2; Vim's registers differ", "keys": "da'", "text": ["x \"a", "|b\"y"]}
  ]}

@@ -447,7 +447,7 @@ fn j_with_a_huge_count_on_a_long_text_is_quick() {
 }
 
 /// As for `p` and a replayed insert (m0-log's call 46): a count that would make a line past
-/// the cap fails and changes nothing. With no count it just joins, whatever the size.
+/// the cap fails and changes nothing. Joining two lines goes ahead, whatever the size.
 #[test]
 fn a_count_on_j_that_would_make_too_long_a_line_fails() {
     let start = numbered_lines(40_000);
@@ -462,7 +462,9 @@ fn a_count_on_j_that_would_make_too_long_a_line_fails() {
     assert_eq!(ctx.text(b).unwrap().cursor(w), Some(0));
 
     let big = "x".repeat(2 << 20);
-    let (t, _, messages, _) = run(&format!("{big}\n{big}\n"), 0, "J");
-    assert!(t == format!("{big} {big}\n"), "no count: J joins them");
-    assert!(messages.is_empty(), "{messages:?}");
+    for keys in ["J", "2J"] {
+        let (t, _, messages, _) = run(&format!("{big}\n{big}\n"), 0, keys);
+        assert!(t == format!("{big} {big}\n"), "{keys} joins them");
+        assert!(messages.is_empty(), "{keys}: {messages:?}");
+    }
 }
