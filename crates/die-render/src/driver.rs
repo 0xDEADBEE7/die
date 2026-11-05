@@ -166,11 +166,10 @@ impl Renderer {
         let pinned = rule.and_then(|r| self.pinned[r]);
         let styled = font::styled_face(bold, italic);
         let chain = font::chain(pinned, styled);
-        let has_all = |&&i: &&usize| text.chars().all(|c| self.faces[i].glyph(c).is_some());
-        let chosen = chain.iter().find(has_all);
+        let has = |i: usize, c: char| self.faces[i].glyph(c).is_some();
         let fallback_face;
-        let (face, fallback) = match chosen {
-            Some(&i) => (&self.faces[i], i >= PRIMARY_FACES),
+        let (face, fallback) = match font::covering(&chain, &text, has) {
+            Some(i) => (&self.faces[i], i >= PRIMARY_FACES),
             None => {
                 fallback_face = self.faces[styled].fallback_for(&text);
                 (&fallback_face, true)

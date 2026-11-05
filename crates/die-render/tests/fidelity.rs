@@ -357,6 +357,11 @@ fn wide_characters_from_fallback_faces_take_two_cells_and_stay_in_them() {
             "col {col}: {x0}..{x1}"
         );
         assert!(y1 <= CH, "col {col}: down to {y0}..{y1}");
+        let (left, right) = (x0 - col * CW, (col + 2) * CW - x1);
+        assert!(
+            left.abs_diff(right) <= 2,
+            "col {col} is centered: {left} and {right}"
+        );
         assert!(x1 - x0 > CW, "col {col} uses both cells: {x0}..{x1}");
     }
 }
@@ -515,6 +520,43 @@ fn a_face_the_rules_pin_goes_first_and_one_without_the_glyph_falls_through() {
     assert!(
         got != draw(&mut plain, &roman),
         "and it isn't the regular A"
+    );
+}
+
+#[test]
+fn a_face_the_rules_pin_is_centered_in_its_cell_as_a_fallback_is() {
+    let avenir = PathBuf::from("/System/Library/Fonts/Avenir.ttc");
+    if !avenir.exists() {
+        eprintln!("skipped: no Avenir here");
+        return;
+    }
+    let mut config = Config::term(16.0, 2.0);
+    config.rules = vec![RangeRule::new('i'..='i', Draw::File(avenir))];
+    let Some(mut r) = renderer(&config) else {
+        return;
+    };
+    let mut s = page(3, 1);
+    line(&mut s, 0, 1, "i");
+    let img = draw(&mut r, &s);
+    let (x0, _, x1, _) = cell_ink(&img, 0, 1, 1);
+    let (left, right) = (x0 - CW, 2 * CW - x1);
+    assert!(left.abs_diff(right) <= 2, "{left} and {right}");
+    assert!(x1 - x0 < CW / 2, "and it's Avenir's narrow i: {x0}..{x1}");
+}
+
+#[test]
+fn a_box_glyph_with_a_mark_comes_from_the_font_since_the_renderer_has_no_marks() {
+    let Some(mut r) = term() else { return };
+    let img = with_and_without(&mut r, "─\u{301}", "─");
+    let (_, y0, _, _) = cell_ink(&img, 0, 4, 1);
+    assert!(
+        ink_in(&img, CW, 0, 2 * CW, y0) > 0,
+        "the mark, above the line"
+    );
+    assert_eq!(
+        ink_in(&img, 4 * CW, 0, 5 * CW, y0),
+        0,
+        "and none on the plain line"
     );
 }
 
