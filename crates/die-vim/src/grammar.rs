@@ -138,6 +138,9 @@ pub struct Target {
     /// `w` and `W`: if a `d` ends up taking whole lines, the cursor goes to the first
     /// non-blank, not to the column it started in.
     pub no_column: bool,
+    /// A search can land on the empty line after a final newline, as Evil's does; no other
+    /// motion takes the cursor there.
+    pub to_last_line: bool,
 }
 
 impl Target {
@@ -149,6 +152,7 @@ impl Target {
             short: None,
             kind: None,
             no_column: false,
+            to_last_line: false,
         }
     }
     /// `pos`, signalling `err` but keeping the goal column. For a motion that fell short
@@ -256,7 +260,8 @@ pub fn run_motion(
         }
     };
     // From the empty line after a final newline, a motion along that line stays on it.
-    let stays = on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head);
+    let stays = (on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head))
+        || (to.to_last_line && on_last_empty_line(t, to.pos));
     let pos = if stays || (visual && !on_last_empty_line(t, to.pos)) {
         to.pos
     } else {
