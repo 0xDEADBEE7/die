@@ -1,7 +1,8 @@
 //! K9: the calls die-render drives core through, headless. Test plan: `workspace.rs`, and here:
 //! - `handle` keeps its order, with keys, a resize and the pointer running in the turn they came.
 //! - `run_ready` says whether a new frame is needed, never waits for a job, and stops at its turn
-//!   limit with one message, and `next_deadline` is then zero so the host comes back.
+//!   limit, with one message if only queued calls took those turns, and `next_deadline` is then
+//!   zero so the host comes back.
 //! - `next_deadline`: None when nothing's due, the time left, and zero when overdue or ready.
 //! - `scene` draws the split tree at the frame's size, the same as `compose` with `placements`.
 //! - `Input::Focus` hollows every cursor, and a surface hears it.
@@ -19,6 +20,8 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 const MS: Duration = Duration::from_millis(1);
+/// What `run_ready` logs when queued calls alone reach its limit.
+const STOPPED: &str = "so the frame went first";
 
 fn key(c: char) -> Input {
     Input::Key(parse_keys(&c.to_string()).unwrap().pop().unwrap())
@@ -151,15 +154,48 @@ fn a_call_that_keeps_queueing_another_stops_for_the_frame() {
     c.defer(again);
     assert!(c.run_ready());
     assert_eq!(c.next_deadline(), Some(Duration::ZERO), "there's more");
-    let said = |c: &Ctx| {
-        c.messages
-            .iter()
-            .filter(|m| m.contains("kept queueing"))
-            .count()
-    };
+    let said = |c: &Ctx| c.messages.iter().filter(|m| m.contains(STOPPED)).count();
     assert_eq!(said(&c), 1);
     assert!(c.run_ready());
     assert_eq!(said(&c), 1, "once");
+}
+
+#[test]
+fn a_long_paste_or_macro_yields_for_the_frame_and_says_nothing() {
+    let said = |c: &Ctx| c.messages.iter().any(|m| m.contains(STOPPED));
+    let n = TURN_LIMIT + 5;
+
+    let (mut c, _, _, _) = world(40, 10);
+    for _ in 0..n {
+        c.handle(key('a'));
+    }
+    assert!(c.run_ready());
+    assert!(!said(&c), "typed keys");
+    assert_eq!(c.next_deadline(), Some(Duration::ZERO), "there's more");
+    assert!(c.run_ready());
+    assert_eq!(c.next_deadline(), None, "and it's done");
+    assert!(!said(&c));
+
+    let (mut c, _, _, _) = world(40, 10);
+    c.feed_keys(&"a".repeat(n)).unwrap();
+    assert!(c.run_ready());
+    assert!(!said(&c), "fed keys");
+    assert_eq!(c.next_deadline(), Some(Duration::ZERO), "there's more");
+}
+
+#[test]
+fn a_call_that_starves_waiting_keys_is_reported() {
+    fn again(ctx: &mut Ctx) -> Result {
+        ctx.defer(again);
+        Ok(())
+    }
+    let (mut c, _, _, _) = world(40, 10);
+    c.defer(again);
+    c.handle(key('a'));
+    assert!(c.run_ready());
+    let said = c.messages.iter().filter(|m| m.contains(STOPPED)).count();
+    assert_eq!(said, 1);
+    assert_eq!(c.next_deadline(), Some(Duration::ZERO));
 }
 
 #[test]
@@ -383,6 +419,40 @@ fn the_focused_surface_hears_the_hosts_focus_once() {
     c.handle(Input::Focus(true));
     c.run_ready();
     assert_eq!(*log.borrow(), [Event::Focus(false), Event::Focus(true)]);
+}
+
+#[test]
+fn a_surface_hears_nothing_while_the_app_is_unfocused() {
+    // It gains the window's focus while DIE's is away, and hears of it once DIE has it back.
+    let (mut c, _, a, _) = world(40, 10);
+    let log: Rc<RefCell<Vec<Event>>> = Rc::default();
+    let s = c.create_surface("s", Plain(log.clone()));
+    let b = c.split_window(a, Side::Right).unwrap();
+    c.focus(b);
+    c.show(s, ShowIn::Current).unwrap();
+    c.focus(a);
+    c.run_ready();
+    log.borrow_mut().clear();
+    c.handle(Input::Focus(false));
+    c.run_ready();
+    c.focus(b);
+    c.run_ready();
+    assert_eq!(*log.borrow(), [], "DIE doesn't have the focus to give");
+    c.handle(Input::Focus(true));
+    c.run_ready();
+    assert_eq!(*log.borrow(), [Event::Focus(true)]);
+
+    // It loses the window's focus while DIE's is away. It heard that already.
+    log.borrow_mut().clear();
+    c.handle(Input::Focus(false));
+    c.run_ready();
+    c.focus(a);
+    c.run_ready();
+    assert_eq!(*log.borrow(), [Event::Focus(false)], "once");
+    log.borrow_mut().clear();
+    c.handle(Input::Focus(true));
+    c.run_ready();
+    assert_eq!(*log.borrow(), [], "the text window has it now");
 }
 
 // ------------------------------------------------------------------ cells

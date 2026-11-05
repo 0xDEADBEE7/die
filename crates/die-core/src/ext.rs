@@ -332,6 +332,8 @@ pub struct Ctx {
     pub(crate) tick: u64,
     /// DIE's OS window has the keyboard focus (K9).
     pub(crate) app_focused: bool,
+    /// Whether a turn has taken input since [`Ctx::run_ready`] began.
+    pub(crate) input_ran: bool,
     /// What the last composed frame's cells showed.
     pub(crate) drawn: Drawn,
     /// `run_ready` hit its turn limit and has said so.
@@ -489,6 +491,7 @@ impl Ctx {
             tree: Tree::default(),
             tick: 0,
             app_focused: true,
+            input_ran: false,
             drawn: Drawn::default(),
             over_limit: false,
             files: Default::default(),

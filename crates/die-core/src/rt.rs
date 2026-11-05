@@ -459,6 +459,7 @@ impl Ctx {
         let Some((input, src)) = next else {
             return false;
         };
+        self.input_ran = true;
         if let Input::Key(ev) = input {
             self.dispatch(ev, src);
             self.restart_idle();
