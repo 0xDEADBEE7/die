@@ -1,6 +1,0 @@
-(let ((nw 0) (ex nil))
-  (dotimes (c #x110000)
-    (when (and (aref (char-category-set c) ?^) (not (eq (char-syntax c) ?w)))
-      (setq nw (1+ nw)) (when (< (length ex) 20) (push (format "%X:%c" c (char-syntax c)) ex))))
-  (princ (format "marks without word syntax %d %S\n" nw (reverse ex))))
-(princ (format "syntax 0301=%c 0483=%c 093E=%c 20D0=%c\n" (char-syntax #x301) (char-syntax #x483) (char-syntax #x93e) (char-syntax #x20d0)))

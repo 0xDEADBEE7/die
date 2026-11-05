@@ -1,7 +1,0 @@
-[package]
-name = "a"
-version = "0.0.0"
-edition = "2024"
-build = "build.rs"
-[lints]
-workspace = true

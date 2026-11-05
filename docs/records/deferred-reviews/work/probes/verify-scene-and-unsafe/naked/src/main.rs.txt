@@ -1,7 +1,0 @@
-#[unsafe(naked)]
-pub extern "C" fn f(_x: u64) -> u64 {
-    core::arch::naked_asm!("add x0, x0, #1", "ret")
-}
-fn main() {
-    println!("{}", f(41));
-}

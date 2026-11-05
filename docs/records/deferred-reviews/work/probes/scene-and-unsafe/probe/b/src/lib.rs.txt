@@ -1,3 +1,0 @@
-#![deny(unsafe_code)]
-macro_rules! lvl { ($l:ident, $($i:item)*) => { #[allow($l)] mod m { $($i)* } } }
-lvl!(unsafe_code, pub fn read(p: *const u8) -> u8 { unsafe { *p } });

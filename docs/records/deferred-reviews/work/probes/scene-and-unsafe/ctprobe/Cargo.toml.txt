@@ -1,8 +1,0 @@
-[package]
-name = "ctprobe"
-version = "0.0.0"
-edition = "2024"
-[dependencies]
-objc2-core-text = { version = "=0.3.2", default-features = false, features = ["std", "objc2-core-graphics", "CTFont", "CTFontDescriptor", "CTFontManager", "CTFontTraits"] }
-objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFArray", "CFBase", "CFCGTypes", "CFString", "CFURL"] }
-objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std"] }

@@ -1,4 +1,0 @@
-{"topic": "noeol3", "run": "tty", "defaults": {"window": {"width": 40, "height": 10}},
- "cases": [
-  {"id": "gj-noeol", "keys": "gj", "text": "|short"}
- ]}
