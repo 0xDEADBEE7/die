@@ -368,7 +368,7 @@ impl Faces {
     }
 }
 
-impl crate::ctx::Ctx {
+impl crate::ext::Ctx {
     /// Use `theme` from the next frame on. Faces it styles that no one
     /// declared, typos most likely, are reported to `*messages*`.
     pub fn set_theme(&mut self, theme: Theme) {

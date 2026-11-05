@@ -1,15 +1,16 @@
-//! The workspace and `Ctx` (C1): extensions, buffers, windows, checkout (C2), queued calls (C3),
-//! subscription handles (C4), commands, keymap dispatch, the prefix argument, `feed_keys`,
-//! key observers and prompts.
+//! The extension machinery (contract §2, §4, §8, §10; C1, C2, C9): the traits extensions
+//! implement, the registry they declare into, `Ctx` and its startup, checkout, modes and the guard
+//! around every call into extension code. Buffers and windows are here until K6 moves them.
+use crate::dispatch::*;
 use crate::error::*;
 use crate::faces::{Faces, Style};
 use crate::ids::*;
 use crate::keymap::*;
 use crate::keys::*;
+use crate::rt::*;
 use crate::text::*;
 use slotmap::SlotMap;
 use std::any::{Any, TypeId};
-use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -18,7 +19,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 pub type ExtIdx = usize;
-const CORE: ExtIdx = usize::MAX;
+pub(crate) const CORE: ExtIdx = usize::MAX;
 
 // ------------------------------------------------------------------ traits
 
@@ -74,43 +75,10 @@ pub trait Surface: Any {
     }
 }
 
-// ------------------------------------------------------------------ commands and registry
-
-#[derive(Clone, Default, Debug)]
-pub struct Args {
-    pub count: Option<usize>,
-    pub register: Option<char>,
-    pub text: Option<String>,
-    /// The key sequence that invoked the command (Emacs's last-command-event).
-    pub keys: Vec<KeyEvent>,
-    pub window: Option<WindowId>,
-    pub buffer: Option<BufferId>,
-    /// For a Hide's reveal command: the decoration being revealed.
-    pub deco: Option<DecorationId>,
-}
-
-impl Args {
-    /// The text typed by the last key, for `<char>` bindings.
-    pub fn typed(&self) -> Option<String> {
-        self.keys.last().and_then(KeyEvent::printable)
-    }
-    pub fn char(&self) -> Option<char> {
-        self.typed().and_then(|s| s.chars().next())
-    }
-}
-
-pub type CommandFn = Rc<dyn Fn(&mut Ctx, &Args) -> Result>;
-
-struct Command {
-    doc: &'static str,
-    owner: ExtIdx,
-    f: CommandFn,
-}
-
 pub struct ModeSpec {
     pub name: &'static str,
     type_id: TypeId,
-    owner: ExtIdx,
+    pub(crate) owner: ExtIdx,
     pub initial_state: Option<State>,
     pub keymap: Keymap,
     new: Rc<dyn Fn() -> Box<dyn Mode>>,
@@ -208,79 +176,6 @@ impl Registry {
     }
 }
 
-// ------------------------------------------------------------------ subscriptions (C4)
-
-struct SubInner {
-    alive: Cell<bool>,
-    detached: Cell<bool>,
-    ext: ExtIdx,
-}
-
-/// A subscription handle. Dropping it cancels the subscription; `detach` ties it to the extension.
-#[must_use = "dropping a Sub cancels it; call .detach() to keep it for the extension's lifetime"]
-pub struct Sub(Rc<SubInner>);
-
-impl Sub {
-    pub fn detach(self) {
-        self.0.detached.set(true);
-    }
-    pub fn is_active(&self) -> bool {
-        self.0.alive.get()
-    }
-}
-
-impl Drop for Sub {
-    fn drop(&mut self) {
-        if !self.0.detached.get() {
-            self.0.alive.set(false);
-        }
-    }
-}
-
-type Callback = Box<dyn FnOnce(&mut Ctx) -> Result>;
-type JobDone = Box<dyn FnOnce(&mut Ctx, Box<dyn Any + Send>) -> Result>;
-
-enum SubKind {
-    Timer {
-        at: Cell<Duration>,
-        every: Option<Duration>,
-        fired: Cell<bool>,
-        f: Rc<RefCell<dyn FnMut(&mut Ctx) -> Result>>,
-    },
-    Killed(Rc<RefCell<dyn FnMut(&mut Ctx, BufferId) -> Result>>),
-    Job {
-        id: u64,
-        f: RefCell<Option<JobDone>>,
-    },
-    Keys(RefCell<Box<dyn FnMut(&KeyEvent, KeySource)>>),
-}
-
-struct SubEntry {
-    inner: Rc<SubInner>,
-    kind: SubKind,
-}
-
-/// A call that receives Ctx, waiting for the top of the loop (C3).
-struct Queued {
-    ext: ExtIdx,
-    alive: Option<Rc<SubInner>>,
-    f: Callback,
-}
-
-// ------------------------------------------------------------------ workspace
-
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-pub struct Prefix {
-    pub count: Option<usize>,
-    pub register: Option<char>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeySource {
-    Typed,
-    Fed,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegKind {
     Char,
@@ -294,7 +189,7 @@ pub struct Register {
     pub text: String,
 }
 
-struct ExtSlot {
+pub(crate) struct ExtSlot {
     name: &'static str,
     type_id: TypeId,
     obj: Option<Box<dyn Extension>>,
@@ -311,8 +206,8 @@ pub(crate) enum Content {
 }
 
 pub(crate) struct ModeSlot {
-    type_id: TypeId,
-    spec: usize,
+    pub(crate) type_id: TypeId,
+    pub(crate) spec: usize,
     pub(crate) obj: Option<Box<dyn Mode>>,
 }
 
@@ -330,43 +225,35 @@ pub(crate) struct Window {
     pub rows: usize,
 }
 
-struct Prompt {
-    label: String,
-    text: String,
-    ext: ExtIdx,
-    prev: State,
-    f: Box<dyn FnOnce(&mut Ctx, Option<String>) -> Result>,
-}
-
 pub struct Ctx {
-    exts: Vec<ExtSlot>,
-    commands: HashMap<String, Command>,
-    global: Keymap,
-    kinds: HashMap<&'static str, Keymap>,
-    modes: Vec<ModeSpec>,
-    named: HashMap<String, Keymap>,
+    pub(crate) exts: Vec<ExtSlot>,
+    pub(crate) commands: HashMap<String, Command>,
+    pub(crate) global: Keymap,
+    pub(crate) kinds: HashMap<&'static str, Keymap>,
+    pub(crate) modes: Vec<ModeSpec>,
+    pub(crate) named: HashMap<String, Keymap>,
     pub(crate) buffers: SlotMap<BufferId, Buffer>,
     pub(crate) windows: SlotMap<WindowId, Window>,
-    focused: Option<WindowId>,
-    ext_stack: Vec<ExtIdx>,
-    queue: VecDeque<Queued>,
-    subs: Vec<SubEntry>,
-    next_id: u64,
-    jobs_tx: mpsc::Sender<(u64, Box<dyn Any + Send>)>,
-    jobs_rx: mpsc::Receiver<(u64, Box<dyn Any + Send>)>,
-    outstanding: usize,
-    typed: VecDeque<KeyEvent>,
-    fed: VecDeque<KeyEvent>,
-    pending: Vec<KeyEvent>,
-    swallow: Vec<Key>,
-    leader: Chord,
-    prefix: Prefix,
-    prompt: Option<Prompt>,
-    clock: Duration,
-    cmd_seq: u64,
+    pub(crate) focused: Option<WindowId>,
+    pub(crate) ext_stack: Vec<ExtIdx>,
+    pub(crate) queue: VecDeque<Queued>,
+    pub(crate) subs: Vec<SubEntry>,
+    pub(crate) next_id: u64,
+    pub(crate) jobs_tx: mpsc::Sender<(u64, Box<dyn Any + Send>)>,
+    pub(crate) jobs_rx: mpsc::Receiver<(u64, Box<dyn Any + Send>)>,
+    pub(crate) outstanding: usize,
+    pub(crate) typed: VecDeque<KeyEvent>,
+    pub(crate) fed: VecDeque<KeyEvent>,
+    pub(crate) pending: Vec<KeyEvent>,
+    pub(crate) swallow: Vec<Key>,
+    pub(crate) leader: Chord,
+    pub(crate) prefix: Prefix,
+    pub(crate) prompt: Option<Prompt>,
+    pub(crate) clock: Duration,
+    pub(crate) cmd_seq: u64,
     /// The window the running command acts for. With none, the focused window acts.
-    cur_window: Option<WindowId>,
-    registers: HashMap<char, Register>,
+    pub(crate) cur_window: Option<WindowId>,
+    pub(crate) registers: HashMap<char, Register>,
     pub(crate) files: crate::files::Files,
     pub messages: Vec<String>,
     pub(crate) faces: Faces,
@@ -501,10 +388,10 @@ impl Ctx {
         out
     }
 
-    fn ext_name(&self, i: ExtIdx) -> &'static str {
+    pub(crate) fn ext_name(&self, i: ExtIdx) -> &'static str {
         self.exts.get(i).map_or("core", |s| s.name)
     }
-    fn cur_ext(&self) -> ExtIdx {
+    pub(crate) fn cur_ext(&self) -> ExtIdx {
         self.ext_stack.last().copied().unwrap_or(CORE)
     }
     /// How many extension calls are on the stack. Queued calls run at depth 1 (C3).
@@ -518,7 +405,11 @@ impl Ctx {
     }
 
     /// The one place core calls extension code: attributes panics (C9).
-    fn guarded<R>(&mut self, ext: ExtIdx, f: impl FnOnce(&mut Ctx) -> Result<R>) -> Result<R> {
+    pub(crate) fn guarded<R>(
+        &mut self,
+        ext: ExtIdx,
+        f: impl FnOnce(&mut Ctx) -> Result<R>,
+    ) -> Result<R> {
         self.ext_stack.push(ext);
         let r = catch_unwind(AssertUnwindSafe(|| f(self)));
         self.ext_stack.pop();
@@ -530,7 +421,7 @@ impl Ctx {
             Err(Error::Panicked { ext: name, msg })
         })
     }
-    fn report(&mut self, r: Result) {
+    pub(crate) fn report(&mut self, r: Result) {
         if let Err(e) = r {
             self.messages.push(format!("{e:?}"));
         }
@@ -556,7 +447,7 @@ impl Ctx {
             )
         })
     }
-    fn with_ext_idx<R>(
+    pub(crate) fn with_ext_idx<R>(
         &mut self,
         i: ExtIdx,
         f: impl FnOnce(&mut dyn Extension, &mut Ctx) -> R,
@@ -583,7 +474,7 @@ impl Ctx {
             f((m as &mut dyn Any).downcast_mut::<M>().unwrap(), ctx)
         })
     }
-    fn checkout_mode<R>(
+    pub(crate) fn checkout_mode<R>(
         &mut self,
         buf: BufferId,
         tid: TypeId,
@@ -624,7 +515,7 @@ impl Ctx {
             f((s as &mut dyn Any).downcast_mut::<S>().unwrap(), ctx)
         })
     }
-    fn checkout_surface<R>(
+    pub(crate) fn checkout_surface<R>(
         &mut self,
         buf: BufferId,
         f: impl FnOnce(&mut dyn Surface, &mut Ctx) -> R,
@@ -867,489 +758,12 @@ impl Ctx {
         Ok(())
     }
 
-    // -------------------------------------------------------------- modal state, prefix, registers
+    // -------------------------------------------------------------- registers
 
-    /// The focused buffer's modal state, or `Normal` with nothing focused. Modal state is per
-    /// buffer: use `state_of` for a command's `Args` buffer, which may not be the focused one.
-    pub fn state(&self) -> State {
-        self.focused_buffer()
-            .map_or(State::Normal, |b| self.state_of(b))
-    }
-    /// Set the focused buffer's modal state.
-    pub fn set_state(&mut self, s: State) {
-        if let Some(b) = self.focused_buffer() {
-            self.set_state_of(b, s);
-        }
-    }
-    /// `buf`'s modal state. A dead buffer reads as `Normal`.
-    pub fn state_of(&self, buf: BufferId) -> State {
-        self.buffers.get(buf).map_or(State::Normal, |b| b.state)
-    }
-    /// Set `buf`'s modal state. A dead buffer is ignored.
-    pub fn set_state_of(&mut self, buf: BufferId, s: State) {
-        if let Some(b) = self.buffers.get_mut(buf) {
-            b.state = s;
-        }
-    }
-    pub fn prefix(&self) -> Prefix {
-        self.prefix
-    }
-    /// die-vim's digit and `"x` commands set this; the next command receives it in `Args` (D9).
-    pub fn set_prefix(&mut self, p: Prefix) {
-        self.prefix = p;
-    }
     pub fn register(&self, c: char) -> Option<&Register> {
         self.registers.get(&c)
     }
     pub fn set_register(&mut self, c: char, r: Register) {
         self.registers.insert(c, r);
-    }
-
-    // -------------------------------------------------------------- commands
-
-    /// Run a command now. The one explicit way to nest extension calls (C3). It acts for
-    /// `args.window`, or with none, for whichever window its caller acts for (contract §9).
-    pub fn run(&mut self, name: &str, args: &Args) -> Result {
-        let (f, owner) = {
-            let c = self
-                .commands
-                .get(name)
-                .ok_or_else(|| Error::NoCommand(name.into()))?;
-            (c.f.clone(), c.owner)
-        };
-        let outer = self.cur_window;
-        self.cur_window = args.window.or(outer);
-        let r = self.guarded(owner, |ctx| f(ctx, args));
-        self.cur_window = outer;
-        r
-    }
-
-    /// Run a Hide's reveal policy for every Hide covering `pos`. Returns whether `pos` is visible.
-    pub fn reveal(&mut self, buf: BufferId, pos: usize) -> Result<bool> {
-        let hides: Vec<(DecorationId, Reveal)> = self
-            .text(buf)?
-            .decorations_at(pos)
-            .filter_map(|(id, d)| match &d.deco {
-                Deco::Hide { reveal, .. } => Some((id, reveal.clone())),
-                _ => None,
-            })
-            .collect();
-        for (id, how) in hides {
-            match how {
-                Reveal::Never => {}
-                Reveal::Remove => {
-                    self.text_mut(buf)?.undecorate(id);
-                }
-                Reveal::Command(name) => {
-                    let args = Args {
-                        deco: Some(id),
-                        buffer: Some(buf),
-                        window: self.focused,
-                        ..Default::default()
-                    };
-                    self.run(&name, &args)?;
-                }
-            }
-        }
-        Ok(self.text(buf)?.is_stop(pos))
-    }
-
-    // -------------------------------------------------------------- async (C3, C4)
-
-    fn defer_as(&mut self, ext: ExtIdx, f: impl FnOnce(&mut Ctx) -> Result + 'static) {
-        self.queue.push_back(Queued {
-            ext,
-            alive: None,
-            f: Box::new(f),
-        });
-    }
-    /// Queue a call for the top of the loop.
-    pub fn defer(&mut self, f: impl FnOnce(&mut Ctx) -> Result + 'static) {
-        self.defer_as(self.cur_ext(), f);
-    }
-    fn new_sub(&mut self, kind: SubKind) -> Sub {
-        let inner = Rc::new(SubInner {
-            alive: Cell::new(true),
-            detached: Cell::new(false),
-            ext: self.cur_ext(),
-        });
-        self.subs.push(SubEntry {
-            inner: inner.clone(),
-            kind,
-        });
-        Sub(inner)
-    }
-    pub fn after(&mut self, d: Duration, f: impl FnOnce(&mut Ctx) -> Result + 'static) -> Sub {
-        let mut f = Some(f);
-        self.timer(d, None, move |ctx| f.take().map_or(Ok(()), |f| f(ctx)))
-    }
-    pub fn every(&mut self, d: Duration, f: impl FnMut(&mut Ctx) -> Result + 'static) -> Sub {
-        self.timer(d, Some(d), f)
-    }
-    fn timer(
-        &mut self,
-        d: Duration,
-        every: Option<Duration>,
-        f: impl FnMut(&mut Ctx) -> Result + 'static,
-    ) -> Sub {
-        let at = Cell::new(self.clock + d);
-        self.new_sub(SubKind::Timer {
-            at,
-            every,
-            fired: Cell::new(false),
-            f: Rc::new(RefCell::new(f)),
-        })
-    }
-    pub fn on_buffer_killed(
-        &mut self,
-        f: impl FnMut(&mut Ctx, BufferId) -> Result + 'static,
-    ) -> Sub {
-        self.new_sub(SubKind::Killed(Rc::new(RefCell::new(f))))
-    }
-    /// `work` runs on a thread; `done` runs on the main thread from the top of the loop.
-    pub fn spawn<T: Send + 'static>(
-        &mut self,
-        work: impl FnOnce() -> T + Send + 'static,
-        done: impl FnOnce(&mut Ctx, T) -> Result + 'static,
-    ) -> Sub {
-        self.next_id += 1;
-        let id = self.next_id;
-        let f: JobDone = Box::new(move |ctx, v| done(ctx, *v.downcast::<T>().expect("job type")));
-        let sub = self.new_sub(SubKind::Job {
-            id,
-            f: RefCell::new(Some(f)),
-        });
-        let tx = self.jobs_tx.clone();
-        self.outstanding += 1;
-        std::thread::spawn(move || {
-            let v = work();
-            let _ = tx.send((id, Box::new(v)));
-        });
-        sub
-    }
-    /// See every key before dispatch. No Ctx, so it runs synchronously (C3). For `q` recording.
-    pub fn observe_keys(&mut self, f: impl FnMut(&KeyEvent, KeySource) + 'static) -> Sub {
-        self.new_sub(SubKind::Keys(RefCell::new(Box::new(f))))
-    }
-    /// A command-line prompt. `f` runs from the top of the loop with the answer, or None on cancel.
-    pub fn prompt(
-        &mut self,
-        label: &str,
-        f: impl FnOnce(&mut Ctx, Option<String>) -> Result + 'static,
-    ) {
-        if self.prompt.is_some() {
-            self.finish_prompt(None);
-        }
-        let prev = self.state();
-        self.set_state(State::CommandLine);
-        self.prompt = Some(Prompt {
-            label: label.into(),
-            text: String::new(),
-            ext: self.cur_ext(),
-            prev,
-            f: Box::new(f),
-        });
-    }
-    pub fn prompt_text(&self) -> Option<&str> {
-        self.prompt.as_ref().map(|p| p.text.as_str())
-    }
-    pub(crate) fn prompt_label(&self) -> Option<&str> {
-        self.prompt.as_ref().map(|p| p.label.as_str())
-    }
-    fn finish_prompt(&mut self, answer: Option<String>) {
-        let Some(p) = self.prompt.take() else { return };
-        self.set_state(p.prev);
-        let f = p.f;
-        self.queue.push_back(Queued {
-            ext: p.ext,
-            alive: None,
-            f: Box::new(move |ctx| f(ctx, answer)),
-        });
-    }
-
-    // -------------------------------------------------------------- the loop
-
-    /// Queue keys as if typed (contract §6). die-vim's `@a` uses this. `keys` is notation,
-    /// as `key_notation` writes it, so plain text with a `<` in it needs `<lt>`.
-    pub fn feed_keys(&mut self, keys: &str) -> Result {
-        let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
-        self.fed.extend(evs);
-        Ok(())
-    }
-    /// Harness: one key event from the OS.
-    pub fn input(&mut self, ev: KeyEvent) {
-        self.typed.push_back(ev);
-    }
-    /// Harness: type keys in notation, then run until idle.
-    pub fn type_keys(&mut self, keys: &str) {
-        for ev in typed(keys, Some(self.leader)).expect("bad key notation") {
-            self.typed.push_back(ev);
-        }
-        self.run_until_idle();
-    }
-    /// Harness: advance the fake clock, then run until idle.
-    pub fn advance(&mut self, d: Duration) {
-        self.clock += d;
-        self.run_until_idle();
-    }
-
-    fn collect_due(&mut self) {
-        while let Ok((id, v)) = self.jobs_rx.try_recv() {
-            self.outstanding -= 1;
-            let mut v = Some(v);
-            for e in &self.subs {
-                if let SubKind::Job { id: jid, f } = &e.kind {
-                    if *jid == id && e.inner.alive.get() {
-                        if let Some(f) = f.borrow_mut().take() {
-                            let v = v.take().unwrap();
-                            let ext = e.inner.ext;
-                            self.queue.push_back(Queued {
-                                ext,
-                                alive: Some(e.inner.clone()),
-                                f: Box::new(move |ctx| f(ctx, v)),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        for e in &self.subs {
-            if let SubKind::Timer {
-                at,
-                every,
-                fired,
-                f,
-            } = &e.kind
-            {
-                while e.inner.alive.get() && !fired.get() && at.get() <= self.clock {
-                    let f = f.clone();
-                    let inner = e.inner.clone();
-                    self.queue.push_back(Queued {
-                        ext: inner.ext,
-                        alive: Some(inner),
-                        f: Box::new(move |ctx| (f.borrow_mut())(ctx)),
-                    });
-                    match every {
-                        Some(d) => at.set(at.get() + *d),
-                        None => fired.set(true),
-                    }
-                }
-            }
-        }
-        self.subs.retain(|e| {
-            e.inner.alive.get() && !matches!(&e.kind, SubKind::Timer { fired, .. } if fired.get())
-        });
-    }
-
-    /// One turn of the loop: queued calls first (C3), then one key (fed keys before typed ones).
-    pub fn step(&mut self) -> bool {
-        self.collect_due();
-        if let Some(q) = self.queue.pop_front() {
-            if q.alive.as_ref().is_none_or(|a| a.alive.get()) {
-                self.cmd_seq += 1;
-                let r = self.guarded(q.ext, q.f);
-                self.report(r);
-                // Code that runs between units (the host, a harness) gets a number of its own.
-                self.cmd_seq += 1;
-            }
-            return true;
-        }
-        if let Some(ev) = self.fed.pop_front() {
-            self.dispatch(ev, KeySource::Fed);
-            self.cmd_seq += 1;
-            return true;
-        }
-        if let Some(ev) = self.typed.pop_front() {
-            self.dispatch(ev, KeySource::Typed);
-            self.cmd_seq += 1;
-            return true;
-        }
-        false
-    }
-
-    pub fn run_until_idle(&mut self) {
-        for _ in 0..1_000_000 {
-            if self.step() {
-                continue;
-            }
-            if self.outstanding == 0 {
-                return;
-            }
-            match self.jobs_rx.recv_timeout(Duration::from_secs(5)) {
-                Ok((id, v)) => {
-                    // Put it back through the normal path.
-                    let tx = self.jobs_tx.clone();
-                    let _ = tx.send((id, v));
-                }
-                Err(_) => return,
-            }
-        }
-        panic!("loop never went idle");
-    }
-
-    /// Shut extensions down in reverse order and cancel what they detached (C4).
-    pub fn shutdown(&mut self) {
-        for i in (0..self.exts.len()).rev() {
-            let r = self.guarded(i, |ctx| {
-                ctx.with_ext_idx(i, |e, ctx| e.shutdown(ctx))?;
-                Ok(())
-            });
-            self.report(r);
-            for e in &self.subs {
-                if e.inner.ext == i {
-                    e.inner.alive.set(false);
-                }
-            }
-        }
-    }
-
-    // -------------------------------------------------------------- key dispatch (contract §7)
-
-    fn dispatch(&mut self, ev: KeyEvent, src: KeySource) {
-        self.cmd_seq += 1;
-        // A key DIE took in passthrough swallows its own repeat and release.
-        if let Some(i) = self.swallow.iter().position(|k| *k == ev.key) {
-            match ev.kind {
-                KeyKind::Repeat => return,
-                KeyKind::Release => {
-                    self.swallow.remove(i);
-                    return;
-                }
-                KeyKind::Press => {
-                    self.swallow.remove(i);
-                }
-            }
-        }
-        let Some(win) = self.focused else { return };
-        let Some(buf) = self.window_buffer(win) else {
-            return;
-        };
-        let Some(state) = self.buffers.get(buf).map(|b| b.state) else {
-            return;
-        };
-        if state == State::Passthrough {
-            return self.dispatch_passthrough(win, buf, ev);
-        }
-        if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_) | Key::Unidentified) {
-            return; // release events, lone modifier keys and unnamed keys never reach keymaps
-        }
-        for e in &self.subs {
-            if let SubKind::Keys(f) = &e.kind {
-                if e.inner.alive.get() {
-                    (f.borrow_mut())(&ev, src);
-                }
-            }
-        }
-        if self.prompt.is_some() {
-            return self.prompt_key(ev);
-        }
-        self.pending.push(ev);
-        match self.lookup(buf, state) {
-            Lookup::Prefix => {}
-            Lookup::Command(name) => {
-                let keys = std::mem::take(&mut self.pending);
-                self.run_key(&name, keys, win, buf);
-            }
-            Lookup::None => {
-                // An undefined key ends the command it began, count and register too.
-                self.prefix = Prefix::default();
-                let keys = std::mem::take(&mut self.pending);
-                let last = keys.last().cloned().unwrap();
-                let handled = self
-                    .checkout_surface(buf, |s, ctx| s.event(&Event::Key(last), ctx))
-                    .unwrap_or(false);
-                if !handled {
-                    self.messages
-                        .push(format!("{} is undefined", key_notation(&keys)));
-                }
-            }
-        }
-    }
-
-    fn dispatch_passthrough(&mut self, win: WindowId, buf: BufferId, ev: KeyEvent) {
-        if ev.key == Key::Esc && ev.mods.super_ && ev.kind == KeyKind::Press {
-            self.buffers[buf].state = State::Normal;
-            self.swallow.push(Key::Esc);
-            return;
-        }
-        let named = !matches!(ev.key, Key::Modifier(_) | Key::Unidentified);
-        if named && ev.mods.super_ && ev.kind != KeyKind::Release {
-            if let Lookup::Command(name) =
-                self.layers_lookup(buf, State::Passthrough, &[ev.clone()])
-            {
-                self.swallow.push(ev.key);
-                return self.run_key(&name, vec![ev], win, buf);
-            }
-        }
-        let _ = self.checkout_surface(buf, |s, ctx| s.event(&Event::Key(ev), ctx));
-    }
-
-    fn run_key(&mut self, name: &str, keys: Vec<KeyEvent>, win: WindowId, buf: BufferId) {
-        let p = std::mem::take(&mut self.prefix);
-        let args = Args {
-            count: p.count,
-            register: p.register,
-            keys,
-            window: Some(win),
-            buffer: Some(buf),
-            ..Default::default()
-        };
-        let r = self.run(name, &args);
-        self.report(r);
-    }
-
-    fn lookup(&self, buf: BufferId, state: State) -> Lookup {
-        self.layers_lookup(buf, state, &self.pending)
-    }
-
-    /// Lookup order: range keymap at the cursor, buffer-local, modes (newest first), kind, global.
-    fn layers_lookup(&self, buf: BufferId, state: State, keys: &[KeyEvent]) -> Lookup {
-        let b = &self.buffers[buf];
-        let mut layers: Vec<&Keymap> = vec![];
-        let (kind, ranges): (&str, Vec<&Keymap>) = match &b.content {
-            Content::Text(t) => {
-                let cur = self.focused.and_then(|w| t.cursor(w));
-                let names = cur.map(|c| {
-                    t.decorations_at(c)
-                        .filter_map(|(_, d)| match &d.deco {
-                            Deco::Keymap(n) => self.named.get(n),
-                            _ => None,
-                        })
-                        .collect()
-                });
-                ("text", names.unwrap_or_default())
-            }
-            Content::Custom { kind, .. } => (kind, vec![]),
-        };
-        layers.extend(ranges);
-        layers.push(&b.local);
-        layers.extend(b.modes.iter().rev().map(|m| &self.modes[m.spec].keymap));
-        layers.extend(self.kinds.get(kind));
-        layers.push(&self.global);
-        for km in layers {
-            match km.lookup(state, keys) {
-                Lookup::None => continue,
-                r => return r,
-            }
-        }
-        Lookup::None
-    }
-
-    fn prompt_key(&mut self, ev: KeyEvent) {
-        match ev.chord().key {
-            Key::Enter => {
-                let t = self.prompt.as_ref().map(|p| p.text.clone());
-                self.finish_prompt(t);
-            }
-            Key::Esc => self.finish_prompt(None),
-            Key::Backspace => {
-                self.prompt.as_mut().unwrap().text.pop();
-            }
-            _ => {
-                if let Some(t) = ev.printable() {
-                    self.prompt.as_mut().unwrap().text.push_str(&t);
-                }
-            }
-        }
     }
 }
