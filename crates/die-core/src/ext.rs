@@ -24,7 +24,7 @@ use std::sync::{Once, mpsc};
 /// An extension's place in the startup order.
 pub type ExtIdx = usize;
 pub(crate) const CORE: ExtIdx = usize::MAX;
-const CONFIG: ExtIdx = usize::MAX - 1;
+pub(crate) const CONFIG: ExtIdx = usize::MAX - 1;
 
 type ConfigRegisterFn = Box<dyn FnOnce(&mut Registry)>;
 type StartupFn = Box<dyn FnOnce(&mut Ctx) -> Result>;
@@ -329,6 +329,7 @@ pub struct Ctx {
     pub(crate) prompt: Option<Prompt>,
     pub(crate) clock: Clock,
     pub(crate) timers: Timers,
+    pub(crate) timer_seq: u64,
     /// Timers have been queued, and no key has had a turn since nor the host been told.
     pub(crate) timers_ran: bool,
     pub(crate) idle: Vec<Idle>,
@@ -356,6 +357,9 @@ pub(crate) struct Caught {
     pub(crate) msg: String,
     place: String,
 }
+
+/// How every panic line ends.
+const RESTART: &str = ". Its state may be half-updated: restart if it misbehaves.";
 
 thread_local! {
     /// The panics the hook saw on this thread that no guard has claimed yet.
@@ -468,6 +472,7 @@ impl Ctx {
             prompt: None,
             clock: config.clock,
             timers: Timers::new(),
+            timer_seq: 0,
             timers_ran: false,
             idle: vec![],
             waker: Waker::default(),
@@ -590,11 +595,20 @@ impl Ctx {
             msg: c.msg,
         }
     }
-    /// The same line twice running is one line, so a panic on every frame can't flood the log.
+    /// A line already among the panic lines at the log's end isn't news, so panics on every frame
+    /// can't flood the log, even from several objects taking turns. Disabling them is M1's.
     fn log_panic(&mut self, what: String) {
-        let line = format!("{what}. Its state may be half-updated: restart if it misbehaves.");
-        if self.messages.last() != Some(&line) {
+        let line = format!("{what}{RESTART}");
+        let recent = self.messages.iter().rev().take(32);
+        let mut run = recent.take_while(|m| m.ends_with(RESTART));
+        if !run.any(|m| *m == line) {
             self.messages.push(line);
+        }
+    }
+    /// Core's own tidying up of what an extension gave it: a `Drop` there is extension code too.
+    pub(crate) fn cleanup(&mut self, f: impl FnOnce(&mut Ctx)) {
+        if let Err(c) = catch(|| f(self)) {
+            self.panicked(CORE, c);
         }
     }
     /// Log the panics no guard claimed: `render`, `decorate`, or what the host caught itself.
@@ -793,9 +807,7 @@ impl Ctx {
         let Some(b) = self.buffers.remove(buf) else {
             return false;
         };
-        if let Err(c) = catch(|| drop(b)) {
-            self.panicked(CORE, c);
-        }
+        self.cleanup(|_| drop(b));
         self.files.forget(buf);
         let hooks: Vec<_> = self
             .subs

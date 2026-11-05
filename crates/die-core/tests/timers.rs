@@ -666,7 +666,11 @@ fn a_key_release_restarts_the_idle_wait() {
     });
     c.run_until_idle();
     c.advance(8 * MS);
-    assert_eq!(n.get(), 0, "16 ms since it was set, but 8 since the release");
+    assert_eq!(
+        n.get(),
+        0,
+        "16 ms since it was set, but 8 since the release"
+    );
     c.advance(2 * MS);
     assert_eq!(n.get(), 1);
     drop(t);

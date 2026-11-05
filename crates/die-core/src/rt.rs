@@ -86,7 +86,8 @@ pub(crate) struct SubInner {
 pub struct Sub(Rc<SubInner>);
 
 impl Sub {
-    /// Keep the subscription until the extension shuts down.
+    /// Keep the subscription until its owner shuts down: the extension that made it, or your
+    /// config, which goes last.
     pub fn detach(self) {
         self.0.detached.set(true);
     }
@@ -246,11 +247,11 @@ impl Ctx {
     /// Put a timer in the heap. A cancelled one goes when it comes due, or in the sweep here, so
     /// a long timer set and cancelled on every key can't pile up.
     fn arm(&mut self, at: Duration, t: Timer) {
-        self.next_id += 1;
-        if self.next_id.is_multiple_of(1024) {
-            self.timers.retain(|_, t| t.sub.alive.get());
+        self.timer_seq += 1;
+        if self.timer_seq.is_multiple_of(1024) {
+            self.cleanup(|ctx| ctx.timers.retain(|_, t| t.sub.alive.get()));
         }
-        self.timers.insert((at, self.next_id), t);
+        self.timers.insert((at, self.timer_seq), t);
     }
     /// When the next timer is due, on the clock [`Ctx::now`] reads: a time already past if one is
     /// overdue, and None with no timer set. A host sleeps until then or until it's woken.
@@ -259,7 +260,8 @@ impl Ctx {
             if e.get().sub.alive.get() {
                 break;
             }
-            e.remove();
+            let dead = e.remove();
+            self.cleanup(|_| drop(dead));
         }
         let heap = self.timers.keys().next().map(|k| k.0);
         let idle = self.idle.iter().filter(|t| t.sub.alive.get());
@@ -323,21 +325,23 @@ impl Ctx {
     // -------------------------------------------------------------- the loop
 
     /// Harness: move a fake clock on by `d`, stopping at each timer's deadline and running until
-    /// idle there, so a callback reads its own deadline and a timer it sets counts from it. A
-    /// real clock can't be moved, so this then only runs until idle.
+    /// idle there, so a callback reads its own deadline and a timer it sets counts from it. What's
+    /// already queued runs first, at the old time. A real clock can't be moved, so this then only
+    /// runs until idle. A job that outlasts its wait isn't waited for again in the same move.
     pub fn advance(&mut self, d: Duration) {
-        self.run_until_idle();
-        let Clock::Fake(mut now) = self.clock else {
-            return;
-        };
-        let end = now.saturating_add(d);
-        while let Some(at) = self.next_timer().filter(|at| *at > now && *at <= end) {
-            now = at;
-            self.clock = Clock::Fake(now);
-            self.run_until_idle();
+        let mut wait = self.drain(true);
+        let Clock::Fake(t) = self.clock else { return };
+        let end = t.saturating_add(d);
+        while let Some(at) = self
+            .next_timer()
+            .filter(|at| *at > self.now() && *at <= end)
+        {
+            self.clock = Clock::Fake(at);
+            wait = self.drain(wait);
         }
-        self.clock = Clock::Fake(end);
-        self.run_until_idle();
+        // A callback may have moved it past the end.
+        self.clock = Clock::Fake(end.max(self.now()));
+        self.drain(wait);
     }
 
     /// A job's thread is done: queue its `done`, unless it was cancelled or panicked.
@@ -349,8 +353,9 @@ impl Ctx {
             .position(|e| matches!(&e.kind, SubKind::Job { id: j, .. } if *j == id));
         let entry = i.map(|i| self.subs.remove(i));
         match (result, entry) {
-            (Err(c), _) => {
+            (Err(c), entry) => {
                 self.panicked(ext, c);
+                self.cleanup(|_| drop(entry));
             }
             (
                 Ok(v),
@@ -364,7 +369,7 @@ impl Ctx {
                 keyed: false,
                 f: Box::new(move |ctx| f(ctx, v)),
             }),
-            _ => {}
+            cancelled => self.cleanup(|_| drop(cancelled)),
         }
     }
 
@@ -378,8 +383,10 @@ impl Ctx {
         if !self.timers_ran {
             self.collect_timers();
         }
-        self.idle.retain(|t| t.sub.alive.get());
-        self.subs.retain(|e| e.inner.alive.get());
+        self.cleanup(|ctx| {
+            ctx.idle.retain(|t| t.sub.alive.get());
+            ctx.subs.retain(|e| e.inner.alive.get());
+        });
     }
 
     /// Queue the timers that are due, in deadline order. Idle timers wait while a key does.
@@ -389,6 +396,7 @@ impl Ctx {
         while let Some(e) = self.timers.first_entry().filter(|e| e.key().0 <= now) {
             let ((at, _), t) = e.remove_entry();
             if !t.sub.alive.get() {
+                self.cleanup(|_| drop(t));
                 continue;
             }
             due.push((at, fire(&t.sub, &t.f)));
@@ -439,16 +447,16 @@ impl Ctx {
                 self.report(r);
                 // Code that runs between units (the host, a harness) gets a number of its own.
                 self.cmd_seq += 1;
+            } else {
+                self.cleanup(|_| drop(q));
             }
             return true;
         }
         self.timers_ran = false;
         let fed = self.fed.pop_front().map(|ev| (ev, KeySource::Fed));
         let key = fed.or_else(|| self.typed.pop_front().map(|ev| (ev, KeySource::Typed)));
-        let Some((ev, source)) = key else {
-            return false;
-        };
-        self.dispatch(ev, source);
+        let Some((ev, src)) = key else { return false };
+        self.dispatch(ev, src);
         self.restart_idle();
         self.cmd_seq += 1;
         true
@@ -458,23 +466,31 @@ impl Ctx {
     /// for each. A host can't wait, so it uses [`Ctx::step`]. If a call keeps queueing another,
     /// this stops after a million turns and says so in `*messages*`.
     pub fn run_until_idle(&mut self) {
+        self.drain(true);
+    }
+
+    /// Take turns until nothing is ready. With `wait`, go on until no job is out, and return false
+    /// if one outlasts its wait.
+    fn drain(&mut self, wait: bool) -> bool {
         for _ in 0..1_000_000 {
-            if self.step() || self.next_timer().is_some_and(|at| at <= self.clock.now()) {
+            if self.step() || self.next_timer().is_some_and(|at| at <= self.now()) {
                 continue;
             }
-            if self.outstanding == 0 {
-                return;
+            if !wait || self.outstanding == 0 {
+                return wait;
             }
             match self.jobs_rx.recv_timeout(Duration::from_secs(5)) {
                 Ok(m) => self.accept_job(m),
-                Err(_) => return,
+                Err(_) => return false,
             }
         }
         self.messages
             .push("The loop never went idle in 1,000,000 turns, so this run stopped".into());
+        wait
     }
 
-    /// Shut extensions down in reverse order and cancel what they detached (C4).
+    /// Shut extensions down in reverse order and cancel what they detached (C4). What your config
+    /// detached goes last, since an extension's `shutdown` can still run config's commands.
     pub fn shutdown(&mut self) {
         for i in (0..self.exts.len()).rev() {
             let r = self.guarded(i, |ctx| {
@@ -482,12 +498,16 @@ impl Ctx {
                 Ok(())
             });
             self.report(r);
-            let handles = self.subs.iter().map(|e| &e.inner);
-            let handles = handles.chain(self.timers.values().map(|t| &t.sub));
-            let handles = handles.chain(self.idle.iter().map(|t| &t.sub));
-            for h in handles.filter(|h| h.ext == i) {
-                h.alive.set(false);
-            }
+            self.cancel_owned_by(i);
+        }
+        self.cancel_owned_by(CONFIG);
+    }
+    fn cancel_owned_by(&self, owner: ExtIdx) {
+        let handles = self.subs.iter().map(|e| &e.inner);
+        let handles = handles.chain(self.timers.values().map(|t| &t.sub));
+        let handles = handles.chain(self.idle.iter().map(|t| &t.sub));
+        for h in handles.filter(|h| h.ext == owner) {
+            h.alive.set(false);
         }
     }
 }
