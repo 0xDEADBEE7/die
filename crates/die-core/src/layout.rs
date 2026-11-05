@@ -311,12 +311,24 @@ impl Walker<'_> {
         // at a newline.
         let ascii =
             b[i] < 0x80 && (p + 1 == self.run_end || b.get(i + 1).is_some_and(|c| *c < 0x80));
-        let (e, text): (usize, Cow<str>) = if ascii {
-            (p + 1, self.chunk.0[i..=i].into())
+        // A cluster inside the chunk needs no walk through the rope. One that reaches the chunk's
+        // end may go on in the next, unless the run ends there too.
+        let in_chunk = &self.chunk.0[i..b.len().min(self.run_end - self.chunk.1)];
+        let run_ends = self.chunk.1 + b.len() >= self.run_end;
+        let found = if ascii {
+            Some(1)
         } else {
-            let run = rope.byte_slice(p..self.run_end);
-            let e = p + grapheme(run, 0, Step::Next).unwrap_or(run.len_bytes());
-            (e, rope.byte_slice(p..e).into())
+            let mut gc = GraphemeCursor::new(0, in_chunk.len(), true);
+            let n = gc.next_boundary(in_chunk, 0).ok().flatten();
+            n.filter(|n| *n < in_chunk.len() || run_ends)
+        };
+        let (e, text): (usize, Cow<str>) = match found {
+            Some(n) => (p + n, in_chunk[..n].into()),
+            None => {
+                let run = rope.byte_slice(p..self.run_end);
+                let e = p + grapheme(run, 0, Step::Next).unwrap_or(run.len_bytes());
+                (e, rope.byte_slice(p..e).into())
+            }
         };
         let item = self.item(&text, CellKind::Text, None);
         self.w = Walk::at(e, self.w.vcol + item.width);
