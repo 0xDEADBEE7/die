@@ -1993,3 +1993,285 @@ fn run_history(init: String, steps_cap: usize, bytes_cap: usize, hs: Vec<H>) {
         assert_eq!(replayed, text_of(&ctx, b), "the log replays to the text");
     }
 }
+
+/// K10b: random saves, reloads and outside changes against a model of the disk. Here and not
+/// in `tests/save.rs` because `cargo xtask mutate` runs this binary.
+mod saves {
+    use die_core::*;
+    use proptest::prelude::*;
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, SystemTime};
+
+    /// Every save flushes to the disk, so this is capped below the other properties' counts.
+    fn file_cases() -> u32 {
+        super::prop_cases().map_or(300, |c| c.min(300))
+    }
+
+    const MODE: u32 = 0o750;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Visit {
+        Plain,
+        Symlink,
+        HardLink,
+    }
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Type(String),
+        TypeAndUndo,
+        Save,
+        SaveForce,
+        Revert,
+        Poll,
+        Rewrite(String),
+        SameBytes,
+        RenameOver(String),
+        Delete,
+    }
+
+    fn text() -> impl Strategy<Value = String> {
+        let piece = prop_oneof![
+            Just("a\n"),
+            Just("b\n"),
+            Just("é\n"),
+            Just("🦀"),
+            Just("\n"),
+            Just("c"),
+            Just("\u{FEFF}"),
+        ];
+        prop::collection::vec(piece, 0..6).prop_map(|v| v.concat())
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            text().prop_map(Op::Type),
+            Just(Op::TypeAndUndo),
+            Just(Op::Save),
+            Just(Op::SaveForce),
+            Just(Op::Revert),
+            Just(Op::Poll),
+            text().prop_map(Op::Rewrite),
+            Just(Op::SameBytes),
+            text().prop_map(Op::RenameOver),
+            Just(Op::Delete),
+        ]
+    }
+
+    struct Dir(PathBuf);
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// What the buffer and the disk should hold, and what the buffer should know.
+    struct Model {
+        text: String,
+        disk: Option<String>,
+        /// The text has changes the file doesn't.
+        unsaved: bool,
+        /// The file changed since DIE last read or wrote it.
+        changed: bool,
+        /// The other hard link still names the file.
+        linked: bool,
+        /// The mode a save has to keep, until an outside change makes a new file.
+        mode: Option<u32>,
+    }
+
+    /// Change the file's bytes and give it a time of its own, however coarse the clock.
+    fn stamp(p: &Path, bytes: &[u8], tick: &mut u64) {
+        fs::write(p, bytes).unwrap();
+        *tick += 1;
+        let at = SystemTime::now() + Duration::from_secs(1000 + *tick);
+        let f = fs::File::options().write(true).open(p).unwrap();
+        f.set_modified(at).unwrap();
+    }
+
+    fn run(visit: Visit, init: String, ops: Vec<Op>) {
+        static CASE: AtomicU32 = AtomicU32::new(0);
+        let n = CASE.fetch_add(1, Ordering::Relaxed);
+        let name = format!("die-prop-saves-{}-{n}", std::process::id());
+        let dir = Dir(std::env::temp_dir().join(name));
+        fs::create_dir_all(dir.0.join("store")).unwrap();
+        let real = dir.0.join("store/file");
+        let other = dir.0.join("other");
+        let link = dir.0.join("link");
+        fs::write(&real, &init).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(MODE)).unwrap();
+        let open_at = match visit {
+            Visit::Plain => real.clone(),
+            Visit::Symlink => {
+                symlink("store/file", &link).unwrap();
+                link.clone()
+            }
+            Visit::HardLink => {
+                fs::hard_link(&real, &other).unwrap();
+                real.clone()
+            }
+        };
+
+        let mut c = Ctx::new(vec![]).unwrap();
+        let b = c.open_file(&open_at).unwrap();
+        // A leading mark on disk is a BOM, which isn't in the text, and a save puts it back.
+        let shown = |s: &str, bom: bool| {
+            if bom {
+                format!("\u{FEFF}{s}")
+            } else {
+                s.to_string()
+            }
+        };
+        let strip = |s: &str| s.strip_prefix('\u{FEFF}').unwrap_or(s).to_string();
+        let mut m = Model {
+            text: strip(&init),
+            disk: Some(init.clone()),
+            unsaved: false,
+            changed: false,
+            linked: matches!(visit, Visit::HardLink),
+            mode: Some(MODE),
+        };
+        let mut tick = 0;
+
+        for op in ops {
+            let rev = c.text(b).unwrap().rev();
+            let reload = match &op {
+                Op::Type(s) => {
+                    if !s.is_empty() {
+                        let end = c.text(b).unwrap().len();
+                        let t = c.text_mut(b).unwrap();
+                        t.tx(Origin::User).insert(end, s.as_str()).commit().unwrap();
+                        m.text.push_str(s);
+                        m.unsaved = true;
+                    }
+                    false
+                }
+                // The text is what it was, and so is whether it's saved.
+                Op::TypeAndUndo => {
+                    let end = c.text(b).unwrap().len();
+                    let t = c.text_mut(b).unwrap();
+                    t.undo_boundary();
+                    t.tx(Origin::User).insert(end, "x").commit().unwrap();
+                    t.undo().unwrap();
+                    false
+                }
+                Op::Save => {
+                    let refuse = m.disk.is_some() && m.unsaved && m.changed;
+                    let write = !refuse && (m.disk.is_none() || m.unsaved);
+                    let bom = c.file(b).unwrap().bom;
+                    assert_eq!(c.save(b).is_err(), refuse, "{op:?}");
+                    if write {
+                        m.disk = Some(shown(&m.text, bom));
+                        m.unsaved = false;
+                        m.changed = false;
+                    }
+                    false
+                }
+                Op::SaveForce => {
+                    let bom = c.file(b).unwrap().bom;
+                    c.save_force(b).unwrap();
+                    m.disk = Some(shown(&m.text, bom));
+                    m.unsaved = false;
+                    m.changed = false;
+                    false
+                }
+                Op::Revert => {
+                    assert_eq!(c.revert_file(b).is_err(), m.disk.is_none());
+                    m.disk.is_some()
+                }
+                Op::Poll => {
+                    c.check_files();
+                    m.disk.is_some() && m.changed && !m.unsaved
+                }
+                Op::Rewrite(s) => {
+                    stamp(&real, s.as_bytes(), &mut tick);
+                    m.disk = Some(s.clone());
+                    m.changed = true;
+                    false
+                }
+                Op::SameBytes => {
+                    if let Some(d) = &m.disk {
+                        stamp(&real, d.as_bytes(), &mut tick);
+                        m.changed = true;
+                    }
+                    false
+                }
+                Op::RenameOver(s) => {
+                    let tmp = dir.0.join("incoming");
+                    stamp(&tmp, s.as_bytes(), &mut tick);
+                    if let Some(mode) = m.mode {
+                        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode)).unwrap();
+                    }
+                    fs::rename(&tmp, &real).unwrap();
+                    m.disk = Some(s.clone());
+                    m.changed = true;
+                    m.linked = false;
+                    false
+                }
+                Op::Delete => {
+                    if m.disk.take().is_some() {
+                        fs::remove_file(&real).unwrap();
+                    }
+                    m.linked = false;
+                    m.mode = None;
+                    false
+                }
+            };
+            if reload {
+                let new = strip(m.disk.as_ref().unwrap());
+                if new == m.text {
+                    assert_eq!(c.text(b).unwrap().rev(), rev, "the same text: no change");
+                }
+                m.text = new;
+                m.unsaved = false;
+                m.changed = false;
+            }
+
+            assert_eq!(text_of(&c, b), m.text, "the text after {op:?}");
+            let disk = fs::read(&real).ok().map(|d| String::from_utf8(d).unwrap());
+            assert_eq!(disk, m.disk, "the file after {op:?}");
+            if m.linked {
+                assert_eq!(
+                    fs::read(&other).ok(),
+                    disk.map(String::into_bytes),
+                    "{op:?}"
+                );
+                assert_eq!(fs::metadata(&real).unwrap().nlink(), 2, "{op:?}");
+            }
+            if let (Some(mode), true) = (m.mode, real.exists()) {
+                let now = fs::metadata(&real).unwrap().permissions().mode() & 0o7777;
+                assert_eq!(now, mode, "the mode after {op:?}");
+            }
+            if let Visit::Symlink = visit {
+                let to = fs::read_link(&link).expect("still a symlink");
+                assert_eq!(to, Path::new("store/file"), "{op:?}");
+            }
+            for d in [&dir.0, &dir.0.join("store")] {
+                let mut names = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name());
+                assert!(
+                    names.all(|n| !n.to_string_lossy().contains("die-save")),
+                    "{op:?}"
+                );
+            }
+        }
+    }
+
+    fn text_of(c: &Ctx, b: BufferId) -> String {
+        c.text(b).unwrap().rope().to_string()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: file_cases(), ..ProptestConfig::default() })]
+        #[test]
+        fn saves_and_reloads_agree_with_a_model_of_the_disk(
+            visit in prop_oneof![Just(Visit::Plain), Just(Visit::Symlink), Just(Visit::HardLink)],
+            init in text(),
+            ops in prop::collection::vec(op(), 1..16),
+        ) {
+            run(visit, init, ops);
+        }
+    }
+}

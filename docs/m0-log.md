@@ -2,6 +2,108 @@
 
 What merged, what waits on you, what changed in die-core's API, and where the budget stands ([m0-plan.md](m0-plan.md) §3). Newest first.
 
+## 2026-11-05 (K10b): saving works, and files changed on disk reload
+
+**Waiting on you: nothing.** You can overturn any call below at any time.
+
+**You can't use it yet.** `:w`, `:w!` and `:e!` wait for V5, and the window for R3 and F3. Today this is die-core's API, and criterion (c) is checked by a test that runs the real `rustfmt` on open files through that API. The check by hand and a `:w` through die-vim wait for V5 and F3.
+
+### What you have now
+
+- **Saving.** It works through symlinks, including dangling ones, and keeps the mode and group. Hard-linked files are written in place. The round trip is byte-exact, BOM included. On macOS, ACLs and extended attributes survive.
+- **Refusing.** `:w` refuses a file changed on disk, and `:w!` writes it. Both refuse a file that opened read-only.
+- **Reloading.** A one-second poll reloads unmodified buffers as one undo step, keeping cursors and markers between changes. A rewrite with the same bytes leaves no undo step. A modified buffer is never reloaded over. Files over 16 MiB aren't read by the poll: it says so once and leaves them to `:e!`.
+- **The modified flag.** K6's flag came over early, byte for byte, because the review showed K10b's stand-in was wrong. A buffer undone back to its saved text now counts as unmodified.
+
+**Oracle:** unchanged, because nothing in die-vim moved.
+
+### What the review found
+
+One review, stopped at 16 minutes: 9 findings, 1 major, 6 minors and 2 nits. All 7 that change behaviour are fixed. The 2 nits are left for later. It found no data loss in normal use and no unsound code, and the diff adds no `unsafe`.
+
+| | Severity | What | What became of it |
+|---|---|---|---|
+| F1 | major | A buffer undone back to the saved text still counted as modified, so it didn't reload and `:w` refused. That missed criterion (c) | Fixed with K6's flag |
+| F2 | minor | A reload's cost grew with the file: 1.7 s for one line added to a 10 MB log, every second, and the poll read files of any size | Fixed: shared ends are skipped, and there are limits (calls 207, 209). A test now holds that log to 300 ms |
+| F3 | minor | A poll between `rustfmt` truncating and writing loaded the empty file and lost the cursor and markers | Fixed: the poll skips a file whose mtime is under 200 ms old (call 210) |
+| F4 | minor | Undoing past a reload and then `:w` could write U+FFFD over real bytes, or drop a BOM | U+FFFD fixed (call 211). The BOM loss is accepted (call 212) |
+| F5 | minor | `:e!` onto a file now non-UTF-8 broke `u`, and the work couldn't be saved | Fixed: `:e!` refuses and keeps the text (call 213) |
+| F6 | minor | A reload cleared a read-only flag your config had set | Fixed: the flag from before is restored (call 206) |
+| F7 | minor | A save dropped ACLs and extended attributes | Fixed on macOS. Still lost on Linux (call 214) |
+| F8 | nit | The changed-on-disk message offers `:w!` on a file that opened read-only, where `:w!` always refuses | Left for later |
+| F9 | nit | `Ctx::save`'s doc says an error leaves the file as it was, but an in-place write that fails part way leaves new bytes and the old tail | Left for later |
+
+### API changes, for your later review
+
+From `cargo xtask api-diff`. Nothing removed, and no signature changed. die-vim's grammar has no changes.
+
+- die-core adds `Ctx::save`, `Ctx::save_force`, `Ctx::revert_file`, `Ctx::check_files`, `TextBuf::modified` and `TextBuf::set_modified`.
+- `FileInfo` gains private fields, so it can't be built or destructured outside core.
+
+Behaviour with the same signature:
+
+- `open_file` starts a repeating 1 s timer, so `next_timer` is `Some` while any buffer visits a file, and `None` again once the last one is killed.
+- `FileInfo.fingerprint` becomes `None` when a check finds the file gone. `fingerprint`, `bom` and `read_only` change on a reload.
+- A reload sets `Settings::read_only` when the file stops being UTF-8-editable, and restores its earlier value when the file becomes editable again.
+
+### Budget
+
+| Crate | Lines |
+|---|---|
+| die-core | 5,888 of 14k, up from 5,450 |
+| text and undo | 1,213 of 1,250, up from 1,171 |
+| files | 563 of 650 |
+| product code | 10,811, up from 10,373 |
+
+No limit was raised and no dependency added. Text and undo has 37 lines left, and K6's flag is already counted in it.
+
+### Calls (veto any)
+
+191. A save writes a temp file (`.die-save-<pid>-<n>`, mode 0600 until the end) and renames it over the file. It writes in place for a hard link, an owner it can't keep, or a directory it can't write. Your Emacs, with backups off, always writes in place.
+192. A crash during a replacement can leave a `.die-save-*` file beside the original. Nothing cleans those up.
+193. `:w!` still refuses a file that opened read-only (not UTF-8, NUL bytes, CRLF), as K10a's docs require, because for non-UTF-8 the text doesn't hold the bytes.
+194. `:w` on an unmodified buffer whose file exists writes nothing and refuses nothing, even if the file changed on disk, because there's nothing to lose. `:w!` always writes.
+195. A file that's gone is written again by `:w` without refusing, as I recall Emacs's `basic-save-buffer` doing. This wasn't run against Emacs or Evil.
+196. `:w` refuses a file you can't write. `:w!` replaces it if the directory allows, keeping mode 0444.
+197. Any fingerprint change makes `:w` refuse on a modified buffer, including `touch` or a same-bytes rewrite, because there's no content hash. As far as I recall, Emacs compares only the modification time too.
+198. Refusals are `Error::Msg` with the reason in the text, with no new `Error` variant.
+199. The poll runs every 1 s. Your init.el leaves Emacs's interval at its default of 5 s, but I recall Emacs also using file notifications, so 5 s here would feel slower. A host wakes once a second while a file is open.
+200. The poll is an ordinary `every` timer started by the first `open_file`, so an extension opening the first file owns it and its shutdown cancels it. That's harmless today, and M1's disabling should recheck it.
+201. A reload is one recorded undo step with `Origin::Extension`, so it works in read-only buffers, and undoing it leaves the buffer modified.
+202. Beyond the plan row, reloads use a line diff of about 70 lines, patience-style on lines unique to both files and trimmed to character boundaries, so `cargo fmt` keeps cursors and markers between its changes. As I recall, Emacs's revert only trims the two ends. At worst it's one change.
+203. A reload waits while any undo group is open, as during an insert with nothing typed. It happens at the next poll after the group closes.
+204. A modified buffer gets one message per divergence, not one per outside rewrite. A save, a reload or the file being deleted resets it.
+205. A deleted file keeps its text, with one message. If the file comes back, an unmodified buffer reloads and a modified one refuses `:w`.
+206. When a reload finds a read-only file now editable, `Settings::read_only` goes back to what it was before the file made it read-only, so your per-path settings hold. A flag you set by hand on a normally editable file stays.
+207. Reloads read and diff on the main thread, and the poll won't read files over 16 MiB. The number is my choice, not measured. A hitch while reading a file below it stays possible, which falls short of contract §13's "There are no blocking calls".
+208. The model property is in `tests/prop.rs`, as a `saves` module, because `cargo xtask mutate` only runs that binary. It's capped at 300 cases because saves flush to disk.
+209. Past 1 MiB of differing text a reload is one change, so cursors and markers inside that middle region aren't kept.
+210. F3's wait is a wall-clock check on mtime, and a future mtime doesn't count as recent. `:e!` doesn't wait. A tool that takes longer than 200 ms between truncating and writing still shows the empty file for one poll. The test's assertion is skipped if the poll itself took 150 ms or more on a very slow host.
+211. A reload into or out of a read-only state commits as `.silent()`, so `u` and `C-r` can't step into lossy text. This is wider than the finding, because redo could otherwise bring it back. After `:e!` out of such a state, `u` can't bring back edits made with `settings.read_only` off. Text you deleted in that state that held U+FFFD could still return through an older undo step. I accepted that rather than drop the history, since a tool caught mid-write would otherwise wipe your undo.
+212. The BOM belongs to the file as last read, so undoing past a reload and then `:w` writes no BOM. A test pins this.
+213. `:e!` with unsaved changes refuses when the file can't be edited, including one that was read-only already and stays so. Use `u` first, or `:w!` if the file has become editable. With no unsaved changes, it reloads.
+214. On macOS a save now copies the old file's data once before overwriting it, because that's what keeps the ACL, so saving a large file costs more. Copying to a new name clones on APFS and drops the ACL, so it copies onto the existing empty temp. On Linux `fs::copy` carries neither ACLs nor extended attributes, so they're still lost there, and the module doc says so.
+215. Some of K10b's own tests changed after the review; no ported S4 test did. The `rustfmt` test's `cfg!(target_os)` branch failed `cargo xtask lint`, so it now probes `rustfmt --version` and skips if that fails, on any platform. It also waits 250 ms after rustfmt, and `rename_over` and two tests age the mtime, so the poll doesn't treat those writes as in progress.
+
+### Notes for the next packages
+
+- **K6:** the flag is in, and `settle()` in `files.rs` is the one place that marks a buffer as matching its file. `undo.rs` and `text.rs` hold K6's code byte for byte. A trial merge with m0/k6-k9 merges those and `files.rs` cleanly, and conflicts only in the lists in `tests/mutants.toml` and `tests/prop.rs`.
+- **V5:** `:w` is `Ctx::save`, `:w!` is `save_force`, and `:e!` is `revert_file`. Refusal text arrives in `Error::Msg`. `:w` with a path isn't built.
+- **F3, K9:** `next_timer` is now always set while a file is open. `check_files` is public if you want a check on focus-in.
+- **K12:** restoring a session can use `set_modified`, but `files.rs` has no setter for `fingerprint` yet.
+- **Whoever builds save hooks:** the contract says a save runs its write as a queued step after the before-save hooks, but `write_file` writes at once. No plan row names save hooks.
+- **Mutants:** M49 to M53 are in `mutants.toml`. A failed run of these can add seeds to `prop.proptest-regressions`, so check that file before committing.
+- **Timings:** one-off, at load about 40, background priority and `opt-level` 1, before the review's fixes. A poll of 200 unchanged files took 15 ms, reloading a 1.2 MB file with 250 scattered changes took 357 ms, and saving it took 98 ms.
+
+### Open, and what wasn't verified
+
+- **`ci`:** passed on a fresh clone of the commit before this line was written, on the third run. The first two failed only `layout_speed`, at load about 20 to 27, with 4.6 to 13.6 ms against the 4 ms limit, and 431 to 479 ms against the 400 ms limit in the second. Nothing changed between runs and no limit was raised. `ci` stops at the first failing test binary, so those two runs skipped what comes after it. All tests then passed in a separate `cargo test --workspace` and in the third run, with load near 7 when it started and 17.5 when it ended. So these limits fail under load, whatever K10b does, which the K10b fixer also saw on an older binary (of unknown commit) from the main checkout. `scene` wasn't compared with a build without K10b.
+- **`mutate` wasn't run.** The five mutants were each caught when applied by hand and run against the model property, before the review's fixes, so `cargo xtask mutate`'s own report on them doesn't exist yet.
+- **`ci --linux` wasn't run,** so these tests haven't run on Linux. The root and missing-`rustfmt` guards were written from reading `xtask/src/linux.rs`.
+- **Not tested:** the in-place fallback for an owner it can't keep, which needs a file owned by someone else, and crash behaviour during a save.
+- **Not run against Emacs or Evil:** what's recalled in calls 195, 197, 199 and 202.
+- **Save hooks don't exist,** so the contract's queued write isn't honoured yet.
+
 ## 2026-11-05 (later): K4, K5, R2 and V3 merged, and every test binary has a memory limit
 
 **Waiting on you: nothing.** You can overturn any call below at any time. The one check still open is R2's: comparing a rendered page with your Emacs at 16 pt needs Emacs's window on screen, so it waits for R3 or for your eye.
