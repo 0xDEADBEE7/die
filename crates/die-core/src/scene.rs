@@ -369,14 +369,9 @@ impl Ctx {
             for x in 0..wc {
                 scene.put(row, p.col + x, Cell::styled(Glyph::Char(' '), style));
             }
-            if let Some(b) = self.buffers.get(bid) {
-                put_text(
-                    &mut scene,
-                    row,
-                    p.col + 1,
-                    p.col + wc,
-                    glyphs(&b.name, style),
-                );
+            if self.buffers.contains_key(bid) {
+                let text = self.status_text(bid);
+                put_text(&mut scene, row, p.col + 1, p.col + wc, glyphs(&text, style));
             }
             if p.col + wc < cols {
                 let style = self.faces.get("divider").over(base);

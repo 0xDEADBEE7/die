@@ -78,12 +78,15 @@ pub struct FileInfo {
 
 /// Settings by path, as [`crate::Config`] and [`Ctx::set_file_settings`] take them.
 pub(crate) type SettingsFn = Box<dyn Fn(&Path, &mut Settings)>;
+/// What a status line says, from the buffer's name and the file it visits.
+pub type StatusTextFn = Box<dyn Fn(&str, Option<&FileInfo>) -> String>;
 
 /// Which buffers visit files, and the config's settings by path.
 #[derive(Default)]
 pub(crate) struct Files {
     by_buffer: HashMap<BufferId, FileInfo>,
     pub(crate) settings: Option<SettingsFn>,
+    status_text: Option<StatusTextFn>,
 }
 
 impl Files {
@@ -180,6 +183,32 @@ impl Ctx {
     /// first. If `f` panics, the file opens with `Config::text_defaults` and a message.
     pub fn set_file_settings(&mut self, f: impl Fn(&Path, &mut Settings) + 'static) {
         self.files.settings = Some(Box::new(f));
+    }
+
+    /// What status lines show in place of the buffer's name: `f` gets the name and the file the
+    /// buffer visits. A second call replaces the first. If `f` panics, it's logged once and
+    /// status lines go back to the name.
+    pub fn set_status_text(&mut self, f: impl Fn(&str, Option<&FileInfo>) -> String + 'static) {
+        self.files.status_text = Some(Box::new(f));
+    }
+
+    /// What `buf`'s status line says.
+    pub(crate) fn status_text(&mut self, buf: BufferId) -> String {
+        let name = self.buffers.get(buf).map_or("", |b| &b.name);
+        let Some(f) = &self.files.status_text else {
+            return name.to_owned();
+        };
+        match catch(|| f(name, self.files.by_buffer.get(&buf))) {
+            Ok(text) => text,
+            Err(c) => {
+                let msg = c.msg;
+                self.messages.push(format!(
+                    "status text panicked: {msg}. Status lines show the buffer's name now."
+                ));
+                self.files.status_text = None;
+                name.to_owned()
+            }
+        }
     }
 }
 

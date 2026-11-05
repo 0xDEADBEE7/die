@@ -128,7 +128,15 @@ files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
 crate = "die-render"
 name = "neutral"
 limit = 2300
-files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "sprite.rs"]
+files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "sprite.rs", "window.rs"]
+
+# `die --check`: the window's own checks, which ship in the binary. R3's are about 420
+# lines, and R6 adds `typing` and `firstframe`.
+[[module]]
+crate = "die-render"
+name = "checks"
+limit = 700
+files = ["check.rs"]
 
 # 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
 # Raising it is when the thin-wrapper question gets asked.
@@ -140,10 +148,10 @@ limit = 900
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
-# from 3 lines to 64.
+# from 3 lines to 64, and R3 to 105.
 [[module]]
 crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
-limit = 70
+limit = 110
 files = ["platform/backend.rs"]
