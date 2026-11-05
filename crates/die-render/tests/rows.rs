@@ -1,7 +1,7 @@
 //! The row cache, diff and instance building, as data: scenes in, instances out,
 //! with a stand-in for the faces. These run under `cargo xtask ci --linux`.
 
-use die_core::{Cell, CursorShape, Glyph, Rgb, Scene, Underline};
+use die_core::{Cell, Cursor, CursorShape, Glyph, Rgb, Scene, Underline};
 use die_render::atlas::GlyphKey;
 use die_render::font::{CellMetrics, FaceMetrics};
 use die_render::frame::{GlyphBitmap, Plane, Quad, kind, rgba};
@@ -520,6 +520,92 @@ fn a_cursor_on_a_wide_character_covers_its_cells_and_on_its_right_half_takes_it_
             "a bar at its left edge"
         );
     }
+}
+
+/// A frame's instances for a cursor in `RED` on an "x" in these colors, on a scene of
+/// this background.
+fn cursor_on(shape: CursorShape, fg: Rgb, bg: Rgb, background: Rgb) -> Vec<Quad> {
+    let mut f = frames();
+    let mut s = blank(3, 1);
+    s.background = background;
+    put_with(&mut s, 0, 1, &["x"], |c| {
+        c.fg = fg;
+        c.bg = bg;
+    });
+    let without = frame(&mut f, &s).0.len();
+    s.cursors = vec![cursor(0, 1, shape)];
+    frame(&mut f, &s).0[without..].to_vec()
+}
+
+const THIN_SHAPES: [CursorShape; 4] = [
+    CursorShape::Bar,
+    CursorShape::Underline,
+    CursorShape::HalfBlock,
+    CursorShape::Hollow,
+];
+
+#[test]
+fn a_cursor_the_color_of_its_cell_stays_visible() {
+    // As mono-dark's current search match has it: the cursor is the cell's background.
+    let q = cursor_on(CursorShape::Block, GREEN, RED, BG);
+    assert_eq!(q[0].kind, kind::SOLID);
+    assert_eq!(q[0].color, rgba(GREEN), "filled with the cell's foreground");
+    assert_eq!(q[1].kind, kind::GRAY);
+    assert_eq!(
+        q[1].color,
+        rgba(RED),
+        "and its glyph in the cell's background"
+    );
+    for shape in THIN_SHAPES {
+        let q = cursor_on(shape, GREEN, RED, BG);
+        assert!(!q.is_empty(), "{shape:?}");
+        for quad in &q {
+            assert_eq!(
+                quad.color,
+                rgba(GREEN),
+                "{shape:?} in the cell's foreground"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_cursor_of_another_color_keeps_it_on_a_cell_of_its_foreground() {
+    // The usual case, as a cursor in the text's color on plain text is.
+    let q = cursor_on(CursorShape::Block, RED, GREEN, BG);
+    assert_eq!(q[0].color, rgba(RED));
+    assert_eq!(q[1].color, rgba(GREEN));
+    for shape in THIN_SHAPES {
+        let q = cursor_on(shape, RED, GREEN, BG);
+        assert!(q.iter().all(|quad| quad.color == rgba(RED)), "{shape:?}");
+    }
+}
+
+#[test]
+fn a_cursor_shows_on_a_cell_with_no_other_color_in_it() {
+    // A cell the cursor's color all through takes the scene's background.
+    let q = cursor_on(CursorShape::Block, RED, RED, BG);
+    assert_eq!(q[0].color, rgba(BG));
+    assert_eq!(q[1].color, rgba(RED), "and its glyph can be seen on that");
+    for shape in THIN_SHAPES {
+        let q = cursor_on(shape, RED, RED, BG);
+        assert!(q.iter().all(|quad| quad.color == rgba(BG)), "{shape:?}");
+    }
+    // A frame the cursor's color all through takes black, or white on black.
+    let q = cursor_on(CursorShape::Bar, RED, RED, RED);
+    assert_eq!(q[0].color, rgba(Rgb(0, 0, 0)));
+    let mut f = frames();
+    let black = Rgb(0, 0, 0);
+    let mut s = blank(3, 1);
+    s.background = black;
+    for c in &mut s.cells {
+        *c = Cell::new(Glyph::Char(' '), black, black);
+    }
+    s.cursors = vec![Cursor {
+        color: black,
+        ..cursor(0, 1, CursorShape::Bar)
+    }];
+    assert_eq!(f_quads(&mut f, &s)[0].color, rgba(Rgb(255, 255, 255)));
 }
 
 #[test]

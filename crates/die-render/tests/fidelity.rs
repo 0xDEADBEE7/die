@@ -4,7 +4,7 @@
 //! compiles them against the stub, so this file carries no platform cfg. Set
 //! `DIE_RENDER_PNG_DIR` to have them write the pictures they measure.
 
-use die_core::{Cell, CursorShape, Glyph, Rgb, Scene, Underline};
+use die_core::{Cell, Cursor, CursorShape, Glyph, Rgb, Scene, Underline};
 use die_render::driver::{Config, Renderer, grid_pixels};
 use die_render::font::{Draw, RangeRule};
 use die_render::font_dir;
@@ -737,6 +737,68 @@ fn a_hollow_cursor_outlines_the_cell_and_draws_the_glyph_as_it_is() {
             assert_eq!(b, RGB_RED, "the outline, at {x},{y}");
         }
     });
+}
+
+/// mono-dark's text and background colors.
+const MONO_FG: Rgb = Rgb(0xCC, 0xCC, 0xCC);
+const MONO_BG: Rgb = Rgb(0x1A, 0x1A, 0x1A);
+
+/// Its current search match with a cursor on it: an H in the background's color on a
+/// cell of the cursor's color. What die-core gives the match that starts at a cursor.
+fn on_a_current_match(r: &mut Renderer, shape: CursorShape) -> (Image, Image) {
+    let mut s = page(3, 3);
+    s.background = MONO_BG;
+    for c in &mut s.cells {
+        c.bg = MONO_BG;
+    }
+    put_with(&mut s, 1, 1, &["H"], |c| {
+        c.fg = MONO_BG;
+        c.bg = MONO_FG;
+    });
+    let without = draw(r, &s);
+    s.cursors = vec![Cursor {
+        color: MONO_FG,
+        ..cursor(1, 1, shape)
+    }];
+    (without, draw(r, &s))
+}
+
+#[test]
+fn every_cursor_on_a_search_match_of_its_own_color_stays_visible_and_keeps_the_letter() {
+    let Some(mut r) = term() else { return };
+    let (fg, bg) = ([MONO_FG.0; 3], [MONO_BG.0; 3]);
+    let (without, with) = on_a_current_match(&mut r, CursorShape::Block);
+    write_png(&with, "cursor-match-block.png");
+    each_pixel(&without, &with, |x, y, a, b| {
+        if a == fg {
+            assert_eq!(b, bg, "around the H, at {x},{y}");
+        }
+        if a == bg {
+            assert_eq!(b, fg, "the H's own pixel, at {x},{y}");
+        }
+    });
+    let mut letter = 0;
+    for y in CH..2 * CH {
+        letter += columns_in(&with, y, CW, 2 * CW, MONO_FG).len();
+    }
+    assert!(letter > 50, "an H to see: {letter} pixels");
+    for (shape, covered) in [
+        (CursorShape::Bar, (|x, _| x < 4) as fn(u32, u32) -> bool),
+        (CursorShape::Underline, |_, y| y >= CH - 4),
+        (CursorShape::HalfBlock, |_, y| y >= CH / 2),
+        (CursorShape::Hollow, |x, y| {
+            !((2..CW - 2).contains(&x) && (2..CH - 2).contains(&y))
+        }),
+    ] {
+        let (without, with) = on_a_current_match(&mut r, shape);
+        each_pixel(&without, &with, |x, y, a, b| {
+            if covered(x, y) {
+                assert_eq!(b, bg, "{shape:?} in the cell's foreground, at {x},{y}");
+            } else {
+                assert_eq!(a, b, "beside {shape:?}, at {x},{y}");
+            }
+        });
+    }
 }
 
 #[test]

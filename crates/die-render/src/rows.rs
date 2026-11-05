@@ -162,6 +162,19 @@ fn cursor_rects(
     }
 }
 
+/// What a cursor of this color is drawn in on `cell`: its color, unless that's the
+/// cell's background, where it wouldn't show and a block would erase the glyph. There
+/// the cell's foreground takes over, as Emacs's `x_set_cursor_gc` has it, then the
+/// scene's background, then black or white, so there's always a color that shows.
+fn cursor_color(color: Rgb, cell: &Cell, background: Rgb) -> Rgb {
+    if color != cell.bg {
+        return color;
+    }
+    let last = [Rgb(0, 0, 0), Rgb(255, 255, 255)];
+    let others = [cell.fg, background].into_iter().chain(last);
+    others.into_iter().find(|&c| c != color).unwrap_or(color)
+}
+
 /// A frame's data for the backend.
 #[derive(Debug)]
 pub struct Frame<'a> {
@@ -313,7 +326,7 @@ impl Frames {
             self.quads.extend_from_slice(&r.glyphs);
         }
         for c in &scene.cursors {
-            self.cursor(c);
+            self.cursor(c, scene.background);
         }
         Frame {
             quads: &self.quads,
@@ -325,7 +338,7 @@ impl Frames {
     /// A cursor's instances. On the right half of a wide character it takes the
     /// character's first cell, and it covers the character's cells. A cursor off the
     /// grid draws nothing.
-    fn cursor(&mut self, cursor: &Cursor) {
+    fn cursor(&mut self, cursor: &Cursor, background: Rgb) {
         if cursor.row >= self.rows.len() || cursor.col >= self.cols {
             return;
         }
@@ -340,8 +353,9 @@ impl Frames {
             col as f32 * cell.w as f32,
             cursor.row as f32 * cell.h as f32,
         );
+        let color = cursor_color(cursor.color, &row[col], background);
         for rect in cursor_rects(cursor.shape, x, y, span, cell) {
-            self.quads.push(solid(rect, cursor.color));
+            self.quads.push(solid(rect, color));
         }
         if cursor.shape == CursorShape::Block {
             let ink = Some(row[col].bg);
