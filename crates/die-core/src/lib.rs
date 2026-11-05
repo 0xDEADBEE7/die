@@ -38,6 +38,7 @@ mod windows;
 mod workspace;
 
 pub use app::{Button, Input, PointerEvent, PointerKind, TURN_LIMIT};
+pub use commands::{CommandDescription, KeyAction, KeyDescription};
 pub use dispatch::*;
 pub use error::*;
 pub use ext::*;
