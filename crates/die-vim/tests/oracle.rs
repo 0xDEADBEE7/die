@@ -236,6 +236,11 @@ fn run_case(case: &Case) -> Result<(), String> {
         );
     }
     if let Some(size) = &input.window {
+        // A tty Emacs keeps a window's last column for its continuation mark (m0-plan's Geometry risk).
+        ctx.text_mut(buf)
+            .map_err(|e| format!("{e:?}"))?
+            .settings_mut()
+            .max_width = Some(size.width.saturating_sub(1));
         ctx.set_top_line(w, size.top_line)
             .ok_or("the window shows no text")?;
     }
