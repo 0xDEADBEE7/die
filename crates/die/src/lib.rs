@@ -128,10 +128,6 @@ fn launch(config: Config, script: Option<window::Script>) -> i32 {
             return 2;
         }
     };
-    // `*messages*` isn't there to show these yet (K11a), and a file that didn't open is one.
-    for message in &ctx.messages {
-        eprintln!("die: {message}");
-    }
     let options = window::Options {
         font,
         title: "DIE".into(),

@@ -11,6 +11,7 @@
 use die_test_cap as _;
 
 mod grammar;
+mod ex;
 mod insert;
 mod motions;
 mod objects;
@@ -111,6 +112,9 @@ type Body = fn(&mut Ctx, &Args) -> Result;
 /// The other commands.
 #[rustfmt::skip]
 const COMMANDS: &[(&str, &str, Body)] = &[
+    ("vim-ex", ":: read a line and run it.", ex::open),
+    ("vim-search-forward", "/: read a pattern to search forward for.", ex::search_forward),
+    ("vim-search-backward", "?: read a pattern to search backward for.", ex::search_backward),
     ("vim-cancel", "Escape after a key that waits for another: only the operator, the count and the goal column go.", operators::cancel),
     ("vim-replace", "r: replace count characters with the next key.", operators::replace),
     ("vim-join", "J: join count lines.", operators::join),
@@ -244,6 +248,11 @@ impl Extension for Vim {
                 .bind(state, "gv", "vim-visual-restore")
                 .bind(state, "q", "vim-record-macro")
                 .bind(state, "@<any>", "vim-execute-macro");
+        }
+        for state in [Normal, Visual] {
+            k.bind(state, ":", "vim-ex")
+                .bind(state, "/", "vim-search-forward")
+                .bind(state, "?", "vim-search-backward");
         }
         k.bind(Normal, ".", "vim-repeat")
             .bind(CommandLine, "<any>", "vim-record-macro-into");

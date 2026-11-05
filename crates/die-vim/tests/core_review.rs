@@ -208,7 +208,10 @@ fn u_with_a_count_reports_the_conflict_it_reaches() {
     });
     ctx.run_until_idle();
     ctx.type_keys("c<Esc>3u");
-    assert_eq!(ctx.messages, ["UndoConflict"]);
+    assert_eq!(
+        ctx.messages,
+        ["undo history was cut short by an overlapping edit"]
+    );
     assert_eq!(ctx.text(b).unwrap().rope().to_string(), "older aB");
 }
 
@@ -225,7 +228,7 @@ fn u_with_a_count_reports_a_read_only_step() {
     assert_eq!(ctx.text(b).unwrap().rope().to_string(), "axyz\n");
     assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
     assert!(
-        ctx.messages[0].starts_with("ReadOnly"),
+        ctx.messages[0].contains("read-only"),
         "{:?}",
         ctx.messages
     );
@@ -239,7 +242,7 @@ fn a_count_past_the_end_of_history_is_quiet() {
     let (_, messages) = run("abc\n", 0, "u");
     assert_eq!(
         messages,
-        ["NothingToUndo"],
+        ["nothing to undo"],
         "with nothing at all to do, it says so"
     );
 }
