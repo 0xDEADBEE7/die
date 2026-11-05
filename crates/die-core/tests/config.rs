@@ -240,7 +240,7 @@ fn the_leader_config_sets_applies_to_every_keymap() {
     log.borrow_mut().clear();
     ctx.type_keys(",l");
     assert_eq!(*log.borrow(), ["a-cmd"]);
-    assert_eq!(ctx.leader(), Chord::parse(",").unwrap());
+    assert_eq!(ctx.leader(), KeyEvent::press(Key::Char(',')).chord());
 }
 
 #[test]
@@ -321,8 +321,13 @@ fn buffer_defaults_apply_to_every_new_text_buffer() {
     assert_eq!(*seen.borrow(), Some(3));
     let b = ctx.create_text("later", "");
     assert_eq!(ctx.text(b).unwrap().settings().tab_width, 3);
-    let plain = Ctx::new(vec![]).unwrap().create_text("t", "");
-    drop(plain);
+    let mut plain = Ctx::new(vec![]).unwrap();
+    let b = plain.create_text("t", "");
+    assert_eq!(
+        plain.text(b).unwrap().settings().tab_width,
+        Settings::default().tab_width,
+        "no config, no change"
+    );
 }
 
 struct TempFile(std::path::PathBuf);
