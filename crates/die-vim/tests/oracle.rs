@@ -12,11 +12,9 @@
 //!   different result for the same keys, mode and input, and only a regex-syntax
 //!   deviation may change the keys. A case whose oracle run dies has no oracle case to replace:
 //!   its rule's kind says so, and it runs here like any other hand-written fixture.
-//! - `oracle/pending.txt` names the cases die-vim doesn't pass yet, by the work
-//!   package they land with. A pending case that passes fails this test, and so
-//!   does a failing case that isn't pending.
-//! - `DIE_ORACLE_BLESS=1` rewrites `pending.txt` to the cases that fail now.
-//!   Check the diff: a case that leaves it is done, one that joins it is a regression.
+//! - `oracle/pending.txt` stays empty since V7: exit test (d) allows no pending case, so a
+//!   failing case is fixed, or becomes a deviation with a fixture. Anything in it fails this test.
+//! - `DIE_ORACLE_BLESS=1` rewrites `pending.txt` to the cases that fail now, to list them.
 //!
 //! The runner is core's public harness (K7). A tty case also sets its window's size and top
 //! line, and is held to its top line after a frame per key, as the oracle redisplays per command.
@@ -134,19 +132,15 @@ fn oracle() {
     }
 
     let mut failing = BTreeMap::new();
-    let mut passed_pending = Vec::new();
     let mut failed_new = Vec::new();
     for (name, (case, run)) in &all {
         if excluded.contains(name.as_str()) {
             continue;
         }
         match run_case(case) {
-            Ok(()) if pending.contains_key(name) => passed_pending.push(name.clone()),
             Ok(()) => {}
             Err(why) => {
-                if !pending.contains_key(name) {
-                    failed_new.push(format!("{name} ({}): {why}", case.keys));
-                }
+                failed_new.push(format!("{name} ({}): {why}", case.keys));
                 failing.insert(name.clone(), tranche(case, *run));
             }
         }
@@ -167,21 +161,20 @@ fn oracle() {
     if std::env::var_os("DIE_ORACLE_BLESS").is_some() {
         std::fs::write(&pending_path, pending_file(&failing)).unwrap();
         eprintln!(
-            "oracle: wrote {} ({} left it, {} joined it)",
+            "oracle: wrote {} ({} on it)",
             pending_path.display(),
-            passed_pending.len(),
-            failed_new.len()
+            failing.len()
         );
         assert!(problems.is_empty(), "{}", problems.join("\n"));
         return;
     }
-    for name in &passed_pending {
-        problems.push(format!("{name} passes now: take it off pending.txt"));
+    for name in pending.keys() {
+        problems.push(format!("{name}: pending, and exit test (d) allows none"));
     }
     problems.extend(
         failed_new
             .iter()
-            .map(|f| format!("{f}\n  (not pending: a regression, or a new case)")),
+            .map(|f| format!("{f}\n  (a regression, or a new case)")),
     );
     assert!(problems.is_empty(), "\n{}\n", problems.join("\n"));
 }
