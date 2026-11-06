@@ -163,24 +163,24 @@ fn a_later_binding_for_the_same_keys_shadows_the_earlier() {
 #[test]
 fn the_leader_comes_from_config_registered_last() {
     let log = Log::default();
-    let tool = ext(&log, &["find-file"], |r| {
+    let tool = ext(&log, &["my-finder"], |r| {
         r.global_keymap()
-            .bind(State::Normal, "<leader>f", "find-file");
+            .bind(State::Normal, "<leader>f", "my-finder");
     });
     let mut ctx = typing(vec![tool, Box::new(LeaderIs("<Space>"))], " f\\f");
-    assert_eq!(*log.borrow(), ["find-file"], "only Space-f ran it");
+    assert_eq!(*log.borrow(), ["my-finder"], "only Space-f ran it");
     assert_eq!(ctx.leader(), parse_keys(" ").unwrap()[0].chord());
     ctx.feed_keys("<leader>f").unwrap();
     ctx.run_until_idle();
     assert_eq!(log.borrow().len(), 2, "fed keys resolve the leader too");
 
     let log = Log::default();
-    let tool = ext(&log, &["find-file"], |r| {
+    let tool = ext(&log, &["my-finder"], |r| {
         r.global_keymap()
-            .bind(State::Normal, "<leader>f", "find-file");
+            .bind(State::Normal, "<leader>f", "my-finder");
     });
     let ctx = typing(vec![tool], "\\f");
-    assert_eq!(*log.borrow(), ["find-file"], "the default leader is \\");
+    assert_eq!(*log.borrow(), ["my-finder"], "the default leader is \\");
     assert_eq!(ctx.leader(), parse_keys("\\").unwrap()[0].chord());
 }
 
@@ -338,7 +338,7 @@ fn your_config_unbinds_a_key_to_free_it() {
     let vim = || {
         ext(
             &log,
-            &["emacs-state", "top", "end", "find-file", "g"],
+            &["emacs-state", "top", "end", "my-finder", "g"],
             |r| {
                 r.kind_keymap("text")
                     .bind(State::Normal, "\\", "emacs-state")
@@ -351,7 +351,7 @@ fn your_config_unbinds_a_key_to_free_it() {
         vim(),
         Box::new(Config(|r| {
             r.kind_keymap("text")
-                .bind(State::Normal, "<leader>f", "find-file")
+                .bind(State::Normal, "<leader>f", "my-finder")
                 .bind(State::Normal, "g", "g");
         })),
     ]);
@@ -359,12 +359,12 @@ fn your_config_unbinds_a_key_to_free_it() {
     let config = Config(|r| {
         r.kind_keymap("text")
             .unbind(State::Normal, "\\")
-            .bind(State::Normal, "<leader>f", "find-file")
+            .bind(State::Normal, "<leader>f", "my-finder")
             .unbind(State::Normal, "g")
             .bind(State::Normal, "g", "g");
     });
     typing(vec![vim(), Box::new(config)], "\\fg");
-    assert_eq!(*log.borrow(), ["find-file", "g"]);
+    assert_eq!(*log.borrow(), ["my-finder", "g"]);
 }
 
 /// Your config, registered last.
