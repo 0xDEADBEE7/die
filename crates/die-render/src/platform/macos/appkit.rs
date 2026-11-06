@@ -3,20 +3,22 @@
 
 use super::metal::{Pipeline, TARGET_FORMAT};
 use block2::RcBlock;
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Imp, Sel};
+use objc2::{MainThreadMarker, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSRunningApplication,
     NSView, NSWindow, NSWindowOcclusionState,
 };
 use objc2_core_foundation::CGSize;
-use objc2_foundation::{NSDictionary, NSNumber, NSString, NSUserDefaults};
+use objc2_foundation::{
+    NSArgumentDomain, NSDictionary, NSNotFound, NSNumber, NSRange, NSString, NSUserDefaults,
+};
 use objc2_quartz_core::CAMetalLayer;
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::{NonNull, null_mut};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 use winit::event_loop::EventLoopBuilder;
 use winit::platform::macos::{
@@ -35,13 +37,8 @@ const RETURN: u16 = 36;
 
 /// No default menu, and never activate the app on launch. With `dock`, it's a regular app
 /// with a Dock icon, and otherwise an accessory, which has none: a check's window is one.
-/// Holding a key repeats it: that's set for this process only, and nothing goes to disk.
 pub fn prepare_loop<T: 'static>(builder: &mut EventLoopBuilder<T>, dock: bool) {
-    let key = NSString::from_str(PRESS_AND_HOLD);
-    let no = NSNumber::new_bool(false);
-    let defaults = NSDictionary::<NSString, AnyObject>::from_slices(&[&*key], &[&**no]);
-    // SAFETY: the dictionary's values are NSNumbers, which the defaults system can hold.
-    unsafe { NSUserDefaults::standardUserDefaults().registerDefaults(&defaults) };
+    hold_repeats();
     let policy = if dock {
         ActivationPolicy::Regular
     } else {
@@ -51,6 +48,30 @@ pub fn prepare_loop<T: 'static>(builder: &mut EventLoopBuilder<T>, dock: bool) {
         .with_default_menu(false)
         .with_activate_ignoring_other_apps(false)
         .with_activation_policy(policy);
+}
+
+/// Holding a key repeats it, whatever your own defaults say: the process's argument domain
+/// outranks them, and stays in memory, so nothing goes to disk. Its real arguments stay.
+fn hold_repeats() {
+    let key = NSString::from_str(PRESS_AND_HOLD);
+    let no = NSNumber::new_bool(false);
+    let defaults = NSUserDefaults::standardUserDefaults();
+    // SAFETY: Foundation's constant names the domain, and it's read and replaced whole, with
+    // what it held and an NSNumber, which the defaults system can hold.
+    unsafe {
+        let (mut keys, mut values) = defaults.volatileDomainForName(NSArgumentDomain).to_vecs();
+        if let Some(at) = keys.iter().position(|k| **k == *key) {
+            keys.remove(at);
+            values.remove(at);
+        }
+        let mut names: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+        let mut objects: Vec<&AnyObject> = values.iter().map(|v| &**v).collect();
+        names.push(&key);
+        objects.push(&no);
+        let domain = NSDictionary::from_slices(&names, &objects);
+        defaults.removeVolatileDomainForName(NSArgumentDomain);
+        defaults.setVolatileDomain_forName(&domain, NSArgumentDomain);
+    }
 }
 
 /// Option acts as Alt on both sides.
@@ -90,6 +111,7 @@ struct Seen {
     toggles: RefCell<Vec<bool>>,
     panics: Cell<u64>,
     on_caps: RefCell<Box<dyn Fn()>>,
+    inserted: RefCell<Vec<String>>,
     deliver_to: RefCell<Option<Retained<NSWindow>>>,
 }
 
@@ -130,6 +152,89 @@ impl Seen {
     }
 }
 
+type KeyDownImp = unsafe extern "C-unwind" fn(&NSView, Sel, &NSEvent);
+type InsertImp = unsafe extern "C-unwind" fn(&NSView, Sel, &AnyObject, NSRange);
+
+thread_local! {
+    /// What `hook_view` replaced. All of this is the main thread's, where views live.
+    static ORIGINAL: Cell<Option<(KeyDownImp, InsertImp)>> = const { Cell::new(None) };
+    /// How many of winit's `keyDown:` are running.
+    static IN_KEY_DOWN: Cell<u32> = const { Cell::new(0) };
+    /// The installed monitor's state.
+    static SEEN: RefCell<Weak<Seen>> = const { RefCell::new(Weak::new()) };
+}
+
+/// The view's `keyDown:`, as winit has it, marking that it's running.
+unsafe extern "C-unwind" fn key_down(view: &NSView, sel: Sel, event: &NSEvent) {
+    let Some((original, _)) = ORIGINAL.get() else {
+        return;
+    };
+    IN_KEY_DOWN.set(IN_KEY_DOWN.get() + 1);
+    // SAFETY: this is what the method was, called as it would have been.
+    unsafe { original(view, sel, event) };
+    IN_KEY_DOWN.set(IN_KEY_DOWN.get() - 1);
+}
+
+/// The view's `insertText:replacementRange:`. winit commits only marked text, since within
+/// `keyDown:` the key's own event carries the text, so it drops what comes with neither: the
+/// Character Viewer's. That text goes to the monitor, and all else to winit.
+unsafe extern "C-unwind" fn insert_text(view: &NSView, sel: Sel, text: &AnyObject, range: NSRange) {
+    // SAFETY: winit's view answers this, on the main thread.
+    let marked: bool = unsafe { msg_send![view, hasMarkedText] };
+    let seen = SEEN.with_borrow(Weak::upgrade);
+    let taker = seen.filter(|_| IN_KEY_DOWN.get() == 0 && !marked);
+    if let Some(seen) = taker {
+        // SAFETY: AppKit's text is an NSString or an NSAttributedString, which answers `string`.
+        let string = match text.downcast_ref::<NSString>() {
+            Some(string) => string.to_string(),
+            None => {
+                let string: Option<Retained<NSString>> = unsafe { msg_send![text, string] };
+                string.map_or_else(String::new, |s| s.to_string())
+            }
+        };
+        // winit drops a control character too.
+        if string.chars().next().is_some_and(|c| !c.is_control()) {
+            seen.inserted.borrow_mut().push(string);
+            // A panic in it can't unwind into AppKit, as in the monitor's block.
+            let woke = catch_unwind(AssertUnwindSafe(|| (seen.on_caps.borrow())()));
+            if woke.is_err() {
+                seen.panics.set(seen.panics.get() + 1);
+            }
+        }
+    } else if let Some((_, original)) = ORIGINAL.get() {
+        // SAFETY: this is what the method was, called as it would have been.
+        unsafe { original(view, sel, text, range) };
+    }
+}
+
+/// Put `key_down` and `insert_text` on winit's view class, once.
+fn hook_view(view: &NSView) -> Result<(), String> {
+    if ORIGINAL.get().is_some() {
+        return Ok(());
+    }
+    let class = view.class();
+    let method = |sel| {
+        let found = class.instance_method(sel);
+        found.ok_or("winit's view hasn't the text input methods it had")
+    };
+    let keys = method(sel!(keyDown:))?;
+    let inserts = method(sel!(insertText:replacementRange:))?;
+    // SAFETY: both replacements take what these methods take (winit's platform_impl/macos/
+    // view.rs, at the exact version Cargo.toml pins), and the originals, cast back to those
+    // same types, are what they call.
+    unsafe {
+        let new_keys = std::mem::transmute::<KeyDownImp, Imp>(key_down);
+        let new_inserts = std::mem::transmute::<InsertImp, Imp>(insert_text);
+        let old_keys = keys.set_implementation(new_keys);
+        let old_inserts = inserts.set_implementation(new_inserts);
+        ORIGINAL.set(Some((
+            std::mem::transmute::<Imp, KeyDownImp>(old_keys),
+            std::mem::transmute::<Imp, InsertImp>(old_inserts),
+        )));
+    }
+    Ok(())
+}
+
 /// A local event monitor: it runs inside `sendEvent:`, before the event is dispatched. It sees
 /// Caps Lock, and hands the chords AppKit traps straight to the first responder. A panic
 /// in it can't unwind into AppKit, so it's caught and counted, and the event goes on as if
@@ -150,8 +255,10 @@ impl KeyMonitor {
             toggles: RefCell::default(),
             panics: Cell::new(0),
             on_caps: RefCell::new(Box::new(on_caps)),
+            inserted: RefCell::default(),
             deliver_to: RefCell::new(None),
         });
+        SEEN.set(Rc::downgrade(&seen));
         let shared = seen.clone();
         let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit passes a live event for the length of this call.
@@ -176,6 +283,11 @@ impl KeyMonitor {
     /// What Caps Lock did since the last call, in order: on or off.
     pub fn take_caps(&self) -> Vec<bool> {
         std::mem::take(&mut self.seen.toggles.borrow_mut())
+    }
+
+    /// The text inserted with no key since the last call, in order (`hook_view`).
+    pub fn take_inserted(&self) -> Vec<String> {
+        std::mem::take(&mut self.seen.inserted.borrow_mut())
     }
 
     /// Whether Caps Lock was on at the last event.
@@ -234,6 +346,7 @@ impl Surface {
         let view = unsafe { Retained::retain(handle.ns_view.as_ptr().cast::<NSView>()) };
         let view = view.ok_or("the window has no view")?;
         let ns_window = view.window().ok_or("the view has no window")?;
+        hook_view(&view)?;
         let layer = CAMetalLayer::new();
         layer.setDevice(Some(pipeline.device()));
         layer.setPixelFormat(TARGET_FORMAT);
@@ -250,6 +363,15 @@ impl Surface {
             read_next: Cell::new(false),
             readable,
         })
+    }
+
+    /// Hand the view text as an input method does, with no key and no marked text.
+    pub fn insert_text(&self, text: &str) {
+        let text = NSString::from_str(text);
+        let nowhere = NSRange::new(NSNotFound as usize, 0);
+        // SAFETY: winit's view takes this NSTextInputClient message, on the main thread, where a
+        // surface stays.
+        let () = unsafe { msg_send![&*self.view, insertText: &*text, replacementRange: nowhere] };
     }
 
     /// Read the next frame back, which costs tens of ms. On a surface attached without

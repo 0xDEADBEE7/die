@@ -219,7 +219,8 @@ pub fn caps_event(held: &Held) -> KeyEvent {
 pub struct Pointer {
     double_click: Duration,
     at: (usize, usize),
-    down: Option<Button>,
+    /// The buttons held, oldest first, each with the click count of its press.
+    held: Vec<(Button, u8)>,
     last: Option<(Button, (usize, usize), Instant)>,
     clicks: u8,
 }
@@ -230,7 +231,7 @@ impl Pointer {
         Pointer {
             double_click,
             at: (0, 0),
-            down: None,
+            held: vec![],
             last: None,
             clicks: 0,
         }
@@ -253,7 +254,8 @@ impl Pointer {
             return None;
         }
         self.at = at;
-        let kind = self.down.map_or(PointerKind::Move, PointerKind::Drag);
+        let dragging = self.held.first().map(|&(button, _)| button);
+        let kind = dragging.map_or(PointerKind::Move, PointerKind::Drag);
         Some(self.event(kind, 0, mods))
     }
 
@@ -272,11 +274,10 @@ impl Pointer {
             MouseButton::Right => Button::Right,
             _ => return None,
         };
+        let at = self.held.iter().position(|&(b, _)| b == button);
+        let pressed = at.map(|i| self.held.remove(i).1);
         if !down {
-            if self.down == Some(button) {
-                self.down = None;
-            }
-            let clicks = self.clicks.max(1);
+            let clicks = pressed.unwrap_or(1);
             return Some(self.event(PointerKind::Release(button), clicks, mods));
         }
         let again = self.last.is_some_and(|(b, at, t)| {
@@ -288,7 +289,7 @@ impl Pointer {
             1
         };
         self.last = Some((button, self.at, now));
-        self.down = Some(button);
+        self.held.push((button, self.clicks));
         Some(self.event(PointerKind::Press(button), self.clicks, mods))
     }
 

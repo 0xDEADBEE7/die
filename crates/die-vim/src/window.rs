@@ -53,17 +53,23 @@ const EX: &[(&str, &str, &str)] = &[
 ];
 
 /// An ex line, if it's a window command: an optional count, the name, and a file. `!` changes
-/// nothing here, as `:q!` only differs from `:q` when quitting.
+/// nothing here but for `:q!`, whose text tells the app's `quit` to drop unsaved changes.
 pub fn ex(ctx: &mut Ctx, line: &str) -> Option<Result> {
     let digits = line.find(|c: char| !c.is_ascii_digit())?;
     let (n, rest) = line.split_at(digits);
     let (name, file) = rest.split_once(' ').unwrap_or((rest, ""));
+    let bang = name.ends_with('!');
     let name = name.strip_suffix('!').unwrap_or(name);
     let is = |e: &&(&str, &str, &str)| name.len() >= e.0.len() && e.1.starts_with(name);
     let &(.., command) = EX.iter().find(is)?;
+    let text = match file.trim() {
+        _ if bang && command == "vim-quit" => Some("!".to_string()),
+        "" => None,
+        file => Some(file.to_string()),
+    };
     let args = Args {
         count: n.parse().ok(),
-        text: (!file.trim().is_empty()).then(|| file.trim().to_string()),
+        text,
         ..Default::default()
     };
     Some(ctx.run(command, &args))

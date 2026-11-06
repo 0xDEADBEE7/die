@@ -433,12 +433,20 @@ impl Shell {
         }
     }
 
+    /// Have the view get `text` as an input method gives it (`Surface::insert_text`).
+    pub fn insert_text(&self, text: &str) {
+        if let Some(live) = &self.live {
+            live.surface.insert_text(text);
+        }
+    }
+
     /// What the monitor saw before now, so that it stays in order with the keys.
     fn drain_monitor(&mut self) {
         let Some(monitor) = &self.monitor else {
             return;
         };
         let (toggles, caps, panics) = (monitor.take_caps(), monitor.caps(), monitor.panics());
+        let inserted = monitor.take_inserted();
         for on in toggles {
             self.held.set_caps(on);
             self.send(caps_event(&self.held));
@@ -449,6 +457,17 @@ impl Shell {
             let line = "the key monitor panicked, and goes on";
             self.host.ctx.messages.push(line.to_owned());
         }
+        for text in inserted {
+            self.commit(&text);
+        }
+    }
+
+    /// Text that came with no key of its own.
+    fn commit(&mut self, text: &str) {
+        self.send(KeyEvent {
+            caps_lock: self.held.caps(),
+            ..KeyEvent::committed(text)
+        });
     }
 
     fn key(&mut self, event: &winit::event::KeyEvent, synthetic: bool) {
@@ -596,10 +615,8 @@ impl ApplicationHandler<Wake> for Shell {
                 return self.held.sync(modifiers.state());
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                return self.input(KeyEvent {
-                    caps_lock: self.held.caps(),
-                    ..KeyEvent::committed(&text)
-                });
+                self.commit(&text);
+                return self.settle();
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let (now, mods) = (Instant::now(), self.held.mods());
@@ -643,6 +660,9 @@ impl ApplicationHandler<Wake> for Shell {
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         self.stats.wakeups += 1;
         self.settle();
+        if self.host.ctx.quit_requested() {
+            return el.exit();
+        }
         el.set_control_flow(match self.host.sleep(self.more) {
             Sleep::Forever => ControlFlow::Wait,
             Sleep::No => ControlFlow::Poll,
