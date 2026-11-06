@@ -236,6 +236,23 @@ fn click(p: &mut Pointer, at: Instant) -> (PointerEvent, PointerEvent) {
 }
 
 #[test]
+fn a_second_button_coming_and_going_leaves_the_drag_and_its_click_count() {
+    let (mods, now) = (Mods::default(), Instant::now());
+    let mut p = Pointer::new(Duration::from_millis(400));
+    click(&mut p, now);
+    p.button(MouseButton::Left, true, now, mods).unwrap();
+    p.button(MouseButton::Right, true, now, mods).unwrap();
+    p.button(MouseButton::Right, false, now, mods).unwrap();
+    let moved = p.moved((100.0, 100.0), &cell(), (80, 24), mods).unwrap();
+    assert_eq!(moved.kind, PointerKind::Drag(Button::Left));
+    let up = p.button(MouseButton::Left, false, now, mods).unwrap();
+    assert_eq!(
+        (up.kind, up.clicks),
+        (PointerKind::Release(Button::Left), 2)
+    );
+}
+
+#[test]
 fn clicks_count_up_while_they_are_quick_on_one_cell_with_one_button() {
     let double = Duration::from_millis(400);
     let mut p = Pointer::new(double);

@@ -65,6 +65,11 @@ pub mod appkit {
         }
 
         /// Never runs.
+        pub fn take_inserted(&self) -> Vec<String> {
+            match self.0 {}
+        }
+
+        /// Never runs.
         pub fn caps(&self) -> bool {
             match self.0 {}
         }
@@ -106,6 +111,11 @@ pub mod appkit {
 
         /// Never runs.
         pub fn resize(&self, _: (u32, u32), _: f64) {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        pub fn insert_text(&self, _: &str) {
             match self.0 {}
         }
 
