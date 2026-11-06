@@ -22,6 +22,7 @@ mod repeat;
 mod scripts;
 mod scroll;
 mod search;
+mod substitute;
 mod text;
 mod visual;
 mod window;

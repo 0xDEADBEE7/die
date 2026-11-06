@@ -3,11 +3,9 @@
 
 use die_test_cap as _;
 
-use die_core::{BufferId, Extension, Harness, Registry, WindowId};
+use die_core::{BufferId, Harness, WindowId};
 use die_vim::Vim;
-use std::cell::RefCell;
 use std::path::Path;
-use std::rc::Rc;
 
 /// A frame of 80 by 26, a window on `t`, and the keys typed. An error fails the test.
 fn start(keys: &str) -> (Harness, BufferId, WindowId) {
@@ -205,38 +203,10 @@ fn q_on_a_split_closes_the_window_and_evens_out_its_split_as_c_w_c_does() {
 }
 
 #[test]
-fn bang_on_q_reaches_the_apps_quit_on_the_last_window() {
-    // `quit` is the app's: `:q!` comes as the text "!", which `:q` and `C-w q` don't have.
-    struct App(Rc<RefCell<Vec<Option<String>>>>);
-    impl Extension for App {
-        fn name(&self) -> &'static str {
-            "app"
-        }
-        fn register(&mut self, reg: &mut Registry) {
-            let seen = self.0.clone();
-            reg.command("quit", "", move |_, a| {
-                seen.borrow_mut().push(a.text.clone());
-                Ok(())
-            });
-        }
-    }
-    let seen = Rc::new(RefCell::new(vec![]));
-    let exts: Vec<Box<dyn Extension>> = vec![Box::new(Vim::default()), Box::new(App(seen.clone()))];
-    let mut h = Harness::new(exts).expect("both register");
-    h.open_text("t", "one\n").expect("a window");
-    typed(&mut h, ":q!<CR>:q<CR><C-w>q:quit!<CR>");
-    let bang = Some("!".to_string());
-    assert_eq!(*seen.borrow(), [bang.clone(), None, None, bang]);
-}
-
-#[test]
-fn quit_on_the_last_window_runs_the_apps_quit() {
+fn quit_on_the_last_window_asks_the_host_to_end() {
     let (mut h, _, w) = start("");
-    let log = h.type_keys(":q<CR>").unwrap();
-    assert!(
-        !log.last().unwrap().errors.is_empty(),
-        "no app here to quit"
-    );
+    typed(&mut h, "<C-w>q");
+    assert!(h.quit_wanted());
     assert_eq!(h.window_list(), [w]);
 }
 
