@@ -1,7 +1,7 @@
 //! `:s`: its line range, its parts, and the case of what it writes. Patterns and replacements
 //! are Rust's (D4); core's [`die_core::TextBuf::substitutions`] finds and expands them.
 use crate::grammar::buffer_window;
-use crate::search::ignores_case;
+use crate::search::{self, ignores_case};
 use crate::text::{indent_end, rest_pos};
 use crate::visual;
 use die_core::{Args, BufferId, Ctx, Error, Origin, Pattern, Result, WindowId};
@@ -38,18 +38,25 @@ pub fn parse(text: &str) -> Option<(Lines, &str)> {
 
 /// Run `:s`, given its range and what follows the `s`. No match isn't an error, as in your Evil.
 /// It's one undo step, and the cursor ends on the first non-blank of the last line it changed.
+/// It shares its pattern with `n`, and an empty pattern is the last one. As in your Evil, it ends
+/// the highlight of the last search.
 pub fn run(ctx: &mut Ctx, lines: Lines, rest: &str) -> Result {
     let (from, to, global) = parts(rest)?;
-    if from.is_empty() {
-        return Err(Error::Msg("Reusing the last pattern isn't built".into()));
-    }
+    let pat = if from.is_empty() {
+        let last = search::last_pattern(ctx)?;
+        last.ok_or_else(|| Error::Msg(search::NONE_YET.into()))?
+    } else {
+        Pattern::new(&from, ignores_case(&from))?
+    };
+    let ignore_case = ignores_case(pat.as_str());
     let (b, w) = buffer_window(ctx, &Args::default())?;
     let lines = line_range(ctx, b, w, lines)?;
-    let ignore_case = ignores_case(&from);
-    let pat = Pattern::new(&from, ignore_case)?;
+    search::remember_pattern(ctx, pat.clone())?;
+    ctx.set_search_highlight(None);
     let t = ctx.text_mut(b)?;
     let mut changes = t.substitutions(&pat, lines, &to, global);
     if changes.is_empty() {
+        let from = pat.as_str();
         ctx.messages.push(format!("Pattern not found: {from}"));
         return Ok(());
     }
@@ -121,8 +128,28 @@ fn parts(rest: &str) -> Result<(String, String, bool)> {
         return Err(Error::Msg(format!("Only the g flag is built: {rest}")));
     }
     let global = flags == "g";
-    let to = pieces.get(1).cloned().unwrap_or_default();
+    let to = pieces.get(1).map_or(String::new(), |to| escapes(to));
     Ok((pieces.swap_remove(0), to, global))
+}
+
+/// `\n`, `\t` and `\\` in a replacement are those characters, as in your Evil. Any other backslash
+/// is itself (D4).
+fn escapes(to: &str) -> String {
+    let mut out = String::with_capacity(to.len());
+    let mut chars = to.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('\\') | None => out.push('\\'),
+            Some(other) => out.extend(['\\', other]),
+        }
+    }
+    out
 }
 
 /// `new` in the case of the `old` it replaces, by the rules of Emacs's `replace-match`: all caps

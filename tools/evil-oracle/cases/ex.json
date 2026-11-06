@@ -13,5 +13,13 @@
   {"id": "s-smartcase-upper", "keys": ":s/Foo/x/g<CR>", "text": ["|foo Foo"]},
   {"id": "goto-line", "vim": "startofline: Vim moves to the first non-blank; Evil goes to column 0", "keys": ":3<CR>", "text": ["|one", "two", "  three", "four"]},
   {"id": "s-cursor-after-percent", "keys": ":%s/a/b/<CR>", "text": ["|a", "x", "  a", "x"]},
-  {"id": "s-group-before-letter", "description": "A group followed by a letter. With DIE's Rust regex syntax the same command is :s/(foo)/${1}x/", "keys": ":s/\\(foo\\)/\\1x/<CR>", "text": ["|foo"]}
+  {"id": "s-group-before-letter", "description": "A group followed by a letter. With DIE's Rust regex syntax the same command is :s/(foo)/${1}x/", "keys": ":s/\\(foo\\)/\\1x/<CR>", "text": ["|foo"]},
+  {"id": "s-replacement-newline", "description": "A \\n in the replacement is a newline.", "keys": ":s/, /\\n/<CR>", "text": ["|a, b"]},
+  {"id": "s-replacement-tab", "keys": ":s/, /\\t/<CR>", "text": ["|a, b"]},
+  {"id": "s-replacement-backslash", "keys": ":s/, /\\\\n/<CR>", "text": ["|a, b"]},
+  {"id": "s-then-n", "description": "n repeats the pattern of :s. No search has set a direction, so it goes backward.", "keys": ":s/foo/bar/<CR>n", "text": ["|foo foo", "foo", "foo"]},
+  {"id": "s-then-n-keeps-direction", "description": "n after :s finds its pattern, not the older one, the way the older search went.", "keys": "/baz<CR>gg:s/foo/x/<CR>n", "text": ["|foo baz", "foo", "baz", "foo"]},
+  {"id": "s-empty-reuses-search", "keys": "/bar<CR>gg:s//x/<CR>", "text": ["|foo bar", "bar"]},
+  {"id": "s-match-across-lines", "description": "Without g, a match holding a newline leaves the rest of its last line in play.", "keys": ":%s/a\\nb/X/<CR>", "text": ["|a", "b a", "b"]},
+  {"id": "visual-then-command", "description": "A command that takes no range runs from a selection.", "keys": "V:vsplit<CR>x", "text": ["|foo", "bar"]}
  ]}

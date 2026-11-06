@@ -246,7 +246,9 @@ impl TextBuf {
     /// What `:s` changes in the whole lines `lines`: each match and its replacement, in order and
     /// without overlaps. With `global` that's every match, otherwise the first of each line. `$1`,
     /// `${1}`, `$name`, `$0` and `$$` in `template` expand as in Rust's regex crate. An empty match
-    /// at `lines.end` belongs to the next line, so it doesn't count unless `lines` is empty.
+    /// at `lines.end` belongs to the next line, so it doesn't count unless `lines` is empty or
+    /// the text ends there with no newline. A match holding a newline leaves the rest of its
+    /// last line in play.
     pub fn substitutions(
         &self,
         pat: &Pattern,
@@ -263,7 +265,7 @@ impl TextBuf {
             let Some(m) = caps.get_match().map(|m| m.range()) else {
                 continue;
             };
-            if m.start == lines.end && !lines.is_empty() {
+            if m.start == lines.end && !lines.is_empty() && text[..m.start].ends_with('\n') {
                 break;
             }
             if m.start < next_line || !pat.stands_alone(text, &m) {
@@ -271,7 +273,7 @@ impl TextBuf {
             }
             out.push((m.clone(), caps.interpolate_string(text, template)));
             if !global {
-                next_line = if text[m.clone()].ends_with('\n') {
+                next_line = if text[m.clone()].contains('\n') {
                     m.end
                 } else {
                     self.line_start(self.line_of(m.end) + 1)
