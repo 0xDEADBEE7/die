@@ -192,8 +192,9 @@ impl Ctx {
     /// Open the file at `path`, which must be absolute, into a text buffer named
     /// after it, or return the buffer already visiting it (through a symlink too).
     /// `..` is resolved as [`FileInfo::path`] says. A missing file opens as an
-    /// empty buffer that a save will create, and anything else that isn't a
-    /// readable regular file is an error. The settings from
+    /// empty buffer that a save will create. A save can't make a missing directory,
+    /// so a message says when it's missing. Anything else that isn't a readable
+    /// regular file is an error. The settings from
     /// [`Ctx::set_file_settings`] apply, then read-only for a file that can't be
     /// edited safely, with a message.
     pub fn open_file(&mut self, path: &Path) -> Result<BufferId> {
@@ -212,7 +213,13 @@ impl Ctx {
                 let (text, bom, why) = decode(bytes);
                 (text, Some(fp), bom, why)
             }
-            Err(e) if e.kind() == ErrorKind::NotFound => (String::new(), None, false, None),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                if let Some(dir) = path.parent().filter(|d| !d.exists()) {
+                    let line = format!("Directory {} doesn't exist", dir.display());
+                    self.messages.push(line);
+                }
+                (String::new(), None, false, None)
+            }
             Err(e) => return Err(Error::Msg(format!("{}: {e}", path.display()))),
         };
         let state = FileState {
@@ -522,7 +529,7 @@ impl Ctx {
 }
 
 /// `path` with `.` and `..` resolved without touching the disk.
-fn normalize(path: &Path) -> PathBuf {
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in path.components() {
         match c {

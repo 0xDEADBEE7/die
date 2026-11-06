@@ -97,3 +97,16 @@ fn other_states_do_not_come_back() {
     typed(&mut b, "x"); // a command, not a character
     assert_eq!(text(&b), "helloext\n");
 }
+
+/// The idle write catches an insert session, whose cursor can be on a newline. Normal state's can't.
+#[test]
+fn a_cursor_saved_in_an_insert_session_comes_back_where_normal_state_rests() {
+    let mut a = editor();
+    a.open_text("t", "abc\ndef\n").unwrap();
+    typed(&mut a, "AZ");
+    let mut b = editor();
+    b.restore_session(&a.session_json()).unwrap();
+    assert_eq!(b.state(), State::Normal);
+    typed(&mut b, "x");
+    assert_eq!(text(&b), "abc\ndef\n");
+}

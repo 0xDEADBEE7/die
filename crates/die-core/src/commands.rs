@@ -5,6 +5,7 @@ use crate::ShowIn;
 use crate::dispatch::*;
 use crate::error::Error;
 use crate::ext::*;
+use crate::files::normalize;
 use crate::prompt::{PromptSpec, recent_first};
 use std::path::{Path, PathBuf};
 
@@ -134,14 +135,36 @@ fn ask_for_file(ctx: &mut Ctx, dir: PathBuf, home: Option<PathBuf>, line: &str) 
         };
         let path = resolve(&dir, home.as_deref(), &answer);
         if path.is_dir() {
-            let line = format!("{}/", answer.trim_end_matches('/'));
-            ask_for_file(ctx, dir, home, &line);
+            let slash = if answer.ends_with('/') { "" } else { "/" };
+            ask_for_file(ctx, dir, home, &format!("{answer}{slash}"));
             return Ok(());
         }
-        let file = ctx.open_file(&path)?;
-        ctx.show(file, ShowIn::Current)?;
+        let Some(missing) = path.parent().filter(|d| !d.exists()).map(Path::to_path_buf) else {
+            return open_in_window(ctx, &path);
+        };
+        // Emacs asks when saving, and a save can't ask yet, so this asks before opening.
+        let label = format!(
+            "Directory {} doesn't exist; create? (y or n) ",
+            missing.display()
+        );
+        ctx.prompt(PromptSpec::new(&label), move |ctx, answer| {
+            let Some(answer) = answer else {
+                return Ok(());
+            };
+            if matches!(answer.as_str(), "y" | "yes") {
+                std::fs::create_dir_all(&missing)
+                    .map_err(|e| Error::Msg(format!("{}: {e}", missing.display())))?;
+            }
+            open_in_window(ctx, &path)
+        });
         Ok(())
     });
+}
+
+fn open_in_window(ctx: &mut Ctx, path: &Path) -> crate::error::Result {
+    let file = ctx.open_file(path)?;
+    ctx.show(file, ShowIn::Current)?;
+    Ok(())
 }
 
 /// The prompt's starting line for a directory: ending in `/`, and with `~` for the home directory
@@ -154,13 +177,27 @@ fn line_for(dir: &Path, home: Option<&Path>) -> String {
     format!("{}/", line.trim_end_matches('/'))
 }
 
-/// What a line means: `~` is the home directory, and a relative path starts from `dir`.
+/// What a line means: only what's from its last restart counts, `~` is the home directory, a
+/// relative path starts from `dir`, and `..` goes by name, as [`Ctx::open_file`] takes it.
 fn resolve(dir: &Path, home: Option<&Path>, line: &str) -> PathBuf {
-    match (line.strip_prefix('~'), home) {
+    let line = restarted(line);
+    normalize(&match (line.strip_prefix('~'), home) {
         (Some(""), Some(home)) => home.to_path_buf(),
         (Some(rest), Some(home)) if rest.starts_with('/') => home.join(&rest[1..]),
         _ => dir.join(line),
-    }
+    })
+}
+
+/// The line from where it last starts again, as Emacs's `substitute-in-file-name` has it: the
+/// second slash of a `//`, or the `~` of a `/~/`. The start line is a full path, so typing over
+/// it is how to go elsewhere. A `/~` at the end counts too, and a `~name` is only a name.
+fn restarted(line: &str) -> &str {
+    let b = line.as_bytes();
+    let starts = |&i: &usize| {
+        b[i - 1] == b'/'
+            && (b[i] == b'/' || b[i] == b'~' && matches!(b.get(i + 1), None | Some(b'/')))
+    };
+    (1..b.len()).rev().find(starts).map_or(line, |i| &line[i..])
 }
 
 /// The candidates for the line: the entries of the directory it names up to its last `/`. That
