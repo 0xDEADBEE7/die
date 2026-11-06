@@ -26,6 +26,7 @@ mod substitute;
 mod text;
 mod visual;
 mod window;
+pub use window::quit_app;
 
 use die_core::key_notation;
 use die_core::{
