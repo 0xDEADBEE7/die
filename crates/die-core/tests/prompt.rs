@@ -7,6 +7,8 @@ use die_core::{
     Theme,
 };
 use std::cell::RefCell;
+use std::fs;
+use std::path::Path;
 use std::rc::Rc;
 
 fn ctx() -> Ctx {
@@ -658,6 +660,78 @@ fn command_palette_runs_what_is_chosen_with_its_count() {
         before + 1,
         "a name that isn't one says so"
     );
+}
+
+/// The whole way down this repository, from a buffer at its root to a file in a crate.
+#[test]
+fn find_file_descends_into_a_crate_and_opens_the_file() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = root.canonicalize().unwrap();
+    let mut ctx = ctx();
+    let start = ctx.open_file(&root.join("Cargo.toml")).unwrap();
+    ctx.show(start, ShowIn::Current).unwrap();
+
+    ctx.run("find-file", &Args::default()).unwrap();
+    let line = ctx.prompt_text().unwrap().to_string();
+    assert!(line.ends_with('/'), "{line}");
+    assert!(ctx.prompt_candidates().contains(&"crates/"));
+
+    ctx.type_keys("crates<CR>");
+    assert_eq!(ctx.prompt_text().unwrap(), format!("{line}crates/"));
+    ctx.type_keys("die-core<CR>");
+    assert_eq!(
+        ctx.prompt_text().unwrap(),
+        format!("{line}crates/die-core/")
+    );
+    let shown = ctx.prompt_candidates();
+    for entry in ["Cargo.toml", "src/", "tests/"] {
+        assert!(shown.contains(&entry), "{entry} in {shown:?}");
+    }
+
+    ctx.type_keys("src<CR>");
+    ctx.type_keys("commands.rs<CR>");
+    assert_eq!(ctx.prompt_text(), None, "answered");
+    let opened = ctx.focused_buffer().unwrap();
+    assert_eq!(ctx.buffer_name(opened), Some("commands.rs"));
+    assert_eq!(
+        ctx.directory(opened),
+        Some(root.join("crates/die-core/src").as_path())
+    );
+}
+
+/// Hidden entries come last, a symlink to a directory descends, a new name is a new file, and a
+/// cancel opens nothing.
+#[test]
+fn find_file_lists_a_directory_and_takes_a_new_name() {
+    let dir = std::env::temp_dir().join(format!("die-find-file-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(dir.join("b.txt"), "b").unwrap();
+    fs::write(dir.join(".hidden"), "").unwrap();
+    fs::write(dir.join("sub/deep.txt"), "deep").unwrap();
+    std::os::unix::fs::symlink(dir.join("sub"), dir.join("link")).unwrap();
+
+    let mut ctx = ctx();
+    let start = ctx.focused_buffer().unwrap();
+    ctx.set_directory(start, &dir);
+    ctx.run("find-file", &Args::default()).unwrap();
+    assert_eq!(
+        ctx.prompt_candidates(),
+        ["b.txt", "link/", "sub/", ".hidden"]
+    );
+
+    ctx.type_keys("<Esc>");
+    assert_eq!(ctx.focused_buffer(), Some(start), "a cancel opens nothing");
+
+    ctx.run("find-file", &Args::default()).unwrap();
+    ctx.type_keys("link<CR>");
+    assert_eq!(ctx.prompt_candidates(), ["deep.txt"]);
+    ctx.type_keys("new.txt<M-CR>");
+    let opened = ctx.focused_buffer().unwrap();
+    assert_eq!(ctx.buffer_name(opened), Some("new.txt"));
+    assert!(!dir.join("sub/new.txt").exists(), "not on disk until saved");
+
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
