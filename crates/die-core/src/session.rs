@@ -330,7 +330,7 @@ pub(crate) struct Session {
     /// What the last look found, and when it first found it.
     seen: Option<(Snapshot, Duration)>,
     written: Option<Snapshot>,
-    /// When a look first found something `written` doesn't have.
+    /// When a look first found something `written` doesn't have. Stale, it only writes early.
     unwritten: Option<Duration>,
     /// A failure was reported and no write has worked since.
     failing: bool,
@@ -567,12 +567,11 @@ impl Ctx {
             };
             ids.push(restored.as_ref().ok().copied().flatten());
             match restored {
-                Ok(id) => {
-                    if let Some(id) = id {
-                        views.push((id, its_views));
-                        if parsed.focus == Some(i as u64) {
-                            focus = Some(id);
-                        }
+                Ok(None) => {}
+                Ok(Some(id)) => {
+                    views.push((id, its_views));
+                    if parsed.focus == Some(i as u64) {
+                        focus = Some(id);
                     }
                 }
                 Err(e) => {
@@ -584,30 +583,16 @@ impl Ctx {
             }
         }
         dropped += self.restore_registers(parsed.registers);
-        dropped += self.restore_histories(parsed.histories);
-        let layout = match parsed.layout.map(serde_json::from_value::<Layout>) {
-            Some(Ok(layout)) => Some(layout),
-            Some(Err(e)) => {
-                self.messages
-                    .push(format!("session: dropped the windows: {e}"));
-                dropped += 1;
-                None
-            }
-            None => None,
-        };
-        let windows = match parsed
-            .windows
-            .map(serde_json::from_value::<Vec<WindowRecord>>)
-        {
-            Some(Ok(windows)) => windows,
-            Some(Err(e)) => {
-                self.messages
-                    .push(format!("session: dropped the windows: {e}"));
-                dropped += 1;
-                vec![]
-            }
-            None => vec![],
-        };
+        let histories: Option<BTreeMap<String, Vec<String>>> =
+            self.read_part(parsed.histories, "histories", &mut dropped);
+        for (name, mut past) in histories.into_iter().flatten() {
+            past.drain(..past.len().saturating_sub(HISTORY));
+            self.histories.insert(name, past);
+        }
+        let layout: Option<Layout> = self.read_part(parsed.layout, "windows", &mut dropped);
+        let windows: Option<Vec<WindowRecord>> =
+            self.read_part(parsed.windows, "windows", &mut dropped);
+        let windows = windows.unwrap_or_default();
         let placed = layout.is_some_and(|layout| {
             let focused = parsed.focused_window.map(|f| f as usize);
             let placing = catch(|| self.restore_windows(&layout, &windows, focused, &ids, views));
@@ -627,6 +612,22 @@ impl Ctx {
             self.show_restored(buf);
         }
         dropped
+    }
+
+    /// Part of the file, if it can be read, and otherwise a message and one more dropped.
+    fn read_part<T: serde::de::DeserializeOwned>(
+        &mut self,
+        value: Option<Value>,
+        what: &str,
+        dropped: &mut usize,
+    ) -> Option<T> {
+        serde_json::from_value(value?)
+            .inspect_err(|e| {
+                self.messages
+                    .push(format!("session: dropped the {what}: {e}"));
+                *dropped += 1;
+            })
+            .ok()
     }
 
     /// How many it dropped.
@@ -650,26 +651,6 @@ impl Ctx {
         }
         self.clipboard_known_from_registers();
         dropped
-    }
-
-    /// How many it dropped: all of them or none.
-    fn restore_histories(&mut self, histories: Option<Value>) -> usize {
-        let read = histories.map(serde_json::from_value::<BTreeMap<String, Vec<String>>>);
-        match read {
-            None => 0,
-            Some(Ok(all)) => {
-                for (name, mut past) in all {
-                    past.drain(..past.len().saturating_sub(HISTORY));
-                    self.histories.insert(name, past);
-                }
-                0
-            }
-            Some(Err(e)) => {
-                self.messages
-                    .push(format!("session: dropped the histories: {e}"));
-                1
-            }
-        }
     }
 
     /// Replace the split tree with the saved one. False if there's none to put on screen, and an
@@ -1029,7 +1010,6 @@ impl Ctx {
             s.writing = true;
             s.seen = None;
             s.written = None;
-            s.unwritten = None;
         }
     }
 
@@ -1047,7 +1027,6 @@ impl Ctx {
             .map_err(|_| failed("the writer has stopped".into()))?
             .map_err(failed)?;
         s.written = Some(snapshot);
-        s.unwritten = None;
         Ok(())
     }
 
