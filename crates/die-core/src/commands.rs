@@ -8,6 +8,9 @@ use crate::ext::*;
 use crate::prompt::PromptSpec;
 use std::path::{Path, PathBuf};
 
+mod describe;
+pub use describe::{CommandDescription, KeyAction, KeyDescription};
+
 impl Ctx {
     /// Every command's name, sorted.
     pub fn command_names(&self) -> Vec<&str> {
@@ -18,6 +21,7 @@ impl Ctx {
 }
 
 pub(crate) fn register_commands(reg: &mut Registry) {
+    describe::register(reg);
     reg.command(
         "command-palette",
         "Choose a command by name and run it, with this command's count and register",
