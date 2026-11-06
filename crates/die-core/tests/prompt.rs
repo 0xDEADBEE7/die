@@ -3,12 +3,12 @@
 use die_test_cap as _;
 
 use die_core::{
-    Args, Ctx, CursorShape, Error, Extension, PromptSpec, Registry, Rgb, ShowIn, State, Style,
-    Theme,
+    Args, Ctx, CursorShape, Error, Extension, Origin, PromptSpec, Registry, Rgb, ShowIn, State,
+    Style, Theme,
 };
 use std::cell::RefCell;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 fn ctx() -> Ctx {
@@ -812,6 +812,126 @@ fn find_file_lists_a_directory_and_takes_a_new_name() {
     assert_eq!(ctx.buffer_name(opened), Some("new.txt"));
     assert!(!dir.join("sub/new.txt").exists(), "not on disk until saved");
 
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A focused buffer in `here/`, inside a new directory of the test's own, which is returned.
+fn in_new_dir(name: &str) -> (Ctx, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("die-ff-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("here")).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut ctx = ctx();
+    let start = ctx.focused_buffer().unwrap();
+    ctx.set_directory(start, &dir.join("here"));
+    (ctx, dir)
+}
+
+/// Typing over the starting line is how to go elsewhere: `//` starts again from the root.
+#[test]
+fn find_file_starts_again_at_a_double_slash() {
+    let (mut ctx, dir) = in_new_dir("root");
+    fs::write(dir.join("far.txt"), "far").unwrap();
+    ctx.run("find-file", &Args::default()).unwrap();
+    let start = ctx.prompt_text().unwrap().to_string();
+
+    ctx.type_keys(&format!("{}/", dir.display()));
+    assert_eq!(ctx.prompt_candidates(), ["far.txt", "here/"]);
+    ctx.type_keys("far<Tab>");
+    assert_eq!(
+        ctx.prompt_text().unwrap(),
+        format!("{start}{}/far.txt", dir.display()),
+        "what's in front stays on the line"
+    );
+    ctx.type_keys("<CR>");
+    let opened = ctx.focused_buffer().unwrap();
+    assert_eq!(ctx.file(opened).unwrap().path, dir.join("far.txt"));
+    assert_eq!(ctx.text(opened).unwrap().rope().to_string(), "far");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `~/` starts again from the home directory. Nothing is written there.
+#[test]
+fn find_file_starts_again_at_a_tilde() {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+    let known = fs::read_dir(&home)
+        .unwrap()
+        .flatten()
+        .find_map(|e| e.file_name().into_string().ok());
+    let (mut ctx, dir) = in_new_dir("home");
+    ctx.run("find-file", &Args::default()).unwrap();
+    ctx.type_keys("~/");
+    if let Some(known) = known {
+        let shown = ctx.prompt_candidates();
+        assert!(
+            shown.iter().any(|c| c.trim_end_matches('/') == known),
+            "{known} in {shown:?}"
+        );
+    }
+    ctx.type_keys("die-no-such-file-k11b<M-CR>");
+    let opened = ctx.focused_buffer().unwrap();
+    assert_eq!(ctx.directory(opened), Some(home.as_path()));
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `..` goes by name in the list, as it does when opening, so the list shows what will open.
+#[test]
+fn find_file_lists_what_it_opens_past_a_symlink() {
+    let (mut ctx, dir) = in_new_dir("link");
+    fs::create_dir_all(dir.join("away/place")).unwrap();
+    fs::write(dir.join("away/only-there.txt"), "real").unwrap();
+    fs::write(dir.join("here/beside.txt"), "beside").unwrap();
+    std::os::unix::fs::symlink(dir.join("away/place"), dir.join("here/link")).unwrap();
+
+    ctx.run("find-file", &Args::default()).unwrap();
+    ctx.type_keys("link<CR>../");
+    assert_eq!(ctx.prompt_candidates(), ["beside.txt", "link/"]);
+    ctx.type_keys("bes<CR>");
+    let opened = ctx.focused_buffer().unwrap();
+    assert_eq!(ctx.text(opened).unwrap().rope().to_string(), "beside");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `<CR>` on a directory with nothing to choose stays in the prompt, on that directory.
+#[test]
+fn find_file_stays_on_a_directory_with_nothing_to_choose() {
+    let (mut ctx, dir) = in_new_dir("stay");
+    fs::create_dir_all(dir.join("here/empty")).unwrap();
+    ctx.run("find-file", &Args::default()).unwrap();
+    let line = ctx.prompt_text().unwrap().to_string();
+
+    ctx.type_keys("..<CR>");
+    assert_eq!(ctx.prompt_text().unwrap(), format!("{line}../"));
+    ctx.type_keys("<C-u>");
+    ctx.type_keys(&format!("{line}empty<CR><CR>"));
+    assert_eq!(ctx.prompt_text().unwrap(), format!("{line}empty/"));
+    ctx.type_keys("<C-u>~<CR>");
+    assert_eq!(ctx.prompt_text(), Some("~/"));
+    ctx.type_keys("x//<CR>");
+    assert_eq!(ctx.prompt_text(), Some("~/x//"), "still from the root");
+    assert!(ctx.messages.is_empty(), "{:?}", ctx.messages);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A new file under a missing directory says so when it opens, and its save makes the directory.
+#[test]
+fn find_file_new_file_under_a_missing_directory_saves() {
+    let (mut ctx, dir) = in_new_dir("new");
+    ctx.run("find-file", &Args::default()).unwrap();
+    ctx.type_keys("new/deep/new.txt<M-CR>");
+    let opened = ctx.focused_buffer().unwrap();
+    let missing = dir.join("here/new/deep");
+    assert!(!missing.exists(), "not on disk until saved");
+    let said = format!(
+        "Directory {} doesn't exist; a save makes it",
+        missing.display()
+    );
+    assert_eq!(ctx.messages, [said]);
+
+    let t = ctx.text_mut(opened).unwrap();
+    t.tx(Origin::User).insert(0, "text").commit().unwrap();
+    ctx.save(opened).unwrap();
+    assert_eq!(fs::read_to_string(missing.join("new.txt")).unwrap(), "text");
     fs::remove_dir_all(&dir).unwrap();
 }
 
