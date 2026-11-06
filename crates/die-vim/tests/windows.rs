@@ -209,13 +209,10 @@ fn q_on_a_split_closes_the_window_and_evens_out_nothing() {
 }
 
 #[test]
-fn quit_on_the_last_window_runs_the_apps_quit() {
+fn quit_on_the_last_window_asks_the_host_to_end() {
     let (mut h, _, w) = start("");
-    let log = h.type_keys(":q<CR>").unwrap();
-    assert!(
-        !log.last().unwrap().errors.is_empty(),
-        "no app here to quit"
-    );
+    typed(&mut h, "<C-w>q");
+    assert!(h.quit_wanted());
     assert_eq!(h.window_list(), [w]);
 }
 

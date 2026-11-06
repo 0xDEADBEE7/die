@@ -6,6 +6,10 @@ use crate::dispatch::*;
 use crate::error::Error;
 use crate::ext::*;
 use crate::prompt::{PromptSpec, recent_first};
+use std::path::{Path, PathBuf};
+
+mod describe;
+pub use describe::{CommandDescription, KeyAction, KeyDescription};
 
 impl Ctx {
     /// Every command's name, sorted.
@@ -17,6 +21,7 @@ impl Ctx {
 }
 
 pub(crate) fn register_commands(reg: &mut Registry) {
+    describe::register(reg);
     reg.command(
         "command-palette",
         "Choose a command by name and run it, with this command's count and register",
@@ -36,6 +41,19 @@ pub(crate) fn register_commands(reg: &mut Registry) {
                     None => Ok(()),
                 }
             });
+            Ok(())
+        },
+    );
+    reg.command(
+        "find-file",
+        "Open a file, starting from this buffer's directory, going down through directories on the way",
+        |ctx, _| {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
+            let here = ctx.focused_buffer().and_then(|b| ctx.directory(b));
+            let dir = here.map_or(cwd, Path::to_path_buf);
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let line = line_for(&dir, home.as_deref());
+            ask_for_file(ctx, dir, home, &line);
             Ok(())
         },
     );
@@ -100,6 +118,86 @@ pub(crate) fn register_commands(reg: &mut Registry) {
             Ok(())
         },
     );
+}
+
+/// Ask for a file, from this line. There's no directory editor to open, so answering with a
+/// directory, as `<CR>` on one does, asks again from there.
+fn ask_for_file(ctx: &mut Ctx, dir: PathBuf, home: Option<PathBuf>, line: &str) {
+    let spec = PromptSpec::new("Find file: ")
+        .initial(line)
+        .history("file")
+        .descends()
+        .candidates_from(listing(dir.clone(), home.clone()));
+    ctx.prompt(spec, move |ctx, answer| {
+        let Some(answer) = answer.filter(|a| !a.is_empty()) else {
+            return Ok(());
+        };
+        let path = resolve(&dir, home.as_deref(), &answer);
+        if path.is_dir() {
+            let line = format!("{}/", answer.trim_end_matches('/'));
+            ask_for_file(ctx, dir, home, &line);
+            return Ok(());
+        }
+        let file = ctx.open_file(&path)?;
+        ctx.show(file, ShowIn::Current)?;
+        Ok(())
+    });
+}
+
+/// The prompt's starting line for a directory: ending in `/`, and with `~` for the home directory
+/// as Emacs abbreviates it.
+fn line_for(dir: &Path, home: Option<&Path>) -> String {
+    let shown = home
+        .and_then(|h| dir.strip_prefix(h).ok())
+        .map(|rest| Path::new("~").join(rest));
+    let line = shown.as_deref().unwrap_or(dir).to_string_lossy();
+    format!("{}/", line.trim_end_matches('/'))
+}
+
+/// What a line means: `~` is the home directory, and a relative path starts from `dir`.
+fn resolve(dir: &Path, home: Option<&Path>, line: &str) -> PathBuf {
+    match (line.strip_prefix('~'), home) {
+        (Some(""), Some(home)) => home.to_path_buf(),
+        (Some(rest), Some(home)) if rest.starts_with('/') => home.join(&rest[1..]),
+        _ => dir.join(line),
+    }
+}
+
+/// The candidates for the line: the entries of the directory it names up to its last `/`. That
+/// directory's listing is kept until the line names another.
+fn listing(dir: PathBuf, home: Option<PathBuf>) -> impl FnMut(&str) -> (usize, Vec<String>) {
+    let mut kept: Option<(String, Vec<String>)> = None;
+    move |line| {
+        let base = line.rfind('/').map_or(0, |i| i + 1);
+        let named = &line[..base];
+        match &kept {
+            Some((name, entries)) if name == named => (base, entries.clone()),
+            _ => {
+                let entries = entries_of(&resolve(&dir, home.as_deref(), named));
+                kept = Some((named.to_string(), entries.clone()));
+                (base, entries)
+            }
+        }
+    }
+}
+
+/// A directory's entries by name, hidden ones last, each directory ending in `/`. That includes a
+/// symlink to one. A name that isn't UTF-8 can't go on the line, so it isn't offered.
+fn entries_of(dir: &Path) -> Vec<String> {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut entries: Vec<String> = read
+        .flatten()
+        .filter_map(|e| {
+            let is_dir = e.file_type().is_ok_and(|t| t.is_dir())
+                || e.file_type().is_ok_and(|t| t.is_symlink()) && e.path().is_dir();
+            let name = e.file_name().into_string().ok()?;
+            Some(if is_dir { name + "/" } else { name })
+        })
+        .collect();
+    entries.sort_unstable_by(|a, b| (a.starts_with('.'), a).cmp(&(b.starts_with('.'), b)));
+    entries
 }
 
 /// The focused buffer's name, and every other buffer's, the one used last first.
