@@ -195,7 +195,7 @@ impl Ctx {
         let Some(state) = self.buffers.get(buf).map(|b| b.state) else {
             return;
         };
-        if state == State::Passthrough {
+        if state == State::Passthrough && self.describing.is_none() {
             return self.dispatch_passthrough(win, buf, ev);
         }
         if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_) | Key::Unidentified) {
@@ -212,6 +212,9 @@ impl Ctx {
         }
         for (ext, c) in caught {
             self.panicked(ext, c);
+        }
+        if self.describing.is_some() {
+            return self.describe_key_read(ev);
         }
         if self.prompt.is_some() {
             return self.prompt_key(ev);
@@ -301,15 +304,26 @@ impl Ctx {
 
     /// Lookup order: range keymap at the cursor, buffer-local, modes (newest first), kind, global.
     pub(crate) fn layers_lookup(&self, buf: BufferId, state: State, keys: &[KeyEvent]) -> Lookup {
+        for (_, km) in self.layers(buf) {
+            match km.lookup(state, keys) {
+                Lookup::None => continue,
+                r => return r,
+            }
+        }
+        Lookup::None
+    }
+
+    /// The keymaps a key in `buf` goes through, in lookup order, with their names.
+    pub(crate) fn layers(&self, buf: BufferId) -> Vec<(String, &Keymap)> {
         let b = &self.buffers[buf];
-        let mut layers: Vec<&Keymap> = vec![];
-        let (kind, ranges): (&str, Vec<&Keymap>) = match &b.content {
+        let mut layers: Vec<(String, &Keymap)> = vec![];
+        let (kind, ranges): (&str, Vec<(String, &Keymap)>) = match &b.content {
             Content::Text(t) => {
                 let cur = self.focused.and_then(|w| t.cursor(w));
                 let names = cur.map(|c| {
                     t.decorations_at(c)
                         .filter_map(|(_, d)| match &d.deco {
-                            Deco::Keymap(n) => self.named.get(n),
+                            Deco::Keymap(n) => Some((format!("keymap {n}"), self.named.get(n)?)),
                             _ => None,
                         })
                         .collect()
@@ -319,16 +333,13 @@ impl Ctx {
             Content::Custom { kind, .. } => (kind, vec![]),
         };
         layers.extend(ranges);
-        layers.push(&b.local);
-        layers.extend(b.modes.iter().rev().map(|m| &self.modes[m.spec].keymap));
-        layers.extend(self.kinds.get(kind));
-        layers.push(&self.global);
-        for km in layers {
-            match km.lookup(state, keys) {
-                Lookup::None => continue,
-                r => return r,
-            }
+        layers.push(("buffer-local".into(), &b.local));
+        for m in b.modes.iter().rev() {
+            let spec = &self.modes[m.spec];
+            layers.push((format!("mode {}", spec.name), &spec.keymap));
         }
-        Lookup::None
+        layers.extend(self.kinds.get(kind).map(|m| (format!("kind {kind}"), m)));
+        layers.push(("global".into(), &self.global));
+        layers
     }
 }
