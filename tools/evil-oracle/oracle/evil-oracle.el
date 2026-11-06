@@ -518,6 +518,8 @@ macro is hidden from it for the moment."
          (buf (generate-new-buffer "evil-oracle-case"))
          input expected)
     (unless (fboundp mode) (error "%s: unknown mode %s" id mode))
+    ;; A case can split the frame (`:vsplit'); the next starts on one window.
+    (delete-other-windows)
     (evil-oracle--configure-window window-spec)
     (evil-oracle--setup-registers (evil-oracle--get case 'registers)
                                   (evil-oracle--get case 'clipboard))

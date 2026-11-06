@@ -70,5 +70,6 @@
   {"id": "dd-into-a-read-only-register-fails", "keys": "\"%dd", "text": ["ab|c", "d"]},
   {"id": "x-into-a-read-only-register-fails", "keys": "\":x", "text": ["ab|c", "d"]},
   {"id": "yiw-into-a-read-only-register-fails", "vim": "Vim's cursor is at line 0 col 0, Evil's at line 0 col 2", "keys": "\"%yiw", "text": ["ab|c", "d"]},
-  {"id": "p-from-the-search-register-fails", "vim": "Vim's registers differ", "keys": "\"/yl\"/p", "text": ["|abc"]}
+  {"id": "p-from-the-search-register-fails", "vim": "Vim's registers differ", "keys": "\"/yl\"/p", "text": ["|abc"]},
+  {"id": "viw-p-then-p-again", "keys": "yiwwviwp0P", "text": ["|one two", "c"]}
  ]}
