@@ -121,9 +121,22 @@ die-vim, session and checks have 1 line or none left, so the next change to any 
 
 **K15, hardening.** No review. Core's share of a keystroke: p50 0.157, p99 0.713, max 1.055 ms over 4,000 keys on 10k lines, at opt-level 1 and load about 5, against 10.4 ms p99 before. `gg` and `G` had asked for a whole viewport. Rustdoc on every public item of the product crates. Fixes from use: wrapped-line trackpad scroll, clicks in the gutter or below the text, input held during a handover, focus when launched in front, `C-u 3`, `:noh`. API: signatures unchanged. `hand_over_session` holds typed input until `resume_session`, and `C-u` then a digit restarts the count. Open: only core's share is measured, not scroll commands or wrapped text. The 1 ms limit may flake. xtask and evil-oracle have about 155 undocumented items.
 
+### Checkpoint: the full checks on `m0/integration`
+
+Added after the run. `ci --full` passed on 0ec2045 in 273 s: 82 test binaries at the old property counts, with the ignored speed and window tests included, plus guards and clean-build. On 36d60af, `ci --linux` passed in 125 s and `mutate` caught 58 of 58 in 158 s. The only change between those commits is a retry in xtask's app test. `mutate` took 3,117 s on 48 mutants at 7c530fb, at background priority and higher property counts, so 158 s isn't a like-for-like figure.
+
+It took four rounds of `ci --full`. They found five problems, all in the checks and none in product code:
+- `die-render`'s key test took `--include-ignored` for its own re-run, which ended the test binary early and hid what came after it.
+- `other_app`, a helper test another test launches, failed when `--include-ignored` ran it alone.
+- Guards planted code with no docs, which K15's `missing_docs` rejects.
+- M10 had gone stale, because `undo.rs` gained a line between the two it targets. The other 57 still matched.
+- `two_launches_leave_one_instance` failed once, when `open` got LaunchServices error -600 from an instance that had only just started.
+
+The light gate let all five through, since none of them run under plain `cargo test`.
+
 ### What wasn't verified
 
-- **No `ci`, `ci --full`, `ci --linux` or `mutate` result for `m0/integration` appears in any report this entry draws on.** So T1's `--include-ignored` paths in `mutate` and `ci --linux`, a run on Linux and the mutants on the merged tree are all unshown. Linux can break between checkpoints, since the landing gate has no cross-check.
+- **Checks ran after this entry was first written**, under "Checkpoint" below, and they cover the whole tree. They can't show a problem the tests don't look for, and Linux can still break between checkpoints, since the landing gate has no cross-check.
 - **The tip's tests.** Many packages landed with only `cargo check` on their final merge. K15's gate ran on the tip it pushed, 12834dd: fmt, lint, budget, check, clippy, tests for die-core, die-vim, die, die-render and die-dev, plus `die-dev --test window` (8 of 8) and `xtask --test app` (7 of 7). But its filter hid the per-binary totals, so that rests on no FAILED line. evil-oracle's tests didn't run in it, and I ran only the oracle on this entry's base.
 - **Speed tests.** Ignored by default, so no gate holds them, and `layout_speed` failed under load in several packages' runs before T1. Load is the reading, not a finding. No limit in ms was raised.
 - **Tests that a fix fails first.** Most did, as listed in the reports. These didn't: K11b2-4's rewritten test, K11b2-3's main parts, `wrapped/j-then-gj`, `visual-s-then-undo`. K15's new tests weren't checked by reverting, and K7's rest on an earlier agent's commit.
@@ -435,6 +448,7 @@ Calls later fixes reversed appear once, as they now stand. Procedural notes from
 437. `C-w x` across splits follows `window-swap-states`, whole or not at all per axis, without the preserve-size step, so a third column can shift in rare layouts. `Kid` and `Node` now derive Clone.
 438. WindowIds move with the buffer in DIE, so focus after `C-w x` is the `to` window, at the original place.
 439. `2<C-w>5s` gives 25, where Evil multiplies to 10, because the prefix can't tell a first digit from a later one. `<C-w>0` is a digit even with no count, as Evil's map binds it.
+440. xtask's app test retries `open` on LaunchServices' -600, up to 5 tries. It was seen once, and I didn't find out what a real second launch does at that moment. It may show you an error if you launch DIE twice within a moment. Veto if you'd rather it stayed a failure until that's understood.
 
 ## 2026-11-05 (later): K4, K5, R2 and V3 merged, and every test binary has a memory limit
 
