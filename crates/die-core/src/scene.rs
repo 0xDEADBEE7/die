@@ -418,7 +418,11 @@ impl Ctx {
             let label = label.as_str();
             let text = self.prompt_text().unwrap_or_default();
             let prompt = self.faces.get("prompt").over(base);
-            let parts: Vec<_> = glyphs(label, prompt).chain(glyphs(text, base)).collect();
+            let note = self.prompt_note();
+            let parts: Vec<_> = glyphs(label, prompt)
+                .chain(glyphs(text, base))
+                .chain(glyphs(note, prompt))
+                .collect();
             let typed = self.prompt_before_cursor().unwrap_or_default();
             let at = glyphs(label, prompt).chain(glyphs(typed, base)).count();
             // When it doesn't fit, leave off the start, up to where the cursor shows.

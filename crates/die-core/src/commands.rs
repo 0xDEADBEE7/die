@@ -5,7 +5,7 @@ use crate::ShowIn;
 use crate::dispatch::*;
 use crate::error::Error;
 use crate::ext::*;
-use crate::prompt::PromptSpec;
+use crate::prompt::{PromptSpec, recent_first};
 
 impl Ctx {
     /// Every command's name, sorted.
@@ -25,10 +25,11 @@ pub(crate) fn register_commands(reg: &mut Registry) {
                 keys: vec![],
                 ..a.clone()
             };
-            let names: Vec<String> = ctx.command_names().iter().map(|n| n.to_string()).collect();
+            let names = ctx.command_names().iter().map(|n| n.to_string()).collect();
             let spec = PromptSpec::new("Command: ")
                 .history("command")
-                .candidates(names);
+                .require_match()
+                .candidates(recent_first(ctx.prompt_history("command"), names));
             ctx.prompt(spec, move |ctx, name| {
                 match name.filter(|n| !n.is_empty()) {
                     Some(name) => ctx.run(&name, &args),
@@ -43,8 +44,13 @@ pub(crate) fn register_commands(reg: &mut Registry) {
         "Show a buffer in this window, and make a new one for a name no buffer has",
         |ctx, _| {
             // As in Emacs, `<CR>` with nothing typed goes back to the last buffer.
-            let mut names = buffer_names(ctx);
-            names.rotate_left(1);
+            let (here, others) = buffer_names(ctx);
+            let last = others.first().cloned();
+            let mut names = recent_first(ctx.prompt_history("buffer"), others);
+            if let Some(at) = names.iter().position(|n| Some(n) == last.as_ref()) {
+                names[..=at].rotate_right(1);
+            }
+            names.extend(here);
             let spec = PromptSpec::new("Switch to buffer: ")
                 .history("buffer")
                 .candidates(names);
@@ -65,9 +71,11 @@ pub(crate) fn register_commands(reg: &mut Registry) {
         "kill-buffer",
         "Kill a buffer, by default this one, asking first if it has unsaved changes to a file",
         |ctx, _| {
+            let (here, others) = buffer_names(ctx);
+            let others = recent_first(ctx.prompt_history("buffer"), others);
             let spec = PromptSpec::new("Kill buffer: ")
                 .history("buffer")
-                .candidates(buffer_names(ctx));
+                .candidates(here.into_iter().chain(others));
             ctx.prompt(spec, |ctx, name| {
                 let Some(name) = name.filter(|n| !n.is_empty()) else {
                     return Ok(());
@@ -94,10 +102,10 @@ pub(crate) fn register_commands(reg: &mut Registry) {
     );
 }
 
-/// Every buffer's name, the focused buffer's first and then the one used last first.
-fn buffer_names(ctx: &Ctx) -> Vec<String> {
-    let mut bufs = ctx.buffer_list();
-    bufs.sort_by_key(|b| Some(*b) != ctx.focused_buffer());
-    let names = bufs.iter().filter_map(|b| ctx.buffer_name(*b));
-    names.map(str::to_string).collect()
+/// The focused buffer's name, and every other buffer's, the one used last first.
+fn buffer_names(ctx: &Ctx) -> (Option<String>, Vec<String>) {
+    let name = |b| ctx.buffer_name(b).map(str::to_string);
+    let here = ctx.focused_buffer();
+    let others = ctx.buffer_list().into_iter().filter(|b| Some(*b) != here);
+    (here.and_then(name), others.filter_map(name).collect())
 }
