@@ -52,19 +52,28 @@ impl App {
     /// `open -g`, with any more options. It takes the state directory by `--env`, since a
     /// launch gets its environment from LaunchServices rather than from this process.
     fn open(&self, options: &[&str], args: &[&str]) {
-        let status = Command::new("open")
-            .arg("-g")
-            .args(options)
-            .arg("--env")
-            .arg(format!("DIE_STATE_DIR={}", self.state.display()))
-            .arg("--stderr")
-            .arg(&self.stderr)
-            .arg(&self.app)
-            .arg("--args")
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        // An instance that has only just started can make `open` fail with -600 until
+        // LaunchServices has caught up, so that one error gets a few more tries.
+        for tries_left in (0..5).rev() {
+            let out = Command::new("open")
+                .arg("-g")
+                .args(options)
+                .arg("--env")
+                .arg(format!("DIE_STATE_DIR={}", self.state.display()))
+                .arg("--stderr")
+                .arg(&self.stderr)
+                .arg(&self.app)
+                .arg("--args")
+                .args(args)
+                .output()
+                .unwrap();
+            if out.status.success() {
+                return;
+            }
+            let why = String::from_utf8_lossy(&out.stderr);
+            assert!(tries_left > 0 && why.contains("error -600"), "{why}");
+            sleep(Duration::from_millis(200));
+        }
     }
 
     fn pids(&self) -> Vec<u32> {
