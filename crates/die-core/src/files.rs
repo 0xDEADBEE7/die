@@ -192,9 +192,9 @@ impl Ctx {
     /// Open the file at `path`, which must be absolute, into a text buffer named
     /// after it, or return the buffer already visiting it (through a symlink too).
     /// `..` is resolved as [`FileInfo::path`] says. A missing file opens as an
-    /// empty buffer that a save will create, with its directory, which a message
-    /// says if it's missing. Anything else that isn't a readable regular file is
-    /// an error. The settings from
+    /// empty buffer that a save will create. A save can't make a missing directory,
+    /// so a message says when it's missing. Anything else that isn't a readable
+    /// regular file is an error. The settings from
     /// [`Ctx::set_file_settings`] apply, then read-only for a file that can't be
     /// edited safely, with a message.
     pub fn open_file(&mut self, path: &Path) -> Result<BufferId> {
@@ -215,8 +215,7 @@ impl Ctx {
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 if let Some(dir) = path.parent().filter(|d| !d.exists()) {
-                    let line =
-                        format!("Directory {} doesn't exist; a save makes it", dir.display());
+                    let line = format!("Directory {} doesn't exist", dir.display());
                     self.messages.push(line);
                 }
                 (String::new(), None, false, None)
@@ -611,11 +610,7 @@ fn resolve(path: &Path) -> io::Result<PathBuf> {
 fn store(path: &Path, text: &Rope, bom: bool) -> io::Result<Fingerprint> {
     let real = resolve(path)?;
     if on_disk(&real)?.is_none() {
-        // A new file: umask sets the mode, and a crash has nothing to lose. Emacs asks before it
-        // makes the directory. A save can't ask yet, so the open said it would.
-        if let Some(dir) = real.parent() {
-            fs::create_dir_all(dir)?;
-        }
+        // A new file: umask sets the mode, and a crash has nothing to lose.
         let mut f = File::options().write(true).create_new(true).open(&real)?;
         put(&mut f, text, bom)?;
         return stamp(&f);

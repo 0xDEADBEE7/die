@@ -823,7 +823,7 @@ fn in_new_dir(name: &str) -> (Ctx, PathBuf) {
     let dir = dir.canonicalize().unwrap();
     let mut ctx = ctx();
     let start = ctx.focused_buffer().unwrap();
-    ctx.set_directory(start, &dir.join("here"));
+    ctx.set_directory(start, dir.join("here"));
     (ctx, dir)
 }
 
@@ -913,21 +913,29 @@ fn find_file_stays_on_a_directory_with_nothing_to_choose() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A new file under a missing directory says so when it opens, and its save makes the directory.
+/// A new file under a missing directory offers to make it. Without it the open says so, and with
+/// it the first save works.
 #[test]
-fn find_file_new_file_under_a_missing_directory_saves() {
+fn find_file_offers_to_make_a_missing_directory() {
     let (mut ctx, dir) = in_new_dir("new");
-    ctx.run("find-file", &Args::default()).unwrap();
-    ctx.type_keys("new/deep/new.txt<M-CR>");
-    let opened = ctx.focused_buffer().unwrap();
     let missing = dir.join("here/new/deep");
-    assert!(!missing.exists(), "not on disk until saved");
-    let said = format!(
-        "Directory {} doesn't exist; a save makes it",
-        missing.display()
-    );
-    assert_eq!(ctx.messages, [said]);
 
+    ctx.run("find-file", &Args::default()).unwrap();
+    ctx.type_keys("new/deep/new.txt<M-CR>n<CR>");
+    assert_eq!(ctx.prompt_text(), None);
+    let opened = ctx.focused_buffer().unwrap();
+    assert_eq!(ctx.buffer_name(opened), Some("new.txt"));
+    assert!(!missing.exists(), "not asked for");
+    let said = format!("Directory {} doesn't exist", missing.display());
+    assert_eq!(ctx.messages, [said]);
+    ctx.kill(opened);
+
+    let start = ctx.focused_buffer().unwrap();
+    ctx.set_directory(start, dir.join("here"));
+    ctx.run("find-file", &Args::default()).unwrap();
+    ctx.type_keys("new/deep/new.txt<M-CR>y<CR>");
+    let opened = ctx.focused_buffer().unwrap();
+    assert!(missing.is_dir());
     let t = ctx.text_mut(opened).unwrap();
     t.tx(Origin::User).insert(0, "text").commit().unwrap();
     ctx.save(opened).unwrap();
