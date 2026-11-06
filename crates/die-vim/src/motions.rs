@@ -224,7 +224,9 @@ fn visual_line(s: &Start, dy: isize, err: Fail) -> Result<Target, Fail> {
     if eol && pos != s.pos {
         let (_, col) = t.move_visual(s.window, pos, 0, None).ok_or("No window")?;
         let short = Some(col.saturating_sub(1));
-        (pos, _) = t.move_visual(s.window, from, dy, short).ok_or("No window")?;
+        (pos, _) = t
+            .move_visual(s.window, from, dy, short)
+            .ok_or("No window")?;
     }
     Ok(Target {
         goal: goal.map(|g| if eol { Goal::Eol } else { Goal::Row(g) }),
