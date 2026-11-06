@@ -73,6 +73,7 @@ impl Rect {
     }
 }
 
+#[derive(Clone)]
 struct Kid {
     node: Node,
     /// Its share of the split, in cells of the design.
@@ -81,6 +82,7 @@ struct Kid {
     len: usize,
 }
 
+#[derive(Clone)]
 enum Node {
     Leaf(WindowId),
     /// At least two children, none of them split the same way.
@@ -443,7 +445,7 @@ impl Tree {
         self.remove(w)
     }
 
-    /// Give two windows each other's places, sizes included.
+    /// Give two windows each other's places, each taking the size of the place.
     pub fn swap(&mut self, a: WindowId, b: WindowId) {
         if let Some(r) = &mut self.root {
             r.rename(&|id| match id {
@@ -494,6 +496,36 @@ impl Tree {
             }
             if rows != 0 {
                 r.resize(w, Axis::Rows, rows);
+            }
+        }
+    }
+
+    /// Add `by` cells to `w` and take them from `other`, if the two are children of one split
+    /// along `axis`, so the windows between them stay as they are. False if they aren't.
+    pub fn trade(&mut self, w: WindowId, other: WindowId, axis: Axis, by: isize) -> bool {
+        let Some(Node::Split(a, kids)) = self.root.as_mut().and_then(|r| r.parent_of(w)) else {
+            return false;
+        };
+        let at = |kids: &[Kid], o| {
+            kids.iter()
+                .position(|k| matches!(k.node, Node::Leaf(id) if id == o))
+        };
+        let (Some(i), Some(j), true) = (at(kids, w), at(kids, other), *a == axis) else {
+            return false;
+        };
+        kids.iter_mut().for_each(|k| k.size = k.len);
+        kids[i].size = kids[i].size.saturating_add_signed(by);
+        kids[j].size = kids[j].size.saturating_add_signed(-by);
+        true
+    }
+
+    /// Change `w`'s cells along `axis` by `by` if the whole of it fits, and otherwise not at all,
+    /// as Emacs's `window-resize-no-error` does.
+    pub fn resize_whole(&mut self, w: WindowId, axis: Axis, by: isize) {
+        if let Some(r) = &mut self.root {
+            let was = r.clone();
+            if r.resize(w, axis, by) != Some(by) {
+                *r = was;
             }
         }
     }
