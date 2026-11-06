@@ -3,8 +3,11 @@
 
 use die_test_cap as _;
 
-use die_core::{BufferId, Harness, WindowId};
+use die_core::{BufferId, Extension, Harness, Registry, WindowId};
 use die_vim::Vim;
+use std::cell::RefCell;
+use std::path::Path;
+use std::rc::Rc;
 
 /// A frame of 80 by 26, a window on `t`, and the keys typed. An error fails the test.
 fn start(keys: &str) -> (Harness, BufferId, WindowId) {
@@ -189,23 +192,41 @@ fn only_leaves_this_window() {
 }
 
 #[test]
-fn q_on_a_split_closes_the_window_and_evens_out_nothing() {
+fn q_on_a_split_closes_the_window_and_evens_out_its_split_as_c_w_c_does() {
     for keys in [":q<CR>", ":quit<CR>", ":q!<CR>", "<C-w>q"] {
-        // A small window at the top, and the rest split in two:
-        // Evil's `:q` is `delete-window`, with no balance, so the cells go to one neighbour.
+        // Evil's `evil-quit` runs `evil-window-delete`, the same as `C-w c`: the two left share
+        // the cells evenly, and neither takes them all.
         let (mut h, _, bottom) = start("3<C-w>s<C-w>j<C-w>s");
-        let mid = h.focused().unwrap();
         let top = h.window_list()[0];
-        let (t, m, b) = (rows(&h, top), rows(&h, mid), rows(&h, bottom));
         typed(&mut h, keys);
         assert_eq!(h.window_list(), [top, bottom], "{keys}");
-        assert_eq!(rows(&h, bottom), b, "{keys}");
-        assert_eq!(
-            rows(&h, top),
-            t + m + 1,
-            "{keys}: the one before gets the cells"
-        );
+        assert!(rows(&h, top).abs_diff(rows(&h, bottom)) <= 1, "{keys}");
     }
+}
+
+#[test]
+fn bang_on_q_reaches_the_apps_quit_on_the_last_window() {
+    // `quit` is the app's: `:q!` comes as the text "!", which `:q` and `C-w q` don't have.
+    struct App(Rc<RefCell<Vec<Option<String>>>>);
+    impl Extension for App {
+        fn name(&self) -> &'static str {
+            "app"
+        }
+        fn register(&mut self, reg: &mut Registry) {
+            let seen = self.0.clone();
+            reg.command("quit", "", move |_, a| {
+                seen.borrow_mut().push(a.text.clone());
+                Ok(())
+            });
+        }
+    }
+    let seen = Rc::new(RefCell::new(vec![]));
+    let exts: Vec<Box<dyn Extension>> = vec![Box::new(Vim::default()), Box::new(App(seen.clone()))];
+    let mut h = Harness::new(exts).expect("both register");
+    h.open_text("t", "one\n").expect("a window");
+    typed(&mut h, ":q!<CR>:q<CR><C-w>q:quit!<CR>");
+    let bang = Some("!".to_string());
+    assert_eq!(*seen.borrow(), [bang.clone(), None, None, bang]);
 }
 
 #[test]
@@ -243,7 +264,7 @@ fn sizes_change_by_count_and_stop_at_the_frame() {
     typed(&mut h, "<C-w><lt>");
     assert_eq!(cols(&h, left), was + 2);
     typed(&mut h, "9<C-w>|");
-    assert_eq!(cols(&h, left), 8, "9 with its divider");
+    assert_eq!(cols(&h, left), 9, "the text is 9 wide, unlike a count on `C-w v`");
 
     let (mut h, _, w) = start("<C-w>+<C-w>>");
     typed(&mut h, "<C-w>_");
@@ -267,12 +288,54 @@ fn moving_exchanging_and_rotating_keep_each_windows_place_in_the_tiling() {
     assert_eq!(cols(&h, w), 80, "the whole width");
     assert_eq!(at(&h, w), (0, 0));
 
-    // x: the focus stays on its window, which is at the other place now.
-    let (mut h, _, bottom) = start("<C-w>s");
+    // x: the focus keeps its place on the screen, on the other buffer, and each buffer keeps
+    // its size.
+    let (mut h, _, bottom) = start("5<C-w>s");
     let top = h.focused().unwrap();
+    let (t, b) = (rows(&h, top), rows(&h, bottom));
+    assert_ne!(t, b);
     typed(&mut h, "<C-w>x");
     assert_eq!(h.window_list(), [bottom, top]);
-    assert_eq!(h.focused(), Some(top));
+    assert_eq!(h.focused(), Some(bottom));
+    assert_eq!(at(&h, bottom), (0, 0));
+    assert_eq!((rows(&h, top), rows(&h, bottom)), (t, b));
+
+    // Three in a split, the one between them keeping its size and its place.
+    let (mut h, _, c) = start("<C-w>s3<C-w>s");
+    let a = h.focused().unwrap();
+    let m = h.window_list()[1];
+    let (ra, rm, rc) = (rows(&h, a), rows(&h, m), rows(&h, c));
+    assert_ne!(ra, rc);
+    typed(&mut h, "3<C-w>x");
+    assert_eq!(h.window_list(), [c, m, a]);
+    assert_eq!((rows(&h, a), rows(&h, m), rows(&h, c)), (ra, rm, rc));
+
+    // Beside each other, each keeps its text's width, and only the left place has a divider.
+    let (mut h, _, right) = start("9<C-w>v");
+    let left = h.focused().unwrap();
+    let (l, r) = (cols(&h, left), cols(&h, right));
+    typed(&mut h, "<C-w>x");
+    assert_eq!((cols(&h, left), cols(&h, right)), (l, r));
+
+    // In different splits a size swaps if the whole of it fits: your Evil's, read live, leaves
+    // these at their places' heights, as the window in the column of two can't get a whole one.
+    let (mut h, _, right) = start("<C-w>v<C-w>s");
+    let upper = h.focused().unwrap();
+    let lower = h.window_list()[1];
+    let (u, d, r) = (rows(&h, upper), rows(&h, lower), rows(&h, right));
+    typed(&mut h, "3<C-w>x");
+    assert_eq!(h.window_list(), [right, lower, upper]);
+    assert_eq!(h.focused(), Some(right));
+    assert_eq!((rows(&h, right), rows(&h, lower), rows(&h, upper)), (u, d, r));
+
+    // Two columns of two, where it does fit.
+    let (mut h, _, _) = start("<C-w>v<C-w>s<C-w>l<C-w>s<C-w>h3<C-w>+");
+    let l = h.window_list();
+    let (a, b) = (rows(&h, l[0]), rows(&h, l[2]));
+    assert_ne!(a, b);
+    typed(&mut h, "3<C-w>x");
+    assert_eq!(h.window_list(), [l[2], l[1], l[0], l[3]]);
+    assert_eq!((rows(&h, l[0]), rows(&h, l[2])), (a, b));
 
     // r and R go round, and the focus keeps its place on the screen.
     let (mut h, _, _) = start("<C-w>s<C-w>s");
@@ -283,4 +346,43 @@ fn moving_exchanging_and_rotating_keep_each_windows_place_in_the_tiling() {
     typed(&mut h, "<C-w>R");
     assert_eq!(h.window_list(), l);
     assert_eq!(h.focused(), Some(l[0]));
+}
+
+#[test]
+fn a_split_on_a_file_finds_it_as_e_does() {
+    let home = std::env::var_os("HOME").expect("a home directory");
+    for ex in [":sp", ":vs", ":new", ":vne"] {
+        let (h, _, _) = start(&format!("{ex} ~/die-v6b-no-such-file.txt<CR>"));
+        let opened = h.window_buffer(h.focused().unwrap()).unwrap();
+        assert_eq!(h.directory(opened), Some(Path::new(&home)), "{ex}");
+    }
+}
+
+#[test]
+fn digits_after_c_w_are_its_count_and_the_map_stays() {
+    let (h, _, _) = start("<C-w>5s");
+    assert_eq!(h.window_list().len(), 2);
+    assert_eq!(rows(&h, h.focused().unwrap()), 4, "as `5 C-w s`");
+    let (h, _, _) = start("<C-w>12v");
+    assert_eq!(cols(&h, h.focused().unwrap()), 11, "digits add up");
+    // And a macro's keys run the same.
+    let (mut h, _, _) = start("qa<C-w>7vq");
+    typed(&mut h, "<C-w>o@a");
+    assert_eq!(cols(&h, h.focused().unwrap()), 6);
+}
+
+#[test]
+fn c_w_with_control_arrows_moves_as_h_j_k_l_do() {
+    let (mut h, _, bottom) = start("<C-w>s");
+    let top = h.focused().unwrap();
+    typed(&mut h, "<C-w><C-Down>");
+    assert_eq!(h.focused(), Some(bottom));
+    typed(&mut h, "<C-w><C-Up>");
+    assert_eq!(h.focused(), Some(top));
+    let (mut h, _, right) = start("<C-w>v");
+    let left = h.focused().unwrap();
+    typed(&mut h, "<C-w><C-Right>");
+    assert_eq!(h.focused(), Some(right));
+    typed(&mut h, "<C-w><C-Left>");
+    assert_eq!(h.focused(), Some(left));
 }

@@ -62,7 +62,7 @@ fn edit(ctx: &mut Ctx, path: &str) -> Result {
     Ok(())
 }
 
-fn absolute(dir: Option<&Path>, path: &str) -> PathBuf {
+pub(crate) fn absolute(dir: Option<&Path>, path: &str) -> PathBuf {
     if let (Some(rest), Some(home)) = (path.strip_prefix("~/"), std::env::var_os("HOME")) {
         return Path::new(&home).join(rest);
     }
