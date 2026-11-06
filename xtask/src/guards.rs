@@ -160,11 +160,11 @@ const LINUX_SOURCE: &str = "\n#[cfg(target_os = \"linux\")]\nmacro_rules! plante
 const BLOCK_LINT_PLANTS: &[(&str, &str)] = &[
     (
         "allowing the unsafe-block lints by name",
-        "\n#[allow(clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
+        "\n/// Planted.\n#[allow(clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
     ),
     (
         "allowing the group they're in",
-        "\n#[allow(clippy::restriction)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
+        "\n/// Planted.\n#[allow(clippy::restriction)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
     ),
 ];
 

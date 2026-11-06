@@ -96,8 +96,10 @@ name = "M10 edits added to an open step don't count toward the byte cap"
 file = "src/undo.rs"
 old = '''
                 g.bytes += bytes;
+                g.after = self.state;
                 self.trim(limit);'''
 new = '''
+                g.after = self.state;
                 self.trim(limit);'''
 
 [[mutant]]

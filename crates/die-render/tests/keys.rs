@@ -20,7 +20,8 @@ fn main() {}
 
 #[cfg(target_os = "macos")]
 fn main() {
-    if std::env::args().len() > 1 {
+    // cargo's own arguments, such as --include-ignored, don't mean this is the re-run.
+    if std::env::args().any(|a| a.strip_prefix('-') == Some(matrix::ARG)) {
         matrix::run();
     } else {
         matrix::in_a_process_saying_press_and_hold();
@@ -424,7 +425,7 @@ mod matrix {
     static FAILED: AtomicBool = AtomicBool::new(false);
 
     /// An argument of the process's, which must survive the loop's setup.
-    const ARG: &str = "DIE_KEYS_ARG";
+    pub const ARG: &str = "DIE_KEYS_ARG";
 
     /// Run this binary again with arguments the defaults system reads. That domain outranks your
     /// own defaults, so its yes stands in for one in your NSGlobalDomain, which a test mustn't
