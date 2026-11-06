@@ -3,7 +3,6 @@
 //! matches the drawable to the view before every frame, and wakes only through the event
 //! loop. `Host` is what the loop decides, with no window, so its tests run anywhere.
 //! `Shell` is winit's side. Through `Remote`, a check on another thread acts in the loop.
-#![warn(missing_docs)]
 
 use crate::driver::{self, KeyMonitor, Renderer, Surface};
 use crate::font::CellMetrics;

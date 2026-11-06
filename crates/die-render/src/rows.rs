@@ -15,7 +15,6 @@
 //! Instances go in three layers, so that nothing covers what should be above it:
 //! every background, then every glyph and line, then the cursors. A glyph may reach
 //! past its cell, and a neighbour's background doesn't cut it off.
-#![warn(missing_docs)]
 
 use crate::atlas::{Atlas, Full, GlyphKey, Slot};
 use crate::font::CellMetrics;

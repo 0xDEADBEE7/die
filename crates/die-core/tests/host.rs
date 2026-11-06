@@ -695,3 +695,62 @@ fn the_host_loop_end_to_end() {
     assert_eq!(ticks.get(), 2);
     assert_eq!(*log.borrow(), ["a 30x10", "b 30x10"]);
 }
+
+#[test]
+fn a_cursor_on_a_wrapped_lines_first_row_comes_to_the_top_when_scrolled_off() {
+    let (mut c, _, a, _) = world(10, 6);
+    let b = c.create_text("long", &format!("{}\nend\n", "x".repeat(90)));
+    c.show(b, ShowIn::Current).unwrap();
+    c.scene();
+    c.text_mut(b).unwrap().set_cursor(a, 0);
+    press(&mut c, PointerKind::Scroll { dx: 0.0, dy: 2.0 }, 0, 5);
+    let t = c.text(b).unwrap();
+    assert_eq!(t.scroll(a).unwrap().0, 0, "still the same line");
+    let (row, _) = t.screen_pos(a, t.cursor(a).unwrap()).unwrap();
+    assert_eq!(row, 0, "the row it left by, not the last");
+}
+
+#[test]
+fn a_click_in_the_gutter_or_below_the_text_lands_on_the_nearest_text() {
+    let (mut c, b, w, _) = world(20, 10);
+    c.text_mut(b).unwrap().settings_mut().line_numbers = LineNumbers::Absolute;
+    c.scene();
+    press(&mut c, LEFT, 1, 0);
+    assert_eq!(
+        c.text(b).unwrap().cursor(w),
+        Some(6),
+        "the gutter: its row's start"
+    );
+    press(&mut c, LEFT, 6, 5);
+    assert_eq!(
+        c.text(b).unwrap().cursor(w),
+        Some(12),
+        "below: the text's end"
+    );
+}
+
+#[test]
+fn keys_and_clicks_dont_count_while_a_restart_hands_over() {
+    let (mut c, b, w, log) = world(20, 10);
+    c.scene();
+    c.hand_over_session().unwrap();
+    c.handle(key('a'));
+    c.run_ready();
+    press(&mut c, LEFT, 1, 2);
+    assert!(
+        log.borrow().is_empty(),
+        "the session can no longer hold them"
+    );
+    assert_eq!(c.text(b).unwrap().cursor(w), Some(0));
+
+    c.resume_session();
+    c.handle(key('b'));
+    c.run_ready();
+    press(&mut c, LEFT, 1, 2);
+    assert_eq!(
+        log.borrow().len(),
+        1,
+        "the restart failed, so they count again"
+    );
+    assert_eq!(c.text(b).unwrap().cursor(w), Some(8));
+}

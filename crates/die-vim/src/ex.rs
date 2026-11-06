@@ -54,6 +54,10 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
         }
         "e" | "edit" => edit(ctx, rest),
         "b" | "buffer" => buffer(ctx, rest),
+        "noh" | "nohl" | "nohlsearch" => {
+            ctx.set_search_highlight(None);
+            Ok(())
+        }
         _ => {
             let args = Args {
                 text: (!rest.is_empty()).then(|| rest.to_string()),

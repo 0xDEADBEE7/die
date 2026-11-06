@@ -176,3 +176,15 @@ fn colon_b_goes_by_name_part_of_a_name_or_to_the_last_buffer() {
     assert_eq!(h.window_buffer(w), Some(notes));
     assert!(h.is_live(a));
 }
+
+#[test]
+fn noh_clears_the_highlight_until_the_next_search() {
+    let (mut h, _, _) = editor("ab x ab y ab\n");
+    let plain = h.scene().row(0)[10].bg;
+    typed(&mut h, "/ab<CR>");
+    assert_ne!(h.scene().row(0)[10].bg, plain);
+    assert!(typed(&mut h, ":noh<CR>").is_empty());
+    assert_eq!(h.scene().row(0)[10].bg, plain);
+    typed(&mut h, "n");
+    assert_ne!(h.scene().row(0)[10].bg, plain, "n searches, so it's back");
+}

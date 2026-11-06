@@ -11,7 +11,6 @@
 //! on the display, or `none` if it never got there. That comes in after the key, so a key's
 //! line is written when the next key comes, or when DIE exits, and so is `first_shown`,
 //! whose `ms` is still when the frame got there.
-#![warn(missing_docs)]
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};

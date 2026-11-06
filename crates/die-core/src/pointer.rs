@@ -49,6 +49,20 @@ impl Drawn {
 }
 
 impl Ctx {
+    /// The position a click means on a text cell that shows none: the first to its right on the
+    /// row, as for the gutter, or else the last above it, as for the rows below the text.
+    pub(crate) fn nearest_pos(&self, win: WindowId, row: usize, col: usize) -> Option<usize> {
+        let d = &self.drawn;
+        let (p, cols, _) = d.placed.iter().find(|(p, ..)| p.window == win)?;
+        let cells = p.col..p.col + cols;
+        let at = |r: usize, c: usize| d.positions[r * d.cols + c].filter(|(w, _)| *w == win);
+        let last_of = |r| cells.clone().rev().find_map(|c| at(r, c));
+        (col..cells.end)
+            .find_map(|c| at(row, c))
+            .or_else(|| (p.row..row).rev().find_map(last_of))
+            .map(|(_, pos)| pos)
+    }
+
     /// What the cell at (row, col) of the last composed frame showed: its window, the part of it,
     /// and the buffer position. None for a cell outside every window, such as the command line.
     pub fn cell_at(&self, row: usize, col: usize) -> Option<CellHit> {

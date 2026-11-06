@@ -29,8 +29,8 @@ note = "guard 7: 5k per build, 7k in total"
 [[crate]]
 name = "die-vim"
 path = "crates/die-vim"
-limit = 5780
-note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5"
+limit = 5790
+note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
 name = "die"
@@ -109,8 +109,9 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 [[module]]
 crate = "die-core"
 name = "session"
-limit = 1085
-# 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes.
+limit = 1086
+# 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
+# held input during a restart's handover.
 files = ["session.rs", "session/", "instance.rs", "sys/"]
 
 [[module]]

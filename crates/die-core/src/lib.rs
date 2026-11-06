@@ -5,6 +5,7 @@
 //! `dispatch` and `rt`), the layout cache and its character wrap, the key type and
 //! `render.rs`, are rebuilt under these tests during M0 (docs/m0-plan.md §2).
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 #[cfg(test)]
 use die_test_cap as _;

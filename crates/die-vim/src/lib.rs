@@ -7,6 +7,7 @@
 //! undo, operators, registers, text objects, visual state (`visual.rs`), `.` and macros
 //! (`repeat.rs`), scrolling (`scroll.rs`), search (`search.rs`), windows (`window.rs`), and
 //! `:e`, `:b` and `:N` (`ex.rs`). `registers.rs` is the one place that touches registers, for K6.
+#![warn(missing_docs)]
 
 #[cfg(test)]
 use die_test_cap as _;
@@ -60,6 +61,8 @@ pub struct Vim {
     visual_register: Option<char>,
     /// What `.` and macros keep, which a key observer shares.
     rec: Rc<RefCell<Recorder>>,
+    /// `C-u` was the last part of the count, so a digit starts a new one, as in Emacs.
+    universal: bool,
 }
 
 #[rustfmt::skip]
@@ -416,6 +419,7 @@ fn zero(ctx: &mut Ctx, a: &Args) -> Result {
 
 /// `C-u`: your Evil leaves it Emacs's prefix argument, so it scrolls nothing.
 fn universal_argument(ctx: &mut Ctx, a: &Args) -> Result {
+    ctx.with_ext(|v: &mut Vim, _| v.universal = true)?;
     ctx.set_prefix(Prefix {
         count: Some(a.count.unwrap_or(1).saturating_mul(4)),
         register: a.register,

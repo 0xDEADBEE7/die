@@ -26,6 +26,7 @@
 //! line after a final newline, as in Evil and Vim (`text::rest_pos`). Motions along
 //! that line (`0`, `^`, `$`, `C-a`) keep it there, and `}` from it fails.
 
+use crate::Vim;
 use crate::operators;
 use crate::text::{normal_pos, on_last_empty_line};
 use crate::visual;
@@ -228,8 +229,10 @@ pub fn char_key(a: &Args) -> Option<char> {
 /// A count digit: `1`-`9`, and `0` after another digit. The count stays core's
 /// prefix for the next command, keeping any register already typed.
 pub fn count_digit(ctx: &mut Ctx, a: &Args, d: usize) -> Result {
+    let fresh = ctx.with_ext(|v: &mut Vim, _| std::mem::take(&mut v.universal))?;
+    let so_far = a.count.filter(|_| !fresh).unwrap_or(0);
     ctx.set_prefix(Prefix {
-        count: Some(a.count.unwrap_or(0).saturating_mul(10).saturating_add(d)),
+        count: Some(so_far.saturating_mul(10).saturating_add(d)),
         register: a.register,
     });
     Ok(())

@@ -367,6 +367,8 @@ pub struct Ctx {
     pub(crate) search_highlight: Option<Pattern>,
     /// `Ctx::quit` was called.
     pub(crate) quit_wanted: bool,
+    /// A restart wrote the session, so a key or a click now would be lost with this instance.
+    pub(crate) handing_over: bool,
 }
 
 fn panic_msg(p: &(dyn Any + Send)) -> String {
@@ -532,6 +534,7 @@ impl Ctx {
             faces,
             search_highlight: None,
             quit_wanted: false,
+            handing_over: false,
         };
         for (name, c) in reg.commands {
             if ctx.commands.insert(name.clone(), c).is_some() {

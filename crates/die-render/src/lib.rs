@@ -19,6 +19,7 @@
 //! it `#[cfg_attr(not(target_os = "macos"), allow(dead_code))]`: a `cfg_attr` that
 //! only sets a lint level is the one platform cfg neutral code may carry.
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 
 #[cfg(test)]
 use die_test_cap as _;

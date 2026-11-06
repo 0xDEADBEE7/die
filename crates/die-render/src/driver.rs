@@ -5,7 +5,6 @@
 //! A frame goes to a texture, read back, or to a window's drawable (`Renderer::present`).
 //! The loop itself is `window`, which reaches the platform's window through what's
 //! re-exported here.
-#![warn(missing_docs)]
 
 use crate::atlas::GlyphKey;
 use crate::font::{self, CellMetrics, RangeRule};
