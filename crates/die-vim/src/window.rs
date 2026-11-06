@@ -49,11 +49,10 @@ const EX: &[(&str, &str, &str)] = &[
     ("vne", "vnew", "vim-window-vnew"),
     ("clo", "close", "vim-window-delete"),
     ("on", "only", "vim-window-only"),
-    ("q", "quit", "vim-quit"),
 ];
 
 /// An ex line, if it's a window command: an optional count, the name, and a file. `!` changes
-/// nothing here, as `:q!` only differs from `:q` when quitting.
+/// nothing here. `:q` is with the file commands, where its `!` means something.
 pub fn ex(ctx: &mut Ctx, line: &str) -> Option<Result> {
     let digits = line.find(|c: char| !c.is_ascii_digit())?;
     let (n, rest) = line.split_at(digits);
@@ -176,14 +175,30 @@ fn close(ctx: &mut Ctx, a: &Args) -> Result {
     ctx.close_window_balancing(w)
 }
 
-/// `:q`: Evil's `evil-quit` closes a window without evening anything out, and only the last
-/// window quits. Quitting is a command of the app's.
+/// `C-w q`, as `:q`.
 fn quit(ctx: &mut Ctx, a: &Args) -> Result {
     let (_, w) = buffer_window(ctx, a)?;
+    close_or_quit(ctx, w, false)
+}
+
+/// `:q`: Evil's `evil-quit` closes a window without evening anything out, and only the last
+/// window quits. That refuses while a file has unsaved changes, unless `force`.
+pub fn close_or_quit(ctx: &mut Ctx, w: WindowId, force: bool) -> Result {
     if ctx.window_list().len() > 1 {
         return ctx.close_window(w);
     }
-    ctx.run("quit", a)
+    let unsaved = ctx
+        .buffer_list()
+        .into_iter()
+        .find(|&b| ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified()));
+    if let Some(b) = unsaved.filter(|_| !force) {
+        let name = ctx.buffer_name(b).unwrap_or_default();
+        return Err(Error::Msg(format!(
+            "{name} has unsaved changes; :w saves them, :q! drops them"
+        )));
+    }
+    ctx.quit();
+    Ok(())
 }
 
 fn only(ctx: &mut Ctx, a: &Args) -> Result {
