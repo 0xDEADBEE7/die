@@ -188,15 +188,17 @@ pub fn close_or_quit(ctx: &mut Ctx, w: WindowId, force: bool) -> Result {
     if ctx.window_list().len() > 1 {
         return ctx.close_window_balancing(w);
     }
-    let unsaved = ctx
-        .buffer_list()
-        .into_iter()
-        .find(|&b| ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified()));
+    quit_app(ctx, force)
+}
+
+/// Quit, which refuses while a file has unsaved changes, unless `force`.
+pub fn quit_app(ctx: &mut Ctx, force: bool) -> Result {
+    let mut all = ctx.buffer_list().into_iter();
+    let unsaved = all.find(|&b| ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified()));
     if let Some(b) = unsaved.filter(|_| !force) {
         let name = ctx.buffer_name(b).unwrap_or_default();
-        return Err(Error::Msg(format!(
-            "{name} has unsaved changes; :w saves them, :q! drops them"
-        )));
+        let why = format!("{name} has unsaved changes; :w saves them, :q! drops them");
+        return Err(Error::Msg(why));
     }
     ctx.quit();
     Ok(())

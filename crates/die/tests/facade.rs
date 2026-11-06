@@ -253,3 +253,13 @@ fn a_bundle_uses_its_own_fonts_unless_told_otherwise() {
     assert_eq!(bundle_of(&plain), None);
     assert!(font_dir_from(None, Some(&plain)).ends_with("fonts"));
 }
+
+#[test]
+fn colon_q_in_the_last_window_and_cmd_q_ask_the_loop_to_stop() {
+    for keys in [":q<CR>", "<D-q>", "i<D-q>"] {
+        let mut ctx = start(Config::default()).unwrap();
+        ctx.type_keys(keys);
+        ctx.step();
+        assert!(ctx.quit_wanted(), "{keys}: {:?}", ctx.messages);
+    }
+}
