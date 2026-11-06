@@ -50,7 +50,7 @@ pub use keymap::*;
 pub use keys::*;
 pub use layout::{Dir, DisplayLine, Geometry, Stop, ViewRow, Viewport};
 pub use pointer::{CellHit, WindowPart};
-pub use prompt::{PromptSpec, flex_rank};
+pub use prompt::{PromptSpec, flex_rank, recent_first};
 pub use rt::*;
 pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
 pub use text::*;
