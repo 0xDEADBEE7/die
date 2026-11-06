@@ -7,6 +7,7 @@
 //! that moves a border first takes the lengths on screen as the new design.
 
 use crate::ids::WindowId;
+use serde::{Deserialize, Serialize};
 
 /// A side of a window: where a new split goes, and the way focus moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +32,7 @@ impl Side {
 }
 
 /// Which way a split divides.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Axis {
     /// Side by side.
     Cols,
@@ -70,6 +71,62 @@ impl Rect {
             Side::Above | Side::Below => o.x <= at && at < o.x + o.w,
         };
         across && along
+    }
+}
+
+/// The tree as the session keeps it, with each window a number the caller gives it. Its sizes are
+/// the design, not the lengths, so it means the same in a frame of another size.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Layout {
+    Window { window: usize },
+    Split { axis: Axis, kids: Vec<LayoutKid> },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct LayoutKid {
+    size: usize,
+    node: Layout,
+}
+
+/// The most a size read from a session may be, so scaling one can't overflow.
+const MAX_SIZE: usize = 1 << 20;
+
+impl Layout {
+    /// Whether this is a tree [`Node`] allows, with each of `windows` windows in it once.
+    pub fn valid(&self, windows: usize) -> bool {
+        fn walk(l: &Layout, parent: Option<Axis>, seen: &mut [bool]) -> bool {
+            match l {
+                Layout::Window { window } => seen
+                    .get_mut(*window)
+                    .is_some_and(|s| !std::mem::replace(s, true)),
+                Layout::Split { axis, kids } => {
+                    parent != Some(*axis)
+                        && kids.len() >= 2
+                        && kids.iter().all(|k| walk(&k.node, Some(*axis), seen))
+                }
+            }
+        }
+        let mut seen = vec![false; windows];
+        walk(self, None, &mut seen) && seen.iter().all(|s| *s)
+    }
+
+    /// A valid layout's windows are all in `ids`.
+    fn node(&self, ids: &[WindowId]) -> Node {
+        match self {
+            Layout::Window { window } => Node::Leaf(ids[*window]),
+            Layout::Split { axis, kids } => {
+                let kid = |k: &LayoutKid| {
+                    let size = k.size.min(MAX_SIZE);
+                    Kid {
+                        node: k.node.node(ids),
+                        size,
+                        len: size,
+                    }
+                };
+                Node::Split(*axis, kids.iter().map(kid).collect())
+            }
+        }
     }
 }
 
@@ -128,6 +185,24 @@ fn fit(kids: &[Kid], axis: Axis, len: usize) -> Vec<usize> {
 }
 
 impl Node {
+    fn layout(&self, number: &impl Fn(WindowId) -> usize) -> Layout {
+        match self {
+            Node::Leaf(id) => Layout::Window {
+                window: number(*id),
+            },
+            Node::Split(axis, kids) => Layout::Split {
+                axis: *axis,
+                kids: kids
+                    .iter()
+                    .map(|k| LayoutKid {
+                        size: k.size,
+                        node: k.node.layout(number),
+                    })
+                    .collect(),
+            },
+        }
+    }
+
     fn contains(&self, w: WindowId) -> bool {
         match self {
             Node::Leaf(id) => *id == w,
@@ -407,6 +482,16 @@ impl Tree {
             r.tile(area, &mut out);
         }
         out
+    }
+
+    /// The tree as the session keeps it, with `number` naming each window.
+    pub fn layout(&self, number: &impl Fn(WindowId) -> usize) -> Option<Layout> {
+        self.root.as_ref().map(|r| r.layout(number))
+    }
+
+    /// Replace the tree with a valid layout, whose window `n` is `ids[n]`.
+    pub fn set_layout(&mut self, layout: &Layout, ids: &[WindowId]) {
+        self.root = Some(layout.node(ids));
     }
 
     /// Start the tree with its first window.

@@ -337,6 +337,9 @@ pub struct Ctx {
     /// The window the running command acts for. With none, the focused window acts.
     pub(crate) cur_window: Option<WindowId>,
     pub(crate) registers: HashMap<char, Register>,
+    /// The registers as the session keeps them, until one changes: they can be large, and core
+    /// looks for changes twice a second.
+    pub(crate) registers_saved: std::cell::OnceCell<crate::session::SavedRegisters>,
     pub(crate) clip: Clip,
     /// The split tree and the frame it divides.
     pub(crate) tree: Tree,
@@ -506,6 +509,7 @@ impl Ctx {
             cmd_seq: 0,
             cur_window: None,
             registers: HashMap::new(),
+            registers_saved: Default::default(),
             clip: Clip::new(
                 config
                     .clipboard

@@ -29,7 +29,7 @@ pub enum ShowIn {
 }
 
 /// A register's shape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RegKind {
     /// Characters.
     Char,
@@ -267,6 +267,7 @@ impl Ctx {
     /// Set a register.
     pub fn set_register(&mut self, c: char, r: Register) {
         self.registers.insert(c, r);
+        self.registers_saved.take();
     }
 
     /// Use this clipboard from now on, in place of the one in memory every workspace starts with.
@@ -282,6 +283,11 @@ impl Ctx {
         self.clip.board.write(r);
         self.clip.seen_count = Some(self.clip.board.change_count());
         self.clip.seen_text = Some(r.text.clone());
+    }
+    /// Registers came back from a session, and the newest kill is what DIE last put on the
+    /// clipboard or took from it, so that text still there isn't news.
+    pub(crate) fn clipboard_known_from_registers(&mut self) {
+        self.clip.seen_text = self.registers.get(&'"').map(|r| r.text.clone());
     }
     /// What another app copied since core last wrote to the clipboard or asked this, once, as
     /// Emacs's `interprogram-paste-function` answers. Copying the text DIE last knew of isn't news.

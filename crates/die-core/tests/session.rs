@@ -1,9 +1,11 @@
-//! K12: the session file, restoring from it, and when it's written.
+//! K12 and K13: the session file, restoring from it, and when it's written.
 
 use die_test_cap as _;
 
 use die_core::session::{FILE, PREVIOUS};
-use die_core::{Config, Ctx, Harness, Origin, Uneditable};
+use die_core::{
+    Config, Ctx, Harness, Origin, RegKind, Register, Selection, Shape, ShowIn, Side, Uneditable,
+};
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
@@ -418,4 +420,238 @@ fn a_harness_restores_into_a_fresh_workspace() {
     assert_eq!(b.screen(), a.screen());
     assert_eq!(b.style_dump(), a.style_dump());
     assert!(b.restore_session("not json").is_err());
+}
+
+fn numbered(lines: usize) -> String {
+    (0..lines).map(|i| format!("line {i}\n")).collect()
+}
+
+/// K13's proof: a nested tree with a moved border, two windows on one buffer with their own
+/// selections and scroll, a view waiting in a buffer that's out of sight, and registers.
+#[test]
+fn a_harness_save_and_restore_gives_equal_state() {
+    let mut a = fresh();
+    a.set_window_size(100, 30);
+    let (one, w1) = a.open_text("one", &numbered(200)).unwrap();
+    let two = a.create_text("two", &numbered(50));
+    let w2 = a.split_window(w1, Side::Right).unwrap();
+    let w3 = a.split_window(w2, Side::Below).unwrap();
+    a.resize(w1, 30, 28).unwrap();
+
+    let t = a.text_mut(one).unwrap();
+    t.set_cursor(w1, 700);
+    t.set_scroll(w1, 650, 0);
+    let line_sel = Selection {
+        anchor: 40,
+        head: 90,
+        shape: Shape::Line,
+        goal: Some(3),
+    };
+    t.set_selection(w2, line_sel);
+    a.focus(w3);
+    a.show(two, ShowIn::Current).unwrap();
+    a.text_mut(two).unwrap().set_cursor(w3, 33);
+    a.show(one, ShowIn::Current).unwrap();
+    a.text_mut(one).unwrap().set_cursor(w3, 1000);
+    a.focus(w2);
+    let kept = Register {
+        kind: RegKind::Line,
+        text: "kept\n".into(),
+    };
+    a.set_register('a', kept.clone());
+    a.screen(); // a frame, as there's one between keystrokes: scrolling follows the cursor
+    let saved = a.session_json();
+
+    let mut b = fresh();
+    b.set_window_size(100, 30);
+    b.restore_session(&saved).unwrap();
+    assert_eq!(b.session_json(), saved);
+    assert_eq!(b.screen(), a.screen());
+    assert_eq!(b.style_dump(), a.style_dump());
+    assert_eq!(b.window_list().len(), 3);
+    assert_eq!(b.register('a'), Some(&kept));
+
+    // Each window by what it shows on screen: the focus, and the second's line selection.
+    let b2 = b.focused().unwrap();
+    let one = b.find_buffer("one").unwrap();
+    assert_eq!(b.text(one).unwrap().selection(b2), Some(line_sel));
+    // The view waiting in the buffer out of sight is that window's, once it goes back.
+    let b3 = b.windows_by_use()[1];
+    assert_eq!(b.text(one).unwrap().cursor(b3), Some(1000));
+    b.focus(b3);
+    let two = b.find_buffer("two").unwrap();
+    b.show(two, ShowIn::Current).unwrap();
+    assert_eq!(b.text(two).unwrap().cursor(b3), Some(33));
+}
+
+/// In a frame of another size the tree scales, as the design it keeps says it should.
+#[test]
+fn a_tree_comes_back_in_a_frame_of_another_size() {
+    let mut a = fresh();
+    a.set_window_size(100, 30);
+    let (_, w1) = a.open_text("t", "text\n").unwrap();
+    let w2 = a.split_window(w1, Side::Right).unwrap();
+    a.resize(w2, 25, 28).unwrap();
+    let mut b = fresh();
+    b.set_window_size(200, 30);
+    b.restore_session(&a.session_json()).unwrap();
+    let mut cols: Vec<usize> = b
+        .window_list()
+        .iter()
+        .map(|w| b.window_size(*w).unwrap().0)
+        .collect();
+    cols.sort();
+    assert!(cols[1] >= 2 * cols[0] && cols[0] > 25, "{cols:?}");
+}
+
+/// A clean file that went has no buffer, so the window on it goes and the others take its cells.
+#[test]
+fn a_window_on_a_buffer_that_did_not_come_back_goes() {
+    let dir = Dir::new();
+    let gone = dir.file("gone.txt", "gone\n");
+    let mut a = fresh();
+    a.set_window_size(100, 30);
+    let (_, w1) = a.open_text("stays", "text\n").unwrap();
+    let w2 = a.split_window(w1, Side::Right).unwrap();
+    let g = a.open_file(&gone).unwrap();
+    a.focus(w2);
+    a.show(g, ShowIn::Current).unwrap();
+    let saved = a.session_json();
+    fs::remove_file(&gone).unwrap();
+
+    let mut b = fresh();
+    b.set_window_size(100, 30);
+    b.restore_session(&saved).unwrap();
+    let w = b.focused().unwrap();
+    assert_eq!(b.window_list(), [w]);
+    assert_eq!(b.window_size(w).unwrap().0, 100);
+    assert_eq!(b.window_buffer(w), b.find_buffer("stays"));
+}
+
+/// A tree that can't be one costs the windows and is kept aside. The buffers still come back.
+#[test]
+fn an_unreadable_tree_is_dropped_alone_and_kept_aside() {
+    let kid = |w: usize| format!(r#"{{"size":1,"node":{{"window":{w}}}}}"#);
+    for (layout, windows) in [
+        (r#""junk""#.to_owned(), r#"[{"buffer":0}]"#),
+        (r#"{"window":0}"#.to_owned(), r#""junk""#),
+        (r#"{"window":7}"#.to_owned(), r#"[{"buffer":0}]"#),
+        (
+            format!(r#"{{"axis":"Cols","kids":[{},{}]}}"#, kid(0), kid(0)),
+            r#"[{"buffer":0},{"buffer":0}]"#,
+        ),
+    ] {
+        let dir = Dir::new();
+        let session = format!(
+            r#"{{"version":1,"focus":0,"layout":{layout},"windows":{windows},
+                "buffers":[{{"name":"n","text":"kept","modified":true}}]}}"#
+        );
+        fs::write(dir.0.join(FILE), session).unwrap();
+        let h = kept_in(&dir.0);
+        assert!(
+            said(&h, "dropped the windows"),
+            "{layout}: {:?}",
+            h.messages
+        );
+        assert_eq!(h.window_list().len(), 1, "{layout}");
+        assert_eq!(h.focused_buffer(), h.find_buffer("n"), "{layout}");
+        let names: Vec<_> = fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let rejected = names.iter().any(|n| n.starts_with("session.rejected-"));
+        assert!(rejected, "{layout}: {names:?}");
+    }
+}
+
+/// Build N reading build N+1's view or register: only that one is lost.
+#[test]
+fn an_unreadable_view_or_register_is_dropped_alone() {
+    let mut h = fresh();
+    h.restore_session(
+        r#"{"version":1,"focus":0,"layout":{"window":0},"windows":[{"buffer":0}],
+            "registers":[{"name":"a","kind":"Hologram","text":"x"},
+                         {"name":"b","kind":"Char","text":"bee"}],
+            "buffers":[{"name":"n","text":"some text",
+              "views":[{"window":0,"anchor":"elsewhere"},
+                       {"window":0,"anchor":2,"head":4,"shape":"Char","top":0,"top_row":0}]}]}"#,
+    )
+    .unwrap();
+    assert_eq!(h.register('a'), None);
+    assert_eq!(h.register('b').unwrap().text, "bee");
+    assert!(said(&h, "dropped a register"));
+    let buf = h.find_buffer("n").unwrap();
+    let sel = h
+        .text(buf)
+        .unwrap()
+        .selection(h.focused().unwrap())
+        .unwrap();
+    assert_eq!((sel.anchor, sel.head), (2, 4));
+}
+
+/// The newest kill was on the clipboard when DIE stopped, so it isn't news after a restart.
+#[test]
+fn the_newest_kill_still_on_the_clipboard_is_not_news() {
+    let mut a = fresh();
+    a.open_text("t", "text").unwrap();
+    let copied = Register {
+        kind: RegKind::Char,
+        text: "copied".into(),
+    };
+    a.set_register('"', copied);
+    let mut b = fresh();
+    b.fake_clipboard().copy_from_outside("copied");
+    b.restore_session(&a.session_json()).unwrap();
+    assert_eq!(b.clipboard_news(), None);
+    b.fake_clipboard().copy_from_outside("from another app");
+    assert_eq!(b.clipboard_news().unwrap().text, "from another app");
+}
+
+/// What K13 adds to the file counts as a change, or the idle write wouldn't happen for it.
+#[test]
+fn a_change_beside_the_text_is_written() {
+    let dir = Dir::new();
+    let file = dir.0.join(FILE);
+    let mut h = kept_in(&dir.0);
+    let (buf, w) = h.open_text("t", &numbered(100)).unwrap();
+    h.resume_session();
+    let wrote = |h: &mut Harness, what: &str| {
+        h.advance(Duration::from_secs(5));
+        h.flush_session();
+        let now = fs::read_to_string(&file).unwrap();
+        assert_eq!(now, h.session_json(), "{what}");
+        now
+    };
+    let mut last = wrote(&mut h, "the start");
+    type Change = fn(&mut Harness, die_core::BufferId, die_core::WindowId);
+    let changes: [(&str, Change); 3] = [
+        ("a register", |h, _, _| {
+            let text = "reg".to_owned();
+            h.set_register(
+                'z',
+                Register {
+                    kind: RegKind::Char,
+                    text,
+                },
+            );
+        }),
+        ("a selection", |h, buf, w| {
+            let sel = Selection {
+                anchor: 3,
+                head: 9,
+                shape: Shape::Char,
+                goal: None,
+            };
+            h.text_mut(buf).unwrap().set_selection(w, sel);
+        }),
+        ("a split", |h, _, w| {
+            h.split_window(w, Side::Right).unwrap();
+        }),
+    ];
+    for (what, change) in changes {
+        change(&mut h, buf, w);
+        let now = wrote(&mut h, what);
+        assert_ne!(now, last, "{what}");
+        last = now;
+    }
 }

@@ -45,7 +45,7 @@ type ChangeFn = Rc<RefCell<dyn FnMut(&mut Ctx, &str) -> Result>>;
 type LiveFn = Rc<RefCell<dyn FnMut(&str) -> (usize, Vec<String>)>>;
 
 /// How many answers a history keeps.
-const HISTORY: usize = 100;
+pub(crate) const HISTORY: usize = 100;
 /// How many candidates show at once, as the owner's `vertico-count`.
 const ROWS: usize = 20;
 
