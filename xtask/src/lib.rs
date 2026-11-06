@@ -16,5 +16,6 @@ pub mod guards;
 pub mod lint;
 pub mod linux;
 pub mod mutate;
+pub mod restart_loop;
 pub mod sources;
 pub mod util;
