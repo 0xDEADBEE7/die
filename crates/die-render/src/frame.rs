@@ -94,7 +94,7 @@ pub struct Image {
 }
 
 /// A frame on the window's drawable.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Presented {
     /// The drawable's width in pixels.
     pub w: u32,
@@ -102,6 +102,12 @@ pub struct Presented {
     pub h: u32,
     /// Its pixels, if the surface was asked to read this frame back.
     pub image: Option<Image>,
+    /// Which of the surface's presents it is, as `Surface::take_presented` names it.
+    pub id: u64,
+    /// The main thread's time on it in ms, up to the commit.
+    pub cpu_ms: f64,
+    /// The GPU's time on it in ms.
+    pub gpu_ms: f64,
 }
 
 impl Image {
