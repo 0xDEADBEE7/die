@@ -98,6 +98,7 @@ fn bindings(reg: &mut Registry) {
     let keys = reg.global_keymap();
     keys.bind(State::Normal, "<leader>z", "toggle-max-width");
     keys.bind(State::Normal, "<leader>x", "command-palette");
+    keys.bind(State::Normal, "<leader>]", "switch-buffer");
 }
 
 /// `global-visual-line-mode` and `visual-fill-column`, centered at 80.
