@@ -109,8 +109,8 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 [[module]]
 crate = "die-core"
 name = "session"
-limit = 1060
-# 1,000 until K13: the full session came to 1,039.
+limit = 1085
+# 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes.
 files = ["session.rs", "session/", "instance.rs", "sys/"]
 
 [[module]]

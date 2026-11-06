@@ -234,15 +234,11 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
 /// Where the cursor at `p` goes on leaving insert state, by Escape or by a restored session.
 pub fn stepped_back(t: &TextBuf, w: WindowId, p: usize) -> usize {
     // As Evil's evil-move-cursor-back does under visual-line-mode: not back over a row's start.
-    let back = if p > row_start(t, w, p) {
-        prev_stop(t, p).unwrap_or(p)
-    } else {
-        p
-    };
+    let back = (p > row_start(t, w, p)).then(|| prev_stop(t, p));
     // A session that ends on the empty line after a final newline leaves the
     // cursor there, as Evil and Vim do, so the next `i` types on that line. Only
     // motions keep off it (scope §10).
-    rest_pos(t, back)
+    rest_pos(t, back.flatten().unwrap_or(p))
 }
 
 /// Replay the session count-1 more times. Typed text alone goes in at once; anything
