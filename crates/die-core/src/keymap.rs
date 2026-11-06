@@ -162,7 +162,7 @@ pub struct Shadowed {
 pub struct Keymap {
     tries: HashMap<State, Trie>,
     /// Every bind and unbind (no command), in order, replayed when the leader changes.
-    log: Vec<(State, String, Option<String>)>,
+    pub(crate) log: Vec<(State, String, Option<String>)>,
     shadowed: Vec<Shadowed>,
     leader: Chord,
     pub(crate) errors: Vec<String>,
@@ -243,7 +243,7 @@ impl Keymap {
     }
 
     /// `keys` as patterns, with the leader resolved.
-    fn pats(&self, state: State, keys: &str) -> Result<Vec<Pat>, String> {
+    pub(crate) fn pats(&self, state: State, keys: &str) -> Result<Vec<Pat>, String> {
         let mut pats = parse_pats(keys)?;
         if pats.is_empty() {
             return Err(format!("no keys in {state:?}"));
@@ -311,6 +311,11 @@ impl Keymap {
         self.log
             .iter()
             .filter_map(|(s, k, c)| Some((*s, k.as_str(), c.as_deref()?)))
+    }
+
+    /// The indices in `log` of the bindings in force.
+    pub(crate) fn live(&self) -> Vec<usize> {
+        self.tries.values().flat_map(Trie::bound).collect()
     }
 
     /// The bindings hidden by later ones for the same keys, or unbound, in that order.

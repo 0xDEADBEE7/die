@@ -132,6 +132,10 @@ pub trait Surface: Any {
     fn event(&mut self, _ev: &Event, _ctx: &mut Ctx) -> bool {
         false
     }
+    /// Whether it handles this key in passthrough, so `describe-key` can say so (contract §7).
+    fn handles(&self, _key: &KeyEvent) -> bool {
+        false
+    }
     /// The state a buffer showing it starts in.
     fn initial_state(&self) -> State {
         State::Normal
@@ -313,6 +317,8 @@ pub struct Ctx {
     /// Where the next key fed from inside a call goes. Each turn starts it at the front.
     pub(crate) fed_at: usize,
     pub(crate) pending: Vec<KeyEvent>,
+    /// The keys `describe-key` has read so far, while it's reading them.
+    pub(crate) describing: Option<Vec<KeyEvent>>,
     pub(crate) swallow: Vec<Key>,
     pub(crate) leader: Chord,
     pub(crate) prefix: Prefix,
@@ -354,6 +360,8 @@ pub struct Ctx {
     pub(crate) errors: Option<Vec<String>>,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
+    /// `Ctx::quit` was called.
+    pub(crate) quit_wanted: bool,
 }
 
 fn panic_msg(p: &(dyn Any + Send)) -> String {
@@ -482,6 +490,7 @@ impl Ctx {
             fed: VecDeque::new(),
             fed_at: 0,
             pending: vec![],
+            describing: None,
             swallow: vec![],
             leader: default_leader(),
             prefix: Prefix::default(),
@@ -515,6 +524,7 @@ impl Ctx {
             errors: None,
             faces,
             search_highlight: None,
+            quit_wanted: false,
         };
         for (name, c) in reg.commands {
             if ctx.commands.insert(name.clone(), c).is_some() {
@@ -565,7 +575,8 @@ impl Ctx {
         self.leader
     }
 
-    fn check_bindings(&self) -> Vec<String> {
+    /// Every keymap in the registry with its name, sorted by name.
+    pub(crate) fn all_keymaps(&self) -> Vec<(String, &Keymap)> {
         let mut maps: Vec<(String, &Keymap)> = vec![("global".into(), &self.global)];
         maps.extend(self.kinds.iter().map(|(k, m)| (format!("kind {k}"), m)));
         maps.extend(
@@ -574,8 +585,13 @@ impl Ctx {
                 .map(|m| (format!("mode {}", m.name), &m.keymap)),
         );
         maps.extend(self.named.iter().map(|(k, m)| (format!("keymap {k}"), m)));
+        maps.sort_by(|a, b| a.0.cmp(&b.0));
+        maps
+    }
+
+    fn check_bindings(&self) -> Vec<String> {
         let mut out = vec![];
-        for (name, m) in maps {
+        for (name, m) in self.all_keymaps() {
             out.extend(m.errors.iter().map(|e| format!("{name}: {e}")));
             for (_, keys, cmd) in m.bindings() {
                 if !self.commands.contains_key(cmd) {
@@ -600,6 +616,17 @@ impl Ctx {
     pub fn nesting(&self) -> usize {
         self.ext_stack.len()
     }
+    /// Ask the host to end the program when this turn's work is done, as `:q` from the last
+    /// window does. Nothing here checks for unsaved changes: that's the caller's.
+    pub fn quit(&mut self) {
+        self.quit_wanted = true;
+    }
+
+    /// Whether [`Ctx::quit`] has been called.
+    pub fn quit_wanted(&self) -> bool {
+        self.quit_wanted
+    }
+
     /// A command's doc and the name of whoever registered it.
     pub fn command_doc(&self, name: &str) -> Option<(&'static str, &'static str)> {
         self.commands
