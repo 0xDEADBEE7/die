@@ -193,6 +193,37 @@ fn a_build_that_panics_before_its_first_frame_leaves_the_old_one_running() {
     assert_eq!(app.holder(), Some(old));
 }
 
+/// F4b: the loop itself, shorter, with the dev build. `cargo xtask restart-loop 20` is the proof.
+#[test]
+fn the_restart_loop_finds_equal_digests_and_logs_each_time() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let options = xtask::restart_loop::Options {
+        restarts: 2,
+        profile: xtask::app::Profile::Dev,
+        bundle_id: "dev.die.DIE.test",
+    };
+    let times = xtask::restart_loop::drive(&root(), options).unwrap();
+    assert_eq!(times.len(), 2);
+}
+
+/// What the loop would be fooled by: a digest that moved, a slow restart, a restart left out, or
+/// equal digests of a session that was lost.
+#[test]
+fn the_restart_loop_refuses_what_is_wrong() {
+    use xtask::restart_loop::{holds_the_seed, seed, verify};
+    assert!(verify("a\na\na\n", "10\n20\n", 2, 1000.0).is_ok());
+    assert!(verify("a\na\nb\n", "10\n20\n", 2, 1000.0).is_err());
+    assert!(verify("a\na\na\n", "10\n1000\n", 2, 1000.0).is_err());
+    assert!(verify("a\na\n", "10\n", 2, 1000.0).is_err());
+    assert!(verify("a\na\na\n", "10\n", 2, 1000.0).is_err());
+    let lost = r#"{"version":1,"buffers":[]}"#;
+    assert!(holds_the_seed(lost).unwrap_err().contains("lost"));
+    let this = std::env::current_exe().unwrap();
+    let text = seed(&this, &this).unwrap().to_string();
+    assert_eq!(holds_the_seed(&text), Ok(()));
+    assert!(holds_the_seed(&text.replace("Cols", "Rows")).is_err());
+}
+
 #[test]
 fn a_restart_hands_over_in_time() {
     let _one = ONE_AT_A_TIME.lock().unwrap();
