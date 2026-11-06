@@ -98,6 +98,9 @@ fn bindings(reg: &mut Registry) {
     let keys = reg.global_keymap();
     keys.bind(State::Normal, "<leader>z", "toggle-max-width");
     keys.bind(State::Normal, "<leader>x", "command-palette");
+    keys.bind(State::Normal, "<leader>f", "find-file");
+    keys.bind(State::Normal, "<leader>hk", "describe-key");
+    keys.bind(State::Normal, "<leader>hc", "describe-command");
     keys.bind(State::Normal, "<leader>]", "switch-buffer");
 }
 

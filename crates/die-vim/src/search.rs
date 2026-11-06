@@ -26,7 +26,7 @@ const NONE_YET: &str = "No previous search";
 
 /// Smartcase: a pattern with no capital in it ignores case. What follows a backslash isn't
 /// text, so `\S` has no capital.
-fn ignores_case(src: &str) -> bool {
+pub fn ignores_case(src: &str) -> bool {
     let mut chars = src.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
