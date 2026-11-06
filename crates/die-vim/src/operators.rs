@@ -44,7 +44,11 @@ impl Pending {
         Change {
             count: counts(self.count, a.count),
             register: self.register,
-            keys: self.keys.clone() + &key_notation(&a.keys),
+            // An operator run from `:` has no keys to type again, whatever its motion's.
+            keys: match self.keys.is_empty() {
+                true => String::new(),
+                false => self.keys.clone() + &key_notation(&a.keys),
+            },
             visual: None,
         }
     }
@@ -476,7 +480,7 @@ fn change(
         ..a.clone()
     };
     let mut session = insert::begin(ctx, &once, entry)?;
-    session.repeat = again;
+    session.repeat = again.and_then(Change::typed);
     ctx.with_ext(|v: &mut Vim, _| v.inserts.insert(b, session))?;
     Ok(())
 }
