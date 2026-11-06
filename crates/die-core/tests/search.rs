@@ -283,15 +283,26 @@ fn a_rejected_match_moves_on_a_character_not_a_byte() {
     assert_eq!(find_word(&t, "é", 9, Dir::Backward), Some((7..9, false)));
 }
 
-/// A match that doesn't count can overlap one that does, when `text` isn't all word characters.
+/// A match that doesn't count can overlap one that does, when `text` has a non-word character
+/// inside it.
 #[test]
 fn a_rejected_match_doesnt_hide_one_it_overlaps() {
-    let t = buf("x---");
-    assert_eq!(find_word(&t, "--", 0, Dir::Forward), Some((2..4, false)));
-    assert_eq!(t.matches(&word("--"), 0..4), vec![2..4]);
-    let t = buf("---x");
-    assert_eq!(find_word(&t, "--", 4, Dir::Backward), Some((0..2, false)));
-    assert_eq!(t.matches(&word("--"), 0..4), vec![0..2]);
+    let t = buf("xa-a-a");
+    assert_eq!(find_word(&t, "a-a", 0, Dir::Forward), Some((3..6, false)));
+    assert_eq!(t.matches(&word("a-a"), 0..6), vec![3..6]);
+    let t = buf("a-a-ax");
+    assert_eq!(find_word(&t, "a-a", 6, Dir::Backward), Some((0..3, false)));
+    assert_eq!(t.matches(&word("a-a"), 0..6), vec![0..3]);
+}
+
+/// As with Emacs's `\\<` and `\\>`, a word starts and ends on a word character, whatever is
+/// beside it.
+#[test]
+fn a_word_pattern_with_no_word_character_at_an_end_matches_nowhere() {
+    let t = buf("a ++ b ++ c");
+    assert_eq!(find_word(&t, "++", 0, Dir::Forward), None);
+    assert!(t.matches(&word("++"), 0..t.len()).is_empty());
+    assert_eq!(find_word(&buf("a-- a--"), "a--", 0, Dir::Forward), None);
 }
 
 #[test]
@@ -332,28 +343,11 @@ fn a_plain_pattern_is_not_filtered() {
     assert_eq!(find(&t, "foo", 6, Dir::Forward), Some((0..3, true)));
 }
 
+/// An empty word pattern has no word character at its ends, so it matches nowhere. Every small
+/// text, from every position, going both ways: the search has to walk them all and stop.
 #[test]
-fn an_empty_word_pattern_terminates() {
-    let t = buf("ab");
-    assert_eq!(t.search(&word(""), 0, Dir::Forward), None);
-    assert_eq!(t.search(&word(""), 2, Dir::Backward), None);
-    let t = buf("a  b");
-    let hit = t.search(&word(""), 0, Dir::Forward).unwrap();
-    assert_eq!(hit.range, 2..2);
-    assert_eq!(t.matches(&word(""), 0..4), vec![2..2]);
-}
-
-/// An empty word pattern stands at each position with no word character beside it. Every
-/// small text, from every position, going both ways: a rejected match mustn't skip one.
-#[test]
-fn an_empty_word_pattern_finds_every_position_it_stands_at() {
-    assert_eq!(
-        buf("\n\n\n\na").search(&word(""), 5, Dir::Backward),
-        Some(Found {
-            range: 3..3,
-            wrapped: false
-        })
-    );
+fn an_empty_word_pattern_matches_nowhere_and_terminates() {
+    assert!(buf("a  b").matches(&word(""), 0..4).is_empty());
     let mut texts = vec![String::new()];
     for _ in 0..4 {
         let longer = texts.iter().flat_map(|t| {
@@ -369,23 +363,12 @@ fn an_empty_word_pattern_finds_every_position_it_stands_at() {
     }
     let empty = word("");
     for text in &texts {
-        let stands: Vec<usize> = (0..=text.len())
-            .filter(|&p| {
-                text.is_char_boundary(p)
-                    && !text[..p].chars().next_back().is_some_and(evil_word)
-                    && !text[p..].chars().next().is_some_and(evil_word)
-            })
-            .collect();
         let t = buf(text);
         for from in 0..=text.len() {
-            let forward = stands.iter().find(|&&p| p > from && from < text.len());
-            let found = t.search(&empty, from, Dir::Forward).map(|f| f.range.start);
-            let want = forward.or(stands.first()).copied();
-            assert_eq!(found, want, "{text:?} forward from {from}");
-            let backward = stands.iter().rev().find(|&&p| p < from);
-            let found = t.search(&empty, from, Dir::Backward).map(|f| f.range.start);
-            let want = backward.or(stands.last()).copied();
-            assert_eq!(found, want, "{text:?} backward from {from}");
+            let found = t.search(&empty, from, Dir::Forward);
+            assert_eq!(found, None, "{text:?} forward from {from}");
+            let found = t.search(&empty, from, Dir::Backward);
+            assert_eq!(found, None, "{text:?} backward from {from}");
         }
     }
 }

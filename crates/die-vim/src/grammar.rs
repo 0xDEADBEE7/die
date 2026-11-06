@@ -36,17 +36,25 @@ use die_core::{
 /// The column vertical motions aim for, kept across a run of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Goal {
-    /// A display column.
+    /// A display column on the logical line, from `j` and the like.
     Col(usize),
+    /// A column on the screen row, from `gj` and `gk`. Going by logical lines recomputes it, as
+    /// `evil-line-move` resets its goal between the two; only `j` and `k` do, and the rest read
+    /// it as a logical column, as `evil-ensure-column` reads Emacs's.
+    Row(usize),
     /// The end of each line, after `$`.
     Eol,
 }
+
+/// Marks a [`Goal::Row`] in a [`Selection`]'s goal column.
+const ROW_GOAL: usize = !(usize::MAX >> 1);
 
 impl Goal {
     /// As stored in a [`Selection`]'s goal column.
     pub fn encode(g: Option<Goal>) -> Option<usize> {
         g.map(|g| match g {
             Goal::Col(c) => c,
+            Goal::Row(c) => c | ROW_GOAL,
             Goal::Eol => usize::MAX,
         })
     }
@@ -55,6 +63,8 @@ impl Goal {
         c.map(|c| {
             if c == usize::MAX {
                 Goal::Eol
+            } else if c & ROW_GOAL != 0 {
+                Goal::Row(c & !ROW_GOAL)
             } else {
                 Goal::Col(c)
             }
@@ -138,6 +148,9 @@ pub struct Target {
     /// `w` and `W`: if a `d` ends up taking whole lines, the cursor goes to the first
     /// non-blank, not to the column it started in.
     pub no_column: bool,
+    /// A search can land on the empty line after a final newline, as Evil's does; no other
+    /// motion takes the cursor there.
+    pub to_last_line: bool,
 }
 
 impl Target {
@@ -149,6 +162,7 @@ impl Target {
             short: None,
             kind: None,
             no_column: false,
+            to_last_line: false,
         }
     }
     /// `pos`, signalling `err` but keeping the goal column. For a motion that fell short
@@ -256,7 +270,8 @@ pub fn run_motion(
         }
     };
     // From the empty line after a final newline, a motion along that line stays on it.
-    let stays = on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head);
+    let stays = (on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head))
+        || (to.to_last_line && on_last_empty_line(t, to.pos));
     let pos = if stays || (visual && !on_last_empty_line(t, to.pos)) {
         to.pos
     } else {
@@ -295,6 +310,8 @@ mod tests {
             None,
             Some(Goal::Col(0)),
             Some(Goal::Col(7)),
+            Some(Goal::Row(0)),
+            Some(Goal::Row(7)),
             Some(Goal::Eol),
         ] {
             assert_eq!(Goal::decode(Goal::encode(g)), g);

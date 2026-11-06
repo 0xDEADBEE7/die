@@ -2,16 +2,16 @@
 //! commands do them: a new window goes above or to the left and takes the focus, and without a
 //! count the split evens out.
 use crate::Body;
-use crate::grammar::{buffer_window, forget_goal};
+use crate::grammar::{buffer_window, count_digit, forget_goal};
 use die_core::{Args, Ctx, Error, Result, ShowIn, Side, WindowId};
 
 /// Keys after `C-w`, the command, its doc, and what it does. `f` (ffap) and `T` (tabs) aren't here.
 #[rustfmt::skip]
 pub const MAP: &[(&str, &str, &str, Body)] = &[
-    ("h <C-h> <Left>", "vim-window-left", "C-w h: to the count-th window on the left.", |c, a| go(c, a, Side::Left)),
-    ("j <C-j> <Down>", "vim-window-down", "C-w j: to the count-th window below.", |c, a| go(c, a, Side::Below)),
-    ("k <C-k> <Up>", "vim-window-up", "C-w k: to the count-th window above.", |c, a| go(c, a, Side::Above)),
-    ("l <C-l> <Right>", "vim-window-right", "C-w l: to the count-th window on the right.", |c, a| go(c, a, Side::Right)),
+    ("h <C-h> <Left> <C-Left>", "vim-window-left", "C-w h: to the count-th window on the left.", |c, a| go(c, a, Side::Left)),
+    ("j <C-j> <Down> <C-Down>", "vim-window-down", "C-w j: to the count-th window below.", |c, a| go(c, a, Side::Below)),
+    ("k <C-k> <Up> <C-Up>", "vim-window-up", "C-w k: to the count-th window above.", |c, a| go(c, a, Side::Above)),
+    ("l <C-l> <Right> <C-Right>", "vim-window-right", "C-w l: to the count-th window on the right.", |c, a| go(c, a, Side::Right)),
     ("w <C-w>", "vim-window-next", "C-w w: to the next window, or the count-th from the top left.", |c, a| next(c, a, 1)),
     ("W <C-S-w>", "vim-window-prev", "C-w W: to the previous window, or the count-th from the top left.", |c, a| next(c, a, -1)),
     ("t <C-t>", "vim-window-top-left", "C-w t: to the top left window.", |c, _| at(c, |l| l.first().copied())),
@@ -30,7 +30,7 @@ pub const MAP: &[(&str, &str, &str, Body)] = &[
     (">", "vim-window-wider", "C-w >: count columns wider.", |c, a| size(c, |n, _| (n.0 + count(a), n.1))),
     ("<lt>", "vim-window-narrower", "C-w <: count columns narrower.", |c, a| size(c, |n, _| (n.0.saturating_sub(count(a)), n.1))),
     ("_ <C-_>", "vim-window-set-height", "C-w _: count lines high, or as high as it goes.", |c, a| size(c, |n, f| (n.0, a.count.map_or(f.1, whole)))),
-    ("|", "vim-window-set-width", "C-w |: count columns wide, or as wide as it goes.", |c, a| size(c, |n, f| (a.count.map_or(f.0, whole), n.1))),
+    ("|", "vim-window-set-width", "C-w |: count columns of text wide, or as wide as it goes.", |c, a| size(c, |n, f| (a.count.unwrap_or(f.0), n.1))),
     ("H <C-S-h>", "vim-window-move-far-left", "C-w H: move this window to the frame's left.", |c, a| edge(c, a, Side::Left)),
     ("J <C-S-j>", "vim-window-move-very-bottom", "C-w J: move this window to the frame's bottom.", |c, a| edge(c, a, Side::Below)),
     ("K <C-S-k>", "vim-window-move-very-top", "C-w K: move this window to the frame's top.", |c, a| edge(c, a, Side::Above)),
@@ -39,6 +39,7 @@ pub const MAP: &[(&str, &str, &str, Body)] = &[
     ("R <C-S-r>", "vim-window-rotate-upwards", "C-w R: each window's content moves to the window before.", |c, a| rotate(c, a, false)),
     ("x <C-x>", "vim-window-exchange", "C-w x: change places with the next window, or the count-th.", exchange),
     (":", "vim-window-ex", "C-w :: read a line and run it.", crate::ex::open),
+    ("0 1 2 3 4 5 6 7 8 9", "vim-window-digit-argument", "C-w 5: a count digit, and the C-w map stays.", digit),
 ];
 
 /// Ex names, as `sp[lit]` gives its shortest form and its whole name, and what they run.
@@ -49,27 +50,20 @@ const EX: &[(&str, &str, &str)] = &[
     ("vne", "vnew", "vim-window-vnew"),
     ("clo", "close", "vim-window-delete"),
     ("on", "only", "vim-window-only"),
-    ("q", "quit", "vim-quit"),
 ];
 
 /// An ex line, if it's a window command: an optional count, the name, and a file. `!` changes
-/// nothing here but for `:q!`, whose text tells the app's `quit` to drop unsaved changes.
+/// nothing here. `:q` is with the file commands, where its `!` means something.
 pub fn ex(ctx: &mut Ctx, line: &str) -> Option<Result> {
     let digits = line.find(|c: char| !c.is_ascii_digit())?;
     let (n, rest) = line.split_at(digits);
     let (name, file) = rest.split_once(' ').unwrap_or((rest, ""));
-    let bang = name.ends_with('!');
     let name = name.strip_suffix('!').unwrap_or(name);
     let is = |e: &&(&str, &str, &str)| name.len() >= e.0.len() && e.1.starts_with(name);
     let &(.., command) = EX.iter().find(is)?;
-    let text = match file.trim() {
-        _ if bang && command == "vim-quit" => Some("!".to_string()),
-        "" => None,
-        file => Some(file.to_string()),
-    };
     let args = Args {
         count: n.parse().ok(),
-        text,
+        text: (!file.trim().is_empty()).then(|| file.trim().to_string()),
         ..Default::default()
     };
     Some(ctx.run(command, &args))
@@ -166,7 +160,7 @@ fn split(ctx: &mut Ctx, a: &Args, side: Side, blank: bool) -> Result {
     ctx.focus(new);
     let shown = match a.text.as_deref() {
         Some(file) => {
-            let path = ctx.directory(b).map_or(file.into(), |d| d.join(file));
+            let path = crate::ex::absolute(ctx.directory(b), file);
             Some(ctx.open_file(&path)?)
         }
         None => blank.then(|| ctx.create_text("*new*", "")),
@@ -182,14 +176,35 @@ fn close(ctx: &mut Ctx, a: &Args) -> Result {
     ctx.close_window_balancing(w)
 }
 
-/// `:q`: Evil's `evil-quit` closes a window without evening anything out, and only the last
-/// window quits. Quitting is a command of the app's.
+/// `C-w q`, as `:q`.
 fn quit(ctx: &mut Ctx, a: &Args) -> Result {
     let (_, w) = buffer_window(ctx, a)?;
+    close_or_quit(ctx, w, false)
+}
+
+/// `:q`: Evil's `evil-quit` runs `evil-window-delete`, as `C-w c` does, and only the last window
+/// quits. That refuses while a file has unsaved changes, unless `force`.
+pub fn close_or_quit(ctx: &mut Ctx, w: WindowId, force: bool) -> Result {
     if ctx.window_list().len() > 1 {
-        return ctx.close_window(w);
+        return ctx.close_window_balancing(w);
     }
-    ctx.run("quit", a)
+    quit_app(ctx, force)
+}
+
+/// Quit, which refuses while a file has unsaved changes, unless `force`.
+pub fn quit_app(ctx: &mut Ctx, force: bool) -> Result {
+    let unsaved = ctx
+        .buffer_list()
+        .into_iter()
+        .find(|&b| ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified()));
+    if let Some(b) = unsaved.filter(|_| !force) {
+        let name = ctx.buffer_name(b).unwrap_or_default();
+        return Err(Error::Msg(format!(
+            "{name} has unsaved changes; :w saves them, :q! drops them"
+        )));
+    }
+    ctx.quit();
+    Ok(())
 }
 
 fn only(ctx: &mut Ctx, a: &Args) -> Result {
@@ -242,11 +257,22 @@ fn rotate(ctx: &mut Ctx, a: &Args, down: bool) -> Result {
     Ok(())
 }
 
+/// `C-w x`: as Evil's `window-swap-states` does, the focus keeps its place on the screen, so it's
+/// on the other window now.
 fn exchange(ctx: &mut Ctx, a: &Args) -> Result {
     let (_, w) = buffer_window(ctx, a)?;
     let to = target(ctx, a, 1)?;
     if to != w {
-        ctx.swap_windows(w, to)?;
+        ctx.exchange_windows(w, to)?;
+        ctx.focus(to);
     }
     Ok(())
+}
+
+/// A digit after `C-w`: Evil's `evil-window-digit-argument`. The count waits in the prefix, and
+/// the next key is looked up after `C-w` again. A recording holds typed keys, so not this one.
+fn digit(ctx: &mut Ctx, a: &Args) -> Result {
+    let d = a.char().and_then(|c| c.to_digit(10)).unwrap_or(0);
+    count_digit(ctx, a, d as usize)?;
+    ctx.feed_keys("<C-w>")
 }
