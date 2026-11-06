@@ -41,6 +41,7 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
     "NSApplication",
     "NSEvent",
     "NSGraphics",
+    "NSGraphicsContext",
     "NSPasteboard",
     "NSResponder",
     "NSRunningApplication",
@@ -51,6 +52,7 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
 objc2-metal = { version = "=0.3.2", default-features = false, features = [
     "std",
     "block2",
+    "objc2-core-foundation",
     "MTLAllocation",
     "MTLArgument",
     "MTLBuffer",
@@ -118,10 +120,6 @@ die-test-cap.workspace = true
 
 # Only `tests/keys.rs` posts events, to its own process.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
-    "std",
-    "NSGraphicsContext",
-] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = [
     "std",
     "libc",

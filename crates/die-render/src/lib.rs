@@ -29,6 +29,7 @@ pub mod driver;
 pub mod font;
 pub mod frame;
 pub mod input;
+pub mod latency;
 pub mod platform;
 pub mod rows;
 pub mod sprite;
