@@ -412,7 +412,7 @@ impl Ctx {
             .collect()
     }
     /// Give every window in the tree the cells it now has.
-    fn retile(&mut self) {
+    pub(crate) fn retile(&mut self) {
         let frame_cols = self.tree.frame.0;
         for (w, r) in self.tree.tile() {
             let (cols, rows) = r.text_size(frame_cols);
@@ -509,7 +509,7 @@ impl Ctx {
     }
 
     /// A window has left the tree: forget it, and move the focus off it.
-    fn drop_window(&mut self, w: WindowId) {
+    pub(crate) fn drop_window(&mut self, w: WindowId) {
         let Some(win) = self.windows.remove(w) else {
             return;
         };

@@ -56,5 +56,6 @@ impl Ctx {
     /// Empty a register, as if nothing had ever been put in it.
     pub fn clear_register(&mut self, c: char) {
         self.registers.remove(&c);
+        self.registers_saved.take();
     }
 }

@@ -81,7 +81,7 @@ pub enum Gravity {
 }
 
 /// A selection's shape.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Shape {
     /// The characters between the two ends.
     Char,
