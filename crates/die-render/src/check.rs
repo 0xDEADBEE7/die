@@ -1,12 +1,22 @@
-//! `die --check idle,resize,scale,occlusion,show`: the window held to S1's rules, by DIE
-//! itself, on its own window. It posts no input and takes no focus. Each check prints one
-//! line, `name: ok a=1 b=2`, `name: skip why` or `name: FAIL why`, and any FAIL makes the
-//! exit code 1. R6 adds `typing` and `firstframe`.
+//! `die --check idle,resize,scale,occlusion,show,...`: the window held to S1's rules, by DIE
+//! itself, on its own window. It takes no focus, and only `typing` posts input, to this
+//! process and no other. Each check prints one line, `name: ok a=1 b=2`, `name: skip why` or
+//! `name: FAIL why`, and any FAIL makes the exit code 1. It reports its numbers, and
+//! `apps/die-dev/tests/window.rs` holds them to S1's limits.
+//!
+//! By S1's check: 1 is `typing`, 2 is `redraw`, 4 is `idle-60`, 5 is `occlusion-20`, 6 is
+//! `scale`, 7 is `resize` and 8 is `firstframe`. 9, fidelity, needs no window, and stays in
+//! die-render's `tests/fidelity.rs`, on the same renderer.
 #![warn(missing_docs)]
 
+use crate::driver;
+use crate::latency;
 use crate::window::{Remote, Script, Shell, floating_window};
-use die_core::{Ctx, Key, KeyEvent, Origin, Result as CoreResult, Scene, WindowId};
+use die_core::{Cell, Ctx, Glyph, Key, KeyEvent, Origin, Result as CoreResult, Rgb, Scene};
+use die_core::{Underline, WindowId};
 use std::collections::HashSet;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::sleep;
@@ -15,13 +25,54 @@ use winit::dpi::LogicalSize;
 use winit::event_loop::ActiveEventLoop;
 
 /// The checks there are.
-pub const NAMES: [&str; 5] = ["idle", "resize", "scale", "occlusion", "show"];
+pub const NAMES: [&str; 11] = [
+    "idle",
+    "idle-60",
+    "resize",
+    "scale",
+    "occlusion",
+    "occlusion-20",
+    "show",
+    "typing",
+    "redraw",
+    "firstframe",
+    "firstframe-once",
+];
 
 const IDLE: Duration = Duration::from_secs(3);
+/// S1's check 4 is this long, which is what makes its CPU figure mean anything.
+const LONG_IDLE: Duration = Duration::from_secs(60);
 const TICKS: u32 = 10;
 const RESIZE_STEPS: u32 = 120;
 const SCALE_CHANGES: usize = 6;
 const OCCLUSION_CYCLES: u32 = 3;
+/// S1's check 5.
+const LONG_OCCLUSION_CYCLES: u32 = 20;
+/// S1's check 1.
+const KEYS: usize = 500;
+/// A key's press, then the wait after its release: about 30 keys a second.
+const KEY_DOWN: Duration = Duration::from_millis(5);
+const KEY_GAP: Duration = Duration::from_millis(25);
+/// Letters and their virtual key codes.
+const LETTERS: [(char, u16); 9] = [
+    ('a', 0),
+    ('s', 1),
+    ('d', 2),
+    ('f', 3),
+    ('g', 5),
+    ('h', 4),
+    ('j', 38),
+    ('k', 40),
+    ('l', 37),
+];
+const I_KEY: (char, u16) = ('i', 34);
+const ESC_KEY: (char, u16) = ('\u{1b}', 53);
+/// S1's check 2: every cell of a window this size changes, this many times.
+const REDRAW_GRID: (usize, usize) = (159, 49);
+const REDRAWS: usize = 600;
+/// S1's check 8: launches, of which the first is cold and doesn't count.
+const LAUNCHES: usize = 12;
+const BETWEEN_LAUNCHES: Duration = Duration::from_millis(100);
 /// How long the window server gets to report a window covered or uncovered.
 const SERVER: Duration = Duration::from_secs(3);
 /// How long an event has to come through the window server and draw.
@@ -54,11 +105,17 @@ pub fn script(names: Vec<String>) -> Script {
                 return 1;
             }
             let outcome = match name.as_str() {
-                "idle" => idle(remote),
+                "idle" => idle(remote, IDLE),
+                "idle-60" => idle(remote, LONG_IDLE),
                 "resize" => resize(remote),
                 "scale" => scale(remote),
-                "occlusion" => occlusion(remote),
+                "occlusion" => occlusion(remote, OCCLUSION_CYCLES),
+                "occlusion-20" => occlusion(remote, LONG_OCCLUSION_CYCLES),
                 "show" => show(remote),
+                "typing" => typing(remote),
+                "redraw" => redraw(remote),
+                "firstframe" => firstframe(),
+                "firstframe-once" => firstframe_once(remote),
                 other => Err(format!("no such check: {other}")),
             };
             match outcome {
@@ -136,14 +193,39 @@ fn tick(ctx: &mut Ctx, left: u32, count: Arc<AtomicU32>) -> CoreResult {
     Ok(())
 }
 
+/// This process's CPU time so far, as `ps` has it, to 10 ms.
+fn cpu_seconds() -> Result<f64, String> {
+    let pid = std::process::id().to_string();
+    let args = ["-o", "time=", "-p", pid.as_str()];
+    let out = Command::new("ps").args(args).output();
+    let out = out.map_err(|e| format!("ps: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut seconds = 0.0;
+    for part in text.trim().split(':') {
+        let part: f64 = part.parse().map_err(|_| format!("ps said {text:?}"))?;
+        seconds = seconds * 60.0 + part;
+    }
+    Ok(seconds)
+}
+
+/// The value `percent`% of the way up `values`.
+fn percentile(values: &mut [f64], percent: usize) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let i = values.len() * percent / 100;
+    values.get(i).copied().unwrap_or(0.0)
+}
+
 /// Nothing happens, so nothing draws, and a timer that changes nothing draws nothing either.
-fn idle(r: &Remote) -> Outcome {
+fn idle(r: &Remote, how_long: Duration) -> Outcome {
     first_frame(r)?;
     sleep(Duration::from_millis(300));
     let read = |s: &mut Shell, _: &_| (s.stats.frames, s.stats.wakeups);
     let (f0, w0) = r.call(read)?;
-    sleep(IDLE);
+    let cpu0 = cpu_seconds()?;
+    sleep(how_long);
+    let cpu1 = cpu_seconds()?;
     let (f1, w1) = r.call(read)?;
+    let cpu_percent = (cpu1 - cpu0) / how_long.as_secs_f64() * 100.0;
     let (idle_frames, wakeups) = (f1 - f0, w1 - w0);
     ensure(idle_frames == 0, || {
         format!("{idle_frames} frames while idle")
@@ -169,8 +251,8 @@ fn idle(r: &Remote) -> Outcome {
         format!("only {ticks} of {TICKS} ticks in 10 s")
     })?;
     Ok(Verdict::Ok(format!(
-        "frames={idle_frames} wakeups={wakeups} seconds={} timer_frames={timer_frames} ticks={ticks}",
-        IDLE.as_secs()
+        "frames={idle_frames} wakeups={wakeups} seconds={} timer_frames={timer_frames} ticks={ticks} cpu_percent={cpu_percent:.3}",
+        how_long.as_secs()
     )))
 }
 
@@ -221,9 +303,7 @@ fn resize(r: &Remote) -> Outcome {
         }
     }
     let mut ms = r.call(|s, _| s.stats.frame_ms.clone())?;
-    ms.sort_by(f64::total_cmp);
-    let at = |percent: usize| ms.get(ms.len() * percent / 100).copied().unwrap_or(0.0);
-    let (p50, p99) = (at(50), at(99));
+    let (p50, p99) = (percentile(&mut ms, 50), percentile(&mut ms, 99));
     ensure(mismatched == 0, || format!("{mismatched} stretched frames"))?;
     ensure(missed == 0, || format!("{missed} resizes without a frame"))?;
     ensure(extra == 0, || format!("{extra} frames too many"))?;
@@ -338,7 +418,7 @@ fn first_frame_covered(r: &Remote) -> Result<u64, String> {
 
 /// Covered, nothing draws though the text changed. Uncovered, the change draws with nothing
 /// from this check poking the loop, which is why it sleeps rather than polls.
-fn occlusion(r: &Remote) -> Outcome {
+fn occlusion(r: &Remote, cycles: u32) -> Outcome {
     first_frame(r)?;
     r.call(|s, _| {
         s.guard = true;
@@ -350,7 +430,7 @@ fn occlusion(r: &Remote) -> Outcome {
         ));
     }
     let (mut drawn, mut missed) = (0, 0);
-    for cycle in 0..OCCLUSION_CYCLES {
+    for cycle in 0..cycles {
         r.call(cover)??;
         ensure(wait_occluded(r, true)?, || {
             format!("cycle {cycle}: the window server never reported it covered")
@@ -380,7 +460,7 @@ fn occlusion(r: &Remote) -> Outcome {
         format!("a hidden window's first frame drew {first} frames, not 1")
     })?;
     Ok(Verdict::Ok(format!(
-        "cycles={OCCLUSION_CYCLES} frames_while_covered={drawn} missed_uncover={missed} worst_stall_ms={stall:.1} first_frame_covered={first}"
+        "cycles={cycles} frames_while_covered={drawn} missed_uncover={missed} worst_stall_ms={stall:.1} first_frame_covered={first}"
     )))
 }
 
@@ -439,12 +519,13 @@ fn unreadable_refuses(s: &mut Shell, el: &ActiveEventLoop) -> Result<bool, Strin
     Ok(surface.read_next_frame().is_err())
 }
 
-/// Put a window on `show`'s own buffer in front. The window that was there, to go back to.
-fn open_show_buffer(s: &mut Shell) -> Result<WindowId, String> {
+/// Put a window on a buffer of a check's own in front. The window that was there, to go
+/// back to.
+fn open_own_buffer(s: &mut Shell, name: &str, text: &str) -> Result<WindowId, String> {
     let ctx = &mut s.host.ctx;
     let back = ctx.focused().ok_or("no window")?;
     let (cols, rows) = ctx.window_size(back).ok_or("no window")?;
-    let buf = ctx.create_text("*show*", SHOW_TEXT);
+    let buf = ctx.create_text(name, text);
     ctx.open_window(buf, cols, rows)
         .map_err(|e| e.to_string())?;
     Ok(back)
@@ -456,7 +537,7 @@ fn open_show_buffer(s: &mut Shell) -> Result<WindowId, String> {
 fn show(r: &Remote) -> Outcome {
     first_frame(r)?;
     let refused = r.call(unreadable_refuses)??;
-    let back = r.call(|s, _| open_show_buffer(s))??;
+    let back = r.call(|s, _| open_own_buffer(s, "*show*", SHOW_TEXT))??;
     let shown = r.call(|s, _| what_is_shown(s))??;
     let (input_frames, input_shown) = r.call(|s, _| {
         let (f0, before) = (s.stats.frames, s.last.clone());
@@ -516,5 +597,210 @@ fn show(r: &Remote) -> Outcome {
     Ok(Verdict::Ok(format!(
         "pixels_differ={differ} colors={colors} text=yes unreadable_refused=yes input_frames={input_frames} input_shown={} timer_frames={timer_frames} job_frames={job_frames} decorated={decorated} option_as_alt={option_as_alt} active={active} key={key}",
         yes_no(input_shown),
+    )))
+}
+
+/// Press and release one key, through AppKit's queue and the key monitor as far as the view.
+fn tap(r: &Remote, (c, vk): (char, u16)) -> Result<(), String> {
+    r.call(move |_, _| driver::post_key(vk, c, true))??;
+    sleep(KEY_DOWN);
+    r.call(move |_, _| driver::post_key(vk, c, false))??;
+    sleep(KEY_GAP);
+    Ok(())
+}
+
+/// Put a new layer on the window, readable or not.
+fn reattach(s: &mut Shell, readable: bool) -> Result<(), String> {
+    s.drain_presented();
+    let live = s.live.as_mut().ok_or("no window")?;
+    let surface = live.renderer.attach(&live.window, readable)?;
+    surface.resize(surface.size(live.scale), live.scale);
+    surface.watch_presents();
+    live.surface = surface;
+    s.stale = true;
+    Ok(())
+}
+
+/// S1's check 1: real key events, one at a time, each to its frame and on to the display, on
+/// a layer that can't be read, as a window with no check has. A
+/// window this small isn't the one S1's display figures are for, and M0 has no pixel buffer,
+/// so the hand run has the first and M3 the second. No key is lost or out of order.
+fn typing(r: &Remote) -> Outcome {
+    first_frame(r)?;
+    if r.call(|s, _| s.key_monitor().is_none())? {
+        return Ok(Verdict::Skip("no key monitor to deliver keys".into()));
+    }
+    let back = r.call(|s, _| {
+        reattach(s, false)?;
+        s.latency.keep = true;
+        s.deliver_keys_here();
+        open_own_buffer(s, "*typing*", "")
+    })??;
+    tap(r, I_KEY)?;
+    sleep(SETTLE);
+    r.call(|s, _| {
+        s.drain_presented();
+        s.latency.flush();
+        s.latency.samples.clear();
+    })?;
+    let mut typed = String::new();
+    for i in 0..KEYS {
+        let key = LETTERS[i % LETTERS.len()];
+        typed.push(key.0);
+        tap(r, key)?;
+    }
+    sleep(SETTLE);
+    let (text, samples) = r.call(|s, _| {
+        s.drain_presented();
+        s.latency.flush();
+        s.latency.keep = false;
+        let line = s.host.ctx.focused_buffer().and_then(|buf| {
+            let text = s.host.ctx.text(buf).ok()?;
+            Some(text.rope().line(0).to_string())
+        });
+        (line, std::mem::take(&mut s.latency.samples))
+    })?;
+    tap(r, ESC_KEY)?;
+    r.call(move |s, _| {
+        s.host.ctx.focus(back);
+        reattach(s, true)
+    })??;
+    ensure(text.as_deref().map(str::trim_end) == Some(&typed), || {
+        format!("typed {typed:?}, and the buffer has {text:?}")
+    })?;
+    ensure(samples.len() == KEYS, || {
+        format!("{} of {KEYS} keys drew a frame", samples.len())
+    })?;
+    let mut frame: Vec<f64> = samples.iter().map(|k| k.to_frame_ms).collect();
+    let mut shown: Vec<f64> = samples.iter().filter_map(|k| k.to_shown_ms).collect();
+    Ok(Verdict::Ok(format!(
+        "keys={KEYS} p50_ms={:.2} p99_ms={:.2} shown={} shown_p50_ms={:.2} shown_p99_ms={:.2}",
+        percentile(&mut frame, 50),
+        percentile(&mut frame, 99),
+        shown.len(),
+        percentile(&mut shown, 50),
+        percentile(&mut shown, 99),
+    )))
+}
+
+/// A full grid in which every cell's glyph, colors and decoration differ from frame `n - 1`'s.
+fn full_grid(s: &mut Shell, n: usize) -> Scene {
+    let (cols, rows) = REDRAW_GRID;
+    let mut scene = s.host.ctx.compose(cols, rows, &[]);
+    scene.cursors.clear();
+    for (i, cell) in scene.cells.iter_mut().enumerate() {
+        let at = i + n;
+        let glyph = Glyph::Char(char::from(b'a' + (at % 26) as u8));
+        let shade = (at % 200) as u8;
+        let fg = Rgb(255 - shade, 250, 240);
+        *cell = Cell::new(glyph, fg, Rgb(shade, 20, 30));
+        cell.underline = Underline::Single;
+        cell.underline_color = fg;
+    }
+    scene
+}
+
+/// What each full redraw took on the main thread and the GPU, in ms, on a hidden window of
+/// S1's size with no read back, so your screen is left alone.
+fn full_redraws(s: &mut Shell, el: &ActiveEventLoop) -> Result<(Vec<f64>, Vec<f64>), String> {
+    let (cols, rows) = REDRAW_GRID;
+    let hidden = crate::window::quiet_window().with_visible(false);
+    let window = el.create_window(hidden).map_err(|e| e.to_string())?;
+    let scenes: Vec<Scene> = (0..REDRAWS).map(|n| full_grid(s, n)).collect();
+    let live = s.live.as_mut().ok_or("no window")?;
+    let surface = live.renderer.attach(&window, false)?;
+    let cell = live.renderer.cell();
+    let px = (cols as u32 * cell.w, rows as u32 * cell.h);
+    surface.resize(px, live.scale);
+    let (mut cpu, mut gpu) = (vec![], vec![]);
+    for scene in &scenes {
+        let frame = live.renderer.present(scene, &surface, false)?;
+        let frame = frame.ok_or("no drawable for a hidden window")?;
+        cpu.push(frame.cpu_ms);
+        gpu.push(frame.gpu_ms);
+    }
+    s.stale = true;
+    s.dirty = true;
+    Ok((cpu, gpu))
+}
+
+/// S1's check 2.
+fn redraw(r: &Remote) -> Outcome {
+    first_frame(r)?;
+    let (mut cpu, mut gpu) = r.call(full_redraws)??;
+    let (cols, rows) = REDRAW_GRID;
+    Ok(Verdict::Ok(format!(
+        "grid={cols}x{rows} frames={} cpu_p99_ms={:.2} gpu_p99_ms={:.2}",
+        cpu.len(),
+        percentile(&mut cpu, 99),
+        percentile(&mut gpu, 99),
+    )))
+}
+
+/// One launch's end: the first frame reached the display, or the display dropped it and
+/// another is on its way. How long ago it got there, for `firstframe`.
+fn firstframe_once(r: &Remote) -> Outcome {
+    first_frame(r)?;
+    let start = Instant::now();
+    while start.elapsed() < THEN {
+        let shown = r.call(|s, _| {
+            s.drain_presented();
+            if s.latency.first_dropped && s.latency.first_shown.is_none() {
+                s.latency.first_dropped = false;
+                s.stale = true;
+            }
+            s.latency.first_shown
+        })?;
+        if let Some(at) = shown {
+            let lag_ms = at.elapsed().as_secs_f64() * 1e3;
+            return Ok(Verdict::Ok(format!("lag_ms={lag_ms:.2}")));
+        }
+        sleep(Duration::from_millis(1));
+    }
+    Err("the first frame never reached the display".into())
+}
+
+/// How long one launch took to get a frame on the display, in ms.
+fn launch(exe: &std::path::Path) -> Result<f64, String> {
+    let start = Instant::now();
+    let child = Command::new(exe)
+        .args(["--check", "firstframe-once"])
+        .env_remove(latency::ENV)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = child.map_err(|e| e.to_string())?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let mut line = String::new();
+    let read = BufReader::new(stdout).read_line(&mut line);
+    let took = start.elapsed().as_secs_f64() * 1e3;
+    read.map_err(|e| e.to_string())?;
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let lag = line.trim_end().rsplit_once("lag_ms=");
+    let lag = lag.and_then(|(_, ms)| ms.parse::<f64>().ok());
+    match lag {
+        Some(lag) if status.success() => Ok(took - lag),
+        _ => Err(format!("a launch said {line:?}, and {status}")),
+    }
+}
+
+/// S1's check 8: DIE starts itself over and over, and times exec to the first frame on the
+/// display from outside. None of the windows takes focus.
+fn firstframe() -> Outcome {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut warm = vec![];
+    for run in 0..LAUNCHES {
+        let ms = launch(&exe)?;
+        if run > 0 {
+            warm.push(ms);
+        }
+        sleep(BETWEEN_LAUNCHES);
+    }
+    let (median, p90) = (percentile(&mut warm, 50), percentile(&mut warm, 90));
+    let worst = warm.last().copied().unwrap_or(0.0);
+    Ok(Verdict::Ok(format!(
+        "launches={} median_ms={median:.1} p90_ms={p90:.1} worst_ms={worst:.1}",
+        warm.len()
     )))
 }

@@ -9,6 +9,7 @@ use crate::driver::{self, KeyMonitor, Renderer, Surface};
 use crate::font::CellMetrics;
 use crate::frame::{Image, Presented};
 use crate::input::{Held, KeyFacts, Pointer, caps_event, key_event};
+use crate::latency::Latency;
 use die_core::{Ctx, Input, KeyEvent, PointerEvent, Scene, WindowPlacement};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc;
@@ -136,7 +137,7 @@ impl Host {
     }
 }
 
-/// What the loop has done, for checks and later for R6's log.
+/// What the loop has done, for checks. `Latency` is what it took, for the log.
 #[derive(Clone, Default, Debug)]
 pub struct Stats {
     /// Frames presented.
@@ -201,6 +202,10 @@ pub struct Shell {
     monitor_panics: u64,
     /// Every key that has gone to core since `record_keys`, for a test.
     recorded: Option<Vec<KeyEvent>>,
+    /// The log behind `DIE_LATENCY_LOG`, and what a check reads.
+    pub(crate) latency: Latency,
+    /// The last frame's id, main-thread ms and GPU ms.
+    last_present: (u64, f64, f64),
 }
 
 impl Shell {
@@ -276,6 +281,9 @@ pub struct Options {
 /// no window.
 pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
     driver::ready()?;
+    let (mut latency, unopened) = Latency::from_env();
+    ctx.messages.extend(unopened);
+    latency.stage("core");
     let mut builder = EventLoop::<Wake>::with_user_event();
     driver::prepare_loop(&mut builder, options.script.is_none());
     let event_loop = builder.build().map_err(|e| e.to_string())?;
@@ -310,8 +318,12 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         monitor: None,
         monitor_panics: 0,
         recorded: None,
+        latency,
+        last_present: (0, 0.0, 0.0),
     };
     event_loop.run_app(&mut shell).map_err(|e| e.to_string())?;
+    shell.drain_presented();
+    shell.latency.flush();
     shell.host.ctx.shutdown();
     match shell.failed {
         Some(e) => Err(e),
@@ -354,6 +366,7 @@ impl Shell {
             .with_title(&self.title)
             .with_visible(!self.hidden);
         let window = el.create_window(attributes).map_err(|e| e.to_string())?;
+        self.latency.stage("window");
         let scale = window.scale_factor();
         let font = driver::Config {
             scale,
@@ -361,6 +374,10 @@ impl Shell {
         };
         let renderer = Renderer::new(&font)?;
         let surface = renderer.attach(&window, scripted)?;
+        self.latency.stage("renderer");
+        if scripted || self.latency.logging() {
+            surface.watch_presents();
+        }
         window.set_ime_allowed(true);
         self.host.ctx.handle(Input::Focus(window.has_focus()));
         let wake = self.remote.proxy.clone();
@@ -393,8 +410,23 @@ impl Shell {
 
     /// One key from the OS: it runs and draws now, in this run-loop turn.
     pub fn input(&mut self, ev: KeyEvent) {
+        let key_at = self.monitor.as_ref().and_then(KeyMonitor::take_key_at);
+        let start = key_at.unwrap_or_else(Instant::now);
+        let f0 = self.stats.frames;
+        self.drain_presented();
         self.send(ev);
         self.settle();
+        if self.stats.frames > f0 {
+            let (id, cpu_ms, gpu_ms) = self.last_present;
+            self.latency.key(id, start.elapsed(), cpu_ms, gpu_ms);
+        }
+    }
+
+    /// Hand the log what has reached the screen since the last call.
+    pub(crate) fn drain_presented(&mut self) {
+        if let Some(live) = &self.live {
+            self.latency.shown(live.surface.take_presented());
+        }
     }
 
     fn send(&mut self, ev: KeyEvent) {
@@ -521,8 +553,19 @@ impl Shell {
                 self.resized = false;
                 self.stale = false;
                 self.last_error = None;
-                let Presented { w, h, image } = presented;
+                let Presented {
+                    w,
+                    h,
+                    image,
+                    id,
+                    cpu_ms,
+                    gpu_ms,
+                } = presented;
                 live.image = image;
+                self.last_present = (id, cpu_ms, gpu_ms);
+                if self.stats.frames == 0 {
+                    self.latency.stage("first_frame");
+                }
                 self.stats.frames += 1;
                 self.stats.drawable = (w, h);
                 if self.stats.frame_ms.len() < FRAME_TIMES {
