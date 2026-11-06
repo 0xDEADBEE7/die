@@ -29,8 +29,8 @@ note = "guard 7: 5k per build, 7k in total"
 [[crate]]
 name = "die-vim"
 path = "crates/die-vim"
-limit = 5721
-note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting"
+limit = 5780
+note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5"
 
 [[crate]]
 name = "die"

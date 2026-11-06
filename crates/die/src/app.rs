@@ -1,6 +1,8 @@
 //! DIE.app: one instance, its session, and `restart`. The new instance comes up through
-//! LaunchServices, with `open -g`, so it takes no focus. Whether it's up is said over a Unix
-//! socket (`die_core::instance`), since LaunchServices can't say that.
+//! LaunchServices, with `open -g` so that it takes no focus, unless the old one was the active app,
+//! when it comes up in front and takes the keyboard at its first frame, as a restart should feel
+//! like nothing happened. Whether it's up is said over a Unix socket (`die_core::instance`), since
+//! LaunchServices can't say that.
 //!
 //! A restart writes the session and stops writing, starts the new instance, which restores what
 //! was written, and exits at its first frame. If the new one dies or takes too long, the old
@@ -43,6 +45,8 @@ pub struct Launch {
     pub handover: Option<PathBuf>,
     /// `--restart-after-frame`: run `restart` once the first frame is up.
     pub restart_after_frame: bool,
+    /// `--frontmost`: the old instance had the keyboard, so this one takes it at its first frame.
+    pub frontmost: bool,
     /// `--restart-loop`: write a digest of the restored session at the first frame, restart at
     /// the go-ahead, and pass this on. `cargo xtask restart-loop` drives it.
     pub restart_loop: bool,
@@ -95,6 +99,7 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
             register(reg);
         }
     }));
+    let frontmost = asked.frontmost;
     let first_frame = Box::new(move |remote: &Remote| {
         let remote = remote.clone();
         thread::spawn(move || {
@@ -102,7 +107,12 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
                 remote.exit(0);
                 return;
             };
-            let _ = remote.call(|shell, _| shell.ctx().resume_session());
+            let _ = remote.call(move |shell, _| {
+                if frontmost {
+                    shell.take_focus();
+                }
+                shell.ctx().resume_session();
+            });
             if let Some(again) = again {
                 digest_then_wait_for_go(&remote, &dir, again);
             }
@@ -179,7 +189,8 @@ fn serve(wanted: &Receiver<()>, bundle: &Path, dir: &Path, remote: &Remote, rest
             }
             Err(_) => return,
         }
-        match restart(bundle, dir, restart_loop) {
+        let frontmost = remote.call(|shell, _| shell.app_active()).unwrap_or(false);
+        match restart(bundle, dir, frontmost, restart_loop) {
             Ok((handover, took)) => {
                 if let Err(e) = log_restart(dir, took) {
                     eprintln!("die: {RESTART_LOG}: {e}");
@@ -191,7 +202,13 @@ fn serve(wanted: &Receiver<()>, bundle: &Path, dir: &Path, remote: &Remote, rest
                 }
             }
             Err(e) => {
-                let _ = remote.call(|shell, _| shell.ctx().resume_session());
+                let _ = remote.call(move |shell, _| {
+                    // In front, the new instance took the focus as it started, and it's gone.
+                    if frontmost {
+                        shell.take_focus();
+                    }
+                    shell.ctx().resume_session();
+                });
                 report(remote, e);
             }
         }
@@ -205,11 +222,16 @@ fn report(remote: &Remote, e: String) {
 }
 
 /// Launch the new instance and wait for its first frame, which is how long it took.
-fn restart(bundle: &Path, dir: &Path, restart_loop: bool) -> Result<(Handover, Duration), String> {
+fn restart(
+    bundle: &Path,
+    dir: &Path,
+    frontmost: bool,
+    restart_loop: bool,
+) -> Result<(Handover, Duration), String> {
     let start = Instant::now();
     let mut handover = Handover::bind(dir).map_err(|e| e.to_string())?;
     let mut open = Command::new("open");
-    open.args(["-g", "-n"]);
+    open.args(open_options(frontmost));
     for name in ["DIE_STATE_DIR", PANIC_ON_RESTART] {
         if let Some(value) = std::env::var_os(name) {
             let mut env = std::ffi::OsString::from(name);
@@ -220,6 +242,9 @@ fn restart(bundle: &Path, dir: &Path, restart_loop: bool) -> Result<(Handover, D
     }
     open.arg(bundle).args(["--args", "--handover"]);
     open.arg(handover.path());
+    if frontmost {
+        open.arg("--frontmost");
+    }
     if restart_loop {
         open.arg("--restart-loop");
     }
@@ -233,6 +258,11 @@ fn restart(bundle: &Path, dir: &Path, restart_loop: bool) -> Result<(Handover, D
     Ok((handover, start.elapsed()))
 }
 
+/// How `open` starts the new instance.
+fn open_options(frontmost: bool) -> &'static [&'static str] {
+    if frontmost { &["-n"] } else { &["-g", "-n"] }
+}
+
 fn log_restart(dir: &Path, took: Duration) -> io::Result<()> {
     let line = format!("{:.1}", took.as_secs_f64() * 1e3);
     append_line(&dir.join(RESTART_LOG), &line)
@@ -241,4 +271,16 @@ fn log_restart(dir: &Path, took: Duration) -> io::Result<()> {
 fn append_line(path: &Path, line: &str) -> io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{line}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::open_options;
+
+    /// A restart keeps the focus DIE had, and takes none it didn't have.
+    #[test]
+    fn only_a_frontmost_instance_starts_the_new_one_in_front() {
+        assert_eq!(open_options(false), ["-g", "-n"]);
+        assert_eq!(open_options(true), ["-n"]);
+    }
 }

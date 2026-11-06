@@ -4,7 +4,8 @@ use die_test_cap as _;
 
 use die_core::session::{FILE, PREVIOUS};
 use die_core::{
-    Config, Ctx, Harness, Origin, RegKind, Register, Selection, Shape, ShowIn, Side, Uneditable,
+    Config, Ctx, Extension, Harness, Origin, RegKind, Register, Registry, Selection, Shape, ShowIn,
+    Side, Uneditable,
 };
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -80,6 +81,7 @@ fn every_field_round_trips() {
     let clean = dir.file("clean.txt", "one\ntwo\nthree\n");
     let gone = dir.file("gone.txt", "kept text\n");
     let crlf = dir.file("crlf.txt", "a\r\nb\r\n");
+    let turned = dir.file("turned.txt", "a\n");
     let new = dir.0.join("new.txt");
     // APFS won't make such a name, but other file systems do.
     let odd = PathBuf::from(std::ffi::OsStr::from_bytes(b"/nowhere/odd\xff.txt"));
@@ -89,25 +91,31 @@ fn every_field_round_trips() {
     let mut a = fresh();
     a.set_window_size(40, 10);
     a.restore_session(oddly).unwrap();
-    for path in [&clean, &gone, &crlf, &new] {
+    for path in [&clean, &gone, &crlf, &turned, &new] {
         a.open_file(path).unwrap();
     }
+    let flagged = a.find_buffer("clean.txt").unwrap();
+    a.text_mut(flagged).unwrap().settings_mut().read_only = true;
     let scratch = a.create_text("*notes*", "scratch text");
     a.text_mut(scratch).unwrap().settings_mut().read_only = true;
     a.set_directory(scratch, "/tmp");
     fs::remove_file(&gone).unwrap();
     a.check_files(); // the text stays, and now only the session has it
     let shown = a.open_file(&unsaved).unwrap();
-    let w = a.open_window(shown, 40, 10).unwrap();
+    a.show(shown, ShowIn::Current).unwrap();
+    let w = a.focused().unwrap();
     edit(&mut a, "unsaved.txt", 0, "EDIT ");
     let t = a.text_mut(shown).unwrap();
     t.set_cursor(w, 7);
     t.set_scroll(w, 0, 0);
     let before = a.file(shown).unwrap().clone();
 
+    let saved = a.session_json();
+    fs::write(&turned, "a\r\nb\r\n").unwrap();
+
     let mut b = fresh();
     b.set_window_size(40, 10);
-    b.restore_session(&a.session_json()).unwrap();
+    b.restore_session(&saved).unwrap();
 
     let buf = b.find_buffer("unsaved.txt").unwrap();
     assert_eq!(text_of(&b, "unsaved.txt"), "EDIT on disk\n");
@@ -119,6 +127,15 @@ fn every_field_round_trips() {
 
     assert_eq!(text_of(&b, "clean.txt"), "one\ntwo\nthree\n");
     assert!(!modified(&b, "clean.txt"));
+    let read_only = |name| {
+        b.text(b.find_buffer(name).unwrap())
+            .unwrap()
+            .settings()
+            .read_only
+    };
+    assert!(read_only("clean.txt"), "a clean file keeps its flag");
+    assert!(read_only("crlf.txt"), "as it opened");
+    assert!(read_only("turned.txt"), "it can't be edited now");
     assert_eq!(text_of(&b, "gone.txt"), "kept text\n");
     let g = b.find_buffer("gone.txt").unwrap();
     assert_eq!(b.file(g).unwrap().fingerprint, None);
@@ -355,6 +372,17 @@ fn the_idle_write_fires_on_the_fake_clock() {
     assert_eq!(fs::read_to_string(dir.0.join(PREVIOUS)).unwrap(), previous);
     let mode = fs::metadata(&file).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "it holds your unsaved text");
+
+    // Changes that never pause still can't keep what changed off the disk for long.
+    h.create_text("notes", "");
+    h.create_text("log", "");
+    edit(&mut h, "notes", 0, "precious");
+    for _ in 0..20 {
+        edit(&mut h, "log", 0, ".");
+        h.advance(Duration::from_millis(400));
+    }
+    h.flush_session();
+    assert!(read().contains("precious"), "at most about 5 s behind");
 
     // A handover stops writes until it fails.
     edit(&mut h, "t", 0, "z");
@@ -723,4 +751,50 @@ fn a_change_beside_the_text_is_written() {
         assert_ne!(now, last, "{what}");
         last = now;
     }
+}
+
+/// With the focus on a buffer the session doesn't keep, the buffer used last goes on screen,
+/// rather than everything coming back hidden.
+#[test]
+fn with_the_focus_on_what_is_not_saved_the_last_used_buffer_shows() {
+    let mut a = fresh();
+    a.open_text("older", "old\n").unwrap();
+    a.open_text("notes", "unsaved\n").unwrap();
+    let log = a.create_text("*messages*", "");
+    a.show(log, ShowIn::Current).unwrap();
+
+    let mut b = fresh();
+    b.restore_session(&a.session_json()).unwrap();
+    assert_eq!(b.focused_buffer(), b.find_buffer("notes"));
+}
+
+/// Makes `*log*` at init, as an extension's own buffer.
+struct Logs;
+
+impl Extension for Logs {
+    fn name(&self) -> &'static str {
+        "logs"
+    }
+
+    fn register(&mut self, _reg: &mut Registry) {}
+
+    fn init(&mut self, ctx: &mut Ctx) -> die_core::Result {
+        ctx.create_text("*log*", "boot\n");
+        Ok(())
+    }
+}
+
+/// An extension's own buffer takes the saved text, however it differs, and stays the one it has.
+#[test]
+fn an_extensions_buffer_takes_its_saved_text() {
+    let logs = || Harness::new(vec![Box::new(Logs)]).unwrap();
+    let mut a = logs();
+    edit(&mut a, "*log*", 0, "ran\n");
+    let mut b = logs();
+    let own = b.find_buffer("*log*").unwrap();
+    b.restore_session(&a.session_json()).unwrap();
+    assert_eq!(b.find_buffer("*log*"), Some(own));
+    assert_eq!(text_of(&b, "*log*"), "ran\nboot\n");
+    assert_eq!(b.find_buffer("*log*<2>"), None);
+    assert!(modified(&b, "*log*"));
 }
