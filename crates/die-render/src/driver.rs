@@ -20,11 +20,12 @@ use crate::rows::Frames;
 use crate::sprite;
 use die_core::Scene;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use winit::window::Window;
 
 pub use crate::platform::backend::appkit::{
-    KeyMonitor, Surface, double_click_interval, option_as_alt, prepare_loop, press_and_hold,
-    window_attributes,
+    KeyMonitor, Surface, double_click_interval, option_as_alt, post_key, prepare_loop,
+    press_and_hold, window_attributes,
 };
 pub use crate::platform::backend::{ready, system_clipboard};
 
@@ -166,13 +167,20 @@ impl Renderer {
         surface: &Surface,
         sync: bool,
     ) -> Result<Option<Presented>, String> {
+        let start = Instant::now();
         self.supply_glyphs(scene);
         let frame = self.frames.build(scene);
         for upload in &frame.uploads {
             self.pipeline.upload(upload)?;
         }
-        self.pipeline
-            .present(frame.quads, frame.clear, surface, sync)
+        let building = start.elapsed().as_secs_f64() * 1e3;
+        let presented = self
+            .pipeline
+            .present(frame.quads, frame.clear, surface, sync)?;
+        Ok(presented.map(|p| Presented {
+            cpu_ms: p.cpu_ms + building,
+            ..p
+        }))
     }
 
     /// Give the row cache every glyph `scene` needs.
