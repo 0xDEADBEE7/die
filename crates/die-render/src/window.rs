@@ -213,6 +213,19 @@ impl Shell {
     pub fn ctx(&mut self) -> &mut Ctx {
         &mut self.host.ctx
     }
+
+    /// Whether this app is the active one, as far as a window on screen can say.
+    pub fn app_active(&self) -> bool {
+        self.live.as_ref().is_some_and(|l| l.surface.app_active())
+    }
+
+    /// Take the keyboard focus. Only for when it's already this app's by rights: a restart's
+    /// new instance after an old one that had it.
+    pub fn take_focus(&self) {
+        if let Some(live) = &self.live {
+            live.window.focus_window();
+        }
+    }
 }
 
 /// What wakes the loop.

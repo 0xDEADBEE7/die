@@ -8,7 +8,8 @@
 //! file's fingerprint, so a file that changed while DIE was down makes `:w` refuse as it always
 //! does. A clean buffer reads its file again.
 //!
-//! **Writing.** About 1 s after the last change, and on restart and quit. The main thread takes a
+//! **Writing.** About 1 s after the last change, or about 5 s after the first change not yet
+//! written if changes keep coming, and on restart and quit. The main thread takes a
 //! snapshot, whose ropes share their text, and a thread of its own encodes and writes it: to a
 //! temporary file, flushed, renamed over the last one, which is kept as `session.prev.json`.
 //! A crash at any point leaves one or the other, and a load falls back on the previous copy.
@@ -23,8 +24,10 @@
 //! scroll in every buffer it has shown, which window has the focus, the registers with their
 //! kinds and the prompt histories. A window showing a buffer that didn't come back goes, and its
 //! cells with it. A tree that can't be read is dropped with a message, and the focused buffer goes
-//! on screen as a file with no tree does. A selection in visual state comes back in visual state.
-//! Other states don't come back, as what they wait for is gone.
+//! on screen as a file with no tree does. When no window or focus can come back, because what had
+//! the focus isn't kept or is gone, the buffer used last goes on screen instead. A selection in
+//! visual state comes back in visual state. Other states don't come back, as what they wait for
+//! is gone, and a cursor left where only they allow it goes where normal state rests.
 //!
 //! What die-vim holds itself isn't saved: `.`, `@@`, `;`, `n`, `gv`. Windows outside the tree aren't
 //! either, since only a host that places its own windows has them.
@@ -38,7 +41,7 @@ use crate::prompt::HISTORY;
 use crate::windows::{View, Window};
 use crate::workspace::tree::Layout;
 use crate::workspace::{RegKind, Register, ShowIn};
-use crate::{Content, Ctx, Error, Result, Selection, Shape, Sub, TextBuf};
+use crate::{Content, Ctx, Error, Origin, Result, Selection, Shape, Sub, TextBuf};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,6 +69,8 @@ const TEMPORARY: &str = "session.tmp";
 const LOOK_EVERY: Duration = Duration::from_millis(500);
 /// How long nothing must change before a write.
 const QUIET: Duration = Duration::from_secs(1);
+/// How long a change waits for that quiet before it's written anyway.
+const MOST_BEHIND: Duration = Duration::from_secs(5);
 
 type Outcome = std::result::Result<(), String>;
 
@@ -233,7 +238,8 @@ struct BufferRecord {
     /// The text, when the file doesn't have it.
     text: Option<String>,
     modified: bool,
-    read_only: bool,
+    /// None from a build that didn't save it, which leaves what the buffer opened with.
+    read_only: Option<bool>,
     /// The view a window that has none of its own starts from.
     cursor: usize,
     top: usize,
@@ -324,6 +330,8 @@ pub(crate) struct Session {
     /// What the last look found, and when it first found it.
     seen: Option<(Snapshot, Duration)>,
     written: Option<Snapshot>,
+    /// When a look first found something `written` doesn't have.
+    unwritten: Option<Duration>,
     /// A failure was reported and no write has worked since.
     failing: bool,
     _look: Sub,
@@ -505,7 +513,7 @@ impl Ctx {
                 }),
                 text: None,
                 modified: t.modified(),
-                read_only: t.settings().read_only,
+                read_only: Some(t.settings().read_only),
                 cursor: view.map_or(0, |v| v.sel.head),
                 top: view.map_or(0, |v| v.top),
                 top_row: view.map_or(0, |v| v.top_row),
@@ -543,6 +551,7 @@ impl Ctx {
         let mut dropped = 0;
         let mut focus = None;
         let mut ids = vec![];
+        let before = self.buffer_list();
         let mut views = vec![];
         for (i, value) in parsed.buffers.into_iter().enumerate() {
             let hint = value.get("name").and_then(Value::as_str);
@@ -551,7 +560,7 @@ impl Ctx {
             let restored = match serde_json::from_value::<BufferRecord>(value) {
                 Ok(mut record) => {
                     its_views = std::mem::take(&mut record.views);
-                    catch(|| self.restore_buffer(record))
+                    catch(|| self.restore_buffer(record, &before))
                         .unwrap_or_else(|c| Err(format!("panicked: {}", c.msg)))
                 }
                 Err(e) => Err(e.to_string()),
@@ -612,7 +621,9 @@ impl Ctx {
             dropped += 1;
             false
         });
-        if let (false, Some(buf)) = (placed, focus) {
+        // The file has the buffer used last at the end.
+        let last_used = ids.iter().flatten().last().copied();
+        if let (false, Some(buf)) = (placed, focus.or(last_used)) {
             self.show_restored(buf);
         }
         dropped
@@ -703,6 +714,7 @@ impl Ctx {
         }
         for (buf, list) in views {
             let shown: Vec<_> = made.iter().map(|w| self.window_buffer(*w)).collect();
+            let list: Vec<_> = list.into_iter().map(|v| self.at_rest(buf, v)).collect();
             let Ok(t) = self.text_mut(buf) else { continue };
             for v in list {
                 match shown.get(v.window) {
@@ -764,10 +776,23 @@ impl Ctx {
         Ok(true)
     }
 
-    /// One buffer. None if there's nothing to bring back, which isn't a failure.
+    /// A saved view, with its positions where the buffer's state lets a cursor rest.
+    fn at_rest(&mut self, buf: BufferId, v: ViewRecord) -> ViewRecord {
+        let Ok(t) = self.text(buf) else { return v };
+        let (anchor, head) = (fit(t, v.anchor), fit(t, v.head));
+        ViewRecord {
+            anchor: self.rested(buf, anchor),
+            head: self.rested(buf, head),
+            ..v
+        }
+    }
+
+    /// One buffer. None if there's nothing to bring back, which isn't a failure. `before` is what
+    /// was there before this restore began.
     fn restore_buffer(
         &mut self,
         record: BufferRecord,
+        before: &[BufferId],
     ) -> std::result::Result<Option<BufferId>, String> {
         let name = record.name.as_str();
         let id = match (&record.file, &record.text) {
@@ -782,15 +807,22 @@ impl Ctx {
             }
             (Some(f), Some(text)) => self.restore_file(name, f, text)?,
             (None, text) => {
-                let text = text.as_deref().unwrap_or("");
-                let same = |b: BufferId| {
-                    let t = self.text(b).ok()?;
-                    (t.rope() == text).then_some(b)
-                };
-                // An extension's own buffer, made again at init, isn't made twice.
-                match self.find_buffer(name).and_then(same) {
-                    Some(b) => b,
-                    None => self.create_text(name, text),
+                // An extension's own buffer, made again at init, takes the saved text and stays
+                // the buffer the extension holds.
+                let own = self.find_buffer(name).filter(|b| {
+                    before.contains(b) && self.file(*b).is_none() && self.text(*b).is_ok()
+                });
+                match (own, text) {
+                    (Some(b), None) => b,
+                    (Some(b), Some(text)) => {
+                        let t = self.text_mut(b).map_err(|e| e.to_string())?;
+                        let all = 0..t.len();
+                        let tx = t.tx(Origin::Extension).silent();
+                        let replaced = tx.replace(all, text.as_str()).commit();
+                        replaced.map_err(|e| e.to_string())?;
+                        b
+                    }
+                    (None, text) => self.create_text(name, text.as_deref().unwrap_or("")),
                 }
             }
         };
@@ -800,12 +832,19 @@ impl Ctx {
         if record.visual {
             self.set_state_of(id, State::Visual);
         }
+        // A file that can't be edited now and could when it was saved stays read-only.
+        let was_editable = record.file.as_ref().is_none_or(|f| f.uneditable.is_none());
+        let forced = was_editable && self.file(id).is_some_and(|f| f.read_only.is_some());
+        let t = self.text(id).map_err(|e| e.to_string())?;
+        let (cursor, top) = (fit(t, record.cursor), fit(t, record.top));
+        let cursor = self.rested(id, cursor);
         let t = self.text_mut(id).map_err(|e| e.to_string())?;
         if record.text.is_some() {
             t.set_modified(record.modified);
-            t.settings_mut().read_only = record.read_only;
         }
-        let (cursor, top) = (fit(t, record.cursor), fit(t, record.top));
+        if let Some(read_only) = record.read_only {
+            t.settings_mut().read_only = read_only || forced;
+        }
         t.rest = Some(View {
             sel: Selection::cursor(cursor),
             top,
@@ -890,6 +929,7 @@ impl Ctx {
             writing: false,
             seen: None,
             written: None,
+            unwritten: None,
             failing: false,
             _look: look,
         });
@@ -942,13 +982,19 @@ impl Ctx {
         let since = match &s.seen {
             Some((seen, since)) if *seen == snapshot => *since,
             _ => {
-                s.seen = Some((snapshot, now));
-                return;
+                s.seen = Some((snapshot.clone(), now));
+                now
             }
         };
-        if s.written.as_ref() == Some(&snapshot) || now.saturating_sub(since) < QUIET {
+        if s.written.as_ref() == Some(&snapshot) {
+            s.unwritten = None;
             return;
         }
+        let unwritten = *s.unwritten.get_or_insert(now);
+        if now.saturating_sub(since) < QUIET && now.saturating_sub(unwritten) < MOST_BEHIND {
+            return;
+        }
+        s.unwritten = None;
         s.written = Some(snapshot.clone());
         if s.jobs.send(Job::Write(snapshot)).is_err() {
             s.written = None;
@@ -983,6 +1029,7 @@ impl Ctx {
             s.writing = true;
             s.seen = None;
             s.written = None;
+            s.unwritten = None;
         }
     }
 
@@ -1000,6 +1047,7 @@ impl Ctx {
             .map_err(|_| failed("the writer has stopped".into()))?
             .map_err(failed)?;
         s.written = Some(snapshot);
+        s.unwritten = None;
         Ok(())
     }
 

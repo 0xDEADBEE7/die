@@ -106,14 +106,14 @@ pub(crate) struct PointerState {
 }
 
 impl Ctx {
-    /// Say where the pointer may leave a cursor in normal state: `rule` takes a position in the
-    /// text and gives the one to use. Which positions a cursor may rest on is the keymap's
+    /// Say where the pointer or a restored session may leave a cursor in normal state: `rule`
+    /// takes a position in the text and gives the one to use. Which positions a cursor may rest on is the keymap's
     /// business (contract §9). With no rule, anywhere the scene maps a cell to.
     pub fn set_cursor_rest(&mut self, rule: fn(&TextBuf, usize) -> usize) {
         self.pointer.rest = Some(rule);
     }
 
-    fn rested(&mut self, buf: BufferId, pos: usize) -> usize {
+    pub(crate) fn rested(&mut self, buf: BufferId, pos: usize) -> usize {
         let rule = self
             .pointer
             .rest

@@ -1,5 +1,5 @@
-//! `die [--check a,b] [--handover socket] [--restart-after-frame] [--] [file...]`: your DIE
-//! config, with the files you name. In DIE.app it's the one instance (`die::app`).
+//! `die [--check a,b] [--handover socket] [--restart-after-frame] [--frontmost] [--] [file...]`:
+//! your DIE config, with the files you name. In DIE.app it's the one instance (`die::app`).
 
 #[cfg(test)]
 use die_test_cap as _;
