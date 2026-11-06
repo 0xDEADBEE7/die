@@ -2,7 +2,9 @@
 use die_test_cap as _;
 
 use xtask::util::{Result, root, task_dir};
-use xtask::{api, app, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, sources};
+use xtask::{
+    api, app, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, restart_loop, sources,
+};
 
 const USAGE: &str = "usage: cargo xtask <task>
 
@@ -20,6 +22,9 @@ const USAGE: &str = "usage: cargo xtask <task>
                        (R defaults to the merge base with main)
   app                  build ~/Applications/DIE.app, with the release build and the fonts;
                        open -g launches it without taking focus
+  restart-loop N       N rebuilds and restarts of a release bundle of its own, launched with
+                       open -g: every restore's session digest must match and hold what it
+                       started with, and each restart must take under 1 s
   fonts                fetch Ioskeley Mono Term into fonts/, checked by SHA-256
   clean-build [--keep] no C builders in each target's build graph but the allowlist's,
                        and a build from an empty environment with no C compiler or
@@ -62,6 +67,10 @@ fn dispatch(args: &[String]) -> Result {
         ["api-diff"] => api::run(&root, None),
         ["api-diff", "--base", b] => api::run(&root, Some(b)),
         ["app"] => app::run(&root),
+        ["restart-loop", n] => match n.parse() {
+            Ok(count) => restart_loop::run(&root, count),
+            Err(_) => Err(USAGE.into()),
+        },
         ["fonts"] => fonts::run_fonts(&root),
         ["clean-build"] => clean::run(&root, false),
         ["clean-build", "--keep"] => clean::run(&root, true),
