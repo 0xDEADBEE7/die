@@ -83,17 +83,26 @@ fn a_visual_selection_comes_back_and_goes_on() {
     assert_eq!(text(&b), "four\n");
 }
 
-/// Insert state and a half-typed operator wait for what's gone, so they don't come back.
+/// Insert and replace state wait for what's gone, so they don't come back: a restore leaves them
+/// as Escape does, cursor included.
 #[test]
 fn other_states_do_not_come_back() {
-    let mut a = editor();
-    a.open_text("t", "text\n").unwrap();
-    typed(&mut a, "ihello");
-    let saved = a.session_json();
-    let mut b = editor();
-    b.restore_session(&saved).unwrap();
-    assert_eq!(b.state(), State::Normal);
-    assert_eq!(text(&b), "hellotext\n");
-    typed(&mut b, "x"); // a command, not a character
-    assert_eq!(text(&b), "helloext\n");
+    for (start, keys) in [
+        ("text\n", "ihello"),
+        ("one\ntwo\n", "Ahello"),
+        ("text\n", "i"),
+        ("text\n", "Rab"),
+    ] {
+        let mut a = editor();
+        a.open_text("t", start).unwrap();
+        typed(&mut a, keys);
+        let saved = a.session_json();
+        let mut b = editor();
+        b.restore_session(&saved).unwrap();
+        assert_eq!(b.state(), State::Normal, "{keys}");
+        assert_eq!(text(&b), text(&a), "{keys}");
+        typed(&mut a, "<Esc>x");
+        typed(&mut b, "x"); // a command, not a character
+        assert_eq!(text(&b), text(&a), "{keys}");
+    }
 }

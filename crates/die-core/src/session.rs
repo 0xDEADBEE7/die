@@ -23,8 +23,10 @@
 //! scroll in every buffer it has shown, which window has the focus, the registers with their
 //! kinds and the prompt histories. A window showing a buffer that didn't come back goes, and its
 //! cells with it. A tree that can't be read is dropped with a message, and the focused buffer goes
-//! on screen as a file with no tree does. A selection in visual state comes back in visual state.
-//! Other states don't come back, as what they wait for is gone.
+//! on screen as a file with no tree does. A window on `*messages*` stays, on the one this instance
+//! has, as its text isn't saved. A selection in visual state comes back in visual state. Other
+//! states don't come back, as what they wait for is gone: a restore leaves insert and replace state
+//! as Escape does, moving the cursor by [`Ctx::set_insert_end`]'s rule and changing no text.
 //!
 //! What die-vim holds itself isn't saved: `.`, `@@`, `;`, `n`, `gv`. Windows outside the tree aren't
 //! either, since only a host that places its own windows has them.
@@ -202,6 +204,8 @@ impl ViewRecord {
 struct WindowRecord {
     /// Which of the file's `buffers`. None for what a session doesn't keep.
     buffer: Option<usize>,
+    /// It shows `*messages*`, whose text isn't kept but which every instance has.
+    messages: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -214,11 +218,14 @@ pub(crate) struct RegisterRecord {
 /// Every register, in order of name. Shared, so looking for changes doesn't copy their text.
 pub(crate) type SavedRegisters = Arc<Vec<RegisterRecord>>;
 
-/// A list whose unreadable items are skipped: a new build's view mustn't cost an old one a buffer.
+/// A list whose unreadable items are skipped, as is a value that isn't a list: a new build's view
+/// mustn't cost an old one a buffer.
 fn readable<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(
     d: D,
 ) -> std::result::Result<Vec<T>, D::Error> {
-    let list = Option::<Vec<Value>>::deserialize(d)?.unwrap_or_default();
+    let Value::Array(list) = Value::deserialize(d)? else {
+        return Ok(vec![]);
+    };
     let read = |v| serde_json::from_value(v).ok();
     Ok(list.into_iter().filter_map(read).collect())
 }
@@ -241,6 +248,8 @@ struct BufferRecord {
     #[serde(deserialize_with = "readable")]
     views: Vec<ViewRecord>,
     visual: bool,
+    /// It was in insert or replace state, which a restore leaves.
+    insert: bool,
 }
 
 /// A buffer as of a snapshot. Its text is shared, and read when it's encoded.
@@ -374,7 +383,7 @@ struct Parsed {
     layout: Option<Value>,
     windows: Option<Value>,
     focused_window: Option<u64>,
-    registers: Vec<Value>,
+    registers: Option<Value>,
     histories: Option<Value>,
 }
 
@@ -388,14 +397,13 @@ fn parse(bytes: &[u8]) -> std::result::Result<Parsed, String> {
     };
     let some = |name: &str| top.get(name).filter(|v| !v.is_null()).cloned();
     let number = |name: &str| top.get(name).and_then(Value::as_u64);
-    let registers = top.get("registers").and_then(Value::as_array);
     Ok(Parsed {
         focus: number("focus"),
         buffers,
         layout: some("layout"),
         windows: some("windows"),
         focused_window: number("focused_window"),
-        registers: registers.cloned().unwrap_or_default(),
+        registers: some("registers"),
         histories: some("histories"),
     })
 }
@@ -442,6 +450,7 @@ impl Ctx {
         }
         let number = |w: WindowId| windows.iter().position(|o| *o == w);
         let in_file = |b: BufferId| kept.iter().position(|k| *k == b);
+        let log = self.find_buffer(MESSAGES);
         Snapshot {
             focus,
             buffers,
@@ -450,6 +459,7 @@ impl Ctx {
                 .iter()
                 .map(|w| WindowRecord {
                     buffer: self.window_buffer(*w).and_then(in_file),
+                    messages: log.is_some() && self.window_buffer(*w) == log,
                 })
                 .collect(),
             focused_window: self.focused.and_then(number),
@@ -518,6 +528,7 @@ impl Ctx {
                     })
                     .collect(),
                 visual: b.state == State::Visual,
+                insert: matches!(b.state, State::Insert | State::Replace),
             },
             rev: t.rev(),
             rope: keep_text.then(|| t.rope().clone()),
@@ -544,13 +555,16 @@ impl Ctx {
         let mut focus = None;
         let mut ids = vec![];
         let mut views = vec![];
+        let mut left_insert = vec![];
         for (i, value) in parsed.buffers.into_iter().enumerate() {
             let hint = value.get("name").and_then(Value::as_str);
             let name = hint.unwrap_or("a buffer").to_owned();
             let mut its_views = vec![];
+            let mut in_insert = false;
             let restored = match serde_json::from_value::<BufferRecord>(value) {
                 Ok(mut record) => {
                     its_views = std::mem::take(&mut record.views);
+                    in_insert = record.insert;
                     catch(|| self.restore_buffer(record))
                         .unwrap_or_else(|c| Err(format!("panicked: {}", c.msg)))
                 }
@@ -561,6 +575,9 @@ impl Ctx {
                 Ok(id) => {
                     if let Some(id) = id {
                         views.push((id, its_views));
+                        if in_insert {
+                            left_insert.push(id);
+                        }
                         if parsed.focus == Some(i as u64) {
                             focus = Some(id);
                         }
@@ -615,11 +632,49 @@ impl Ctx {
         if let (false, Some(buf)) = (placed, focus) {
             self.show_restored(buf);
         }
+        for buf in left_insert {
+            self.leave_insert(buf);
+        }
         dropped
     }
 
+    /// Insert state didn't come back: the window used last goes where Escape would have put its
+    /// cursor, and the buffer's other cursors keep off what normal state can't rest on.
+    fn leave_insert(&mut self, buf: BufferId) {
+        let window = self.window_used_last(buf);
+        let (end, rest) = (self.insert_end, self.pointer.rest_rule());
+        let Ok(t) = self.text_mut(buf) else { return };
+        if let (Some(end), Some(w)) = (end, window)
+            && let Some(p) = t.cursor(w)
+        {
+            let p = end(t, w, p);
+            t.set_cursor(w, p);
+        }
+        let Some(rest) = rest else { return };
+        let rested = |t: &TextBuf, v: View| View {
+            sel: Selection::cursor(rest(t, v.sel.head)),
+            ..v
+        };
+        for w in t.views.keys().copied().collect::<Vec<_>>() {
+            t.views.insert(w, rested(t, t.views[&w]));
+        }
+        for w in t.parked.keys().copied().collect::<Vec<_>>() {
+            t.parked.insert(w, rested(t, t.parked[&w]));
+        }
+        t.rest = t.rest.map(|v| rested(t, v));
+    }
+
     /// How many it dropped.
-    fn restore_registers(&mut self, records: Vec<Value>) -> usize {
+    fn restore_registers(&mut self, records: Option<Value>) -> usize {
+        let records = match records {
+            None => vec![],
+            Some(Value::Array(list)) => list,
+            Some(_) => {
+                self.messages
+                    .push("session: dropped the registers: they aren't a list".into());
+                return 1;
+            }
+        };
         let mut dropped = 0;
         for value in records {
             match serde_json::from_value::<RegisterRecord>(value) {
@@ -671,13 +726,21 @@ impl Ctx {
         ids: &[Option<BufferId>],
         views: Vec<(BufferId, Vec<ViewRecord>)>,
     ) -> std::result::Result<bool, String> {
-        let shows = |r: &WindowRecord| r.buffer.and_then(|i| ids.get(i).copied().flatten());
-        let Some(stand_in) = windows.iter().find_map(shows) else {
+        let saved = |r: &WindowRecord| r.buffer.and_then(|i| ids.get(i).copied().flatten());
+        if !windows.iter().any(|r| r.messages || saved(r).is_some()) {
             return Ok(false);
-        };
+        }
         if !layout.valid(windows.len()) {
             return Err("they don't make a tree".into());
         }
+        let log = windows.iter().any(|r| r.messages).then(|| {
+            let found = self.find_buffer(MESSAGES);
+            found.unwrap_or_else(|| self.create_messages())
+        });
+        let shows = |r: &WindowRecord| saved(r).or(log.filter(|_| r.messages));
+        let Some(stand_in) = windows.iter().find_map(shows) else {
+            return Ok(false);
+        };
         let old = self.tree.windows();
         let mut made = vec![];
         for r in windows {
@@ -691,6 +754,11 @@ impl Ctx {
             }));
         }
         self.tree.set_layout(layout, &made);
+        if self.tree.frame.0 == 0 {
+            self.tree.frame = (80, 26);
+        }
+        // Taking a window out works in cells, which a layout's sizes aren't until it's tiled.
+        self.tree.tile();
         // Taking a window out through the tree leaves it a tree whatever else went.
         for (r, w) in windows.iter().zip(&made) {
             if shows(r).is_none() {
@@ -731,9 +799,6 @@ impl Ctx {
             {
                 t.unpark_view(w, None, 0, 0);
             }
-        }
-        if self.tree.frame.0 == 0 {
-            self.tree.frame = (80, 26);
         }
         self.retile();
         for &w in &alive {

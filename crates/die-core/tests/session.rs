@@ -526,6 +526,56 @@ fn a_window_on_a_buffer_that_did_not_come_back_goes() {
     assert_eq!(b.window_list(), [w]);
     assert_eq!(b.window_size(w).unwrap().0, 100);
     assert_eq!(b.window_buffer(w), b.find_buffer("stays"));
+
+    // A | (G over (C | D)), a border moved: the siblings take its cells, as `C-w c` gives them.
+    let gone = dir.file("gone.txt", "gone\n");
+    let mut a = fresh();
+    a.set_window_size(120, 40);
+    let (_, left) = a.open_text("stays", "text\n").unwrap();
+    let g_win = a.split_window(left, Side::Right).unwrap();
+    let c = a.split_window(g_win, Side::Below).unwrap();
+    a.split_window(c, Side::Right).unwrap();
+    let g = a.open_file(&gone).unwrap();
+    a.focus(g_win);
+    a.show(g, ShowIn::Current).unwrap();
+    a.balance_frame();
+    a.resize(left, 30, 38).unwrap();
+    let saved = a.session_json();
+    fs::remove_file(&gone).unwrap();
+
+    let mut b = fresh();
+    b.set_window_size(120, 40);
+    b.restore_session(&saved).unwrap();
+    let sizes: Vec<_> = b
+        .window_list()
+        .iter()
+        .map(|w| b.window_size(*w).unwrap())
+        .collect();
+    assert_eq!(sizes, [(30, 40), (44, 40), (44, 40)]);
+}
+
+/// `*messages*` isn't saved, but it's always there, so a window on it keeps its place.
+#[test]
+fn a_window_on_the_messages_comes_back() {
+    let mut a = fresh();
+    a.set_window_size(100, 30);
+    let (_, w1) = a.open_text("stays", "text\n").unwrap();
+    let w2 = a.split_window(w1, Side::Right).unwrap();
+    a.messages.push("something to log".into());
+    a.scene(); // the log reaches its buffer
+    let log = a.find_buffer("*messages*").unwrap();
+    a.focus(w2);
+    a.show(log, ShowIn::Current).unwrap();
+    let saved = a.session_json();
+    assert!(!saved.contains("something to log"));
+
+    let mut b = fresh();
+    b.set_window_size(100, 30);
+    b.restore_session(&saved).unwrap();
+    assert_eq!(b.window_list().len(), 2);
+    assert!(b.focused_buffer().is_some());
+    assert_eq!(b.focused_buffer(), b.find_buffer("*messages*"));
+    assert_eq!(b.session_json(), saved);
 }
 
 /// A tree that can't be one costs the windows and is kept aside. The buffers still come back.
@@ -587,6 +637,25 @@ fn an_unreadable_view_or_register_is_dropped_alone() {
         .selection(h.focused().unwrap())
         .unwrap();
     assert_eq!((sel.anchor, sel.head), (2, 4));
+}
+
+/// A field of the wrong shape costs that field: `views` nothing else and silently, as an unreadable
+/// view does, and `registers` with a message and the file kept aside.
+#[test]
+fn a_field_of_the_wrong_shape_costs_only_that_field() {
+    let dir = Dir::new();
+    let session = r#"{"version":1,"focus":0,"registers":"junk","buffers":[{"name":"n",
+        "text":"unsaved","modified":true,"views":{"from":"a newer build"}}]}"#;
+    fs::write(dir.0.join(FILE), session).unwrap();
+    let h = kept_in(&dir.0);
+    assert_eq!(text_of(&h, "n"), "unsaved");
+    assert!(modified(&h, "n"));
+    assert!(said(&h, "dropped the registers"), "{:?}", h.messages);
+    let kept = fs::read_dir(&dir.0).unwrap().any(|e| {
+        let name = e.unwrap().file_name();
+        name.to_string_lossy().starts_with("session.rejected-")
+    });
+    assert!(kept);
 }
 
 /// The newest kill was on the clipboard when DIE stopped, so it isn't news after a restart.

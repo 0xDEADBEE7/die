@@ -53,7 +53,7 @@ impl Ctx {
         self.log.logged = self.messages.len();
     }
 
-    fn create_messages(&mut self) -> BufferId {
+    pub(crate) fn create_messages(&mut self) -> BufferId {
         let buf = self.create_text(MESSAGES, "");
         self.buffers[buf].used = 0;
         if let Ok(t) = self.text_mut(buf) {
