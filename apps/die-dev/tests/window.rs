@@ -11,8 +11,8 @@
 //!   half drawn in the same turn and half from winit's Resized. None stretched. The
 //!   median frame is under S1's 8 ms, with 4 times that allowed for background priority.
 //!   S1's limit is on p99, which at that priority, with other work on the machine, is
-//!   100 ms or so from the wait for the drawable, the GPU and the flush alike. The check
-//!   prints it, and R6 holds it to S1's limit on the real app.
+//!   100 ms or so from the wait for the drawable, the GPU and the flush alike. So p99 is
+//!   held to S1's 8 ms with the same allowance, the best of three.
 //! - `scale`: each scale change gives the right drawable in its first frame, and
 //!   rebuilds the cell and the grid. Simulated: this machine may have one display.
 //! - `occlusion`: covered by another window of ours, nothing draws though the text
@@ -21,6 +21,10 @@
 //! - `show`: its own buffer is on the drawable, pixel for pixel what the offscreen path
 //!   draws, whatever file was named. `Ctx::input` draws in the same turn. A timer and a job's wake each make
 //!   a frame with no other event. Borderless, Option as Alt, not active, not key.
+//!
+//! - `typing`, `redraw`, `firstframe`, `idle-60`, `occlusion-20`: S1's checks 1, 2, 8, 4 and
+//!   5 (R6), held to S1's limits with the same allowance, since these run among other work.
+//!   S1's own limits are for a quiet machine, and the hand run: the numbers are printed.
 //!
 //! Plain `die file.txt` stays up with no output, which `no window yet` didn't, and
 //! whatever app was in front stays in front.
@@ -37,6 +41,9 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// What S1's limits allow here, for background priority, as `support` does in die-core's tests.
+const ALLOWANCE: f64 = 4.0;
 
 const DIE: &str = env!("CARGO_BIN_EXE_die");
 
@@ -120,8 +127,17 @@ fn run_check(names: &str) -> Run {
 }
 
 fn run_check_on(names: &str, path: Option<PathBuf>) -> Run {
+    run_check_with(names, path, None)
+}
+
+/// A check run, logging latency to `log`.
+fn run_check_with(names: &str, path: Option<PathBuf>, log: Option<&PathBuf>) -> Run {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let child = Command::new(DIE)
+    let mut command = Command::new(DIE);
+    if let Some(log) = log {
+        command.env("DIE_LATENCY_LOG", log);
+    }
+    let child = command
         .args(["--check", names])
         .args(path)
         .stdin(Stdio::null())
@@ -129,7 +145,7 @@ fn run_check_on(names: &str, path: Option<PathBuf>) -> Run {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let (out, err, ok) = finish(child, Duration::from_secs(120));
+    let (out, err, ok) = finish(child, Duration::from_secs(300));
     println!("{out}{err}");
     assert!(ok, "the check failed\n{out}\n{err}");
     Run {
@@ -193,23 +209,81 @@ fn the_window_holds_to_s1s_rules() {
 
 #[test]
 #[ignore = "window: runs in ci --full"]
-fn a_median_resize_frame_stays_under_s1s_limit() {
+fn a_resize_frame_stays_under_s1s_limit() {
     if no_backend() {
         return;
     }
-    // S1's 8 ms, allowing 4 times that at background priority, as `support` does in
-    // die-core's tests. The best of three tries.
-    let limit = 8.0 * 4.0;
+    // S1's 8 ms at p99. The best of three tries.
+    let limit = 8.0 * ALLOWANCE;
     let mut tries = vec![];
     for _ in 0..3 {
         let run = run_check("resize");
         let line = run.passed("resize").expect("resize can always run");
-        tries.push(num(&line, "p50_ms"));
-        if tries.last().unwrap() <= &limit {
+        tries.push((num(&line, "p50_ms"), num(&line, "p99_ms")));
+        if tries.last().unwrap().1 <= limit {
             return;
         }
     }
-    panic!("{tries:?} are all over {limit} ms");
+    panic!("{tries:?} are all over {limit} ms at p99");
+}
+
+#[test]
+#[ignore = "window: runs in ci --full"]
+fn typing_redraw_and_first_frame_hold_on_the_real_app_and_the_log_has_them() {
+    if no_backend() {
+        return;
+    }
+    let log = file("latency.log", "");
+    let run = run_check_with("typing,redraw,firstframe", None, Some(&log));
+
+    let typing = run.passed("typing").expect("typing can run with a monitor");
+    assert_eq!(num(&typing, "keys"), 500.0, "{typing:?}");
+    assert!(num(&typing, "p99_ms") <= 3.0 * ALLOWANCE, "{typing:?}");
+    assert!(num(&typing, "shown") > 0.0, "{typing:?}");
+    assert!(
+        num(&typing, "shown_p50_ms") >= num(&typing, "p50_ms"),
+        "the display comes after the commit: {typing:?}"
+    );
+
+    let redraw = run.passed("redraw").expect("redraw can always run");
+    assert_eq!(redraw["grid"], "159x49", "{redraw:?}");
+    assert_eq!(num(&redraw, "frames"), 600.0, "{redraw:?}");
+    assert!(num(&redraw, "cpu_p99_ms") <= 2.0 * ALLOWANCE, "{redraw:?}");
+    assert!(num(&redraw, "gpu_p99_ms") <= 1.5 * ALLOWANCE, "{redraw:?}");
+
+    let first = run.passed("firstframe").expect("firstframe can always run");
+    assert_eq!(num(&first, "launches"), 11.0, "{first:?}");
+    assert!(num(&first, "median_ms") <= 150.0 * ALLOWANCE, "{first:?}");
+
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("startup stage=first_shown"), "{text}");
+    // `first_shown` comes from the display, whose clock may run a moment before the rest.
+    let stages: Vec<f64> = text
+        .lines()
+        .filter(|l| l.starts_with("startup ") && !l.contains("first_shown"))
+        .map(|l| num(&numbers(l), "ms"))
+        .collect();
+    assert!(stages.len() >= 4, "{text}");
+    assert!(stages.is_sorted_by(|a, b| a <= b), "{text}");
+    let keys = text.lines().filter(|l| l.starts_with("key ")).count();
+    assert!(keys >= 500, "{keys} key lines");
+}
+
+#[test]
+#[ignore = "window: runs in ci --full"]
+fn a_minute_idle_and_twenty_occlusions_hold_on_the_real_app() {
+    if no_backend() {
+        return;
+    }
+    let run = run_check("idle-60,occlusion-20");
+    let idle = run.passed("idle-60").expect("idle can always run");
+    assert_eq!(num(&idle, "frames"), 0.0, "{idle:?}");
+    assert!(num(&idle, "cpu_percent") < 0.3 * ALLOWANCE, "{idle:?}");
+    if let Some(occ) = run.passed("occlusion-20") {
+        assert_eq!(num(&occ, "cycles"), 20.0, "{occ:?}");
+        assert_eq!(num(&occ, "frames_while_covered"), 0.0, "{occ:?}");
+        assert!(num(&occ, "worst_stall_ms") <= 50.0 * ALLOWANCE, "{occ:?}");
+    }
 }
 
 #[test]

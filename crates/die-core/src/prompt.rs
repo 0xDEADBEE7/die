@@ -16,11 +16,15 @@
 //! A prompt with candidates shows up to 20 of them under its line, flex matched against what's
 //! typed, and some keys change:
 //! - `<CR>` answers with the chosen candidate, or the typed text if none matches. `<M-CR>` answers
-//!   with the typed text whatever matches. With [`PromptSpec::descends`], a candidate ending in
-//!   `/` goes on the line instead of answering.
-//! - `<Tab>` puts the chosen candidate on the line.
-//! - `<Down>` `<C-n>` and `<Up>` `<C-p>` choose the next and last row, stopping at the ends, and
-//!   `<PageDown>` `<C-v>` and `<PageUp>` `<M-v>` go a screenful.
+//!   with the typed text whatever matches. [`PromptSpec::require_match`] holds both to a candidate.
+//! - `<Tab>` puts the chosen candidate on the line, or the first if none is chosen.
+//! - `<Down>` `<C-n>` and `<Up>` `<C-p>` choose the next and last row, stopping at the ends,
+//!   `<PageDown>` `<C-v>` and `<PageUp>` `<M-v>` go a screenful, and `<M-<>` and `<M->>` go to the
+//!   first and the last.
+//! - With [`PromptSpec::descends`], a candidate ending in `/` goes on the line instead of
+//!   answering. While nothing's typed after the directory no row is chosen, shown as `*/N`, so
+//!   `<CR>` answers with the line. `<Down>` chooses the first row, and `<Up>` from it the line
+//!   again, as vertico's `directory` preselect has it.
 //! - History is on `<M-p>` and `<M-n>`, which also work with no candidates.
 //!
 //! The cursor moves by what the scene draws as one glyph, a grapheme cluster. A word is a run of
@@ -59,6 +63,7 @@ pub struct PromptSpec {
     on_change: Option<ChangeFn>,
     source: Option<Source>,
     descends: bool,
+    require_match: bool,
 }
 
 enum Source {
@@ -78,6 +83,7 @@ impl PromptSpec {
             on_change: None,
             source: None,
             descends: false,
+            require_match: false,
         }
     }
     /// Start with this text, the cursor at its end.
@@ -128,8 +134,15 @@ impl PromptSpec {
         self.source = Some(Source::Live(Rc::new(RefCell::new(f))));
         self
     }
+    /// `<CR>` and `<M-CR>` answer only with a candidate or an empty line. Anything else stays on
+    /// the line, with a note until the next key, as a prompt that requires a match does in Vertico.
+    pub fn require_match(mut self) -> Self {
+        self.require_match = true;
+        self
+    }
     /// A candidate ending in `/` goes on the line instead of answering, as a directory does in
-    /// `find-file`.
+    /// `find-file`. With nothing typed after the directory no row is chosen, and `<CR>` answers
+    /// with the directory: what that means is up to the prompt's owner.
     pub fn descends(mut self) -> Self {
         self.descends = true;
         self
@@ -142,6 +155,21 @@ impl From<&str> for PromptSpec {
     }
 }
 
+/// `items` in the order the owner's `vertico-sort-history-length-alpha` puts them: those answered
+/// under this history (oldest first, as [`Ctx::prompt_history`] gives it), newest first, then the
+/// shortest, then alphabetically. For [`PromptSpec::candidates`], which keeps the order it's given.
+pub fn recent_first(history: &[String], mut items: Vec<String>) -> Vec<String> {
+    items.sort_by_cached_key(|item| {
+        let age = history.iter().rev().position(|h| h == item);
+        (
+            age.unwrap_or(usize::MAX),
+            item.chars().count(),
+            item.clone(),
+        )
+    });
+    items
+}
+
 /// A prompt's candidates, and which of them match the text now.
 struct List {
     live: Option<LiveFn>,
@@ -150,8 +178,10 @@ struct List {
     base: usize,
     /// Indices into `items`, best first.
     matches: Vec<usize>,
-    /// An index into `matches`.
-    chosen: usize,
+    /// An index into `matches`. None means the line itself, or that nothing matches.
+    chosen: Option<usize>,
+    /// The line can be chosen, above the first row.
+    line_row: bool,
     /// The first of `matches` showing.
     top: usize,
     /// The rows taken so far. Like the owner's minibuffer, the list grows and doesn't shrink.
@@ -159,7 +189,7 @@ struct List {
 }
 
 impl List {
-    fn new(source: Source) -> List {
+    fn new(source: Source, line_row: bool) -> List {
         let (live, items) = match source {
             Source::Fixed(items) => (None, items),
             Source::Live(f) => (Some(f), vec![]),
@@ -169,7 +199,8 @@ impl List {
             items,
             base: 0,
             matches: vec![],
-            chosen: 0,
+            chosen: None,
+            line_row,
             top: 0,
             height: 0,
         }
@@ -180,16 +211,34 @@ impl List {
     fn filter(&mut self, text: &str) {
         let query = self.query(text);
         self.matches = flex::rank(query, self.items.iter().map(String::as_str));
-        (self.chosen, self.top) = (0, 0);
+        let on_line = self.line_row && query.is_empty();
+        self.chosen = (!self.matches.is_empty() && !on_line).then_some(0);
+        self.top = 0;
         self.height = self.height.max(self.matches.len().min(ROWS));
     }
     fn chosen_item(&self) -> Option<&str> {
-        let i = *self.matches.get(self.chosen)?;
-        Some(&self.items[i])
+        self.item_at(self.chosen?)
     }
-    fn step(&mut self, by: isize) {
-        let last = self.matches.len().saturating_sub(1);
-        self.chosen = self.chosen.saturating_add_signed(by).min(last);
+    fn item_at(&self, at: usize) -> Option<&str> {
+        Some(&self.items[*self.matches.get(at)?])
+    }
+    /// The chosen row's place, with the line at -1.
+    fn at(&self) -> isize {
+        self.chosen.map_or(-1, |c| c as isize)
+    }
+    /// Choose this row, or the nearest there is.
+    fn goto(&mut self, at: isize) {
+        let first = if self.line_row || self.matches.is_empty() {
+            -1
+        } else {
+            0
+        };
+        let last = self.matches.len() as isize - 1;
+        self.chosen = usize::try_from(at.min(last).max(first)).ok();
+    }
+    /// The first row, and from there the line, as `vertico-first` does.
+    fn first(&mut self) {
+        self.goto(if self.at() > 0 { 0 } else { -1 });
     }
 }
 
@@ -203,6 +252,8 @@ pub(crate) struct Prompt {
     /// What was typed before going back in the history.
     draft: String,
     list: Option<List>,
+    /// `<CR>` was refused, until the next key.
+    refused: bool,
     ext: ExtIdx,
     prev: State,
     f: PromptFn,
@@ -254,13 +305,31 @@ impl Prompt {
     /// The line choosing the chosen candidate would make, and whether it ends in `/`.
     fn chosen_line(&self) -> Option<(String, bool)> {
         let l = self.list.as_ref()?;
-        let item = l.chosen_item()?;
-        let fixed = self.text.get(..l.base).unwrap_or_default();
+        self.line_with(l.chosen_item()?)
+    }
+    /// What `<Tab>` puts on the line: the chosen candidate, or the first.
+    fn tab_line(&self) -> Option<(String, bool)> {
+        let l = self.list.as_ref()?;
+        self.line_with(l.item_at(l.chosen.unwrap_or(0))?)
+    }
+    fn line_with(&self, item: &str) -> Option<(String, bool)> {
+        let fixed = self
+            .text
+            .get(..self.list.as_ref()?.base)
+            .unwrap_or_default();
         Some((format!("{fixed}{item}"), item.ends_with('/')))
+    }
+    /// Whether [`PromptSpec::require_match`] refuses the line as it is.
+    fn refuses(&self) -> bool {
+        let Some(l) = self.list.as_ref().filter(|_| self.spec.require_match) else {
+            return false;
+        };
+        let query = l.query(&self.text);
+        !self.text.is_empty() && !l.items.iter().any(|i| i == query)
     }
     fn step(&mut self, by: isize) {
         if let Some(l) = self.list.as_mut() {
-            l.step(by);
+            l.goto(l.at().saturating_add(by));
         }
     }
     /// A screenful of rows, for paging.
@@ -318,7 +387,7 @@ impl Ctx {
         let prev = self.state();
         self.set_state(State::CommandLine);
         let mut spec: PromptSpec = spec.into();
-        let list = spec.source.take().map(List::new);
+        let list = spec.source.take().map(|s| List::new(s, spec.descends));
         let text = spec.initial.clone();
         self.prompt = Some(Prompt {
             cursor: text.len(),
@@ -327,6 +396,7 @@ impl Ctx {
             recalled: None,
             draft: String::new(),
             list,
+            refused: false,
             ext: self.cur_ext(),
             prev,
             f: Box::new(f),
@@ -359,13 +429,20 @@ impl Ctx {
         let p = self.prompt.as_ref()?;
         let label = &p.spec.label;
         Some(match &p.list {
-            Some(l) if l.matches.is_empty() => format!("{:<6} {label}", "*/0"),
             Some(l) => {
-                let at = format!("{}/{}", l.chosen + 1, l.matches.len());
-                format!("{at:<6} {label}")
+                let total = l.matches.len();
+                let at = l.chosen.map_or("*".to_string(), |c| (c + 1).to_string());
+                format!("{:<6} {label}", format!("{at}/{total}"))
             }
             None => label.clone(),
         })
+    }
+    /// What shows after the prompt's text, for now.
+    pub(crate) fn prompt_note(&self) -> &'static str {
+        match self.prompt.as_ref().is_some_and(|p| p.refused) {
+            true => " [Match required]",
+            false => "",
+        }
     }
     /// The list's rows, `room` at most, scrolled to the chosen one: each candidate, the characters
     /// of it that matched, and whether it's chosen.
@@ -379,13 +456,19 @@ impl Ctx {
         if room == 0 {
             return vec![];
         }
-        l.top = l.top.min(l.chosen).max((l.chosen + 1).saturating_sub(room));
+        if let Some(chosen) = l.chosen {
+            l.top = l.top.min(chosen).max((chosen + 1).saturating_sub(room));
+        }
         let query = l.query(&p.text);
         let shown = l.matches.iter().enumerate().skip(l.top).take(room);
         shown
             .map(|(at, &i)| {
                 let item = &l.items[i];
-                (item.clone(), flex::positions(query, item), at == l.chosen)
+                (
+                    item.clone(),
+                    flex::positions(query, item),
+                    Some(at) == l.chosen,
+                )
             })
             .collect()
     }
@@ -430,7 +513,9 @@ impl Ctx {
         let evil = p.spec.evil_keys;
         let before = p.text.clone();
         let listed = p.list.is_some();
+        p.refused = false;
         match c.key {
+            Key::Enter if (alt || p.chosen_line().is_none()) && p.refuses() => p.refused = true,
             Key::Enter if alt => return self.finish_prompt(Some(before), true),
             Key::Enter => match p.chosen_line() {
                 Some((line, true)) if p.spec.descends => p.set_line(line),
@@ -438,7 +523,7 @@ impl Ctx {
                 None => return self.finish_prompt(Some(before), true),
             },
             Key::Tab => {
-                if let Some((line, _)) = p.chosen_line() {
+                if let Some((line, _)) = p.tab_line() {
                     p.set_line(line);
                 }
             }
@@ -488,6 +573,12 @@ impl Ctx {
                 'f' => p.cursor = p.word_after(),
                 'd' => p.replace(at..p.word_after(), ""),
                 'v' => p.step(-p.page()),
+                '<' => {
+                    if let Some(l) = p.list.as_mut() {
+                        l.first();
+                    }
+                }
+                '>' => p.step(isize::MAX),
                 'p' => self.prompt_recall(true, false),
                 'n' => self.prompt_recall(false, false),
                 _ => {}

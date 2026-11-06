@@ -7,6 +7,7 @@ use die_test_cap as _;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    die::render::latency::start_clock();
     let args = match die_dev::parse_args(std::env::args_os().skip(1)) {
         Ok(args) => args,
         Err(e) => {
