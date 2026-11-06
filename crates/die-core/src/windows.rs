@@ -7,7 +7,7 @@ use crate::ids::*;
 use crate::scene::WindowPlacement;
 use crate::text::*;
 use crate::workspace::Side;
-use crate::workspace::tree::Rect;
+use crate::workspace::tree::{Axis, Rect};
 use std::any::TypeId;
 
 /// Per-window state of a text buffer.
@@ -484,6 +484,32 @@ impl Ctx {
         self.in_tree(b)?;
         self.tree.swap(a, b);
         self.retile();
+        Ok(())
+    }
+
+    /// Give two windows in the tree each other's places, each keeping the size of its text where
+    /// that fits, as Emacs's `window-swap-states` with a size does: on each axis, a window whose
+    /// whole size doesn't fit takes its place's. Evil's `C-w x`. The focus stays on its window.
+    pub fn exchange_windows(&mut self, a: WindowId, b: WindowId) -> Result {
+        self.in_tree(a)?;
+        self.in_tree(b)?;
+        let (had_a, had_b) = (self.window_size(a), self.window_size(b));
+        self.tree.swap(a, b);
+        self.retile();
+        for axis in [Axis::Cols, Axis::Rows] {
+            let len = |s: Option<(usize, usize)>| {
+                let (cols, rows) = s.unwrap_or_default();
+                (if axis == Axis::Cols { cols } else { rows }) as isize
+            };
+            let by = len(had_b) - len(self.window_size(b));
+            if !self.tree.trade(b, a, axis, by) {
+                self.tree.resize_whole(b, axis, by);
+                self.retile();
+                let by = len(had_a) - len(self.window_size(a));
+                self.tree.resize_whole(a, axis, by);
+            }
+            self.retile();
+        }
         Ok(())
     }
 

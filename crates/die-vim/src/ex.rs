@@ -40,7 +40,9 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     if name.is_empty() {
         return Ok(());
     }
-    if let Ok(n) = name.parse::<usize>() {
+    // Only digits: `parse` would take `+5` for line 5.
+    let digits = name.bytes().all(|c| c.is_ascii_digit());
+    if let Some(n) = name.parse::<usize>().ok().filter(|_| digits) {
         return run_motion(ctx, &Args::default(), Kind::Linewise, None, |s| {
             goto_line(s, n)
         });
@@ -95,7 +97,7 @@ fn edit(ctx: &mut Ctx, path: &str) -> Result {
     Ok(())
 }
 
-fn absolute(dir: Option<&Path>, path: &str) -> PathBuf {
+pub(crate) fn absolute(dir: Option<&Path>, path: &str) -> PathBuf {
     if let (Some(rest), Some(home)) = (path.strip_prefix("~/"), std::env::var_os("HOME")) {
         return Path::new(&home).join(rest);
     }
