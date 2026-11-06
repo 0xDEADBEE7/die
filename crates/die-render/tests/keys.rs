@@ -1,6 +1,6 @@
 //! S1's 50-chord matrix on a real event loop, with every field of every `KeyEvent` checked, and
 //! `a_panic_in_the_key_monitor_is_caught`. The loop has to be on the main thread, so this has
-//! no test harness and runs the two itself.
+//! no test harness and runs them itself. Its last act is to ask the loop to stop.
 //!
 //! Each chord is real `CGEvent`s posted with `CGEventPostToPid` to this process and no other,
 //! so nothing reaches your desktop, and the window stays hidden and takes no focus. AppKit
@@ -20,7 +20,11 @@ fn main() {}
 
 #[cfg(target_os = "macos")]
 fn main() {
-    matrix::run();
+    if std::env::args().len() > 1 {
+        matrix::run();
+    } else {
+        matrix::in_a_process_saying_press_and_hold();
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -31,7 +35,8 @@ mod matrix {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
     use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventType};
-    use objc2_foundation::{NSPoint, NSString};
+    use objc2_foundation::{NSPoint, NSString, NSUserDefaults};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
@@ -405,10 +410,41 @@ mod matrix {
         Ok(())
     }
 
+    /// The Character Viewer inserts text with no key and no marked text, which winit drops.
+    fn text_inserted_without_a_key_reaches_core(r: &Remote) -> Result<(), String> {
+        r.call(|s, _| s.insert_text("\u{1F600}"))?;
+        let got = keys(r, 1)?;
+        if got.len() != 1 || got[0].text.as_deref() != Some("\u{1F600}") {
+            return Err(format!("core got {got:?}"));
+        }
+        Ok(())
+    }
+
+    /// A test failed. A quit ends the loop with 0, so this keeps that from hiding it.
+    static FAILED: AtomicBool = AtomicBool::new(false);
+
+    /// An argument of the process's, which must survive the loop's setup.
+    const ARG: &str = "DIE_KEYS_ARG";
+
+    /// Run this binary again with arguments the defaults system reads. That domain outranks your
+    /// own defaults, so its yes stands in for one in your NSGlobalDomain, which a test mustn't
+    /// write. A regular defaults domain would lose to it and the accent popup would stay.
+    pub fn in_a_process_saying_press_and_hold() {
+        let me = std::env::current_exe().unwrap();
+        let args = ["-ApplePressAndHoldEnabled", "YES"];
+        let status = std::process::Command::new(me)
+            .args(args)
+            .args([format!("-{ARG}"), "7".into()])
+            .status()
+            .unwrap();
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
     type Test = fn(&Remote) -> Result<(), String>;
 
     fn script(r: &Remote) -> i32 {
         let press_and_hold = driver::press_and_hold();
+        let arg = NSUserDefaults::standardUserDefaults().integerForKey(&NSString::from_str(ARG));
         let setup = r.call(|s, _| {
             s.deliver_keys_here();
             s.record_keys();
@@ -417,16 +453,24 @@ mod matrix {
             println!("{e}");
             return 1;
         }
-        let tests: [(&str, Test); 2] = [
+        let tests: [(&str, Test); 3] = [
             ("the_matrix_holds", the_matrix_holds),
             (
                 "a_panic_in_the_key_monitor_is_caught",
                 a_panic_in_the_key_monitor_is_caught,
             ),
+            (
+                "text_inserted_without_a_key_reaches_core",
+                text_inserted_without_a_key_reaches_core,
+            ),
         ];
         let mut code = 0;
         if press_and_hold {
             println!("test press_and_hold_is_off ... FAILED");
+            code = 1;
+        }
+        if arg != 7 {
+            println!("test the_process_keeps_its_arguments ... FAILED");
             code = 1;
         }
         for (name, test) in tests {
@@ -438,7 +482,13 @@ mod matrix {
                 }
             }
         }
-        code
+        FAILED.store(code != 0, Ordering::SeqCst);
+        if r.call(|s, _| s.ctx().request_quit()).is_err() {
+            return 1;
+        }
+        sleep(Duration::from_secs(10));
+        println!("test a_quit_request_ends_the_loop ... FAILED");
+        1
     }
 
     pub fn run() {
@@ -456,6 +506,14 @@ mod matrix {
             first_frame: None,
         };
         let code = window::run(ctx, options).expect("a window");
+        if code == 0 {
+            println!("test a_quit_request_ends_the_loop ... ok");
+        }
+        let code = if FAILED.load(Ordering::SeqCst) {
+            1
+        } else {
+            code
+        };
         std::process::exit(code);
     }
 }

@@ -320,6 +320,8 @@ pub struct Ctx {
     /// What prompts remember, by history name (K11a).
     pub(crate) histories: HashMap<String, Vec<String>>,
     pub(crate) session: Option<crate::session::Session>,
+    /// Something asked the app to quit.
+    quit_asked: bool,
     pub(crate) clock: Clock,
     pub(crate) timers: Timers,
     pub(crate) timer_seq: u64,
@@ -409,6 +411,17 @@ pub(crate) fn catch<R>(f: impl FnOnce() -> R) -> std::result::Result<R, Caught> 
 }
 
 impl Ctx {
+    /// Ask whatever runs the loop to stop after this turn, and then [`Ctx::shutdown`]. The app's
+    /// `quit` command does this.
+    pub fn request_quit(&mut self) {
+        self.quit_asked = true;
+    }
+
+    /// Whether [`Ctx::request_quit`] has been called.
+    pub fn quit_requested(&self) -> bool {
+        self.quit_asked
+    }
+
     /// [`Ctx::with_config`] with no config.
     pub fn new(exts: Vec<Box<dyn Extension>>) -> std::result::Result<Ctx, Vec<String>> {
         Ctx::with_config(exts, Config::default())
@@ -488,6 +501,7 @@ impl Ctx {
             prompt: None,
             histories: HashMap::new(),
             session: None,
+            quit_asked: false,
             clock: config.clock,
             timers: Timers::new(),
             timer_seq: 0,
