@@ -26,12 +26,13 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
 
 /// Run an ex line: `:s` with its range, `:N`, one of die-vim's own, or a command's name with the
 /// rest of the line as its [`Args::text`]. Any command in the registry can be called this way
-/// (contract §6).
+/// (contract §6), and from a selection: the others take no range, so it's ignored.
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     let text = text.trim().trim_start_matches(':').trim_start();
     if let Some((range, rest)) = substitute::parse(text) {
         return substitute::run(ctx, range, rest);
     }
+    let text = without_range(text)?;
     if let Some(done) = window::ex(ctx, text) {
         return done;
     }
@@ -63,7 +64,24 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     }
 }
 
-/// `:w`, `:q`, `:wq` and `:e!`: `!` writes over a file that changed, or leaves unsaved changes.
+/// The line without the range that only `:s` reads. `:'<,'>w` writes only those lines in your
+/// Evil, and that isn't built, so it's refused: writing the whole file would be wrong.
+fn without_range(text: &str) -> Result<&str> {
+    let Some(rest) = text.strip_prefix(substitute::VISUAL) else {
+        return Ok(text.strip_prefix('%').map_or(text, str::trim_start));
+    };
+    let rest = rest.trim_start();
+    match rest.split_whitespace().next() {
+        Some(name @ ("w" | "w!" | "wq" | "wq!")) => Err(Error::Msg(format!(
+            ":{}{name} isn't built",
+            substitute::VISUAL
+        ))),
+        _ => Ok(rest),
+    }
+}
+
+/// `:w`, `:q`, `:wq` and `:e!`. In `:w!` and `:wq!`, `!` writes over a file that changed. In `:q!`
+/// it drops unsaved changes. `:wq!` still refuses to leave another file's, as your Evil's does.
 fn file_command(ctx: &mut Ctx, name: &str, rest: &str) -> Result {
     if !rest.is_empty() {
         return Err(Error::Msg(format!(":{name} with an argument isn't built")));
@@ -80,7 +98,7 @@ fn file_command(ctx: &mut Ctx, name: &str, rest: &str) -> Result {
     match name.trim_end_matches('!') {
         "w" => Ok(()),
         "e" => ctx.revert_file(buf),
-        _ => window::close_or_quit(ctx, w, force),
+        name => window::close_or_quit(ctx, w, force && name != "wq"),
     }
 }
 

@@ -3,7 +3,7 @@
 //! count the split evens out.
 use crate::Body;
 use crate::grammar::{buffer_window, count_digit, forget_goal};
-use die_core::{Args, Ctx, Error, Result, ShowIn, Side, WindowId};
+use die_core::{Args, BufferId, Ctx, Error, Origin, Result, ShowIn, Side, WindowId};
 
 /// Keys after `C-w`, the command, its doc, and what it does. `f` (ffap) and `T` (tabs) aren't here.
 #[rustfmt::skip]
@@ -191,16 +191,33 @@ pub fn close_or_quit(ctx: &mut Ctx, w: WindowId, force: bool) -> Result {
     quit_app(ctx, force)
 }
 
-/// Quit, which refuses while a file has unsaved changes, unless `force`.
+/// Quit, which refuses while a file has unsaved changes. `force` drops them instead.
 pub fn quit_app(ctx: &mut Ctx, force: bool) -> Result {
-    let mut all = ctx.buffer_list().into_iter();
-    let unsaved = all.find(|&b| ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified()));
-    if let Some(b) = unsaved.filter(|_| !force) {
-        let name = ctx.buffer_name(b).unwrap_or_default();
+    let all = ctx.buffer_list().into_iter();
+    let unsaved = |b: &BufferId| ctx.file(*b).is_some() && ctx.text(*b).is_ok_and(|t| t.modified());
+    let unsaved: Vec<BufferId> = all.filter(unsaved).collect();
+    if let Some(b) = unsaved.first().filter(|_| !force) {
+        let name = ctx.buffer_name(*b).unwrap_or_default();
         let why = format!("{name} has unsaved changes; :w saves them, :q! drops them");
         return Err(Error::Msg(why));
     }
+    for b in unsaved {
+        drop_changes(ctx, b)?;
+    }
     ctx.quit();
+    Ok(())
+}
+
+/// So the session at quit doesn't bring them back. It keeps the text of a buffer marked modified
+/// and of a file that isn't there. The disk has the rest.
+fn drop_changes(ctx: &mut Ctx, b: BufferId) -> Result {
+    let gone = ctx.file(b).is_none_or(|f| f.fingerprint.is_none());
+    let t = ctx.text_mut(b)?;
+    if gone {
+        let all = 0..t.len();
+        t.tx(Origin::Extension).replace(all, "").commit()?;
+    }
+    t.set_modified(false);
     Ok(())
 }
 
