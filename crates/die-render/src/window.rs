@@ -643,6 +643,10 @@ impl ApplicationHandler<Wake> for Shell {
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         self.stats.wakeups += 1;
         self.settle();
+        if self.host.ctx.quit_wanted() {
+            el.exit();
+            return;
+        }
         el.set_control_flow(match self.host.sleep(self.more) {
             Sleep::Forever => ControlFlow::Wait,
             Sleep::No => ControlFlow::Poll,

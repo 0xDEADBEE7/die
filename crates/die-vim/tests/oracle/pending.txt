@@ -1,17 +1,2 @@
 # Oracle cases die-vim doesn't pass yet, by the work package they land with
 # (docs/m0-plan.md §5). See tests/oracle.rs; DIE_ORACLE_BLESS=1 rewrites this file.
-
-# V5 (13)
-V5 ex/s-cursor-after-percent
-V5 ex/s-empty-replacement
-V5 ex/s-first
-V5 ex/s-global-flag
-V5 ex/s-no-match
-V5 ex/s-percent
-V5 ex/s-percent-first-per-line
-V5 ex/s-smartcase-lower
-V5 ex/s-smartcase-upper
-V5 ex/s-undo-one-step
-V5 ex/s-visual-range
-V5 hand-written/ex/s-group-before-letter
-V5 hand-written/ex/s-groups

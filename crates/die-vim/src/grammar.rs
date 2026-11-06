@@ -36,17 +36,25 @@ use die_core::{
 /// The column vertical motions aim for, kept across a run of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Goal {
-    /// A display column.
+    /// A display column on the logical line, from `j` and the like.
     Col(usize),
+    /// A column on the screen row, from `gj` and `gk`. Going by logical lines recomputes it, as
+    /// `evil-line-move` resets its goal between the two; only `j` and `k` do, and the rest read
+    /// it as a logical column, as `evil-ensure-column` reads Emacs's.
+    Row(usize),
     /// The end of each line, after `$`.
     Eol,
 }
+
+/// Marks a [`Goal::Row`] in a [`Selection`]'s goal column.
+const ROW_GOAL: usize = !(usize::MAX >> 1);
 
 impl Goal {
     /// As stored in a [`Selection`]'s goal column.
     pub fn encode(g: Option<Goal>) -> Option<usize> {
         g.map(|g| match g {
             Goal::Col(c) => c,
+            Goal::Row(c) => c | ROW_GOAL,
             Goal::Eol => usize::MAX,
         })
     }
@@ -55,6 +63,8 @@ impl Goal {
         c.map(|c| {
             if c == usize::MAX {
                 Goal::Eol
+            } else if c & ROW_GOAL != 0 {
+                Goal::Row(c & !ROW_GOAL)
             } else {
                 Goal::Col(c)
             }
@@ -300,6 +310,8 @@ mod tests {
             None,
             Some(Goal::Col(0)),
             Some(Goal::Col(7)),
+            Some(Goal::Row(0)),
+            Some(Goal::Row(7)),
             Some(Goal::Eol),
         ] {
             assert_eq!(Goal::decode(Goal::encode(g)), g);
