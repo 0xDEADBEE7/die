@@ -29,8 +29,8 @@ note = "guard 7: 5k per build, 7k in total"
 [[crate]]
 name = "die-vim"
 path = "crates/die-vim"
-limit = 5700
-note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610"
+limit = 5720
+note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2"
 
 [[crate]]
 name = "die"
@@ -60,7 +60,7 @@ dev = true
 [[module]]
 crate = "die-core"
 name = "text and undo"
-limit = 1250
+limit = 1265
 files = ["text.rs", "undo.rs", "text/", "undo/"]
 
 [[module]]
