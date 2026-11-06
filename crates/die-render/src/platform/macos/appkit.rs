@@ -18,6 +18,7 @@ use objc2_foundation::{
 use objc2_metal::{MTLDrawable, MTLDrawablePresentedHandler};
 use objc2_quartz_core::{CACurrentMediaTime, CAMetalDrawable, CAMetalLayer};
 use std::cell::{Cell, RefCell};
+use std::mem::transmute;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::{NonNull, null_mut};
 use std::rc::{Rc, Weak};
@@ -223,10 +224,11 @@ unsafe extern "C-unwind" fn insert_text(view: &NSView, sel: Sel, text: &AnyObjec
     let seen = SEEN.with_borrow(Weak::upgrade);
     let taker = seen.filter(|_| IN_KEY_DOWN.get() == 0 && !marked);
     if let Some(seen) = taker {
-        // SAFETY: AppKit's text is an NSString or an NSAttributedString, which answers `string`.
         let string = match text.downcast_ref::<NSString>() {
             Some(string) => string.to_string(),
             None => {
+                // SAFETY: AppKit's text is an NSString or an NSAttributedString, which answers
+                // `string`.
                 let string: Option<Retained<NSString>> = unsafe { msg_send![text, string] };
                 string.map_or_else(String::new, |s| s.to_string())
             }
@@ -258,19 +260,20 @@ fn hook_view(view: &NSView) -> Result<(), String> {
     };
     let keys = method(sel!(keyDown:))?;
     let inserts = method(sel!(insertText:replacementRange:))?;
-    // SAFETY: both replacements take what these methods take (winit's platform_impl/macos/
-    // view.rs, at the exact version Cargo.toml pins), and the originals, cast back to those
-    // same types, are what they call.
-    unsafe {
-        let new_keys = std::mem::transmute::<KeyDownImp, Imp>(key_down);
-        let new_inserts = std::mem::transmute::<InsertImp, Imp>(insert_text);
-        let old_keys = keys.set_implementation(new_keys);
-        let old_inserts = inserts.set_implementation(new_inserts);
-        ORIGINAL.set(Some((
-            std::mem::transmute::<Imp, KeyDownImp>(old_keys),
-            std::mem::transmute::<Imp, InsertImp>(old_inserts),
-        )));
-    }
+    // SAFETY: `key_down` takes what `keyDown:` takes (winit's platform_impl/macos/view.rs, at
+    // the exact version Cargo.toml pins).
+    let new_keys = unsafe { transmute::<KeyDownImp, Imp>(key_down) };
+    // SAFETY: as above: `insert_text` takes what `insertText:replacementRange:` takes.
+    let new_inserts = unsafe { transmute::<InsertImp, Imp>(insert_text) };
+    // SAFETY: it's the implementation just cast, and of this method's type.
+    let old_keys = unsafe { keys.set_implementation(new_keys) };
+    // SAFETY: as above.
+    let old_inserts = unsafe { inserts.set_implementation(new_inserts) };
+    // SAFETY: this was the method's implementation, and that's its type.
+    let old_keys = unsafe { transmute::<Imp, KeyDownImp>(old_keys) };
+    // SAFETY: as above.
+    let old_inserts = unsafe { transmute::<Imp, InsertImp>(old_inserts) };
+    ORIGINAL.set(Some((old_keys, old_inserts)));
     Ok(())
 }
 
