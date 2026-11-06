@@ -11,7 +11,7 @@ pub use die_core as core;
 pub use die_render as render;
 pub use die_vim as vim;
 
-use die_core::{Clock, Ctx, Extension, ShowIn, StatusTextFn};
+use die_core::{Clock, Ctx, Extension, ShowIn, State, StatusTextFn};
 use die_render::driver::Config as Font;
 use die_render::{check, driver, window};
 use die_vim::Vim;
@@ -82,6 +82,26 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         ..
     } = config;
     core.clock = Clock::real();
+    let register = core.register.take();
+    core.register = Some(Box::new(move |reg| {
+        // Cmd-Q, in every state, since the DIE layer belongs to DIE (scope D18).
+        reg.command("quit", "Quit DIE.", |ctx, _| die_vim::quit_app(ctx, false));
+        for state in [
+            State::Normal,
+            State::Insert,
+            State::Replace,
+            State::Visual,
+            State::OperatorPending,
+            State::CommandLine,
+            State::Copy,
+            State::Passthrough,
+        ] {
+            reg.global_keymap().bind(state, "<D-q>", "quit");
+        }
+        if let Some(register) = register {
+            register(reg);
+        }
+    }));
     let mut exts: Vec<Box<dyn Extension>> = vec![Box::new(Vim::default())];
     exts.extend(extensions);
     let mut ctx = Ctx::with_config(exts, core)?;

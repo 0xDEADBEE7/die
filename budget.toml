@@ -29,8 +29,8 @@ note = "guard 7: 5k per build, 7k in total"
 [[crate]]
 name = "die-vim"
 path = "crates/die-vim"
-limit = 5720
-note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2"
+limit = 5721
+note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting"
 
 [[crate]]
 name = "die"
@@ -142,19 +142,20 @@ files = ["check.rs"]
 # 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
 # Raising it is when the thin-wrapper question gets asked. R6 raised it to 950 for the
 # presented handler, a key's own timestamp and posting a key to this process, each a
-# thin wrapper.
+# thin wrapper. R4's review raised it to 1,060 for the hook on winit's view that keeps the
+# Character Viewer's text, which winit drops, and that isn't a thin wrapper of anything.
 [[module]]
 crate = "die-render"
 name = "platform::macos"
 platforms = ["macos"]
-limit = 950
+limit = 1060
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
-# from 3 lines to 64, R3 to 105, R5 to 112, and R6 to 151.
+# from 3 lines to 64, R3 to 105, R5 to 112, R6 to 151, and R4's review to 157.
 [[module]]
 crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
-limit = 155
+limit = 160
 files = ["platform/backend.rs"]
