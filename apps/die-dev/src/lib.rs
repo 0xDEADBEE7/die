@@ -34,7 +34,8 @@ pub struct Args {
     pub launch: Launch,
 }
 
-/// `die [--check a,b] [--handover socket] [--restart-after-frame] [--frontmost] [--] [file...]`.
+/// `die [--check a,b] [--handover socket] [--restart-after-frame] [--restart-loop] [--frontmost]
+/// [--] [file...]`.
 pub fn parse_args(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Args, String> {
     let mut parsed = Args {
         check: None,
@@ -65,6 +66,8 @@ pub fn parse_args(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result
             parsed.launch.restart_after_frame = true;
         } else if !only_files && name == "--frontmost" {
             parsed.launch.frontmost = true;
+        } else if !only_files && name == "--restart-loop" {
+            parsed.launch.restart_loop = true;
         } else if !only_files && name.starts_with('-') && name != "-" {
             return Err(format!("no option {name}"));
         } else {
