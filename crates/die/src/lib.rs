@@ -11,7 +11,7 @@ pub use die_core as core;
 pub use die_render as render;
 pub use die_vim as vim;
 
-use die_core::{Args, BufferId, Clock, Ctx, Error, Extension, ShowIn, State, StatusTextFn};
+use die_core::{Clock, Ctx, Extension, ShowIn, State, StatusTextFn};
 use die_render::driver::Config as Font;
 use die_render::{check, driver, window};
 use die_vim::Vim;
@@ -84,7 +84,8 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
     core.clock = Clock::real();
     let register = core.register.take();
     core.register = Some(Box::new(move |reg| {
-        reg.command("quit", "Quit DIE.", quit);
+        // Cmd-Q, in every state, since the DIE layer belongs to DIE (scope D18).
+        reg.command("quit", "Quit DIE.", |ctx, _| die_vim::quit_app(ctx, false));
         for state in [
             State::Normal,
             State::Insert,
@@ -128,23 +129,6 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         shown.map_err(|e| vec![e.to_string()])?;
     }
     Ok(ctx)
-}
-
-/// `quit`, which `:q` runs from the last window and Cmd-Q runs anywhere (scope D18). With no
-/// session to keep it, unsaved text in a file's buffer would be lost, so that's refused unless
-/// the args' text is `!`, as `:q!` has it.
-fn quit(ctx: &mut Ctx, a: &Args) -> die_core::Result {
-    if a.text.as_deref() != Some("!") && !ctx.session_keeps_unsaved() {
-        let unsaved =
-            |b: BufferId| ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified());
-        if let Some(b) = ctx.buffer_list().into_iter().find(|&b| unsaved(b)) {
-            let name = ctx.buffer_name(b).unwrap_or("A buffer");
-            let why = format!("{name} has unsaved changes: `:w` it, or `:q!` to quit anyway");
-            return Err(Error::Msg(why));
-        }
-    }
-    ctx.request_quit();
-    Ok(())
 }
 
 /// Run DIE until its window closes. The window opens without taking focus. The exit code:

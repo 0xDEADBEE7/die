@@ -260,23 +260,6 @@ fn colon_q_in_the_last_window_and_cmd_q_ask_the_loop_to_stop() {
         let mut ctx = start(Config::default()).unwrap();
         ctx.type_keys(keys);
         ctx.step();
-        assert!(ctx.quit_requested(), "{keys}: {:?}", ctx.messages);
+        assert!(ctx.quit_wanted(), "{keys}: {:?}", ctx.messages);
     }
-}
-
-#[test]
-fn quit_refuses_unsaved_text_only_a_session_would_keep_until_colon_q_bang() {
-    let dir = Dir::new("quit");
-    let config = Config {
-        files: vec![dir.file("a.txt", "one\n")],
-        ..Config::default()
-    };
-    let mut ctx = start(config).unwrap();
-    ctx.type_keys("ix<Esc>:q<CR>");
-    ctx.step();
-    assert!(!ctx.quit_requested(), "{:?}", ctx.messages);
-    assert!(ctx.messages.last().unwrap().contains("unsaved"));
-    ctx.type_keys(":q!<CR>");
-    ctx.step();
-    assert!(ctx.quit_requested(), "{:?}", ctx.messages);
 }

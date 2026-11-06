@@ -37,10 +37,11 @@ impl Pattern {
         })
     }
 
-    /// A literal pattern for `*` and `#`: `text` matches only where the characters on either
-    /// side aren't word characters by `is_word` (Evil's in fundamental-mode: alphanumerics, not
-    /// `_`, so `foo` matches inside `foo_bar` but not `foobar`). Rust's `\b` can't say this,
-    /// since its word characters include `_`. Errors: `BadPattern`.
+    /// A literal pattern for `*` and `#`: `text` matches only where its first and last characters
+    /// are word characters by `is_word` and those on either side aren't, as with Emacs's `\\<`
+    /// and `\\>` (Evil's in fundamental-mode: alphanumerics, not `_`, so `foo` matches inside
+    /// `foo_bar` but not `foobar`, and `++` matches nowhere). Rust's `\b` can't say this, since
+    /// its word characters include `_`. Errors: `BadPattern`.
     pub fn word(text: &str, ignore_case: bool, is_word: fn(char) -> bool) -> Result<Pattern> {
         Ok(Pattern {
             is_word: Some(is_word),
@@ -59,10 +60,14 @@ impl Pattern {
         &self.src
     }
 
-    /// Whether a match counts: for a `word` pattern, its neighbours aren't word characters.
+    /// Whether a match counts: for a `word` pattern, as with Emacs's `\\<` and `\\>`, a word
+    /// starts and ends there, so its ends are word characters and its neighbours aren't.
     fn stands_alone(&self, text: &str, m: &Range<usize>) -> bool {
         self.is_word.is_none_or(|is_word| {
+            let inside = &text[m.clone()];
             !text[..m.start].chars().next_back().is_some_and(is_word)
+                && inside.chars().next().is_some_and(is_word)
+                && inside.chars().next_back().is_some_and(is_word)
                 && !text[m.end..].chars().next().is_some_and(is_word)
         })
     }
@@ -208,6 +213,17 @@ impl TextBuf {
         })
     }
 
+    /// Whether a search going `dir` would stay at `pos` on an empty match, which `search`
+    /// steps past. Going forward that's the longest match from `pos`. Going backward a match
+    /// has to end by `pos`, as in Emacs, so `x*` is empty there even with an `x` after it.
+    pub fn empty_match_at(&self, pat: &Pattern, pos: usize, dir: Dir) -> bool {
+        let text = self.flat();
+        let pos = pos.min(text.len());
+        let end = if dir == Dir::Forward { text.len() } else { pos };
+        let at = Input::new(&*text).range(pos..end).anchored(Anchored::Yes);
+        pat.re.search(&at).is_some_and(|m| m.is_empty())
+    }
+
     /// Every match that overlaps `range`, in order and without overlaps, for highlighting.
     /// Matching sees only the lines `range` touches, as Emacs's lazy highlighting stops at
     /// the window's end: a match that starts before `range` on its first line is found, but
@@ -222,6 +238,44 @@ impl TextBuf {
             }
             if m.end > range.start || (m.is_empty() && m.start >= range.start) {
                 out.push(m);
+            }
+        }
+        out
+    }
+
+    /// What `:s` changes in the whole lines `lines`: each match and its replacement, in order and
+    /// without overlaps. With `global` that's every match, otherwise the first of each line. `$1`,
+    /// `${1}`, `$name`, `$0` and `$$` in `template` expand as in Rust's regex crate. An empty match
+    /// at `lines.end` belongs to the next line, so it doesn't count unless `lines` is empty.
+    pub fn substitutions(
+        &self,
+        pat: &Pattern,
+        lines: Range<usize>,
+        template: &str,
+        global: bool,
+    ) -> Vec<(Range<usize>, String)> {
+        let text = self.flat();
+        let text = &*text;
+        let mut out = vec![];
+        let mut next_line = lines.start;
+        let input = Input::new(text).range(lines.clone());
+        for caps in pat.re.captures_iter(input) {
+            let Some(m) = caps.get_match().map(|m| m.range()) else {
+                continue;
+            };
+            if m.start == lines.end && !lines.is_empty() {
+                break;
+            }
+            if m.start < next_line || !pat.stands_alone(text, &m) {
+                continue;
+            }
+            out.push((m.clone(), caps.interpolate_string(text, template)));
+            if !global {
+                next_line = if text[m.clone()].ends_with('\n') {
+                    m.end
+                } else {
+                    self.line_start(self.line_of(m.end) + 1)
+                };
             }
         }
         out

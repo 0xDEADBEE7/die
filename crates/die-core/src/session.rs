@@ -660,14 +660,9 @@ impl Ctx {
         self.note_session_outcomes();
     }
 
-    /// Whether quitting now keeps unsaved text, because this instance writes a session.
-    pub fn session_keeps_unsaved(&self) -> bool {
-        self.session.as_ref().is_some_and(|s| s.writing)
-    }
-
     /// At quit: the session as it stands, unless this instance isn't the one writing.
     pub(crate) fn save_session_at_quit(&mut self) {
-        if !self.session_keeps_unsaved() {
+        if !self.session.as_ref().is_some_and(|s| s.writing) {
             return;
         }
         if let Err(e) = self.save_session() {

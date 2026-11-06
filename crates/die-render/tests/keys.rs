@@ -483,7 +483,7 @@ mod matrix {
             }
         }
         FAILED.store(code != 0, Ordering::SeqCst);
-        if r.call(|s, _| s.ctx().request_quit()).is_err() {
+        if r.call(|s, _| s.ctx().quit()).is_err() {
             return 1;
         }
         sleep(Duration::from_secs(10));
