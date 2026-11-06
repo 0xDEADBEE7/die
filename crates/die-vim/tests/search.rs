@@ -112,7 +112,11 @@ fn a_huge_count_goes_round_once_and_lands_where_counting_would() {
 fn colon_takes_a_line_number_only_when_it_is_all_digits() {
     let (mut h, b, w) = editor("1\n2\n3\n4\n5\n6\n7\n8\n");
     assert!(typed(&mut h, ":2<CR>").is_empty());
-    assert_eq!(typed(&mut h, ":+5<CR>").len(), 1, "an error until V5's ranges");
+    assert_eq!(
+        typed(&mut h, ":+5<CR>").len(),
+        1,
+        "an error until V5's ranges"
+    );
     assert_eq!(cursor(&h, b, w), 2);
 }
 
