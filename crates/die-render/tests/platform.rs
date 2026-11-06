@@ -376,7 +376,10 @@ fn a_round_trip_keeps_text_and_kind() {
 #[test]
 #[ignore = "the other app in an_outside_copy_is_detected"]
 fn other_app() {
-    let name = std::env::var("DIE_TEST_PASTEBOARD").unwrap();
+    // --include-ignored runs this alone too, with no pasteboard to write to.
+    let Ok(name) = std::env::var("DIE_TEST_PASTEBOARD") else {
+        return;
+    };
     let board = NSPasteboard::pasteboardWithName(&NSString::from_str(&name));
     board.clearContents();
     let text_type = NSString::from_str("public.utf8-plain-text");
