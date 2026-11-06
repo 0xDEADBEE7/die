@@ -139,10 +139,32 @@ fn ask_for_file(ctx: &mut Ctx, dir: PathBuf, home: Option<PathBuf>, line: &str) 
             ask_for_file(ctx, dir, home, &format!("{answer}{slash}"));
             return Ok(());
         }
-        let file = ctx.open_file(&path)?;
-        ctx.show(file, ShowIn::Current)?;
+        let Some(missing) = path.parent().filter(|d| !d.exists()).map(Path::to_path_buf) else {
+            return open_in_window(ctx, &path);
+        };
+        // Emacs asks when saving, and a save can't ask yet, so this asks before opening.
+        let label = format!(
+            "Directory {} doesn't exist; create? (y or n) ",
+            missing.display()
+        );
+        ctx.prompt(PromptSpec::new(&label), move |ctx, answer| {
+            let Some(answer) = answer else {
+                return Ok(());
+            };
+            if matches!(answer.as_str(), "y" | "yes") {
+                std::fs::create_dir_all(&missing)
+                    .map_err(|e| Error::Msg(format!("{}: {e}", missing.display())))?;
+            }
+            open_in_window(ctx, &path)
+        });
         Ok(())
     });
+}
+
+fn open_in_window(ctx: &mut Ctx, path: &Path) -> crate::error::Result {
+    let file = ctx.open_file(path)?;
+    ctx.show(file, ShowIn::Current)?;
+    Ok(())
 }
 
 /// The prompt's starting line for a directory: ending in `/`, and with `~` for the home directory
