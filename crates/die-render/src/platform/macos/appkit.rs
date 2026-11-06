@@ -5,19 +5,21 @@ use super::metal::{Pipeline, TARGET_FORMAT};
 use block2::RcBlock;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_app_kit::{
     NSApplication, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSRunningApplication,
     NSView, NSWindow, NSWindowOcclusionState,
 };
 use objc2_core_foundation::CGSize;
-use objc2_foundation::{NSDictionary, NSNumber, NSString, NSUserDefaults};
-use objc2_quartz_core::CAMetalLayer;
+use objc2_foundation::{NSDictionary, NSNumber, NSPoint, NSString, NSUserDefaults};
+use objc2_metal::{MTLDrawable, MTLDrawablePresentedHandler};
+use objc2_quartz_core::{CACurrentMediaTime, CAMetalDrawable, CAMetalLayer};
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::{NonNull, null_mut};
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopBuilder;
 use winit::platform::macos::{
     ActivationPolicy, EventLoopBuilderExtMacOS, OptionAsAlt, WindowAttributesExtMacOS,
@@ -74,6 +76,37 @@ pub fn double_click_interval() -> Duration {
         .unwrap_or(Duration::from_millis(500))
 }
 
+/// The moment this host time was, on the clock an event's timestamp and a drawable's
+/// presented time both use.
+fn instant_at(host_time: f64) -> Instant {
+    let age = Duration::try_from_secs_f64(CACurrentMediaTime() - host_time).unwrap_or_default();
+    let now = Instant::now();
+    now.checked_sub(age).unwrap_or(now)
+}
+
+/// Post a key to this app's own event queue, timestamped now, as a key from the OS would be.
+/// Nothing leaves the process. A check does this, through `KeyMonitor::deliver_to`.
+pub fn post_key(vk: u16, c: char, down: bool) -> Result<(), String> {
+    let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
+    let kind = [NSEventType::KeyUp, NSEventType::KeyDown][usize::from(down)];
+    let text = NSString::from_str(&c.to_string());
+    let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+        kind,
+        NSPoint::new(0.0, 0.0),
+        NSEventModifierFlags(0),
+        CACurrentMediaTime(),
+        0,
+        None,
+        &text,
+        &text,
+        false,
+        vk,
+    )
+    .ok_or("AppKit made no event")?;
+    NSApplication::sharedApplication(mtm).postEvent_atStart(&event, false);
+    Ok(())
+}
+
 /// What AppKit treats as a key equivalent and beeps at, never reaching the view: Ctrl-/ and
 /// Ctrl-Return, with no Option or Cmd (winit #4093).
 fn trapped(code: u16, flags: NSEventModifierFlags) -> bool {
@@ -91,6 +124,8 @@ struct Seen {
     panics: Cell<u64>,
     on_caps: RefCell<Box<dyn Fn()>>,
     deliver_to: RefCell<Option<Retained<NSWindow>>>,
+    /// When the last key press happened, by the event's own timestamp.
+    key_at: Cell<Option<Instant>>,
 }
 
 impl Seen {
@@ -105,6 +140,9 @@ impl Seen {
             (self.on_caps.borrow())();
         }
         let is_key = matches!(kind, NSEventType::KeyDown | NSEventType::KeyUp);
+        if kind == NSEventType::KeyDown && e.timestamp() > 0.0 {
+            self.key_at.set(Some(instant_at(e.timestamp())));
+        }
         let trap = is_key && trapped(code, flags);
         let chosen = self.deliver_to.borrow().clone();
         if let Some(window) = &chosen
@@ -151,6 +189,7 @@ impl KeyMonitor {
             panics: Cell::new(0),
             on_caps: RefCell::new(Box::new(on_caps)),
             deliver_to: RefCell::new(None),
+            key_at: Cell::new(None),
         });
         let shared = seen.clone();
         let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
@@ -188,6 +227,11 @@ impl KeyMonitor {
         self.seen.panics.get()
     }
 
+    /// When the key press it saw last happened, if it hasn't been asked since.
+    pub fn take_key_at(&self) -> Option<Instant> {
+        self.seen.key_at.take()
+    }
+
     /// Run this when Caps Lock changes, rather than what it ran before.
     pub fn set_on_caps(&self, on_caps: impl Fn() + 'static) {
         *self.seen.on_caps.borrow_mut() = Box::new(on_caps);
@@ -209,6 +253,9 @@ impl Drop for KeyMonitor {
     }
 }
 
+/// A present, and when it reached the screen, or None if it never did.
+type Shown = (u64, Option<Instant>);
+
 /// A window's view and the layer DIE draws on, which DIE owns, with its scale and size.
 pub struct Surface {
     view: Retained<NSView>,
@@ -218,6 +265,12 @@ pub struct Surface {
     pub(super) read_next: Cell<bool>,
     /// Whether its drawables can be read: they aren't framebuffer-only.
     readable: bool,
+    /// How many presents it has had.
+    presents: Cell<u64>,
+    /// Whether to note when each present reached the screen.
+    watching: Cell<bool>,
+    /// Each watched present and when it reached the screen, or None if it never did.
+    presented: Arc<Mutex<Vec<Shown>>>,
 }
 
 impl Surface {
@@ -249,7 +302,41 @@ impl Surface {
             layer,
             read_next: Cell::new(false),
             readable,
+            presents: Cell::new(0),
+            watching: Cell::new(false),
+            presented: Arc::default(),
         })
+    }
+
+    /// From now on, note when each present reaches the screen.
+    pub fn watch_presents(&self) {
+        self.watching.set(true);
+    }
+
+    /// The presents that have reached the screen, or been dropped, since the last call.
+    pub fn take_presented(&self) -> Vec<Shown> {
+        std::mem::take(&mut *self.presented.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Count a present of `drawable`, watching it if asked to. Its id.
+    pub(super) fn next_present(&self, drawable: &ProtocolObject<dyn CAMetalDrawable>) -> u64 {
+        let id = self.presents.get() + 1;
+        self.presents.set(id);
+        if self.watching.get() {
+            let presented = self.presented.clone();
+            let block = RcBlock::new(move |shown: NonNull<ProtocolObject<dyn MTLDrawable>>| {
+                // SAFETY: Metal passes the live drawable for the length of this call.
+                let time = unsafe { shown.as_ref() }.presentedTime();
+                let at = (time > 0.0).then(|| instant_at(time));
+                let shown = presented.lock();
+                shown.unwrap_or_else(|e| e.into_inner()).push((id, at));
+            });
+            let handler: MTLDrawablePresentedHandler = RcBlock::as_ptr(&block);
+            // SAFETY: the pointer is to a live block of the type the method says, and Metal
+            // copies it. Metal may call it on any thread, and all it holds is `Send`.
+            unsafe { drawable.addPresentedHandler(handler) };
+        }
+        id
     }
 
     /// Read the next frame back, which costs tens of ms. On a surface attached without

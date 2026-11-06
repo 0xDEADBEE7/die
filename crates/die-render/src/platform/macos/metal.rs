@@ -23,6 +23,7 @@ use objc2_metal::{
 use objc2_quartz_core::{CAMetalDrawable, CATransaction};
 use std::mem::size_of_val;
 use std::ptr::NonNull;
+use std::time::Instant;
 
 /// The pipeline's shader. `Quad` here must match `frame::Quad`, field for field, which
 /// `Gpu::instance_layout` lets a test check against the compiled shader.
@@ -308,10 +309,12 @@ impl Pipeline {
         surface: &Surface,
         sync: bool,
     ) -> Result<Option<Presented>, String> {
+        let start = Instant::now();
         self.fill_instances(quads)?;
         let Some(drawable) = surface.layer.nextDrawable() else {
             return Ok(None);
         };
+        let id = surface.next_present(&drawable);
         let target = drawable.texture();
         let (w, h) = (target.width() as u32, target.height() as u32);
         let commands = self.encode(quads, clear, &target, (w, h))?;
@@ -321,13 +324,21 @@ impl Pipeline {
             commands.presentDrawable(show);
         }
         commands.commit();
+        let cpu_ms = start.elapsed().as_secs_f64() * 1e3;
         finish(&commands)?;
         if sync {
             show.present();
             CATransaction::flush();
         }
         let image = surface.read_next.take().then(|| read_back(&target, w, h));
-        Ok(Some(Presented { w, h, image }))
+        Ok(Some(Presented {
+            w,
+            h,
+            image,
+            id,
+            cpu_ms,
+            gpu_ms: (commands.GPUEndTime() - commands.GPUStartTime()) * 1e3,
+        }))
     }
 
     /// Encode the frame's draw on `target`: its commands, not yet committed. The instance

@@ -5,6 +5,7 @@ use die_test_cap as _;
 
 use die_core::{Clock, Config, Ctx, Key, KeyEvent, Result, Scene};
 use die_render::font::{CellMetrics, FaceMetrics};
+use die_render::latency::Latency;
 use die_render::window::{Host, Sleep, TURN_LIMIT, grid, holds_frame, sleep_for};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -185,4 +186,29 @@ fn occlusion_holds_back_every_frame_but_the_first() {
         !holds_frame(false, 1, true),
         "with the guard off, nothing's held"
     );
+}
+
+#[test]
+fn the_latency_log_has_a_line_for_each_stage_and_key_and_says_if_it_cannot_open() {
+    let dir = std::env::temp_dir().join(format!("die-latency-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("log");
+    let mut log = Latency::open(&path).unwrap();
+    assert!(log.logging());
+    log.stage("window");
+    log.key(1, ms(1), 0.5, 0.25);
+    log.key(2, ms(2), 0.5, 0.25);
+    log.shown(vec![(2, None)]);
+    log.flush();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert!(lines[0].starts_with("startup stage=window ms="), "{text}");
+    let key = "to_shown_ms=none cpu_ms=0.50 gpu_ms=0.25";
+    assert_eq!(lines[1], format!("key to_frame_ms=2.00 {key}"), "{text}");
+    assert_eq!(lines[2], format!("key to_frame_ms=1.00 {key}"), "{text}");
+
+    let err = Latency::open(&dir.join("no/such/dir")).err().unwrap();
+    assert!(err.contains("DIE_LATENCY_LOG"), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
 }
