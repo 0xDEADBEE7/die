@@ -142,7 +142,10 @@ fn previous_line(s: &Start) -> Result<Target, Fail> {
 /// does move it, onto the newline, and normal state puts it back.
 fn vertical(s: &Start, dir: Dir, err: Fail) -> Result<Target, Fail> {
     let t = s.text;
-    let goal = s.goal.unwrap_or(Goal::Col(t.display_col(s.pos)));
+    let goal = match s.goal {
+        Some(Goal::Row(_)) | None => Goal::Col(t.display_col(s.pos)),
+        Some(g) => g,
+    };
     let mut line = t.line_of(s.pos);
     let mut moved = false;
     for _ in 0..s.n() {
@@ -164,23 +167,17 @@ fn vertical(s: &Start, dir: Dir, err: Fail) -> Result<Target, Fail> {
 /// The position on `line` at the goal column, which may be its newline.
 pub fn goal_pos(t: &TextBuf, line: usize, goal: Goal) -> usize {
     match goal {
-        Goal::Col(col) => pos_at_col(t, line, col),
+        Goal::Col(col) | Goal::Row(col) => pos_at_col(t, line, col),
         Goal::Eol => line_end(t, line),
     }
 }
 
-/// Where a cursor lands on a window's row, keeping the goal column, as Evil's scrolling and
-/// `H M L` do. The column is the line's, so on a wrapped line it may not be on this row, and
-/// then the row's nearest stop does: the cursor stays where the window shows it. The empty row
-/// after a final newline takes the cursor to the last line (scope §10).
+/// Where a cursor sent to a window's row lands, as Evil's scrolling and `H M L` do: on that row's
+/// line at the goal column. The column is the line's, so on a wrapped line it may be on another
+/// row, even one out of view. The empty row after a final newline takes the cursor to the last
+/// line (scope §10).
 pub fn row_pos(t: &TextBuf, row: &ViewRow, goal: Goal) -> usize {
-    if t.line_of(row.dline_start) > last_line(t) {
-        return goal_pos(t, last_line(t), goal);
-    }
-    let want = Goal::encode(Some(goal)).unwrap_or(0);
-    let stops = row.stops();
-    let stop = stops.iter().rfind(|st| st.vcol <= want).or(stops.first());
-    stop.map_or(row.dline_start, |st| st.pos)
+    goal_pos(t, t.line_of(row.dline_start).min(last_line(t)), goal)
 }
 
 /// The goal a motion or a scroll keeps: the one in force, or the cursor's column.
@@ -201,22 +198,38 @@ fn window_row(s: &Start, which: fn(usize, usize) -> usize) -> Result<Target, Fai
 }
 
 /// `gj` and `gk`: by screen row, keeping the column on the row. They go as far as they can and
-/// signal if that's short of the count. The empty row after a final newline isn't one to land
-/// on (scope §10).
+/// signal only if the cursor didn't move. The empty row after a final newline isn't one to land
+/// on (scope §10). After `$` they keep to each row's end, one short of its last stop as
+/// `evil-end-of-visual-line` stops, and that path never signals.
 fn visual_line(s: &Start, dy: isize, err: Fail) -> Result<Target, Fail> {
     let t = s.text;
-    let mut goal = Goal::encode(s.goal);
-    let mut pos = s.pos;
+    let mut goal = match s.goal {
+        Some(Goal::Row(c)) => Some(c),
+        Some(Goal::Eol) => Some(usize::MAX),
+        Some(Goal::Col(_)) | None => None,
+    };
+    let (mut from, mut pos) = (s.pos, s.pos);
     for _ in 0..s.n() {
         let (q, g) = t.move_visual(s.window, pos, dy, goal).ok_or("No window")?;
         goal = Some(g);
         if q == pos || t.line_of(q) > last_line(t) {
-            return Ok(Target::short(pos, err));
+            break;
         }
-        pos = q;
+        (from, pos) = (pos, q);
+    }
+    let eol = goal == Some(usize::MAX);
+    if pos == s.pos && !eol {
+        return Ok(Target::short(pos, err));
+    }
+    if eol && pos != s.pos {
+        let (_, col) = t.move_visual(s.window, pos, 0, None).ok_or("No window")?;
+        let short = Some(col.saturating_sub(1));
+        (pos, _) = t
+            .move_visual(s.window, from, dy, short)
+            .ok_or("No window")?;
     }
     Ok(Target {
-        goal: Goal::decode(goal),
+        goal: goal.map(|g| if eol { Goal::Eol } else { Goal::Row(g) }),
         ..Target::at(pos)
     })
 }

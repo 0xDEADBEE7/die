@@ -5,7 +5,7 @@
 use crate::grammar::{Fail, Goal, Kind, Target, buffer_window, forget_goal, run_motion};
 use crate::motions::{goal_at, goal_pos, row_pos};
 use crate::text::{last_line, line_end};
-use die_core::{Args, Ctx, Error, Result, Selection, TextBuf, WindowId};
+use die_core::{Args, Ctx, Error, Result, Selection, TextBuf, ViewRow, WindowId};
 
 /// `next-screen-context-lines`: the rows a page keeps from the page before.
 const PAGE_OVERLAP: usize = 2;
@@ -66,25 +66,36 @@ fn scroll_down(t: &mut TextBuf, w: WindowId, n: usize) -> usize {
     moved
 }
 
-/// A cursor the view left behind comes to the row it left by.
-fn pushed(t: &TextBuf, w: WindowId, head: usize, goal: Goal) -> usize {
-    if t.screen_pos(w, head).is_some() {
-        return head;
-    }
-    let Some(v) = t.viewport(w) else { return head };
+/// The row a cursor the view left behind comes to: the one it left by.
+fn pushed_row(t: &TextBuf, w: WindowId, head: usize) -> Option<ViewRow> {
+    let mut v = t.viewport(w)?;
     // `v.top` is the display line's start, which a wrapped line's later rows share.
     let first = v.rows.first().and_then(|r| r.stops().first());
-    let row = if first.is_some_and(|st| head < st.pos) {
-        v.rows.first()
+    if first.is_some_and(|st| head < st.pos) {
+        v.rows.into_iter().next()
     } else {
-        v.rows.last()
-    };
-    row.map_or(head, |r| row_pos(t, r, goal))
+        v.rows.pop()
+    }
+}
+
+/// Where a scrolled view leaves a cursor. A scroll fixes the window's start, so a goal column out
+/// of view doesn't bring the view back: your Emacs's redisplay puts the cursor at the start of the
+/// row just above the window's middle, and the goal stays for the next vertical motion.
+fn in_view(t: &TextBuf, w: WindowId, pos: usize) -> usize {
+    if t.screen_pos(w, pos).is_some() {
+        return pos;
+    }
+    let Some(v) = t.viewport(w) else { return pos };
+    let row = v.geometry.rows / 2;
+    let row = v.rows.get(row.saturating_sub(1)).or(v.rows.last());
+    let stop = row.and_then(|r| r.stops().first());
+    stop.map_or(pos, |st| st.pos.min(line_end(t, last_line(t))))
 }
 
 /// `C-d`: the window and the cursor go down half a window, or count rows. A count doesn't stick.
-/// With the text's end in view only the cursor moves, and once the scroll brings the end into
-/// view the end goes to the window's bottom.
+/// With the text's end in view only the cursor moves, and once the scroll brings the end within
+/// a row of the window, the end goes to the window's bottom. That counts the empty row after a
+/// final newline, as Evil's check does.
 pub fn half_down(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, w, sel, rows) = view(ctx, a)?;
     let t = ctx.text_mut(b)?;
@@ -107,10 +118,15 @@ pub fn half_down(ctx: &mut Ctx, a: &Args) -> Result {
         let target = row
             .or(v.rows.last())
             .map_or(sel.head, |r| row_pos(t, r, goal));
+        let below = v.rows.len() == rows
+            && last_line(t) + 1 < t.line_count()
+            && t.screen_pos(w, line_end(t, last_line(t))).is_some();
         if let Some(short) = rows.checked_sub(v.rows.len()).filter(|&s| s > 0) {
             t.scroll_rows(w, -isize::try_from(short).unwrap_or(0));
+        } else if below {
+            t.scroll_rows(w, 1);
         }
-        target
+        in_view(t, w, target)
     };
     land(ctx, a, target, Some(goal))
 }
@@ -148,13 +164,22 @@ pub fn page(ctx: &mut Ctx, a: &Args, down: bool) -> Result {
         end = Some(goal_pos(t, line, goal));
         break;
     }
-    let target = end.unwrap_or_else(|| pushed(t, w, sel.head, goal));
+    let target = end.unwrap_or_else(|| {
+        let to = if t.screen_pos(w, sel.head).is_some() {
+            goal_pos(t, t.line_of(sel.head), goal)
+        } else {
+            pushed_row(t, w, sel.head).map_or(sel.head, |r| row_pos(t, &r, goal))
+        };
+        in_view(t, w, to)
+    });
     land(ctx, a, target, Some(goal))
 }
 
-/// `C-e` and `C-y`: count rows, the cursor staying unless the view leaves it behind. Failing at
-/// the text's end or start, they forget the goal column, as any command but a vertical motion
-/// does.
+/// `C-e` and `C-y`: count rows, the cursor staying unless the view leaves it behind, and then at
+/// the start of the row it left by: unlike the other scrolling commands they don't restore the
+/// column. A `C-e` count that goes past the text's end doesn't scroll at all, and a `C-y` count
+/// scrolls as far as it can. Failing, they forget the goal column, as any command but a vertical
+/// motion does.
 pub fn rows(ctx: &mut Ctx, a: &Args, down: bool) -> Result {
     let (b, w, sel, _) = view(ctx, a)?;
     let t = ctx.text_mut(b)?;
@@ -165,7 +190,10 @@ pub fn rows(ctx: &mut Ctx, a: &Args, down: bool) -> Result {
         t.scroll_rows(w, -isize::try_from(n).unwrap_or(isize::MAX))
             .unwrap_or(0)
     };
-    if moved == 0 {
+    if down && moved < n {
+        t.scroll_rows(w, -isize::try_from(moved).unwrap_or(0));
+    }
+    if moved == 0 || down && moved < n {
         let e = if down {
             "End of buffer"
         } else {
@@ -173,8 +201,12 @@ pub fn rows(ctx: &mut Ctx, a: &Args, down: bool) -> Result {
         };
         return fail(t, w, e);
     }
-    let goal = goal_at(Goal::decode(sel.goal), t, sel.head);
-    let target = pushed(t, w, sel.head, goal);
+    let target = if t.screen_pos(w, sel.head).is_some() {
+        sel.head
+    } else {
+        let first = pushed_row(t, w, sel.head).and_then(|r| r.stops().first().map(|st| st.pos));
+        first.unwrap_or(sel.head)
+    };
     land(ctx, a, target, None)
 }
 
