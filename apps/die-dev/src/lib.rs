@@ -99,6 +99,7 @@ fn bindings(reg: &mut Registry) {
     keys.bind(State::Normal, "<leader>z", "toggle-max-width");
     keys.bind(State::Normal, "<leader>x", "command-palette");
     keys.bind(State::Normal, "<leader>f", "find-file");
+    keys.bind(State::Normal, "<leader>]", "switch-buffer");
 }
 
 /// `global-visual-line-mode` and `visual-fill-column`, centered at 80.
