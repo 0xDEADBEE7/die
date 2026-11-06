@@ -17,5 +17,15 @@
   {"id": "count-slash", "vim": "search: Vim goes to the 2nd match; Evil ignores the count", "keys": "2/x<CR>", "text": ["|x a x b x"]},
   {"id": "empty-pattern-repeats", "vim": "search: Vim's empty / repeats the last pattern; Evil's does nothing", "keys": "/b<CR>/<CR>", "text": ["|a b c b"]},
   {"id": "v-slash-d", "keys": "v/c<CR>d", "text": ["|ab cd"]},
-  {"id": "search-next-line", "keys": "/two<CR>", "text": ["|one", "two"]}
+  {"id": "search-next-line", "keys": "/two<CR>", "text": ["|one", "two"]},
+  {"id": "star-punctuation", "keys": "*", "text": ["a |++ b ++ c"]},
+  {"id": "star-punctuation-n", "keys": "*n", "text": ["a |++ b ++ c"]},
+  {"id": "d-star-punctuation", "keys": "d*", "text": ["a |++ b ++ c"]},
+  {"id": "slash-empty-at-point", "keys": "/x*<CR>", "text": ["|abc"]},
+  {"id": "slash-caret-n", "keys": "/^<CR>n", "text": ["|ab", "cd"]},
+  {"id": "slash-caret-to-last-line", "keys": "/^<CR>nnn", "text": ["|ab", "cd"]},
+  {"id": "question-empty-n-stays", "keys": "?^<CR>n", "text": ["ab", "|cd"]},
+  {"id": "d-slash-empty-at-point", "keys": "d/x*<CR>", "text": ["a|bc"]},
+  {"id": "v-slash-last-line-d", "keys": "v/^$<CR>d", "text": ["a|b", "cd"]},
+  {"id": "slash-dollar-stays", "keys": "/$<CR>", "text": ["a|b", "cd"]}
  ]}
