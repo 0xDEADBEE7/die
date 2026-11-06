@@ -73,6 +73,8 @@ pub fn run(ctx: &mut Ctx, lines: Lines, rest: &str) -> Result {
         .sum();
     let last = changes.last().map_or(0, |(m, _)| m.end);
     let last = last.saturating_add_signed(moved);
+    // Where your Evil's `u` goes: the first replacement's end, as Emacs's undo chain leaves it.
+    t.set_cursor(w, rest_pos(t, changes.first().map_or(0, |(m, _)| m.end)));
     let tx = t.tx(Origin::User);
     let tx = changes
         .into_iter()

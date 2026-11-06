@@ -21,5 +21,9 @@
   {"id": "s-then-n-keeps-direction", "description": "n after :s finds its pattern, not the older one, the way the older search went.", "keys": "/baz<CR>gg:s/foo/x/<CR>n", "text": ["|foo baz", "foo", "baz", "foo"]},
   {"id": "s-empty-reuses-search", "keys": "/bar<CR>gg:s//x/<CR>", "text": ["|foo bar", "bar"]},
   {"id": "s-match-across-lines", "description": "Without g, a match holding a newline leaves the rest of its last line in play.", "keys": ":%s/a\\nb/X/<CR>", "text": ["|a", "b a", "b"]},
-  {"id": "visual-then-command", "description": "A command that takes no range runs from a selection.", "keys": "V:vsplit<CR>x", "text": ["|foo", "bar"]}
+  {"id": "visual-then-command", "description": "A command that takes no range runs from a selection.", "keys": "V:vsplit<CR>x", "text": ["|foo", "bar"]},
+  {"id": "at-colon-real-ex", "keys": ":s/a/b/<CR>j@:", "text": ["|a a", "a a", "c"]},
+  {"id": "count-at-colon", "keys": ":s/a/b/<CR>2@:", "text": ["|aaaa", "c"]},
+  {"id": "whole-file-s-then-undo", "keys": ":%s/a/b/g<CR>u", "text": ["|a a", "a a", "c"]},
+  {"id": "visual-s-then-undo", "keys": "V:s/a/b/<CR>u", "text": ["|xa a", "c"]}
  ]}
