@@ -22,7 +22,7 @@ pub struct Last {
     forward: bool,
 }
 
-const NONE_YET: &str = "No previous search";
+pub const NONE_YET: &str = "No previous search";
 
 /// Smartcase: a pattern with no capital in it ignores case. What follows a backslash isn't
 /// text, so `\S` has no capital.
@@ -119,6 +119,18 @@ fn remember(ctx: &mut Ctx, last: Last) -> Result {
 
 fn last(ctx: &mut Ctx) -> Result<Option<Last>> {
     Ok(ctx.with_ext(|v: &mut Vim, _| v.search.clone())?)
+}
+
+/// `:s` leaves its pattern for `n` and keeps the way searches go. Before any search that's
+/// backward, as `isearch-forward` starts out nil in your Evil.
+pub fn remember_pattern(ctx: &mut Ctx, pat: Pattern) -> Result {
+    let forward = last(ctx)?.is_some_and(|l| l.forward);
+    remember(ctx, Last { pat, forward })
+}
+
+/// What an empty `:s` pattern means.
+pub fn last_pattern(ctx: &mut Ctx) -> Result<Option<Pattern>> {
+    Ok(last(ctx)?.map(|l| l.pat))
 }
 
 /// Search, and show every match. A match in hidden text is revealed first, since a cursor

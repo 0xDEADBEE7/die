@@ -143,3 +143,64 @@ fn s_keeps_a_matchs_case_as_emacs_does_and_takes_any_delimiter() {
     assert!(keys(&mut h, ":s#bar#a/$$#<CR>").is_empty());
     assert_eq!(text(&h, b), "a/$ Bar BAR\n");
 }
+
+#[test]
+fn q_bang_at_the_last_window_leaves_the_changes_out_of_the_session() {
+    let dir = Dir::new("q-session");
+    let (mut h, path, _, _) = on_file(&dir, "a\n");
+    assert!(keys(&mut h, "idiscard me <Esc>:q!<CR>").is_empty());
+    assert!(h.quit_wanted());
+    let mut next = editor();
+    next.restore_session(&h.session_json()).unwrap();
+    let b = next.find_buffer("f.txt").unwrap();
+    assert_eq!(text(&next, b), "a\n");
+    assert!(!next.text(b).unwrap().modified());
+    assert_eq!(read(&path), "a\n");
+}
+
+#[test]
+fn q_bang_drops_the_text_of_a_file_that_isnt_there() {
+    let dir = Dir::new("q-new");
+    let (mut h, _, _, _) = on_file(&dir, "a\n");
+    assert!(keys(&mut h, ":e new.txt<CR>idiscard me<Esc>:q!<CR>").is_empty());
+    let mut next = editor();
+    next.restore_session(&h.session_json()).unwrap();
+    let b = next.find_buffer("new.txt").unwrap();
+    assert_eq!(text(&next, b), "");
+    assert!(!next.text(b).unwrap().modified());
+}
+
+#[test]
+fn wq_bang_forces_the_write_but_not_the_quit() {
+    let dir = Dir::new("wq-bang");
+    let (mut h, _, _, _) = on_file(&dir, "one\n");
+    std::fs::write(dir.0.join("c.txt"), "c\n").unwrap();
+    assert!(keys(&mut h, "ix<Esc>:e c.txt<CR>").is_empty());
+    let errors = keys(&mut h, ":wq!<CR>");
+    assert!(errors.iter().any(|e| e.contains("f.txt")), "{errors:?}");
+    assert!(!h.quit_wanted());
+}
+
+#[test]
+fn s_treats_the_end_of_text_with_no_final_newline_as_a_line() {
+    let mut h = editor();
+    let (b, _) = h.open_text("t", "abc").unwrap();
+    assert!(keys(&mut h, ":s/$/;/<CR>").is_empty());
+    assert_eq!(text(&h, b), "abc;");
+    let (b, _) = h.open_text("u", "a\nb").unwrap();
+    assert!(keys(&mut h, ":%s/$/;/<CR>").is_empty());
+    assert_eq!(text(&h, b), "a;\nb;");
+}
+
+/// `:'<,'>w` writes only the selected lines in Evil, so a whole-file write would be wrong.
+#[test]
+fn a_selections_range_is_refused_by_w_and_ignored_by_commands_that_take_none() {
+    let dir = Dir::new("range");
+    let (mut h, path, _, _) = on_file(&dir, "one\ntwo\n");
+    assert!(keys(&mut h, "ix<Esc>").is_empty());
+    assert_eq!(keys(&mut h, "V:w<CR>").len(), 1);
+    assert_eq!(read(&path), "one\ntwo\n");
+    assert!(keys(&mut h, "V:<CR>").is_empty());
+    assert!(keys(&mut h, ":%vsplit<CR>").is_empty());
+    assert_eq!(h.window_list().len(), 2);
+}

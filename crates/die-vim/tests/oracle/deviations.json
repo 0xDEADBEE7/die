@@ -104,7 +104,7 @@
       "s5_row": null,
       "kind": "regex-syntax",
       "evil": ":s/\\(foo\\) \\(bar\\)/\\2 \\1/ uses Emacs regex groups.",
-      "die_vim": "DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result. Replacements expand $N, ${N} and $name as regex-automata's interpolation does (the regex crate's rule): the longest name wins, so a group followed by a letter, digit or _ needs braces, ${1}x. $0 is the whole match and $$ a literal $; & and \\N are literal.",
+      "die_vim": "DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result. Replacements expand $N, ${N} and $name as regex-automata's interpolation does (the regex crate's rule): the longest name wins, so a group followed by a letter, digit or _ needs braces, ${1}x. $0 is the whole match and $$ a literal $; & and \\N are literal. \\n, \\t and \\\\ are a newline, a tab and a backslash, as in Evil.",
       "cases": [
         { "case": "ex/s-groups", "fixture": "hand-written/ex.json" },
         { "case": "ex/s-group-before-letter", "fixture": "hand-written/ex.json" }
