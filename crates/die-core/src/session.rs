@@ -697,9 +697,9 @@ impl Ctx {
         views: Vec<(BufferId, Vec<ViewRecord>)>,
     ) -> std::result::Result<bool, String> {
         let saved = |r: &WindowRecord| r.buffer.and_then(|i| ids.get(i).copied().flatten());
-        if !windows.iter().any(|r| r.messages || saved(r).is_some()) {
+        let Some(stand_in) = windows.iter().find_map(saved) else {
             return Ok(false);
-        }
+        };
         if !layout.valid(windows.len()) {
             return Err("they don't make a tree".into());
         }
@@ -708,9 +708,6 @@ impl Ctx {
             found.unwrap_or_else(|| self.create_messages())
         });
         let shows = |r: &WindowRecord| saved(r).or(log.filter(|_| r.messages));
-        let Some(stand_in) = windows.iter().find_map(shows) else {
-            return Ok(false);
-        };
         let old = self.tree.windows();
         let mut made = vec![];
         for r in windows {
