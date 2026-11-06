@@ -30,6 +30,11 @@ pub mod appkit {
         attributes
     }
 
+    /// There's no way to yet.
+    pub fn post_key(_: u16, _: char, _: bool) -> Result<(), String> {
+        Err("no way to post a key on this platform yet".into())
+    }
+
     /// There's no Option key.
     pub fn option_as_alt(_: &Window) -> bool {
         false
@@ -75,6 +80,11 @@ pub mod appkit {
         }
 
         /// Never runs.
+        pub fn take_key_at(&self) -> Option<std::time::Instant> {
+            match self.0 {}
+        }
+
+        /// Never runs.
         pub fn set_on_caps(&self, _: impl Fn() + 'static) {
             match self.0 {}
         }
@@ -111,6 +121,16 @@ pub mod appkit {
 
         /// Never runs.
         pub fn read_next_frame(&self) -> Result<(), String> {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        pub fn watch_presents(&self) {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        pub fn take_presented(&self) -> Vec<(u64, Option<std::time::Instant>)> {
             match self.0 {}
         }
 
