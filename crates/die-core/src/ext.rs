@@ -352,6 +352,8 @@ pub struct Ctx {
     /// What the last composed frame's cells showed.
     pub(crate) drawn: Drawn,
     pub(crate) pointer: crate::app::PointerState,
+    /// [`Ctx::set_insert_end`]'s rule.
+    pub(crate) insert_end: Option<fn(&TextBuf, WindowId, usize) -> usize>,
     /// `run_ready` hit its turn limit and has said so.
     pub(crate) over_limit: bool,
     pub(crate) files: crate::files::Files,
@@ -521,6 +523,7 @@ impl Ctx {
             input_ran: false,
             drawn: Drawn::default(),
             pointer: Default::default(),
+            insert_end: None,
             over_limit: false,
             files: Default::default(),
             messages: vec![],

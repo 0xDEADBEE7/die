@@ -105,12 +105,25 @@ pub(crate) struct PointerState {
     rest: Option<fn(&TextBuf, usize) -> usize>,
 }
 
+impl PointerState {
+    pub(crate) fn rest_rule(&self) -> Option<fn(&TextBuf, usize) -> usize> {
+        self.rest
+    }
+}
+
 impl Ctx {
     /// Say where the pointer may leave a cursor in normal state: `rule` takes a position in the
     /// text and gives the one to use. Which positions a cursor may rest on is the keymap's
     /// business (contract §9). With no rule, anywhere the scene maps a cell to.
     pub fn set_cursor_rest(&mut self, rule: fn(&TextBuf, usize) -> usize) {
         self.pointer.rest = Some(rule);
+    }
+
+    /// Say where a cursor goes when a buffer leaves insert state with no key to say so, as a
+    /// restored session does: `rule` takes a window's position in the text and gives the new one.
+    /// Like [`Ctx::set_cursor_rest`], this is the keymap's business. With no rule, it stays.
+    pub fn set_insert_end(&mut self, rule: fn(&TextBuf, WindowId, usize) -> usize) {
+        self.insert_end = Some(rule);
     }
 
     fn rested(&mut self, buf: BufferId, pos: usize) -> usize {
