@@ -21,7 +21,7 @@ pub fn reveal(ctx: &mut Ctx, a: &Args) {
     if t.screen_pos(w, head).is_some() {
         return;
     }
-    let Some(rows) = t.viewport(w).map(|v| v.geometry.rows) else {
+    let Some(rows) = t.geometry(w).map(|g| g.rows) else {
         return;
     };
     if let Ok(t) = ctx.text_mut(b) {
@@ -34,8 +34,8 @@ fn view(ctx: &mut Ctx, a: &Args) -> Result<(die_core::BufferId, WindowId, Select
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text(b)?;
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
-    let rows = t.viewport(w).ok_or(Error::Msg("no window".into()))?;
-    Ok((b, w, sel, rows.geometry.rows))
+    let rows = t.geometry(w).ok_or(Error::Msg("no window".into()))?;
+    Ok((b, w, sel, rows.rows))
 }
 
 /// Put the cursor at `pos`, in visual state moving the selection's head.

@@ -229,7 +229,8 @@ impl Ctx {
         if t.screen_pos(w, sel.head).is_some() {
             return;
         }
-        let row = if sel.head < v.top {
+        let first = v.rows.first().and_then(|r| r.stops().first());
+        let row = if first.is_some_and(|st| sel.head < st.pos) {
             v.rows.first()
         } else {
             v.rows.last()
@@ -249,7 +250,13 @@ impl Ctx {
     }
 
     fn run_pointer(&mut self, p: PointerEvent) {
-        let hit = self.cell_at(p.row, p.col);
+        let hit = self.cell_at(p.row, p.col).map(|hit| CellHit {
+            pos: hit.pos.or_else(|| {
+                let text = hit.part == WindowPart::Text;
+                self.nearest_pos(hit.window, p.row, p.col).filter(|_| text)
+            }),
+            ..hit
+        });
         match (p.kind, hit) {
             (PointerKind::Release(Button::Left), _) => self.pointer.pressed = None,
             (PointerKind::Scroll { dy, .. }, Some(hit)) => self.pointer_scroll(hit.window, dy),

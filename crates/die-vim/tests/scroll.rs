@@ -83,3 +83,20 @@ fn a_gj_count_that_moves_part_of_the_way_succeeds() {
     assert_eq!(t.line_of(t.cursor(w).unwrap()), 1);
     assert_eq!(errors(&mut ctx, "9gj").len(), 1);
 }
+
+#[test]
+fn a_digit_after_c_u_starts_the_count_again_as_in_emacs() {
+    let (mut ctx, b, w) = open(&lines(40));
+    let line = |ctx: &Harness| {
+        let t = ctx.text(b).unwrap();
+        t.line_of(t.cursor(w).unwrap())
+    };
+    errors(&mut ctx, "<C-u>3j");
+    assert_eq!(line(&ctx), 3);
+    errors(&mut ctx, "<C-u>12j");
+    assert_eq!(line(&ctx), 15);
+    errors(&mut ctx, "<C-u><C-u>j");
+    assert_eq!(line(&ctx), 31);
+    errors(&mut ctx, "gg<C-u>j2j");
+    assert_eq!(line(&ctx), 6, "the count ended with its motion");
+}

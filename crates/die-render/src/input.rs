@@ -5,7 +5,6 @@
 //! winit reports which side of a modifier is held only on macOS, so `Held` takes the sides
 //! from the modifier keys' own events, and winit's modifier state only corrects it, for a key
 //! released while another app had the keyboard (docs/records/platforms.md).
-#![warn(missing_docs)]
 
 use crate::font::CellMetrics;
 use die_core::{Button, Key, KeyEvent, KeyKind, ModifierKey, Mods, PointerEvent, PointerKind};

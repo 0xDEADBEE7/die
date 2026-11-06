@@ -461,6 +461,10 @@ impl Ctx {
             return false;
         };
         self.input_ran = true;
+        let dropped = matches!(input, Input::Key(_) | Input::Pointer(_));
+        if dropped && self.handing_over && matches!(src, KeySource::Typed) {
+            return true;
+        }
         if let Input::Key(ev) = input {
             self.dispatch(ev, src);
             self.restart_idle();

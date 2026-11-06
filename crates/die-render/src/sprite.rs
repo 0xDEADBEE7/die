@@ -2,7 +2,6 @@
 //! Ghostty's do (scope §5.11): box drawing, blocks, braille and powerline, and the
 //! underlines and strike-through. Each is a cell-sized coverage bitmap, from the
 //! cell's size in pixels and nothing else, so its tests need no font and no GPU.
-#![warn(missing_docs)]
 
 use die_core::Underline;
 use std::f32::consts::TAU;

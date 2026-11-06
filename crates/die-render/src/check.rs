@@ -7,7 +7,6 @@
 //! By S1's check: 1 is `typing`, 2 is `redraw`, 4 is `idle-60`, 5 is `occlusion-20`, 6 is
 //! `scale`, 7 is `resize` and 8 is `firstframe`. 9, fidelity, needs no window, and stays in
 //! die-render's `tests/fidelity.rs`, on the same renderer.
-#![warn(missing_docs)]
 
 use crate::driver;
 use crate::latency;

@@ -1043,9 +1043,11 @@ impl Ctx {
         self.messages.extend(line);
     }
 
-    /// The lock is held: writes may start. The first comes after the quiet time, whether or not
-    /// anything changed. Without a session this does nothing.
+    /// The lock is held: writes may start, and input counts again after a failed restart. The
+    /// first write comes after the quiet time, whether or not anything changed. Without a session
+    /// this only does the second.
     pub fn resume_session(&mut self) {
+        self.handing_over = false;
         if let Some(s) = &mut self.session {
             s.writing = true;
             s.seen = None;
@@ -1071,10 +1073,12 @@ impl Ctx {
     }
 
     /// A restart is starting: write the session, and write no more until
-    /// [`Ctx::resume_session`] says the restart failed. If the write fails, nothing is paused and
-    /// the restart shouldn't go on.
+    /// [`Ctx::resume_session`] says the restart failed. Until then keys and clicks are dropped,
+    /// since the session already written can't hold them: the frame not changing shows they
+    /// didn't count. If the write fails, nothing is paused and the restart shouldn't go on.
     pub fn hand_over_session(&mut self) -> Result {
         self.save_session()?;
+        self.handing_over = true;
         if let Some(s) = &mut self.session {
             s.writing = false;
         }

@@ -1,6 +1,7 @@
 //! Your DIE config while DIE is being built, drafted from `~/.emacs.d/init.el`, which it
 //! only reads. Bindings grow with each checkpoint, as their commands land: `\f \] \/ \x`
 //! come with K6 and K11a.
+#![warn(missing_docs)]
 
 #[cfg(test)]
 use die_test_cap as _;
