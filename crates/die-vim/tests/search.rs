@@ -97,6 +97,30 @@ fn star_goes_by_die_vims_word_test_and_n_keeps_it() {
 }
 
 #[test]
+fn a_huge_count_goes_round_once_and_lands_where_counting_would() {
+    let (mut h, b, w) = editor("x a x b x\n");
+    typed(&mut h, "13/x<CR>");
+    assert_eq!(cursor(&h, b, w), 4, "4 rounds of 3 from the start, then 1");
+    let (mut h, b, w) = editor(&format!("{}zq\n", "a".repeat(200_000)));
+    let began = std::time::Instant::now();
+    assert!(typed(&mut h, "99999999/zq<CR>").is_empty());
+    assert_eq!(cursor(&h, b, w), 200_000);
+    assert!(began.elapsed().as_secs() < 10, "{:?}", began.elapsed());
+}
+
+#[test]
+fn colon_takes_a_line_number_only_when_it_is_all_digits() {
+    let (mut h, b, w) = editor("1\n2\n3\n4\n5\n6\n7\n8\n");
+    assert!(typed(&mut h, ":2<CR>").is_empty());
+    assert_eq!(
+        typed(&mut h, ":+5<CR>").len(),
+        1,
+        "an error until V5's ranges"
+    );
+    assert_eq!(cursor(&h, b, w), 2);
+}
+
+#[test]
 fn a_regex_is_rusts() {
     let (mut h, b, w) = editor("a foo b bar\n");
     typed(&mut h, "/(bar|baz)<CR>");
