@@ -234,7 +234,11 @@ fn sizes_change_by_count_and_stop_at_the_frame() {
     typed(&mut h, "<C-w><lt>");
     assert_eq!(cols(&h, left), was + 2);
     typed(&mut h, "9<C-w>|");
-    assert_eq!(cols(&h, left), 9, "the text is 9 wide, unlike a count on `C-w v`");
+    assert_eq!(
+        cols(&h, left),
+        9,
+        "the text is 9 wide, unlike a count on `C-w v`"
+    );
 
     let (mut h, _, w) = start("<C-w>+<C-w>>");
     typed(&mut h, "<C-w>_");
@@ -296,7 +300,10 @@ fn moving_exchanging_and_rotating_keep_each_windows_place_in_the_tiling() {
     typed(&mut h, "3<C-w>x");
     assert_eq!(h.window_list(), [right, lower, upper]);
     assert_eq!(h.focused(), Some(right));
-    assert_eq!((rows(&h, right), rows(&h, lower), rows(&h, upper)), (u, d, r));
+    assert_eq!(
+        (rows(&h, right), rows(&h, lower), rows(&h, upper)),
+        (u, d, r)
+    );
 
     // Two columns of two, where it does fit.
     let (mut h, _, _) = start("<C-w>v<C-w>s<C-w>l<C-w>s<C-w>h3<C-w>+");
