@@ -1251,16 +1251,17 @@ fn underlining_a_wide_character_covers_both_of_its_cells() {
 // The frame as a whole.
 
 #[test]
-fn the_pixels_around_the_grid_are_the_scene_background() {
+fn a_row_reaches_the_window_edge_and_below_the_grid_is_the_scene_background() {
     let Some(mut r) = term() else { return };
     let mut s = page(2, 1);
     s.background = BLUE;
     line(&mut s, 0, 0, "█");
-    let img = r.render(&s, 3 * CW, 2 * CH).unwrap();
-    assert_eq!((img.w, img.h), (3 * CW, 2 * CH));
+    let img = r.render(&s, 4 * CW, 2 * CH).unwrap();
+    assert_eq!((img.w, img.h), (4 * CW, 2 * CH));
     assert_eq!(img.rgb(5, 5), [255; 3], "the grid is at the top left");
+    assert_eq!(img.rgb(2 * CW + 5, 5), [0; 3], "less than a cell past it");
     assert_eq!(
-        img.rgb(3 * CW - 1, 5),
+        img.rgb(4 * CW - 1, 5),
         [BLUE.0, BLUE.1, BLUE.2],
         "right of it"
     );

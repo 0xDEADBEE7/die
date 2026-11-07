@@ -569,11 +569,12 @@ impl Block {
         let mut c = Chars::at(t, start);
         while c.pos() < end {
             let Some(ch) = c.ch() else { break };
-            let from = t.display_col(c.pos());
-            c.fwd();
             if ch == '\t' {
+                let from = t.display_col(c.pos());
+                c.fwd();
                 s.push_str(&" ".repeat(t.display_col(c.pos()).saturating_sub(from)));
             } else {
+                c.fwd();
                 s.push(ch);
             }
         }

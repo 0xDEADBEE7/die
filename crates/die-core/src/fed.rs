@@ -16,13 +16,20 @@ impl Ctx {
     /// a macro inside a macro runs before the rest of it. The host's go behind what's left.
     pub fn feed_keys(&mut self, keys: &str) -> Result {
         let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
-        let end = self.fed.len();
-        let from = if self.nesting() > 0 { self.fed_at } else { end };
-        let at = from.min(end);
-        let rest = self.fed.split_off(at);
-        self.fed.extend(evs);
-        self.fed_at = self.fed.len();
-        self.fed.extend(rest);
+        if self.nesting() == 0 {
+            self.fed.extend(evs);
+            self.fed_at = self.fed.len();
+            return Ok(());
+        }
+        // At the front, moving only what this turn has fed, so a macro that keeps calling macros
+        // doesn't move everything still waiting each time.
+        let at = self.fed_at.min(self.fed.len());
+        let this_turn: Vec<_> = self.fed.drain(..at).collect();
+        self.fed_at = at + evs.len();
+        evs.into_iter().rev().for_each(|ev| self.fed.push_front(ev));
+        for ev in this_turn.into_iter().rev() {
+            self.fed.push_front(ev);
+        }
         Ok(())
     }
     /// Run `f` from the top of the loop, before the next key is looked up, whenever a key's
@@ -32,16 +39,36 @@ impl Ctx {
         self.new_sub(SubKind::Dropped(Rc::new(RefCell::new(f))))
     }
 
+    /// Run `f` from the top of the loop, before the next key is looked up, whenever a command
+    /// has run from a key, whoever's it is, a prompt has given its answer, or a pointer press has
+    /// moved the cursor (contract §6). A key that only starts a longer one runs nothing.
+    pub fn on_command_ended(&mut self, f: impl FnMut(&mut Ctx) -> Result + 'static) -> Sub {
+        self.new_sub(SubKind::Ended(Rc::new(RefCell::new(f))))
+    }
+
     /// A key failed: what's left of the fed keys goes.
     pub(crate) fn drop_fed(&mut self) {
         self.fed.clear();
+        self.queue_hooks(|kind| match kind {
+            SubKind::Dropped(f) => Some(f.clone()),
+            _ => None,
+        });
+    }
+
+    /// A command is over.
+    pub(crate) fn command_ended(&mut self) {
+        self.queue_hooks(|kind| match kind {
+            SubKind::Ended(f) => Some(f.clone()),
+            _ => None,
+        });
+    }
+
+    fn queue_hooks(&mut self, which: impl Fn(&SubKind) -> Option<TimerFn>) {
         let hooks: Vec<_> = self
             .subs
             .iter()
-            .filter_map(|e| match &e.kind {
-                SubKind::Dropped(f) if e.inner.alive.get() => Some((e.inner.clone(), f.clone())),
-                _ => None,
-            })
+            .filter(|e| e.inner.alive.get())
+            .filter_map(|e| which(&e.kind).map(|f| (e.inner.clone(), f)))
             .collect();
         for (inner, f) in hooks {
             self.queue.push_back(Queued {
@@ -53,6 +80,12 @@ impl Ctx {
         }
     }
 
+    /// Give a register's text to another name, without copying it. An empty one changes nothing.
+    pub fn move_register(&mut self, from: char, to: char) {
+        if let Some(r) = self.registers.remove(&from) {
+            self.set_register(to, r);
+        }
+    }
     /// Empty a register, as if nothing had ever been put in it.
     pub fn clear_register(&mut self, c: char) {
         self.registers.remove(&c);

@@ -72,10 +72,12 @@ pub struct Vim {
     rec: Rc<RefCell<Recorder>>,
     /// Each buffer's `C-o` waiting for its command.
     once: HashMap<BufferId, insert_keys::Once>,
-    /// Commands run so far, for a command that acts on being run twice in a row.
+    /// Commands that have ended, anyone's, for a command that acts on being run twice in a row.
     commands: u64,
     /// What `C-p` and `C-n` remember between presses.
     dabbrev: complete::Dabbrev,
+    /// What `C-x C-n` and `C-x C-p` remember between presses.
+    hippie: complete::Hippie,
     /// The last `C-y` or `C-e`, whose count the next press keeps.
     last_copy: Option<insert_keys::LastCopy>,
     /// The code `C-v` has read so far, in octal, and the count for what it puts in.
@@ -148,6 +150,8 @@ const EDITS: &[(&str, &str, Edit, &str)] = &[
     ("<Down>", "vim-insert-down", Edit::Down, "Down a line."),
     ("<Del>", "vim-insert-delete", Edit::Delete, "Delete the character at the cursor."),
     ("<C-t>", "vim-shift-right-line", Edit::Shift { right: true }, "Shift the line right."),
+    ("<S-Left>", "vim-insert-word-left", Edit::WordLeft, "Back to a word's start."),
+    ("<S-Right>", "vim-insert-word-right", Edit::WordRight, "On to the next word's start."),
 ];
 
 pub(crate) type Body = fn(&mut Ctx, &Args) -> Result;
@@ -223,9 +227,11 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-execute-normal", "C-o: one command in normal state, then back.", insert_keys::execute_normal),
     ("vim-complete-previous", "C-p: complete from words before the cursor, then after it, then in other buffers.", complete::previous),
     ("vim-complete-next", "C-n: complete from words after the cursor, then other buffers, then before it.", complete::next),
+    ("vim-complete-line-next", "C-x C-n: complete the whole line, from lines before the cursor, then after it, then in other buffers.", |ctx, a| complete::line(ctx, a, true)),
+    ("vim-complete-line-previous", "C-x C-p: complete the whole line, as C-x C-n does.", |ctx, a| complete::line(ctx, a, false)),
     ("vim-shift-left-line", "C-d: shift the line left. After a typed 0, take away its indentation.", insert_keys::shift_left),
     ("vim-paste-from-register", "C-r x: put in a register's text.", insert_keys::paste_register),
-    ("vim-paste-last-insertion", "C-a: put in the last insertion.", |ctx, a| insert_keys::paste(ctx, a, '.')),
+    ("vim-paste-last-insertion", "C-a: put in the last insertion.", insert_keys::paste_last),
     ("vim-paste-last-insertion-stop", "C-@: put in the last insertion, and go to normal state.", insert_keys::paste_and_stop),
     ("vim-copy-from-above", "C-y: copy from the line above.", |ctx, a| insert_keys::copy(ctx, a, true)),
     ("vim-copy-from-below", "C-e: copy from the line below.", |ctx, a| insert_keys::copy(ctx, a, false)),
@@ -242,6 +248,7 @@ impl Extension for Vim {
         repeat::observe(ctx, self.rec.clone());
         ctx.set_cursor_rest(text::rest_pos);
         ctx.set_insert_end(insert::stepped_back);
+        ctx.on_command_ended(insert_keys::command_ended).detach();
         ctx.set_jump_rule(marks::before_far_move);
         ctx.set_prompt_register(registers::for_prompt);
         // A buffer killed in insert state never gets its Escape, nor one with an
@@ -431,6 +438,8 @@ impl Extension for Vim {
             k.bind(state, "<C-o>", "vim-execute-normal")
                 .bind(state, "<C-p>", "vim-complete-previous")
                 .bind(state, "<C-n>", "vim-complete-next")
+                .bind(state, "<C-x><C-n>", "vim-complete-line-next")
+                .bind(state, "<C-x><C-p>", "vim-complete-line-previous")
                 .bind(state, "<C-d>", "vim-shift-left-line")
                 .bind(state, "<C-a>", "vim-paste-last-insertion")
                 .bind(state, "<C-@>", "vim-paste-last-insertion-stop")
@@ -518,7 +527,6 @@ fn command(
     let (jump, quiet) = (marks::sets_jump(name), marks::says_its_jump(name));
     reg.command(name, doc, move |ctx, a| {
         repeat::before(ctx)?;
-        ctx.with_ext(|v: &mut Vim, _| v.commands += 1)?;
         marks::before(ctx, a, jump);
         let r = f(ctx, a);
         marks::after(ctx, a, quiet);
