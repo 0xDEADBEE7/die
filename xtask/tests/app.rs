@@ -347,6 +347,7 @@ fn a_new_build_put_in_under_a_running_instance_restarts_with_everything() {
     let at = code.windows(name.len()).position(|w| w == name).unwrap();
     code[at..at + other.len()].copy_from_slice(other);
     let built = app.dir.join("die-new");
+    std::fs::copy(&exe, &built).unwrap();
     std::fs::write(&built, code).unwrap();
     let fonts = xtask::fonts::dir(&root());
     xtask::app::bundle(&built, &fonts, &app.app, "dev.die.DIE.test").unwrap();
