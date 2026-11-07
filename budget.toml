@@ -119,8 +119,9 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 [[module]]
 crate = "die-core"
 name = "session"
-# 1,250 until U7, whose marks and jump lists in session.json are about 50 lines.
-limit = 1305
+# 1,250 until U7, whose marks and jump lists in session.json are about 50 lines. 1,305 until U8:
+# what an extension keeps, by name, whole and by buffer, is about 80.
+limit = 1385
 # 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
 # held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
