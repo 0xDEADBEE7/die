@@ -18,6 +18,7 @@ mod ex;
 mod grammar;
 mod insert;
 mod insert_keys;
+mod kept;
 mod marks;
 mod motions;
 mod objects;
@@ -34,6 +35,7 @@ mod window;
 pub use window::quit_app;
 
 use die_core::key_notation;
+use die_core::session::Kept;
 use die_core::{
     Args, BufferId, Ctx, Dir, Error, Extension, Prefix, Registry, Result, Shape, State, WindowId,
 };
@@ -46,7 +48,8 @@ use objects::OBJECTS;
 use operators::Pending;
 use repeat::{Change, Recorder};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 /// The die-vim extension.
@@ -83,6 +86,8 @@ pub struct Vim {
     seen: HashMap<WindowId, (BufferId, usize)>,
     /// Each buffer's `g;` and `g,`.
     changes: HashMap<BufferId, marks::Changes>,
+    /// Where each file's `A` to `Z` were last seen, which outlives its buffer.
+    file_marks: BTreeMap<char, (PathBuf, usize)>,
     /// How the count waiting in core's prefix came about.
     count_was: grammar::CountWas,
     /// The last `:s`'s replacement and whether it had `g`, which `&` and `~` use.
@@ -166,6 +171,7 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-replace", "r: replace count characters with the next key.", operators::replace),
     ("vim-join", "J: join count lines.", |ctx, a| operators::join(ctx, a, false)),
     ("vim-join-whitespace", "gJ: join count lines, keeping their whitespace.", |ctx, a| operators::join(ctx, a, true)),
+    ("vim-find-file-at-point", "gf, gF: open the file named under the cursor, at its line and column if it gives them.", ex::find_file_at_point),
     ("vim-what-cursor-position", "ga: say what the character under the cursor is, and where.", operators::what_cursor_position),
     ("vim-repeat-substitute", "&: the last :s again on this line, or count lines, or the selection, without its flags.", substitute::again),
     ("vim-repeat-substitute-all", "g&: the last :s again on every line, with its flags.", substitute::again_everywhere),
@@ -239,6 +245,8 @@ impl Extension for Vim {
         ctx.set_cursor_rest(text::rest_pos);
         ctx.set_insert_end(insert::stepped_back);
         ctx.on_command_ended(insert_keys::command_ended).detach();
+        ctx.set_jump_rule(marks::before_far_move);
+        ctx.set_prompt_register(registers::for_prompt);
         // A buffer killed in insert state never gets its Escape, nor one with an
         // operator waiting its motion.
         ctx.on_buffer_killed(|ctx, b| {
@@ -253,6 +261,14 @@ impl Extension for Vim {
         })
         .detach();
         Ok(())
+    }
+
+    fn save_session(&self, ctx: &Ctx) -> Kept {
+        kept::save(self, ctx)
+    }
+
+    fn restore_session(&mut self, ctx: &mut Ctx, saved: Kept) -> Result {
+        kept::restore(self, ctx, &saved)
     }
 
     fn register(&mut self, reg: &mut Registry) {
@@ -296,7 +312,9 @@ impl Extension for Vim {
                 .bind(state, "<C-o>", "vim-jump-backward")
                 .bind(state, "<Tab>", "vim-jump-forward");
         }
-        k.bind(Normal, "u", "vim-undo")
+        k.bind(Normal, "gf", "vim-find-file-at-point")
+            .bind(Normal, "gF", "vim-find-file-at-point")
+            .bind(Normal, "u", "vim-undo")
             .bind(Normal, "<C-r>", "vim-redo")
             .bind(Normal, "<Esc>", "vim-force-normal-state");
         for (keys, name, ..) in INSERTS {

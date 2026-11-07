@@ -78,6 +78,17 @@ pub trait Extension: Any {
     fn init(&mut self, _ctx: &mut Ctx) -> Result {
         Ok(())
     }
+    /// What a restart must not forget of what this holds itself (§14), as JSON core doesn't read.
+    /// Core asks about twice a second to see whether anything changed, so it should be cheap, and
+    /// a restore should give back a state that saves as the same JSON.
+    fn save_session(&self, _ctx: &Ctx) -> crate::session::Kept {
+        crate::session::Kept::default()
+    }
+    /// What [`Extension::save_session`] gave, perhaps from another build, once the session's
+    /// buffers and windows are back. Not called if it kept nothing. An error is a message.
+    fn restore_session(&mut self, _ctx: &mut Ctx, _kept: crate::session::Kept) -> Result {
+        Ok(())
+    }
     /// Called in reverse order at shutdown. What the extension detached is cancelled after.
     fn shutdown(&mut self, _ctx: &mut Ctx) {}
 }
@@ -259,9 +270,9 @@ impl Registry {
 }
 
 pub(crate) struct ExtSlot {
-    name: &'static str,
+    pub(crate) name: &'static str,
     type_id: TypeId,
-    obj: Option<Box<dyn Extension>>,
+    pub(crate) obj: Option<Box<dyn Extension>>,
     panics: u32,
 }
 
@@ -323,12 +334,15 @@ pub struct Ctx {
     pub(crate) leader: Chord,
     pub(crate) prefix: Prefix,
     pub(crate) prompt: Option<Prompt>,
+    /// [`Ctx::set_prompt_register`]'s rule.
+    pub(crate) prompt_register: Option<fn(&mut Ctx, char) -> Result<String>>,
     /// What prompts remember, by history name (K11a).
     pub(crate) histories: HashMap<String, Vec<String>>,
     pub(crate) session: Option<crate::session::Session>,
     pub(crate) clock: Clock,
     pub(crate) timers: Timers,
     pub(crate) timer_seq: u64,
+    pub(crate) pace: Tick,
     /// Timers have been queued, and no key has had a turn since nor the host been told.
     pub(crate) timers_ran: bool,
     pub(crate) idle: Vec<Idle>,
@@ -354,6 +368,8 @@ pub struct Ctx {
     pub(crate) pointer: crate::app::PointerState,
     /// [`Ctx::set_insert_end`]'s rule.
     pub(crate) insert_end: Option<fn(&TextBuf, WindowId, usize) -> usize>,
+    /// [`Ctx::set_jump_rule`]'s rule.
+    pub(crate) jump_rule: Option<fn(&mut Ctx, WindowId)>,
     /// `run_ready` hit its turn limit and has said so.
     pub(crate) over_limit: bool,
     pub(crate) files: crate::files::Files,
@@ -365,6 +381,8 @@ pub struct Ctx {
     pub(crate) errors: Option<Vec<String>>,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
+    /// What `*grep*` holds, and the search that's filling it.
+    pub(crate) grep: Option<crate::project::Grep>,
     /// `Ctx::quit` was called.
     pub(crate) quit_wanted: bool,
     /// A restart wrote the session, so a key or a click now would be lost with this instance.
@@ -499,6 +517,7 @@ impl Ctx {
             fed_at: 0,
             pending: vec![],
             describing: None,
+            prompt_register: None,
             swallow: vec![],
             leader: default_leader(),
             prefix: Prefix::default(),
@@ -508,6 +527,7 @@ impl Ctx {
             clock: config.clock,
             timers: Timers::new(),
             timer_seq: 0,
+            pace: Tick::default(),
             timers_ran: false,
             idle: vec![],
             waker: Waker::default(),
@@ -527,6 +547,7 @@ impl Ctx {
             drawn: Drawn::default(),
             pointer: Default::default(),
             insert_end: None,
+            jump_rule: None,
             over_limit: false,
             files: Default::default(),
             messages: vec![],
@@ -534,6 +555,7 @@ impl Ctx {
             errors: None,
             faces,
             search_highlight: None,
+            grep: None,
             quit_wanted: false,
             handing_over: false,
         };

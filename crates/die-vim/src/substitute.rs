@@ -71,6 +71,8 @@ fn substitute(ctx: &mut Ctx, lines: Lines, rest: &str, from_line: bool) -> Resul
     let ignore_case = ignores_case(pat.as_str());
     let (b, w) = buffer_window(ctx, &Args::default())?;
     let lines = line_range(ctx, b, w, lines)?;
+    // Your Evil's `:s` is an operator on these lines, whether or not anything in them matches.
+    crate::marks::covered(ctx.text_mut(b)?, lines.start, lines.end)?;
     search::remember_pattern(ctx, pat.clone())?;
     ctx.set_search_highlight(None);
     let t = ctx.text_mut(b)?;

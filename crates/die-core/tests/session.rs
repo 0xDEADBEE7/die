@@ -4,8 +4,8 @@ use die_test_cap as _;
 
 use die_core::session::{FILE, PREVIOUS};
 use die_core::{
-    Config, Ctx, Extension, Harness, Origin, RegKind, Register, Registry, Selection, Shape, ShowIn,
-    Side, Uneditable,
+    Config, Ctx, Extension, Harness, Input, Origin, RegKind, Register, Registry, Selection, Shape,
+    ShowIn, Side, Uneditable,
 };
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -606,6 +606,32 @@ fn a_window_on_the_messages_comes_back() {
     assert_eq!(b.session_json(), saved);
 }
 
+/// `*grep*` isn't saved, nor is its window, as no search stands behind it after a restart.
+#[test]
+fn a_window_on_grep_results_goes() {
+    let mut a = fresh();
+    a.set_window_size(100, 30);
+    a.open_text("stays", "text\n").unwrap();
+    let dir = Dir::new();
+    dir.file("f", "needle\n");
+    let args = die_core::Args {
+        text: Some(format!("needle {}", dir.0.display())),
+        ..Default::default()
+    };
+    a.run("grep", &args).unwrap();
+    a.run_until_idle();
+    assert_eq!(a.window_list().len(), 2);
+    let saved = a.session_json();
+    assert!(!saved.contains("f:1:1"));
+
+    let mut b = fresh();
+    b.set_window_size(100, 30);
+    b.restore_session(&saved).unwrap();
+    assert_eq!(b.window_list().len(), 1);
+    assert_eq!(b.buffer_name(b.focused_buffer().unwrap()), Some("stays"));
+    assert_eq!(b.find_buffer("*grep*"), None);
+}
+
 /// A tree that can't be one costs the windows and is kept aside. The buffers still come back.
 #[test]
 fn an_unreadable_tree_is_dropped_alone_and_kept_aside() {
@@ -702,6 +728,24 @@ fn the_newest_kill_still_on_the_clipboard_is_not_news() {
     assert_eq!(b.clipboard_news(), None);
     b.fake_clipboard().copy_from_outside("from another app");
     assert_eq!(b.clipboard_news().unwrap().text, "from another app");
+}
+
+/// A session with nothing to write doesn't keep the loop awake, and a change still reaches disk.
+#[test]
+fn looks_rest_when_nothing_changes_and_a_change_wakes_them() {
+    let dir = Dir::new();
+    let file = dir.0.join(FILE);
+    let mut h = kept_in(&dir.0);
+    h.resume_session();
+    h.advance(Duration::from_secs(40));
+    assert!(h.next_timer().unwrap() - h.now() > Duration::from_secs(1));
+    h.flush_session();
+    let before = fs::read_to_string(&file).unwrap();
+    h.open_text("notes", "kept").unwrap();
+    h.handle(Input::Focus(true));
+    h.advance(Duration::from_secs(3));
+    h.flush_session();
+    assert_ne!(fs::read_to_string(&file).unwrap(), before);
 }
 
 /// What K13 adds to the file counts as a change, or the idle write wouldn't happen for it.

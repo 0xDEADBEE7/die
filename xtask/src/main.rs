@@ -1,6 +1,7 @@
 #[cfg(test)]
 use die_test_cap as _;
 
+use std::path::Path;
 use xtask::util::{Result, root, task_dir};
 use xtask::{
     api, app, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, restart_loop, sources,
@@ -20,8 +21,8 @@ const USAGE: &str = "usage: cargo xtask <task>
                        on Linux and a build script that calls cc fail the cross-check
   api-diff [--base R]  die-core's public API and die-vim's grammar, R -> working tree
                        (R defaults to the merge base with main)
-  app                  build ~/Applications/DIE.app, with the release build and the fonts;
-                       open -g launches it without taking focus
+  app [--home DIR]     build ~/Applications/DIE.app, or under DIR, with the release build and
+                       the fonts; open -g launches it without taking focus
   restart-loop N       N rebuilds and restarts of a release bundle of its own, launched with
                        open -g: every restore's session digest must match and hold what it
                        started with, and each restart must take under 1 s
@@ -66,7 +67,8 @@ fn dispatch(args: &[String]) -> Result {
         ["guards"] => guards::run(&root, &task_dir(&root, "guards")),
         ["api-diff"] => api::run(&root, None),
         ["api-diff", "--base", b] => api::run(&root, Some(b)),
-        ["app"] => app::run(&root),
+        ["app"] => app::run(&root, None),
+        ["app", "--home", home] => app::run(&root, Some(Path::new(home))),
         ["restart-loop", n] => match n.parse() {
             Ok(count) => restart_loop::run(&root, count),
             Err(_) => Err(USAGE.into()),

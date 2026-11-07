@@ -13,7 +13,11 @@ const PAGE_OVERLAP: usize = 2;
 /// After a command: a cursor that left the window brings it back with the cursor in the middle,
 /// as your Emacs's redisplay does, with `scroll-conservatively` at 0. That's why `20G` recentres.
 pub fn reveal(ctx: &mut Ctx, a: &Args) {
-    let Ok((b, w)) = buffer_window(ctx, a) else {
+    let Ok((_, w)) = buffer_window(ctx, a) else {
+        return;
+    };
+    // Not the buffer in `a`: the command may have left it.
+    let Some(b) = ctx.window_buffer(w) else {
         return;
     };
     let Ok(t) = ctx.text(b) else { return };

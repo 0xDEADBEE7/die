@@ -419,6 +419,47 @@ fn the_trackpad_scrolls_the_window_under_it_and_brings_the_cursor_along() {
     assert_eq!(view(&c, r).1, 15, "the bottom row of 3, at its column");
 }
 
+#[test]
+fn a_scroll_over_a_prompts_list_goes_through_it_and_not_the_window_it_hides() {
+    let (mut c, _, a, _) = world(20, 24);
+    let b = c.create_text("long", &"0123\n".repeat(50));
+    c.show(b, ShowIn::Current).unwrap();
+    let items = (0..40).map(|i| format!("item{i}"));
+    c.prompt(PromptSpec::new("? ").candidates(items), |_, _| Ok(()));
+    let s = c.scene();
+    assert!(s.row_text(20).starts_with("item"), "{}", s.row_text(20));
+    assert_eq!(c.cell_at(20, 2), None);
+    press(&mut c, PointerKind::Scroll { dx: 0.0, dy: 3.0 }, 20, 2);
+    assert_eq!(c.prompt_chosen(), Some("item3"));
+    let t = c.text(b).unwrap();
+    assert_eq!((t.scroll(a).unwrap().0, t.cursor(a)), (0, Some(0)));
+
+    press(&mut c, PointerKind::Scroll { dx: 0.0, dy: 1.0 }, 0, 2);
+    assert_eq!(c.prompt_chosen(), Some("item3"), "above the list");
+    assert_eq!(c.text(b).unwrap().scroll(a).unwrap().0, 5, "the window");
+}
+
+#[test]
+fn a_click_on_virtual_text_at_a_rows_edge_stays_on_its_row() {
+    let (mut c, b, w, _) = world(10, 6);
+    let t = c.text_mut(b).unwrap();
+    t.decorate(11..11, Deco::Virtual("v".repeat(5).into()))
+        .unwrap();
+    c.scene();
+    press(&mut c, LEFT, 1, 9);
+    assert_eq!(c.text(b).unwrap().cursor(w), Some(10), "its last character");
+}
+
+#[test]
+fn a_click_in_a_frame_composed_narrower_than_its_window_lands_in_it() {
+    let (mut c, b, w, _) = world(20, 10);
+    let placed = c.placements();
+    c.compose(10, 5, &placed);
+    c.handle(pointer(LEFT, 4, 5));
+    c.run_ready();
+    assert_eq!(c.text(b).unwrap().cursor(w), Some(12), "the text's end");
+}
+
 // ------------------------------------------------------------------ scene
 
 #[test]

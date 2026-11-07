@@ -338,6 +338,11 @@ impl Walker<'_> {
     }
 }
 
+/// How many columns `plain_reach` looks along a line.
+const PLAIN_REACH: usize = 256;
+/// How far from where it's asked a question about a cluster looks.
+const CLUSTER_REACH: usize = 1 << 10;
+
 /// What to ask a grapheme cursor.
 #[derive(Clone, Copy)]
 pub(crate) enum Step {
@@ -348,6 +353,16 @@ pub(crate) enum Step {
 
 /// The next or previous cluster boundary from `at` in a run, or `at` if it is one.
 pub(crate) fn grapheme(run: RopeSlice, at: usize, step: Step) -> Option<usize> {
+    // Marks or flags by the million make one question walk them all, each time: past this much a
+    // cluster is cut, wherever it comes.
+    if run.len_bytes() > 2 * CLUSTER_REACH {
+        let on_char = |b: usize| run.byte_to_char(b);
+        let lo = run.char_to_byte(on_char(at.saturating_sub(CLUSTER_REACH)));
+        let hi = run.char_to_byte(on_char((at + CLUSTER_REACH).min(run.len_bytes())));
+        if hi - lo < run.len_bytes() {
+            return grapheme(run.byte_slice(lo..hi), at - lo, step).map(|b| b + lo);
+        }
+    }
     let (mut chunk, mut chunk_at, ..) = run.chunk_at_byte(at);
     let mut gc = GraphemeCursor::new(at, run.len_bytes(), true);
     loop {
@@ -744,13 +759,39 @@ impl TextBuf {
     }
     /// The display column of `pos`, independent of wrapping (for `j`/`k` goals and block selections).
     pub fn display_col(&self, pos: usize) -> usize {
-        self.locate(pos, None).1.vcol
+        let s = self.line_start(self.line_of(pos));
+        let plain = pos
+            .checked_sub(s)
+            .filter(|n| self.plain_reach(s, *n) == Some(*n));
+        plain.unwrap_or_else(|| self.locate(pos, None).1.vcol)
+    }
+    /// With nothing hidden or added anywhere, how much of the `n` columns from `s` a line reaches,
+    /// when they're all one-column ASCII, each its own cursor position. A question about a column
+    /// is asked once per line by what runs over a whole file, so it's worth not laying them out.
+    fn plain_reach(&self, s: usize, n: usize) -> Option<usize> {
+        let h = self.hidden();
+        if n > PLAIN_REACH || !h.spans.is_empty() || !h.virt.is_empty() {
+            return None;
+        }
+        let mut read = 0;
+        for b in self.rope().bytes_at(s).take(n + 1) {
+            match b {
+                b'\n' => return Some(read),
+                b' '..=b'~' => read += 1,
+                _ => return None,
+            }
+        }
+        Some(n.min(read))
     }
     /// The first cursor position at or after display column `vcol` on the display line holding
     /// `line`, or else that display line's last. A column inside a tab, a wide character or a
     /// replacement lands after it, as Emacs's `move-to-column` does for Evil's `j` and `k`.
     pub fn pos_at_vcol(&self, line: usize, vcol: usize) -> usize {
-        self.first_stop_from(self.dline_start(self.line_start(line)), vcol)
+        let s = self.line_start(line);
+        match self.plain_reach(s, vcol) {
+            Some(reach) => s + reach,
+            None => self.first_stop_from(self.dline_start(s), vcol),
+        }
     }
     fn first_stop_from(&self, s: usize, vcol: usize) -> usize {
         let past = |rows: &[(Walk, usize)]| rows.partition_point(|(w, _)| w.vcol <= vcol);

@@ -21,8 +21,8 @@
 //! a regular file. With no unsaved changes `:w` writes nothing and refuses nothing,
 //! and a file that's gone is simply written again, as in Emacs.
 //!
-//! **Reloading.** Once a second [`Ctx::check_files`] compares each file with its
-//! fingerprint, and reloads a buffer with no unsaved changes. A reload is one undo
+//! **Reloading.** Once a second, or every 5 s with nobody using the editor (any input brings
+//! it back at once), [`Ctx::check_files`] compares each file with its fingerprint, and reloads a buffer with no unsaved changes. A reload is one undo
 //! step, and text it didn't change keeps its cursors and markers. With the same
 //! bytes it changes nothing. It waits while an undo group is open, as during an
 //! insert, and while the file's time is within 200 ms of now, because `rustfmt` and
@@ -44,7 +44,7 @@ mod target;
 pub use target::FileTarget;
 
 use crate::ext::catch;
-use crate::{BufferId, Ctx, Error, Origin, Result, Settings, Sub};
+use crate::{BufferId, Ctx, Error, Origin, Result, Settings};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -55,10 +55,11 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, fchown};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// How often [`Ctx::check_files`] runs while a file is open. A `stat` took about 80 µs at
-/// background priority on a loaded machine. Emacs's own 5 s interval is mostly hidden by its
-/// file notifications, so 5 s here would feel slower than your Emacs.
-const POLL_EVERY: Duration = Duration::from_secs(1);
+/// How often [`Ctx::check_files`] runs while a file is open and the editor is in use (`rt`'s
+/// tick rests otherwise). A `stat` took about 80 µs at background priority on a loaded machine.
+/// Emacs's own 5 s interval is mostly hidden by its file notifications, so 5 s here would feel
+/// slower than your Emacs.
+pub(crate) const POLL_EVERY: Duration = Duration::from_secs(1);
 
 /// How long after a file's modification time the poll leaves it alone: the tool may be between
 /// truncating and writing. A time in the future isn't settling, or a skewed clock would stop
@@ -178,17 +179,18 @@ pub type StatusTextFn = Box<dyn Fn(&str, Option<&FileInfo>) -> String>;
 pub(crate) struct Files {
     by_buffer: HashMap<BufferId, FileInfo>,
     pub(crate) settings: Option<SettingsFn>,
-    /// The repeating [`Ctx::check_files`], while any buffer visits a file.
-    poll: Option<Sub>,
+    /// A poll found something new, so the editor isn't resting.
+    pub(crate) noticed: bool,
     status_text: Option<StatusTextFn>,
 }
 
 impl Files {
     pub(crate) fn forget(&mut self, buf: BufferId) {
         self.by_buffer.remove(&buf);
-        if self.by_buffer.is_empty() {
-            self.poll = None;
-        }
+    }
+
+    pub(crate) fn any(&self) -> bool {
+        !self.by_buffer.is_empty()
     }
 }
 
@@ -284,13 +286,7 @@ impl Ctx {
                 told: false,
             },
         );
-        if self.files.poll.is_none() {
-            let poll = self.every(POLL_EVERY, |ctx| {
-                ctx.check_files();
-                Ok(())
-            });
-            self.files.poll = Some(poll);
-        }
+        self.start_ticking();
         Ok(buf)
     }
 
@@ -358,8 +354,8 @@ impl Ctx {
     }
 
     /// Compare every visited file with its fingerprint now, and reload the buffers with no
-    /// unsaved changes. It runs by itself every second while a file is open. A host may also
-    /// call it when its window gets the focus back.
+    /// unsaved changes. It runs by itself while a file is open, as often as the top of this
+    /// file says. A host may also call it when its window gets the focus back.
     pub fn check_files(&mut self) {
         let bufs: Vec<BufferId> = self.files.by_buffer.keys().copied().collect();
         for buf in bufs {
@@ -383,21 +379,28 @@ impl Ctx {
             f.told = false;
             let line = format!("{name} was deleted on disk; the text stays, and :w writes it");
             self.messages.push(line);
+            self.files.noticed = true;
         } else if self.unsaved(buf).ok()? {
             let f = self.files.by_buffer.get_mut(&buf)?;
             if !std::mem::replace(&mut f.told, true) {
                 self.messages.push(format!(
                     "{name} changed on disk; :w refuses, :w! overwrites it, :e! reloads it"
                 ));
+                self.files.noticed = true;
             }
         } else if disk.is_some_and(|d| d.len > POLL_READS_UP_TO) {
             let f = self.files.by_buffer.get_mut(&buf)?;
             if !std::mem::replace(&mut f.told, true) {
                 let line = format!("{name} changed on disk and is large; :e! reloads it");
                 self.messages.push(line);
+                self.files.noticed = true;
             }
-        } else if !self.text(buf).ok()?.undo_group_open() && !disk.is_some_and(settling) {
-            self.reload(buf).ok()?;
+        } else if !self.text(buf).ok()?.undo_group_open() {
+            // What's still settling needs another look soon, as much as what's reloaded.
+            self.files.noticed = true;
+            if !disk.is_some_and(settling) {
+                self.reload(buf).ok()?;
+            }
         }
         Some(())
     }
