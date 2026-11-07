@@ -167,6 +167,7 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-replace", "r: replace count characters with the next key.", operators::replace),
     ("vim-join", "J: join count lines.", |ctx, a| operators::join(ctx, a, false)),
     ("vim-join-whitespace", "gJ: join count lines, keeping their whitespace.", |ctx, a| operators::join(ctx, a, true)),
+    ("vim-find-file-at-point", "gf, gF: open the file named under the cursor, at its line and column if it gives them.", ex::find_file_at_point),
     ("vim-what-cursor-position", "ga: say what the character under the cursor is, and where.", operators::what_cursor_position),
     ("vim-repeat-substitute", "&: the last :s again on this line, or count lines, or the selection, without its flags.", substitute::again),
     ("vim-repeat-substitute-all", "g&: the last :s again on every line, with its flags.", substitute::again_everywhere),
@@ -304,7 +305,9 @@ impl Extension for Vim {
                 .bind(state, "<C-o>", "vim-jump-backward")
                 .bind(state, "<Tab>", "vim-jump-forward");
         }
-        k.bind(Normal, "u", "vim-undo")
+        k.bind(Normal, "gf", "vim-find-file-at-point")
+            .bind(Normal, "gF", "vim-find-file-at-point")
+            .bind(Normal, "u", "vim-undo")
             .bind(Normal, "<C-r>", "vim-redo")
             .bind(Normal, "<Esc>", "vim-force-normal-state");
         for (keys, name, ..) in INSERTS {

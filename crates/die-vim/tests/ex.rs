@@ -238,3 +238,97 @@ fn a_selections_range_is_refused_by_w_and_ignored_by_commands_that_take_none() {
     assert!(keys(&mut h, ":%vsplit<CR>").is_empty());
     assert_eq!(h.window_list().len(), 2);
 }
+
+/// A project on disk, with an editor on `src/a.txt`, whose lines name other files.
+fn in_project(name: &str, text: &str) -> (Dir, Harness, BufferId) {
+    let dir = Dir::new(name);
+    let root = dir.0.canonicalize().unwrap();
+    for sub in [".git", "src", "lib"] {
+        std::fs::create_dir_all(root.join(sub)).unwrap();
+    }
+    std::fs::write(root.join("src/a.txt"), text).unwrap();
+    std::fs::write(root.join("src/near.txt"), "one\ntwo\nthree needle\n").unwrap();
+    std::fs::write(root.join("lib/far.txt"), "one\ntwo\nthree\nneedle\n").unwrap();
+    let mut h = editor();
+    let b = h.open_file(&root.join("src/a.txt")).unwrap();
+    h.open_window(b, 80, 24).unwrap();
+    (dir, h, b)
+}
+
+/// The focused file's name, and its cursor's line and byte in it, from 1.
+fn at_file(h: &Harness) -> (String, usize, usize) {
+    let (w, b) = (h.focused().unwrap(), h.focused_buffer().unwrap());
+    let name = h.buffer_name(b).unwrap().to_string();
+    let t = h.text(b).unwrap();
+    let pos = t.cursor(w).unwrap();
+    let line = t.line_of(pos);
+    (name, line + 1, pos - t.line_start(line) + 1)
+}
+
+#[test]
+fn gf_opens_from_this_directory_then_the_project_with_its_line_and_column() {
+    let text = "near.txt:2:3: rustc\n\
+                see lib/far.txt(3,2) there\n\
+                lib/far.txt:\n\
+                near.txt(2)\n\
+                nowhere.txt\n\
+                ../src\n";
+    let (_dir, mut h, b) = in_project("gf", text);
+    assert_eq!(keys(&mut h, "gf"), Vec::<String>::new());
+    assert_eq!(at_file(&h), ("near.txt".to_string(), 2, 3));
+    keys(&mut h, "<C-o>");
+    assert_eq!(h.focused_buffer(), Some(b), "C-o comes back");
+
+    keys(&mut h, "0jfbgf");
+    let far = ("far.txt".to_string(), 3, 2);
+    assert_eq!(at_file(&h), far, "from the project, with parentheses");
+    keys(&mut h, "<C-o>0jgF");
+    assert_eq!(
+        at_file(&h),
+        far,
+        "gF too, and no position leaves the cursor"
+    );
+    keys(&mut h, "<C-o>0jgf");
+    assert_eq!(at_file(&h), ("near.txt".to_string(), 2, 1));
+    keys(&mut h, "<C-o>0j");
+    assert_eq!(keys(&mut h, "gf"), ["File does not exist."]);
+    keys(&mut h, "j");
+    assert_eq!(keys(&mut h, "gf"), ["File does not exist."], "a directory");
+    assert_eq!(h.focused_buffer(), Some(b));
+}
+
+#[test]
+fn grep_results_take_motions_search_and_cn_with_a_jump_to_go_back() {
+    let (_dir, mut h, b) = in_project("grep", "needle here\n");
+    assert_eq!(keys(&mut h, ":grep needle<CR>"), Vec::<String>::new());
+    h.run_until_idle();
+    assert_eq!(h.focused_buffer(), Some(b), "the focus stays");
+    keys(&mut h, ":cn<CR>");
+    assert_eq!(
+        at_file(&h),
+        ("far.txt".to_string(), 4, 1),
+        "by directory, then name"
+    );
+    keys(&mut h, "<C-o>");
+    assert_eq!(h.focused_buffer(), Some(b), "C-o comes back");
+    keys(&mut h, ":cnext<CR>");
+    assert_eq!(at_file(&h), ("a.txt".to_string(), 1, 1));
+    keys(&mut h, ":cn<CR>");
+    assert_eq!(at_file(&h), ("near.txt".to_string(), 3, 7));
+    assert_eq!(keys(&mut h, ":cn<CR>"), ["Moved past last match"]);
+    keys(&mut h, ":cp<CR>");
+    assert_eq!(at_file(&h), ("a.txt".to_string(), 1, 1));
+
+    keys(&mut h, "<C-w>w");
+    let results = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(results), Some("*grep*"));
+    keys(&mut h, "ggj");
+    assert_eq!(at_file(&h).1, 2, "motions");
+    keys(&mut h, "/near<CR>");
+    assert_eq!(at_file(&h).1, 4, "search");
+    let before = h.text(results).unwrap().rope().to_string();
+    assert!(!keys(&mut h, "x").is_empty(), "read-only");
+    assert_eq!(h.text(results).unwrap().rope().to_string(), before);
+    keys(&mut h, "0<CR>");
+    assert_eq!(at_file(&h), ("near.txt".to_string(), 3, 7));
+}

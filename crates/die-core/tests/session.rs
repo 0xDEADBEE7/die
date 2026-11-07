@@ -606,6 +606,32 @@ fn a_window_on_the_messages_comes_back() {
     assert_eq!(b.session_json(), saved);
 }
 
+/// `*grep*` isn't saved, nor is its window, as no search stands behind it after a restart.
+#[test]
+fn a_window_on_grep_results_goes() {
+    let mut a = fresh();
+    a.set_window_size(100, 30);
+    a.open_text("stays", "text\n").unwrap();
+    let dir = Dir::new();
+    dir.file("f", "needle\n");
+    let args = die_core::Args {
+        text: Some(format!("needle {}", dir.0.display())),
+        ..Default::default()
+    };
+    a.run("grep", &args).unwrap();
+    a.run_until_idle();
+    assert_eq!(a.window_list().len(), 2);
+    let saved = a.session_json();
+    assert!(!saved.contains("f:1:1"));
+
+    let mut b = fresh();
+    b.set_window_size(100, 30);
+    b.restore_session(&saved).unwrap();
+    assert_eq!(b.window_list().len(), 1);
+    assert_eq!(b.buffer_name(b.focused_buffer().unwrap()), Some("stays"));
+    assert_eq!(b.find_buffer("*grep*"), None);
+}
+
 /// A tree that can't be one costs the windows and is kept aside. The buffers still come back.
 #[test]
 fn an_unreadable_tree_is_dropped_alone_and_kept_aside() {
