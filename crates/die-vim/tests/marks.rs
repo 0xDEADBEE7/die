@@ -3,7 +3,7 @@
 
 use die_test_cap as _;
 
-use die_core::{BufferId, Ctx, WindowId};
+use die_core::{BufferId, Ctx, FileTarget, ShowIn, Side, State, WindowId};
 use die_vim::Vim;
 
 fn editor() -> Ctx {
@@ -177,4 +177,44 @@ fn a_session_without_them_still_restores() {
     assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
     ctx.type_keys("<C-o>");
     assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
+}
+
+/// `die file:line` from the terminal in the next tile goes far with no key, in the buffer on
+/// screen as much as to another: `C-o` comes back.
+#[test]
+fn a_file_opened_at_a_line_from_outside_leaves_a_jump() {
+    let dir = std::env::temp_dir().join(format!("die-vim-marks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (path_a, path_b) = (dir.join("a.txt"), dir.join("b.txt"));
+    std::fs::write(&path_a, "a0\na1\na2\na3\na4\n").unwrap();
+    std::fs::write(&path_b, "b0\nb1\nb2\nb3\n").unwrap();
+    let target = |path: &std::path::Path, line| FileTarget {
+        path: path.to_path_buf(),
+        line: Some(line),
+        col: None,
+    };
+    let mut ctx = editor();
+    let a = ctx.open_file(&path_a).unwrap();
+    let w = ctx.open_window(a, 80, 24).unwrap();
+    ctx.focus(w);
+    ctx.type_keys("j");
+    let term = ctx.create_text("term", "");
+    let right = ctx.split_window(w, Side::Right).unwrap();
+    ctx.focus(right);
+    ctx.show(term, ShowIn::Current).unwrap();
+    ctx.set_state_of(term, State::Passthrough);
+
+    ctx.open_target(&target(&path_a, 4)).unwrap();
+    assert_eq!(at(&ctx, w), (a, 3));
+    ctx.type_keys("<C-o>");
+    assert_eq!(at(&ctx, w), (a, 1), "back in the buffer it never left");
+
+    // Twice with no key between, and each place it left is still there to go back to.
+    let b = ctx.open_target(&target(&path_b, 3)).unwrap();
+    ctx.open_target(&target(&path_a, 5)).unwrap();
+    ctx.type_keys("<C-o>");
+    assert_eq!(at(&ctx, w), (b, 2), "the file it was in just now");
+    ctx.type_keys("<C-o>");
+    assert_eq!(at(&ctx, w), (a, 1), "and the one before");
+    let _ = std::fs::remove_dir_all(&dir);
 }

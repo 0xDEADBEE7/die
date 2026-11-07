@@ -120,6 +120,22 @@ impl Ctx {
         self.insert_end = Some(rule);
     }
 
+    /// Say what keeps a window's place when its cursor is about to go far with no key, as for
+    /// `die file:line`. Like [`Ctx::set_cursor_rest`], this is the keymap's business. With no rule,
+    /// nothing keeps it.
+    pub fn set_jump_rule(&mut self, rule: fn(&mut Ctx, WindowId)) {
+        self.jump_rule = Some(rule);
+    }
+
+    pub(crate) fn keep_place(&mut self, w: WindowId) {
+        let Some(rule) = self.jump_rule else {
+            return;
+        };
+        if catch_unwind(AssertUnwindSafe(|| rule(self, w))).is_err() {
+            self.log_error("The jump rule panicked".into());
+        }
+    }
+
     pub(crate) fn rested(&mut self, buf: BufferId, pos: usize) -> usize {
         let rule = self
             .pointer
