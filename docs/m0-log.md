@@ -2,6 +2,299 @@
 
 What merged, what waits on you, what changed in die-core's API, and where the budget stands ([m0-plan.md](m0-plan.md) §3). Newest first.
 
+## 2026-11-08: the MVP run, 17 packages on `m0/integration`, and no terminal
+
+**Waiting on you:**
+1. **The terminal.** This run's goal was a whole day in DIE with a terminal in the next tile. No package built one: there's no `die-term` crate and no real `Surface` in the tree, and §7 of the plan still has it in M2. The editing half is here. cargo and git still need a terminal of your own, with `die file:line` from it. `EDITOR=die` doesn't work for `git commit`, as there's no `--wait`.
+2. **Whether this reaches `main`.** Nothing in this run has.
+3. **The hand checks** below.
+4. **Any call below.** The ones I'd read first: 444 (project search and the finder are in core), 445 (die-vim is at 8,801, against 5,000 at the guard's start), 449 (`platform::macos`'s limit and the test that holds it), 467 (`<CR>` in a finder waits on the main thread for up to 2 s), 472 (`gf` isn't your Evil's `gf`), 478 (`*grep*` doesn't survive a restart) and 530 (a whole big file yanked doesn't survive one either).
+
+**Not yet run on this:** `ci --full`, `ci --linux` and `mutate`. The lead runs them after this entry. **`cargo xtask budget` fails on the tip this entry starts from, 30ed2f0:** die-vim is 8,801 lines against a limit of 8,800, from merges after V2 measured 8,780. `ci` will stop there until a line is cut or the limit moves. This entry changes only docs and leaves that to the lead.
+
+### What you can do now, on `m0/integration`
+
+[using-die.md](using-die.md) has every key. New in this run:
+
+- **Open files from a terminal.** `die foo.rs:12:3` opens it in the running DIE, or starts one, and `C-o` comes back.
+- **Find things.** `\\` fuzzy finds from home, `\p` from the project root, with results while you type at 500,000 paths. `\/` switches buffer.
+- **Search the project.** `:grep` and `\r` stream into `*grep*`, `<CR>` opens a row, `:cn` and `:cp` step. `gf`, `gF`, `]f` and Visual `gf` open `path:line:col`.
+- **More Vim.** Marks, the jump list and `g;`. `ge gE g_ | [[ ]] gd gJ & g& = ga`, `+ - _`, `g0 g^ g$`, `g* g#`, `[( ]) [{ ]}`, `io ao`, `ZZ ZQ`, `C-^`. `:2,5s` with addresses, `:bn :bp :bd :up :u :$ :wa :qa :wqa :xa :x`.
+- **Insert state.** `C-o`, `C-p`, `C-n`, `C-x C-n`, `C-x C-p`, `C-t`, `C-d`, `C-a`, `C-@`, `C-e`, `C-y`, `C-r`, `C-v`, `C-q`, `C-u`, `<Del>`.
+- **Prompts.** Cmd-V, `C-y`, `C-r` and `C-r C-w` paste into any of them.
+- **Splits in the app.** Before this run the windowed app drew only the focused window of a split.
+- **Restart keeps more.** `.`, `@@`, `;`, `,`, `n`, `N`, `gv`, `&`, marks and jumps come back.
+- **Huge and odd files.** A 100 MB file opens in 42 ms and most keys take under a millisecond. `*` on a giant word no longer crashes it. Directories, FIFOs and `/dev/zero` are refused.
+- **Idle.** About 0.55-0.6 OS wakes a second, down from 2.4.
+
+**Oracle, from a fresh `DIE_ORACLE_BLESS=1` run on 30ed2f0:** 2,136 of 2,136 cases pass, with 107 deviations excluded and 0 pending. That's 2,135 from your Evil (2,045 batch, 90 tty), less the 107, plus 108 hand-written fixtures. It was 1,411 in the entry below. `DIE_ORACLE_BLESS` only rewrites `pending.txt`, so I also regenerated every fixture from batch Emacs into a scratch directory: all are byte for byte what's in the repo.
+
+**Budget, `cargo xtask budget` on 30ed2f0, the lines that moved:**
+
+| Crate or module | Entry below | Now | Limit |
+|---|---|---|---|
+| die-core | 9,970 | 11,754 | 14k |
+| text and undo | 1,260 | **1,416** | 1,420, was 1,265 |
+| layout | 914 | 947 | 950 |
+| keys, keymaps, describe | 646 | 673 | 675, was 650 |
+| ext, dispatch, rt | 1,411 | 1,521 | 1,525, was 1,500 |
+| workspace, windows, pointer | 1,317 | 1,361 | 1,365, was 1,320 |
+| files | 634 | **780** | 780, was 650 |
+| command line, prompt, core commands | 1,135 | 1,288 | 1,300 |
+| project (new) | none | 747 | 750, was 600 |
+| faces and scene | 936 | 939 | 950 |
+| session | 1,086 | **1,384** | 1,385, was 1,086 |
+| harness, app interface, messages, ids, errors | 631 | 698 | 800 |
+| die-render | 4,128 | 4,312 | 7k |
+| macOS build | 3,971 | 4,147 | 5k |
+| Linux build | 3,088 | 3,135 | 5k |
+| neutral | 2,232 | 2,255 | 2,300 |
+| checks | 699 | 715 | 720, was 700 |
+| `platform::macos` | 1,040 | 1,177 | 1,180, was 1,060 |
+| platform stub | 157 | **165** | 165, was 160 |
+| die-vim | 5,789 | **8,801, over** | 8,800, was 5,790 |
+| die | 358 | 493 | none |
+| die-dev | 181 | 189 | none |
+| product code | 20,426 | 25,549 | none |
+| xtask (dev) | 4,517 | 4,554 | none |
+| evil-oracle (dev) | 588 | 589 | none |
+
+Most core modules have 4 lines or fewer left, and files none, so most next changes need a cut or a call. Calls 441 to 450 list each raise.
+
+### What only you can check
+
+These stand with the entry below's list, which no one has worked through.
+
+- `die foo.rs` from another app, also with DIE minimized or hidden: does it come forward? `come_to_front` has never run, since every test stays in the background. If it doesn't, the U1 review's guess is that the client should also run `open` on the bundle.
+- `cargo xtask app` for your real `~/Applications` and `~/.local/bin` link. V1 ran it only under `--home`.
+- Launch from the Dock and type, real keys and input methods (V1 posted events to a background instance), restart while in front, and AeroSpace tiling and a live resize with splits.
+- Press `p` after copying in another app: the pasteboard alert should appear only then. Copy a file in Finder and an image in a browser, then `p`: the register's text should paste. Yank and paste both ways on the real pasteboard (V6).
+- The leader keys, `:grep`'s streaming and a real mouse in a drawn window. None of it has been tried in one.
+- Colours on a P3 display: the Metal layer sets no colorspace, so reds and greens may look stronger than in Emacs (V4, from reading the code).
+- `gd` in your GUI Emacs, where xref might ask for a TAGS file rather than fall through to the search the oracle saw (U4). `ga` on non-ASCII in graphical Emacs (U5).
+
+### What wasn't verified
+
+- **Nobody has typed into this.** V1 posted real key events to a release bundle before later packages landed. Everything since ran through the harness or through offscreen frames. U2, U3, U4, U5, U6, U7, U8, V2, V3 and W2 ran no window test.
+- **No gate covers the tip.** A package that had a push refused re-merged and pushed on `cargo check`, as the rule allows, so no test has run on the merged whole. U1, U6, V2 and W3 say so for their own, and V6 re-ran only the budget and `tests/platform.rs`. W1's 6 window tests passed before two later merges. V5's `idle-60` and wake figures weren't re-run on its tip. W3 changed `crates/die/src/app.rs` and didn't run `xtask --test app`. V4 changed die-render and ran no window test.
+- **Not run:** `ci --full`, `ci --linux`, `mutate`, `vim/compare.sh`, anything on Linux, and `restart-loop` with marks present.
+- **The window rule, broken once and possibly twice.** U1's window tests ran up to three times. V6 ran `crates/die-render/tests/keys.rs` repeatedly and didn't check whether it put windows on the screen.
+- **A flake, cause unknown.** `the_restart_loop_finds_equal_digests_and_logs_each_time` failed once in V1's full run, with `two_launches_leave_one_instance` failing on the poisoned mutex. It passed alone and on rerun.
+- **Compared with Evil by reading, not running:** `n` after `gd`, because batch Emacs loses keys after `gd` and why isn't traced. Anything a click touches, and opening a file with `gf`, because the oracle can't click or set up files. `` `F `` for a killed file, and a jump into a killed buffer.
+- **Measured once, under load:** the finder at 500,000 synthetic paths. A real `~` was never walked. No real-tree timing of `:grep` since the review's fixes. V3's before and after figures aren't from the same load.
+- **The original SIGABRT in `tests/platform.rs` never reproduced** in 60 runs, so its cause isn't known. Any raise is now caught, which is all V6 can claim.
+
+### The packages
+
+**U1, `die file:line`.** Review: 4 minor, all fixed. `die a.txt:4` set no jump unless it crossed a buffer. A file could replace a lone terminal, a client could hang writing a long request to a stuck instance, and `restart` hung for good if `open.sock` had been removed. Probes of prompts, goal column and paths found nothing. API: die-core adds `FileTarget`, `Ctx::open_target`, `Ctx::set_jump_rule`, and `OpenRequest`, `OpenListener`, `send_open`, `Sent` and `OPEN_SOCKET` in `instance`. die-render adds `come_to_front`. die adds `app::is_client`, `app::client`, `Launch.background`. xtask adds `app::link_command`. Open: coming to the front, `cargo xtask app` for real, exit 1 from the real binary. `open -a DIE file` and Finder aren't built, by estimate over 30 lines. The restart test may not exercise the retry, which only die-core's socket test proves.
+
+**U2, finders.** No review. A worktree's `.git` file was listed: fixed. At 500,000 synthetic paths and load about 18, a key and its frame took p50 125 us, p99 343 us on the main thread, and the new list arrived in p50 70 ms, p99 451 ms. API: die-core adds `walk`, `project_root`, `PathSource`, `Ctx::find_under`, `Ctx::prompt_settle`, and `Ctx::step` takes the finder's news. Open: at load 33 the ranker reached about 2 s, so `<CR>` can do nothing and need a second press. The frame was imitated, not a real GPU frame.
+
+**U3, `:grep` and `gf`.** Review: 1 major, 5 minor, all fixed. 4,360 of 4,398 rows on DIE's own tree came from `.claude/worktrees` (major). Rows waited through long stretches with no match, `<CR>` ignored a window already on the file, a deleted file's row opened an empty buffer that `:w` could write back, an empty match made a row past the last line, and `]f [f ]F [F` and Visual `gf` were missing. API: die-core adds `grep`, `compile-goto-error`, `next-error`, `previous-error`, `Pattern::ignores_case`. Open: `.gitignore` isn't read, `:cc` and the rest aren't bound, and opening a file with `gf` has never been compared with Evil. `rows_show_while_the_search_goes_on_through_files_with_none` has about 700 ms of margin under load.
+
+**U4, motions.** No review. `ge gE g_ | [[ ]] gd` with 150 oracle cases. `gd` hit a batch Emacs error, fixed in the oracle with `(require 'etags)`, and a full regeneration then matched. API: 7 commands, and `[<any>` and `]<any>` cancel an operator. Open: keys after `gd` are lost in batch Emacs. `[[ ]] gd` now set jumps through U7's list, which U4 left open.
+
+**U5, edits.** No review. `gJ & g& = == ga`, with `:&`, `:&&`, the `&` flag and `~` in a replacement, in 31 oracle cases. `=` read a stale column and `u` after `&` went to the wrong place, both fixed before landing. `gJ` on the last line is a new deviation row. API: 5 commands and `Operator::Indent`, and `:s/x/~/` now means the last replacement. Open: `:sort :d :y :m :t` weren't built, at about 160 lines against a limit of about 60. V2 later built the numeric ranges. `&` and `=` on blocks, folds and Hide aren't checked.
+
+**U6, insert state.** Review: 3 major, 8 minor, all fixed, and it built the builder's open keys. A macro with `C-o` ran its later text as normal commands (major). `C-p` after a click panicked and lost the session (major). `C-o` then a command that wasn't die-vim's stayed in normal state (major). Also `C-o` with `:b`, with `R`, with `gi`, and with `dd` on the last line, `C-a` with a count, and two multibyte failures in completion. API: die-core adds `Ctx::on_command_ended`. 16 commands in all, 246 oracle cases, 243 from Evil. `registers::read` now answers `:`, `/`, `%`. Open: `<Insert>`, a count on `C-x C-p`, no message when line completion finds nothing, non-ASCII symbols in a word for `C-p`. Four `C-o` probes that killed the batch run stay unprobed.
+
+**U7, marks and the jump list.** Review: 1 major, 5 minor fixed, 1 made a deviation. A mark or jump into another buffer left the cursor off screen (major). `:s`, `&` and `g&` set no jump and `:s` no `[ ]`, a key naming no mark gave no error, a killed file's `A`-`Z` were lost, and `.` after `:%s` went to the first line changed. API: die-core adds `Place`, `PlaceList`, `Ctx::places`, `Ctx::set_places`, and `TextBuf`'s `mark`, `set_mark`, `remove_mark`, `marks`. session.json gains additive fields. `<Tab>` in motion states is now a jump. Evil-oracle adds kind `not-in-scope`. Open: a killed file's marks don't survive a restart, and past 1,024 edits `.` can be imprecise, with no test of that.
+
+**U8, what a restart keeps.** No review. `.`, `@@`, `;`, `,`, `n`, `N`, `gv` and `&`'s replacement survive, and an old or nonsense session.json still loads. A kept pattern with no replacement would have made `&` delete: fixed, from reading. API: `Extension::save_session` and `restore_session`, `session::{Kept, Value, json}`. Open: no real restart was run, only 8 harness tests. The restart loop covers these only through the digest.
+
+**V1, the real bundle.** No review. The release bundle was built, signed and launched with `open -g`, and took posted keys for `:w`, `/`, `C-w v`, find-file, `:q` and Cmd-Q. A rebuild then `:restart` ran the new code with everything back. Fixed: `:wa :qa :wqa :xa :x` were missing, each restart left a socket file, bundle replacement left a gap (narrowed, not closed). W1 landed the same split fix first. API: `Handover::wait` removes its socket's file, 5 families of ex commands, `cargo xtask app --home DIR`. Open: a state directory path over about 100 characters fails to bind, `die` on an unreadable file exits 0, keys typed during the handover are lost.
+
+**V2, a day's keys.** No review. 15 realistic tasks on a copy of die-vim's source pass in `tests/a_day.rs`, with no panic. One product bug: `cargo fmt` under a clean buffer moved the cursor, and now it stays on its line when the line count holds. Missing small keys are bound, as listed above. API: `:e!` and the poll apply same-size runs line by line, `Words` takes a `WordKind`. Open: `gq gw`, sentences, `:d :m :t :g :normal` and the rest in using-die.md, which V2 thinks is the next package. rustfmt wasn't really run. `ZQ`, `:bw` and the page keys have no test.
+
+**V3, hostile input.** No review. Fixed: out of memory on `*` on a 100 MB word. `ggVGrX` on 100 MB never finished, now 0.4 s. `gg<C-v>G$d` 300 s to 5 s, `:%s` 6.2 s to 0.66 s, `gg>G` 71 s to 1.5 s, a macro fan-out 74 s to 0.3 s, `w` in a 5 MB word 2-10 s to 0.2 s, lines of combining marks 15 s to 190 ms, and `:noh` on a highlighted 5 MB line 3.7 s to under 30 ms. Odd files, resizes and regex blow-ups held with no change. API: `Ctx::move_register`. A `Tx` of 4,096 changes or more runs in one pass and may leave `edits_since` returning None. `Pattern::new` refuses over 64 KiB. Open: on 100 MB, `di"` takes 4-6 s, `#` up to 7 s, `dap` 1.4 s, all uninterruptible. A dirty 100 MB buffer rewrites 100 MB to session.json each quiet second, and RSS reached 2.9 GB. The 100 MB one-line sweep died on the probe's own memory and wasn't rerun.
+
+**V4, looks.** No review. 36 scenes rendered offscreen and looked at, and `apps/die-dev/tests/looks.rs` makes them again. Theme faces match mono-dark by value. One defect fixed: a status line or a prompt's row stopped up to a cell short of the right edge. API: `Frames::build` extends a row's last run. Open: no syntax highlighting, the biggest visible difference from Emacs. `:b *messages*` fails until there's a message, and the colorspace is unset. A block cursor on an emoji and the status bar at the edge weren't seen in a picture.
+
+**V5, idle.** No review. Steady wakes fell from 2.4 to 0.55-0.6 a second: the session look and file poll are one timer, resting at 5 s after 30 s of nothing. The "20 a second" was a launch transient of about 10 OS wakes for 15 s, inside AppKit, not fixed. `--check idle-60` now reads the OS's count, fails at 1 a second, and takes about 95 s. API: `driver::process_wakeups`. Open: `idle-60` was never seen failing on a real regression. An occluded window wasn't measured for wakes.
+
+**V6, clipboard.** No review. Nothing landed in this run's pass: its work was already there as e9aa36c, merged at 7233e9c, and this pass reviewed it and ran the gate. Fixed there: an NSException on a yank aborted the app, write failures were silent, a Finder or image copy went in as text, `generalPasteboard` opened at launch. API: `Clipboard`'s `read`, `write`, `change_count` return `Result`, `FakeClipboard` gains `reads` and `set_failing`, die-render adds `catch::guarded`. Open: the hand checks above, and a real pasteboard failure wasn't tried. Local commit 1d528c5 on `mvp/v6-clipboard` is moot.
+
+**W1, pointer review (K14).** Fixed: the windowed app drew only the focused window (major), a scroll over a prompt's list moved the window behind it (major), `o` then a click on a blank line then Esc emptied that line, a click on virtual text at a row's edge landed a line up, a narrow frame could index out of bounds. API: `Ctx::cell_at` is None over a prompt, `Host::set_grid` sets the frame, and a loose `open_window` no longer shows or takes focus. Open: no real pointer session. Evil's click behaviour comes from reading its source.
+
+**W2, prompts (K11, K16).** Fixed: Cmd-V, `C-r` and `C-y` on prompts, Cmd-Q with a prompt open, `*messages*` opening at its start, a scroll over the list, `describe-command` reordering the palette, find-file starting at `/` from Finder. `\x \f \] \hk \hc` have end-to-end tests. API: `Ctx::set_prompt_register`, `registers::for_prompt`, and super keys go to keymaps first. Open: `C-r =`, Cmd-V in the real app, and no real surface overrides `Surface::handles`, for the terminal to fix.
+
+**W3, hardening review (K15, R6).** Fixed: `3 C-u j` moved 12 (major), and the rest of `C-u`'s arithmetic against Evil in 12 cases. A cursor scrolled off a wrapped line lost its screen column. A frame that failed to draw waited for the next event (major by reading, not reproduced), and a launch in front could miss the keyboard (plausible, not reproduced). R6's latency code and the handover found nothing. API: `grammar::CountWas`, `window::sleep_or_retry`, `RETRY_DRAW`, `Shell::take_focus_when_active`. Open: `C-u -` isn't done and has no row. A restart in front can steal focus back if you Cmd-Tab away in that half second. Call 335 is out of date: a drag over the gutter moves the head.
+
+### Calls (veto any)
+
+**Budget and scope**
+
+441. die-vim's limit went from 5,790 to 7,000 ahead of the run (85b9410), for the Evil keys left out of M0, marks and the jump list.
+442. session's limit went from 1,086 to 1,250 ahead of the run (85b9410), for opening files in the running instance and what a restart keeps.
+443. A new module, project, got 600 lines ahead of the run (85b9410), for the walk, the finder and grep.
+444. Project search and fuzzy file finding are in core, not an extension (scope §11).
+445. die-vim's limit during the run: 7,800 (U6), 7,850 (W1), 8,050 (U8), 8,100 (V1), 8,150 (U3), 8,200 (V3), 8,500 (U6's review), 8,800 (V2).
+446. session: 1,305 (U7), 1,385 (U8). project: 750 (U3). files: 760 (U1), 780 (V2).
+447. text and undo: 1,285 (U7), 1,300 (U3), 1,420 (V3). The last is a real increase in core, for the one-pass path.
+448. workspace, windows, pointer: 1,340 (V6), 1,365 (U7). ext, dispatch, rt: 1,510 (V1, for another package's overrun), 1,525 (V3). keys, keymaps, describe: 660 (V3), 675 (U6's review).
+449. `platform::macos`: 1,160 (V6), 1,170 (U7), 1,180 (V5). Stub: 165 (U7). U7's two only cover another package's overrun. V1 moved the test that holds the macOS limit from 1,060 to 1,180 to match, and that test exists to hold the unsafe-review limit, so look at why the limit moved without it.
+450. checks: 720 (V5).
+451. Paused WIP history was squashed into one commit each (U2, U6, V5, W1), and commits carry no attribution lines, by your rule over the session's reminder.
+
+**U1**
+
+452. A run whose parent is launchd is an instance, any other from a bundle binary a client, unless it has `--handover`. A process orphaned to pid 1 before that check would become an instance, judged harmless.
+453. `die` with no files from a terminal brings the instance forward or starts one.
+454. If the focused window is a terminal, the file opens in the most recently used window that isn't, and that window takes focus. Tested only with a buffer set to Passthrough.
+455. Several files open as `:e` would, so the last is on screen. `die a b` outside a bundle still shows the first and parses no positions.
+456. Columns count characters. rg's `--column` counts bytes, so it can land off on non-ASCII lines.
+457. `+LINE PATH` takes PATH literally, and takes `+LINE:COL` too. `foo:12:3` where `foo:12` exists means line 3 of that file.
+458. A new instance gives a client's lock probe 20 ms, adding up to 20 ms to a second launch about to fail.
+459. If `~/.local/bin` isn't on PATH, the printed line adds the bundle's `Contents/MacOS` to PATH. A regular file at `~/.local/bin/die` is left alone and reported.
+460. Activation uses the deprecated `activateIgnoringOtherApps`, because the newer `activate` only takes what the active app yields.
+461. A lone terminal is split with the new window on its left, not replaced. If it's too small to split, it's replaced.
+462. `die file:line` sets a jump only with a line. A plain `die file` into another buffer gets it at the next key, as `:b` does.
+463. The jump goes through a keymap rule on `Ctx`, so core knows nothing of Evil's jump list.
+464. A file arriving during a prompt opens underneath, and the prompt stays up.
+465. `open -a DIE file` and Finder aren't built, by both agents' estimate of over 30 lines.
+
+**U2**
+
+466. Two plain `std::thread`s rather than `Ctx::spawn`, as the ranker needs a long-lived loop and the walker a stop flag. Closing the prompt stops both.
+467. `<CR>` and `<Tab>` wait for the ranker's answer for up to 2 s on the main thread, and do nothing if it doesn't come. Typing never waits.
+468. Only the best 1,000 matches reach the main thread. The count shows the true total.
+469. Non-UTF-8 paths, sockets and pipes aren't listed. A symlink to a file is. A symlink to a directory is neither followed nor listed.
+470. `.cargo/registry` is skipped only under `.cargo`. The other skips match by name at any depth, so a project directory named `target` or `Library` is skipped.
+471. If the app starts in `/` and no buffer has a directory, `find-file-project` uses home.
+
+**U3**
+
+472. `gf` does what your `gF` does, line numbers included, because the package asked. Your Evil's `gf` is plain `find-file-at-point`, which prompts on a name that isn't a file, and here it's an error. No fixture can show this, so no row. A directory counts as not a file.
+473. `:grep` keeps focus in the source window. `*grep*` goes in a window showing it, else the most recently used other window that isn't a terminal, else a split below.
+474. One row per line at its first match, so `:cn` steps by line.
+475. `[DIR]` is the last word if it names a directory, so a pattern can't end in one, and `:grep mod tests` searches `tests/`.
+476. A row shows at most 500 characters of its line.
+477. Non-UTF-8 files with no early NUL are searched, with replacement characters.
+478. `*grep*` isn't kept by the session, because its `<CR>` binding and run state can't be restored. V2 notes this may matter for restart-heavy use.
+479. `*grep*` fills its window, without max width or centering.
+480. Emacs's command names and end messages: `next-error`, `previous-error`, `compile-goto-error`, `Moved past last match`.
+481. `.claude/worktrees` is skipped by name rather than by reading `.gitignore`.
+482. Visual `gf` tries the buffer's directory and then the project root, where Evil tries only the first. No row, as the oracle can't set up files. After one that succeeds, the old buffer's selection ends, not compared.
+483. `:line:col` keeps character columns, where Evil's `gF` uses `move-to-column`, so tabs land differently.
+
+**U4**
+
+484. New deviation rule, "sections start at a bracket, whatever is open" (evil-bug, 2 cases): `]]` and `[[` go by lines starting with `(`, `[` or `{` outside a `"` string. Evil's results differ only for nested or unbalanced column-0 brackets.
+485. 8 new rows under "the last line is the last line", including `99gg`, `9g_` and `]]` with no section left.
+486. `tools/evil-oracle/oracle/user-evil.el` has `(require 'etags)`, though it otherwise mirrors init.el. I assume your running Emacs has it loaded, unchecked.
+487. `gd` also sets the search highlight, as `*` does here. Evil only flashes it.
+488. `][` and `[]` are unbound.
+489. `is_symbol` is DIE's word test plus `_-+*/&|<>=`, so non-ASCII symbols won't match Emacs's table exactly.
+490. New oracle topics go in their own files, so packages don't conflict (U4, W3).
+
+**U5**
+
+491. `:sort :d :y :m :t` are left out, at about 160 lines. A draft compiled up to a few borrow errors and never ran.
+492. `ga` on non-ASCII says `file ...`, as batch Emacs does. A graphical Emacs may print bytes.
+493. `=` rewrites leading whitespace as spaces, as the oracle's Evil has `indent-tabs-mode nil`, so it converts tab-indented lines.
+494. `&` on a block acts on the bytes from the selection's first end to its last. Not asked of the oracle.
+495. U5 regenerated `operators.json` and `ex.json` only, and W2 `ex.json` only. This entry's full regeneration matches.
+
+**U6**
+
+496. A core hook, `Ctx::on_command_ended`, rather than die-vim guessing. It fires after a key's command, a prompt's answer and a pointer press, like `post-command-hook`, and queues one call per command.
+497. C-o's return lives in that hook, and swallows any error, since no command is left to answer for it.
+498. A click counts as a command for die-vim: it ends a C-o wait and breaks a C-p or C-y run.
+499. `C-k` stays out, as scope lists digraphs as out. `C-z`, `C-h` and the global `C-b C-f C-j C-l` aren't built.
+500. `C-x C-n`, `C-x C-p`, `S-Left` and `S-Right` are built rather than given rows, as all four are in your Evil's map. `<Insert>` is unbound: Mac keyboards generally lack it, and Evil's behaviour there is quirky.
+501. All 246 cases are kept, well over about 3 per key, as they encode real behaviour and the oracle takes under a second.
+
+**U7**
+
+502. `:N` sets no jump, against the package text, as Evil's `ex-line-jumps` fixture shows.
+503. `g;`, `g,` and the `.` mark are Vim's, because your Evil has no goto-chg and only errors there. An evil-gap row with hand-written fixtures.
+504. `g;`'s list isn't saved across a restart. The `.` mark is.
+505. A mark or jump into another buffer under an operator cancels it with an error.
+506. scope §10's line also lists `^`, `{ }`, `gi` and `u` as jump sources, taken from Evil.
+507. A killed file's mark reopens the file without Evil's "Visit file again?".
+508. A jump into a killed buffer is dropped. Evil's would stick on that entry, from reading evil-jumps.el.
+509. `.` for a command with several edits is the furthest place in the text, as Vim has it for `:%s`.
+510. A new deviation kind, `not-in-scope`, for `` `( `` and `` `) ``, as DIE has no sentence motions.
+
+**U8**
+
+511. A generic extension hook with opaque JSON, so core doesn't learn about `.`. die-vim builds JSON through a re-export, so it has no serde dependency.
+512. `&`'s replacement is kept, though not on the list, since a pattern alone would make `&` delete.
+513. The search highlight doesn't come back until `n` or `N`, since it would also have to respect `:noh`.
+514. Not kept: `g;`, a `q` still recording, and the keys of an insert session open at the restart. Its text stays, and `.` stays the change before.
+515. An extension whose `save_session` panics keeps nothing for that snapshot, unlogged, as a snapshot has no `&mut Ctx`.
+
+**V1**
+
+516. `cargo xtask app --home DIR`, as the harness refuses commands that set HOME.
+517. `:qa` without `!` refuses with Cmd-Q's message. Evil may prompt. Not asked of the oracle, no row.
+518. `:wa` tries every file, past one that's refused, and returns the first error. Not asked of the oracle.
+519. `:wqa!` and `:xa!` force the writes but refuse to quit if something's left unsaved, as `:wq!` does.
+
+**V2**
+
+520. `+`, `_` and Return stop on the last line, and `+` fails there, under "the last line is the last line". 4 rows.
+521. `:bn` and `:bp` go through file buffers in opening order and wrap. Evil follows each window's history, which core doesn't keep.
+522. `:bd` refuses unsaved text instead of asking. It closes the windows on the buffer and keeps the last.
+523. PageUp and PageDown use the `C-b` and `C-f` commands. Not compared with the oracle.
+524. `C-^` shows the most recently used buffer no window shows, or else the most recent other, approximating `other-buffer`.
+525. `g$` lands two characters before the next row's start, a quirk of your Evil.
+526. `:3,2s` does nothing, with no error, as the oracle has it.
+527. `a_day.rs` repeats four leader bindings, because a die-dev dev-dependency would link a second die-vim.
+528. `:'q,.s` with an unset mark was removed rather than given a row: Evil errors during typing, DIE at Return.
+529. `:redo` isn't bound, as it errors in your Evil's batch run.
+
+**V3**
+
+530. Registers over 1 MiB stay out of the session, so a whole big file yanked is gone after a restart.
+531. A pattern over 64 KiB is an error, so `*` on a longer word says "too long".
+532. A grapheme cluster over about 1 KiB is cut. A cursor can land mid-flag deep in a run of flags, and `l` on a line of only marks says "End of line".
+533. Search highlight on lines over 1 MiB looks only within 128 KiB of the view, so `^` may highlight at that cut.
+534. A typed `C-g` ends a running macro and is consumed.
+535. MAX_RUNS stays at 100,000 macro starts between typed keys.
+
+**V4**
+
+536. The status line keeps showing only the directory, clipped in narrow splits, as `init.el` line 379 has it. V1 notes you may want the file name added.
+537. The inactive status line stays #555 on #1a1a1a with no box. Emacs draws a #3a3a3a box and DIE doesn't.
+538. The prompt list stays tall after candidates narrow, and draws over the bottom rows. I read this as vertico's grow-only default, unchecked.
+539. Only the right edge is extended. Below the grid stays the scene's background.
+540. `looks.rs` has its own copy of the small PNG writer, to avoid a dependency.
+541. The ignored test asserts four mono-dark colours. The search faces were checked by eye.
+
+**V5**
+
+542. At rest the file poll is every 5 s, Emacs's auto-revert interval, or within 1 s of any input. Your target said at most once a second.
+543. `idle-60` takes the median of 6 ten-second slices, so a burst shorter than half the run passes unnoticed.
+544. `idle-60` holds its 1.0 limit in the check too, so a plain `die --check idle-60` fails.
+
+**V6**
+
+545. U7's limits were kept over the 1,175 in the branch's unpushed commit, and no empty merge was pushed.
+546. `catch.s` is clang's `@try` output as hand-kept aarch64 assembly via `global_asm`, instead of objc2's `exception` feature, which compiles through cc and D16 keeps out. aarch64 only, enforced with a compile_error (D12).
+547. Only pasteboard, defaults, layer and key-monitor calls are guarded. Getters, `come_to_front`, `resize`, `post_key` and the like aren't, from reading, not a test.
+
+**W1**
+
+548. A scroll over a prompt's list or line moves the chosen row, replacing W2's choice to ignore it.
+549. Double-click and drag autoscroll stay unbuilt.
+550. `3ix`, a click, `y`, Esc replays "xy" at the click. Not checked against Evil, as the oracle can't click.
+
+**W2**
+
+551. `C-r` works on every prompt, past Evil, whose `/` is isearch. Rows and hand-written fixtures for `/`.
+552. `C-y` pastes the newest kill on every prompt. `C-v` is literal on `:` and `/` only, and candidates prompts keep it as page down.
+553. Cmd-V strips only trailing newlines. Inner ones draw as `^J`.
+554. A super key bound in a layer beats the prompt, so binding `<D-v>` would beat prompt paste.
+555. A window that starts showing `*messages*` goes to its end, even if a cursor was parked. An open one follows only from the last line.
+
+**W3**
+
+556. Evil's `C-u 0` is a count of zero, so `j` doesn't move. DIE treats it as none, as changing that touches every motion. Row "a count of zero".
+557. `d C-u` doesn't copy Evil writing empty text over the registers and clipboard. Row "an operator C-u cuts short".
+558. The drawing retry is 50 ms and stops while occluded or zero-sized. A GPU that keeps failing wakes the loop 20 times a second.
+559. `take_focus_when_active` stays armed after an `open -g` launch and fires on the first activation, however late. It takes nothing from another app.
+
 ## 2026-11-07: 28 packages on `m0/integration`, and none of them on `main`
 
 **Waiting on you:**

@@ -126,7 +126,7 @@ The five scheduled reviews each read a whole surface at once. The other three ru
 - `cargo xtask ci` is the same checks in a fresh clone, for when one is wanted: the tests, the oracle's pending list and the budget, with the properties at 100 cases unless `DIE_PROP_CASES` is set. It leaves out the tests marked `#[ignore]`. `guards` and the clean build run only when the diff from the merge base with main touches a `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain.toml`, a build script, `xtask/` or `tools/test-cap/`.
 - `cargo test` leaves three kinds of test for the checkpoints, each marked by the reason in its `#[ignore]`. `speed`: an absolute limit in ms or s, which load alone fails. `window`: it puts a window on your screen. `slow`: over 5 s. A limit on a ratio stays in, as long as load doesn't fail it.
 - `cargo xtask api-diff` lists every public item a branch adds, removes or changes in die-core, and every change to die-vim's grammar module. Under 09-B, a branch with a non-empty list waits for you. Everything else lands when its gate passes.
-- Each package an AI drafts starts with a test plan. That's 08's "under tests you review".
+- A package states its tests by writing them, in what it lands. No test plan comes first or waits for you, and the tests are yours to read in the review behind it.
 - A weekly note in `docs/m0-log.md` says what merged, what waits on you, what changed in the API, and where the budget stands.
 - Every problem you hit while dogfooding becomes a test first: an oracle case for die-vim, a harness test for core.
 - Every test binary has a memory limit (scope §12). A new `tests/*.rs` file starts with `use die_test_cap as _;`, and `cargo xtask lint` fails one that doesn't.
@@ -261,10 +261,9 @@ Each case's tranche comes from the keys it uses, not its topic file: a case land
   - horizontal scrolling
   - language-aware indentation
   - dark-coffee
-  - opening a file in a running DIE from a vterm
-  - an equivalent of `\\` (your fzf from home); `\f` descends from the buffer's directory instead
-  - undo history across restarts; marks, the jumplist, an undo tree
+  - undo history across restarts, an undo tree
   - S1's second-display check, whenever a display is at hand
+- **Built ahead of the rows above, in the MVP run (`m0-log.md`, 2026-11-08):** U1 opening a file from a terminal, U2 the finders, U3 `:grep` and `gf`, U4 motions, U5 edits, U6 insert state's keys, U7 marks and the jumplist, U8 what a restart keeps, V1 the real bundle, V2 a day's keys, V3 hostile input, V4 looks, V5 idle wakes, V6 the clipboard, W1 to W3 reviews of pointer, prompts and hardening.
 - **In M0, after checkpoint 4, not gating it:** `describe-key` and `describe-command`, annotations in the command palette.
 
 ## 8. Doc edits
