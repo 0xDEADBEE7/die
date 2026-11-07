@@ -29,8 +29,10 @@ note = "guard 7: 5k per build, 7k in total"
 [[crate]]
 name = "die-vim"
 path = "crates/die-vim"
-# 5,790 until the MVP run: the Evil keys left out of M0, marks and the jumplist.
-limit = 7000
+# 5,790 until the MVP run: the Evil keys left out of M0, marks and the jumplist. 7,000 until U6:
+# insert state's control keys, with Emacs's dabbrev behind C-p and C-n. 7,800 until W1: a click
+# ends a new line's claim on a blank line.
+limit = 7850
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -61,7 +63,8 @@ dev = true
 [[module]]
 crate = "die-core"
 name = "text and undo"
-limit = 1265
+# 1,265 until U7, whose named positions are about 20 lines.
+limit = 1285
 files = ["text.rs", "undo.rs", "text/", "undo/"]
 
 [[module]]
@@ -85,8 +88,8 @@ files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 [[module]]
 crate = "die-core"
 name = "workspace, windows, pointer"
-limit = 1340
-# 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs.
+limit = 1365
+# 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs. 1,340 until U7, whose lists of places are about 20.
 files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
 
 [[module]]
@@ -118,7 +121,8 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 [[module]]
 crate = "die-core"
 name = "session"
-limit = 1250
+# 1,250 until U7, whose marks and jump lists in session.json are about 50 lines.
+limit = 1305
 # 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
 # held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
@@ -159,7 +163,8 @@ files = ["check.rs"]
 crate = "die-render"
 name = "platform::macos"
 platforms = ["macos"]
-limit = 1160
+# 1,160 until U7's landing found it at 1,169 from another package.
+limit = 1170
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
@@ -168,5 +173,6 @@ files = ["platform/macos/"]
 crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
-limit = 160
+# 160 until U7's landing found it at 162 from another package.
+limit = 165
 files = ["platform/backend.rs"]
