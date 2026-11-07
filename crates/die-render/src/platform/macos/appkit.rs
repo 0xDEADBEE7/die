@@ -40,6 +40,19 @@ const CAPS_LOCK: u16 = 57;
 const SLASH: u16 = 44;
 const RETURN: u16 = 36;
 
+unsafe extern "C" {
+    fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
+}
+
+/// How many times the OS has woken this process's threads, which is what costs battery.
+pub fn process_wakeups() -> u64 {
+    // rusage_info_v0: a 16-byte id, user and system time, the two kinds of wakeup, and 6 more.
+    let mut usage = [0u64; 12];
+    // SAFETY: flavor 0 fills 96 bytes, which `usage` is, and it lives through the call.
+    let _ = unsafe { proc_pid_rusage(std::process::id() as i32, 0, usage.as_mut_ptr()) };
+    usage[4] + usage[5]
+}
+
 /// No default menu, and never activate the app on launch. With `dock`, it's a regular app
 /// with a Dock icon, and otherwise an accessory, which has none: a check's window is one. An error
 /// says what didn't take, and the loop can run without it.
