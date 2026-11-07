@@ -32,16 +32,36 @@ impl Ctx {
         self.new_sub(SubKind::Dropped(Rc::new(RefCell::new(f))))
     }
 
+    /// Run `f` from the top of the loop, before the next key is looked up, whenever a command
+    /// has run from a key, whoever's it is, a prompt has given its answer, or a pointer press has
+    /// moved the cursor (contract §6). A key that only starts a longer one runs nothing.
+    pub fn on_command_ended(&mut self, f: impl FnMut(&mut Ctx) -> Result + 'static) -> Sub {
+        self.new_sub(SubKind::Ended(Rc::new(RefCell::new(f))))
+    }
+
     /// A key failed: what's left of the fed keys goes.
     pub(crate) fn drop_fed(&mut self) {
         self.fed.clear();
+        self.queue_hooks(|kind| match kind {
+            SubKind::Dropped(f) => Some(f.clone()),
+            _ => None,
+        });
+    }
+
+    /// A command is over.
+    pub(crate) fn command_ended(&mut self) {
+        self.queue_hooks(|kind| match kind {
+            SubKind::Ended(f) => Some(f.clone()),
+            _ => None,
+        });
+    }
+
+    fn queue_hooks(&mut self, which: impl Fn(&SubKind) -> Option<TimerFn>) {
         let hooks: Vec<_> = self
             .subs
             .iter()
-            .filter_map(|e| match &e.kind {
-                SubKind::Dropped(f) if e.inner.alive.get() => Some((e.inner.clone(), f.clone())),
-                _ => None,
-            })
+            .filter(|e| e.inner.alive.get())
+            .filter_map(|e| which(&e.kind).map(|f| (e.inner.clone(), f)))
             .collect();
         for (inner, f) in hooks {
             self.queue.push_back(Queued {
