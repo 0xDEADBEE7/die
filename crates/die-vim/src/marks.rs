@@ -72,6 +72,7 @@ const JUMPS: &[&str] = &[
     "vim-repeat-substitute",
     "vim-repeat-substitute-all",
     "vim-find-file-at-point",
+    "vim-find-file-selected",
 ];
 
 /// Whether a command sets a jump before it runs.

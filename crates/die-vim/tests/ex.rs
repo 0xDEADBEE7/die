@@ -3,7 +3,7 @@
 
 use die_test_cap as _;
 
-use die_core::{BufferId, Harness, Side, WindowId};
+use die_core::{BufferId, Harness, Side, State, WindowId};
 use die_vim::Vim;
 use std::path::{Path, PathBuf};
 
@@ -294,6 +294,45 @@ fn gf_opens_from_this_directory_then_the_project_with_its_line_and_column() {
     assert_eq!(keys(&mut h, "gf"), ["File does not exist."]);
     keys(&mut h, "j");
     assert_eq!(keys(&mut h, "gf"), ["File does not exist."], "a directory");
+    assert_eq!(h.focused_buffer(), Some(b));
+}
+
+/// Your Evil's other keys for it. In batch Emacs they can only be asked about a name that isn't a
+/// file (the oracle's `gF-not-a-file` and so on), so the opening is held here.
+#[test]
+fn the_bracket_keys_open_the_file_as_gf_does() {
+    let (_dir, mut h, b) = in_project("gf-brackets", "near.txt:2\n");
+    for key in ["]f", "[f", "]F", "[F"] {
+        assert_eq!(keys(&mut h, key), Vec::<String>::new(), "{key}");
+        assert_eq!(at_file(&h), ("near.txt".to_string(), 2, 1), "{key}");
+        keys(&mut h, "<C-o>");
+        assert_eq!(h.focused_buffer(), Some(b), "{key}");
+    }
+}
+
+#[test]
+fn gf_on_a_selection_takes_it_as_the_whole_name() {
+    let (_dir, mut h, b) = in_project("gf-visual", "lib/far.txt:2 there\nnear.txt\n");
+    assert_eq!(
+        keys(&mut h, "vt:gf"),
+        Vec::<String>::new(),
+        "from the project"
+    );
+    assert_eq!(at_file(&h).0, "far.txt");
+    assert_eq!(h.state_of(b), State::Normal, "the selection ended");
+    keys(&mut h, "<C-o>");
+    assert_eq!(h.focused_buffer(), Some(b), "C-o comes back");
+
+    keys(&mut h, "0vf2");
+    let no_position = keys(&mut h, "gf");
+    assert_eq!(
+        no_position,
+        ["Can't find file \"lib/far.txt:2\" in path"],
+        "a position isn't read from a selection"
+    );
+    assert_eq!(h.state_of(b), State::Visual, "it stays");
+    keys(&mut h, "<Esc>j");
+    assert_eq!(keys(&mut h, "Vgf").len(), 1, "a line holds its newline");
     assert_eq!(h.focused_buffer(), Some(b));
 }
 

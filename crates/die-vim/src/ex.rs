@@ -224,18 +224,28 @@ pub fn find_file_at_point(ctx: &mut Ctx, a: &Args) -> Result {
     ctx.open_target(&target).map(drop)
 }
 
+/// Your Evil's `evil-find-file-at-point-visual`: the selection is the whole name, with no position
+/// read from it, tried from the same places as `gf`. Failing, the selection stays.
+pub fn find_file_selected(ctx: &mut Ctx, a: &Args) -> Result {
+    let (b, _) = buffer_window(ctx, a)?;
+    let name = visual::region_text(ctx, a)?;
+    let dir = absolute(ctx.directory(b), "");
+    let tries = [dir.clone(), project_root(&dir)].map(|base| absolute(Some(&base), &name));
+    let Some(path) = tries.into_iter().find(|p| p.is_file()) else {
+        return Err(Error::Msg(format!("Can't find file \"{name}\" in path")));
+    };
+    visual::escape(ctx, a)?;
+    let (line, col) = (None, None);
+    ctx.open_target(&FileTarget { path, line, col }).map(drop)
+}
+
 /// The file name around byte `at` of `line`, and what comes after it, with the characters ffap
 /// takes for a file (`ffap-string-at-point-mode-alist`), and without those it strips from the ends.
 fn name_at(line: &str, at: usize) -> Option<(&str, &str)> {
     let names =
         |c: char| c.is_alphabetic() || c.is_ascii_digit() || "-./:\\${}+<>@_~*?#".contains(c);
-    let back = line[..at].rfind(|c| !names(c));
-    let start = back.map_or(0, |i| {
-        i + line[i..].chars().next().map_or(1, char::len_utf8)
-    });
-    let end = line[at..]
-        .find(|c| !names(c))
-        .map_or(line.len(), |i| at + i);
+    let start = line[..at].trim_end_matches(names).len();
+    let end = line.len() - line[at..].trim_start_matches(names).len();
     let name = line[start..end].trim_start_matches(['{', '<', '@']);
     let name = name.trim_end_matches(['@', '>', ';', '.', ',', '!', ':', '}']);
     (!name.is_empty()).then_some((name, &line[end..]))

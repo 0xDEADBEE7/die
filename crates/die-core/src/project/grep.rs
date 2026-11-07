@@ -140,10 +140,10 @@ fn scan(rel: &str, text: &str, pat: &Pattern, limit: usize, out: &mut Rows) {
         let (shown, more) = cut.map_or((shown, ""), |(at, _)| (&shown[..at], " ..."));
         let _ = writeln!(out.text, "{rel}:{line}:{col}: {shown}{more}");
         out.count += 1;
-        if out.count >= limit {
+        if out.count >= limit || end == text.len() {
             return;
         }
-        (line, line_at) = (line + 1, (end + 1).min(text.len()));
+        (line, line_at) = (line + 1, end + 1);
     }
 }
 
@@ -157,21 +157,18 @@ fn search(root: &Path, pat: &Pattern, stop: &AtomicBool, board: &Board, waker: &
             if stop.load(Ordering::Relaxed) {
                 return;
             }
-            let Some(text) = read_text(&root.join(&rel)) else {
-                continue;
-            };
-            let had = rows.count;
-            scan(&rel, &text, pat, had + MAX_ROWS - ended.rows, &mut rows);
-            if rows.count == had {
-                continue;
+            if let Some(text) = read_text(&root.join(&rel)) {
+                let had = rows.count;
+                scan(&rel, &text, pat, had + MAX_ROWS - ended.rows, &mut rows);
+                ended.files += usize::from(rows.count > had);
+                ended.rows += rows.count - had;
             }
-            ended.files += 1;
-            ended.rows += rows.count - had;
             if ended.rows >= MAX_ROWS {
                 stop.store(true, Ordering::Relaxed);
                 return;
             }
-            if published.is_none_or(|at| at.elapsed() >= PUBLISH_EVERY) {
+            // Not only after a match: the rows held back may be the last for a long while.
+            if rows.count > 0 && published.is_none_or(|at| at.elapsed() >= PUBLISH_EVERY) {
                 board.put(std::mem::take(&mut rows), waker);
                 published = Some(Instant::now());
             }
@@ -307,8 +304,10 @@ impl Ctx {
     }
 
     /// Go to the result in line `row` of the buffer, as Emacs's `compilation-goto-locus` does: in
-    /// the focused window unless that has the results or a terminal, then in the one used last
-    /// that has neither, or else a split. That window takes the focus.
+    /// the focused window unless that has the results or a terminal, then in the one that has the
+    /// file, or the one used last that has neither, or else a split. That window takes the focus.
+    /// A file that's gone since is an error, not a new empty buffer, and the row still counts as
+    /// visited, so `:cn` goes on past it.
     fn grep_visit(&mut self, row: usize) -> Result {
         let no_results = || Error::Msg("No grep results".into());
         let g = self.grep.as_ref().ok_or_else(no_results)?;
@@ -329,9 +328,17 @@ impl Ctx {
         if let Some(g) = self.grep.as_mut() {
             g.current = Some(row);
         }
+        if !target.path.is_file() {
+            return Err(Error::Msg(format!("{path} no longer exists")));
+        }
+        let file = self.open_file(&target.path)?;
         if !self.focused.is_some_and(|w| self.takes_source(w, buf)) {
-            let mut others = self.windows_by_use().into_iter();
-            match (others.find(|w| self.takes_source(*w, buf)), self.focused) {
+            let by_use = self.windows_by_use();
+            let has_file = by_use
+                .iter()
+                .find(|w| self.window_buffer(**w) == Some(file));
+            let other = has_file.or_else(|| by_use.iter().find(|w| self.takes_source(**w, buf)));
+            match (other.copied(), self.focused) {
                 (Some(w), _) => self.focus(w),
                 (None, Some(w)) => {
                     if let Ok(new) = self.split_window(w, Side::Below) {

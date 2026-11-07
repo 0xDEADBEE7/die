@@ -65,5 +65,10 @@
   {"id": "gamp-before-any-pattern", "keys": "g&", "text": ["  a|a", "  a a"]},
   {"id": "gamp-from-selection", "keys": ":s/a/b/<CR>uVg&", "text": ["|a a", "a a", "x"]},
   {"id": "s-tilde-is-the-last-replacement", "keys": ":s/a/b/<CR>:s/c/~/<CR>", "text": ["|a c", "a a"]},
-  {"id": "ex-ampamp-keeps-flags", "keys": ":s/a/b/g<CR>j:&&<CR>", "text": ["|a a", "a a"]}
+  {"id": "ex-ampamp-keeps-flags", "keys": ":s/a/b/g<CR>j:&&<CR>", "text": ["|a a", "a a"]},
+  {"id": "gF-not-a-file", "keys": "gF", "text": ["see |nowhere.zzz here"]},
+  {"id": "bracket-F-not-a-file", "keys": "]F", "text": ["see |nowhere.zzz here"]},
+  {"id": "gF-not-a-name", "keys": "gF", "text": ["see| (nowhere)", "x"]},
+  {"id": "visual-gf-not-a-file", "keys": "vegf", "text": ["see |nowhere.zzz here"]},
+  {"id": "visual-line-gf-not-a-file", "keys": "Vgf", "text": ["|nowhere.zzz"]}
  ]}
