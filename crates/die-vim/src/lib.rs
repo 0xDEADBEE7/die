@@ -48,7 +48,8 @@ use objects::OBJECTS;
 use operators::Pending;
 use repeat::{Change, Recorder};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 /// The die-vim extension.
@@ -83,6 +84,8 @@ pub struct Vim {
     seen: HashMap<WindowId, (BufferId, usize)>,
     /// Each buffer's `g;` and `g,`.
     changes: HashMap<BufferId, marks::Changes>,
+    /// Where each file's `A` to `Z` were last seen, which outlives its buffer.
+    file_marks: BTreeMap<char, (PathBuf, usize)>,
     /// How the count waiting in core's prefix came about.
     count_was: grammar::CountWas,
     /// The last `:s`'s replacement and whether it had `g`, which `&` and `~` use.

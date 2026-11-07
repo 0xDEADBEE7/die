@@ -268,7 +268,18 @@
         { "case": "marks/g-semi-oldest", "fixture": "hand-written/marks.json" },
         { "case": "marks/g-semi-same-line-is-one", "fixture": "hand-written/marks.json" },
         { "case": "marks/g-semi-then-comma", "fixture": "hand-written/marks.json" },
-        { "case": "marks/g-semi-three-lines", "fixture": "hand-written/marks.json" }
+        { "case": "marks/g-semi-three-lines", "fixture": "hand-written/marks.json" },
+        { "case": "marks/dot-mark-substitute", "note": "`.` is the last line :s changed, as in Vim", "fixture": "hand-written/marks.json" }
+      ]
+    },
+    {
+      "rule": "no sentence motions, so no marks ( and )",
+      "kind": "not-in-scope",
+      "evil": "`( and `) run evil-backward-sentence-begin and evil-forward-sentence-begin, and ( and ) are those motions.",
+      "die_vim": "Scope section 10 has no sentence motions, so ( and ) aren't bound, and `( and `) say the marker isn't set. m( and m) are errors in both.",
+      "cases": [
+        { "case": "marks/backtick-sentence-forward", "fixture": "hand-written/marks.json" },
+        { "case": "marks/backtick-sentence-backward", "fixture": "hand-written/marks.json" }
       ]
     },
     {

@@ -160,5 +160,20 @@
   {"id": "dot-mark-undo", "keys": "jxu`.", "text": ["|ab", "cd"]},
   {"id": "m-in-visual-line", "keys": "Vma<Esc>G`a", "text": ["|ab", "cd", "ef"]},
   {"id": "m-in-visual-backward", "keys": "$vhma<Esc>0`a", "text": ["|abc"]},
-  {"id": "m-in-visual-line-backward", "keys": "jVkma<Esc>G`a", "text": ["|ab", "cd", "ef"]}
+  {"id": "m-in-visual-line-backward", "keys": "jVkma<Esc>G`a", "text": ["|ab", "cd", "ef"]},
+  {"id": "sub-jumps", "keys": "3Gj:s/c/x/<CR>k<C-o>", "text": ["|a1", "c2", "c3", "c4", "c5"], "buffer": "*new*"},
+  {"id": "amp-jumps", "keys": "3G:s/c/x/<CR>j&k<C-o>", "text": ["|a1", "c2", "c3", "c4", "c5"], "buffer": "*new*"},
+  {"id": "g-amp-jumps", "keys": "3G:s/c/x/<CR>jg&k<C-o>", "text": ["|a1", "c2", "c3", "c4", "c5"], "buffer": "*new*"},
+  {"id": "bracket-sub", "keys": ":s/a/b/<CR>G`[", "text": ["|xa", "y"]},
+  {"id": "bracket-sub-end", "keys": ":s/a/b/<CR>G`]", "text": ["|xa", "y"]},
+  {"id": "bracket-sub-no-match", "keys": ":s/zz/b/<CR>j`[", "text": ["|xa", "y"]},
+  {"id": "bracket-sub-all-end", "keys": ":%s/a/bb/<CR>gg`]", "text": ["|xa", "ya", "z"]},
+  {"id": "bracket-amp-end", "keys": ":s/a/b/<CR>j&gg`]", "text": ["|xa", "ya", "z"]},
+  {"id": "backtick-esc", "keys": "`<Esc>x", "text": ["|one two"]},
+  {"id": "quote-esc", "keys": "'<Esc>x", "text": ["|one two"]},
+  {"id": "d-backtick-esc", "keys": "d`<Esc>x", "text": ["|one two"]},
+  {"id": "backtick-sentence-forward", "keys": "`)", "text": ["|a. b. c.", "d. e."]},
+  {"id": "backtick-sentence-backward", "keys": "j`(", "text": ["|a. b. c.", "d. e."]},
+  {"id": "dot-mark-substitute", "keys": ":%s/a/bb/<CR>gg`.", "text": ["|xa", "ya", "z"]},
+  {"id": "c-backtick-dot", "keys": "wwmabbc`axx<Esc>$.", "text": ["|one two three"]}
 ]}
