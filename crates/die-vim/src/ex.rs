@@ -126,7 +126,11 @@ fn write_all(ctx: &mut Ctx, force: bool) -> Result {
     for b in ctx.buffer_list() {
         let unsaved = ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified());
         if unsaved {
-            let saved = if force { ctx.save_force(b) } else { ctx.save(b) };
+            let saved = if force {
+                ctx.save_force(b)
+            } else {
+                ctx.save(b)
+            };
             first = first.and(saved);
         }
     }

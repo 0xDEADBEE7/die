@@ -138,7 +138,10 @@ fn wa_writes_every_file_and_qa_leaves_only_with_nothing_unsaved() {
     assert_eq!(keys(&mut h, ":qa<CR>").len(), 1);
     assert!(!h.quit_wanted());
     assert!(keys(&mut h, ":wa<CR>").is_empty());
-    assert_eq!((read(&path), read(&other)), ("xone\n".into(), "ytwo\n".into()));
+    assert_eq!(
+        (read(&path), read(&other)),
+        ("xone\n".into(), "ytwo\n".into())
+    );
     assert!(!h.text(b).unwrap().modified());
     assert!(keys(&mut h, ":qa<CR>").is_empty());
     assert!(h.quit_wanted());
