@@ -132,6 +132,7 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-search-previous", "N: the last search again, the other way.", |ctx, a| search::again(ctx, a, true)),
     ("vim-search-word-forward", "*: search forward for the word under the cursor.", |ctx, a| search::word(ctx, a, true)),
     ("vim-search-word-backward", "#: search backward for the word under the cursor.", |ctx, a| search::word(ctx, a, false)),
+    ("vim-goto-definition", "gd: to the first place in the text with the symbol under the cursor, as your Evil's falls back to.", search::definition),
     ("vim-cancel", "Escape after a key that waits for another: only the operator, the count and the goal column go.", operators::cancel),
     ("vim-replace", "r: replace count characters with the next key.", operators::replace),
     ("vim-join", "J: join count lines.", operators::join),
@@ -256,7 +257,8 @@ impl Extension for Vim {
         // Anything else cancels an operator, and so does a key that fails under a prefix,
         // which core wouldn't try against <any> (contract §7).
         for keys in [
-            "<Esc>", "<any>", "i<any>", "a<any>", "g<any>", "f<any>", "F<any>", "t<any>", "T<any>",
+            "<Esc>", "<any>", "i<any>", "a<any>", "g<any>", "[<any>", "]<any>", "f<any>", "F<any>",
+            "t<any>", "T<any>",
         ] {
             k.bind(OperatorPending, keys, "vim-cancel");
         }
@@ -296,7 +298,8 @@ impl Extension for Vim {
                 .bind(state, "n", "vim-search-next")
                 .bind(state, "N", "vim-search-previous")
                 .bind(state, "*", "vim-search-word-forward")
-                .bind(state, "#", "vim-search-word-backward");
+                .bind(state, "#", "vim-search-word-backward")
+                .bind(state, "gd", "vim-goto-definition");
         }
         for &(keys, name, ..) in window::MAP {
             for key in keys.split_whitespace() {

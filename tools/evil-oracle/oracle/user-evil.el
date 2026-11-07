@@ -55,5 +55,10 @@
 ;; In batch mode `transient-mark-mode' starts off; the GUI has it on.
 (transient-mark-mode 1)
 
+;;; The first `gd' of a session signals until xref's etags methods are loaded, as your
+;;; running Emacs has them by then. The oracle loads them so that no case is first.
+
+(require 'etags)
+
 (provide 'user-evil)
 ;;; user-evil.el ends here
