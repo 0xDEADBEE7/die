@@ -328,7 +328,9 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
     ctx.messages.extend(unopened);
     latency.stage("core");
     let mut builder = EventLoop::<Wake>::with_user_event();
-    driver::prepare_loop(&mut builder, options.script.is_none());
+    if let Err(e) = driver::prepare_loop(&mut builder, options.script.is_none()) {
+        ctx.messages.push(e);
+    }
     let event_loop = builder.build().map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
     let wake = proxy.clone();

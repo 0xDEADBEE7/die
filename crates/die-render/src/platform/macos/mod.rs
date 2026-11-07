@@ -3,6 +3,8 @@
 
 /// AppKit.
 pub mod appkit;
+/// Catching Objective-C exceptions.
+pub mod catch;
 /// The system clipboard.
 pub mod clipboard;
 /// Metal.

@@ -241,6 +241,8 @@ struct FakeState {
     held: Option<Register>,
     count: u64,
     writes: Vec<Register>,
+    reads: u64,
+    failing: bool,
 }
 
 /// A clipboard in memory, shared by its clones, so a test keeps one and gives core the other
@@ -264,6 +266,20 @@ impl FakeClipboard {
     pub fn held(&self) -> Option<Register> {
         self.0.borrow().held.clone()
     }
+    /// How many times it's been read.
+    pub fn reads(&self) -> u64 {
+        self.0.borrow().reads
+    }
+    /// From now on every call fails, or none does, as the system's can.
+    pub fn set_failing(&self, failing: bool) {
+        self.0.borrow_mut().failing = failing;
+    }
+    fn check(&self) -> Result<(), String> {
+        match self.0.borrow().failing {
+            true => Err("the clipboard failed".into()),
+            false => Ok(()),
+        }
+    }
     /// Everything written since the last call, oldest first.
     pub fn take_writes(&self) -> Vec<Register> {
         std::mem::take(&mut self.0.borrow_mut().writes)
@@ -271,16 +287,21 @@ impl FakeClipboard {
 }
 
 impl Clipboard for FakeClipboard {
-    fn read(&mut self) -> Option<Register> {
-        self.held()
+    fn read(&mut self) -> Result<Option<Register>, String> {
+        self.0.borrow_mut().reads += 1;
+        self.check()?;
+        Ok(self.held())
     }
-    fn write(&mut self, r: &Register) {
+    fn write(&mut self, r: &Register) -> Result<(), String> {
+        self.check()?;
         let mut s = self.0.borrow_mut();
         s.held = Some(r.clone());
         s.writes.push(r.clone());
         s.count += 1;
+        Ok(())
     }
-    fn change_count(&mut self) -> u64 {
-        self.0.borrow().count
+    fn change_count(&mut self) -> Result<u64, String> {
+        self.check()?;
+        Ok(self.0.borrow().count)
     }
 }
