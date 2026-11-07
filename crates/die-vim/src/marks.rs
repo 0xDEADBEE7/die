@@ -3,8 +3,9 @@
 //!
 //! **Marks** are core's named positions ([`TextBuf::mark`]), so they move with edits and the
 //! session keeps them. Any character names one. `A` to `Z` are one each across buffers, and live
-//! in the buffer they point into. `[` and `]` are what the last operator or paste covered, `^`
-//! where insert state ended, `<` and `>` the last selection, and `.` the last change.
+//! in the buffer they point into. A file's outlive its buffer, and going to one visits the file
+//! again. `[` and `]` are what the last operator or paste covered, `^` where insert state ended,
+//! `<` and `>` the last selection, and `.` the last change.
 //!
 //! **The jump list** is core's [`PlaceList`] for the window, newest first, as Evil's ring is. A
 //! command Evil gives `:jump` sets a jump where the cursor is before it runs, whether or not it
@@ -26,8 +27,8 @@ use crate::repeat::Change;
 use crate::text::indent_end;
 use crate::visual;
 use die_core::{
-    Args, BufferId, Ctx, Error, Gravity, MarkerId, Place, PlaceList, Result, Selection, Shape,
-    ShowIn, State, TextBuf, WindowId,
+    Args, BufferId, Ctx, Error, Gravity, LOG_CAP, MarkerId, Place, PlaceList, Result, Selection,
+    Shape, ShowIn, State, TextBuf, WindowId,
 };
 
 /// What your Evil's rings hold.
@@ -36,6 +37,8 @@ const MAX_JUMPS: usize = 100;
 const MAX_CHANGES: usize = 100;
 /// Vim's reach for a change that replaces the last one, with no `textwidth`.
 const SAME_CHANGE: usize = 79;
+/// An operator can't reach into another buffer.
+const OTHER_BUFFER: &str = "That's in another buffer";
 
 /// The commands Evil gives `:jump`, as this crate names them.
 const JUMPS: &[&str] = &[
@@ -60,6 +63,8 @@ const JUMPS: &[&str] = &[
     "vim-goto-mark",
     "vim-goto-mark-line",
     "vim-insert-resume",
+    "vim-repeat-substitute",
+    "vim-repeat-substitute-all",
     "vim-find-file-at-point",
     "vim-find-file-selected",
 ];
@@ -122,7 +127,19 @@ pub fn after(ctx: &mut Ctx, a: &Args, quiet: bool) {
         crossed(ctx, w, b);
     }
     note_changes(ctx, b);
+    note_file_marks(ctx, b);
     let _ = ctx.with_ext(|v: &mut Vim, _| v.seen.insert(w, (b, pos)));
+}
+
+/// Where a file's `A` to `Z` are, for when its buffer is killed and takes its marks with it. A kill
+/// comes from a command, so this is up to date by then.
+fn note_file_marks(ctx: &mut Ctx, b: BufferId) {
+    let (Ok(t), Some(file)) = (ctx.text(b), ctx.file(b)) else {
+        return;
+    };
+    let held = t.marks().filter(|m| m.0.is_ascii_uppercase());
+    let held: Vec<_> = held.map(|m| (m.0, (file.path.clone(), m.1))).collect();
+    let _ = ctx.with_ext(|v: &mut Vim, _| v.file_marks.extend(held));
 }
 
 /// [`Ctx::set_jump_rule`]: this window is about to go far with no key. A jump, as ahead of a
@@ -258,7 +275,7 @@ fn go(ctx: &mut Ctx, a: &Args, (to, pos): Spot, kind: Kind, line: bool) -> Resul
     }
     if ctx.state_of(b) == State::OperatorPending {
         operators::cancel(ctx, a)?;
-        return Err(Error::Msg("That's in another buffer".into()));
+        return Err(Error::Msg(OTHER_BUFFER.into()));
     }
     ctx.show(to, ShowIn::Current)?;
     let t = ctx.text_mut(to)?;
@@ -302,6 +319,7 @@ pub fn set(ctx: &mut Ctx, a: &Args) -> Result {
                         t.remove_mark(name);
                     }
                 }
+                ctx.with_ext(|v: &mut Vim, _| v.file_marks.remove(&name))?;
             }
             ctx.text_mut(b)?.set_mark(name, at, Gravity::Left)
         }
@@ -336,7 +354,8 @@ pub fn goto(ctx: &mut Ctx, a: &Args, line: bool) -> Result {
         Kind::Exclusive
     };
     let Some(name) = a.char() else {
-        return operators::cancel(ctx, a);
+        operators::cancel(ctx, a)?;
+        return Err(Error::Msg("That key's marker is not set".into()));
     };
     if matches!(name, '{' | '}') {
         let run = if name == '{' {
@@ -353,10 +372,11 @@ pub fn goto(ctx: &mut Ctx, a: &Args, line: bool) -> Result {
             t.selection(w)
                 .map(|s| (b, selection_end(t, s, name == '<')))
         }
-        'A'..='Z' => ctx
-            .buffer_list()
-            .into_iter()
-            .find_map(|o| ctx.text(o).ok()?.mark(name).map(|p| (o, p))),
+        'A'..='Z' => {
+            let mut live = ctx.buffer_list().into_iter();
+            let live = live.find_map(|o| ctx.text(o).ok()?.mark(name).map(|p| (o, p)));
+            live.map_or_else(|| visit_again(ctx, a, b, name), |spot| Ok(Some(spot)))?
+        }
         _ => ctx.text(b)?.mark(name).map(|p| (b, p)),
     };
     let Some(spot) = spot else {
@@ -364,6 +384,25 @@ pub fn goto(ctx: &mut Ctx, a: &Args, line: bool) -> Result {
         return Err(Error::Msg(format!("Marker `{name}' is not set")));
     };
     go(ctx, a, spot, kind, line)
+}
+
+/// Evil's `evil-swap-out-markers`: the mark of a file whose buffer was killed is the file and a
+/// position. Your Evil asks before visiting it again, and this doesn't: the key was the asking.
+fn visit_again(ctx: &mut Ctx, a: &Args, b: BufferId, name: char) -> Result<Option<Spot>> {
+    let held = ctx.with_ext(|v: &mut Vim, _| v.file_marks.get(&name).cloned())?;
+    let Some((path, pos)) = held else {
+        return Ok(None);
+    };
+    if ctx.state_of(b) == State::OperatorPending {
+        operators::cancel(ctx, a)?;
+        return Err(Error::Msg(OTHER_BUFFER.into()));
+    }
+    let file = ctx.open_file(&path)?;
+    let t = ctx.text_mut(file)?;
+    let pos = pos.min(t.len());
+    let pos = (0..=pos).rev().find(|p| t.is_boundary(*p)).unwrap_or(0);
+    t.set_mark(name, pos, Gravity::Left)?;
+    Ok(Some((file, pos)))
 }
 
 /// Evil's `evil-jump-backward-swap`, which is what the marks `` ` `` and `'` are: where it lands
@@ -465,18 +504,15 @@ fn note_changes(ctx: &mut Ctx, b: BufferId) {
     match &mut c {
         Some(c) if c.rev == rev => {}
         Some(c) => {
-            let last = t.edits_since(c.rev).and_then(|changes| {
-                let last = changes.filter(|e| !e.silent).last()?;
-                Some((last.start, last.new_end))
-            });
+            // Past what the log holds, what it still has is the best there is.
+            let edits = t
+                .edits_since(c.rev)
+                .or_else(|| t.edits_since(rev.saturating_sub(LOG_CAP as u64)));
+            let last = edits.and_then(last_change);
             c.rev = rev;
-            if let Some((start, new_end)) = last {
-                let at = if new_end > start {
-                    crate::text::prev_stop(t, new_end).unwrap_or(start)
-                } else {
-                    start
-                };
-                changed(t, c, at);
+            if let Some((pos, inserted)) = last {
+                let at = inserted.then(|| crate::text::prev_stop(t, pos)).flatten();
+                changed(t, c, at.unwrap_or(pos));
             }
         }
         None => {
@@ -490,6 +526,16 @@ fn note_changes(ctx: &mut Ctx, b: BufferId) {
         }
     }
     let _ = ctx.with_ext(|v: &mut Vim, _| v.changes.insert(b, c.unwrap_or_default()));
+}
+
+/// Where the furthest of these changes ended in the text as it is now, and whether that's the end
+/// of text they put there. `:%s` commits its edits from the last line up.
+fn last_change<'a>(edits: impl Iterator<Item = &'a die_core::Change>) -> Option<(usize, bool)> {
+    let kept = edits.filter(|e| !e.silent);
+    kept.fold(None, |held, e| match held {
+        Some((p, inserted)) if p >= e.old_end => Some((p - e.old_end + e.new_end, inserted)),
+        _ => Some((e.new_end.max(e.start), e.new_end > e.start)),
+    })
 }
 
 fn changed(t: &mut TextBuf, c: &mut Changes, at: usize) {

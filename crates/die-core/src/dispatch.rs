@@ -301,6 +301,7 @@ impl Ctx {
             ..Default::default()
         };
         let r = self.run(name, &args);
+        self.command_ended();
         if r.is_err() {
             self.drop_fed(); // a macro stops where it fails (contract §6)
         }

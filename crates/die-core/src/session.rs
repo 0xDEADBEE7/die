@@ -79,6 +79,9 @@ pub struct Kept {
 
 /// The schema this build writes.
 pub const VERSION: u32 = 1;
+/// A register holding more than this stays out of the session: a whole big file yanked would
+/// otherwise be copied at the next look, and written, each time any register changes.
+const LARGEST_REGISTER: usize = 1 << 20;
 /// The session, in the state directory.
 pub const FILE: &str = "session.json";
 /// The copy before it.
@@ -621,6 +624,7 @@ impl Ctx {
             let mut list: Vec<_> = self
                 .registers
                 .iter()
+                .filter(|(_, r)| r.text.len() <= LARGEST_REGISTER)
                 .map(|(name, r)| RegisterRecord {
                     name: *name,
                     kind: r.kind,

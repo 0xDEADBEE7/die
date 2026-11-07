@@ -53,6 +53,9 @@
         { "case": "macros/macro-records-count", "note": "the macro's final j fails on the last line, so the cursor stays on line 2, with an error Evil's run doesn't have", "fixture": "hand-written/macros.json" },
         { "case": "macros/q-empties-register-j", "note": "j stops on the last line, so a macro ends there", "fixture": "hand-written/macros.json" },
         { "case": "repeat/v-D-dot", "note": "after the last lines go, the cursor is on the new last line, in the column the delete started in", "fixture": "hand-written/repeat.json" },
+        { "case": "insert-keys/C-o-w-last-word", "note": "w stops on the last character, and a C-o goes back from there", "fixture": "hand-written/insert-keys.json" },
+        { "case": "insert-keys/C-o-G-last-line", "note": "G stops on the last line, in the column it was in", "fixture": "hand-written/insert-keys.json" },
+        { "case": "insert-keys/C-o-dd-last-line", "note": "dd leaves the cursor on the new last line, and past its end, as your Evil does without the final newline", "fixture": "hand-written/insert-keys.json" },
         { "case": "visual-corners/v-G-d", "note": "G in visual state stops on the last line, so it takes as far as the goal column there, and the newline stays", "fixture": "hand-written/visual-corners.json" }
       ]
     },
@@ -268,7 +271,18 @@
         { "case": "marks/g-semi-oldest", "fixture": "hand-written/marks.json" },
         { "case": "marks/g-semi-same-line-is-one", "fixture": "hand-written/marks.json" },
         { "case": "marks/g-semi-then-comma", "fixture": "hand-written/marks.json" },
-        { "case": "marks/g-semi-three-lines", "fixture": "hand-written/marks.json" }
+        { "case": "marks/g-semi-three-lines", "fixture": "hand-written/marks.json" },
+        { "case": "marks/dot-mark-substitute", "note": "`.` is the last line :s changed, as in Vim", "fixture": "hand-written/marks.json" }
+      ]
+    },
+    {
+      "rule": "no sentence motions, so no marks ( and )",
+      "kind": "not-in-scope",
+      "evil": "`( and `) run evil-backward-sentence-begin and evil-forward-sentence-begin, and ( and ) are those motions.",
+      "die_vim": "Scope section 10 has no sentence motions, so ( and ) aren't bound, and `( and `) say the marker isn't set. m( and m) are errors in both.",
+      "cases": [
+        { "case": "marks/backtick-sentence-forward", "fixture": "hand-written/marks.json" },
+        { "case": "marks/backtick-sentence-backward", "fixture": "hand-written/marks.json" }
       ]
     },
     {

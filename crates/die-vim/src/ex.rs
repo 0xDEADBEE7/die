@@ -1,7 +1,7 @@
 //! The `:` command line. K11a gives it its input; V2 and V5 fill in what it does.
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
-use crate::{insert_keys, substitute, visual, window};
+use crate::{substitute, visual, window};
 use die_core::{Args, BufferId, Ctx, Error, FileTarget, PromptSpec, Result, ShowIn, project_root};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -18,14 +18,9 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
         visual::escape(ctx, a)?;
         spec = spec.initial(substitute::VISUAL);
     }
-    let a = a.clone();
-    ctx.prompt(spec, move |ctx, answer| {
-        let r = match answer {
-            Some(text) => run(ctx, &text),
-            None => Ok(()),
-        };
-        insert_keys::after_command(ctx, &a, &r);
-        r
+    ctx.prompt(spec, |ctx, answer| match answer {
+        Some(text) => run(ctx, &text),
+        None => Ok(()),
     });
     Ok(())
 }
@@ -36,6 +31,9 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     let text = text.trim().trim_start_matches(':').trim_start();
     if let Some((range, rest)) = substitute::parse(text) {
+        // Your Evil gives `:s` `:jump`, and runs it with the hook a key's command gets. `:N` has
+        // no command, so it isn't a jump.
+        crate::marks::before(ctx, &Args::default(), true);
         return substitute::run(ctx, range, rest);
     }
     let text = without_range(text)?;
