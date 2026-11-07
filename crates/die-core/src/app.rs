@@ -10,7 +10,7 @@
 //! The pointer on text windows is here too (K14). A left press focuses the window under it, stops
 //! a selection or a waiting operator as the keymap's `<Esc>` does, and places the cursor. A drag
 //! that leaves that cell selects in visual state, and a scroll moves the view of the window under
-//! it, without the focus.
+//! it, without the focus, or goes through an open prompt's list when it's over that.
 #![warn(missing_docs)]
 use crate::ext::*;
 use crate::ids::*;
@@ -225,20 +225,25 @@ impl Ctx {
         }
     }
 
-    /// Scroll by whole rows once they add up. A cursor the view leaves behind comes to the row
-    /// it left by, at its column, since core would otherwise scroll back to it (C5).
-    fn pointer_scroll(&mut self, w: WindowId, dy: f32) {
+    /// The whole rows a scroll has added up to, keeping what's short of one.
+    fn scrolled_rows(&mut self, dy: f32) -> isize {
         if !dy.is_finite() {
-            return;
+            return 0;
         }
         self.pointer.scroll += dy;
         let rows = self.pointer.scroll.trunc();
         self.pointer.scroll -= rows;
-        let Some(buf) = self.window_buffer(w).filter(|_| rows != 0.0) else {
+        rows as isize
+    }
+
+    /// Scroll by whole rows once they add up. A cursor the view leaves behind comes to the row
+    /// it left by, at its column, since core would otherwise scroll back to it (C5).
+    fn pointer_scroll(&mut self, w: WindowId, rows: isize) {
+        let Some(buf) = self.window_buffer(w).filter(|_| rows != 0) else {
             return;
         };
         let Ok(t) = self.text_mut(buf) else { return };
-        t.scroll_rows(w, rows as isize);
+        t.scroll_rows(w, rows);
         let (Some(v), Some(sel)) = (t.viewport(w), t.selection(w)) else {
             return;
         };
@@ -276,7 +281,15 @@ impl Ctx {
         });
         match (p.kind, hit) {
             (PointerKind::Release(Button::Left), _) => self.pointer.pressed = None,
-            (PointerKind::Scroll { dy, .. }, Some(hit)) => self.pointer_scroll(hit.window, dy),
+            (PointerKind::Scroll { dy, .. }, Some(hit)) => {
+                let rows = self.scrolled_rows(dy);
+                self.pointer_scroll(hit.window, rows);
+            }
+            // Over the prompt, a scroll goes through its list, which follows the chosen row.
+            (PointerKind::Scroll { dy, .. }, None) if self.prompt.is_some() => {
+                let rows = self.scrolled_rows(dy);
+                self.prompt_step(rows);
+            }
             // The prompt has the keys, and it stays on the window it opened in.
             _ if self.prompt.is_some() => {}
             (PointerKind::Press(Button::Left), _) => {
