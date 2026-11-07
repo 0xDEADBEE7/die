@@ -653,6 +653,8 @@ pub enum DeviationKind {
     NeedsModes,
     /// Emacs dies on this case, so the oracle has none. What die-vim does is its fixture's say.
     OracleDies,
+    /// Your Evil has it, and the scope doesn't.
+    NotInScope,
 }
 
 #[derive(Debug, Deserialize)]

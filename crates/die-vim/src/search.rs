@@ -8,7 +8,6 @@
 
 use crate::Vim;
 use crate::grammar::{Fail, Kind, Start, Target, buffer_window, run_motion};
-use crate::insert_keys;
 use crate::operators;
 use crate::text::{Chars, Class, class, normal_pos, same_word};
 use crate::visual;
@@ -243,9 +242,7 @@ pub fn open(ctx: &mut Ctx, a: &Args, forward: bool) -> Result {
     let a = a.clone();
     ctx.prompt(spec, move |ctx, answer| {
         back(ctx)?;
-        let r = answered(ctx, &a, answer, forward);
-        insert_keys::after_command(ctx, &a, &r);
-        r
+        answered(ctx, &a, answer, forward)
     });
     Ok(())
 }
