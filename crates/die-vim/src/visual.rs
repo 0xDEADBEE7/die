@@ -716,8 +716,8 @@ pub fn insert(ctx: &mut Ctx, a: &Args, append: bool) -> Result {
     begin_session(ctx, a, b, a.count, entry, rows, change)
 }
 
-/// `J`: join the selected lines.
-pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
+/// `J` and `gJ`: join the selected lines.
+pub fn join(ctx: &mut Ctx, a: &Args, keep: bool) -> Result {
     let (b, w, sel) = here(ctx, a)?;
     let t = ctx.text(b)?;
     let change = change_of(t, sel, a);
@@ -728,7 +728,7 @@ pub fn join(ctx: &mut Ctx, a: &Args) -> Result {
         count: Some(n),
         ..a.clone()
     };
-    operators::join_from(ctx, &lines, lo)?;
+    operators::join_from(ctx, &lines, lo, keep)?;
     repeat::commit(ctx, change)
 }
 

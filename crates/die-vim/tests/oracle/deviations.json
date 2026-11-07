@@ -2,6 +2,16 @@
   "schema": 1,
   "rules": [
     {
+      "rule": "sections start at a bracket, whatever is open",
+      "kind": "evil-bug",
+      "evil": "]] asks Emacs where this defun ends, by scanning brackets from its start, then steps back from the end of the next one. With a bracket in the first column inside an open one, or one that never closes, it lands inside a line or even moves backward.",
+      "die_vim": "]] and [[ go by the lines that start with an opening bracket, outside a string, and nothing else. While brackets balance, and none in the first column is nested in another, that's your Evil's result.",
+      "cases": [
+        { "case": "motions-more/next-section-nested", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-from-unbalanced", "fixture": "hand-written/motions-more.json" }
+      ]
+    },
+    {
       "rule": "the last line is the last line",
       "s5_row": 1,
       "kind": "emacs-artifact",
@@ -9,6 +19,14 @@
       "die_vim": "What your Evil does when the text has no final newline, with the newline kept: motions never put the cursor on the empty line after it. Motions stop on the last line. j, gj, + and C-d on the last line fail, and so do w and e on its last character and } at its end; a macro ends at the first failure. j doesn't fail when its goal column is past the line's end, as after $: your Evil's j tries that column first, and that moves the cursor. dj, cj and yj on the last line act on that line, as Evil's do (Vim's fail). After dd, dk or dG removes the last lines, the cursor goes to the new last line, in the column the delete started in (S5 row 2). G recentres on the last line, and H, M and L clamp to it. An insert session or an undo can still leave the cursor on that empty line, as in Evil and Vim. Motions along it (0, ^, $, C-a) stay on it, and } from it fails. That empty line still takes a screen row, as in Emacs, so window positions are Evil's. Each fixture takes its cursor and errors from your Evil on the same text without its final newline, and its text and registers from the run with the newline: the run without it adds a - register and has text bugs of its own. A macro that stops a repetition sooner than Evil's takes its registers from the run without the newline, because it deletes less. J on the last line has nothing to join, and the final newline stays; your Evil's J takes it. A count past the last line can't reach the empty line after it, so 2D on the last line takes the line's text, not the whole line.",
       "cases": [
         { "case": "motions/w-last-word-of-buffer", "fixture": "hand-written/motions.json" },
+        { "case": "motions-more/99gg", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/9g_-past-the-end", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/9next-section", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/d-next-section-none", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-at-end", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-last-char", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-indented", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-none", "fixture": "hand-written/motions-more.json" },
         { "case": "motions/G-trailing-newline", "fixture": "hand-written/motions.json" },
         { "case": "motions/5j-past-end", "fixture": "hand-written/motions.json" },
         { "case": "motions/close-brace-last-paragraph", "fixture": "hand-written/motions.json" },
@@ -21,6 +39,7 @@
         { "case": "operators/dj-last-line", "note": "dj acts on the last line, as Evil's does; Vim's fails and deletes nothing", "fixture": "hand-written/operators.json" },
         { "case": "operators/d5j-goes-as-far-as-it-can", "note": "the column is the one d5j started in, as for every linewise d in Evil (S5 row 2)", "fixture": "hand-written/operators.json" },
         { "case": "operators/J-last-line", "note": "Vim's J fails on the last line; Evil's without the final newline does nothing, and with it takes the newline", "fixture": "hand-written/operators.json" },
+        { "case": "operators/gJ-last-line", "note": "the same for gJ", "fixture": "hand-written/operators.json" },
         { "case": "operators/2D-last-line", "note": "Vim's fails, as its count can't be met; Evil's lands on the empty line and takes the whole line", "fixture": "hand-written/operators.json" },
         { "case": "textobjects/dap-before", "note": "the column is the one dap started in", "fixture": "hand-written/textobjects.json" },
         { "case": "textobjects/dap-last-paragraph", "note": "the column is the one dap started in", "fixture": "hand-written/textobjects.json" },
