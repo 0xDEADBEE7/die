@@ -42,6 +42,9 @@ pub enum Sleep {
     No,
 }
 
+/// How soon the loop tries again at a frame that got no drawable, or an error.
+pub const RETRY_DRAW: Duration = Duration::from_millis(50);
+
 /// How long to sleep with the next timer due at `next` and the clock at `now`. A timer may
 /// already be past when the turns end, so then there's no sleep.
 pub fn sleep_for(next: Option<Duration>, now: Duration) -> Sleep {
@@ -49,6 +52,16 @@ pub fn sleep_for(next: Option<Duration>, now: Duration) -> Sleep {
         None => Sleep::Forever,
         Some(at) if at <= now => Sleep::No,
         Some(at) => Sleep::For(at - now),
+    }
+}
+
+/// How long the loop may sleep when `sleep` is what's due and whether a frame it owes failed to
+/// draw. Nothing else may wake it, so that frame comes back after [`RETRY_DRAW`].
+pub fn sleep_or_retry(sleep: Sleep, undrawn: bool) -> Sleep {
+    match sleep {
+        Sleep::Forever if undrawn => Sleep::For(RETRY_DRAW),
+        Sleep::For(d) if undrawn => Sleep::For(d.min(RETRY_DRAW)),
+        other => other,
     }
 }
 
@@ -184,6 +197,10 @@ pub struct Shell {
     pub(crate) dirty: bool,
     /// What's on the drawable no longer stands, whatever the scene is.
     pub(crate) stale: bool,
+    /// The last try at a frame got no drawable, or an error, so the loop mustn't sleep on it.
+    undrawn: bool,
+    /// Take the keyboard when the app next is the active one.
+    key_when_active: bool,
     /// The drawable has a new size, or it's about to be presented in a resize.
     resized: bool,
     /// The last pump left more ready.
@@ -218,11 +235,25 @@ impl Shell {
         self.live.as_ref().is_some_and(|l| l.surface.app_active())
     }
 
+    /// Take the keyboard if this app is, or later becomes, the active one, which takes it from
+    /// no other app. A launch in front may not have become active by its first frame.
+    pub fn take_focus_when_active(&mut self) {
+        self.key_when_active = true;
+    }
+
     /// Take the keyboard focus. Only for when it's already this app's by rights: a restart's
     /// new instance after an old one that had it.
     pub fn take_focus(&self) {
         if let Some(live) = &self.live {
             live.window.focus_window();
+        }
+    }
+
+    /// Come to the front, from behind other apps or the Dock: only when you've just asked this
+    /// instance for something, as `die file` does.
+    pub fn come_to_front(&self) {
+        if let Some(live) = &self.live {
+            live.surface.come_to_front();
         }
     }
 }
@@ -297,7 +328,9 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
     ctx.messages.extend(unopened);
     latency.stage("core");
     let mut builder = EventLoop::<Wake>::with_user_event();
-    driver::prepare_loop(&mut builder, options.script.is_none());
+    if let Err(e) = driver::prepare_loop(&mut builder, options.script.is_none()) {
+        ctx.messages.push(e);
+    }
     let event_loop = builder.build().map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
     let wake = proxy.clone();
@@ -318,6 +351,8 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         guard: true,
         dirty: true,
         stale: true,
+        undrawn: false,
+        key_when_active: false,
         resized: false,
         more: false,
         last: None,
@@ -557,6 +592,7 @@ impl Shell {
         };
         let px = live.surface.size(live.scale);
         if px.0 == 0 || px.1 == 0 {
+            self.undrawn = false;
             return;
         }
         if px != live.px {
@@ -570,6 +606,7 @@ impl Shell {
         if holds_frame(self.guard, self.stats.frames, live.surface.occluded()) {
             self.stats.skipped += 1;
             self.dirty = true;
+            self.undrawn = false;
             return;
         }
         self.dirty = false;
@@ -579,7 +616,9 @@ impl Shell {
         }
         let start = Instant::now();
         let sync = self.resized || live.surface.in_live_resize();
-        match live.renderer.present(&scene, &live.surface, sync) {
+        let presented = live.renderer.present(&scene, &live.surface, sync);
+        self.undrawn = !matches!(presented, Ok(Some(_)));
+        match presented {
             Ok(Some(presented)) => {
                 self.resized = false;
                 self.stale = false;
@@ -608,7 +647,7 @@ impl Shell {
                     first_frame(&self.remote);
                 }
             }
-            // The next wake tries again.
+            // `about_to_wait` wakes again for it.
             Ok(None) => self.stale = true,
             Err(e) => {
                 self.stale = true;
@@ -719,7 +758,14 @@ impl ApplicationHandler<Wake> for Shell {
             el.exit();
             return;
         }
-        el.set_control_flow(match self.host.sleep(self.more) {
+        if self.key_when_active && self.app_active() {
+            self.key_when_active = false;
+            if !self.live.as_ref().is_some_and(|l| l.window.has_focus()) {
+                self.take_focus();
+            }
+        }
+        let sleep = self.host.sleep(self.more);
+        el.set_control_flow(match sleep_or_retry(sleep, self.undrawn) {
             Sleep::Forever => ControlFlow::Wait,
             Sleep::No => ControlFlow::Poll,
             Sleep::For(d) => Instant::now()

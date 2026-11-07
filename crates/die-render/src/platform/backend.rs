@@ -23,7 +23,9 @@ pub mod appkit {
     use winit::window::{Window, WindowAttributes};
 
     /// Nothing to prepare.
-    pub fn prepare_loop<T: 'static>(_: &mut EventLoopBuilder<T>, _: bool) {}
+    pub fn prepare_loop<T: 'static>(_: &mut EventLoopBuilder<T>, _: bool) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Nothing to add.
     pub fn window_attributes(attributes: WindowAttributes) -> WindowAttributes {
@@ -146,6 +148,11 @@ pub mod appkit {
 
         /// Never runs.
         pub fn app_active(&self) -> bool {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        pub fn come_to_front(&self) {
             match self.0 {}
         }
     }

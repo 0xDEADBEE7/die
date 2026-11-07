@@ -11,7 +11,7 @@ pub use die_core as core;
 pub use die_render as render;
 pub use die_vim as vim;
 
-use die_core::{Clock, Ctx, Extension, ShowIn, State, StatusTextFn};
+use die_core::{Clipboard, Clock, Ctx, Extension, ShowIn, State, StatusTextFn};
 use die_render::driver::Config as Font;
 use die_render::{check, driver, window};
 use die_vim::Vim;
@@ -143,15 +143,23 @@ pub fn check(config: Config, names: Vec<String>) -> i32 {
     launch(config, Some(check::script(names)), None)
 }
 
+/// Only a real run gets the system clipboard. A check's keys stay off the one you copy with.
+fn connect_clipboard(
+    config: &mut Config,
+    is_check: bool,
+    system: impl FnOnce() -> Option<Box<dyn Clipboard>>,
+) {
+    if !is_check && config.core.clipboard.is_none() {
+        config.core.clipboard = system();
+    }
+}
+
 fn launch(
     mut config: Config,
     script: Option<window::Script>,
     first_frame: Option<window::FirstFrame>,
 ) -> i32 {
-    // Only a real run gets the system clipboard. A check's keys stay off the one you copy with.
-    if script.is_none() && config.core.clipboard.is_none() {
-        config.core.clipboard = driver::system_clipboard();
-    }
+    connect_clipboard(&mut config, script.is_some(), driver::system_clipboard);
     let font = config.font.clone();
     let ctx = match start(config) {
         Ok(ctx) => ctx,
@@ -173,4 +181,27 @@ fn launch(
         eprintln!("die: {e}");
         2
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use die_core::FakeClipboard;
+
+    #[test]
+    fn a_real_run_gets_the_system_clipboard_unless_config_names_one_and_a_check_never_does() {
+        let system = || Some(Box::new(FakeClipboard::default()) as Box<dyn Clipboard>);
+        let mut run = Config::default();
+        connect_clipboard(&mut run, false, system);
+        assert!(run.core.clipboard.is_some());
+
+        let mut check = Config::default();
+        connect_clipboard(&mut check, true, || panic!("a check asked for it"));
+        assert!(check.core.clipboard.is_none());
+
+        let mut named = Config::default();
+        named.core.clipboard = system();
+        connect_clipboard(&mut named, false, || panic!("config named one"));
+        assert!(named.core.clipboard.is_some());
+    }
 }

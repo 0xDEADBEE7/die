@@ -535,6 +535,8 @@ fn open_own_buffer(s: &mut Shell, name: &str, text: &str) -> Result<WindowId, St
 /// draw with nothing else waking the loop. The window has no border and takes no focus.
 fn show(r: &Remote) -> Outcome {
     first_frame(r)?;
+    // Told to take the keyboard once active, an app that isn't active takes nothing.
+    r.call(|s, _| s.take_focus_when_active())?;
     let refused = r.call(unreadable_refuses)??;
     let back = r.call(|s, _| open_own_buffer(s, "*show*", SHOW_TEXT))??;
     let shown = r.call(|s, _| what_is_shown(s))??;

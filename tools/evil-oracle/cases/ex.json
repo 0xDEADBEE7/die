@@ -51,5 +51,18 @@
   {"id": "cr-empty-line", "keys": ":s/x<C-r><C-l>/X/<CR>", "text": ["x", "|", "y"]},
   {"id": "cy-newest-kill", "keys": "yiw:s/<C-y>/X/<CR>", "text": ["x |foo foo"]},
   {"id": "cv-tab", "keys": ":s/<C-v><Tab>/X/<CR>", "text": ["|a\tb"]},
-  {"id": "cv-then-keeps-reading", "keys": ":s/a<C-v><Tab>b/X/<CR>", "text": ["|a\tb c"]}
+  {"id": "cv-then-keeps-reading", "keys": ":s/a<C-v><Tab>b/X/<CR>", "text": ["|a\tb c"]},
+  {"id": "amp-repeats-without-flags", "keys": ":s/a/b/g<CR>j&", "text": ["|a a", "a a"]},
+  {"id": "amp-count", "keys": ":s/a/b/<CR>2&", "text": ["|a a", "a a", "a a"]},
+  {"id": "amp-not-repeated-by-dot", "keys": "x:s/a/b/<CR>j&.", "text": ["|xa a", "a a", "a a"]},
+  {"id": "amp-charwise-selection", "keys": ":s/a/b/<CR>uwvj&", "text": ["|a a a", "a a a", "a a a"]},
+  {"id": "amp-line-selection-no-match", "keys": ":s/z/b/<CR>Vj&", "text": ["|a a", "a a", "a a"]},
+  {"id": "amp-before-any-pattern", "keys": "&", "text": ["  a|a", "a a"]},
+  {"id": "amp-uses-the-last-search", "keys": ":s/a/b/<CR>/x<CR>&", "text": ["|a a", "x x a", "a a"]},
+  {"id": "amp-undo-goes-where-it-was", "keys": ":s/a/b/<CR>j$&u", "text": ["|a a", "xa a"]},
+  {"id": "gamp-keeps-flags-ignores-count", "keys": ":s/a/b/g<CR>u3g&", "text": ["|a a", "x", "a a"]},
+  {"id": "gamp-before-any-pattern", "keys": "g&", "text": ["  a|a", "  a a"]},
+  {"id": "gamp-from-selection", "keys": ":s/a/b/<CR>uVg&", "text": ["|a a", "a a", "x"]},
+  {"id": "s-tilde-is-the-last-replacement", "keys": ":s/a/b/<CR>:s/c/~/<CR>", "text": ["|a c", "a a"]},
+  {"id": "ex-ampamp-keeps-flags", "keys": ":s/a/b/g<CR>j:&&<CR>", "text": ["|a a", "a a"]}
  ]}

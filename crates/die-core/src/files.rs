@@ -39,6 +39,10 @@
 //! Settings by path are a stopgap until file-type modes (M1), which extensions
 //! will declare at Register.
 
+mod target;
+
+pub use target::FileTarget;
+
 use crate::ext::catch;
 use crate::{BufferId, Ctx, Error, Origin, Result, Settings, Sub};
 use ropey::Rope;
