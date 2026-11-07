@@ -617,7 +617,7 @@ impl Ctx {
             Key::Esc => return self.finish_prompt(None, true),
             Key::Char('v') if c.mods.super_ => {
                 if let Some(r) = self.clipboard() {
-                    self.prompt_insert(r.text.trim_end_matches('\n'));
+                    self.prompt_insert(r.text.trim_end_matches(['\n', '\r']));
                 }
                 return;
             }
