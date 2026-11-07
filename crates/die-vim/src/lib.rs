@@ -18,6 +18,7 @@ mod ex;
 mod grammar;
 mod insert;
 mod insert_keys;
+mod kept;
 mod marks;
 mod motions;
 mod objects;
@@ -34,6 +35,7 @@ mod window;
 pub use window::quit_app;
 
 use die_core::key_notation;
+use die_core::session::Kept;
 use die_core::{
     Args, BufferId, Ctx, Dir, Error, Extension, Prefix, Registry, Result, Shape, State, WindowId,
 };
@@ -247,6 +249,14 @@ impl Extension for Vim {
         })
         .detach();
         Ok(())
+    }
+
+    fn save_session(&self, ctx: &Ctx) -> Kept {
+        kept::save(self, ctx)
+    }
+
+    fn restore_session(&mut self, ctx: &mut Ctx, saved: Kept) -> Result {
+        kept::restore(self, ctx, &saved)
     }
 
     fn register(&mut self, reg: &mut Registry) {
