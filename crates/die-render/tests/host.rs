@@ -3,7 +3,7 @@
 
 use die_test_cap as _;
 
-use die_core::{Clock, Config, Ctx, Key, KeyEvent, Result, Scene};
+use die_core::{Clock, Config, Ctx, Key, KeyEvent, Result, Scene, ShowIn, Side};
 use die_render::font::{CellMetrics, FaceMetrics};
 use die_render::latency::Latency;
 use die_render::window::{
@@ -143,6 +143,27 @@ fn input_goes_to_core_and_runs_on_the_next_pump() {
     h.ctx.input(KeyEvent::press(Key::Char('z')));
     assert_eq!(h.pump().ran, 1);
     assert_eq!(seen.get(), 1);
+}
+
+/// V1: in the real loop the frame came with the focused window alone, and each resize gave it the
+/// whole frame, which crushed the others to 2 columns and stayed that way across a restart.
+#[test]
+fn a_split_shows_both_windows_and_keeps_its_proportions_when_the_frame_changes() {
+    let mut h = host("left\n");
+    let left = h.ctx.focused().unwrap();
+    let right = h.ctx.split_window(left, Side::Right).unwrap();
+    let other = h.ctx.create_text("b.txt", "right\n");
+    h.ctx.focus(right);
+    h.ctx.show(other, ShowIn::Current).unwrap();
+    for (cols, half) in [(80, 40), (120, 60), (40, 20)] {
+        h.set_grid((cols, 10));
+        h.pump();
+        assert_eq!(h.ctx.window_size(left).unwrap().0, half - 1);
+        assert_eq!(h.ctx.window_size(right).unwrap().0, half);
+        let top = row_text(&h.scene(), 0);
+        assert!(top.starts_with("left"), "{top:?}");
+        assert_eq!(top.find("right"), Some(half + 2), "{top:?}");
+    }
 }
 
 #[test]

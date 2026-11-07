@@ -525,8 +525,10 @@ fn open_own_buffer(s: &mut Shell, name: &str, text: &str) -> Result<WindowId, St
     let back = ctx.focused().ok_or("no window")?;
     let (cols, rows) = ctx.window_size(back).ok_or("no window")?;
     let buf = ctx.create_text(name, text);
-    ctx.open_window(buf, cols, rows)
+    let own = ctx
+        .open_window(buf, cols, rows)
         .map_err(|e| e.to_string())?;
+    ctx.focus(own);
     Ok(back)
 }
 
