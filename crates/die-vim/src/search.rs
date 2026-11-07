@@ -8,6 +8,7 @@
 
 use crate::Vim;
 use crate::grammar::{Fail, Kind, Start, Target, buffer_window, run_motion};
+use crate::insert_keys;
 use crate::operators;
 use crate::text::{Chars, Class, class, normal_pos, same_word};
 use crate::visual;
@@ -64,6 +65,13 @@ impl Last {
 }
 
 pub const NONE_YET: &str = "No previous search";
+
+impl Last {
+    /// The search as it was typed, for register `/`.
+    pub fn source(&self) -> &str {
+        self.pat.as_str()
+    }
+}
 
 /// Smartcase: a pattern with no capital in it ignores case. What follows a backslash isn't
 /// text, so `\S` has no capital.
@@ -244,7 +252,9 @@ pub fn open(ctx: &mut Ctx, a: &Args, forward: bool) -> Result {
     let a = a.clone();
     ctx.prompt(spec, move |ctx, answer| {
         back(ctx)?;
-        answered(ctx, &a, answer, forward)
+        let r = answered(ctx, &a, answer, forward);
+        insert_keys::after_command(ctx, &a, &r);
+        r
     });
     Ok(())
 }

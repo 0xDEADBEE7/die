@@ -334,6 +334,8 @@ pub struct Ctx {
     pub(crate) leader: Chord,
     pub(crate) prefix: Prefix,
     pub(crate) prompt: Option<Prompt>,
+    /// [`Ctx::set_prompt_register`]'s rule.
+    pub(crate) prompt_register: Option<fn(&mut Ctx, char) -> Result<String>>,
     /// What prompts remember, by history name (K11a).
     pub(crate) histories: HashMap<String, Vec<String>>,
     pub(crate) session: Option<crate::session::Session>,
@@ -455,6 +457,7 @@ impl Ctx {
         };
         crate::layout::register_commands(&mut reg);
         crate::commands::register_commands(&mut reg);
+        crate::project::register_commands(&mut reg);
         let mut errors = vec![];
         let mut slots: Vec<ExtSlot> = vec![];
         for mut e in exts {
@@ -509,6 +512,7 @@ impl Ctx {
             fed_at: 0,
             pending: vec![],
             describing: None,
+            prompt_register: None,
             swallow: vec![],
             leader: default_leader(),
             prefix: Prefix::default(),

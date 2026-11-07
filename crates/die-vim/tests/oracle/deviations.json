@@ -229,6 +229,13 @@
       "cases": [{ "case": "visual-corners/v-paren-on-open", "fixture": "hand-written/visual-corners.json" }, { "case": "visual-corners/v-paren-twice", "fixture": "hand-written/visual-corners.json" }]
     },
     {
+      "rule": "C-r on / pastes a register",
+      "kind": "evil-gap",
+      "evil": "Your Evil's / is isearch, so C-r there searches backward and a register's name is typed as text. Evil's own evil-search module takes C-r as on :, with evil-paste-from-register.",
+      "die_vim": "/ and ? are the same command line as : (scope §10), so C-r pastes a register there too, and C-r C-w the word under the cursor.",
+      "cases": [{ "case": "ex/cr-search-unnamed", "fixture": "hand-written/ex.json" }, { "case": "ex/cr-search-word", "fixture": "hand-written/ex.json" }]
+    },
+    {
       "rule": "a failed search is an error",
       "s5_row": 31,
       "kind": "evil-gap",

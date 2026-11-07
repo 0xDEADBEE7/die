@@ -3,9 +3,10 @@
 use die_test_cap as _;
 
 use die_core::{
-    Args, Ctx, CursorShape, Error, Extension, Origin, PromptSpec, Registry, Rgb, ShowIn, State,
-    Style, Theme,
+    Args, Ctx, CursorShape, Error, Extension, Origin, PromptSpec, RegKind, Register, Registry, Rgb,
+    ShowIn, Side, State, Style, Theme,
 };
+use die_core::{Input, Mods, PointerEvent, PointerKind};
 use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,29 @@ fn ask(ctx: &mut Ctx, spec: impl Into<PromptSpec>) -> Answers {
         Ok(())
     });
     answers
+}
+
+/// Core alone has only [`Ctx::register`]'s registers. A name it can't read is an error for that
+/// key, and the prompt stays. `<D-v>` takes the clipboard as it is, up to the newlines at its end.
+#[test]
+fn registers_and_the_clipboard_paste_at_the_cursor() {
+    let mut ctx = ctx();
+    let reg = |text: &str| Register {
+        kind: RegKind::Char,
+        text: text.into(),
+    };
+    ctx.set_register('a', reg("A"));
+    ctx.set_register('"', reg("K"));
+    ctx.write_clipboard(&reg("one\ntwo\n\n"));
+    let answers = ask(&mut ctx, "x");
+    ctx.type_keys("()<Left><C-r>a<C-y>");
+    assert_eq!(ctx.prompt_text(), Some("(AK)"));
+    let before = ctx.messages.len();
+    ctx.type_keys("<C-r>z");
+    assert_eq!(ctx.messages.len(), before + 1, "says so");
+    assert_eq!(ctx.prompt_text(), Some("(AK)"), "and stays");
+    ctx.type_keys("<D-v><CR>");
+    assert_eq!(*answers.borrow(), [Some("(AKone\ntwo)".to_string())]);
 }
 
 /// The keys typed after `abc def`, and the line they leave. `X` shows where the cursor is.
@@ -318,6 +342,45 @@ fn messages_are_never_fallen_back_on_and_come_back_when_killed() {
     assert_eq!(ctx.text(log).unwrap().rope().to_string(), "two\n");
 }
 
+/// As Emacs's `*Messages*`: opened at its end, and a cursor there stays there, in any window.
+#[test]
+fn messages_follow_their_end_in_a_window_at_the_end() {
+    let mut ctx = ctx();
+    ctx.set_frame_size(40, 12);
+    let w = ctx.focused().unwrap();
+    for i in 0..30 {
+        ctx.messages.push(format!("line {i}"));
+    }
+    ctx.scene();
+    let log = ctx.find_buffer("*messages*").unwrap();
+    let start_of = |ctx: &Ctx, line| ctx.text(log).unwrap().line_start(line);
+
+    ctx.show(log, ShowIn::Current).unwrap();
+    assert_eq!(ctx.text(log).unwrap().cursor(w), Some(start_of(&ctx, 29)));
+    let other = ctx.split_window(w, Side::Below).unwrap();
+    ctx.focus(other);
+    let t = ctx.create_text("t2", "");
+    ctx.show(t, ShowIn::Current).unwrap();
+    assert_eq!(ctx.focused(), Some(other));
+
+    ctx.messages.push("newest".into());
+    let scene = ctx.scene();
+    let shown = (0..scene.rows)
+        .map(|r| scene.row_text(r))
+        .collect::<Vec<_>>();
+    assert!(shown.iter().any(|r| r == "newest"), "{shown:?}");
+    assert_eq!(ctx.text(log).unwrap().cursor(w), Some(start_of(&ctx, 30)));
+
+    ctx.text_mut(log).unwrap().set_cursor(w, 0);
+    ctx.messages.push("one more".into());
+    ctx.scene();
+    assert_eq!(
+        ctx.text(log).unwrap().cursor(w),
+        Some(0),
+        "a cursor elsewhere stays"
+    );
+}
+
 #[test]
 fn the_log_keeps_its_last_thousand_lines() {
     let mut ctx = ctx();
@@ -514,6 +577,32 @@ fn the_list_covers_the_windows_and_marks_the_chosen_row_and_the_match() {
     assert_eq!(s.row_text(0), "1/2    b", "a small frame gets what fits");
     assert_eq!(s.row_text(1), "abc");
     assert_eq!(s.cursors.len(), 1, "the window's cursor is under the list");
+
+    ctx.type_keys("<Esc>");
+    ctx.set_frame_size(20, 8);
+    let long = ctx.create_text("long", &"x\n".repeat(50));
+    ctx.show(long, ShowIn::Current).unwrap();
+    let w = ctx.focused().unwrap();
+    ask(&mut ctx, PromptSpec::new("").candidates(["abc", "xbz"]));
+    ctx.scene();
+    let scroll = |ctx: &mut Ctx, row| {
+        ctx.handle(Input::Pointer(PointerEvent {
+            kind: PointerKind::Scroll { dx: 0.0, dy: 3.0 },
+            row,
+            col: 0,
+            clicks: 0,
+            mods: Mods::default(),
+        }));
+        ctx.run_ready();
+        ctx.scene();
+        ctx.text(long).unwrap().scroll(w).unwrap().0
+    };
+    assert_eq!(
+        scroll(&mut ctx, 7),
+        0,
+        "over the list, nothing under it moves"
+    );
+    assert_ne!(scroll(&mut ctx, 0), 0, "above it, the window scrolls");
 }
 
 #[test]
@@ -677,6 +766,8 @@ impl Extension for Commands {
             log.borrow_mut().push(a.count);
             Ok(())
         });
+        reg.global_keymap()
+            .bind(State::CommandLine, "<D-h>", "say-hello");
     }
 }
 
@@ -700,6 +791,17 @@ fn command_palette_runs_what_is_chosen_with_its_count() {
     );
     ctx.type_keys("<Esc>");
     assert!(log.borrow().is_empty(), "a cancel runs nothing");
+
+    ctx.run("command-palette", &Args::default()).unwrap();
+    ctx.type_keys("to<D-h>");
+    assert_eq!(
+        *log.borrow(),
+        [None],
+        "the DIE layer runs with a prompt open"
+    );
+    assert_eq!(ctx.prompt_text(), Some("to"), "and the prompt stays");
+    ctx.type_keys("<Esc>");
+    log.borrow_mut().clear();
 
     ctx.run("command-palette", &args).unwrap();
     ctx.type_keys("shl");
@@ -1009,6 +1111,48 @@ fn switch_buffer_goes_to_the_chosen_buffer_and_makes_a_new_one() {
 
 #[test]
 fn kill_buffer_kills_this_one_by_default_or_the_chosen_one() {
+    // The log, and then the last buffer there is: a window always has something to show.
+    {
+        let mut ctx = ctx();
+        let t = ctx.focused_buffer().unwrap();
+        ctx.messages.push("something".into());
+        ctx.scene();
+        let log = ctx.find_buffer("*messages*").unwrap();
+
+        ctx.show(log, ShowIn::Current).unwrap();
+        ctx.run("kill-buffer", &Args::default()).unwrap();
+        ctx.type_keys("<CR>");
+        assert!(
+            !ctx.is_live(log),
+            "<CR> takes the buffer it's on, even the log"
+        );
+        assert_eq!(ctx.focused_buffer(), Some(t));
+
+        ctx.messages.push("again".into());
+        ctx.scene();
+        let log = ctx.find_buffer("*messages*").expect("it comes back");
+        assert_eq!(ctx.text(log).unwrap().rope().to_string(), "again\n");
+
+        ctx.run("kill-buffer", &Args::default()).unwrap();
+        ctx.type_keys("<CR>");
+        assert_eq!(
+            ctx.buffer_name(ctx.focused_buffer().unwrap()),
+            Some("*scratch*")
+        );
+        assert_eq!(ctx.state(), State::Normal);
+
+        ctx.run("switch-buffer", &Args::default()).unwrap();
+        assert_eq!(ctx.prompt_candidates(), ["*messages*", "*scratch*"]);
+        ctx.type_keys("mess<CR>");
+        assert_eq!(ctx.focused_buffer(), Some(log), "the log is on offer");
+        ctx.run("kill-buffer", &Args::default()).unwrap();
+        ctx.type_keys("<CR>");
+        assert_eq!(
+            ctx.buffer_name(ctx.focused_buffer().unwrap()),
+            Some("*scratch*")
+        );
+    }
+
     let mut ctx = ctx();
     let t = ctx.focused_buffer().unwrap();
     let a = ctx.create_text("alpha", "");
