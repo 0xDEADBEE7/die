@@ -90,7 +90,11 @@ impl App {
         self.wait_for("a write after the handover", || {
             std::fs::read_to_string(&previous).is_ok_and(|p| p.contains("\"modified\": true"))
         });
-        std::fs::read_to_string(self.state.join("session.json")).unwrap()
+        // A write renames session.json to session.prev.json before it renames the new copy
+        // in, so for a moment there's no session.json.
+        let file = self.state.join("session.json");
+        self.wait_for("session.json back after a write", || file.exists());
+        std::fs::read_to_string(&file).unwrap()
     }
 
     fn holder(&self) -> Option<u32> {

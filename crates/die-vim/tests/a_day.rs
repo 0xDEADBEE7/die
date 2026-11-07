@@ -654,6 +654,11 @@ fn w_to_a_read_only_file() {
     d.seed("locked.rs", "one\n");
     let locked = d.path("locked.rs");
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o444)).unwrap();
+    // Root writes any file, so this only means something when a write really fails
+    // (`cargo xtask ci --linux` runs its tests as root).
+    if fs::OpenOptions::new().append(true).open(&locked).is_ok() {
+        return;
+    }
     d.open("locked.rs");
     d.keys("x");
     assert_eq!(d.text(), "ne\n");
