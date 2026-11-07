@@ -351,3 +351,268 @@ fn half_a_million_paths_cost_a_key_under_a_frame() {
         assert!(v[v.len() * 99 / 100] < Duration::from_millis(16));
     }
 }
+
+// ---------------------------------------------------------------- grep
+
+fn grep_args(line: &str) -> Args {
+    Args {
+        text: Some(line.to_string()),
+        ..Args::default()
+    }
+}
+
+/// Search and wait for the search to end.
+fn grep(ctx: &mut Harness, line: &str) {
+    ctx.run("grep", &grep_args(line)).unwrap();
+    ctx.run_until_idle();
+}
+
+fn results(ctx: &Ctx) -> String {
+    let buf = ctx.find_buffer("*grep*").expect("*grep*");
+    ctx.text(buf).unwrap().rope().to_string()
+}
+
+fn written(d: &Dir, files: &[(&str, &[u8])]) {
+    for (name, bytes) in files {
+        let p = d.0.join(name);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, bytes).unwrap();
+    }
+}
+
+/// Where the focused window is, as its file relative to `d`, a line and a column, all from 1.
+fn at(ctx: &Ctx, d: &Dir) -> (String, usize, usize) {
+    let (w, b) = (ctx.focused().unwrap(), ctx.focused_buffer().unwrap());
+    let rel = ctx.file(b).unwrap().path.strip_prefix(&d.0).unwrap();
+    let t = ctx.text(b).unwrap();
+    let pos = t.cursor(w).unwrap();
+    let line = t.line_of(pos);
+    let col = t.rope().byte_slice(t.line_start(line)..pos).chars().count();
+    (rel.display().to_string(), line + 1, col + 1)
+}
+
+#[test]
+fn grep_writes_rows_and_skips_binary_big_and_ignored_files() {
+    let d = Dir::new("grep-rows");
+    written(
+        &d,
+        &[
+            (
+                "a.rs",
+                "one\n  a Needle needle\nnone\nneedle\r\n".as_bytes(),
+            ),
+            ("sub/é.rs", "éé needle".as_bytes()),
+            ("target/skip", b"needle\n"),
+            ("binary", b"needle\0\n"),
+            ("empty", b""),
+        ],
+    );
+    let big = fs::File::create(d.0.join("big")).unwrap();
+    big.set_len(10 * 1024 * 1024 + 1).unwrap();
+    fs::write(d.0.join("long"), format!("{}needle", "x".repeat(600))).unwrap();
+    let mut ctx = harness();
+    let root = d.0.display().to_string();
+    grep(&mut ctx, &format!("needle {root}"));
+    let long = format!("long:1:601: {} ...", "x".repeat(500));
+    assert_eq!(
+        results(&ctx),
+        format!(
+            "Grep for needle in {root}\n\
+             a.rs:2:5:   a Needle needle\n\
+             a.rs:4:1: needle\n\
+             {long}\n\
+             sub/é.rs:1:4: éé needle\n\
+             4 matches in 3 files.\n"
+        ),
+        "smartcase, one row a line, and columns in characters"
+    );
+    grep(&mut ctx, &format!("Needle {root}"));
+    assert!(results(&ctx).ends_with(":5:   a Needle needle\n1 match in 1 file.\n"));
+    grep(&mut ctx, &format!("^ {root}"));
+    assert!(results(&ctx).contains("a.rs:4:1: "));
+    assert!(!results(&ctx).contains("a.rs:5:"), "no line after the last");
+    assert!(
+        !results(&ctx).contains("empty:"),
+        "and none in an empty file"
+    );
+    grep(&mut ctx, &format!("no such text {root}"));
+    assert!(results(&ctx).ends_with("No matches.\n"));
+    let grep_buf = ctx.find_buffer("*grep*").unwrap();
+    assert!(ctx.text(grep_buf).unwrap().settings().read_only);
+    assert!(!ctx.text(grep_buf).unwrap().modified());
+    assert!(ctx.run("grep", &grep_args("(")).is_err(), "a bad pattern");
+    assert!(results(&ctx).ends_with("No matches.\n"), "changes nothing");
+}
+
+#[test]
+fn grep_with_no_directory_searches_the_project_and_a_last_word_can_be_the_directory() {
+    let d = Dir::new("grep-root");
+    written(
+        &d,
+        &[
+            ("p/.git/config", b"x\n"),
+            ("p/src/here.rs", b"two words\n"),
+            ("p/lib/there.rs", b"two lib\ntwo\n"),
+            ("outside", b"two words\n"),
+        ],
+    );
+    let mut ctx = harness();
+    let file = ctx.open_file(&d.0.join("p/src/here.rs")).unwrap();
+    ctx.show(file, ShowIn::Current).unwrap();
+    grep(&mut ctx, "two words");
+    let root = d.0.join("p");
+    assert_eq!(
+        results(&ctx),
+        format!(
+            "Grep for two words in {}\nsrc/here.rs:1:1: two words\n1 match in 1 file.\n",
+            root.display()
+        )
+    );
+    grep(&mut ctx, "two lib");
+    assert!(
+        results(&ctx).contains("Grep for two in "),
+        "`lib` is a directory from the project's root"
+    );
+    assert!(results(&ctx).contains("there.rs:2:1: two\n"));
+    ctx.run("grep", &Args::default()).unwrap();
+    assert_eq!(ctx.prompt_text(), Some(""), "with no pattern, it asks");
+    let _ = ctx.type_keys("words<CR>");
+    ctx.run_until_idle();
+    assert!(results(&ctx).contains("src/here.rs:1:5:"));
+    assert_eq!(ctx.focused_buffer(), Some(file), "the focus stays");
+}
+
+#[test]
+fn cr_opens_in_another_window_and_splits_when_there_is_only_one() {
+    let d = Dir::new("grep-cr");
+    written(&d, &[("a.txt", b"zero\none\n  needle\n")]);
+    let mut ctx = harness();
+    let root = d.0.display().to_string();
+    grep(&mut ctx, &format!("needle {root}"));
+    assert_eq!(ctx.window_list().len(), 2, "the results get a window");
+    let source = ctx.focused().unwrap();
+    let list = ctx.find_buffer("*grep*").unwrap();
+    let results_window = ctx
+        .window_list()
+        .into_iter()
+        .find(|w| ctx.window_buffer(*w) == Some(list))
+        .unwrap();
+    ctx.focus(results_window);
+    let header = ctx.type_keys("<CR>").unwrap();
+    assert!(
+        header[0].errors.iter().any(|e| e.contains("No match here")),
+        "{header:?}"
+    );
+    let row = ctx.text(list).unwrap().line_start(1);
+    ctx.text_mut(list).unwrap().set_cursor(results_window, row);
+    let _ = ctx.type_keys("<CR>");
+    assert_eq!(ctx.focused(), Some(source), "the other window takes it");
+    assert_eq!(at(&ctx, &d), ("a.txt".to_string(), 3, 3));
+    assert_eq!(ctx.window_list().len(), 2);
+
+    ctx.only_window(results_window).unwrap();
+    ctx.focus(results_window);
+    ctx.text_mut(list).unwrap().set_cursor(results_window, row);
+    let _ = ctx.type_keys("<CR>");
+    assert_eq!(ctx.window_list().len(), 2, "alone, it splits");
+    assert_eq!(at(&ctx, &d), ("a.txt".to_string(), 3, 3));
+    assert_eq!(ctx.window_buffer(results_window), Some(list));
+}
+
+#[test]
+fn next_and_previous_step_from_any_window_and_say_so_at_either_end() {
+    let d = Dir::new("grep-step");
+    written(&d, &[("a.txt", b"hit\nmiss\nhit\n"), ("b.txt", b"x hit\n")]);
+    let mut ctx = harness();
+    let step = |ctx: &mut Harness, name: &str| ctx.run(name, &Args::default());
+    assert!(step(&mut ctx, "next-error").is_err(), "no results yet");
+    let root = d.0.display().to_string();
+    grep(&mut ctx, &format!("hit {root}"));
+    let moved_back = step(&mut ctx, "previous-error").unwrap_err().to_string();
+    assert!(moved_back.contains("before first"), "{moved_back}");
+    step(&mut ctx, "next-error").unwrap();
+    assert_eq!(at(&ctx, &d), ("a.txt".to_string(), 1, 1));
+    let scratch = ctx.create_text("elsewhere", "");
+    ctx.show(scratch, ShowIn::Current).unwrap();
+    step(&mut ctx, "next-error").unwrap();
+    assert_eq!(at(&ctx, &d), ("a.txt".to_string(), 3, 1));
+    step(&mut ctx, "next-error").unwrap();
+    assert_eq!(at(&ctx, &d), ("b.txt".to_string(), 1, 3));
+    let past = step(&mut ctx, "next-error").unwrap_err().to_string();
+    assert!(past.contains("past last"), "{past}");
+    assert_eq!(at(&ctx, &d), ("b.txt".to_string(), 1, 3), "it stays");
+    step(&mut ctx, "previous-error").unwrap();
+    assert_eq!(at(&ctx, &d), ("a.txt".to_string(), 3, 1));
+    let list = ctx.find_buffer("*grep*").unwrap();
+    let mut shown = ctx.window_list().into_iter();
+    let w = shown.find(|w| ctx.window_buffer(*w) == Some(list));
+    let t = ctx.text(list).unwrap();
+    let row = t.line_of(t.cursor(w.unwrap()).unwrap());
+    assert_eq!(row, 2, "the row follows");
+}
+
+#[test]
+fn results_stop_at_the_limit_and_a_new_search_replaces_the_old() {
+    let d = Dir::new("grep-limit");
+    written(&d, &[("many", "hit\n".repeat(10_001).as_bytes())]);
+    let mut ctx = harness();
+    let root = d.0.display().to_string();
+    grep(&mut ctx, &format!("hit {root}"));
+    let text = results(&ctx);
+    assert!(text.ends_with("many:10000:1: hit\nStopped at 10000 matches, in 1 file.\n"));
+
+    // The first search is still walking when the second starts.
+    let far = Dir::new("grep-cancel");
+    written(&far, &[("seed", "old\n".repeat(50).as_bytes())]);
+    for i in 0..500 {
+        fs::hard_link(far.0.join("seed"), far.0.join(format!("f{i}"))).unwrap();
+    }
+    let old = grep_args(&format!("old {}", far.0.display()));
+    ctx.run("grep", &old).unwrap();
+    grep(&mut ctx, &format!("hit {root}"));
+    let text = results(&ctx);
+    assert!(text.starts_with("Grep for hit in"), "{}", &text[..40]);
+    assert!(!text.contains("seed:"), "nothing of the first search");
+    assert_eq!(text.matches("Stopped at").count(), 1, "one last line");
+
+    ctx.run("grep", &old).unwrap();
+    let list = ctx.find_buffer("*grep*").unwrap();
+    assert!(ctx.kill(list), "killed mid-run");
+    ctx.run_until_idle();
+    assert!(ctx.find_buffer("*grep*").is_none(), "it doesn't come back");
+}
+
+#[test]
+fn a_big_search_doesnt_hold_up_typing_and_its_rows_arrive_as_it_goes() {
+    let d = Dir::new("grep-typing");
+    let seed = "fn needle() {}\n".to_string() + &"filler line of text\n".repeat(2000);
+    written(&d, &[("seed", seed.as_bytes())]);
+    for i in 0..4000 {
+        fs::hard_link(d.0.join("seed"), d.0.join(format!("f{i:04}"))).unwrap();
+    }
+    let mut ctx = harness();
+    let line = format!("needle {}", d.0.display());
+    ctx.run("grep", &grep_args(&line)).unwrap();
+    ctx.prompt(PromptSpec::new("typing: "), |_, _| Ok(()));
+    let done = |c: &Ctx| results(c).contains("matches in");
+    let list = ctx.find_buffer("*grep*").unwrap();
+    let (mut typed, mut slowest, mut partial) = (String::new(), Duration::ZERO, false);
+    while !done(&ctx) {
+        let start = Instant::now();
+        key(&mut ctx, "x");
+        while ctx.step() {}
+        slowest = slowest.max(start.elapsed());
+        typed.push('x');
+        assert_eq!(ctx.prompt_text(), Some(typed.as_str()), "a key is answered");
+        let rows = ctx.text(list).unwrap().line_count();
+        partial |= rows > 2 && !done(&ctx);
+        sleep(Duration::from_millis(2));
+    }
+    assert!(partial, "rows came in before the search ended");
+    assert!(typed.len() > 3, "the search outlasts three keys");
+    assert!(
+        slowest < Duration::from_millis(100),
+        "a key took {slowest:?}"
+    );
+    let _ = ctx.type_keys("<Esc>");
+}

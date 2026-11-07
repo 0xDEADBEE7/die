@@ -65,6 +65,7 @@ const JUMPS: &[&str] = &[
     "vim-insert-resume",
     "vim-repeat-substitute",
     "vim-repeat-substitute-all",
+    "vim-find-file-at-point",
 ];
 
 /// Whether a command sets a jump before it runs.
@@ -372,10 +373,8 @@ pub fn goto(ctx: &mut Ctx, a: &Args, line: bool) -> Result {
         }
         'A'..='Z' => {
             let mut live = ctx.buffer_list().into_iter();
-            match live.find_map(|o| ctx.text(o).ok()?.mark(name).map(|p| (o, p))) {
-                Some(spot) => Some(spot),
-                None => visit_again(ctx, a, b, name)?,
-            }
+            let live = live.find_map(|o| ctx.text(o).ok()?.mark(name).map(|p| (o, p)));
+            live.map_or_else(|| visit_again(ctx, a, b, name), |spot| Ok(Some(spot)))?
         }
         _ => ctx.text(b)?.mark(name).map(|p| (b, p)),
     };

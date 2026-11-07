@@ -2,7 +2,8 @@
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
 use crate::{insert_keys, substitute, visual, window};
-use die_core::{Args, BufferId, Ctx, Error, PromptSpec, Result, ShowIn};
+use die_core::{Args, BufferId, Ctx, Error, FileTarget, PromptSpec, Result, ShowIn, project_root};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// `:`: read a line and run it, with your Evil's line keys. `<BS>` on an empty line leaves it,
@@ -71,6 +72,10 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
         }
         "e" | "edit" => edit(ctx, rest),
         "b" | "buffer" => buffer(ctx, rest),
+        "cn" | "cne" | "cnex" | "cnext" => ctx.run("next-error", &Args::default()),
+        "cp" | "cpr" | "cpre" | "cprev" | "cprevi" | "cprevio" | "cpreviou" | "cprevious" => {
+            ctx.run("previous-error", &Args::default())
+        }
         "noh" | "nohl" | "nohlsearch" => {
             ctx.set_search_highlight(None);
             Ok(())
@@ -185,4 +190,58 @@ fn buffer(ctx: &mut Ctx, name: &str) -> Result {
     };
     ctx.show(found, ShowIn::Current)?;
     Ok(())
+}
+
+/// Your Evil's `evil-find-file-at-point-with-line`, which is its `gF` and here `gf` too: the file
+/// named under the cursor, as ffap reads a name, from this buffer's directory and then from its
+/// project. `:line`, `:line:col`, `(line)` and `(line,col)` after the name say where. A name that
+/// isn't a file is an error, as with `gF`.
+pub fn find_file_at_point(ctx: &mut Ctx, a: &Args) -> Result {
+    let (b, w) = buffer_window(ctx, a)?;
+    let t = ctx.text(b)?;
+    let cursor = t.cursor(w).unwrap_or(0);
+    let start = t.line_start(t.line_of(cursor));
+    let line = t.rope().line(t.line_of(cursor)).to_string();
+    let missing = || Error::Msg("File does not exist.".into());
+    let (name, after) = name_at(&line, cursor - start).ok_or_else(missing)?;
+    let dir = absolute(ctx.directory(b), "");
+    let name = match (name.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => Path::new(&home).join(rest).into_os_string(),
+        _ => name.into(),
+    };
+    let tries = [dir.clone(), project_root(&dir)];
+    let mut targets = tries
+        .iter()
+        .map(|base| FileTarget::parse(OsStr::new(&name), base));
+    let mut target = targets.find(|t| t.path.is_file()).ok_or_else(missing)?;
+    if let (None, Some((line, col))) = (target.line, in_parens(after)) {
+        (target.line, target.col) = (Some(line), col);
+    }
+    ctx.open_target(&target).map(drop)
+}
+
+/// The file name around byte `at` of `line`, and what comes after it, with the characters ffap
+/// takes for a file (`ffap-string-at-point-mode-alist`), and without those it strips from the ends.
+fn name_at(line: &str, at: usize) -> Option<(&str, &str)> {
+    let names =
+        |c: char| c.is_alphabetic() || c.is_ascii_digit() || "-./:\\${}+<>@_~*?#".contains(c);
+    let back = line[..at].rfind(|c| !names(c));
+    let start = back.map_or(0, |i| {
+        i + line[i..].chars().next().map_or(1, char::len_utf8)
+    });
+    let end = line[at..]
+        .find(|c| !names(c))
+        .map_or(line.len(), |i| at + i);
+    let name = line[start..end].trim_start_matches(['{', '<', '@']);
+    let name = name.trim_end_matches(['@', '>', ';', '.', ',', '!', ':', '}']);
+    (!name.is_empty()).then_some((name, &line[end..]))
+}
+
+/// `(line)` or `(line,col)` at the start of this text.
+fn in_parens(text: &str) -> Option<(usize, Option<usize>)> {
+    let inner = text.strip_prefix('(')?.split_once(')')?.0;
+    match inner.split_once(',') {
+        Some((line, col)) => Some((line.parse().ok()?, Some(col.parse().ok()?))),
+        None => Some((inner.parse().ok()?, None)),
+    }
 }

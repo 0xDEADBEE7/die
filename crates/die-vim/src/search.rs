@@ -73,18 +73,9 @@ impl Last {
     }
 }
 
-/// Smartcase: a pattern with no capital in it ignores case. What follows a backslash isn't
-/// text, so `\S` has no capital.
+/// Smartcase, which `:grep` shares.
 pub fn ignores_case(src: &str) -> bool {
-    let mut chars = src.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            chars.next();
-        } else if c.is_uppercase() {
-            return false;
-        }
-    }
-    true
+    Pattern::ignores_case(src)
 }
 
 fn compile(src: &str) -> Result<Pattern> {

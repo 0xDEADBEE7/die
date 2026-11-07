@@ -37,6 +37,20 @@ impl Pattern {
         })
     }
 
+    /// Smartcase: a pattern with no capital in it ignores case. What follows a backslash isn't
+    /// text, so `\\S` has no capital.
+    pub fn ignores_case(src: &str) -> bool {
+        let mut chars = src.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                chars.next();
+            } else if c.is_uppercase() {
+                return false;
+            }
+        }
+        true
+    }
+
     /// A literal pattern for `*` and `#`: `text` matches only where its first and last characters
     /// are word characters by `is_word` and those on either side aren't, as with Emacs's `\\<`
     /// and `\\>` (Evil's in fundamental-mode: alphanumerics, not `_`, so `foo` matches inside
@@ -87,7 +101,11 @@ impl Pattern {
 
     /// Every match that counts, starting in `..end`, left to right and without overlaps. It
     /// finds them as they're asked for, so stopping early doesn't scan a long line to its end.
-    fn all<'a>(&'a self, text: &'a str, end: usize) -> Box<dyn Iterator<Item = Range<usize>> + 'a> {
+    pub(crate) fn all<'a>(
+        &'a self,
+        text: &'a str,
+        end: usize,
+    ) -> Box<dyn Iterator<Item = Range<usize>> + 'a> {
         if self.is_word.is_none() {
             let input = Input::new(text).range(..end);
             return Box::new(self.re.find_iter(input).map(|m| m.range()));
