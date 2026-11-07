@@ -92,7 +92,8 @@ files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
 [[module]]
 crate = "die-core"
 name = "files"
-limit = 650
+# 650 until U1's `die file:line`: the name parser `gf` shares, and opening at a position.
+limit = 760
 files = ["files.rs", "files/"]
 
 [[module]]

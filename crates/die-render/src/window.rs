@@ -225,6 +225,14 @@ impl Shell {
             live.window.focus_window();
         }
     }
+
+    /// Come to the front, from behind other apps or the Dock: only when you've just asked this
+    /// instance for something, as `die file` does.
+    pub fn come_to_front(&self) {
+        if let Some(live) = &self.live {
+            live.surface.come_to_front();
+        }
+    }
 }
 
 /// What wakes the loop.
