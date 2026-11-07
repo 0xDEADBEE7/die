@@ -97,6 +97,19 @@ fn star_goes_by_die_vims_word_test_and_n_keeps_it() {
 }
 
 #[test]
+fn gd_leaves_its_symbol_for_n_and_finds_the_first_one_in_the_text() {
+    // The oracle's keyboard macro drops the keys after a `gd`, so `n` can't be asked of it.
+    let (mut h, b, w) = editor("x foo_b foo y foo\nfoo\n");
+    h.text_mut(b).unwrap().set_cursor(w, 19);
+    assert!(typed(&mut h, "gd").is_empty());
+    assert_eq!(cursor(&h, b, w), 8);
+    assert!(typed(&mut h, "n").is_empty());
+    assert_eq!(cursor(&h, b, w), 14);
+    assert!(typed(&mut h, "N").is_empty());
+    assert_eq!(cursor(&h, b, w), 8);
+}
+
+#[test]
 fn a_huge_count_goes_round_once_and_lands_where_counting_would() {
     let (mut h, b, w) = editor("x a x b x\n");
     typed(&mut h, "13/x<CR>");

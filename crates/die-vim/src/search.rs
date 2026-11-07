@@ -1,4 +1,4 @@
-//! `/ ? n N * #`: incremental, every match highlighted, smartcase. A search is an exclusive
+//! `/ ? n N * # gd`: incremental, every match highlighted, smartcase. A search is an exclusive
 //! motion, so it goes through [`run_motion`] like any other: it moves the cursor, moves a
 //! selection's head, or gives a waiting operator its range.
 //!
@@ -266,6 +266,65 @@ pub fn word(ctx: &mut Ctx, a: &Args, forward: bool) -> Result {
         },
     )?;
     go(ctx, a, &pat, forward, false)
+}
+
+/// `gd`, with no index to ask: the first match in the text of the symbol under the cursor, as
+/// `\\_<symbol\\_>`. Evil's `n` then carries on from there. It takes no count.
+pub fn definition(ctx: &mut Ctx, a: &Args) -> Result {
+    let (b, w) = buffer_window(ctx, a)?;
+    let t = ctx.text(b)?;
+    let head = t.selection(w).map_or(0, |s| s.head);
+    let Some(text) = symbol_at(t, head) else {
+        operators::cancel(ctx, a)?;
+        return Err(Error::Msg("No symbol under the cursor".into()));
+    };
+    let pat = Pattern::word(&text, ignores_case(&text), is_symbol)?;
+    remember(
+        ctx,
+        Last {
+            pat: pat.clone(),
+            forward: true,
+        },
+    )?;
+    ctx.set_search_highlight(Some(pat.clone()));
+    // From the text's end a search wraps round to the first match.
+    let t = ctx.text(b)?;
+    let to = t.search(&pat, t.len(), Dir::Forward).map(|f| f.range.start);
+    if let (Some(to), true) = (to, ctx.state_of(b) != State::OperatorPending) {
+        ctx.reveal(b, to)?;
+    }
+    run_motion(ctx, a, Kind::Exclusive, None, move |_| {
+        to.map(Target::at).ok_or("Search failed")
+    })
+}
+
+/// What Emacs's standard syntax table calls a word or symbol character.
+fn is_symbol(c: char) -> bool {
+    is_word(c) || matches!(c, '_' | '-' | '+' | '*' | '/' | '&' | '|' | '<' | '>' | '=')
+}
+
+/// Emacs's `(thing-at-point 'symbol)` from `pos`, or from the first place after it that has one.
+/// A symbol that ends just before `pos` counts as at it.
+fn symbol_at(t: &TextBuf, pos: usize) -> Option<String> {
+    let mut c = Chars::at(t, pos);
+    if !c.prev_ch().is_some_and(is_symbol) {
+        while !c.ch().is_some_and(is_symbol) {
+            if !c.fwd() {
+                return None;
+            }
+        }
+    } else if !c.ch().is_some_and(is_symbol) {
+        c.back();
+    }
+    while c.prev_ch().is_some_and(is_symbol) {
+        c.back();
+    }
+    let mut symbol = String::new();
+    while let Some(h) = c.ch().filter(|&h| is_symbol(h)) {
+        symbol.push(h);
+        c.fwd();
+    }
+    Some(symbol)
 }
 
 fn word_at(t: &TextBuf, pos: usize, forward: bool) -> Option<String> {
