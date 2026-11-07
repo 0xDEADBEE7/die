@@ -186,6 +186,18 @@ pub fn enter(ctx: &mut Ctx, a: &Args, shape: Shape) -> Result {
     Ok(())
 }
 
+/// What the selection covers, as your Evil's region is read: for `V`, whole lines.
+pub fn region_text(ctx: &Ctx, a: &Args) -> Result<String> {
+    let (b, _, sel) = here(ctx, a)?;
+    let t = ctx.text(b)?;
+    let (lo, hi) = ends(sel);
+    let span = match sel.shape {
+        Shape::Line => operators::lines(t, lo, hi),
+        _ => Span::chars(lo, next_stop(t, hi).unwrap_or(hi)),
+    };
+    Ok(t.rope().byte_slice(span.beg..span.end).to_string())
+}
+
 /// Escape: the cursor stays where the head is.
 pub fn escape(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, w, sel) = here(ctx, a)?;

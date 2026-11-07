@@ -23,7 +23,8 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-/// Directories no walk goes into, by name, wherever they are. `.cargo/registry` is in [`skips`].
+/// Directories no walk goes into, by name, wherever they are. `.cargo/registry` and
+/// `.claude/worktrees`, which holds whole other checkouts of a project, are in [`skips`].
 const SKIP: [&str; 7] = [
     ".git",
     "target",
@@ -51,8 +52,10 @@ const SETTLE: Duration = Duration::from_secs(2);
 pub type PathSource = Box<dyn FnOnce(&AtomicBool, &mut dyn FnMut(Vec<String>)) + Send>;
 
 fn skips(parent: &str, name: &str) -> bool {
-    let in_cargo = parent.trim_end_matches('/').rsplit('/').next() == Some(".cargo");
-    SKIP.contains(&name) || in_cargo && name == "registry"
+    let dir = parent.trim_end_matches('/').rsplit('/').next();
+    SKIP.contains(&name)
+        || dir == Some(".cargo") && name == "registry"
+        || dir == Some(".claude") && name == "worktrees"
 }
 
 /// Every file under `root`, in batches, as paths relative to it. Shallowest first, and by name
