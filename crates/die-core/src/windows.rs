@@ -149,6 +149,26 @@ impl TextBuf {
     }
 }
 
+/// A position in a buffer that moves with edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    /// The buffer.
+    pub buffer: BufferId,
+    /// The position, a marker of that buffer's.
+    pub marker: MarkerId,
+}
+
+/// The places a window keeps, for an extension to go back through. Core holds them so the session
+/// can keep them with the window, and doesn't otherwise read them. What owns a list's markers is
+/// whoever put them there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlaceList {
+    /// Newest first.
+    pub places: Vec<Place>,
+    /// Which of them the window is at, if it's going through them.
+    pub index: Option<usize>,
+}
+
 /// A window: what it shows, its size in cells, and where it sits. A window in the split tree
 /// gets these from it. One that isn't (a second [`Ctx::open_window`]) keeps what it was given.
 pub(crate) struct Window {
@@ -158,6 +178,7 @@ pub(crate) struct Window {
     /// Its cells in the frame, from the last tiling. None if it's not in the tree.
     pub rect: Option<Rect>,
     pub used: u64,
+    pub places: PlaceList,
 }
 
 impl Ctx {
@@ -201,6 +222,7 @@ impl Ctx {
             rows,
             rect: None,
             used,
+            places: PlaceList::default(),
         });
         let b = &mut self.buffers[buf];
         b.used = used;
@@ -308,6 +330,16 @@ impl Ctx {
     /// The buffer a window shows.
     pub fn window_buffer(&self, w: WindowId) -> Option<BufferId> {
         self.windows.get(w).map(|w| w.buffer)
+    }
+    /// The places a window keeps.
+    pub fn places(&self, w: WindowId) -> Option<&PlaceList> {
+        self.windows.get(w).map(|w| &w.places)
+    }
+    /// Replace the places a window keeps.
+    pub fn set_places(&mut self, w: WindowId, list: PlaceList) {
+        if let Some(w) = self.windows.get_mut(w) {
+            w.places = list;
+        }
     }
     /// A window's columns and rows.
     pub fn window_size(&self, w: WindowId) -> Option<(usize, usize)> {
@@ -442,6 +474,7 @@ impl Ctx {
             rows: 0,
             rect: Some(rect),
             used: 0, // not used yet, so closing a window doesn't focus it over one that was
+            places: PlaceList::default(),
         });
         if !self.tree.split(w, new, side, rect) {
             self.windows.remove(new);
