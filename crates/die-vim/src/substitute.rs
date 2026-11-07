@@ -2,7 +2,7 @@
 //! are Rust's (D4); core's [`die_core::TextBuf::substitutions`] finds and expands them.
 use crate::grammar::buffer_window;
 use crate::search::{self, ignores_case};
-use crate::text::{indent_end, next_stop, rest_pos};
+use crate::text::{indent_end, last_line, next_stop, rest_pos};
 use crate::{Vim, operators, visual};
 use die_core::{Args, BufferId, Ctx, Error, Origin, Pattern, Result, Shape, WindowId};
 use std::ops::Range;
@@ -23,6 +23,75 @@ pub enum Lines {
     Selection,
     /// These bytes, from `&`.
     Bytes(Range<usize>),
+    /// `:2,$s`, `:.,+3s`, `:'a,'bs`, or one of them alone.
+    Between(Address, Address),
+}
+
+/// One end of a range.
+#[derive(Clone, Copy)]
+pub struct Address {
+    base: Base,
+    offset: isize,
+}
+
+#[derive(Clone, Copy)]
+enum Base {
+    Cursor,
+    Last,
+    /// A line, from 1.
+    Line(usize),
+    Mark(char),
+}
+
+impl Address {
+    /// An address at the start of `text`, and what follows it.
+    fn parse(text: &str) -> Option<(Address, &str)> {
+        let digits = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
+        let mut chars = text.chars();
+        let (base, mut rest) = match chars.next()? {
+            '.' => (Some(Base::Cursor), chars.as_str()),
+            '$' => (Some(Base::Last), chars.as_str()),
+            '\'' => (Some(Base::Mark(chars.next()?)), chars.as_str()),
+            '0'..='9' => {
+                let (n, rest) = text.split_at(digits(text));
+                (Some(Base::Line(n.parse().ok()?)), rest)
+            }
+            _ => (None, text),
+        };
+        let mut offset = 0isize;
+        let mut any = false;
+        while let Some(sign) = rest.chars().next().filter(|c| matches!(c, '+' | '-')) {
+            let after = &rest[1..];
+            let (n, tail) = after.split_at(digits(after));
+            let n: isize = if n.is_empty() { 1 } else { n.parse().ok()? };
+            offset += if sign == '+' { n } else { -n };
+            rest = tail;
+            any = true;
+        }
+        (base.is_some() || any).then_some((
+            Address {
+                base: base.unwrap_or(Base::Cursor),
+                offset,
+            },
+            rest,
+        ))
+    }
+
+    /// The line it names, from 0, in the text.
+    fn line(self, ctx: &Ctx, b: BufferId, w: WindowId) -> Result<usize> {
+        let t = ctx.text(b)?;
+        let cursor = t.line_of(t.cursor(w).unwrap_or(0));
+        let at = match self.base {
+            Base::Cursor => cursor,
+            Base::Last => last_line(t),
+            Base::Line(n) => n.saturating_sub(1),
+            Base::Mark(c) => {
+                let not_set = || Error::Msg(format!("Marker `{c}' is not set"));
+                t.line_of(t.mark(c).ok_or_else(not_set)?)
+            }
+        };
+        Ok(at.saturating_add_signed(self.offset).min(last_line(t)))
+    }
 }
 
 /// A line that's `:s`: its range, and what follows the `s`, which starts with the delimiter.
@@ -31,6 +100,11 @@ pub fn parse(text: &str) -> Option<(Lines, &str)> {
         (Lines::All, rest)
     } else if let Some(rest) = text.strip_prefix(VISUAL) {
         (Lines::Selection, rest)
+    } else if let Some((from, rest)) = Address::parse(text) {
+        match rest.strip_prefix(',').and_then(Address::parse) {
+            Some((to, rest)) => (Lines::Between(from, to), rest),
+            None => (Lines::Between(from, from), rest),
+        }
     } else {
         (Lines::Cursor, text)
     };
@@ -165,6 +239,14 @@ fn line_range(ctx: &mut Ctx, b: BufferId, w: WindowId, lines: Lines) -> Result<R
         Lines::Bytes(range) => return Ok(range),
         Lines::Selection => visual::last_lines(ctx, b)?
             .ok_or_else(|| Error::Msg("There's no selection yet".into()))?,
+        Lines::Between(from, to) => {
+            let (from, to) = (from.line(ctx, b, w)?, to.line(ctx, b, w)?);
+            if from > to {
+                // Backward: your Evil's finds nothing in it.
+                return Ok(0..0);
+            }
+            (from, to)
+        }
         Lines::Cursor => {
             let t = ctx.text(b)?;
             let line = t.line_of(t.cursor(w).unwrap_or(0));

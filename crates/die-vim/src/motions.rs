@@ -42,6 +42,17 @@ pub const MOTIONS: &[Motion] = &[
     m("vim-window-top", "H", Kind::Linewise, "To the window's top row, or its row count.", |s| window_row(s, |_, n| n - 1)),
     m("vim-window-middle", "M", Kind::Linewise, "To the window's middle row, the lower of two.", |s| window_row(s, |rows, _| rows / 2)),
     m("vim-window-bottom", "L", Kind::Linewise, "To the window's bottom row, or count rows from it.", |s| window_row(s, |rows, n| rows.saturating_sub(n))),
+    m("vim-next-line-first-non-blank", "+", Kind::Linewise, "Down count lines, to the first non-blank.", |s| line_first_non_blank(s, Dir::Forward, s.n())),
+    m("vim-previous-line-first-non-blank", "-", Kind::Linewise, "Up count lines, to the first non-blank.", |s| line_first_non_blank(s, Dir::Backward, s.n())),
+    m("vim-next-line-1-first-non-blank", "_", Kind::Linewise, "Down count-1 lines, to the first non-blank.", |s| line_first_non_blank(s, Dir::Forward, s.n() - 1)),
+    m("vim-line-start", "<Home>", Kind::Exclusive, "To the start of the line.", beginning_of_line),
+    m("vim-beginning-of-row", "g0", Kind::Exclusive, "To the start of the screen row.", |s| row_beginning(&Start { count: None, ..*s })),
+    m("vim-first-non-blank-of-row", "g^", Kind::Exclusive, "To the first non-blank of the screen row.", row_first_non_blank),
+    m("vim-end-of-row", "g$", Kind::Inclusive, "To the end of the screen row, or of count-1 rows down.", row_end),
+    m("vim-previous-open-paren", "[(", Kind::Exclusive, "To the count-th ( that isn't closed before the cursor.", |s| unmatched(s, b'(', b')', false)),
+    m("vim-next-close-paren", "])", Kind::Exclusive, "To the count-th ) that wasn't opened after the cursor.", |s| unmatched(s, b'(', b')', true)),
+    m("vim-previous-open-brace", "[{", Kind::Exclusive, "To the count-th { that isn't closed before the cursor.", |s| unmatched(s, b'{', b'}', false)),
+    m("vim-next-close-brace", "]}", Kind::Exclusive, "To the count-th } that wasn't opened after the cursor.", |s| unmatched(s, b'{', b'}', true)),
     m("vim-next-visual-line", "gj", Kind::Exclusive, "Down a screen row, keeping the column on the row.", |s| visual_line(s, 1, "End of buffer")),
     m("vim-previous-visual-line", "gk", Kind::Exclusive, "Up a screen row, keeping the column on the row.", |s| visual_line(s, -1, "Beginning of buffer")),
 ];
@@ -242,6 +253,110 @@ fn visual_line(s: &Start, dy: isize, err: Fail) -> Result<Target, Fail> {
 
 fn first_non_blank(s: &Start) -> Result<Target, Fail> {
     Ok(Target::at(indent_end(s.text, s.text.line_of(s.pos))))
+}
+
+/// `+`, `-`, Return and `_`: `n` lines along, as `j` and `k` go, to the first non-blank. On the
+/// line they'd leave, they fail.
+fn line_first_non_blank(s: &Start, dir: Dir, n: usize) -> Result<Target, Fail> {
+    let t = s.text;
+    let here = t.line_of(s.pos);
+    let mut pos = s.pos;
+    if n > 0 {
+        let (end, err) = match dir {
+            Dir::Forward => (last_line(t).max(here), "End of buffer"),
+            Dir::Backward => (0, "Beginning of buffer"),
+        };
+        if here == end {
+            return Err(err);
+        }
+        let along = Start {
+            count: Some(n),
+            ..*s
+        };
+        pos = vertical(&along, dir, err)?.pos;
+    }
+    Ok(Target::at(indent_end(t, t.line_of(pos))))
+}
+
+/// `g^`: the first character on this screen row that isn't a space or a tab, or the row's end.
+fn row_first_non_blank(s: &Start) -> Result<Target, Fail> {
+    let start = row_start(s.text, s.window, s.pos);
+    let mut c = Chars::at(s.text, start);
+    let end = row_end(s)?.pos;
+    while c.pos() < end && c.ch().is_some_and(|x| x == ' ' || x == '\t') {
+        c.fwd();
+    }
+    Ok(Target::at(c.pos()))
+}
+
+/// `g$`: the last character on this screen row, count-1 rows down.
+fn row_end(s: &Start) -> Result<Target, Fail> {
+    let (t, w) = (s.text, s.window);
+    let down = |pos, dy| t.move_visual(w, pos, dy, Some(0)).map_or(pos, |(q, _)| q);
+    let mut here = row_start(t, w, s.pos);
+    for _ in 1..s.n() {
+        let next = down(here, 1);
+        if next == here || t.line_of(next) > last_line(t) {
+            break;
+        }
+        here = next;
+    }
+    let next = down(here, 1);
+    // Emacs's end-of-visual-line stops before the next row, and your Evil's then steps back.
+    let end = if next > here && t.line_of(next) == t.line_of(here) {
+        let mut c = Chars::at(t, next);
+        c.back();
+        c.back();
+        c.pos()
+    } else {
+        line_end(t, t.line_of(here))
+    };
+    Ok(Target::at(normal_pos(t, end).max(here)))
+}
+
+/// `[(`, `])`, `[{` and `]}`: the count-th bracket going that way with no partner on the way to
+/// it, of those on the cursor's side of a string, or else nowhere new and no error, as your Evil's.
+fn unmatched(s: &Start, open: u8, close: u8, forward: bool) -> Result<Target, Fail> {
+    let text = s.text.rope().to_string();
+    let bytes = text.as_bytes();
+    let (mut string, mut escaped) = (false, false);
+    let in_string: Vec<bool> = bytes
+        .iter()
+        .map(|&b| {
+            let was = string;
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                string = !string;
+            }
+            was
+        })
+        .collect();
+    let (want, other) = if forward { (close, open) } else { (open, close) };
+    let side = in_string.get(s.pos).copied().unwrap_or(false);
+    let (mut left, mut depth) = (s.n(), 0usize);
+    let mut step = |i: usize| {
+        let b = bytes[i];
+        if in_string[i] != side {
+            return None;
+        }
+        if b == other {
+            depth += 1;
+        } else if b == want && depth > 0 {
+            depth -= 1;
+        } else if b == want {
+            left -= 1;
+        }
+        (b == want && left == 0 && depth == 0).then_some(i)
+    };
+    let found = if forward {
+        (s.pos + 1..bytes.len()).find_map(&mut step)
+    } else {
+        (0..s.pos).rev().find_map(&mut step)
+    };
+    Ok(Target::at(found.unwrap_or(s.pos)))
 }
 
 /// `$`: to the end of the line, count-1 lines down, keeping the line's end as the goal column.

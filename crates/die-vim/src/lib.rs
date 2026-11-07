@@ -162,6 +162,10 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-search-previous", "N: the last search again, the other way.", |ctx, a| search::again(ctx, a, true)),
     ("vim-search-word-forward", "*: search forward for the word under the cursor.", |ctx, a| search::word(ctx, a, true)),
     ("vim-search-word-backward", "#: search backward for the word under the cursor.", |ctx, a| search::word(ctx, a, false)),
+    ("vim-search-unbounded-word-forward", "g*: search forward for the word under the cursor, in longer words too.", |ctx, a| search::unbounded(ctx, a, true)),
+    ("vim-search-unbounded-word-backward", "g#: search backward for the word under the cursor, in longer words too.", |ctx, a| search::unbounded(ctx, a, false)),
+    ("vim-save-and-close", "ZZ: as :x.", |ctx, _| ex::run(ctx, "x")),
+    ("vim-alternate-buffer", "C-^: show the buffer used before this one.", window::alternate),
     ("vim-goto-definition", "gd: to the first place in the text with the symbol under the cursor, as your Evil's falls back to.", search::definition),
     ("vim-cancel", "Escape after a key that waits for another: only the operator, the count and the goal column go.", operators::cancel),
     ("vim-replace", "r: replace count characters with the next key.", operators::replace),
@@ -285,6 +289,10 @@ impl Extension for Vim {
                 ("<Right>", "l"),
                 ("<Up>", "k"),
                 ("<Down>", "j"),
+                ("<CR>", "+"),
+                ("<BS>", "h"),
+                ("<Space>", "l"),
+                ("<End>", "$"),
             ] {
                 let m = MOTIONS
                     .iter()
@@ -303,6 +311,8 @@ impl Extension for Vim {
                 .bind(state, "`<any>", "vim-goto-mark")
                 .bind(state, "'<any>", "vim-goto-mark-line")
                 .bind(state, "<C-o>", "vim-jump-backward")
+                .bind(state, "<PageDown>", "vim-scroll-page-down")
+                .bind(state, "<PageUp>", "vim-scroll-page-up")
                 .bind(state, "<Tab>", "vim-jump-forward");
         }
         k.bind(Normal, "gf", "vim-find-file-at-point")
@@ -376,6 +386,8 @@ impl Extension for Vim {
                 .bind(state, "n", "vim-search-next")
                 .bind(state, "N", "vim-search-previous")
                 .bind(state, "*", "vim-search-word-forward")
+                .bind(state, "g*", "vim-search-unbounded-word-forward")
+                .bind(state, "g#", "vim-search-unbounded-word-backward")
                 .bind(state, "#", "vim-search-word-backward")
                 .bind(state, "gd", "vim-goto-definition");
         }
@@ -385,6 +397,9 @@ impl Extension for Vim {
                 k.bind(Normal, &keys, name).bind(Visual, &keys, name);
             }
         }
+        k.bind(Normal, "ZZ", "vim-save-and-close")
+            .bind(Normal, "ZQ", "vim-quit")
+            .bind(Normal, "<C-^>", "vim-alternate-buffer");
         k.bind(Normal, ".", "vim-repeat")
             .bind(CommandLine, "<any>", "vim-record-macro-into");
         k.bind(Visual, "<Esc>", "vim-exit-visual")
