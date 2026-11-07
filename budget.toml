@@ -29,7 +29,8 @@ note = "guard 7: 5k per build, 7k in total"
 [[crate]]
 name = "die-vim"
 path = "crates/die-vim"
-limit = 5790
+# 5,790 until the MVP run: the Evil keys left out of M0, marks and the jumplist.
+limit = 7000
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -102,6 +103,13 @@ files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "comma
 
 [[module]]
 crate = "die-core"
+name = "project: file walk, finder, grep"
+# New in the MVP run.
+limit = 600
+files = ["project.rs", "project/"]
+
+[[module]]
+crate = "die-core"
 name = "faces and scene"
 limit = 950
 files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
@@ -109,9 +117,10 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 [[module]]
 crate = "die-core"
 name = "session"
-limit = 1086
+limit = 1250
 # 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
-# held input during a restart's handover.
+# held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
+# instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
 files = ["session.rs", "session/", "instance.rs", "sys/"]
 
 [[module]]
