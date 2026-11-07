@@ -681,6 +681,25 @@ fn a_click_past_a_line_rests_as_any_normal_cursor_does_and_not_in_insert_state()
     assert_eq!(text(&ctx, b), "abc!\n\n");
 }
 
+/// Your Evil's `evil-maybe-remove-spaces` forgets the new line at any other command, as a click
+/// is. The oracle can't click, so this is from its source.
+#[test]
+fn a_click_ends_a_new_lines_claim_on_a_blank_line() {
+    let (mut ctx, b, _) = editor("one\n    \nthree\n");
+    ctx.type_keys("o");
+    ctx.scene();
+    click(&mut ctx, 2, 2);
+    ctx.type_keys("<Esc>");
+    assert_eq!(text(&ctx, b), "one\n\n    \nthree\n");
+
+    let (mut ctx, b, _) = editor("one\n    two\n");
+    ctx.type_keys("o");
+    ctx.scene();
+    click(&mut ctx, 2, 20);
+    ctx.type_keys("<CR><Esc>");
+    assert_eq!(text(&ctx, b), "one\n\n    two\n    \n");
+}
+
 #[test]
 fn a_dragged_selection_is_visual_state_for_die_vim() {
     let (mut ctx, b, w) = editor("hello\nworld\n");

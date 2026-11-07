@@ -455,6 +455,12 @@ impl Ctx {
     pub fn prompt_chosen(&self) -> Option<&str> {
         self.prompt.as_ref()?.list.as_ref()?.chosen_item()
     }
+    /// Choose the row `by` rows on in the open prompt's list.
+    pub(crate) fn prompt_step(&mut self, by: isize) {
+        if let Some(p) = self.prompt.as_mut() {
+            p.step(by);
+        }
+    }
     /// The rows the open prompt's list has taken.
     pub(crate) fn prompt_list_height(&self) -> usize {
         let list = self.prompt.as_ref().and_then(|p| p.list.as_ref());
