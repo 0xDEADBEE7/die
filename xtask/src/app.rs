@@ -37,9 +37,13 @@ impl Profile {
     }
 }
 
-/// Build `~/Applications/DIE.app`.
-pub fn run(root: &Path) -> Result {
-    let home = std::env::home_dir().ok_or("HOME isn't set")?;
+/// Build `~/Applications/DIE.app`, or the same under `home` if it's given, which is how to try
+/// the whole of this without touching your own.
+pub fn run(root: &Path, home: Option<&Path>) -> Result {
+    let home = match home {
+        Some(home) => home.to_path_buf(),
+        None => std::env::home_dir().ok_or("HOME isn't set")?,
+    };
     let app = home.join("Applications/DIE.app");
     build(root, &app, BUNDLE_ID, Profile::Release)?;
     println!("app: {}", app.display());
@@ -104,8 +108,10 @@ fn target_dir(root: &Path) -> PathBuf {
 }
 
 /// Make the bundle beside `app`, sign it, and put it in place, so that a running DIE and a
-/// failed build don't see half of one. A running DIE keeps the files it has open.
-fn bundle(binary: &Path, font_dir: &Path, app: &Path, id: &str) -> Result {
+/// failed build don't see half of one. A running DIE keeps the files it has open. The old one is
+/// moved aside rather than deleted first: a `restart` that comes just then finds a whole bundle,
+/// or none and says so.
+pub fn bundle(binary: &Path, font_dir: &Path, app: &Path, id: &str) -> Result {
     let parent = app.parent().ok_or("the app has no parent directory")?;
     fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     let new = parent.join(format!(".DIE-{}.new.app", std::process::id()));
@@ -127,8 +133,11 @@ fn bundle(binary: &Path, font_dir: &Path, app: &Path, id: &str) -> Result {
             .args(["--force", "--sign", "-"])
             .arg(&new),
     )?;
-    let _ = fs::remove_dir_all(app);
+    let old = parent.join(format!(".DIE-{}.old.app", std::process::id()));
+    let _ = fs::remove_dir_all(&old);
+    let _ = fs::rename(app, &old);
     fs::rename(&new, app).map_err(|e| format!("{}: {e}", app.display()))?;
+    let _ = fs::remove_dir_all(&old);
     Ok(())
 }
 

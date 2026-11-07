@@ -124,11 +124,12 @@ impl Host {
         sleep_for(self.ctx.next_timer(), self.ctx.now())
     }
 
-    /// The frame is now `grid`, so the window has that less its status line and the command
-    /// line. What a resize queues (C3) runs on the next pump.
+    /// The frame is now `grid`, which the split tree divides, keeping each split's proportions. A
+    /// focused window outside the tree fills it. What a resize queues (C3) runs on the next pump.
     pub fn set_grid(&mut self, grid: (usize, usize)) {
         self.grid = grid;
-        let Some(window) = self.ctx.focused() else {
+        self.ctx.set_frame_size(grid.0, grid.1);
+        let Some(window) = self.outside_tree() else {
             return;
         };
         let (cols, rows) = (grid.0, grid.1.saturating_sub(2));
@@ -137,15 +138,22 @@ impl Host {
         }
     }
 
-    /// The frame, with the focused window filling it.
+    /// The frame: the split tree's windows, or a focused window outside the tree filling it.
     pub fn scene(&mut self) -> Scene {
-        let placement = self.ctx.focused().map(|window| WindowPlacement {
-            window,
-            col: 0,
-            row: 0,
-        });
-        let placed = placement.as_slice();
-        self.ctx.compose(self.grid.0, self.grid.1, placed)
+        let placed = match self.outside_tree() {
+            Some(window) => vec![WindowPlacement {
+                window,
+                col: 0,
+                row: 0,
+            }],
+            None => self.ctx.placements(),
+        };
+        self.ctx.compose(self.grid.0, self.grid.1, &placed)
+    }
+
+    fn outside_tree(&self) -> Option<die_core::WindowId> {
+        let window = self.ctx.focused()?;
+        (!self.ctx.windows_by_use().contains(&window)).then_some(window)
     }
 }
 
