@@ -166,7 +166,7 @@ fn ask_for_file(ctx: &mut Ctx, dir: PathBuf, home: Option<PathBuf>, line: &str) 
     });
 }
 
-fn open_in_window(ctx: &mut Ctx, path: &Path) -> crate::error::Result {
+pub(crate) fn open_in_window(ctx: &mut Ctx, path: &Path) -> crate::error::Result {
     let file = ctx.open_file(path)?;
     ctx.show(file, ShowIn::Current)?;
     Ok(())
@@ -174,7 +174,7 @@ fn open_in_window(ctx: &mut Ctx, path: &Path) -> crate::error::Result {
 
 /// The prompt's starting line for a directory: ending in `/`, and with `~` for the home directory
 /// as Emacs abbreviates it.
-fn line_for(dir: &Path, home: Option<&Path>) -> String {
+pub(crate) fn line_for(dir: &Path, home: Option<&Path>) -> String {
     let shown = home
         .and_then(|h| dir.strip_prefix(h).ok())
         .map(|rest| Path::new("~").join(rest));
