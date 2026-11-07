@@ -61,6 +61,7 @@ const JUMPS: &[&str] = &[
     "vim-goto-mark-line",
     "vim-insert-resume",
     "vim-find-file-at-point",
+    "vim-find-file-selected",
 ];
 
 /// Whether a command sets a jump before it runs.

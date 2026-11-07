@@ -552,6 +552,103 @@ fn next_and_previous_step_from_any_window_and_say_so_at_either_end() {
 }
 
 #[test]
+fn the_walk_stays_out_of_other_checkouts_in_claude_worktrees() {
+    let d = Dir::new("worktrees");
+    d.files(&[
+        ".claude/settings.json",
+        ".claude/worktrees/wf/src/a.rs",
+        "src/worktrees/b.rs",
+    ]);
+    assert_eq!(
+        walked(&d.0),
+        [".claude/settings.json", "src/worktrees/b.rs"]
+    );
+}
+
+#[test]
+fn cr_goes_to_the_window_that_has_the_file() {
+    let d = Dir::new("grep-has-file");
+    written(&d, &[("a.txt", b"hit\n"), ("b.txt", b"hit\n")]);
+    let mut ctx = harness();
+    let root = d.0.display().to_string();
+    grep(&mut ctx, &format!("hit {root}"));
+    let list = ctx.find_buffer("*grep*").unwrap();
+    let results_window = ctx
+        .window_list()
+        .into_iter()
+        .find(|w| ctx.window_buffer(*w) == Some(list))
+        .unwrap();
+    let a = ctx.open_file(&d.0.join("a.txt")).unwrap();
+    let b = ctx.open_file(&d.0.join("b.txt")).unwrap();
+    ctx.show(a, ShowIn::Current).unwrap();
+    let on_a = ctx.focused().unwrap();
+    let on_b = ctx.show(b, ShowIn::Split(Side::Left)).unwrap().unwrap();
+    ctx.focus(on_a);
+    ctx.focus(results_window);
+    let row = ctx.text(list).unwrap().line_start(2);
+    ctx.text_mut(list).unwrap().set_cursor(results_window, row);
+    let _ = ctx.type_keys("<CR>");
+    assert_eq!(ctx.focused(), Some(on_b), "it has b.txt, the row's file");
+    assert_eq!(ctx.window_buffer(on_a), Some(a), "this one was used last");
+}
+
+#[test]
+fn a_result_whose_file_is_gone_says_so_and_makes_no_buffer() {
+    let d = Dir::new("grep-gone");
+    written(&d, &[("a.txt", b"hit\n"), ("b.txt", b"hit\n")]);
+    let mut ctx = harness();
+    let root = d.0.display().to_string();
+    grep(&mut ctx, &format!("hit {root}"));
+    fs::remove_file(d.0.join("a.txt")).unwrap();
+    let here = ctx.focused_buffer();
+    let gone = ctx.run("next-error", &Args::default()).unwrap_err();
+    assert!(gone.to_string().contains("a.txt"), "{gone}");
+    assert_eq!(ctx.focused_buffer(), here);
+    assert_eq!(ctx.find_buffer("a.txt"), None);
+    ctx.run("next-error", &Args::default()).unwrap();
+    assert_eq!(at(&ctx, &d), ("b.txt".to_string(), 1, 1), "on past it");
+}
+
+#[test]
+fn a_last_line_with_no_newline_has_nothing_after_it_to_match() {
+    let d = Dir::new("grep-last-line");
+    written(&d, &[("a.txt", b"a\nab")]);
+    let mut ctx = harness();
+    let root = d.0.display().to_string();
+    grep(&mut ctx, &format!("a|$ {root}"));
+    let found = results(&ctx);
+    let rows: Vec<_> = found.lines().skip(1).collect();
+    assert_eq!(
+        rows,
+        ["a.txt:1:1: a", "a.txt:2:1: ab", "2 matches in 1 file."]
+    );
+}
+
+#[test]
+fn rows_show_while_the_search_goes_on_through_files_with_none() {
+    let d = Dir::new("grep-lull");
+    written(&d, &[("a.txt", b"needle\n"), ("b.txt", b"needle\n")]);
+    let seed = d.0.join("seed");
+    fs::write(&seed, "nothing here\n".repeat(3000)).unwrap();
+    for i in 0..20_000 {
+        fs::hard_link(&seed, d.0.join(format!("z{i:05}"))).unwrap();
+    }
+    let mut ctx = harness();
+    let root = d.0.display().to_string();
+    ctx.run("grep", &grep_args(&format!("needle {root}")))
+        .unwrap();
+    until(&mut ctx, "the second row", |ctx| {
+        results(ctx).contains("b.txt")
+    });
+    ctx.step();
+    ctx.step();
+    assert!(
+        !results(&ctx).contains("2 matches"),
+        "the row waited for the search to end"
+    );
+}
+
+#[test]
 fn results_stop_at_the_limit_and_a_new_search_replaces_the_old() {
     let d = Dir::new("grep-limit");
     written(&d, &[("many", "hit\n".repeat(10_001).as_bytes())]);
