@@ -11,7 +11,7 @@ use ropey::Rope;
 use slotmap::SlotMap;
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -283,6 +283,8 @@ pub struct TextBuf {
     log: VecDeque<Change>,
     history: History,
     markers: SlotMap<MarkerId, (usize, Gravity)>,
+    /// Markers with a one-character name. The session keeps these (K12), and no other marker.
+    marks: BTreeMap<char, MarkerId>,
     decos: SlotMap<DecorationId, Decoration>,
     next_seq: u64,
     pub(crate) views: HashMap<WindowId, View>,
@@ -371,6 +373,7 @@ impl TextBuf {
             log: VecDeque::new(),
             history: History::default(),
             markers: SlotMap::with_key(),
+            marks: BTreeMap::new(),
             decos: SlotMap::with_key(),
             next_seq: 0,
             views: HashMap::new(),
@@ -720,6 +723,31 @@ impl TextBuf {
     /// Remove a marker; its last position, or None if `id` was already dead.
     pub fn remove_marker(&mut self, id: MarkerId) -> Option<usize> {
         self.markers.remove(id).map(|m| m.0)
+    }
+
+    /// Name a position that moves with edits, in place of what had that name. Errors as for
+    /// [`TextBuf::add_marker`].
+    pub fn set_mark(&mut self, name: char, pos: usize, g: Gravity) -> Result {
+        let id = self.add_marker(pos, g)?;
+        if let Some(old) = self.marks.insert(name, id) {
+            self.remove_marker(old);
+        }
+        Ok(())
+    }
+    /// Where a named position is now.
+    pub fn mark(&self, name: char) -> Option<usize> {
+        self.marker(*self.marks.get(&name)?)
+    }
+    /// Forget a named position.
+    pub fn remove_mark(&mut self, name: char) {
+        if let Some(id) = self.marks.remove(&name) {
+            self.remove_marker(id);
+        }
+    }
+    /// Every named position, in order of name, with its gravity.
+    pub fn marks(&self) -> impl Iterator<Item = (char, usize, Gravity)> + '_ {
+        let at = |(n, id): (&char, &MarkerId)| self.markers.get(*id).map(|m| (*n, m.0, m.1));
+        self.marks.iter().filter_map(at)
     }
 
     // ---- decorations
