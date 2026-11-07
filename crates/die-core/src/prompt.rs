@@ -9,9 +9,13 @@
 //!   either end of the line with `<C-u>` and `<C-k>`.
 //! - History: `<Up>` `<C-p>` `<PageUp>` for older, `<Down>` `<C-n>` `<PageDown>` for newer, when
 //!   there are no candidates. Going past the newest brings back what you were typing.
+//! - Paste at the cursor: `<D-v>` the clipboard, without the newlines it ends in, `<C-y>` the
+//!   newest kill, and `<C-r>` the register the next key names ([`Ctx::set_prompt_register`]).
+//! - A key with super goes to the keymaps first, so the DIE layer works with a prompt open.
 //!
 //! [`PromptSpec::evil_keys`] changes `<Up>`, `<Down>`, `<C-u>` and `<C-b>` to Evil's, for `:` and
-//! `/`. The other Emacs keys stay on those too (scope §10).
+//! `/`, and `<C-v>` inserts the next key as it is. The other Emacs keys stay on those too
+//! (scope §10).
 //!
 //! A prompt with candidates shows up to 20 of them under its line, flex matched against what's
 //! typed, and some keys change:
@@ -242,6 +246,31 @@ impl List {
     }
 }
 
+/// What the next key means, after a key that reads one.
+enum Reading {
+    /// The name of a register to paste, after `<C-r>`.
+    Register,
+    /// A character to insert, after `<C-v>`.
+    Literal,
+}
+
+/// The character a key stands for when it's read as one, as Emacs's `read-char` has it: `<C-w>`
+/// is `^W`. None for a key with no character, such as `<Up>`.
+fn key_char(ev: &KeyEvent) -> Option<char> {
+    let c = ev.chord();
+    match c.key {
+        _ if ev.printable().is_some() => ev.printable()?.chars().next(),
+        Key::Esc => Some('\x1b'),
+        Key::Enter => Some('\r'),
+        Key::Tab => Some('\t'),
+        Key::Backspace => Some('\x7f'),
+        Key::Char(k) if c.mods.ctrl && k.is_ascii_alphabetic() => {
+            Some(char::from(k.to_ascii_lowercase() as u8 - b'`'))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) struct Prompt {
     spec: PromptSpec,
     text: String,
@@ -254,6 +283,7 @@ pub(crate) struct Prompt {
     list: Option<List>,
     /// `<CR>` was refused, until the next key.
     refused: bool,
+    reading: Option<Reading>,
     ext: ExtIdx,
     prev: State,
     f: PromptFn,
@@ -397,6 +427,7 @@ impl Ctx {
             draft: String::new(),
             list,
             refused: false,
+            reading: None,
             ext: self.cur_ext(),
             prev,
             f: Box::new(f),
@@ -439,9 +470,14 @@ impl Ctx {
     }
     /// What shows after the prompt's text, for now.
     pub(crate) fn prompt_note(&self) -> &'static str {
-        match self.prompt.as_ref().is_some_and(|p| p.refused) {
-            true => " [Match required]",
-            false => "",
+        let Some(p) = self.prompt.as_ref() else {
+            return "";
+        };
+        match p.reading {
+            Some(Reading::Register) => "\"",
+            Some(Reading::Literal) => "^",
+            None if p.refused => " [Match required]",
+            None => "",
         }
     }
     /// The list's rows, `room` at most, scrolled to the chosen one: each candidate, the characters
@@ -480,6 +516,47 @@ impl Ctx {
     pub fn prompt_history(&self, name: &str) -> &[String] {
         self.histories.get(name).map_or(&[], Vec::as_slice)
     }
+    /// How a prompt reads a register, for `<C-r>` and `<C-y>`: `rule` takes the register's name,
+    /// a control character standing for its key, and gives the text, or an error to report with
+    /// the prompt staying open. Which registers there are is the keymap's business, as in
+    /// [`Ctx::set_cursor_rest`]. With no rule, they're the ones [`Ctx::register`] holds.
+    pub fn set_prompt_register(&mut self, rule: fn(&mut Ctx, char) -> Result<String>) {
+        self.prompt_register = Some(rule);
+    }
+    /// Put this at the prompt's cursor.
+    fn prompt_insert(&mut self, s: &str) {
+        let Some(p) = self.prompt.as_mut() else {
+            return;
+        };
+        let before = p.text.clone();
+        p.replace(p.cursor..p.cursor, s);
+        self.prompt_changed(&before);
+    }
+    /// Paste this register at the prompt's cursor. A register that can't be read is an error for
+    /// the key, as in your Evil, and the prompt stays open.
+    fn prompt_paste(&mut self, name: Option<char>) {
+        let Some(ext) = self.prompt.as_ref().map(|p| p.ext) else {
+            return;
+        };
+        let rule = self.prompt_register;
+        let read = name
+            .ok_or_else(|| Error::Msg("Non-character input-event".into()))
+            .and_then(|c| match rule {
+                Some(rule) => self.guarded(ext, |ctx| rule(ctx, c)),
+                None => self.register(c).map(|r| r.text.clone()).ok_or_else(|| {
+                    let shown = c.escape_debug();
+                    Error::Msg(format!("Register {shown} is empty"))
+                }),
+            });
+        match read {
+            Ok(text) => self.prompt_insert(&text),
+            Err(Error::Panicked { .. }) => self.drop_fed(),
+            Err(e) => {
+                self.drop_fed();
+                self.log_error(e.to_string());
+            }
+        }
+    }
     /// Queue the answer. `keyed` says a key submitted it, so it's part of the key stream (contract
     /// §6): if it fails, the rest of what was fed drops.
     fn finish_prompt(&mut self, answer: Option<String>, keyed: bool) {
@@ -509,6 +586,16 @@ impl Ctx {
         let Some(p) = self.prompt.as_mut() else {
             return;
         };
+        match p.reading.take() {
+            Some(Reading::Register) => return self.prompt_paste(key_char(&ev)),
+            Some(Reading::Literal) => {
+                if let Some(k) = key_char(&ev) {
+                    self.prompt_insert(k.encode_utf8(&mut [0; 4]));
+                }
+                return;
+            }
+            None => {}
+        }
         let (at, end) = (p.cursor, p.text.len());
         let evil = p.spec.evil_keys;
         let before = p.text.clone();
@@ -528,6 +615,12 @@ impl Ctx {
                 }
             }
             Key::Esc => return self.finish_prompt(None, true),
+            Key::Char('v') if c.mods.super_ => {
+                if let Some(r) = self.clipboard() {
+                    self.prompt_insert(r.text.trim_end_matches('\n'));
+                }
+                return;
+            }
             Key::Char('g' | 'c') if ctrl => return self.finish_prompt(None, true),
             Key::Backspace if end == 0 && p.spec.backspace_cancels => {
                 return self.finish_prompt(None, true);
@@ -563,6 +656,9 @@ impl Ctx {
                 'k' => p.replace(at..end, ""),
                 'p' if listed => p.step(-1),
                 'n' if listed => p.step(1),
+                'r' => p.reading = Some(Reading::Register),
+                'y' => return self.prompt_paste(Some('"')),
+                'v' if evil => p.reading = Some(Reading::Literal),
                 'v' => p.step(p.page()),
                 'p' => self.prompt_recall(true, false),
                 'n' => self.prompt_recall(false, false),

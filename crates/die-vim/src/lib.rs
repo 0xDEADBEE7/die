@@ -184,6 +184,7 @@ impl Extension for Vim {
         repeat::observe(ctx, self.rec.clone());
         ctx.set_cursor_rest(text::rest_pos);
         ctx.set_insert_end(insert::stepped_back);
+        ctx.set_prompt_register(registers::for_prompt);
         // A buffer killed in insert state never gets its Escape, nor one with an
         // operator waiting its motion.
         ctx.on_buffer_killed(|ctx, b| {

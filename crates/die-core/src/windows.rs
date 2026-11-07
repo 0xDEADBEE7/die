@@ -246,6 +246,7 @@ impl Ctx {
         if let Content::Text(t) = &mut b.content {
             t.unpark_view(w, from, cols, rows);
         }
+        self.open_messages_at_end(w, buf);
         if focused {
             self.focus_event(buf, true);
         }

@@ -14,7 +14,8 @@
 //! `a`-`z`, and then `"` holds only the new text (S5 row 9).
 
 use crate::repeat::keys_of;
-use die_core::{Ctx, Error, Key, RegKind, Register, Result, key_notation, parse_keys};
+use crate::text::{Chars, Class, class, same_word};
+use die_core::{Ctx, Error, Key, RegKind, Register, Result, TextBuf, key_notation, parse_keys};
 
 /// How many kills can be read back: `"1` to `"9`. Emacs keeps more, out of reach.
 const RING: usize = 9;
@@ -178,6 +179,102 @@ pub fn read(ctx: &mut Ctx, name: Option<char>) -> Result<Register> {
     held.cloned()
         .map(plain)
         .ok_or_else(|| Error::Msg(format!("Register {c} is empty")))
+}
+
+/// What `<C-r>` pastes on a command line, as your Evil's `evil-get-register` reads it: a register,
+/// or what's under the cursor for `<C-w>` (the word), `<C-a>` (the WORD), `<C-o>` (the symbol),
+/// `<C-f>` (the file name) and `<C-l>` (the line). `:` and `/` are the last of each line, and `%`
+/// and `#` this buffer's and the last buffer's file. `.` and `=` aren't built.
+pub fn for_prompt(ctx: &mut Ctx, c: char) -> Result<String> {
+    let empty = || Error::Msg(format!("Register {} is empty", shown(c)));
+    let last = |ctx: &Ctx, history: &str, none: &str| match ctx.prompt_history(history).last() {
+        Some(line) => Ok(line.clone()),
+        None => Err(Error::Msg(none.into())),
+    };
+    let here = ctx.focused_buffer();
+    let path = |ctx: &Ctx, b| Some(ctx.file(b)?.path.display().to_string());
+    let no_file = || Error::Msg("No file name".into());
+    match c {
+        '\x17' | '\x01' | '\x0f' | '\x06' | '\x0c' => under_cursor(ctx, c).ok_or_else(empty),
+        ':' => last(ctx, "ex", "No previous command line"),
+        '/' => last(ctx, "search", "No previous regular expression"),
+        '%' => here.and_then(|b| path(ctx, b)).ok_or_else(no_file),
+        '#' => {
+            let other = ctx.buffer_list().into_iter().find(|b| Some(*b) != here);
+            other.and_then(|b| path(ctx, b)).ok_or_else(no_file)
+        }
+        _ if c.is_control() => Err(empty()),
+        _ => read(ctx, Some(c)).map(|r| r.text),
+    }
+}
+
+/// A register's name for a message: `^W` for a control character.
+fn shown(c: char) -> String {
+    match u8::try_from(c) {
+        Ok(b) if b < 32 => format!("^{}", char::from(b + 64)),
+        _ => c.to_string(),
+    }
+}
+
+/// The thing `<C-r>` names under the focused window's cursor.
+fn under_cursor(ctx: &Ctx, c: char) -> Option<String> {
+    let w = ctx.focused()?;
+    let t = ctx.text(ctx.window_buffer(w)?).ok()?;
+    let at = t.cursor(w)?;
+    let word = |big: bool| thing(t, at, |c| !blank(c), |a, b| same_word(a, b, big));
+    match c {
+        '\x17' => word(false),
+        '\x01' => word(true),
+        '\x0f' => thing(t, at, |c| !blank(c), |a, b| symbolic(a) == symbolic(b)),
+        '\x06' => thing(t, at, file_char, |_, _| true),
+        _ => {
+            let line = t.rope().line(t.line_of(at)).to_string();
+            Some(line.trim_end_matches('\n').to_owned())
+        }
+    }
+}
+
+fn blank(c: char) -> bool {
+    matches!(class(c, false), Class::Blank | Class::Newline)
+}
+
+/// A word or symbol character in Emacs's standard syntax table, against other punctuation.
+fn symbolic(c: char) -> bool {
+    class(c, false) == Class::Word || "_-+*/&|<>=".contains(c)
+}
+
+/// Emacs's `thing-at-point-file-name-chars`.
+fn file_char(c: char) -> bool {
+    c.is_alphanumeric() || "-@~/_.${}#%,:".contains(c)
+}
+
+/// The run of `same` characters that `is` picks out at `at`, or the one that ends just before it,
+/// as Emacs's `thing-at-point` takes it.
+fn thing(
+    t: &TextBuf,
+    at: usize,
+    is: impl Fn(char) -> bool,
+    same: impl Fn(char, char) -> bool,
+) -> Option<String> {
+    let mut start = Chars::at(t, at);
+    if !start.ch().is_some_and(&is) {
+        start.prev_ch().filter(|c| is(*c))?;
+        start.back();
+    }
+    let mut end = Chars::at(t, start.pos());
+    let mut here = end.ch()?;
+    while let Some(c) = end.fwd().then(|| end.ch()).flatten() {
+        if !is(c) || !same(here, c) {
+            break;
+        }
+        here = c;
+    }
+    let mut here = start.ch()?;
+    while let Some(c) = start.prev_ch().filter(|c| is(*c) && same(*c, here)) {
+        here = c;
+        start.back();
+    }
+    Some(t.rope().byte_slice(start.pos()..end.pos()).to_string())
 }
 
 /// A recording as text: what its keys would type, as your Evil holds it. Keys with no
