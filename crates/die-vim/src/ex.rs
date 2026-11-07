@@ -1,7 +1,7 @@
 //! The `:` command line. K11a gives it its input; V2 and V5 fill in what it does.
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
-use crate::{substitute, visual, window};
+use crate::{insert_keys, substitute, visual, window};
 use die_core::{Args, BufferId, Ctx, Error, PromptSpec, Result, ShowIn};
 use std::path::{Path, PathBuf};
 
@@ -17,9 +17,14 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
         visual::escape(ctx, a)?;
         spec = spec.initial(substitute::VISUAL);
     }
-    ctx.prompt(spec, |ctx, answer| match answer {
-        Some(text) => run(ctx, &text),
-        None => Ok(()),
+    let a = a.clone();
+    ctx.prompt(spec, move |ctx, answer| {
+        let r = match answer {
+            Some(text) => run(ctx, &text),
+            None => Ok(()),
+        };
+        insert_keys::after_command(ctx, &a, &r);
+        r
     });
     Ok(())
 }
@@ -54,6 +59,15 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     match name {
         "w" | "w!" | "q" | "q!" | "quit" | "quit!" | "wq" | "wq!" | "e!" => {
             file_command(ctx, name, rest)
+        }
+        "x" | "xit" => file_command(ctx, "wq", rest),
+        "x!" | "xit!" => file_command(ctx, "wq!", rest),
+        "wa" | "wall" | "wa!" | "wall!" => write_all(ctx, name.ends_with('!')),
+        "qa" | "qall" | "quitall" => window::quit_app(ctx, false),
+        "qa!" | "qall!" | "quitall!" => window::quit_app(ctx, true),
+        "wqa" | "wqall" | "xa" | "xall" | "wqa!" | "wqall!" | "xa!" | "xall!" => {
+            write_all(ctx, name.ends_with('!'))?;
+            window::quit_app(ctx, false)
         }
         "e" | "edit" => edit(ctx, rest),
         "b" | "buffer" => buffer(ctx, rest),
@@ -107,6 +121,23 @@ fn file_command(ctx: &mut Ctx, name: &str, rest: &str) -> Result {
         "e" => ctx.revert_file(buf),
         name => window::close_or_quit(ctx, w, force && name != "wq"),
     }
+}
+
+/// `:wa`: every file with unsaved changes, on past one that's refused, whose error comes back.
+fn write_all(ctx: &mut Ctx, force: bool) -> Result {
+    let mut first = Ok(());
+    for b in ctx.buffer_list() {
+        let unsaved = ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified());
+        if unsaved {
+            let saved = if force {
+                ctx.save_force(b)
+            } else {
+                ctx.save(b)
+            };
+            first = first.and(saved);
+        }
+    }
+    first
 }
 
 /// `:e path`: a path is taken from the buffer's directory, as your Evil's is, or else from

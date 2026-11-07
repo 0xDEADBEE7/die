@@ -110,6 +110,21 @@ pub struct Recorder {
     resume: Option<State>,
 }
 
+impl Recorder {
+    /// What `.` repeats, what `@@` does and the `;` `.` left alone, as they'll be once keys are
+    /// typed again, for the session.
+    pub fn kept(&self) -> (Option<&Change>, Option<char>, Option<Option<Find>>) {
+        let last = self.then_last.as_ref().or(self.last.as_ref());
+        (last, self.last_macro, self.then_find)
+    }
+
+    /// From the session.
+    pub fn restore(&mut self, last: Option<Change>, last_macro: Option<char>) {
+        self.last = last;
+        self.last_macro = last_macro;
+    }
+}
+
 fn recorder(ctx: &mut Ctx) -> Result<Rc<RefCell<Recorder>>> {
     Ok(ctx.with_ext(|v: &mut Vim, _| v.rec.clone())?)
 }
@@ -198,6 +213,27 @@ fn feed(ctx: &mut Ctx, rec: &RefCell<Recorder>, keys: &str) -> Result {
     r.fed += n;
     r.replaying = true;
     Ok(())
+}
+
+/// Feed keys a command needs next, without the macro they run in, if any, ending early.
+pub fn feed_more(ctx: &mut Ctx, keys: &str) -> Result {
+    let rec = recorder(ctx)?;
+    let n = parse_keys(keys).map_or(0, |k| k.len());
+    ctx.feed_keys(keys)?;
+    rec.borrow_mut().fed += n;
+    Ok(())
+}
+
+/// Whether keys that were fed are still to run.
+pub fn feeding(ctx: &mut Ctx) -> Result<bool> {
+    Ok(recorder(ctx)?.borrow().fed > 0)
+}
+
+/// Whether this key was the last that a macro or `.` fed.
+pub fn replay_ending(ctx: &mut Ctx) -> Result<bool> {
+    let rec = recorder(ctx)?;
+    let r = rec.borrow();
+    Ok(r.replaying && r.fed == 0)
 }
 
 /// This change is the one `.` repeats now, unless it came from the command line: then the last

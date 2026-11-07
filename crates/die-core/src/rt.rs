@@ -5,8 +5,10 @@ use crate::app::Input;
 use crate::dispatch::*;
 use crate::error::*;
 use crate::ext::*;
+use crate::files::POLL_EVERY;
 use crate::ids::*;
 use crate::keys::*;
+use crate::session::LOOK_EVERY;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -135,6 +137,28 @@ pub(crate) struct Idle {
     d: Duration,
     sub: Rc<SubInner>,
     f: TimerFn,
+}
+
+/// How long after the last thing that happened the tick rests.
+const REST_AFTER: Duration = Duration::from_secs(30);
+/// The tick's period at rest, Emacs's own auto-revert interval. Anything the tick wasn't told of
+/// is seen within this.
+const RESTING: Duration = Duration::from_secs(5);
+
+/// The one timer behind the file poll and the session's looks, so an editor nobody is using
+/// stays asleep: a tick every [`RESTING`] once nothing has happened for [`REST_AFTER`], and
+/// anything that happens wakes it. One timer, so their wakes coincide.
+#[derive(Default)]
+pub(crate) struct Tick {
+    timer: Option<Sub>,
+    /// When `timer` fires.
+    due: Duration,
+    /// When the file poll next runs.
+    files_due: Duration,
+    /// When something last happened.
+    active: Duration,
+    /// The call that just ran was a tick that found nothing new.
+    found_nothing: bool,
 }
 
 /// The shortest period a repeating timer can have, so one with none can't hold the loop.
@@ -272,6 +296,61 @@ impl Ctx {
     /// The time on this workspace's clock.
     pub fn now(&self) -> Duration {
         self.clock.now()
+    }
+    /// Start the tick, if it hasn't been, as there's now a file or a session to look after.
+    pub(crate) fn start_ticking(&mut self) {
+        if self.pace.timer.is_none() {
+            self.pace.files_due = self.now().saturating_add(POLL_EVERY);
+            self.touch();
+            self.arm_tick(self.fast_tick());
+        }
+    }
+    /// With nothing left to look after, the tick stops.
+    pub(crate) fn stop_ticking_if_done(&mut self) {
+        if !self.files.any() && self.session.is_none() {
+            self.pace.timer = None;
+        }
+    }
+    fn fast_tick(&self) -> Duration {
+        if self.session.is_some() {
+            LOOK_EVERY
+        } else {
+            POLL_EVERY
+        }
+    }
+    fn arm_tick(&mut self, d: Duration) {
+        self.pace.due = self.now().saturating_add(d);
+        self.pace.timer = Some(self.after(d, |ctx| {
+            ctx.run_tick();
+            Ok(())
+        }));
+    }
+    fn run_tick(&mut self) {
+        // Armed before the work, so that a panic in it doesn't end the poll.
+        self.arm_tick(self.fast_tick());
+        let now = self.now();
+        if now >= self.pace.files_due {
+            self.pace.files_due = now.saturating_add(POLL_EVERY);
+            self.check_files();
+        }
+        self.look_at_session();
+        if std::mem::take(&mut self.files.noticed) {
+            return;
+        }
+        self.pace.found_nothing = true;
+        let quiet = now.saturating_sub(self.pace.active);
+        if quiet >= REST_AFTER && !self.session_behind() {
+            self.arm_tick(RESTING);
+        }
+    }
+    /// Something happened, so a tick at rest comes back now, and looks at the files too.
+    pub(crate) fn touch(&mut self) {
+        let now = self.now();
+        self.pace.active = now;
+        if self.pace.timer.is_some() && self.pace.due > now.saturating_add(self.fast_tick()) {
+            self.pace.files_due = now;
+            self.arm_tick(self.fast_tick());
+        }
     }
     /// A key's turn ended: every idle timer's wait starts again.
     pub(crate) fn restart_idle(&mut self) {
@@ -432,6 +511,9 @@ impl Ctx {
     pub fn step(&mut self) -> bool {
         self.fed_at = 0;
         self.collect_due();
+        if self.prompt_take_feed() {
+            return true;
+        }
         if let Some(q) = self.queue.pop_front() {
             if q.alive.as_ref().is_none_or(|a| a.alive.get()) {
                 self.cmd_seq += 1;
@@ -444,6 +526,9 @@ impl Ctx {
                     }
                 }
                 self.report(r);
+                if !std::mem::take(&mut self.pace.found_nothing) {
+                    self.touch();
+                }
                 // Code that runs between units (the host, a harness) gets a number of its own.
                 self.cmd_seq += 1;
             } else {
@@ -471,6 +556,7 @@ impl Ctx {
         } else {
             self.run_input(input);
         }
+        self.touch();
         self.cmd_seq += 1;
         true
     }

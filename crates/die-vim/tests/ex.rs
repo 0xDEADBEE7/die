@@ -126,6 +126,40 @@ fn wq_writes_and_leaves_but_stays_when_the_write_is_refused() {
     assert_eq!(read(&path), "xone\n");
 }
 
+/// Found by typing into the bundle: these fell through to "no such command".
+#[test]
+fn wa_writes_every_file_and_qa_leaves_only_with_nothing_unsaved() {
+    let dir = Dir::new("all");
+    let (mut h, path, b, _) = on_file(&dir, "one\n");
+    let other = dir.0.join("g.txt");
+    std::fs::write(&other, "two\n").unwrap();
+    assert!(keys(&mut h, "ix<Esc>").is_empty());
+    assert!(keys(&mut h, &format!(":e {}<CR>iy<Esc>", other.display())).is_empty());
+    assert_eq!(keys(&mut h, ":qa<CR>").len(), 1);
+    assert!(!h.quit_wanted());
+    assert!(keys(&mut h, ":wa<CR>").is_empty());
+    assert_eq!(
+        (read(&path), read(&other)),
+        ("xone\n".into(), "ytwo\n".into())
+    );
+    assert!(!h.text(b).unwrap().modified());
+    assert!(keys(&mut h, ":qa<CR>").is_empty());
+    assert!(h.quit_wanted());
+}
+
+#[test]
+fn wqa_writes_and_leaves_and_qa_bang_drops() {
+    let dir = Dir::new("wqa");
+    let (mut h, path, _, _) = on_file(&dir, "one\n");
+    assert!(keys(&mut h, "ix<Esc>:qa!<CR>").is_empty());
+    assert!(h.quit_wanted());
+    assert_eq!(read(&path), "one\n");
+    let (mut h, path, _, _) = on_file(&dir, "one\n");
+    assert!(keys(&mut h, "ix<Esc>:xa<CR>").is_empty());
+    assert!(h.quit_wanted());
+    assert_eq!(read(&path), "xone\n");
+}
+
 #[test]
 fn file_commands_refuse_an_argument_and_a_buffer_with_no_file() {
     let mut h = editor();

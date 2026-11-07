@@ -718,6 +718,28 @@ fn the_poll_runs_on_the_clock_and_stops_with_the_last_file() {
     assert_eq!(text_of(&c, a), "four\n", "a new file starts it again");
 }
 
+/// An editor nobody is using rests its poll, so it stays asleep, and still sees a change. Anything
+/// that happens brings the poll back at once.
+#[test]
+fn the_poll_rests_when_nothing_happens_and_input_brings_it_back() {
+    let d = Dir::new("rest");
+    let p = d.file("a.txt", b"one\n");
+    let mut c = ctx();
+    let a = c.open_file(&p).unwrap();
+    c.advance(Duration::from_secs(40));
+    assert!(c.next_timer().unwrap() - c.now() > POLL, "at rest");
+    rewrite(&p, b"two\n");
+    c.advance(Duration::from_secs(5));
+    assert_eq!(text_of(&c, a), "two\n", "seen at rest too");
+    c.advance(Duration::from_secs(40));
+    rewrite(&p, b"three\n");
+    c.handle(Input::Focus(true));
+    assert!(c.step());
+    assert!(c.next_timer().unwrap() - c.now() <= POLL, "awake");
+    c.advance(POLL);
+    assert_eq!(text_of(&c, a), "three\n");
+}
+
 /// M0's criterion (c), with the real tool: `rustfmt` on an open file reloads an unmodified
 /// buffer, and `:w` refuses on a modified one.
 #[test]
