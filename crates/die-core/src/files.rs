@@ -250,10 +250,15 @@ impl Ctx {
             let line = format!("{}: not an absolute path", path.display());
             return Err(Error::Msg(line));
         }
-        let name = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
+        let buf = self.create_text(&file_name(&path), text);
+        self.visit_file(buf, path, state)?;
+        Ok(buf)
+    }
+
+    /// `buf` visits `path` from now on, with its settings by path, then read-only for a file that
+    /// can't be edited safely.
+    fn visit_file(&mut self, buf: BufferId, path: PathBuf, state: FileState) -> Result {
+        let name = file_name(&path);
         let mut settings = self.text_defaults.clone();
         if let Some(f) = &self.files.settings
             && let Err(c) = catch(|| f(&path, &mut settings))
@@ -270,7 +275,6 @@ impl Ctx {
             self.messages
                 .push(format!("{name} {}; opened read-only", why.describe()));
         }
-        let buf = self.create_text(&name, text);
         *self.text_mut(buf)?.settings_mut() = settings;
         if let Some(dir) = path.parent() {
             self.set_directory(buf, dir);
@@ -287,7 +291,61 @@ impl Ctx {
             },
         );
         self.start_ticking();
-        Ok(buf)
+        Ok(())
+    }
+
+    /// Write `buf` to `path`, which must be absolute, as `:w path` and `:saveas`. With `visit`,
+    /// the buffer then visits it, as Emacs's `write-file`: it's named after it, takes its
+    /// settings by path and has nothing unsaved. Without, it's as it was, as `write-region`.
+    /// The buffer's own file is [`Ctx::save`], or [`Ctx::save_force`] with `force`. Errors, with
+    /// nothing changed: `path` is a directory, something else is there and `force` isn't set,
+    /// another buffer visits it and `visit` is set, the buffer's file opened read-only, or the
+    /// write failed.
+    pub fn save_to(&mut self, buf: BufferId, path: &Path, force: bool, visit: bool) -> Result {
+        let path = normalize(path);
+        let shown = path.display().to_string();
+        if !path.is_absolute() {
+            return Err(Error::Msg(format!("{shown}: not an absolute path")));
+        }
+        let other = self.find_file_buffer(&path);
+        if other == Some(buf) {
+            return self.write_file(buf, force);
+        }
+        let name = self.buffer_name(buf).unwrap_or_default().to_string();
+        let f = self.file(buf);
+        if let Some(why) = f.and_then(|f| f.read_only) {
+            return Err(Error::Msg(format!("{name} {}; not saved", why.describe())));
+        }
+        let bom = f.is_some_and(|f| f.bom);
+        if let Some(o) = other.filter(|_| visit) {
+            let o = self.buffer_name(o).unwrap_or_default();
+            return Err(Error::Msg(format!("{o} visits {shown}; not saved")));
+        }
+        if path.is_dir() {
+            return Err(Error::Msg(format!("{shown} is a directory; not saved")));
+        } else if !force && fs::symlink_metadata(&path).is_ok() {
+            return Err(Error::Msg(format!("{shown} exists; ! overwrites it")));
+        }
+        let failed = |e: io::Error| Error::Msg(format!("{shown}: {e}; not saved"));
+        let fingerprint = Some(store(&path, self.text(buf)?.rope(), bom).map_err(failed)?);
+        self.messages.push(format!("Wrote {shown}"));
+        if !visit {
+            return Ok(());
+        }
+        let new = file_name(&path);
+        if name != new {
+            self.buffers[buf].name = self.unique_name(&new);
+        }
+        let (read_only, read_only_before) = (None, false);
+        let state = FileState {
+            fingerprint,
+            bom,
+            read_only,
+            read_only_before,
+        };
+        self.visit_file(buf, path, state)?;
+        self.text_mut(buf)?.set_modified(false);
+        Ok(())
     }
 
     /// The file `buf` visits, if any.
@@ -533,6 +591,14 @@ impl Ctx {
             }
         }
     }
+}
+
+/// The name a buffer visiting `path` gets.
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// `path` with `.` and `..` resolved without touching the disk.
