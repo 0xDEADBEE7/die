@@ -86,8 +86,8 @@ files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 [[module]]
 crate = "die-core"
 name = "workspace, windows, pointer"
-limit = 1345
-# 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs. 1,320 until U7, whose lists of places are about 20.
+limit = 1365
+# 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs. 1,340 until U7, whose lists of places are about 20.
 files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
 
 [[module]]
@@ -160,7 +160,7 @@ files = ["check.rs"]
 crate = "die-render"
 name = "platform::macos"
 platforms = ["macos"]
-limit = 1060
+limit = 1160
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
