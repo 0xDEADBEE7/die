@@ -91,6 +91,24 @@ fn the_leader_is_backslash() {
 }
 
 #[test]
+fn the_finders_are_on_the_leader_as_init_el_has_them() {
+    let ctx = die::start(config(vec![])).unwrap();
+    for (keys, want) in [
+        ("\\\\", "find-file-home"),
+        ("\\p", "find-file-project"),
+        ("\\/", "switch-buffer"),
+    ] {
+        let keys = die::core::parse_keys(keys).unwrap();
+        let found = ctx.describe_key(&keys).map(|d| d.action);
+        let name = match found {
+            Some(die::core::KeyAction::Command { name, .. }) => name,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(name, want);
+    }
+}
+
+#[test]
 fn leader_z_toggles_the_width_as_visual_fill_column_mode_does() {
     let mut ctx = die::start(config(vec![])).unwrap();
     let b = ctx.focused_buffer().unwrap();

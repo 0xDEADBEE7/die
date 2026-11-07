@@ -317,6 +317,82 @@ fn die_file_reaches_the_new_instance_after_a_restart() {
     assert_eq!(app.pids(), [app.holder().unwrap()]);
 }
 
+/// A session with unsaved text in a split, whose focus and cursors have to come back.
+const SPLIT_SESSION: &str = r#"{"version":1,"focus":0,"buffers":[
+    {"name":"*notes*","text":"unsaved words","modified":true,"cursor":3,"views":[
+        {"window":0,"anchor":3,"head":3,"shape":"Char","goal":null,"top":0,"top_row":0},
+        {"window":1,"anchor":8,"head":8,"shape":"Char","goal":null,"top":0,"top_row":0}]}],
+    "layout":{"axis":"Cols","kids":[{"size":1,"node":{"window":0}},{"size":1,"node":{"window":1}}]},
+    "windows":[{"buffer":0,"messages":false},{"buffer":0,"messages":false}],
+    "focused_window":1}"#;
+
+/// The rebuild you'll do all day: a new bundle goes in under a running instance, whose `restart`
+/// then starts the new code with everything it had. The new build differs in a constant, which its
+/// own restart shows: it logs under another name.
+#[test]
+#[ignore = "window: runs in ci --full"]
+fn a_new_build_put_in_under_a_running_instance_restarts_with_everything() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let app = App::build("rebuild");
+    std::fs::write(app.state.join("session.json"), SPLIT_SESSION).unwrap();
+    app.open(&[], &["--restart-loop"]);
+    let digests = || std::fs::read_to_string(app.state.join("restart-loop.digests"));
+    let restored = |n: usize| digests().is_ok_and(|d| d.lines().count() == n);
+    app.wait_for("the first restore", || restored(1));
+    let old = app.holder().unwrap();
+
+    let exe = app.app.join("Contents/MacOS/die");
+    let mut code = std::fs::read(&exe).unwrap();
+    let (name, other) = (b"restart.log", b"restart.lob");
+    let at = code.windows(name.len()).position(|w| w == name).unwrap();
+    code[at..at + other.len()].copy_from_slice(other);
+    let built = app.dir.join("die-new");
+    std::fs::copy(&exe, &built).unwrap();
+    std::fs::write(&built, code).unwrap();
+    let fonts = xtask::fonts::dir(&root());
+    xtask::app::bundle(&built, &fonts, &app.app, "dev.die.DIE.test").unwrap();
+    assert_eq!(app.pids(), [old], "the bundle went in under it");
+
+    let go = || std::fs::write(app.state.join("restart-loop.go"), "").unwrap();
+    go();
+    app.wait_for("the old code's restart", || {
+        app.state.join("restart.log").exists()
+    });
+    app.wait_for("the second restore", || restored(2));
+    app.wait_for("old instance gone", || app.pids().len() == 1);
+    let new = app.pids()[0];
+    assert_ne!(new, old);
+    app.wait_for("lock handed over", || app.holder() == Some(new));
+    go();
+    app.wait_for("the new code's restart", || {
+        app.state.join("restart.lob").exists()
+    });
+    app.wait_for("the third restore", || restored(3));
+
+    let digests = digests().unwrap();
+    let digests: Vec<&str> = digests.lines().collect();
+    assert_eq!(digests[0], digests[1], "{digests:?}");
+    assert_eq!(digests[0], digests[2], "{digests:?}");
+    let name = format!("restart-loop-{}.json", digests[0]);
+    let session = std::fs::read_to_string(app.state.join(name)).unwrap();
+    let session: serde_json::Value = serde_json::from_str(&session).unwrap();
+    assert_eq!(session["buffers"][0]["text"], "unsaved words");
+    assert_eq!(session["focused_window"], 1);
+    let views = session["buffers"][0]["views"].as_array().unwrap();
+    let heads: Vec<_> = views.iter().map(|v| v["head"].as_u64().unwrap()).collect();
+    assert_eq!(heads, [3, 8]);
+    let kids = session["layout"]["kids"].as_array().unwrap();
+    assert_eq!(kids[0]["size"], kids[1]["size"], "{kids:?}");
+    let left = std::fs::read_dir(&app.state).unwrap().flatten();
+    let names: Vec<_> = left.map(|e| e.file_name()).collect();
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.to_string_lossy().starts_with("handover-")),
+        "{names:?}"
+    );
+}
+
 #[test]
 fn the_link_goes_on_a_path_that_has_its_directory_and_nothing_is_overwritten() {
     use xtask::app::link_command;

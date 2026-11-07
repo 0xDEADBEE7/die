@@ -120,3 +120,48 @@ fn a_request_the_instance_can_not_carry_out_is_not_delivered() {
     let _listener = OpenListener::start(&dir.0, |_| false).unwrap();
     assert!(send_open(&dir.0, &request(), Duration::from_millis(50)).is_err());
 }
+
+/// Something took the socket's file away, so nothing can wake the listener's thread: a restart,
+/// which stops listening first, mustn't wait for it for ever.
+#[test]
+fn stopping_does_not_hang_when_the_sockets_file_has_gone() {
+    let dir = Dir::new("gone");
+    let (listener, _got) = listen(&dir);
+    fs::remove_file(dir.0.join(OPEN_SOCKET)).unwrap();
+    let (done, stopped) = channel();
+    thread::spawn(move || {
+        drop(listener);
+        let _ = done.send(());
+    });
+    assert!(stopped.recv_timeout(Duration::from_secs(5)).is_ok());
+}
+
+/// A stuck instance reads nothing, and a long command line doesn't fit the socket's buffer: the
+/// sender still gives up in its time, rather than hang in the owner's terminal.
+#[test]
+fn a_sender_gives_up_on_a_stuck_instance_even_with_a_long_request() {
+    let dir = Dir::new("stuck");
+    let _held = Instance::try_lock(&dir.0).unwrap().unwrap();
+    let (release, stuck) = channel::<()>();
+    let _listener = OpenListener::start(&dir.0, move |_| stuck.recv().is_ok()).unwrap();
+    let limit = Duration::from_millis(50);
+    // This one is taken, and holds the listener's only thread.
+    assert!(send_open(&dir.0, &request(), limit).is_err());
+    let file = |i| FileTarget {
+        path: PathBuf::from(format!("/long/{i}")),
+        line: None,
+        col: None,
+    };
+    let long = OpenRequest {
+        front: false,
+        targets: (0..20_000).map(file).collect(),
+    };
+    let path = dir.0.clone();
+    let (done, answer) = channel();
+    thread::spawn(move || {
+        let _ = done.send(send_open(&path, &long, limit).is_err());
+    });
+    let gave_up = answer.recv_timeout(Duration::from_secs(5));
+    drop(release);
+    assert_eq!(gave_up, Ok(true));
+}
