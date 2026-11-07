@@ -98,6 +98,8 @@ pub enum Operator {
     ShiftLeft,
     /// `>`
     ShiftRight,
+    /// `=`
+    Indent,
     /// `g~`
     InvertCase,
     /// `gU`

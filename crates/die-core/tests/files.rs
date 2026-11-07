@@ -330,3 +330,117 @@ fn killing_a_buffer_forgets_its_file() {
     let b2 = c.open_file(&p).unwrap();
     assert_ne!(b2, b, "a new buffer, not the killed one");
 }
+
+fn at(path: PathBuf, line: Option<usize>, col: Option<usize>) -> FileTarget {
+    FileTarget { path, line, col }
+}
+
+#[test]
+fn a_name_says_a_line_and_column_with_or_without_the_compilers_colon() {
+    let base = Path::new("/nowhere");
+    let read = |name: &str| FileTarget::parse(name.as_ref(), base);
+    let foo = base.join("foo.rs");
+    assert_eq!(read("foo.rs"), at(foo.clone(), None, None));
+    assert_eq!(read("foo.rs:"), at(foo.clone(), None, None));
+    assert_eq!(read("foo.rs:12"), at(foo.clone(), Some(12), None));
+    assert_eq!(read("foo.rs:12:"), at(foo.clone(), Some(12), None));
+    assert_eq!(read("foo.rs:12:3"), at(foo.clone(), Some(12), Some(3)));
+    assert_eq!(read("foo.rs:12:3:"), at(foo.clone(), Some(12), Some(3)));
+    // Not numbers, or nothing before them, so these are names.
+    assert_eq!(read("foo:bar"), at(base.join("foo:bar"), None, None));
+    assert_eq!(read("foo:+5"), at(base.join("foo:+5"), None, None));
+    assert_eq!(read(":12"), at(base.join(":12"), None, None));
+    assert_eq!(
+        read("/abs/foo:7"),
+        at(PathBuf::from("/abs/foo"), Some(7), None)
+    );
+}
+
+#[test]
+fn a_file_that_exists_with_the_colons_in_its_name_wins() {
+    let d = Dir::new("colons");
+    d.file("a:12:3", b"");
+    d.file("b:12", b"");
+    d.file("c:", b"");
+    let read = |name: &str| FileTarget::parse(name.as_ref(), &d.0);
+    assert_eq!(read("a:12:3"), at(d.0.join("a:12:3"), None, None));
+    assert_eq!(read("a:12:3:"), at(d.0.join("a:12:3"), None, None));
+    assert_eq!(read("b:12:7"), at(d.0.join("b:12"), Some(7), None));
+    assert_eq!(read("c:"), at(d.0.join("c:"), None, None));
+    assert_eq!(read("a:12"), at(d.0.join("a"), Some(12), None));
+}
+
+#[test]
+fn plus_line_goes_with_the_name_after_it_and_comes_back_from_its_arguments() {
+    let base = Path::new("/nowhere");
+    let read = |names: &[&str]| {
+        let names = names.iter().map(std::ffi::OsString::from);
+        FileTarget::parse_args(names, base)
+    };
+    let named = |line, col, name: &str| at(base.join(name), line, col);
+    assert_eq!(
+        read(&["+12", "foo"]),
+        Ok(vec![named(Some(12), None, "foo")])
+    );
+    assert_eq!(
+        read(&["+12:3", "foo:9"]),
+        Ok(vec![named(Some(12), Some(3), "foo:9")])
+    );
+    assert_eq!(
+        read(&["+x", "foo:9"]),
+        Ok(vec![named(None, None, "+x"), named(Some(9), None, "foo")])
+    );
+    assert!(read(&["a", "+12"]).unwrap_err().contains("+12"));
+    let targets = read(&["+12:3", "foo:9", "bar:4", "baz"]).unwrap();
+    let args = targets.iter().flat_map(FileTarget::to_args);
+    assert_eq!(
+        FileTarget::parse_args(args, Path::new("/")).unwrap(),
+        targets
+    );
+}
+
+#[test]
+fn a_target_opens_in_the_focused_window_at_its_line_and_column_and_clamps() {
+    let d = Dir::new("target");
+    let p = d.file("t.txt", "one\néa b\nlast\n".as_bytes());
+    let mut c = ctx();
+    let scratch = c.create_text("scratch", "");
+    let w = c.open_window(scratch, 80, 24).unwrap();
+    let mut go = |line, col| {
+        let b = c.open_target(&at(p.clone(), line, col)).unwrap();
+        assert_eq!(c.focused(), Some(w));
+        assert_eq!(c.focused_buffer(), Some(b));
+        c.text(b).unwrap().cursor(w).unwrap()
+    };
+    assert_eq!(go(None, None), 0);
+    assert_eq!(go(Some(2), None), 4);
+    assert_eq!(go(Some(2), Some(3)), 7, "a column counts characters");
+    assert_eq!(go(Some(2), Some(99)), 9, "past the line's end, its end");
+    assert_eq!(
+        go(Some(99), Some(2)),
+        11,
+        "past the last line, the last line"
+    );
+    assert_eq!(go(Some(0), Some(0)), 0);
+    assert_eq!(go(None, None), 0, "no position leaves the cursor");
+}
+
+#[test]
+fn a_target_takes_a_missing_file_as_a_new_buffer_and_leaves_a_terminal_alone() {
+    let d = Dir::new("terminal");
+    let mut c = ctx();
+    let code = c.create_text("code", "");
+    let term = c.create_text("term", "");
+    let left = c.open_window(code, 80, 24).unwrap();
+    let right = c.split_window(left, Side::Right).unwrap();
+    c.focus(right);
+    c.show(term, ShowIn::Current).unwrap();
+    c.set_state_of(term, State::Passthrough);
+    let b = c
+        .open_target(&at(d.0.join("new.txt"), Some(5), None))
+        .unwrap();
+    assert_eq!(c.focused(), Some(left));
+    assert_eq!(c.focused_buffer(), Some(b));
+    assert_eq!(text_of(&c, b), "");
+    assert_eq!(c.text(b).unwrap().cursor(left), Some(0));
+}

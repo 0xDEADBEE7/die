@@ -1,8 +1,10 @@
 //! `cargo xtask app`: `~/Applications/DIE.app`, from the release build of die-dev and the
-//! fonts. `open -g ~/Applications/DIE.app` launches it without taking focus.
+//! fonts. `open -g ~/Applications/DIE.app` launches it without taking focus, and it gives a
+//! terminal `die file:line` through `~/.local/bin/die`.
 
 use crate::fonts;
 use crate::util::{Result, cargo, run as run_cmd};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,7 +43,39 @@ pub fn run(root: &Path) -> Result {
     let app = home.join("Applications/DIE.app");
     build(root, &app, BUNDLE_ID, Profile::Release)?;
     println!("app: {}", app.display());
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    println!("{}", link_command(&home, &app, &path)?);
     Ok(())
+}
+
+/// If `~/.local/bin` is on `path`, link `~/.local/bin/die` to the bundle's binary, replacing a
+/// link but never a file. What to tell you comes back. It edits no dotfile: otherwise, it's the
+/// one line for yours, which needs no link.
+pub fn link_command(home: &Path, app: &Path, path: &OsStr) -> Result<String> {
+    let bin = home.join(".local/bin");
+    let binary = app.join("Contents/MacOS/die");
+    if !std::env::split_paths(path).any(|dir| dir == bin) {
+        return Ok(format!(
+            "add this to your shell's startup file for `die file`: export PATH=\"{}:$PATH\"",
+            binary.parent().unwrap_or(app).display()
+        ));
+    }
+    let link = bin.join("die");
+    let shown = |e: std::io::Error| format!("{}: {e}", link.display());
+    fs::create_dir_all(&bin).map_err(shown)?;
+    match fs::symlink_metadata(&link) {
+        Ok(found) if !found.is_symlink() => {
+            return Ok(format!("{} is a file, so it's left alone", link.display()));
+        }
+        Ok(_) => fs::remove_file(&link).map_err(shown)?,
+        Err(_) => {}
+    }
+    std::os::unix::fs::symlink(&binary, &link).map_err(shown)?;
+    Ok(format!(
+        "linked: {} -> {}",
+        link.display(),
+        binary.display()
+    ))
 }
 
 /// The binary, and the bundle at `app` with the bundle id `id`.
