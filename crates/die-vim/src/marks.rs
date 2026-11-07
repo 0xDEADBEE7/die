@@ -27,8 +27,8 @@ use crate::repeat::Change;
 use crate::text::indent_end;
 use crate::visual;
 use die_core::{
-    Args, BufferId, Ctx, Error, Gravity, LOG_CAP, MarkerId, Place, PlaceList, Result,
-    Selection, Shape, ShowIn, State, TextBuf, WindowId,
+    Args, BufferId, Ctx, Error, Gravity, LOG_CAP, MarkerId, Place, PlaceList, Result, Selection,
+    Shape, ShowIn, State, TextBuf, WindowId,
 };
 
 /// What your Evil's rings hold.
@@ -132,23 +132,12 @@ pub fn after(ctx: &mut Ctx, a: &Args, quiet: bool) {
 /// Where a file's `A` to `Z` are, for when its buffer is killed and takes its marks with it. A kill
 /// comes from a command, so this is up to date by then.
 fn note_file_marks(ctx: &mut Ctx, b: BufferId) {
-    let Ok(t) = ctx.text(b) else { return };
-    let held: Vec<(char, usize)> = t
-        .marks()
-        .filter(|(name, ..)| name.is_ascii_uppercase())
-        .map(|(name, pos, _)| (name, pos))
-        .collect();
-    if held.is_empty() {
-        return;
-    }
-    let Some(path) = ctx.file(b).map(|f| f.path.clone()) else {
+    let (Ok(t), Some(file)) = (ctx.text(b), ctx.file(b)) else {
         return;
     };
-    let _ = ctx.with_ext(|v: &mut Vim, _| {
-        for (name, pos) in held {
-            v.file_marks.insert(name, (path.clone(), pos));
-        }
-    });
+    let held = t.marks().filter(|m| m.0.is_ascii_uppercase());
+    let held: Vec<_> = held.map(|m| (m.0, (file.path.clone(), m.1))).collect();
+    let _ = ctx.with_ext(|v: &mut Vim, _| v.file_marks.extend(held));
 }
 
 /// [`Ctx::set_jump_rule`]: this window is about to go far with no key. A jump, as ahead of a
@@ -410,10 +399,8 @@ fn visit_again(ctx: &mut Ctx, a: &Args, b: BufferId, name: char) -> Result<Optio
     }
     let file = ctx.open_file(&path)?;
     let t = ctx.text_mut(file)?;
-    let mut pos = pos.min(t.len());
-    while !t.is_boundary(pos) {
-        pos -= 1;
-    }
+    let pos = pos.min(t.len());
+    let pos = (0..=pos).rev().find(|p| t.is_boundary(*p)).unwrap_or(0);
     t.set_mark(name, pos, Gravity::Left)?;
     Ok(Some((file, pos)))
 }
@@ -524,12 +511,8 @@ fn note_changes(ctx: &mut Ctx, b: BufferId) {
             let last = edits.and_then(last_change);
             c.rev = rev;
             if let Some((pos, inserted)) = last {
-                let at = if inserted {
-                    crate::text::prev_stop(t, pos).unwrap_or(pos)
-                } else {
-                    pos
-                };
-                changed(t, c, at);
+                let at = inserted.then(|| crate::text::prev_stop(t, pos)).flatten();
+                changed(t, c, at.unwrap_or(pos));
             }
         }
         None => {
@@ -548,19 +531,11 @@ fn note_changes(ctx: &mut Ctx, b: BufferId) {
 /// Where the furthest of these changes ended in the text as it is now, and whether that's the end
 /// of text they put there. `:%s` commits its edits from the last line up.
 fn last_change<'a>(edits: impl Iterator<Item = &'a die_core::Change>) -> Option<(usize, bool)> {
-    let mut held: Option<(usize, bool)> = None;
-    for e in edits {
-        let moved = held
-            .filter(|(p, _)| *p >= e.old_end)
-            .map(|(p, inserted)| (p - e.old_end + e.new_end, inserted));
-        held = match (moved, e.silent) {
-            (Some(m), _) => Some(m),
-            (None, false) if e.new_end > e.start => Some((e.new_end, true)),
-            (None, false) => Some((e.start, false)),
-            (None, true) => held.map(|(p, inserted)| (p.min(e.start), inserted)),
-        };
-    }
-    held
+    let kept = edits.filter(|e| !e.silent);
+    kept.fold(None, |held, e| match held {
+        Some((p, inserted)) if p >= e.old_end => Some((p - e.old_end + e.new_end, inserted)),
+        _ => Some((e.new_end.max(e.start), e.new_end > e.start)),
+    })
 }
 
 fn changed(t: &mut TextBuf, c: &mut Changes, at: usize) {
