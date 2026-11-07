@@ -513,6 +513,9 @@ impl Ctx {
     pub fn step(&mut self) -> bool {
         self.fed_at = 0;
         self.collect_due();
+        if self.prompt_take_feed() {
+            return true;
+        }
         if let Some(q) = self.queue.pop_front() {
             if q.alive.as_ref().is_none_or(|a| a.alive.get()) {
                 self.cmd_seq += 1;

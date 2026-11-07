@@ -200,6 +200,27 @@ fn feed(ctx: &mut Ctx, rec: &RefCell<Recorder>, keys: &str) -> Result {
     Ok(())
 }
 
+/// Feed keys a command needs next, without the macro they run in, if any, ending early.
+pub fn feed_more(ctx: &mut Ctx, keys: &str) -> Result {
+    let rec = recorder(ctx)?;
+    let n = parse_keys(keys).map_or(0, |k| k.len());
+    ctx.feed_keys(keys)?;
+    rec.borrow_mut().fed += n;
+    Ok(())
+}
+
+/// Whether keys that were fed are still to run.
+pub fn feeding(ctx: &mut Ctx) -> Result<bool> {
+    Ok(recorder(ctx)?.borrow().fed > 0)
+}
+
+/// Whether this key was the last that a macro or `.` fed.
+pub fn replay_ending(ctx: &mut Ctx) -> Result<bool> {
+    let rec = recorder(ctx)?;
+    let r = rec.borrow();
+    Ok(r.replaying && r.fed == 0)
+}
+
 /// This change is the one `.` repeats now, unless it came from the command line: then the last
 /// typed one stays.
 pub fn commit(ctx: &mut Ctx, c: Change) -> Result {

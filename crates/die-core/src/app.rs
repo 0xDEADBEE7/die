@@ -258,8 +258,13 @@ impl Ctx {
             }),
             ..hit
         });
+        let (_, rows) = self.frame_size();
+        let list = self.prompt_list_height();
+        let over_list = list > 0 && p.row + list + 1 >= rows;
         match (p.kind, hit) {
             (PointerKind::Release(Button::Left), _) => self.pointer.pressed = None,
+            // The list hides what's under it, and that shouldn't scroll out of sight of you.
+            (PointerKind::Scroll { .. }, _) if over_list => {}
             (PointerKind::Scroll { dy, .. }, Some(hit)) => self.pointer_scroll(hit.window, dy),
             // The prompt has the keys, and it stays on the window it opened in.
             _ if self.prompt.is_some() => {}
