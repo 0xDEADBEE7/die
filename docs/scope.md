@@ -376,6 +376,8 @@ None of your existing packages need pixel buffers (scope guard 8). Pixel buffers
 - Any built-in application
 - Building any extension other than `die-vim` and `die-term`, including ports of your Emacs packages (D14)
 
+Project search and fuzzy file finding (`:grep`, `find-file-home`, `find-file-project`) are in core rather than an extension. That is a call you can veto (m0-log call 444).
+
 **Stays in Emacs after this project.** Until you build them yourself: orchid, scrib, delta, dired-sidebar, buffer-menu, and the markdown preview (DIE has no web views). During M0, before DIE has a terminal, cargo, git and Claude Code run in Emacs's vterm next to DIE. The exit tests in §12 exclude all of these.
 
 **Cut along the way:**
@@ -439,7 +441,7 @@ xtask                      cargo xtask ghostty bump, budget report, clean-enviro
 
 - **You own** what defines DIE: the core API and contract, die-vim's grammar, and the decision records.
 - **An AI drafts,** under tests you review: the renderer and platform layer, `die-term`'s glue, the holder, and test fixtures.
-- **In M0 (question 09, answered 2026-10-19):** an AI drafts die-core's API and die-vim's grammar too, and each change to either waits for your approval as a short rustdoc diff (`cargo xtask api-diff`). Everything else merges when `cargo xtask ci` passes. You read the subtlest code in full: undo, layout, key dispatch and die-vim's grammar core.
+- **In M0 (question 09, answered 2026-10-19):** an AI drafts die-core's API and die-vim's grammar too, and since 2026-11-03 those changes are logged for your veto rather than waiting for your approval. A package lands on the integration branch when its own gate passes, a review runs behind the landing, and `cargo xtask ci --full`, `ci --linux` and `mutate` run at checkpoints (m0-plan §3, "How work lands"). You read the subtlest code in full: undo, layout, key dispatch and die-vim's grammar core.
 
 On that basis M0 is roughly 10–15 weeks, at about 17k lines across crates. Parallel AI sessions can't shorten a chain that has one reviewer. There's no deadline. Dogfood checkpoints inside M0 keep it from going weeks without use:
 
@@ -452,7 +454,7 @@ On that basis M0 is roughly 10–15 weeks, at about 17k lines across crates. Par
 - die-vim is checked against Evil itself (S5). Keys that depend on window geometry or wrapping come from a tty Emacs the oracle drives. Hand-written fixtures are only for the deliberate deviations from Evil, each with a reason. Window and file commands are the exception: the oracle has no window tree and no files, so core's harness tests cover them.
 - Terminal tests use your colima VM as the Linux SSH host. kitty's standalone `kitten` binary, kept in a scratch directory rather than installed system-wide, checks key encoding.
 - **Memory.** Every test binary carries its own limits, in `die-test-cap`. Its global allocator counts live memory. Past 4 GiB, it writes one line to stderr, and the process aborts. Behind that, the binary runs itself again under `taskpolicy -m` when it starts, and macOS kills it at 8 GiB, whatever is growing. Linux has no `taskpolicy`, so it has the count alone. `cargo xtask lint` fails a test binary that doesn't link the crate. The crate's docs say what the limits don't cover.
-- **Linux.** Every `cargo xtask ci` cross-checks and lints the whole workspace for x86_64 and aarch64 Linux on your Mac, in about 11 s. `cargo xtask ci --linux` runs die-core, die-vim, the oracle, the memory limit and xtask's tests in an aarch64 container on colima, weekly and at each checkpoint. From M2, hosted ubuntu-24.04 and ubuntu-24.04-arm jobs add the Linux clean-build, the ELF check, every test, S3L, smoke tests under Xvfb and headless sway, and lavapipe fidelity, plus a FreeBSD `cargo check`. Until a signed Linux archive exists, they run without die-term (D10). colima has no GPU and no display, so latency and real desktop behaviour wait for Linux hardware (SL-hw, SL-desktop).
+- **Linux.** `cargo xtask ci`, at checkpoints, cross-checks and lints the whole workspace for x86_64 and aarch64 Linux on your Mac, in about 11 s. `cargo xtask ci --linux` runs die-core, die-vim, the oracle, the memory limit and xtask's tests in an aarch64 container on colima, at each checkpoint. From M2, hosted ubuntu-24.04 and ubuntu-24.04-arm jobs add the Linux clean-build, the ELF check, every test, S3L, smoke tests under Xvfb and headless sway, and lavapipe fidelity, plus a FreeBSD `cargo check`. Until a signed Linux archive exists, they run without die-term (D10). colima has no GPU and no display, so latency and real desktop behaviour wait for Linux hardware (SL-hw, SL-desktop).
 
 ## 13. Open questions
 
