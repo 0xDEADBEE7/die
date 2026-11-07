@@ -726,11 +726,11 @@ fn line_changes(old: &str, new: &str) -> Vec<(Range<usize>, String)> {
     let (mut i, mut j) = (0, 0);
     if old.len() + new.len() <= ANCHORS_UP_TO {
         for (ai, bj) in anchors(old, &a, new, &b) {
-            push_change(&mut out, old, a[i]..a[ai], new, b[j]..b[bj]);
+            push_lines(&mut out, old, a[i]..a[ai], new, b[j]..b[bj]);
             (i, j) = (ai + 1, bj + 1);
         }
     }
-    push_change(&mut out, old, a[i]..old.len(), new, b[j]..new.len());
+    push_lines(&mut out, old, a[i]..old.len(), new, b[j]..new.len());
     for (r, _) in &mut out {
         *r = r.start + start..r.end + start;
     }
@@ -816,6 +816,29 @@ fn anchors(old: &str, a: &[usize], new: &str, b: &[usize]) -> Vec<(usize, usize)
     }
     run.reverse();
     run
+}
+
+/// Add the change from `old[r]` to `new[s]`. As many lines after as before change line by line,
+/// so a cursor on a line `cargo fmt` rewrote stays on that line.
+fn push_lines(
+    out: &mut Vec<(Range<usize>, String)>,
+    old: &str,
+    r: Range<usize>,
+    new: &str,
+    s: Range<usize>,
+) {
+    let (x, y) = (
+        old[r.clone()].split_inclusive('\n'),
+        new[s.clone()].split_inclusive('\n'),
+    );
+    if x.clone().count() != y.clone().count() {
+        return push_change(out, old, r, new, s);
+    }
+    let (mut i, mut j) = (r.start, s.start);
+    for (p, q) in x.zip(y) {
+        push_change(out, old, i..i + p.len(), new, j..j + q.len());
+        (i, j) = (i + p.len(), j + q.len());
+    }
 }
 
 /// Add the change from `old[r]` to `new[s]`, without what they share at either end.

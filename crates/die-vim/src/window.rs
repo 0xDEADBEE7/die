@@ -183,6 +183,59 @@ fn quit(ctx: &mut Ctx, a: &Args) -> Result {
     close_or_quit(ctx, w, false)
 }
 
+/// `C-^`: the buffer used most recently that no window shows, or else the most recent other.
+pub fn alternate(ctx: &mut Ctx, a: &Args) -> Result {
+    let (here, _) = buffer_window(ctx, a)?;
+    let shown: Vec<_> = ctx.window_list().into_iter().filter_map(|w| ctx.window_buffer(w)).collect();
+    let others: Vec<_> = ctx.buffer_list().into_iter().filter(|b| *b != here).collect();
+    let unseen = others.iter().find(|b| !shown.contains(b));
+    let Some(&other) = unseen.or(others.first()) else {
+        return Err(Error::Msg("No other buffer".into()));
+    };
+    ctx.show(other, ShowIn::Current)?;
+    Ok(())
+}
+
+/// `:bn` and `:bp`: the next file's buffer in the order they opened, round to the first. Your
+/// Evil's follow the window's own history, which core doesn't keep.
+pub fn buffer_step(ctx: &mut Ctx, forward: bool) -> Result {
+    let (here, _) = buffer_window(ctx, &Args::default())?;
+    let mut files: Vec<_> = ctx.buffer_list().into_iter().filter(|b| ctx.file(*b).is_some()).collect();
+    files.sort();
+    let after = files.iter().position(|b| *b == here);
+    let n = files.len();
+    let to = match after {
+        _ if n == 0 => return Err(Error::Msg("No other buffer".into())),
+        Some(i) if forward => (i + 1) % n,
+        Some(i) => (i + n - 1) % n,
+        None if forward => 0,
+        None => n - 1,
+    };
+    ctx.show(files[to], ShowIn::Current)?;
+    Ok(())
+}
+
+/// `:bd`, as your Evil's: kill this buffer and close the windows that showed it. Unsaved text in
+/// a file is refused, unless `force`: Emacs asks, and `:w` or `:bd!` is that answer here.
+pub fn delete_buffer(ctx: &mut Ctx, force: bool) -> Result {
+    let (b, _) = buffer_window(ctx, &Args::default())?;
+    if !force && ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified()) {
+        let name = ctx.buffer_name(b).unwrap_or_default();
+        let why = format!("{name} has unsaved changes; :w saves them, :bd! drops them");
+        return Err(Error::Msg(why));
+    }
+    let list = ctx.window_list();
+    let showing: Vec<_> = list.into_iter().filter(|w| ctx.window_buffer(*w) == Some(b)).collect();
+    ctx.kill(b);
+    for w in showing {
+        // The last window stays, on the buffer that took over.
+        if ctx.window_list().len() > 1 {
+            ctx.close_window_balancing(w)?;
+        }
+    }
+    Ok(())
+}
+
 /// `:q`: Evil's `evil-quit` runs `evil-window-delete`, as `C-w c` does, and only the last window
 /// quits. That refuses while a file has unsaved changes, unless `force`.
 pub fn close_or_quit(ctx: &mut Ctx, w: WindowId, force: bool) -> Result {

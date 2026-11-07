@@ -70,6 +70,15 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
             write_all(ctx, name.ends_with('!'))?;
             window::quit_app(ctx, false)
         }
+        "up" | "update" | "up!" | "update!" => file_command(ctx, "w", rest),
+        "bn" | "bnext" => window::buffer_step(ctx, true),
+        "bp" | "bprevious" | "bN" | "bNext" => window::buffer_step(ctx, false),
+        "bd" | "bdelete" | "bw" | "bwipeout" => window::delete_buffer(ctx, false),
+        "bd!" | "bdelete!" | "bw!" | "bwipeout!" => window::delete_buffer(ctx, true),
+        "u" | "undo" => ctx.run("vim-undo", &Args::default()),
+        "$" => run_motion(ctx, &Args::default(), Kind::Linewise, None, |s| {
+            goto_line(s, usize::MAX)
+        }),
         "e" | "edit" => edit(ctx, rest),
         "b" | "buffer" => buffer(ctx, rest),
         "cn" | "cne" | "cnex" | "cnext" => ctx.run("next-error", &Args::default()),

@@ -299,6 +299,15 @@ pub fn again(ctx: &mut Ctx, a: &Args, reverse: bool) -> Result {
 /// matches as Evil's `\\<word\\>` does, by die-vim's own test of a word character, so a run of
 /// punctuation never matches and the search fails.
 pub fn word(ctx: &mut Ctx, a: &Args, forward: bool) -> Result {
+    word_search(ctx, a, forward, true)
+}
+
+/// `g*` and `g#`: as `*` and `#`, and a match can be part of a longer word.
+pub fn unbounded(ctx: &mut Ctx, a: &Args, forward: bool) -> Result {
+    word_search(ctx, a, forward, false)
+}
+
+fn word_search(ctx: &mut Ctx, a: &Args, forward: bool, bounded: bool) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text(b)?;
     let head = t.selection(w).map_or(0, |s| s.head);
@@ -310,13 +319,17 @@ pub fn word(ctx: &mut Ctx, a: &Args, forward: bool) -> Result {
         text,
         symbol: false,
     };
-    let pat = word.pattern()?;
+    let pat = if bounded {
+        word.pattern()?
+    } else {
+        compile(&Pattern::escape(&word.text))?
+    };
     remember(
         ctx,
         Last {
             pat: pat.clone(),
             forward,
-            word: Some(word),
+            word: bounded.then_some(word),
         },
     )?;
     go(ctx, a, &pat, forward, false)
@@ -355,7 +368,7 @@ pub fn definition(ctx: &mut Ctx, a: &Args) -> Result {
 }
 
 /// What Emacs's standard syntax table calls a word or symbol character.
-fn is_symbol(c: char) -> bool {
+pub fn is_symbol(c: char) -> bool {
     is_word(c) || matches!(c, '_' | '-' | '+' | '*' | '/' | '&' | '|' | '<' | '>' | '=')
 }
 
