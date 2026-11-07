@@ -178,6 +178,7 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-find-file-at-point", "gf, gF, ]f, [f, ]F, [F: open the file named under the cursor, at its line and column if it gives them.", ex::find_file_at_point),
     ("vim-find-file-selected", "gf in Visual: open the file the selection names.", ex::find_file_selected),
     ("vim-what-cursor-position", "ga: say what the character under the cursor is, and where.", operators::what_cursor_position),
+    ("vim-show-file-info", "C-g, :f: say which file this is, its lines, and how far down the cursor is.", ex::show_file_info),
     ("vim-repeat-substitute", "&: the last :s again on this line, or count lines, or the selection, without its flags.", substitute::again),
     ("vim-repeat-substitute-all", "g&: the last :s again on every line, with its flags.", substitute::again_everywhere),
     ("vim-paste-after", "p: paste after the cursor, or below this line.", |ctx, a| operators::paste(ctx, a, false)),
@@ -409,7 +410,8 @@ impl Extension for Vim {
         }
         k.bind(Normal, "ZZ", "vim-save-and-close")
             .bind(Normal, "ZQ", "vim-quit")
-            .bind(Normal, "<C-^>", "vim-alternate-buffer");
+            .bind(Normal, "<C-^>", "vim-alternate-buffer")
+            .bind(Normal, "<C-g>", "vim-show-file-info");
         k.bind(Normal, ".", "vim-repeat")
             .bind(CommandLine, "<any>", "vim-record-macro-into");
         k.bind(Visual, "<Esc>", "vim-exit-visual")

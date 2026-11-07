@@ -66,6 +66,14 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
             window::quit_app(ctx, false)
         }
         "up" | "update" | "up!" | "update!" => file_command(ctx, "w", rest),
+        "sav" | "save" | "savea" | "saveas" | "sav!" | "save!" | "savea!" | "saveas!" => {
+            let (b, _) = buffer_window(ctx, &Args::default())?;
+            write(ctx, b, rest, name.ends_with('!'), true)
+        }
+        "f" | "fi" | "fil" | "file" | "f!" | "fi!" | "fil!" | "file!" => {
+            show_file_info(ctx, &Args::default())
+        }
+        "ls" | "buffers" | "files" => list_buffers(ctx, name == "files"),
         "bn" | "bnext" => window::buffer_step(ctx, true),
         "bp" | "bprevious" | "bN" | "bNext" => window::buffer_step(ctx, false),
         "bd" | "bdelete" | "bw" | "bwipeout" => window::delete_buffer(ctx, false),
@@ -110,26 +118,103 @@ fn without_range(text: &str) -> Result<&str> {
     }
 }
 
-/// `:w`, `:q`, `:wq` and `:e!`. In `:w!` and `:wq!`, `!` writes over a file that changed. In `:q!`
-/// it drops unsaved changes. `:wq!` still refuses to leave another file's, as your Evil's does.
+/// `:w`, `:q`, `:wq` and `:e!`. In `:w!` and `:wq!`, `!` writes over a file that changed, or
+/// over the one named. In `:q!` it drops unsaved changes. `:wq!` still refuses to leave another
+/// file's, as your Evil's does.
 fn file_command(ctx: &mut Ctx, name: &str, rest: &str) -> Result {
-    if !rest.is_empty() {
+    let writes = name.starts_with('w');
+    if !rest.is_empty() && !writes {
         return Err(Error::Msg(format!(":{name} with an argument isn't built")));
     }
     let (buf, w) = buffer_window(ctx, &Args::default())?;
     let force = name.ends_with('!');
-    if name.starts_with('w') {
-        if force {
-            ctx.save_force(buf)?;
-        } else {
-            ctx.save(buf)?;
-        }
+    if writes {
+        write(ctx, buf, rest, force, false)?;
     }
     match name.trim_end_matches('!') {
         "w" => Ok(()),
         "e" => ctx.revert_file(buf),
         name => window::close_or_quit(ctx, w, force && name != "wq"),
     }
+}
+
+/// `:w path` and `:saveas path` as your Evil's, with a path taken as `:e` takes it. A buffer with
+/// no file then visits it, as it does after `:saveas`, and `:w` from one with a file writes a copy
+/// and leaves it as it was, unsaved changes and all. Only `!` writes over what's there. The
+/// buffer's own file is `:w`. A read-only buffer with no file, as `*grep*`, writes a copy.
+fn write(ctx: &mut Ctx, buf: BufferId, path: &str, force: bool, saveas: bool) -> Result {
+    if path.starts_with(['>', '!']) {
+        return Err(Error::Msg(format!(":w {path} isn't built")));
+    }
+    let has_file = ctx.file(buf).is_some();
+    let visit = if has_file {
+        saveas
+    } else {
+        !ctx.text(buf)?.settings().read_only
+    };
+    match (path, has_file, force) {
+        ("", false, _) => Err(Error::Msg(
+            "Please specify a file name for the buffer".into(),
+        )),
+        ("", true, false) => ctx.save(buf),
+        ("", true, true) => ctx.save_force(buf),
+        _ => ctx.save_to(buf, &absolute(ctx.directory(buf), path), force, visit),
+    }
+}
+
+/// `:f` and `C-g`, as your Evil's `evil-show-file-info`: the file, its lines, and how far down
+/// the cursor's line is. An argument is ignored, as there.
+pub fn show_file_info(ctx: &mut Ctx, a: &Args) -> Result {
+    let (b, w) = buffer_window(ctx, a)?;
+    let t = ctx.text(b)?;
+    let rows = t.line_count();
+    let lines = rows - usize::from(t.line_start(rows - 1) == t.len());
+    let at = t.line_of(t.cursor(w).unwrap_or(0)) + 1;
+    let percent = match lines {
+        0 => "No lines in buffer".to_string(),
+        n => format!("{}%", (at as f64 / n as f64 * 100.0) as u64),
+    };
+    let line = match ctx.file(b) {
+        None => format!("{lines} lines --{percent}--"),
+        Some(f) => {
+            let locked = std::fs::metadata(&f.path).is_ok_and(|m| m.permissions().readonly());
+            let ro = if locked || f.read_only.is_some() {
+                "[readonly] "
+            } else {
+                ""
+            };
+            format!("\"{}\" {lines} {ro}lines --{percent}--", f.path.display())
+        }
+    };
+    ctx.messages.push(line);
+    Ok(())
+}
+
+/// `:ls`: a line in `*messages*` for each buffer, the one used last first, which the window
+/// then shows, as your Evil's `buffer-menu` takes it. `.` is this one, `%` read-only, `*` unsaved.
+/// `:files` lists only those with a file.
+fn list_buffers(ctx: &mut Ctx, files_only: bool) -> Result {
+    let here = ctx.focused_buffer();
+    let mut lines = vec![];
+    for b in ctx.buffer_list() {
+        let file = ctx.file(b).map(|f| f.path.display().to_string());
+        let t = ctx.text(b).ok();
+        let mark = |on: bool, c: char| if on { c } else { ' ' };
+        let ro = mark(t.is_some_and(|t| t.settings().read_only), '%');
+        let unsaved = mark(file.is_some() && t.is_some_and(|t| t.modified()), '*');
+        let name = ctx.buffer_name(b).unwrap_or_default();
+        let line = format!("{}{ro}{unsaved} {name:<20} ", mark(here == Some(b), '.'));
+        if file.is_some() || !files_only {
+            lines.push(line + &file.unwrap_or_default());
+        }
+    }
+    ctx.messages
+        .extend(lines.iter().map(|l| l.trim_end().into()));
+    let log = ctx.messages_buffer();
+    if here != Some(log) {
+        ctx.show(log, ShowIn::Current)?;
+    }
+    Ok(())
 }
 
 /// `:wa`: every file with unsaved changes, on past one that's refused, whose error comes back.
@@ -163,7 +248,8 @@ fn edit(ctx: &mut Ctx, path: &str) -> Result {
 }
 
 pub(crate) fn absolute(dir: Option<&Path>, path: &str) -> PathBuf {
-    if let (Some(rest), Some(home)) = (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+    let home = path.strip_prefix("~/").or((path == "~").then_some(""));
+    if let (Some(rest), Some(home)) = (home, std::env::var_os("HOME")) {
         return Path::new(&home).join(rest);
     }
     let cwd = std::env::current_dir().unwrap_or_default();

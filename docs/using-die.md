@@ -136,14 +136,16 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 - **`C-w` then:** `h j k l` and arrows, `w W t b p` to move; `s S v n` to split; `c q o` to close; `= + - > < _ |` to size; `H J K L` to move the window; `r R x` to rotate and exchange; `:` for ex; digits for a count. A key with Control does the same, as `C-w C-h`.
 - **Ex:** `:sp[lit]`, `:vs[plit]`, `:new`, `:vne[w]`, each with a file; `:clo[se]`, `:on[ly]`.
-- **Buffers:** `:e file`, `:e!`, `:b name`, `:bn`, `:bp`, `C-^`, `:bd`, `:bw` (`!` to drop unsaved text), `:kill-buffer`. `:bn` and `:bp` go through file buffers.
+- **Buffers:** `:e file`, `:e!`, `:b name`, `:bn`, `:bp`, `C-^`, `:bd`, `:bw` (`!` to drop unsaved text), `:kill-buffer`. `:bn` and `:bp` go through file buffers. `:ls` (or `:buffers`) lists every buffer in `*messages*` and shows it there, the one used last first, `.` for this one, `%` read-only, `*` unsaved. `:files` lists only those with a file.
 - **Files:** `:w`, `:w!` over a file changed on disk, `:up`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:wqa`, `:xa`, `:qa`, `ZZ`, `ZQ`. Files changed on disk reload by themselves if you have no unsaved text there, and `:w` refuses if you have.
+- **Saving elsewhere:** `:w path` from a buffer with no file, such as `:new`'s, saves it there, and the buffer then visits that file. From a buffer with a file it writes a copy, and the buffer keeps its file and its unsaved changes, as in your Evil. `:sav[eas] path` saves and moves the buffer to the new file. A path is taken from the buffer's directory, as `:e` takes it, and `~/` is your home. A file that's already there is written over only with `!` (`:w! path`, `:saveas! path`). `:wq path` and `:x path` write there, then close.
+- **Which file:** `:f` (`:file`) and `C-g` say the file's full path, its lines and how far down the cursor is, as your Evil's `:f` does. The status line shows only the directory. `C-g` is Vim's: your Evil's quits.
 
 ## What isn't there yet
 
 - **A terminal.** No terminal buffers exist. cargo, git and Claude Code run in a terminal of your own next to DIE, and `die file:line` from there.
-- **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-g`, `C-l`, `C-x`, `]p [p`.
-- **Ex:** `:d :m :t :co :y :pu :j :> :<`, `:normal :g :v :sort :r :!`, `:w path`, `:saveas :f :ls :reg :marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`.
+- **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`.
+- **Ex:** `:d :m :t :co :y :pu :j :> :<`, `:normal :g :v :sort :r :!`, `:w >> file`, `:w !cmd`, a range before `:w`, `:reg :marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`.
 - **Insert keys:** `<Home> <End> <PageUp> <PageDown> C-Left C-Right S-Tab C-c C-g C-h C-j C-k <Insert>`. `C-r =` isn't built anywhere.
 - **Syntax highlighting.** Source is one colour.
 - **Not honoured:** `.gitignore` in the finders and `:grep`.

@@ -65,6 +65,13 @@ impl Ctx {
         self.log.logged = self.messages.len();
     }
 
+    /// `*messages*`, holding the log up to now, made if it isn't there.
+    pub fn messages_buffer(&mut self) -> BufferId {
+        self.sync_messages();
+        let found = self.find_buffer(MESSAGES);
+        found.unwrap_or_else(|| self.create_messages())
+    }
+
     pub(crate) fn create_messages(&mut self) -> BufferId {
         let buf = self.create_text(MESSAGES, "");
         self.buffers[buf].used = 0;

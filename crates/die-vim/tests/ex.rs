@@ -164,8 +164,163 @@ fn wqa_writes_and_leaves_and_qa_bang_drops() {
 fn file_commands_refuse_an_argument_and_a_buffer_with_no_file() {
     let mut h = editor();
     let (_, _) = h.open_text("scratch", "one\n").unwrap();
-    assert_eq!(keys(&mut h, ":w other.txt<CR>").len(), 1);
-    assert_eq!(keys(&mut h, ":w<CR>").len(), 1);
+    assert_eq!(keys(&mut h, ":q other.txt<CR>").len(), 1);
+    let errors = keys(&mut h, ":w<CR>");
+    assert_eq!(errors, ["Please specify a file name for the buffer"]);
+    assert_eq!(
+        keys(&mut h, ":saveas<CR>"),
+        errors,
+        "as your Evil's :w says"
+    );
+}
+
+/// The file `b` visits, under `dir`, and whether it has unsaved changes.
+fn visits(h: &Harness, b: BufferId) -> (String, String, bool) {
+    let f = h
+        .file(b)
+        .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned());
+    let name = h.buffer_name(b).unwrap().to_string();
+    (name, f.unwrap_or_default(), h.text(b).unwrap().modified())
+}
+
+/// Asked of your Evil in batch Emacs: a buffer with no file visits the one `:w` names, as
+/// `write-file`, and only `!` writes over a file that's there.
+#[test]
+fn w_path_from_a_buffer_with_no_file_visits_that_file() {
+    let dir = Dir::new("w-new");
+    let (mut h, _, _, _) = on_file(&dir, "one\n");
+    std::fs::write(dir.0.join("g.txt"), "old\n").unwrap();
+    assert!(keys(&mut h, ":new<CR>inew<Esc>").is_empty());
+    let b = h.focused_buffer().unwrap();
+    let errors = keys(&mut h, ":w g.txt<CR>");
+    assert!(errors[0].contains("exists; ! overwrites it"), "{errors:?}");
+    assert_eq!(read(&dir.0.join("g.txt")), "old\n");
+    assert!(
+        keys(&mut h, ":w a.txt<CR>").is_empty(),
+        "from the directory :e takes"
+    );
+    assert_eq!(read(&dir.0.join("a.txt")), "new");
+    assert_eq!(visits(&h, b), ("a.txt".into(), "a.txt".into(), false));
+    assert!(keys(&mut h, "ax<Esc>:w<CR>").is_empty());
+    assert_eq!(read(&dir.0.join("a.txt")), "newx");
+
+    assert!(keys(&mut h, ":new<CR>ione<Esc>").is_empty());
+    let c = h.focused_buffer().unwrap();
+    let errors = keys(&mut h, ":w! a.txt<CR>");
+    assert!(errors[0].contains("a.txt visits"), "{errors:?}");
+    assert!(keys(&mut h, ":w! g.txt<CR>").is_empty());
+    assert_eq!(read(&dir.0.join("g.txt")), "one");
+    assert_eq!(visits(&h, c), ("g.txt".into(), "g.txt".into(), false));
+    assert_eq!(keys(&mut h, ":new<CR>:w nowhere/z.txt<CR>").len(), 1);
+    assert!(keys(&mut h, ":w .<CR>")[0].contains("is a directory"));
+}
+
+/// From a buffer with a file, `:w path` is `write-region`: a copy, and the buffer as it was.
+#[test]
+fn w_path_from_a_file_writes_a_copy_and_leaves_the_buffer_as_it_was() {
+    let dir = Dir::new("w-copy");
+    let (mut h, path, b, w) = on_file(&dir, "one\n");
+    let g = dir.0.join("g.txt");
+    std::fs::write(&g, "old\n").unwrap();
+    assert!(keys(&mut h, "ix<Esc>:w copy.txt<CR>").is_empty());
+    assert_eq!(read(&dir.0.join("copy.txt")), "xone\n");
+    assert_eq!(read(&path), "one\n");
+    assert_eq!(visits(&h, b), ("f.txt".into(), "f.txt".into(), true));
+    assert_eq!(keys(&mut h, ":w g.txt<CR>").len(), 1);
+    assert_eq!(read(&g), "old\n");
+    assert!(keys(&mut h, ":w! g.txt<CR>").is_empty());
+    assert_eq!(read(&g), "xone\n");
+    assert_eq!(visits(&h, b), ("f.txt".into(), "f.txt".into(), true));
+    for not_built in [":w >> g.txt<CR>", ":w !cat<CR>"] {
+        assert!(keys(&mut h, not_built)[0].contains("isn't built"));
+    }
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 3);
+    assert!(
+        keys(&mut h, ":w f.txt<CR>").is_empty(),
+        "its own file is :w"
+    );
+    assert_eq!(read(&path), "xone\n");
+    assert!(!h.text(b).unwrap().modified());
+
+    h.split_window(w, Side::Below).unwrap();
+    assert!(keys(&mut h, "iy<Esc>:wq q.txt<CR>").is_empty());
+    assert_eq!(read(&dir.0.join("q.txt")), "yxone\n");
+    assert_eq!(h.window_list().len(), 1);
+}
+
+#[test]
+fn saveas_moves_the_buffer_to_the_new_file() {
+    let dir = Dir::new("saveas");
+    let (mut h, path, b, _) = on_file(&dir, "one\n");
+    std::fs::create_dir(dir.0.join("sub")).unwrap();
+    std::fs::write(dir.0.join("g.txt"), "old\n").unwrap();
+    assert!(keys(&mut h, "ix<Esc>:saveas sub/s.txt<CR>").is_empty());
+    assert_eq!(read(&dir.0.join("sub/s.txt")), "xone\n");
+    assert_eq!(read(&path), "one\n");
+    assert_eq!(visits(&h, b), ("s.txt".into(), "s.txt".into(), false));
+    assert_eq!(h.directory(b), Some(dir.0.join("sub").as_path()));
+    assert!(keys(&mut h, "iy<Esc>:sav<CR>").is_empty(), "no name is :w");
+    assert_eq!(read(&dir.0.join("sub/s.txt")), "yxone\n");
+    assert_eq!(keys(&mut h, ":sav ../g.txt<CR>").len(), 1);
+    assert!(keys(&mut h, ":saveas! ../g.txt<CR>").is_empty());
+    assert_eq!(read(&dir.0.join("g.txt")), "yxone\n");
+    assert_eq!(visits(&h, b), ("g.txt".into(), "g.txt".into(), false));
+    assert!(
+        keys(&mut h, ":e f.txt<CR>").is_empty(),
+        "from the new file's directory"
+    );
+    assert_eq!(text(&h, h.focused_buffer().unwrap()), "one\n");
+}
+
+/// Your Evil's `evil-show-file-info`, whose format batch Emacs gave: its percentage is the
+/// cursor's line over the lines, cut to a whole number.
+#[test]
+fn f_and_c_g_say_the_file_its_lines_and_how_far_down() {
+    let dir = Dir::new("f");
+    let (mut h, path, _, _) = on_file(&dir, "a\nb\nc\n");
+    let said = |h: &Harness| h.messages.last().cloned().unwrap_or_default();
+    let shown = path.display();
+    assert!(keys(&mut h, ":f<CR>").is_empty());
+    assert_eq!(said(&h), format!("\"{shown}\" 3 lines --33%--"));
+    assert!(keys(&mut h, "j<C-g>").is_empty());
+    assert_eq!(said(&h), format!("\"{shown}\" 3 lines --66%--"));
+    let mut locked = std::fs::metadata(&path).unwrap().permissions();
+    locked.set_readonly(true);
+    std::fs::set_permissions(&path, locked).unwrap();
+    assert!(
+        keys(&mut h, "G:file name<CR>").is_empty(),
+        "the name is ignored"
+    );
+    assert_eq!(said(&h), format!("\"{shown}\" 3 [readonly] lines --100%--"));
+    let (_, _) = h.open_text("t", "a\nb").unwrap();
+    assert!(keys(&mut h, "<C-g>").is_empty());
+    assert_eq!(said(&h), "2 lines --50%--");
+    let (_, _) = h.open_text("u", "").unwrap();
+    assert!(keys(&mut h, ":f<CR>").is_empty());
+    assert_eq!(said(&h), "0 lines --No lines in buffer--");
+}
+
+#[test]
+fn ls_lists_the_buffers_in_messages_and_shows_them() {
+    let dir = Dir::new("ls");
+    let (mut h, path, b, _) = on_file(&dir, "one\n");
+    std::fs::write(dir.0.join("g.txt"), "two\n").unwrap();
+    assert!(keys(&mut h, "ix<Esc>:e g.txt<CR>:ls<CR>").is_empty());
+    let log = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(log), Some("*messages*"));
+    let g = dir.0.join("g.txt");
+    let row =
+        |marks: &str, name: &str, file: &Path| format!("{marks} {name:<20} {}", file.display());
+    let (gs, fs) = (row(".  ", "g.txt", &g), row("  *", "f.txt", &path));
+    assert!(h.messages.ends_with(&[gs, fs.clone()]), "{:?}", h.messages);
+    assert!(keys(&mut h, ":ls<CR>").is_empty());
+    let first = row(".% ", "*messages*", Path::new(""));
+    let all = [first.trim_end().into(), row("   ", "g.txt", &g), fs.clone()];
+    assert!(h.messages.ends_with(&all), "{:?}", h.messages);
+    assert!(keys(&mut h, ":files<CR>").is_empty());
+    assert!(h.messages.ends_with(&all[1..]), "only files");
+    assert!(keys(&mut h, ":b f.txt<CR>").is_empty());
+    assert_eq!(h.focused_buffer(), Some(b));
 }
 
 #[test]

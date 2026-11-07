@@ -70,5 +70,9 @@
   {"id": "bracket-F-not-a-file", "keys": "]F", "text": ["see |nowhere.zzz here"]},
   {"id": "gF-not-a-name", "keys": "gF", "text": ["see| (nowhere)", "x"]},
   {"id": "visual-gf-not-a-file", "keys": "vegf", "text": ["see |nowhere.zzz here"]},
-  {"id": "visual-line-gf-not-a-file", "keys": "Vgf", "text": ["|nowhere.zzz"]}
+  {"id": "visual-line-gf-not-a-file", "keys": "Vgf", "text": ["|nowhere.zzz"]},
+  {"id": "w-no-file-name", "description": "A buffer with no file has no name for :w, and the keys after it still run.", "keys": ":w<CR>x", "text": ["|foo"]},
+  {"id": "w-bang-no-file-name", "keys": ":w!<CR>x", "text": ["|foo"]},
+  {"id": "f-leaves-the-cursor", "description": ":f only says where you are.", "keys": "j:f<CR>x", "text": ["one", "|two", "three"]},
+  {"id": "file-ignores-a-name", "vim": "ex: Vim's :file NAME renames the buffer; Evil's shows the same as :f", "keys": ":file other<CR>x", "text": ["|one"]}
  ]}
