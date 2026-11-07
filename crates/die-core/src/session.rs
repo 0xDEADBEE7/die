@@ -36,8 +36,9 @@
 //! are kept as positions, which go where they fit if the file changed while DIE was down. A place
 //! in a buffer that isn't kept goes.
 //!
-//! What die-vim holds itself isn't saved: `.`, `@@`, `;`, `n`, `gv`, `g;`. Windows outside the tree
-//! aren't either, since only a host that places its own windows has them.
+//! An extension keeps what it holds itself with [`Extension::save_session`], as JSON that core
+//! writes and hands back without reading: die-vim's `.`, `@@`, `;`, `n` and `gv`. Its `g;` isn't
+//! kept, nor are windows outside the tree, since only a host that places its own windows has them.
 
 use crate::ext::catch;
 use crate::files::{FileState, Fingerprint, Uneditable};
@@ -48,10 +49,13 @@ use crate::prompt::HISTORY;
 use crate::windows::{Place, PlaceList, View, Window};
 use crate::workspace::tree::Layout;
 use crate::workspace::{RegKind, Register, ShowIn};
-use crate::{Content, Ctx, Error, Gravity, Origin, Result, Selection, Shape, Sub, TextBuf};
+use crate::{
+    Content, Ctx, Error, Extension, Gravity, Origin, Result, Selection, Shape, Sub, TextBuf,
+};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::Map;
+pub use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, DirBuilder, File};
@@ -63,6 +67,16 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, SystemTime};
+
+/// What an extension keeps over a restart ([`Extension::save_session`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Kept {
+    /// What isn't about a buffer. Null is nothing.
+    pub state: Value,
+    /// What's about a buffer. One the session doesn't keep isn't written, and one that didn't come
+    /// back isn't handed back.
+    pub buffers: Vec<(BufferId, Value)>,
+}
 
 /// The schema this build writes.
 pub const VERSION: u32 = 1;
@@ -284,6 +298,10 @@ struct BufferRecord {
     visual: bool,
     /// It was in insert or replace state, which a restore leaves.
     insert: bool,
+    /// By extension's name, what each keeps about this buffer. Any JSON at all reads, so what a
+    /// build can't make sense of can't cost it the buffer.
+    #[serde(skip_serializing_if = "Value::is_null")]
+    extensions: Value,
 }
 
 /// A buffer as of a snapshot. Its text is shared, and read when it's encoded.
@@ -311,6 +329,7 @@ struct Snapshot {
     focused_window: Option<usize>,
     registers: SavedRegisters,
     histories: BTreeMap<String, Vec<String>>,
+    extensions: Value,
 }
 
 #[derive(Serialize)]
@@ -323,6 +342,7 @@ struct SessionFile<'a> {
     focused_window: Option<usize>,
     registers: &'a [RegisterRecord],
     histories: &'a BTreeMap<String, Vec<String>>,
+    extensions: &'a Value,
 }
 
 impl Snapshot {
@@ -344,6 +364,7 @@ impl Snapshot {
             focused_window: self.focused_window,
             registers: &self.registers,
             histories: &self.histories,
+            extensions: &self.extensions,
         };
         // Strings, numbers and options: there's nothing here that can fail to encode.
         serde_json::to_vec_pretty(&file).expect("a session encodes")
@@ -421,6 +442,7 @@ struct Parsed {
     focused_window: Option<u64>,
     registers: Option<Value>,
     histories: Option<Value>,
+    extensions: Option<Value>,
 }
 
 fn parse(bytes: &[u8]) -> std::result::Result<Parsed, String> {
@@ -441,6 +463,7 @@ fn parse(bytes: &[u8]) -> std::result::Result<Parsed, String> {
         focused_window: number("focused_window"),
         registers: some("registers"),
         histories: some("histories"),
+        extensions: some("extensions"),
     })
 }
 
@@ -453,6 +476,16 @@ fn keep_rejected(from: &Path) -> Option<PathBuf> {
         .map(|n| from.with_file_name(format!("session.rejected-{at}-{n}.json")))
         .find(|to| !to.exists())?;
     fs::copy(from, &to).ok().map(|_| to)
+}
+
+/// By extension's name, or null if there's none.
+fn named<'a>(parts: impl Iterator<Item = (&'a str, Value)>) -> Value {
+    let map: Map<String, Value> = parts.map(|(n, v)| (n.to_owned(), v)).collect();
+    if map.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(map)
+    }
 }
 
 /// Where a position may be in this text.
@@ -474,10 +507,15 @@ impl Ctx {
         let mut kept = vec![];
         let mut focus = None;
         let focused = self.focused_buffer();
+        let parts = self.saved_extensions();
         for id in order {
-            let Some(saved) = self.saved_buffer(id, &windows) else {
+            let Some(mut saved) = self.saved_buffer(id, &windows) else {
                 continue;
             };
+            saved.record.extensions = named(parts.iter().filter_map(|(name, kept)| {
+                let (_, v) = kept.buffers.iter().find(|(b, _)| *b == id)?;
+                Some((*name, v.clone()))
+            }));
             if focused == Some(id) {
                 focus = Some(buffers.len());
             }
@@ -510,7 +548,54 @@ impl Ctx {
                 .iter()
                 .map(|(name, past)| (name.clone(), past.clone()))
                 .collect(),
+            extensions: named(
+                parts
+                    .iter()
+                    .filter(|(_, kept)| !kept.state.is_null())
+                    .map(|(name, kept)| (*name, kept.state.clone())),
+            ),
         }
+    }
+
+    /// What each extension keeps now. One that panics keeps nothing this time: with no `&mut Ctx`
+    /// here that can't be logged, and a panic on the way to a save mustn't stop the save.
+    fn saved_extensions(&self) -> Vec<(&'static str, Kept)> {
+        let ask = |e: &dyn Extension| catch(|| e.save_session(self)).ok();
+        (self.exts.iter())
+            .filter_map(|s| Some((s.name, ask(s.obj.as_deref()?)?)))
+            .collect()
+    }
+
+    /// Hand each extension what it kept, once its buffers and windows are back.
+    fn restore_extensions(
+        &mut self,
+        state: Option<Value>,
+        mut by_buffer: BTreeMap<String, Vec<(BufferId, Value)>>,
+    ) -> usize {
+        let mut dropped = 0;
+        let mut state = match state {
+            Some(Value::Object(state)) => state,
+            _ => Map::new(),
+        };
+        for i in 0..self.exts.len() {
+            let name = self.ext_name(i);
+            let kept = Kept {
+                state: state.remove(name).unwrap_or_default(),
+                buffers: by_buffer.remove(name).unwrap_or_default(),
+            };
+            if kept == Kept::default() {
+                continue;
+            }
+            let restored = self.guarded(i, |ctx| {
+                ctx.with_ext_idx(i, |e, ctx| e.restore_session(ctx, kept))?
+            });
+            if let Err(e) = restored {
+                dropped += 1;
+                self.messages
+                    .push(format!("session: dropped what {name} kept: {e}"));
+            }
+        }
+        dropped
     }
 
     /// A window's places in buffers the file has. If one goes, so does the window's place among them.
@@ -597,6 +682,7 @@ impl Ctx {
                     .collect(),
                 visual: b.state == State::Visual,
                 insert: matches!(b.state, State::Insert | State::Replace),
+                extensions: Value::Null,
             },
             rev: t.rev(),
             rope: keep_text.then(|| t.rope().clone()),
@@ -625,15 +711,18 @@ impl Ctx {
         let before = self.buffer_list();
         let mut views = vec![];
         let mut left_insert = vec![];
+        let mut by_buffer: BTreeMap<String, Vec<(BufferId, Value)>> = BTreeMap::new();
         for (i, value) in parsed.buffers.into_iter().enumerate() {
             let hint = value.get("name").and_then(Value::as_str);
             let name = hint.unwrap_or("a buffer").to_owned();
             let mut its_views = vec![];
             let mut in_insert = None;
+            let mut its_extensions = Value::Null;
             let restored = match serde_json::from_value::<BufferRecord>(value) {
                 Ok(mut record) => {
                     its_views = std::mem::take(&mut record.views);
                     in_insert = record.insert.then_some(record.cursor);
+                    its_extensions = record.extensions.take();
                     catch(|| self.restore_buffer(record, &before))
                         .unwrap_or_else(|c| Err(format!("panicked: {}", c.msg)))
                 }
@@ -645,6 +734,11 @@ impl Ctx {
                 Ok(Some(id)) => {
                     views.push((id, its_views));
                     left_insert.extend(in_insert.map(|cursor| (id, cursor)));
+                    if let Value::Object(parts) = its_extensions {
+                        for (name, v) in parts {
+                            by_buffer.entry(name).or_default().push((id, v));
+                        }
+                    }
                     if parsed.focus == Some(i as u64) {
                         focus = Some(id);
                     }
@@ -691,7 +785,7 @@ impl Ctx {
         for (buf, cursor) in left_insert {
             self.leave_insert(buf, cursor);
         }
-        dropped
+        dropped + self.restore_extensions(parsed.extensions, by_buffer)
     }
 
     /// Insert state didn't come back: the window used last goes from where its cursor was saved to
