@@ -159,6 +159,7 @@ pub(crate) enum SubKind {
     Job { id: u64, f: JobDone },
     Keys(KeysFn),
     Dropped(TimerFn),
+    Ended(TimerFn),
 }
 
 pub(crate) struct SubEntry {

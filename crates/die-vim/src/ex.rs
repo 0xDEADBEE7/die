@@ -1,7 +1,7 @@
 //! The `:` command line. K11a gives it its input; V2 and V5 fill in what it does.
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
-use crate::{insert_keys, substitute, visual, window};
+use crate::{substitute, visual, window};
 use die_core::{Args, BufferId, Ctx, Error, PromptSpec, Result, ShowIn};
 use std::path::{Path, PathBuf};
 
@@ -17,14 +17,9 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
         visual::escape(ctx, a)?;
         spec = spec.initial(substitute::VISUAL);
     }
-    let a = a.clone();
-    ctx.prompt(spec, move |ctx, answer| {
-        let r = match answer {
-            Some(text) => run(ctx, &text),
-            None => Ok(()),
-        };
-        insert_keys::after_command(ctx, &a, &r);
-        r
+    ctx.prompt(spec, |ctx, answer| match answer {
+        Some(text) => run(ctx, &text),
+        None => Ok(()),
     });
     Ok(())
 }

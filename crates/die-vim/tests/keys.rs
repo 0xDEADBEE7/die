@@ -4,7 +4,9 @@
 
 use die_test_cap as _;
 
-use die_core::Ctx;
+use die_core::{
+    Args, Button, Ctx, Extension, Input, Mods, PointerEvent, PointerKind, Registry, Result, State,
+};
 use die_vim::Vim;
 
 fn run(text: &str, keys: &str) -> (usize, Vec<String>) {
@@ -113,4 +115,115 @@ fn completion_goes_on_to_other_buffers() {
     );
     ctx.type_keys("<C-p><Esc>");
     assert_eq!(text(&ctx), "fob\nfo\n", "not *Messages*, and not fob again");
+}
+
+/// An extension with a command of its own in normal state, and a key for it.
+struct Other;
+
+impl Extension for Other {
+    fn name(&self) -> &'static str {
+        "other"
+    }
+    fn register(&mut self, reg: &mut Registry) {
+        fn nothing(_: &mut Ctx, _: &Args) -> Result {
+            Ok(())
+        }
+        reg.command("other-nothing", "Does nothing.", nothing);
+        reg.global_keymap()
+            .bind(State::Normal, "<F5>", "other-nothing");
+    }
+}
+
+fn click(ctx: &mut Ctx, row: usize, col: usize) {
+    for kind in [
+        PointerKind::Press(Button::Left),
+        PointerKind::Release(Button::Left),
+    ] {
+        ctx.handle(Input::Pointer(PointerEvent {
+            kind,
+            row,
+            col,
+            clicks: 1,
+            mods: Mods::default(),
+        }));
+        ctx.run_ready();
+    }
+}
+
+/// `C-o` waits for one command, anyone's. A click is one too, as it is in Emacs.
+#[test]
+fn c_o_ends_with_whatever_comes_next() {
+    let mut ctx = Ctx::new(vec![Box::new(Vim::default()), Box::new(Other)]).expect("it registers");
+    let b = ctx.create_text("t", "abc\n");
+    let w = ctx.open_window(b, 80, 24).expect("a window");
+    ctx.focus(w);
+    ctx.scene();
+    ctx.type_keys("i<C-o><F5>");
+    assert_eq!(ctx.state(), State::Insert, "after another extension's command");
+    ctx.type_keys("Z");
+    assert_eq!(ctx.text(b).unwrap().rope().to_string(), "Zabc\n");
+    ctx.type_keys("<C-o>");
+    assert_eq!(ctx.state(), State::Normal);
+    click(&mut ctx, 0, 2);
+    assert_eq!(ctx.state(), State::Insert, "after a click");
+    ctx.type_keys("Y<Esc>");
+    assert_eq!(ctx.text(b).unwrap().rope().to_string(), "ZaYbc\n");
+    ctx.type_keys("j");
+    assert_eq!(ctx.state(), State::Normal, "and nothing is left waiting");
+}
+
+/// A `C-o` whose command takes the window to another buffer still goes back in its own.
+#[test]
+fn c_o_goes_back_in_its_own_buffer() {
+    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers");
+    let other = ctx.create_text("other", "x\n");
+    let b = ctx.create_text("t", "abc\n");
+    let w = ctx.open_window(b, 80, 24).expect("a window");
+    ctx.focus(w);
+    ctx.type_keys("i<C-o>:b other<CR>");
+    assert_eq!(ctx.window_buffer(w), Some(other));
+    assert_eq!(ctx.state_of(other), State::Normal);
+    assert_eq!(ctx.state_of(b), State::Insert);
+}
+
+/// A click runs no command of die-vim's, but `C-p` after one isn't a press after a press.
+#[test]
+fn completion_after_a_click_starts_anew() {
+    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers");
+    let b = ctx.create_text("t", "foo fob\n");
+    let w = ctx.open_window(b, 80, 24).expect("a window");
+    ctx.focus(w);
+    ctx.scene();
+    ctx.type_keys("ofo<C-p>");
+    click(&mut ctx, 0, 1);
+    ctx.type_keys("<C-p>");
+    assert_eq!(ctx.messages, Vec::<String>::new());
+    assert_eq!(
+        ctx.text(b).unwrap().rope().to_string(),
+        "foboo fob\nfob\n"
+    );
+}
+
+/// `k` is one byte and a Kelvin sign three, and the one completes to the other.
+#[test]
+fn completion_folds_case_across_lengths() {
+    let (_, messages) = run("\u{212a}x\n\nkb\n", "jik<C-p>");
+    assert_eq!(messages, Vec::<String>::new());
+}
+
+/// The oracle has one buffer. `C-x C-p` goes on to the others too, once this one has no more.
+#[test]
+fn line_completion_goes_on_to_other_buffers() {
+    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers");
+    ctx.create_text("other", "  far away\n");
+    let b = ctx.create_text("t", "fob\n\n");
+    let w = ctx.open_window(b, 80, 24).expect("a window");
+    ctx.focus(w);
+    let text = |ctx: &Ctx| ctx.text(b).unwrap().rope().to_string();
+    ctx.type_keys("jif<C-x><C-p>");
+    assert_eq!(text(&ctx), "fob\nfob\n");
+    ctx.type_keys("<C-x><C-p>");
+    assert_eq!(text(&ctx), "fob\nfar away\n");
+    ctx.type_keys("<C-x><C-p>");
+    assert_eq!(text(&ctx), "fob\nf\n", "none left, so what was typed");
 }

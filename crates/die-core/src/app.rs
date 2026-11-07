@@ -160,6 +160,7 @@ impl Ctx {
     }
 
     fn pointer_press(&mut self, hit: CellHit) {
+        self.command_ended();
         self.pending.clear();
         self.prefix = Default::default();
         self.stop_selecting();

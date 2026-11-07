@@ -4,7 +4,7 @@
 //! on lines or a block, what's typed goes in on each of them when it ends ([`Rows`]).
 
 use crate::grammar::{buffer_window, forget_goal};
-use crate::motions::{row_start, word_back};
+use crate::motions::{row_start, word_back, word_begin};
 use crate::operators::SHIFT_WIDTH;
 use crate::repeat::{Change, keys_of};
 use crate::text::{
@@ -68,6 +68,10 @@ pub enum Edit {
     RestoreWord,
     /// `<Del>`
     Delete,
+    /// `<S-Left>`
+    WordLeft,
+    /// `<S-Right>`
+    WordRight,
     /// `<C-t>` (right) and `<C-d>`: the line moves a shift, and the cursor with it.
     Shift {
         right: bool,
@@ -119,6 +123,8 @@ pub struct Session {
     /// What register `.` will hold: the range the last run of changes made, as Evil's
     /// `evil-track-last-insertion` keeps it. A change that doesn't carry on from it starts anew.
     insertion: Option<(usize, usize)>,
+    /// Which of the edits put in the last insertion, read afresh by whatever replays them.
+    pasted: Vec<usize>,
 }
 
 /// What a key in replace state wrote over: the bytes it now holds, and what they were.
@@ -140,7 +146,18 @@ impl Session {
             rows: None,
             restore: vec![],
             insertion: None,
+            pasted: vec![],
         }
+    }
+
+    /// The edit just made put in the last insertion.
+    pub fn mark_pasted(&mut self) {
+        self.pasted.extend(self.edits.len().checked_sub(1));
+    }
+
+    /// What's typed from here on is all the last insertion has.
+    pub fn restart_insertion(&mut self, at: usize) {
+        self.insertion = Some((at, at));
     }
 
     /// Bytes from `beg` that were `old` long are now up to `end`.
@@ -221,6 +238,16 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
         return Ok(());
     }
     match &e {
+        // A count past the text's end stops there. Only going nowhere fails.
+        Edit::WordLeft | Edit::WordRight => {
+            s.restore.retain(|r| r.at != p);
+            apply(t, w, &e)?;
+            for _ in 1..n {
+                if apply(t, w, &e).is_err() {
+                    break;
+                }
+            }
+        }
         Edit::Restore => restore(t, w, s)?,
         Edit::RestoreWord => {
             let to = word_start(t, p).ok_or(Error::Msg("Beginning of buffer".into()))?;
@@ -275,8 +302,8 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
     let t = ctx.text_mut(b)?;
     let cursor = |t: &TextBuf| t.cursor(w).unwrap_or(0);
     let mut r = Ok(());
-    if let Some(s) = s {
-        r = close(t, w, &s);
+    if let Some(mut s) = s {
+        r = close(t, w, &mut s);
     }
     r = r.and(crate::marks::insert_ended(t, cursor(t)));
     let p = stepped_back(t, w, cursor(t));
@@ -287,7 +314,20 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
 
 /// What a session does on leaving insert state, whatever comes next: its count and its other
 /// lines, a new line's indentation if nothing was typed on it, and the end of the undo step.
-fn close(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
+fn close(t: &mut TextBuf, w: WindowId, s: &mut Session) -> Result {
+    if !s.pasted.is_empty() {
+        let held = s.insertion.filter(|&(_, e)| e <= t.len());
+        let text = held.map_or(String::new(), |(b, e)| {
+            t.rope().byte_slice(b..e).to_string()
+        });
+        let take = match s.entry {
+            Entry::Replace => text.chars().count(),
+            _ => 0,
+        };
+        for i in std::mem::take(&mut s.pasted) {
+            s.edits[i] = Edit::Literal(text.clone(), take);
+        }
+    }
     let mut r = replay(t, w, s);
     r = r.and(rows(t, w, s));
     let line = t.line_of(t.cursor(w).unwrap_or(0));
@@ -326,7 +366,10 @@ pub fn pause(ctx: &mut Ctx, a: &Args, s: &mut Session) -> Result {
     let t = ctx.text_mut(b)?;
     let r = close(t, w, s);
     (s.rows, s.drop_indent, s.insertion) = (None, false, None);
+    // Your Evil forgets what replace state took on leaving it, and marks where insert state ended.
+    s.restore.clear();
     let p = t.cursor(w).unwrap_or(0);
+    let r = r.and(crate::marks::insert_ended(t, p));
     t.set_cursor(w, rest_pos(t, p));
     ctx.set_state_of(b, State::Normal);
     r
@@ -389,18 +432,24 @@ pub fn swap(ctx: &mut Ctx, a: &Args, s: &mut Session, beg: usize, new: &str) -> 
     t.set_cursor(w, end);
     forget_goal(t, w);
     s.note(beg, p - beg, end);
+    let n = old.chars().count();
     if s.entry == Entry::Replace {
         s.restore.retain(|r| r.at != p);
         moved_after(s, p, t.len() as isize - len as isize);
-        if let Some(after) = next_stop(t, p).filter(|_| p < t.len()) {
+        // Emacs's note of the place is in characters, so it's as many on from `beg` as it was.
+        let mut c = Chars::at(t, beg);
+        for _ in 0..n {
+            c.fwd();
+        }
+        let at = c.pos();
+        if let Some(after) = next_stop(t, at).filter(|_| at < t.len()) {
             s.restore.push(Taken {
-                at: p,
+                at,
                 end: after,
                 old: here.map(String::from),
             });
         }
     }
-    let n = old.chars().count();
     s.edits.extend(std::iter::repeat_n(Edit::Backspace, n));
     s.edits.push(Edit::Text(new.to_owned()));
     s.drop_indent = false;
@@ -743,6 +792,13 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
             t.tx(Origin::User).delete(p..end).commit()?;
             p
         }
+        Edit::WordLeft => match word_back(t, p, false) {
+            Some(q) => q,
+            None => return fail("Beginning of buffer"),
+        },
+        // Past the last word it's the text's end, the empty line after a final newline.
+        Edit::WordRight if p == t.len() => return fail("End of buffer"),
+        Edit::WordRight => word_begin(t, p, false).unwrap_or(t.len()),
         Edit::Shift { right } => return shift_line(t, w, p, *right),
         Edit::ZeroIndent => {
             let line = t.line_of(p);
