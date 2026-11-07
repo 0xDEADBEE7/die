@@ -97,6 +97,7 @@ fn the_finders_are_on_the_leader_as_init_el_has_them() {
         ("\\\\", "find-file-home"),
         ("\\p", "find-file-project"),
         ("\\/", "switch-buffer"),
+        ("\\r", "grep"),
     ] {
         let keys = die::core::parse_keys(keys).unwrap();
         let found = ctx.describe_key(&keys).map(|d| d.action);

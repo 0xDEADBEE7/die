@@ -149,6 +149,9 @@ impl Handover {
         let mut line = String::new();
         match BufReader::new(&stream).read_line(&mut line) {
             Ok(_) if line == FIRST_FRAME => {
+                // This process won't drop the handover: it exits holding it. The connection
+                // stands without the name, so each restart doesn't leave a file behind.
+                let _ = fs::remove_file(&self.path);
                 self.successor = Some(stream);
                 Ok(())
             }
@@ -281,9 +284,11 @@ fn answer(mut stream: UnixStream, handle: &mut impl FnMut(OpenRequest) -> bool) 
 impl Drop for OpenListener {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        // Wakes the thread from its `accept`.
-        let _ = UnixStream::connect(&self.path);
-        if let Some(thread) = self.thread.take() {
+        // Wakes the thread from its `accept`. If the socket's file has gone, nothing can, and the
+        // thread stays there with nobody able to reach it.
+        if UnixStream::connect(&self.path).is_ok()
+            && let Some(thread) = self.thread.take()
+        {
             let _ = thread.join();
         }
         let _ = fs::remove_file(&self.path);
@@ -326,6 +331,8 @@ pub fn send_open(dir: &Path, request: &OpenRequest, patience: Duration) -> io::R
 fn deliver(socket: &Path, bytes: &[u8], limit: Duration) -> io::Result<()> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(limit))?;
+    // A long command line doesn't fit the socket's buffer, and a stuck instance reads nothing.
+    stream.set_write_timeout(Some(limit))?;
     stream.write_all(bytes)?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let mut answer = vec![];

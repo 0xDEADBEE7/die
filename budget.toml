@@ -30,9 +30,13 @@ note = "guard 7: 5k per build, 7k in total"
 name = "die-vim"
 path = "crates/die-vim"
 # 5,790 until the MVP run: the Evil keys left out of M0, marks and the jumplist. 7,000 until U6:
-# insert state's control keys, with Emacs's dabbrev behind C-p and C-n. 7,800 until U6's review:
-# C-x C-n, C-x C-p and S-Left, S-Right, the last of what your Evil's map binds there.
-limit = 8000
+# insert state's control keys, with Emacs's dabbrev behind C-p and C-n. 7,800 until W1: a click
+# ends a new line's claim on a blank line. 7,850 until U8: what a restart keeps of `.`, `n`, `;` and `gv`. 8,050 until V1: `:wa`, `:qa`, `:wqa`, `:xa` and `:x`.
+# 8,100 until U3: `gf`, reading a file name at the cursor as ffap does.
+# 8,150 until V3: walking text by chunks, `r` over a whole file.
+# 8,200 until U6's review: C-x C-n, C-x C-p, S-Left and S-Right, the last of what your Evil's map
+# binds there.
+limit = 8400
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -63,8 +67,9 @@ dev = true
 [[module]]
 crate = "die-core"
 name = "text and undo"
-# 1,265 until U7, whose named positions are about 20 lines.
-limit = 1285
+# 1,265 until U7, whose named positions are about 20 lines. 1,285 until U3's grep shared smartcase.
+# 1,300 until V3: thousands of changes go in one pass, undo too, and a line of megabytes is searched near what's asked.
+limit = 1420
 files = ["text.rs", "undo.rs", "text/", "undo/"]
 
 [[module]]
@@ -76,13 +81,16 @@ files = ["layout.rs", "layout/"]
 [[module]]
 crate = "die-core"
 name = "keys, keymaps, describe"
-limit = 650
+# 650 until V3: a macro calling macros doesn't move what's waiting, and registers move uncopied.
+limit = 660
 files = ["keys.rs", "keymap.rs", "describe.rs", "fed.rs"]
 
 [[module]]
 crate = "die-core"
 name = "ext, dispatch, rt"
-limit = 1500
+# 1,500 until V1's landing found it at 1,502 from another package, and U3 adds what `*grep*` holds.
+# 1,510 until V3: a typed C-g ends a macro.
+limit = 1525
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
@@ -108,8 +116,8 @@ files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "comma
 [[module]]
 crate = "die-core"
 name = "project: file walk, finder, grep"
-# New in the MVP run.
-limit = 600
+# New in the MVP run. 600 until U3: grep came to about 390, with its streaming and going to results.
+limit = 750
 files = ["project.rs", "project/"]
 
 [[module]]
@@ -121,8 +129,9 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 [[module]]
 crate = "die-core"
 name = "session"
-# 1,250 until U7, whose marks and jump lists in session.json are about 50 lines.
-limit = 1305
+# 1,250 until U7, whose marks and jump lists in session.json are about 50 lines. 1,305 until U8:
+# what an extension keeps, by name, whole and by buffer, is about 80.
+limit = 1385
 # 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
 # held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
@@ -147,11 +156,11 @@ limit = 2300
 files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "input.rs", "sprite.rs", "window.rs", "latency.rs"]
 
 # `die --check`: the window's own checks, which ship in the binary. R3's are about 420
-# lines, and R6 adds `typing` and `firstframe`.
+# lines, R6 adds `typing` and `firstframe`, and V5 `idle-60`'s count of the OS's wakes.
 [[module]]
 crate = "die-render"
 name = "checks"
-limit = 700
+limit = 720
 files = ["check.rs"]
 
 # 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
@@ -163,8 +172,8 @@ files = ["check.rs"]
 crate = "die-render"
 name = "platform::macos"
 platforms = ["macos"]
-# 1,160 until U7's landing found it at 1,169 from another package.
-limit = 1170
+# 1,160 until U7's landing found it at 1,169 from another package, and V5's OS wake count needs 8.
+limit = 1180
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it

@@ -120,6 +120,9 @@ pub struct Session {
     pub rows: Option<Rows>,
     /// In replace state, what each key took: `<BS>` from just past it puts it back.
     restore: Vec<Taken>,
+    /// Where the session last left the cursor. Elsewhere, something else moved it, as a click
+    /// does, which is a command of its own to `drop_indent`.
+    left: Option<usize>,
     /// What register `.` will hold: the range the last run of changes made, as Evil's
     /// `evil-track-last-insertion` keeps it. A change that doesn't carry on from it starts anew.
     insertion: Option<(usize, usize)>,
@@ -145,6 +148,7 @@ impl Session {
             repeat: None,
             rows: None,
             restore: vec![],
+            left: None,
             insertion: None,
             pasted: vec![],
         }
@@ -212,8 +216,10 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
             State::Insert
         },
     );
+    let left = ctx.text(b)?.cursor(w);
     Ok(Session {
         entry,
+        left,
         count: a.count.unwrap_or(1).max(1),
         drop_indent: !replacing && entry != Entry::Insert && entry != Entry::InsertLine,
         ..Session::bare()
@@ -226,6 +232,7 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
+    s.drop_indent &= s.left == Some(p);
     let once = matches!(
         e,
         Edit::DeleteWord | Edit::Tab | Edit::Restore | Edit::RestoreWord | Edit::ZeroIndent
@@ -286,6 +293,7 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
     if e != Edit::Newline {
         s.drop_indent = false;
     }
+    s.left = t.cursor(w);
     s.edits.push(e);
     Ok(())
 }
@@ -315,6 +323,7 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
 /// What a session does on leaving insert state, whatever comes next: its count and its other
 /// lines, a new line's indentation if nothing was typed on it, and the end of the undo step.
 fn close(t: &mut TextBuf, w: WindowId, s: &mut Session) -> Result {
+    let drop_indent = s.drop_indent && s.left == t.cursor(w);
     if !s.pasted.is_empty() {
         let held = s.insertion.filter(|&(_, e)| e <= t.len());
         let text = held.map_or(String::new(), |(b, e)| {
@@ -332,7 +341,7 @@ fn close(t: &mut TextBuf, w: WindowId, s: &mut Session) -> Result {
     r = r.and(rows(t, w, s));
     let line = t.line_of(t.cursor(w).unwrap_or(0));
     let (ls, le) = (t.line_start(line), line_end(t, line));
-    if s.drop_indent && le > ls && blank_line(t, line) {
+    if drop_indent && le > ls && blank_line(t, line) {
         let dropped = t.tx(Origin::User).delete(ls..le).commit();
         r = r.and(dropped.map(drop));
     }

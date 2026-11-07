@@ -9,7 +9,7 @@ use crate::font::CellMetrics;
 use crate::frame::{Image, Presented};
 use crate::input::{Held, KeyFacts, Pointer, caps_event, key_event};
 use crate::latency::Latency;
-use die_core::{Ctx, Input, KeyEvent, PointerEvent, Scene, WindowPlacement};
+use die_core::{Ctx, Input, KeyEvent, PointerEvent, Scene};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -89,8 +89,8 @@ pub struct Pumped {
     pub more: bool,
 }
 
-/// Core, as a loop drives it: turns, sleep, and a frame of one window. K9's calls replace
-/// `step`, `next_timer` and `compose` here when they land.
+/// Core, as a loop drives it: turns, sleep, and a frame of the split tree. K9's calls replace
+/// `step` and `next_timer` here when they land.
 pub struct Host {
     /// The editor.
     pub ctx: Ctx,
@@ -124,28 +124,16 @@ impl Host {
         sleep_for(self.ctx.next_timer(), self.ctx.now())
     }
 
-    /// The frame is now `grid`, so the window has that less its status line and the command
-    /// line. What a resize queues (C3) runs on the next pump.
+    /// The frame is now `grid`, which the split tree shares out, less the command line. What a
+    /// resize queues (C3) runs on the next pump.
     pub fn set_grid(&mut self, grid: (usize, usize)) {
         self.grid = grid;
-        let Some(window) = self.ctx.focused() else {
-            return;
-        };
-        let (cols, rows) = (grid.0, grid.1.saturating_sub(2));
-        if let Err(e) = self.ctx.resize(window, cols, rows) {
-            self.ctx.messages.push(e.to_string());
-        }
+        self.ctx.set_frame_size(grid.0, grid.1);
     }
 
-    /// The frame, with the focused window filling it.
+    /// The frame, with every window of the split tree.
     pub fn scene(&mut self) -> Scene {
-        let placement = self.ctx.focused().map(|window| WindowPlacement {
-            window,
-            col: 0,
-            row: 0,
-        });
-        let placed = placement.as_slice();
-        self.ctx.compose(self.grid.0, self.grid.1, placed)
+        self.ctx.scene()
     }
 }
 

@@ -3,7 +3,10 @@
 
 use die_test_cap as _;
 
-use die_core::{Clock, Config, Ctx, Key, KeyEvent, Result, Scene};
+use die_core::{
+    Button, Clock, Config, Ctx, Input, Key, KeyEvent, Mods, PointerEvent, PointerKind, Result,
+    Scene, ShowIn, Side,
+};
 use die_render::font::{CellMetrics, FaceMetrics};
 use die_render::latency::Latency;
 use die_render::window::{
@@ -130,6 +133,41 @@ fn one_window_fills_the_frame_above_its_status_line_and_the_command_line() {
     assert!(row_text(&s, 1).starts_with("world"));
     assert!(row_text(&s, 4).contains("a.txt"), "the status line");
     assert_eq!(row_text(&s, 5).trim(), "", "the command line");
+}
+
+#[test]
+fn every_window_of_a_split_shows_and_a_click_reaches_the_one_it_is_over() {
+    let mut h = host("hello\nworld\n");
+    h.set_grid((30, 6));
+    let left = h.ctx.focused().unwrap();
+    let right = h.ctx.split_window(left, Side::Right).unwrap();
+    let other = h.ctx.create_text("b.txt", "other\n");
+    h.ctx.focus(right);
+    h.ctx.show(other, ShowIn::Current).unwrap();
+    h.ctx.focus(left);
+    h.pump();
+    let s = h.scene();
+    assert!(row_text(&s, 0).starts_with("hello"), "{}", row_text(&s, 0));
+    assert!(row_text(&s, 0).contains("│other"), "{}", row_text(&s, 0));
+
+    h.ctx.handle(Input::Pointer(PointerEvent {
+        kind: PointerKind::Press(Button::Left),
+        row: 0,
+        col: 18,
+        clicks: 1,
+        mods: Mods::default(),
+    }));
+    h.pump();
+    assert_eq!(h.ctx.focused(), Some(right));
+    assert_eq!(h.ctx.text(other).unwrap().cursor(right), Some(3));
+
+    h.set_grid((40, 6));
+    h.pump();
+    assert_eq!(
+        h.ctx.window_size(left).map(|s| s.0),
+        Some(19),
+        "they share it"
+    );
 }
 
 #[test]

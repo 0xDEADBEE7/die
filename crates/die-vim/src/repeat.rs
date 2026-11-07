@@ -110,6 +110,21 @@ pub struct Recorder {
     resume: Option<State>,
 }
 
+impl Recorder {
+    /// What `.` repeats, what `@@` does and the `;` `.` left alone, as they'll be once keys are
+    /// typed again, for the session.
+    pub fn kept(&self) -> (Option<&Change>, Option<char>, Option<Option<Find>>) {
+        let last = self.then_last.as_ref().or(self.last.as_ref());
+        (last, self.last_macro, self.then_find)
+    }
+
+    /// From the session.
+    pub fn restore(&mut self, last: Option<Change>, last_macro: Option<char>) {
+        self.last = last;
+        self.last_macro = last_macro;
+    }
+}
+
 fn recorder(ctx: &mut Ctx) -> Result<Rc<RefCell<Recorder>>> {
     Ok(ctx.with_ext(|v: &mut Vim, _| v.rec.clone())?)
 }

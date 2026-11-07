@@ -548,6 +548,7 @@ C3 costs you something with multi-step prompts, which nest one callback per step
   Undo history comes later.
 - **Format.** JSON with a version field. Each buffer's data is stored separately and read with defaults for missing fields, so data that fails to load drops only that buffer, with a message.
 - **When.** Core writes the session after a short idle period following any change, as well as on restart and quit, so a crash loses at most the last few seconds.
+- **Extensions** keep what they hold themselves with `save_session` and `restore_session`, as JSON core writes and hands back without reading, whole or by buffer. die-vim keeps `.`, `@@`, `;`, `n` and `gv` this way.
 - **Custom surfaces** return data from `save()`, serialized with serde and tagged with the surface kind. The extension registers a **restorer** for that kind, which rebuilds the surface from the data.
 - **Buffers restored by their mode** (orchid's chat). The mode saves what it needs, such as a session id, and repopulates the buffer on restore, for example by re-reading the session log. Core doesn't save their text.
 - **Missing extensions.** If a saved buffer belongs to an extension that's no longer in your config, the buffer is dropped and a message is logged.

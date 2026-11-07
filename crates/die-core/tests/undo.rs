@@ -555,3 +555,78 @@ fn an_edit_made_after_a_fed_key_is_its_own_undo_step() {
     };
     assert_eq!(host_edit_after_key(press), "kabc");
 }
+
+/// A transaction of thousands of changes goes in one pass, past what the log can hold. It must be
+/// the same to everything else as making them one at a time.
+#[test]
+fn a_transaction_of_thousands_of_changes_is_an_ordinary_step() {
+    let n = 6000;
+    let before: String = (0..n).map(|i| format!("ab{i}\n")).collect();
+    let (mut ctx, b, w) = setup(&before);
+    let changes = |text: &str| -> Vec<(std::ops::Range<usize>, String)> {
+        let mut at = 0;
+        let lines = text.split_inclusive('\n').enumerate();
+        lines
+            .map(|(i, l)| {
+                let r = at..at + 2;
+                at += l.len();
+                // Some grow and some shrink, so positions don't just shift one way.
+                (
+                    r,
+                    if i % 2 == 0 {
+                        "long text".into()
+                    } else {
+                        String::new()
+                    },
+                )
+            })
+            .collect()
+    };
+    let t = ctx.text_mut(b).unwrap();
+    let last = t.line_start(n - 1);
+    let (near, far) = (
+        t.add_marker(last + 2, Gravity::Right).unwrap(),
+        t.add_marker(t.line_start(100) + 2, Gravity::Right).unwrap(),
+    );
+    t.set_cursor(w, last);
+    let rev = t.rev();
+    let mut tx = t.tx(Origin::User);
+    for (r, s) in changes(&before) {
+        tx = tx.replace(r, s);
+    }
+    let ops = changes(&before);
+    let after_rev = tx.commit().unwrap();
+    let after = {
+        let mut s = before.clone();
+        for (r, new) in ops.iter().rev() {
+            s.replace_range(r.clone(), new);
+        }
+        s
+    };
+    let t = ctx.text_mut(b).unwrap();
+    assert_eq!(String::from(t.rope()), after);
+    assert_eq!(after_rev, rev + n as u64, "one revision per change");
+    assert!(t.edits_since(rev).is_none(), "the log doesn't reach back");
+    let tail: Vec<_> = t.edits_since(after_rev - LOG_CAP as u64).unwrap().collect();
+    assert_eq!(tail.len(), LOG_CAP);
+    assert_eq!(tail[LOG_CAP - 1].start, 0, "the first position goes last");
+    // A marker and the cursor follow, one at a shrinking change and one at a growing one.
+    let moved = t.line_start(n - 1);
+    assert_eq!(t.marker(near), Some(moved));
+    assert_eq!(t.selection(w).unwrap().head, moved);
+    assert_eq!(t.marker(far), Some(t.line_start(100) + "long text".len()));
+    t.undo().unwrap();
+    assert_eq!(String::from(t.rope()), before);
+    assert_eq!(t.selection(w).unwrap().head, last);
+    assert!(!t.modified());
+    t.redo().unwrap();
+    assert_eq!(String::from(t.rope()), after);
+    // Undo works through a silent edit above the step.
+    t.tx(Origin::Extension)
+        .silent()
+        .insert(0, "head\n")
+        .commit()
+        .unwrap();
+    t.undo().unwrap();
+    assert_eq!(String::from(t.rope()), format!("head\n{before}"));
+}

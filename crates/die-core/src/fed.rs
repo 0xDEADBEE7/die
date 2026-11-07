@@ -16,13 +16,20 @@ impl Ctx {
     /// a macro inside a macro runs before the rest of it. The host's go behind what's left.
     pub fn feed_keys(&mut self, keys: &str) -> Result {
         let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
-        let end = self.fed.len();
-        let from = if self.nesting() > 0 { self.fed_at } else { end };
-        let at = from.min(end);
-        let rest = self.fed.split_off(at);
-        self.fed.extend(evs);
-        self.fed_at = self.fed.len();
-        self.fed.extend(rest);
+        if self.nesting() == 0 {
+            self.fed.extend(evs);
+            self.fed_at = self.fed.len();
+            return Ok(());
+        }
+        // At the front, moving only what this turn has fed, so a macro that keeps calling macros
+        // doesn't move everything still waiting each time.
+        let at = self.fed_at.min(self.fed.len());
+        let this_turn: Vec<_> = self.fed.drain(..at).collect();
+        self.fed_at = at + evs.len();
+        evs.into_iter().rev().for_each(|ev| self.fed.push_front(ev));
+        for ev in this_turn.into_iter().rev() {
+            self.fed.push_front(ev);
+        }
         Ok(())
     }
     /// Run `f` from the top of the loop, before the next key is looked up, whenever a key's
@@ -73,6 +80,12 @@ impl Ctx {
         }
     }
 
+    /// Give a register's text to another name, without copying it. An empty one changes nothing.
+    pub fn move_register(&mut self, from: char, to: char) {
+        if let Some(r) = self.registers.remove(&from) {
+            self.set_register(to, r);
+        }
+    }
     /// Empty a register, as if nothing had ever been put in it.
     pub fn clear_register(&mut self, c: char) {
         self.registers.remove(&c);
