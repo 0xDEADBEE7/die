@@ -146,11 +146,11 @@ limit = 2300
 files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "input.rs", "sprite.rs", "window.rs", "latency.rs"]
 
 # `die --check`: the window's own checks, which ship in the binary. R3's are about 420
-# lines, and R6 adds `typing` and `firstframe`.
+# lines, R6 adds `typing` and `firstframe`, and V5 `idle-60`'s count of the OS's wakes.
 [[module]]
 crate = "die-render"
 name = "checks"
-limit = 700
+limit = 720
 files = ["check.rs"]
 
 # 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
@@ -162,8 +162,8 @@ files = ["check.rs"]
 crate = "die-render"
 name = "platform::macos"
 platforms = ["macos"]
-# 1,160 until U7's landing found it at 1,169 from another package.
-limit = 1170
+# 1,160 until U7's landing found it at 1,169 from another package, and V5's OS wake count needs 8.
+limit = 1180
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
