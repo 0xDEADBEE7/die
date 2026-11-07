@@ -49,9 +49,7 @@ use crate::prompt::HISTORY;
 use crate::windows::{Place, PlaceList, View, Window};
 use crate::workspace::tree::Layout;
 use crate::workspace::{RegKind, Register, ShowIn};
-use crate::{
-    Content, Ctx, Error, Extension, Gravity, Origin, Result, Selection, Shape, Sub, TextBuf,
-};
+use crate::{Content, Ctx, Error, Extension, Gravity, Origin, Result, Selection, Shape, TextBuf};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
@@ -86,8 +84,9 @@ pub const FILE: &str = "session.json";
 pub const PREVIOUS: &str = "session.prev.json";
 const TEMPORARY: &str = "session.tmp";
 
-/// How often core looks for a change to write.
-const LOOK_EVERY: Duration = Duration::from_millis(500);
+/// How often core looks for a change to write, while the editor is in use (`rt`'s tick rests
+/// otherwise).
+pub(crate) const LOOK_EVERY: Duration = Duration::from_millis(500);
 /// How long nothing must change before a write.
 const QUIET: Duration = Duration::from_secs(1);
 /// How long a change waits for that quiet before it's written anyway.
@@ -392,7 +391,6 @@ pub(crate) struct Session {
     unwritten: Option<Duration>,
     /// A failure was reported and no write has worked since.
     failing: bool,
-    _look: Sub,
 }
 
 /// Write the bytes durably, keeping the file they replace.
@@ -1124,10 +1122,6 @@ impl Ctx {
                 .push(format!("session: won't be saved, with no thread: {e}"));
             return;
         }
-        let look = self.every(LOOK_EVERY, |ctx| {
-            ctx.look_at_session();
-            Ok(())
-        });
         self.session = Some(Session {
             jobs,
             outcomes,
@@ -1136,8 +1130,8 @@ impl Ctx {
             written: None,
             unwritten: None,
             failing: false,
-            _look: look,
         });
+        self.start_ticking();
     }
 
     fn load_session(&mut self, dir: &Path) {
@@ -1174,7 +1168,7 @@ impl Ctx {
         }
     }
 
-    fn look_at_session(&mut self) {
+    pub(crate) fn look_at_session(&mut self) {
         self.note_session_outcomes();
         if !self.session.as_ref().is_some_and(|s| s.writing) {
             return;
@@ -1207,6 +1201,11 @@ impl Ctx {
         }
     }
 
+    /// Whether a change is waiting to be written, so that the looks can't rest yet.
+    pub(crate) fn session_behind(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.unwritten.is_some())
+    }
+
     /// Say a failed write once, until one works, and try again at the next look.
     fn note_session_outcomes(&mut self) {
         let Some(s) = self.session.as_mut() else {
@@ -1237,6 +1236,7 @@ impl Ctx {
             s.seen = None;
             s.written = None;
         }
+        self.touch();
     }
 
     /// Write the session now, and wait until it's on disk. Without a session this does nothing.

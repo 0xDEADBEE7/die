@@ -41,6 +41,10 @@ pub const NAMES: [&str; 11] = [
 const IDLE: Duration = Duration::from_secs(3);
 /// S1's check 4 is this long, which is what makes its CPU figure mean anything.
 const LONG_IDLE: Duration = Duration::from_secs(60);
+/// How long `idle-60` waits before it measures: a new app wakes about 10 times a second for about
+/// 15 s with no event reaching the loop, and core's tick rests 30 s after the last thing.
+const LONG_IDLE_SETTLE: Duration = Duration::from_secs(35);
+const WAKE_SLICES: u32 = 6;
 const TICKS: u32 = 10;
 const RESIZE_STEPS: u32 = 120;
 const SCALE_CHANGES: usize = 6;
@@ -215,17 +219,34 @@ fn percentile(values: &mut [f64], percent: usize) -> f64 {
 }
 
 /// Nothing happens, so nothing draws, and a timer that changes nothing draws nothing either.
+/// `os_wakes_per_second` is the OS's count for the whole process, the median of `WAKE_SLICES` parts
+/// of the wait: the pointer crossing the window wakes it for real, and that's not what's measured.
 fn idle(r: &Remote, how_long: Duration) -> Outcome {
     first_frame(r)?;
-    sleep(Duration::from_millis(300));
+    let settle = (how_long == LONG_IDLE).then_some(LONG_IDLE_SETTLE);
+    sleep(settle.unwrap_or(Duration::from_millis(300)));
     let read = |s: &mut Shell, _: &_| (s.stats.frames, s.stats.wakeups);
     let (f0, w0) = r.call(read)?;
     let cpu0 = cpu_seconds()?;
-    sleep(how_long);
+    let slice = how_long / WAKE_SLICES;
+    let mut last = driver::process_wakeups();
+    let mut rates = vec![];
+    for _ in 0..WAKE_SLICES {
+        sleep(slice);
+        let now = driver::process_wakeups();
+        rates.push((now - last) as f64 / slice.as_secs_f64());
+        last = now;
+    }
+    let os_wakes = percentile(&mut rates, 50);
     let cpu1 = cpu_seconds()?;
     let (f1, w1) = r.call(read)?;
     let cpu_percent = (cpu1 - cpu0) / how_long.as_secs_f64() * 100.0;
     let (idle_frames, wakeups) = (f1 - f0, w1 - w0);
+    if how_long == LONG_IDLE {
+        ensure(os_wakes < 1.0, || {
+            format!("{os_wakes:.2} wakes a second by the OS's count")
+        })?;
+    }
     ensure(idle_frames == 0, || {
         format!("{idle_frames} frames while idle")
     })?;
@@ -250,7 +271,7 @@ fn idle(r: &Remote, how_long: Duration) -> Outcome {
         format!("only {ticks} of {TICKS} ticks in 10 s")
     })?;
     Ok(Verdict::Ok(format!(
-        "frames={idle_frames} wakeups={wakeups} seconds={} timer_frames={timer_frames} ticks={ticks} cpu_percent={cpu_percent:.3}",
+        "frames={idle_frames} wakeups={wakeups} seconds={} timer_frames={timer_frames} ticks={ticks} cpu_percent={cpu_percent:.3} os_wakes_per_second={os_wakes:.2}",
         how_long.as_secs()
     )))
 }
