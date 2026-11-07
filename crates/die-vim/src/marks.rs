@@ -54,6 +54,9 @@ const JUMPS: &[&str] = &[
     "vim-search-previous",
     "vim-search-word-forward",
     "vim-search-word-backward",
+    "vim-forward-section",
+    "vim-backward-section",
+    "vim-goto-definition",
     "vim-goto-mark",
     "vim-goto-mark-line",
     "vim-insert-resume",
@@ -398,7 +401,11 @@ pub fn operated(t: &mut TextBuf, beg: usize, end: Option<MarkerId>) -> Result {
 
 /// `[` and `]` for what's at `beg..end`.
 pub fn covered(t: &mut TextBuf, beg: usize, end: usize) -> Result {
-    let beg = beg.min(t.len());
+    // An edit that changed how long a case is can leave a byte count inside a character.
+    let mut beg = beg.min(t.len());
+    while !t.is_boundary(beg) {
+        beg -= 1;
+    }
     let last = crate::text::prev_stop(t, end.min(t.len())).unwrap_or(beg);
     t.set_mark('[', beg, Gravity::Left)?;
     t.set_mark(']', last.max(beg), Gravity::Left)
