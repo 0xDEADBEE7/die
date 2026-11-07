@@ -35,6 +35,8 @@ pub(crate) struct Drawn {
     positions: Vec<Option<(WindowId, usize)>>,
     /// Each placed window's placement and text size.
     placed: Vec<(WindowPlacement, usize, usize)>,
+    /// The first row the prompt covers: the windows drawn under it don't show from there down.
+    pub(crate) covered: usize,
 }
 
 impl Drawn {
@@ -50,24 +52,28 @@ impl Drawn {
 
 impl Ctx {
     /// The position a click means on a text cell that shows none: the first to its right on the
-    /// row, as for the gutter, or else the last above it, as for the rows below the text.
+    /// row, as for the gutter, or else the nearest to its left, as for virtual text at the row's
+    /// edge, or else the last above it, as for the rows below the text.
     pub(crate) fn nearest_pos(&self, win: WindowId, row: usize, col: usize) -> Option<usize> {
         let d = &self.drawn;
         let (p, cols, _) = d.placed.iter().find(|(p, ..)| p.window == win)?;
-        let cells = p.col..p.col + cols;
+        // A frame composed smaller than the window shows only part of it.
+        let cells = p.col..(p.col + cols).min(d.cols);
         let at = |r: usize, c: usize| d.positions[r * d.cols + c].filter(|(w, _)| *w == win);
         let last_of = |r| cells.clone().rev().find_map(|c| at(r, c));
         (col..cells.end)
             .find_map(|c| at(row, c))
+            .or_else(|| (cells.start..col).rev().find_map(|c| at(row, c)))
             .or_else(|| (p.row..row).rev().find_map(last_of))
             .map(|(_, pos)| pos)
     }
 
     /// What the cell at (row, col) of the last composed frame showed: its window, the part of it,
-    /// and the buffer position. None for a cell outside every window, such as the command line.
+    /// and the buffer position. None for a cell outside every window, such as the command line,
+    /// or one the prompt's list covers.
     pub fn cell_at(&self, row: usize, col: usize) -> Option<CellHit> {
         let d = &self.drawn;
-        if row >= d.rows || col >= d.cols {
+        if row >= d.rows.min(d.covered) || col >= d.cols {
             return None;
         }
         let pos = d.positions[row * d.cols + col];

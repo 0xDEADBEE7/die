@@ -410,9 +410,11 @@ impl Ctx {
                 }
             }
         }
+        let mut covered = rows;
         if let (Some(label), Some(last)) = (self.prompt_lead(), rows.checked_sub(1)) {
             let room = self.prompt_list_height().min(last);
             let row = last - room;
+            covered = row;
             self.draw_prompt_list(&mut scene, row, room, base);
             hollow.retain(|c: &Cursor| room == 0 || c.row < row);
             let label = label.as_str();
@@ -451,6 +453,7 @@ impl Ctx {
         }
         scene.cursors.extend(hollow);
         self.drawn.note(&scene, placed);
+        self.drawn.covered = covered;
         scene
     }
 
