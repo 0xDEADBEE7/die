@@ -10,7 +10,7 @@ What merged, what waits on you, what changed in die-core's API, and where the bu
 3. **The hand checks** below.
 4. **Any call below.** The ones I'd read first: 444 (project search and the finder are in core), 445 (die-vim is at 8,801, against 5,000 at the guard's start), 449 (`platform::macos`'s limit and the test that holds it), 467 (`<CR>` in a finder waits on the main thread for up to 2 s), 472 (`gf` isn't your Evil's `gf`), 478 (`*grep*` doesn't survive a restart) and 530 (a whole big file yanked doesn't survive one either).
 
-**Not yet run on this:** `ci --full`, `ci --linux` and `mutate`. The lead runs them after this entry. **`cargo xtask budget` fails on the tip this entry starts from, 30ed2f0:** die-vim is 8,801 lines against a limit of 8,800, from merges after V2 measured 8,780. `ci` will stop there until a line is cut or the limit moves. This entry changes only docs and leaves that to the lead.
+**Checkpoint, after this entry was first written:** on b85389e, `ci --linux` passed in 169 s, and exit test (f) holds. `ci --full` ran every test with the ignored ones and the old property counts, and only one failed: `the_restart_loop_finds_equal_digests_and_logs_each_time`, whose first restart took 1,021.6 ms against 1 s while the whole suite ran. Its failure poisoned `two_launches_leave_one_instance` too. Alone, it passed. Exit test (b) therefore holds with no margin under load. `mutate` caught 57 of 58 on b85389e, missing M41, a property-test catch that took 6 to 15 s when caught before; a rerun caught all 58 in 155 s, so M41 is a rare catch rather than a regression (layout.rs is unchanged). Earlier rounds of `ci --full` found four problems, all in checks or the build rather than in what you'd use: the clipboard's exception catch kept 86 lines of assembly in a `.s` file that lint and the budget don't read, now in `catch.rs` (call 560); an app test read `session.json` between a write's two renames; `a_day.rs`'s read-only test failed as root on Linux; and die-vim was one line over after the merges.
 
 ### What you can do now, on `m0/integration`
 
@@ -39,7 +39,7 @@ What merged, what waits on you, what changed in die-core's API, and where the bu
 | keys, keymaps, describe | 646 | 673 | 675, was 650 |
 | ext, dispatch, rt | 1,411 | 1,521 | 1,525, was 1,500 |
 | workspace, windows, pointer | 1,317 | 1,361 | 1,365, was 1,320 |
-| files | 634 | **780** | 780, was 650 |
+| files | 634 | **833** | 833, was 650 |
 | command line, prompt, core commands | 1,135 | 1,288 | 1,300 |
 | project (new) | none | 747 | 750, was 600 |
 | faces and scene | 936 | 939 | 950 |
@@ -52,7 +52,7 @@ What merged, what waits on you, what changed in die-core's API, and where the bu
 | checks | 699 | 715 | 720, was 700 |
 | `platform::macos` | 1,040 | 1,266 | 1,270, was 1,060 |
 | platform stub | 157 | **165** | 165, was 160 |
-| die-vim | 5,789 | **8,801** | 8,810, was 5,790 |
+| die-vim | 5,789 | **8,876** | 8,876, was 5,790 |
 | die | 358 | 493 | none |
 | die-dev | 181 | 189 | none |
 | product code | 20,426 | 25,549 | none |
@@ -119,6 +119,8 @@ These stand with the entry below's list, which no one has worked through.
 **W2, prompts (K11, K16).** Fixed: Cmd-V, `C-r` and `C-y` on prompts, Cmd-Q with a prompt open, `*messages*` opening at its start, a scroll over the list, `describe-command` reordering the palette, find-file starting at `/` from Finder. `\x \f \] \hk \hc` have end-to-end tests. API: `Ctx::set_prompt_register`, `registers::for_prompt`, and super keys go to keymaps first. Open: `C-r =`, Cmd-V in the real app, and no real surface overrides `Surface::handles`, for the terminal to fix.
 
 **W3, hardening review (K15, R6).** Fixed: `3 C-u j` moved 12 (major), and the rest of `C-u`'s arithmetic against Evil in 12 cases. A cursor scrolled off a wrapped line lost its screen column. A frame that failed to draw waited for the next event (major by reading, not reproduced), and a launch in front could miss the keyboard (plausible, not reproduced). R6's latency code and the handover found nothing. API: `grammar::CountWas`, `window::sleep_or_retry`, `RETRY_DRAW`, `Shell::take_focus_when_active`. Open: `C-u -` isn't done and has no row. A restart in front can steal focus back if you Cmd-Tab away in that half second. Call 335 is out of date: a drag over the gutter moves the head.
+
+**X1, saving elsewhere, after the run.** No review. `:w PATH` and `:w! PATH` follow Evil: a buffer with no file becomes that file, one with a file writes a copy and keeps its own. `:sav[eas]`, `:wq PATH`, `:x PATH`, `:up PATH`. `:f`, `:file` and `C-g` show Evil's file info. `:ls`, `:buffers` and `:files` list buffers in `*messages*`. 4 oracle cases and 5 harness tests. API: `Ctx::save_to`, `Ctx::messages_buffer`. Open: `:d :y :m :t :co` with ranges (80 to 100 lines). `:w >> file` and `:w !cmd` refuse. `:up PATH` and `:x PATH` write with nothing unsaved, where Evil doesn't. `~/` in `:w` untested. Nothing seen in a real window.
 
 ### Calls (veto any)
 
@@ -294,6 +296,20 @@ These stand with the entry below's list, which no one has worked through.
 557. `d C-u` doesn't copy Evil writing empty text over the registers and clipboard. Row "an operator C-u cuts short".
 558. The drawing retry is 50 ms and stops while occluded or zero-sized. A GPU that keeps failing wakes the loop 20 times a second.
 559. `take_focus_when_active` stays armed after an `open -g` launch and fires on the first activation, however late. It takes nothing from another app.
+
+**After the run**
+
+560. The clipboard's Objective-C `@try` is hand-written aarch64 assembly inside `catch.rs`, as clang writes it, since objc2's own needs a C compiler (D16). platform::macos's limit went from 1,180 to 1,270 to count it.
+561. die-vim's limit went from 8,800 to 8,810 for the merges after V2, then to 8,876 for X1. files went from 780 to 833 for X1.
+562. `C-g` shows file info as Vim's does. In your Evil it's `keyboard-quit`, which the oracle can't run.
+563. `:w own.txt` naming the buffer's own file by a relative path is just `:w`. Evil refuses, since it compares the raw path.
+564. An existing file is refused without `!` ("PATH exists; ! overwrites it"), where Evil asks y/n. That includes `:saveas` with no name on a buffer with a file, which DIE treats as `:w`.
+565. A missing directory in `:w PATH` is an error and changes nothing, where Evil offers to make it.
+566. `:saveas` or `:w PATH` onto a file another buffer visits refuses, and so does any `:w PATH` from a file that opened read-only.
+567. `*grep*` and `*messages*` write a copy with `:w PATH` and keep their names.
+568. `:saveas` with no name on a buffer with no file is an error, where Evil prompts for one.
+569. `:ls` shows `*messages*` in the window, as Evil's buffer menu takes it. The format is DIE's: marks, the name padded to 20, then the path.
+570. The restart loop's 1 s limit stays, though one restart took 1,021.6 ms under the full suite's load.
 
 ## 2026-11-07: 28 packages on `m0/integration`, and none of them on `main`
 
