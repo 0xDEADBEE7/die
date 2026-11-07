@@ -13,6 +13,7 @@
 //! that named none, and `a`-`z` what was yanked into them. Naming `A`-`Z` appends to
 //! `a`-`z`, and then `"` holds only the new text (S5 row 9).
 
+use crate::Vim;
 use crate::repeat::keys_of;
 use die_core::{Ctx, Error, Key, RegKind, Register, Result, key_notation, parse_keys};
 
@@ -168,7 +169,13 @@ pub fn read(ctx: &mut Ctx, name: Option<char>) -> Result<Register> {
         }
         // `1` is read from `"`, which is the ring's head even if only `"` was ever set.
         '1' => ctx.register('"'),
-        ':' | '.' | '%' | '#' | '/' | '=' => None,
+        ':' | '/' | '%' => {
+            return Ok(Register {
+                kind: RegKind::Char,
+                text: computed(ctx, c)?,
+            });
+        }
+        '#' | '=' => None,
         '+' => {
             from_clipboard = ctx.clipboard();
             from_clipboard.as_ref()
@@ -178,6 +185,27 @@ pub fn read(ctx: &mut Ctx, name: Option<char>) -> Result<Register> {
     held.cloned()
         .map(plain)
         .ok_or_else(|| Error::Msg(format!("Register {c} is empty")))
+}
+
+/// The registers your Evil works out when they're read: the last ex line, the last search, and
+/// the file's name.
+fn computed(ctx: &mut Ctx, c: char) -> Result<String> {
+    let none = |m: &str| Error::Msg(m.into());
+    match c {
+        ':' => ctx
+            .prompt_history("ex")
+            .last()
+            .cloned()
+            .ok_or_else(|| none("No previous command line")),
+        '/' => ctx
+            .with_ext(|v: &mut Vim, _| v.search.as_ref().map(|l| l.source().to_owned()))?
+            .ok_or_else(|| none("No previous regular expression")),
+        _ => ctx
+            .focused_buffer()
+            .and_then(|b| ctx.file(b))
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .ok_or_else(|| none("No file name")),
+    }
 }
 
 /// A recording as text: what its keys would type, as your Evil holds it. Keys with no
@@ -230,7 +258,6 @@ pub fn macro_keys(ctx: &Ctx, name: char) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Vim;
     use die_core::FakeClipboard;
 
     fn ctx() -> Ctx {
