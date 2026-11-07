@@ -20,6 +20,7 @@ use crate::operators::{self, How, Span};
 use crate::registers;
 use crate::repeat::{self, Change, Extent};
 use crate::text::{Chars, last_line, line_end, next_stop, pos_at_col, prev_stop, rest_pos};
+use die_core::session::{Value, json};
 use die_core::{Args, BufferId, Ctx, Error, Gravity, MarkerId, Origin, RegKind, Register, Result};
 use die_core::{Selection, Shape, State, TextBuf, WindowId, key_notation};
 use std::ops::Range;
@@ -53,6 +54,62 @@ impl Last {
             shape: sel.shape,
             goal: sel.goal,
         })
+    }
+
+    /// For the session. None if its markers went with the text.
+    pub fn saved(&self, t: &TextBuf) -> Option<Value> {
+        Some(json!({
+            "anchor": t.marker(self.anchor)?,
+            "head": t.marker(self.head)?,
+            "shape": shape_name(self.shape),
+            "goal": self.goal,
+        }))
+    }
+
+    /// From the session. The file may have changed while DIE was down: each end goes where it fits.
+    pub fn restored(t: &mut TextBuf, v: &Value) -> Result<Option<Last>> {
+        let (Some(anchor), Some(head), Some(shape)) = (
+            v["anchor"].as_u64(),
+            v["head"].as_u64(),
+            v["shape"].as_str().and_then(shape_named),
+        ) else {
+            return Ok(None);
+        };
+        let fit = |pos: u64| {
+            let mut p = usize::try_from(pos).unwrap_or(usize::MAX).min(t.len());
+            while !t.is_boundary(p) {
+                p -= 1;
+            }
+            p
+        };
+        let (anchor, head) = (fit(anchor), fit(head));
+        let goal = v["goal"].as_u64().and_then(|g| usize::try_from(g).ok());
+        let sel = Selection {
+            anchor,
+            head,
+            shape,
+            goal,
+        };
+        Last::of(t, sel).map(Some)
+    }
+}
+
+/// A shape's name in the session.
+fn shape_name(s: Shape) -> &'static str {
+    match s {
+        Shape::Char => "char",
+        Shape::Line => "line",
+        Shape::Block => "block",
+    }
+}
+
+/// The shape of that name.
+fn shape_named(s: &str) -> Option<Shape> {
+    match s {
+        "char" => Some(Shape::Char),
+        "line" => Some(Shape::Line),
+        "block" => Some(Shape::Block),
+        _ => None,
     }
 }
 
