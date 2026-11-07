@@ -4,6 +4,9 @@
 //! after an expansion and another press brings in the word that follows the last one found.
 //!
 //! The case of what goes in follows Emacs's `dabbrev--substitute-expansion` and `replace-match`.
+//!
+//! `C-x C-n` and `C-x C-p`: Emacs's `hippie-expand`, as your Evil calls it. The line up to the
+//! cursor, from its first non-blank, expands to a whole line in the same way.
 
 use crate::Vim;
 use crate::grammar::buffer_window;
@@ -237,7 +240,8 @@ impl Dabbrev {
         let (mut word, mut record) = (None, false);
         let abbrev;
         let direction;
-        if arg.is_none() && again && self.end.is_some() {
+        let carries_on = self.end == Some(p) && text.is_char_boundary(p - self.inserted.min(p));
+        if arg.is_none() && again && carries_on {
             abbrev = self.abbrev.clone();
             old = Some(self.inserted);
             direction = self.direction;
@@ -358,7 +362,7 @@ impl Dabbrev {
                 };
             }
         }
-        let kept = spaced(&found, if abbrev == " " { 0 } else { abbrev.len() });
+        let kept = spaced(&found, if abbrev == " " { 0 } else { chars });
         let new = if fold {
             like(over, &kept)
         } else {
@@ -368,9 +372,10 @@ impl Dabbrev {
     }
 }
 
-/// Runs of whitespace after `from` become one space, as `dabbrev-eliminate-newlines` has it.
+/// Runs of whitespace after `from` characters become one space, as `dabbrev-eliminate-newlines`
+/// has it.
 fn spaced(s: &str, from: usize) -> String {
-    let from = from.min(s.len());
+    let from = s.char_indices().nth(from).map_or(s.len(), |(i, _)| i);
     let mut out = s[..from].to_owned();
     let mut gap = false;
     for c in s[from..].chars() {
@@ -449,6 +454,243 @@ fn other_buffers(ctx: &Ctx, b: BufferId) -> Vec<BufferId> {
     }
     out.reverse();
     out
+}
+
+/// What Emacs's `hippie-expand` keeps between presses of `C-x C-n` or `C-x C-p`, which run its
+/// `try-expand-line` and then `try-expand-line-all-buffers`.
+#[derive(Default)]
+pub struct Hippie {
+    /// The command count at the last press, and which key.
+    last: Option<(u64, bool)>,
+    /// A press has found something, and the next carries on from it.
+    going: bool,
+    /// What's being completed, from the line's first non-blank to the cursor, as it was typed.
+    typed: String,
+    beg: usize,
+    end: usize,
+    /// The lines already put in.
+    tried: Vec<String>,
+    /// Where the search goes on from, in this buffer or `source`.
+    from: usize,
+    /// It's still looking back in this buffer.
+    back: bool,
+    source: Option<BufferId>,
+    /// The other buffers still to search, the next last. None until it gets to them.
+    others: Option<Vec<BufferId>>,
+}
+
+/// The line starting at `start`, if it completes `pat`: where its text starts and ends, past any
+/// whitespace either side. It has to go on past `pat`.
+fn line_match(s: &str, start: usize, pat: &str) -> Option<(usize, usize)> {
+    let line = s[start..].split('\n').next().unwrap_or("");
+    let blank = |c: char| matches!(c, ' ' | '\t');
+    let text = start + line.len() - line.trim_start_matches(blank).len();
+    let end = start + line.trim_end_matches(blank).len();
+    (prefix_end(s, text, pat)? < end).then_some((text, end))
+}
+
+/// The nearest line back from `from`, or on from it, that completes `pat` and isn't in `tried`,
+/// and where to go on from. A line counts only if it starts on the right side of `from`.
+fn line_search(
+    s: &str,
+    from: usize,
+    pat: &str,
+    reverse: bool,
+    tried: &dyn Fn(&str) -> bool,
+) -> Option<(String, usize)> {
+    if !s.is_char_boundary(from) {
+        return None;
+    }
+    let mut at = if reverse {
+        s[..from].rfind('\n')
+    } else if from == 0 || s.as_bytes().get(from - 1) == Some(&b'\n') {
+        Some(from)
+    } else {
+        s[from..].find('\n').map(|i| from + i + 1)
+    };
+    loop {
+        let line = if reverse {
+            let nl = at?;
+            let start = s[..nl].rfind('\n').map_or(0, |i| i + 1);
+            at = s[..nl].rfind('\n');
+            start
+        } else {
+            let start = at.filter(|&i| i < s.len())?;
+            at = s[start..].find('\n').map(|i| start + i + 1);
+            start
+        };
+        if let Some((text, end)) = line_match(s, line, pat)
+            && !tried(&s[text..end])
+        {
+            return Some((s[text..end].to_owned(), if reverse { line } else { end }));
+        }
+    }
+}
+
+fn line_beg(s: &str, p: usize) -> usize {
+    let start = s[..p].rfind('\n').map_or(0, |i| i + 1);
+    let text = start + s[start..p].len() - s[start..p].trim_start_matches([' ', '\t']).len();
+    if text < p { text } else { p }
+}
+
+fn word_cap(s: &str, first_only: bool) -> String {
+    let mut out = String::new();
+    let (mut seen, mut in_word) = (false, false);
+    for c in s.chars() {
+        let word = class(c, false) == Class::Word;
+        if word && !in_word && !(first_only && seen) {
+            out.extend(c.to_uppercase());
+            seen = true;
+        } else {
+            out.extend(c.to_lowercase());
+        }
+        in_word = word;
+    }
+    out
+}
+
+/// Emacs's `he-transfer-case`: `to` in the case of `from`, unless it has a case of its own.
+fn transfer_case(from: &str, to: &str) -> String {
+    let (down, up) = (|x: &str| x.to_lowercase(), |x: &str| x.to_uppercase());
+    let first = |x: &str| word_cap(x, true);
+    let caps = |x: &str| word_cap(x, false);
+    let same_start = to.chars().take(from.chars().count()).eq(from.chars());
+    let ordinary = to == down(to) || to == up(to) || to == first(to) || to == caps(to);
+    if same_start || !ordinary {
+        to.to_owned()
+    } else if from == down(from) {
+        down(to)
+    } else if from == up(from) {
+        up(to)
+    } else if from == first(from) {
+        first(to)
+    } else if from == caps(from) {
+        caps(to)
+    } else {
+        to.to_owned()
+    }
+}
+
+impl Hippie {
+    fn find(&mut self, ctx: &Ctx, b: BufferId, text: &str) -> Option<String> {
+        if self.typed.is_empty() {
+            return None;
+        }
+        let (typed, tried) = (self.typed.clone(), self.tried.clone());
+        let is_tried = |x: &str| tried.iter().any(|t| *t == transfer_case(&typed, x));
+        if self.others.is_none() {
+            if self.back {
+                if let Some((x, at)) = line_search(text, self.from, &typed, true, &is_tried) {
+                    self.from = at;
+                    return Some(x);
+                }
+                (self.back, self.from) = (false, self.end);
+            }
+            if let Some((x, at)) = line_search(text, self.from, &typed, false, &is_tried) {
+                self.from = at;
+                return Some(x);
+            }
+            self.others = Some(other_buffers(ctx, b));
+        }
+        loop {
+            let o = match self.source {
+                Some(o) => o,
+                None => {
+                    let o = self.others.as_mut()?.pop()?;
+                    (self.source, self.from) = (Some(o), 0);
+                    o
+                }
+            };
+            if let Ok(t) = ctx.text(o) {
+                let s = t.rope().to_string();
+                if let Some((x, at)) = line_search(&s, self.from, &typed, false, &is_tried) {
+                    self.from = at;
+                    return Some(x);
+                }
+            }
+            self.source = None;
+        }
+    }
+
+    fn press(
+        &mut self,
+        ctx: &mut Ctx,
+        a: &Args,
+        s: &mut Session,
+        again: bool,
+        undo: bool,
+    ) -> Result {
+        let (b, w) = buffer_window(ctx, a)?;
+        let t = ctx.text(b)?;
+        let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
+        let text = t.rope().to_string();
+        let carries_on = again && self.going && self.end == p && text.is_char_boundary(self.beg);
+        if undo {
+            if carries_on {
+                self.going = false;
+                let typed = self.typed.clone();
+                insert::swap(ctx, a, s, self.beg, &typed)?;
+            }
+            return Ok(());
+        }
+        if !carries_on {
+            let beg = line_beg(&text, p);
+            *self = Hippie {
+                last: self.last,
+                typed: text[beg..p].to_owned(),
+                beg,
+                end: p,
+                from: beg,
+                back: true,
+                ..Hippie::default()
+            };
+        }
+        let Some(found) = self.find(ctx, b, &text) else {
+            // Emacs only says so, and rings the bell. The next press starts over.
+            self.going = false;
+            if carries_on {
+                let typed = self.typed.clone();
+                insert::swap(ctx, a, s, self.beg, &typed)?;
+            }
+            return Ok(());
+        };
+        let new = transfer_case(&self.typed, &found);
+        self.tried.push(new.clone());
+        let before = text.len();
+        insert::swap(ctx, a, s, self.beg, &new)?;
+        // Emacs puts the line in first, and then takes away what was there.
+        s.restart_insertion(self.beg + new.len());
+        let by = ctx.text(b)?.len() as isize - before as isize;
+        if !self.back && self.source.is_none() {
+            self.from = self.from.saturating_add_signed(by);
+        }
+        (self.going, self.end) = (true, self.beg + new.len());
+        Ok(())
+    }
+}
+
+/// `C-x C-n` and `C-x C-p`: Evil's `evil-complete-next-line` and `evil-complete-previous-line`,
+/// which are one function. A bare `C-u` takes back what they put in.
+pub fn line(ctx: &mut Ctx, a: &Args, next: bool) -> Result {
+    let (b, _) = buffer_window(ctx, a)?;
+    let undo = a.count.is_some()
+        && ctx.with_ext(|v: &mut Vim, _| v.count_was == crate::grammar::CountWas::Universal)?;
+    let (mut h, s, seq) = ctx.with_ext(|v: &mut Vim, _| {
+        (
+            std::mem::take(&mut v.hippie),
+            v.inserts.remove(&b),
+            v.commands,
+        )
+    })?;
+    let mut s = s.unwrap_or_else(Session::bare);
+    let again = h.last == Some((seq.wrapping_sub(1), next));
+    h.last = Some((seq, next));
+    let r = h.press(ctx, a, &mut s, again, undo);
+    ctx.with_ext(|v: &mut Vim, _| {
+        v.hippie = h;
+        v.inserts.insert(b, s);
+    })?;
+    r
 }
 
 fn with_state(

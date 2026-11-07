@@ -1,10 +1,11 @@
 //! The control keys of insert and replace state that aren't plain edits, as your Evil's
 //! `evil-insert-state-map` has them: `C-o`, `C-r`, `C-a`, `C-@`, `C-v`, `C-q`, `C-y`, `C-e`, and
-//! the special case of `C-d`. `C-p` and `C-n` are in `complete.rs`.
+//! the special case of `C-d`. `C-p`, `C-n`, `C-x C-n` and `C-x C-p` are in `complete.rs`.
 //!
 //! **`C-o`** ends the insert step: the session's count is dropped, its other lines get what
-//! was typed, and `.` keeps its keys so far. [`after_command`] goes back when the next
-//! command is over, one that didn't leave an operator, a count or fed keys waiting.
+//! was typed, and `.` keeps its keys so far. [`command_ended`] goes back when the next
+//! command is over, whoever's it is, one that didn't leave an operator, a count or its own fed
+//! keys waiting. [`after_command`] tells it what only die-vim's own commands can say.
 
 use crate::grammar::{Goal, buffer_window};
 use crate::insert::{self, Edit, Session};
@@ -12,16 +13,25 @@ use crate::registers;
 use crate::repeat::{self, Change};
 use crate::text::{line_end, next_stop};
 use crate::{Vim, end_session, insert_edit, visual};
-use die_core::{Args, BufferId, Ctx, Error, Key, KeyEvent, Prefix, Result, State, key_notation};
+use die_core::{
+    Args, BufferId, Ctx, Error, Key, KeyEvent, Prefix, Result, State, WindowId, key_notation,
+};
 
 /// A `C-o` waiting for its command.
 pub struct Once {
     /// The state to go back to.
     back: State,
+    window: WindowId,
     /// The line whose end the cursor was past, if it was.
     eol_line: Option<usize>,
     /// The next command to finish isn't `C-o` itself.
     armed: bool,
+    /// Keys fed and not yet run behind the `C-o`: the rest of the macro it's in.
+    fed: usize,
+    /// The last command is one Evil's would have signalled before it ran.
+    never_ran: bool,
+    /// The last command was `0` or `^`, which stay where they go.
+    to_start: bool,
 }
 
 /// The last `C-y` or `C-e`.
@@ -59,8 +69,12 @@ pub fn execute_normal(ctx: &mut Ctx, a: &Args) -> Result {
     // At the end of a `.` or a macro, Evil counts that as the command it waited for.
     let once = Once {
         back,
+        window: w,
         eol_line,
         armed: repeat::replay_ending(ctx)?,
+        fed: repeat::fed_left(ctx)?,
+        never_ran: false,
+        to_start: false,
     };
     ctx.with_ext(|v: &mut Vim, _| v.once.insert(b, once))?;
     r
@@ -79,36 +93,58 @@ pub fn motion(ctx: &mut Ctx, a: &Args, run: impl FnOnce(&mut Ctx) -> Result) -> 
     Ok(())
 }
 
-/// After every command: if it's the one `C-o` was waiting for, go back.
+/// After each of die-vim's commands: what [`command_ended`] can't see for itself.
 pub fn after_command(ctx: &mut Ctx, a: &Args, r: &Result) {
-    // A failure here is one the command's own result already covers.
-    let _ = back_from_once(ctx, a, r);
-}
-
-fn back_from_once(ctx: &mut Ctx, a: &Args, r: &Result) -> Result {
-    let (b, w) = buffer_window(ctx, a)?;
-    let state = ctx.state_of(b);
-    let armed = ctx.with_ext(|v: &mut Vim, _| {
-        v.once
-            .get_mut(&b)
-            .map(|o| std::mem::replace(&mut o.armed, true))
-    })?;
-    if armed != Some(true) {
-        return Ok(());
-    }
+    let Ok((b, _)) = buffer_window(ctx, a) else {
+        return;
+    };
     // Evil's `h` and `l` signal as if they'd never run, so the wait goes on.
     let never_ran =
         matches!(r, Err(Error::Msg(m)) if m == "End of line" || m == "Beginning of line");
+    let to_start = matches!(a.char(), Some('0' | '^'));
+    // A failure here is one the command's own result already covers.
+    let _ = ctx.with_ext(|v: &mut Vim, _| {
+        if let Some(o) = v.once.get_mut(&b) {
+            (o.never_ran, o.to_start) = (never_ran, to_start);
+        }
+    });
+}
+
+/// After every command, die-vim's or not: if it's the one a `C-o` was waiting for, go back to
+/// that `C-o`'s buffer, wherever the command went.
+pub fn command_ended(ctx: &mut Ctx) -> Result {
+    let waiting: Vec<BufferId> = ctx.with_ext(|v: &mut Vim, _| {
+        v.commands += 1;
+        v.once.keys().copied().collect()
+    })?;
+    for b in waiting {
+        // A failure here has no command to answer for it. A buffer it killed has nothing to do.
+        let _ = back_from_once(ctx, b);
+    }
+    Ok(())
+}
+
+fn back_from_once(ctx: &mut Ctx, b: BufferId) -> Result {
+    let state = ctx.state_of(b);
+    let seen = ctx.with_ext(|v: &mut Vim, _| {
+        v.once
+            .get_mut(&b)
+            .map(|o| (std::mem::replace(&mut o.armed, true), o.never_ran, o.fed))
+    })?;
+    let Some((true, never_ran, fed)) = seen else {
+        return Ok(());
+    };
     let waiting = matches!(state, State::OperatorPending | State::CommandLine)
         || ctx.prefix() != Prefix::default()
         || never_ran
-        || repeat::feeding(ctx)?;
+        || repeat::fed_left(ctx)? > fed.saturating_sub(1);
     if waiting {
         return Ok(());
     }
     let Some(once) = ctx.with_ext(|v: &mut Vim, _| v.once.remove(&b))? else {
         return Ok(());
     };
+    let w = once.window;
     if matches!(state, State::Insert | State::Replace) {
         // It started a session of its own. Evil records nothing typed after a `C-o`.
         let mut s = session(ctx, b)?;
@@ -120,17 +156,29 @@ fn back_from_once(ctx: &mut Ctx, a: &Args, r: &Result) -> Result {
         return put_session(ctx, b, s);
     }
     if state == State::Visual {
-        visual::escape(ctx, a)?;
+        let a = Args {
+            window: Some(w),
+            buffer: Some(b),
+            ..Default::default()
+        };
+        visual::escape(ctx, &a)?;
     }
     let t = ctx.text(b)?;
-    let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
+    let Some(sel) = t.selection(w) else {
+        // The command took this window to another buffer. This one goes back all the same.
+        ctx.set_state_of(b, once.back);
+        return Ok(());
+    };
     let (p, line) = (sel.head, t.line_of(sel.head));
     let eol = line_end(t, line);
     // Past the end again if it was before, or if `$` took it there: Evil's normal state
-    // hasn't stepped back yet when it goes back.
-    let was_past = once.eol_line == Some(line)
-        && next_stop(t, p) == Some(eol)
-        && !matches!(a.char(), Some('0' | '^'));
+    // hasn't stepped back yet when it goes back. The line it was on may be gone, deleted from
+    // the end of the text, and then Evil's mark of that place is on the last line that's left.
+    let last = t.line_of(t.len().saturating_sub(1));
+    let was_on = once
+        .eol_line
+        .is_some_and(|l| l == line || (l > line && line == last));
+    let was_past = was_on && next_stop(t, p) == Some(eol) && !once.to_start;
     let pos = if Goal::decode(sel.goal) == Some(Goal::Eol) || was_past {
         eol
     } else {
@@ -161,6 +209,16 @@ fn takes(ctx: &Ctx, b: BufferId, n: usize) -> usize {
     }
 }
 
+/// `C-a`: what was last inserted. A session's count or its other lines put that in again as it
+/// is by then, which takes in what the session has added to it.
+pub fn paste_last(ctx: &mut Ctx, a: &Args) -> Result {
+    let (b, _) = buffer_window(ctx, a)?;
+    paste(ctx, a, '.')?;
+    let mut s = session(ctx, b)?;
+    s.mark_pasted();
+    put_session(ctx, b, s)
+}
+
 /// `C-r` and `C-a`: a register's text, whole lines or not, with no count.
 pub fn paste(ctx: &mut Ctx, a: &Args, name: char) -> Result {
     let (b, _) = buffer_window(ctx, a)?;
@@ -183,7 +241,7 @@ pub fn paste_register(ctx: &mut Ctx, a: &Args) -> Result {
 
 /// `C-@`: only if there was something to paste does it stop.
 pub fn paste_and_stop(ctx: &mut Ctx, a: &Args) -> Result {
-    paste(ctx, a, '.')?;
+    paste_last(ctx, a)?;
     let esc = Args {
         keys: vec![KeyEvent::press(Key::Esc)],
         ..a.clone()

@@ -33,7 +33,10 @@ path = "crates/die-vim"
 # insert state's control keys, with Emacs's dabbrev behind C-p and C-n. 7,800 until W1: a click
 # ends a new line's claim on a blank line. 7,850 until U8: what a restart keeps of `.`, `n`, `;` and `gv`. 8,050 until V1: `:wa`, `:qa`, `:wqa`, `:xa` and `:x`.
 # 8,100 until U3: `gf`, reading a file name at the cursor as ffap does.
-limit = 8150
+# 8,150 until V3: walking text by chunks, `r` over a whole file.
+# 8,200 until U6's review: C-x C-n, C-x C-p, S-Left and S-Right, the last of what your Evil's map
+# binds there.
+limit = 8500
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -65,7 +68,8 @@ dev = true
 crate = "die-core"
 name = "text and undo"
 # 1,265 until U7, whose named positions are about 20 lines. 1,285 until U3's grep shared smartcase.
-limit = 1300
+# 1,300 until V3: thousands of changes go in one pass, undo too, and a line of megabytes is searched near what's asked.
+limit = 1420
 files = ["text.rs", "undo.rs", "text/", "undo/"]
 
 [[module]]
@@ -77,14 +81,17 @@ files = ["layout.rs", "layout/"]
 [[module]]
 crate = "die-core"
 name = "keys, keymaps, describe"
-limit = 650
+# 650 until V3: a macro calling macros doesn't move what's waiting, and registers move uncopied.
+# 660 until U6's review: `on_command_ended`, so a C-o can end on a command that isn't die-vim's.
+limit = 675
 files = ["keys.rs", "keymap.rs", "describe.rs", "fed.rs"]
 
 [[module]]
 crate = "die-core"
 name = "ext, dispatch, rt"
 # 1,500 until V1's landing found it at 1,502 from another package, and U3 adds what `*grep*` holds.
-limit = 1510
+# 1,510 until V3: a typed C-g ends a macro.
+limit = 1525
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]

@@ -224,9 +224,9 @@ pub fn feed_more(ctx: &mut Ctx, keys: &str) -> Result {
     Ok(())
 }
 
-/// Whether keys that were fed are still to run.
-pub fn feeding(ctx: &mut Ctx) -> Result<bool> {
-    Ok(recorder(ctx)?.borrow().fed > 0)
+/// How many keys that were fed are still to run.
+pub fn fed_left(ctx: &mut Ctx) -> Result<usize> {
+    Ok(recorder(ctx)?.borrow().fed)
 }
 
 /// Whether this key was the last that a macro or `.` fed.

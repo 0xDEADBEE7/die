@@ -644,7 +644,7 @@ fn empty_line(c: &Chars) -> bool {
     c.ch() == Some('\n') && c.at_line_start()
 }
 
-fn word_begin(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
+pub(crate) fn word_begin(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
     let mut c = Chars::at(t, p);
     let mut a = c.ch()?;
     let in_word = matches!(class(a, big), Class::Word | Class::Punct);

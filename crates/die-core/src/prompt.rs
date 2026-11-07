@@ -622,6 +622,7 @@ impl Ctx {
             keyed,
             f: Box::new(move |ctx| f(ctx, answer)),
         });
+        self.command_ended();
     }
 
     pub(crate) fn prompt_key(&mut self, ev: KeyEvent) {

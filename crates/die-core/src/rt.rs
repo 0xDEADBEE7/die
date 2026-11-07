@@ -183,6 +183,7 @@ pub(crate) enum SubKind {
     Job { id: u64, f: JobDone },
     Keys(KeysFn),
     Dropped(TimerFn),
+    Ended(TimerFn),
 }
 
 pub(crate) struct SubEntry {
@@ -503,6 +504,23 @@ impl Ctx {
         self.queue.extend(due.into_iter().map(|d| d.1));
     }
 
+    /// A typed `C-g` ends what was fed, as Emacs's quit ends a macro, and goes no further. A host
+    /// reads its events between [`Ctx::run_ready`]s, so a macro that won't end can be stopped.
+    pub(crate) fn quit_fed(&mut self) {
+        if self.fed.is_empty() {
+            return;
+        }
+        let is_quit = |i: &Input| match i {
+            Input::Key(k) => key_notation(std::slice::from_ref(k)) == "<C-g>",
+            _ => false,
+        };
+        if let Some(i) = self.typed.iter().position(is_quit) {
+            self.typed.remove(i);
+            self.drop_fed();
+            self.messages.push("Quit".into());
+        }
+    }
+
     /// One turn of the loop: queued calls first (C3), then one key (fed keys before typed ones).
     /// False once what was ready has run. It never waits, so a host can call it until it returns
     /// false, draw, read its events, and ask [`Ctx::next_timer`] how long to sleep. Timers get no
@@ -537,6 +555,7 @@ impl Ctx {
             return true;
         }
         self.timers_ran = false;
+        self.quit_fed();
         let fed = self
             .fed
             .pop_front()
