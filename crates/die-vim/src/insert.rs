@@ -5,12 +5,16 @@
 
 use crate::grammar::{buffer_window, forget_goal};
 use crate::motions::{row_start, word_back};
-use crate::repeat::Change;
+use crate::operators::SHIFT_WIDTH;
+use crate::repeat::{Change, keys_of};
 use crate::text::{
     Chars, blank_line, indent_end, indent_stops, indentation, line_end, next_stop, pos_at_col,
     prev_stop, rest_pos,
 };
-use die_core::{Args, Ctx, Error, Origin, Result, Selection, State, TextBuf, WindowId};
+use die_core::{
+    Args, BufferId, Ctx, Error, Origin, RegKind, Register, Result, Selection, State, TextBuf,
+    WindowId,
+};
 
 /// The most typed text a count may replay at once, K4's budget for one line. K4 took
 /// away the layout memory this guarded, so it can rise, and it stands until it does.
@@ -62,6 +66,21 @@ pub enum Edit {
     Restore,
     /// `<C-w>` in replace state: `<BS>` back to the start of a word.
     RestoreWord,
+    /// `<Del>`
+    Delete,
+    /// `<C-t>` (right) and `<C-d>`: the line moves a shift, and the cursor with it.
+    Shift {
+        right: bool,
+    },
+    /// `0<C-d>`: the `0` goes, and so does the line's indentation.
+    ZeroIndent,
+    /// `<C-y>` and `<C-e>`: one character from the nearest line above or below that isn't blank.
+    Copy {
+        above: bool,
+    },
+    /// Text put in as it is, with no meaning in its characters, that takes this many
+    /// characters after it from the line. `<C-r>`, `<C-a>` and `<C-v>`.
+    Literal(String, usize),
 }
 
 /// Where on each line a session from visual state goes in.
@@ -97,6 +116,9 @@ pub struct Session {
     pub rows: Option<Rows>,
     /// In replace state, what each key took: `<BS>` from just past it puts it back.
     restore: Vec<Taken>,
+    /// What register `.` will hold: the range the last run of changes made, as Evil's
+    /// `evil-track-last-insertion` keeps it. A change that doesn't carry on from it starts anew.
+    insertion: Option<(usize, usize)>,
 }
 
 /// What a key in replace state wrote over: the bytes it now holds, and what they were.
@@ -117,6 +139,16 @@ impl Session {
             repeat: None,
             rows: None,
             restore: vec![],
+            insertion: None,
+        }
+    }
+
+    /// Bytes from `beg` that were `old` long are now up to `end`.
+    fn note(&mut self, beg: usize, old: usize, end: usize) {
+        let replacing = self.entry == Entry::Replace;
+        match &mut self.insertion {
+            Some((b, e)) if *b <= beg && (beg + old == *e || (replacing && beg == *e)) => *e = end,
+            ins => *ins = Some((beg, end)),
         }
     }
 }
@@ -171,11 +203,23 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
     })
 }
 
-/// Apply one insert-state edit and record it.
+/// Apply one insert-state edit and record it. `C-u`'s count says how many times, for the edits
+/// Emacs's commands take one for. As in your Evil, a count on the session or `.` doesn't repeat it.
 pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
+    let once = matches!(
+        e,
+        Edit::DeleteWord | Edit::Tab | Edit::Restore | Edit::RestoreWord | Edit::ZeroIndent
+    );
+    let n = if once { 1 } else { a.count.unwrap_or(1) };
+    if n > MAX_REPLAY {
+        return Err(Error::Msg("Count too large".into()));
+    }
+    if n == 0 {
+        return Ok(());
+    }
     match &e {
         Edit::Restore => restore(t, w, s)?,
         Edit::RestoreWord => {
@@ -184,9 +228,14 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
                 restore(t, w, s)?;
             }
         }
+        Edit::Literal(text, take) if s.entry == Entry::Replace => {
+            for _ in 0..n {
+                literal_over(t, w, s, text, *take)?;
+            }
+        }
         _ if s.entry == Entry::Replace => {
             let (old, len) = (over_text(t, p, &e), t.len());
-            apply(t, w, &e)?;
+            tracked(t, w, s, &e)?;
             // Your Evil notes what's at the cursor before every command, so going over a place
             // again, or just past it, forgets what the key before took there.
             s.restore.retain(|r| r.at != p);
@@ -195,8 +244,17 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
                 let end = t.cursor(w).unwrap_or(p);
                 s.restore.push(Taken { at: p, end, old });
             }
+            for _ in 1..n {
+                let (from, len) = (t.cursor(w).unwrap_or(p), t.len());
+                tracked(t, w, s, &e)?;
+                moved_after(s, from, t.len() as isize - len as isize);
+            }
         }
-        _ => apply(t, w, &e)?,
+        _ => {
+            for _ in 0..n {
+                tracked(t, w, s, &e)?;
+            }
+        }
     }
     if e != Edit::Newline {
         s.drop_indent = false;
@@ -211,25 +269,149 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
 /// session; the first error is returned.
 pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    if let Some(s) = &s {
+        keep_insertion(ctx, b, s)?;
+    }
     let t = ctx.text_mut(b)?;
     let cursor = |t: &TextBuf| t.cursor(w).unwrap_or(0);
     let mut r = Ok(());
     if let Some(s) = s {
-        r = replay(t, w, &s);
-        r = r.and(rows(t, w, &s));
-        let line = t.line_of(cursor(t));
-        let (ls, le) = (t.line_start(line), line_end(t, line));
-        if s.drop_indent && le > ls && blank_line(t, line) {
-            let dropped = t.tx(Origin::User).delete(ls..le).commit();
-            r = r.and(dropped.map(drop));
-        }
-        t.end_undo_group();
+        r = close(t, w, &s);
     }
     r = r.and(crate::marks::insert_ended(t, cursor(t)));
     let p = stepped_back(t, w, cursor(t));
     t.set_cursor(w, p);
     ctx.set_state_of(b, State::Normal);
     r
+}
+
+/// What a session does on leaving insert state, whatever comes next: its count and its other
+/// lines, a new line's indentation if nothing was typed on it, and the end of the undo step.
+fn close(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
+    let mut r = replay(t, w, s);
+    r = r.and(rows(t, w, s));
+    let line = t.line_of(t.cursor(w).unwrap_or(0));
+    let (ls, le) = (t.line_start(line), line_end(t, line));
+    if s.drop_indent && le > ls && blank_line(t, line) {
+        let dropped = t.tx(Origin::User).delete(ls..le).commit();
+        r = r.and(dropped.map(drop));
+    }
+    t.end_undo_group();
+    r
+}
+
+/// Register `.`: what the session last put in, or nothing if it made no change.
+fn keep_insertion(ctx: &mut Ctx, b: BufferId, s: &Session) -> Result {
+    let t = ctx.text(b)?;
+    let held = s.insertion.filter(|&(_, e)| e <= t.len());
+    match held.map(|(beg, e)| t.rope().byte_slice(beg..e).to_string()) {
+        Some(text) => ctx.set_register(
+            '.',
+            Register {
+                kind: RegKind::Char,
+                text,
+            },
+        ),
+        None => ctx.clear_register('.'),
+    }
+    Ok(())
+}
+
+/// `C-o`: leave insert state for one command, without the session's count, and without
+/// stepping back unless the cursor is past the line's last character.
+pub fn pause(ctx: &mut Ctx, a: &Args, s: &mut Session) -> Result {
+    let (b, w) = buffer_window(ctx, a)?;
+    keep_insertion(ctx, b, s)?;
+    s.count = 1;
+    let t = ctx.text_mut(b)?;
+    let r = close(t, w, s);
+    (s.rows, s.drop_indent, s.insertion) = (None, false, None);
+    let p = t.cursor(w).unwrap_or(0);
+    t.set_cursor(w, rest_pos(t, p));
+    ctx.set_state_of(b, State::Normal);
+    r
+}
+
+/// Back from `C-o`: `state` again, with a new undo step, at `pos`.
+pub fn resume(ctx: &mut Ctx, b: BufferId, w: WindowId, state: State, pos: usize) -> Result {
+    let t = ctx.text_mut(b)?;
+    t.set_cursor(w, pos);
+    forget_goal(t, w);
+    // The command's own edit is a step of its own, though this is still that command.
+    t.undo_boundary();
+    t.begin_undo_group();
+    ctx.set_state_of(b, state);
+    Ok(())
+}
+
+/// What `<BS>` or `<Del>` will take with `C-u`'s count, which Emacs's commands kill. It has to
+/// reach that far, or they take nothing.
+pub fn killed(ctx: &Ctx, a: &Args, e: &Edit) -> Result<Option<Register>> {
+    let forward = match e {
+        Edit::Backspace => false,
+        Edit::Delete => true,
+        _ => return Ok(None),
+    };
+    let Some(n) = a.count else { return Ok(None) };
+    let (b, w) = buffer_window(ctx, a)?;
+    let t = ctx.text(b)?;
+    let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
+    let mut c = Chars::at(t, p);
+    for _ in 0..n.min(MAX_REPLAY + 1) {
+        if forward && (c.ch().is_none() || !c.fwd()) {
+            return Err(Error::Msg("End of buffer".into()));
+        }
+        if !forward && !c.back() {
+            return Err(Error::Msg("Beginning of buffer".into()));
+        }
+    }
+    let range = if forward { p..c.pos() } else { c.pos()..p };
+    Ok((n > 0).then(|| Register {
+        kind: RegKind::Char,
+        text: t.rope().byte_slice(range).to_string(),
+    }))
+}
+
+/// Replace `beg..` the cursor with `new`, as a completion does: that's what the session
+/// replays, one `<BS>` at a time and then the text. Replace state notes what's at the
+/// cursor, as it does before any command, for `<BS>` to put back.
+pub fn swap(ctx: &mut Ctx, a: &Args, s: &mut Session, beg: usize, new: &str) -> Result {
+    let (b, w) = buffer_window(ctx, a)?;
+    let t = ctx.text_mut(b)?;
+    let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
+    let old = t.rope().byte_slice(beg..p).to_string();
+    let here = (p < line_end(t, t.line_of(p)))
+        .then(|| Chars::at(t, p).ch())
+        .flatten();
+    let len = t.len();
+    t.tx(Origin::User).replace(beg..p, new).commit()?;
+    let end = beg + new.len();
+    t.set_cursor(w, end);
+    forget_goal(t, w);
+    s.note(beg, p - beg, end);
+    if s.entry == Entry::Replace {
+        s.restore.retain(|r| r.at != p);
+        moved_after(s, p, t.len() as isize - len as isize);
+        if let Some(after) = next_stop(t, p).filter(|_| p < t.len()) {
+            s.restore.push(Taken {
+                at: p,
+                end: after,
+                old: here.map(String::from),
+            });
+        }
+    }
+    let n = old.chars().count();
+    s.edits.extend(std::iter::repeat_n(Edit::Backspace, n));
+    s.edits.push(Edit::Text(new.to_owned()));
+    s.drop_indent = false;
+    if let Some(c) = &mut s.repeat {
+        c.keys.push_str(&"<BS>".repeat(n));
+        c.keys.push_str(&keys_of(&Register {
+            kind: RegKind::Char,
+            text: new.to_owned(),
+        }));
+    }
+    Ok(())
 }
 
 /// Where the cursor at `p` goes on leaving insert state, by Escape or by a restored session.
@@ -330,7 +512,110 @@ fn restore(t: &mut TextBuf, w: WindowId, s: &mut Session) -> Result {
         .commit()?;
     t.set_cursor(w, at);
     moved_after(s, at, t.len() as isize - len as isize);
+    // What it put back isn't an insertion, only what it took away counts.
+    s.note(at, p - at, at);
     Ok(())
+}
+
+/// [`apply`], noting the change for register `.`.
+fn tracked(t: &mut TextBuf, w: WindowId, s: &mut Session, e: &Edit) -> Result {
+    if matches!(e, Edit::Left | Edit::Right | Edit::Up | Edit::Down) {
+        return apply(t, w, e);
+    }
+    let (p, len) = (t.cursor(w).unwrap_or(0), t.len());
+    let line = t.line_of(p);
+    let start = t.line_start(line);
+    let had = indent_end(t, line) - start;
+    let r = apply(t, w, e);
+    let q = t.cursor(w).unwrap_or(0);
+    let by = t.len() as isize - len as isize;
+    if let Edit::Shift { .. } = e {
+        // New indentation goes in first, and if the old goes after it, that's the last change.
+        let now = indent_end(t, line) - start;
+        s.insertion = match had {
+            0 => Some((start, start + now)),
+            _ => Some((start + now, start + now)),
+        };
+    } else if by != 0 || q != p {
+        let beg = p.min(q);
+        s.note(beg, ((q - beg) as isize - by).max(0) as usize, q);
+    }
+    r
+}
+
+/// [`Edit::Literal`] in replace state. `<BS>` puts back what each of its characters took.
+fn literal_over(t: &mut TextBuf, w: WindowId, s: &mut Session, text: &str, take: usize) -> Result {
+    let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
+    let end = taken_end(t, p, take);
+    let old: Vec<char> = t.rope().byte_slice(p..end).to_string().chars().collect();
+    let len = t.len();
+    tracked(t, w, s, &Edit::Literal(text.to_owned(), take))?;
+    s.restore.retain(|r| r.at < p || r.at >= p + text.len());
+    moved_after(s, p, t.len() as isize - len as isize);
+    for (i, (at, c)) in text.char_indices().enumerate() {
+        s.restore.push(Taken {
+            at: p + at,
+            end: p + at + c.len_utf8(),
+            old: old.get(i).map(char::to_string),
+        });
+    }
+    Ok(())
+}
+
+/// How far `take` characters from `p` reach, stopping at the line's end.
+fn taken_end(t: &TextBuf, p: usize, take: usize) -> usize {
+    let eol = line_end(t, t.line_of(p));
+    let mut c = Chars::at(t, p);
+    for _ in 0..take {
+        if c.pos() >= eol || !c.fwd() {
+            break;
+        }
+    }
+    c.pos().min(eol)
+}
+
+/// The next `n` characters from the line above or below, from the cursor's column, as
+/// Evil's `evil-copy-chars-from-line`: lines of nothing but whitespace are passed over, and
+/// a column inside a tab gives spaces. With no line that way, the line itself.
+pub fn copied(t: &TextBuf, p: usize, above: bool, n: usize) -> String {
+    let (col, here) = (t.display_col(p), t.line_of(p));
+    let blank = |l: usize| indent_end(t, l) == line_end(t, l);
+    let mut line = match above {
+        true => here.saturating_sub(1),
+        false => (here + 1).min(t.line_count() - 1),
+    };
+    while blank(line)
+        && (if above {
+            line > 0
+        } else {
+            line + 1 < t.line_count()
+        })
+    {
+        line = if above { line - 1 } else { line + 1 };
+    }
+    let (eol, mut n) = (line_end(t, line), n);
+    let mut at = pos_at_col(t, line, col).min(eol);
+    let mut out = String::new();
+    let reached = t.display_col(at);
+    if reached > col {
+        let before = prev_stop(t, at).unwrap_or(at);
+        if t.rope().get_byte(before) == Some(b'\t') {
+            let spaces = n.min(reached - col);
+            out.push_str(&" ".repeat(spaces));
+            n -= spaces;
+        } else {
+            at = before;
+        }
+    }
+    let mut c = Chars::at(t, at);
+    for _ in 0..n {
+        match c.ch().filter(|_| c.pos() < eol) {
+            Some(ch) => out.push(ch),
+            None => break,
+        }
+        c.fwd();
+    }
+    out
 }
 
 /// The text after `p` moved by `by` bytes.
@@ -449,6 +734,39 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
             None => return fail("Beginning of buffer"),
         },
         Edit::Tab => return tab(t, w, p),
+        Edit::Delete => {
+            let mut c = Chars::at(t, p);
+            if c.ch().is_none() || !c.fwd() {
+                return fail("End of buffer");
+            }
+            let end = c.pos();
+            t.tx(Origin::User).delete(p..end).commit()?;
+            p
+        }
+        Edit::Shift { right } => return shift_line(t, w, p, *right),
+        Edit::ZeroIndent => {
+            let line = t.line_of(p);
+            let (start, end) = (t.line_start(line), indent_end(t, line));
+            let zero = prev_char(t, p).unwrap_or(p);
+            let mut tx = t.tx(Origin::User).delete(zero..p);
+            if zero >= end {
+                tx = tx.delete(start..end);
+            }
+            tx.commit()?;
+            zero - if zero >= end { end - start } else { 0 }
+        }
+        Edit::Copy { above } => {
+            let text = copied(t, p, *above, 1);
+            t.tx(Origin::User).insert(p, text.as_str()).commit()?;
+            p + text.len()
+        }
+        Edit::Literal(text, take) => {
+            let end = taken_end(t, p, *take);
+            if !text.is_empty() || end > p {
+                t.tx(Origin::User).replace(p..end, text.as_str()).commit()?;
+            }
+            p + text.len()
+        }
         Edit::Over(s) => {
             let (end, spaces) = over(t, p, s);
             t.tx(Origin::User)
@@ -543,6 +861,26 @@ pub fn indent_from_above(t: &mut TextBuf, w: WindowId, line: usize) -> Result {
         t.tx(Origin::User).replace(keep..end, spaces).commit()?;
     }
     t.set_cursor(w, indent_end(t, line));
+    Ok(())
+}
+
+/// `<C-t>` and `<C-d>`: to the next multiple of a shift that way, blank lines too, as Evil's
+/// `evil-shift-right` does from insert state. The cursor keeps its place in the text.
+fn shift_line(t: &mut TextBuf, w: WindowId, p: usize, right: bool) -> Result {
+    let line = t.line_of(p);
+    let (start, end) = (t.line_start(line), indent_end(t, line));
+    let (indent, col) = (t.display_col(end), t.display_col(p));
+    let new = if right {
+        (indent / SHIFT_WIDTH + 1) * SHIFT_WIDTH
+    } else {
+        indent.div_ceil(SHIFT_WIDTH).saturating_sub(1) * SHIFT_WIDTH
+    };
+    t.tx(Origin::User)
+        .replace(start..end, " ".repeat(new))
+        .commit()?;
+    let to = (col + new).saturating_sub(indent);
+    let pos = pos_at_col(t, line, to).min(line_end(t, line));
+    t.set_cursor(w, pos);
     Ok(())
 }
 

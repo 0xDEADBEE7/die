@@ -512,7 +512,7 @@ fn yank(ctx: &mut Ctx, b: BufferId, w: WindowId, register: Option<char>, span: S
 }
 
 /// Spaces in a shift (scope §10).
-const SHIFT_WIDTH: usize = 4;
+pub const SHIFT_WIDTH: usize = 4;
 
 /// `>` and `<`: each line moves to the next multiple of 4 columns that way. Lines of
 /// nothing but spaces end up empty, and empty lines stay empty. The cursor stays in its

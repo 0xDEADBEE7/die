@@ -50,6 +50,7 @@
   {"id": "cr-esc", "keys": ":s/foo<C-r><Esc>/X/<CR>", "text": ["|foo bar"]},
   {"id": "cr-empty-line", "keys": ":s/x<C-r><C-l>/X/<CR>", "text": ["x", "|", "y"]},
   {"id": "cy-newest-kill", "keys": "yiw:s/<C-y>/X/<CR>", "text": ["x |foo foo"]},
+  {"id": "cr-dot", "keys": "ifoo<Esc>:s/<C-r>./X/<CR>", "text": ["|bar"]},
   {"id": "cv-tab", "keys": ":s/<C-v><Tab>/X/<CR>", "text": ["|a\tb"]},
   {"id": "cv-then-keeps-reading", "keys": ":s/a<C-v><Tab>b/X/<CR>", "text": ["|a\tb c"]},
   {"id": "amp-repeats-without-flags", "keys": ":s/a/b/g<CR>j&", "text": ["|a a", "a a"]},

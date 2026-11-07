@@ -13,6 +13,7 @@
 //! that named none, and `a`-`z` what was yanked into them. Naming `A`-`Z` appends to
 //! `a`-`z`, and then `"` holds only the new text (S5 row 9).
 
+use crate::Vim;
 use crate::repeat::keys_of;
 use crate::text::{Chars, Class, class, same_word};
 use die_core::{Ctx, Error, Key, RegKind, Register, Result, TextBuf, key_notation, parse_keys};
@@ -169,7 +170,13 @@ pub fn read(ctx: &mut Ctx, name: Option<char>) -> Result<Register> {
         }
         // `1` is read from `"`, which is the ring's head even if only `"` was ever set.
         '1' => ctx.register('"'),
-        ':' | '.' | '%' | '#' | '/' | '=' => None,
+        ':' | '/' | '%' => {
+            return Ok(Register {
+                kind: RegKind::Char,
+                text: computed(ctx, c)?,
+            });
+        }
+        '#' | '=' => None,
         '+' => {
             from_clipboard = ctx.clipboard();
             from_clipboard.as_ref()
@@ -183,25 +190,18 @@ pub fn read(ctx: &mut Ctx, name: Option<char>) -> Result<Register> {
 
 /// What `<C-r>` pastes on a command line, as your Evil's `evil-get-register` reads it: a register,
 /// or what's under the cursor for `<C-w>` (the word), `<C-a>` (the WORD), `<C-o>` (the symbol),
-/// `<C-f>` (the file name) and `<C-l>` (the line). `:` and `/` are the last of each line, and `%`
-/// and `#` this buffer's and the last buffer's file. `.` and `=` aren't built.
+/// `<C-f>` (the file name) and `<C-l>` (the line). `#` is the last buffer's file, and the rest go
+/// through [`read`]. `=` isn't built.
 pub fn for_prompt(ctx: &mut Ctx, c: char) -> Result<String> {
     let empty = || Error::Msg(format!("Register {} is empty", shown(c)));
-    let last = |ctx: &Ctx, history: &str, none: &str| match ctx.prompt_history(history).last() {
-        Some(line) => Ok(line.clone()),
-        None => Err(Error::Msg(none.into())),
-    };
-    let here = ctx.focused_buffer();
-    let path = |ctx: &Ctx, b| Some(ctx.file(b)?.path.display().to_string());
-    let no_file = || Error::Msg("No file name".into());
     match c {
         '\x17' | '\x01' | '\x0f' | '\x06' | '\x0c' => under_cursor(ctx, c).ok_or_else(empty),
-        ':' => last(ctx, "ex", "No previous command line"),
-        '/' => last(ctx, "search", "No previous regular expression"),
-        '%' => here.and_then(|b| path(ctx, b)).ok_or_else(no_file),
         '#' => {
+            let here = ctx.focused_buffer();
             let other = ctx.buffer_list().into_iter().find(|b| Some(*b) != here);
-            other.and_then(|b| path(ctx, b)).ok_or_else(no_file)
+            other
+                .and_then(|b| Some(ctx.file(b)?.path.display().to_string()))
+                .ok_or_else(|| Error::Msg("No file name".into()))
         }
         _ if c.is_control() => Err(empty()),
         _ => read(ctx, Some(c)).map(|r| r.text),
@@ -221,11 +221,14 @@ fn under_cursor(ctx: &Ctx, c: char) -> Option<String> {
     let w = ctx.focused()?;
     let t = ctx.text(ctx.window_buffer(w)?).ok()?;
     let at = t.cursor(w)?;
-    let word = |big: bool| thing(t, at, |c| !blank(c), |a, b| same_word(a, b, big));
+    let solid = |c| !matches!(class(c, false), Class::Blank | Class::Newline);
+    let word = |big: bool| thing(t, at, solid, |a, b| same_word(a, b, big));
+    // Emacs's `thing-at-point-file-name-chars`.
+    let file_char = |c: char| c.is_alphanumeric() || "-@~/_.${}#%,:".contains(c);
     match c {
         '\x17' => word(false),
         '\x01' => word(true),
-        '\x0f' => thing(t, at, |c| !blank(c), |a, b| symbolic(a) == symbolic(b)),
+        '\x0f' => thing(t, at, solid, |a, b| symbolic(a) == symbolic(b)),
         '\x06' => thing(t, at, file_char, |_, _| true),
         _ => {
             let line = t.rope().line(t.line_of(at)).to_string();
@@ -234,18 +237,9 @@ fn under_cursor(ctx: &Ctx, c: char) -> Option<String> {
     }
 }
 
-fn blank(c: char) -> bool {
-    matches!(class(c, false), Class::Blank | Class::Newline)
-}
-
 /// A word or symbol character in Emacs's standard syntax table, against other punctuation.
 fn symbolic(c: char) -> bool {
     class(c, false) == Class::Word || "_-+*/&|<>=".contains(c)
-}
-
-/// Emacs's `thing-at-point-file-name-chars`.
-fn file_char(c: char) -> bool {
-    c.is_alphanumeric() || "-@~/_.${}#%,:".contains(c)
 }
 
 /// The run of `same` characters that `is` picks out at `at`, or the one that ends just before it,
@@ -275,6 +269,27 @@ fn thing(
         start.back();
     }
     Some(t.rope().byte_slice(start.pos()..end.pos()).to_string())
+}
+
+/// The registers your Evil works out when they're read: the last ex line, the last search, and
+/// the file's name.
+fn computed(ctx: &mut Ctx, c: char) -> Result<String> {
+    let none = |m: &str| Error::Msg(m.into());
+    match c {
+        ':' => ctx
+            .prompt_history("ex")
+            .last()
+            .cloned()
+            .ok_or_else(|| none("No previous command line")),
+        '/' => ctx
+            .with_ext(|v: &mut Vim, _| v.search.as_ref().map(|l| l.source().to_owned()))?
+            .ok_or_else(|| none("No previous regular expression")),
+        _ => ctx
+            .focused_buffer()
+            .and_then(|b| ctx.file(b))
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .ok_or_else(|| none("No file name")),
+    }
 }
 
 /// A recording as text: what its keys would type, as your Evil holds it. Keys with no
@@ -327,7 +342,6 @@ pub fn macro_keys(ctx: &Ctx, name: char) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Vim;
     use die_core::FakeClipboard;
 
     fn ctx() -> Ctx {
