@@ -22,8 +22,12 @@ pub const MOTIONS: &[Motion] = &[
     m("vim-forward-WORD-end", "E", Kind::Inclusive, "To the next WORD's end.", |s| words(s, Word::End, true)),
     m("vim-backward-word-begin", "b", Kind::Exclusive, "To the previous word's start.", |s| words(s, Word::Back, false)),
     m("vim-backward-WORD-begin", "B", Kind::Exclusive, "To the previous WORD's start.", |s| words(s, Word::Back, true)),
+    m("vim-backward-word-end", "ge", Kind::Inclusive, "To the previous word's end.", |s| word_ends_back(s, false)),
+    m("vim-backward-WORD-end", "gE", Kind::Inclusive, "To the previous WORD's end.", |s| word_ends_back(s, true)),
     m("vim-first-non-blank", "^", Kind::Exclusive, "To the line's first non-blank.", first_non_blank),
     m("vim-end-of-line", "$", Kind::Inclusive, "To the end of the line, or of count-1 lines down.", end_of_line),
+    m("vim-last-non-blank", "g_", Kind::Inclusive, "To the line's last non-blank, or that of count-1 lines down.", last_non_blank),
+    m("vim-goto-column", "|", Kind::Exclusive, "To column count on the line, counted from 0 as your Evil does.", goto_column),
     m("vim-goto-first-line", "gg", Kind::Linewise, "To the first line, or line count.", |s| goto_line(s, s.count.unwrap_or(1))),
     m("vim-goto-line", "G", Kind::Linewise, "To the last line, or line count.", |s| goto_line(s, s.count.unwrap_or(usize::MAX))),
     m("vim-find-char", "f<char>", Kind::Inclusive, "To the next char on the line.", |s| find(s, Find::new('f', s.arg))),
@@ -33,6 +37,8 @@ pub const MOTIONS: &[Motion] = &[
     m("vim-jump-item", "%", Kind::Inclusive, "To the bracket matching the next one on the line, or count percent down the text.", jump_item),
     m("vim-forward-paragraph", "}", Kind::Exclusive, "To the next blank line after this paragraph.", forward_paragraph),
     m("vim-backward-paragraph", "{", Kind::Exclusive, "To the previous blank line before this paragraph.", backward_paragraph),
+    m("vim-forward-section", "]]", Kind::Exclusive, "To the next line that starts with an opening bracket.", forward_section),
+    m("vim-backward-section", "[[", Kind::Exclusive, "To the previous line that starts with an opening bracket.", backward_section),
     m("vim-window-top", "H", Kind::Linewise, "To the window's top row, or its row count.", |s| window_row(s, |_, n| n - 1)),
     m("vim-window-middle", "M", Kind::Linewise, "To the window's middle row, the lower of two.", |s| window_row(s, |rows, _| rows / 2)),
     m("vim-window-bottom", "L", Kind::Linewise, "To the window's bottom row, or count rows from it.", |s| window_row(s, |rows, n| rows.saturating_sub(n))),
@@ -267,6 +273,34 @@ pub fn end_of_line(s: &Start) -> Result<Target, Fail> {
     })
 }
 
+/// `g_`: to the last character on the line, count-1 lines down, that isn't a space or a tab. On
+/// a line with none, to its start, so an operator there takes its first character, or the
+/// newline of an empty line.
+fn last_non_blank(s: &Start) -> Result<Target, Fail> {
+    let t = s.text;
+    let here = t.line_of(s.pos);
+    let line = here.saturating_add(s.n() - 1).min(last_line(t).max(here));
+    let start = t.line_start(line);
+    let mut p = line_end(t, line);
+    while p > start && matches!(t.rope().byte(p - 1), b' ' | b'\t') {
+        p -= 1;
+    }
+    Ok(Target::at(
+        prev_stop(t, p).filter(|&q| q >= start).unwrap_or(start),
+    ))
+}
+
+/// `|`: to display column count on this line, 0 without one. A column past the line's end
+/// lands on its newline, and normal state puts the cursor back.
+fn goto_column(s: &Start) -> Result<Target, Fail> {
+    let t = s.text;
+    Ok(Target::at(pos_at_col(
+        t,
+        t.line_of(s.pos),
+        s.count.unwrap_or(0),
+    )))
+}
+
 /// `gg` and `G` to a line counted from 1, keeping the goal column, as in your Evil
 /// (no `startofline`).
 pub fn goto_line(s: &Start, n: usize) -> Result<Target, Fail> {
@@ -325,6 +359,44 @@ fn words(s: &Start, which: Word, big: bool) -> Result<Target, Fail> {
         });
     }
     Ok(Target::at(p))
+}
+
+/// `ge` and `gE`. Short of the count it stops at the text's start, and fails only from there.
+fn word_ends_back(s: &Start, big: bool) -> Result<Target, Fail> {
+    if s.pos == 0 {
+        return Err("Beginning of buffer");
+    }
+    let mut p = s.pos;
+    for _ in 0..s.n() {
+        match word_end_back(s.text, p, big) {
+            Some(q) => p = q,
+            None => return Ok(Target::at(0)),
+        }
+    }
+    Ok(Target::at(p))
+}
+
+/// The end of the word before the one at `p`. An empty line counts as a word.
+fn word_end_back(t: &TextBuf, p: usize, big: bool) -> Option<usize> {
+    let mut c = Chars::at(t, p);
+    if let Some(mut a) = c
+        .ch()
+        .filter(|&a| matches!(class(a, big), Class::Word | Class::Punct))
+    {
+        while let Some(b) = c.prev_ch().filter(|&b| same_word(b, a, big)) {
+            a = b;
+            c.back();
+        }
+    }
+    while c.back() {
+        match class(c.ch()?, big) {
+            Class::Blank => {}
+            Class::Newline if empty_line(&c) => return Some(c.pos()),
+            Class::Newline => {}
+            _ => return Some(t.snap(c.pos(), Some(Dir::Backward))),
+        }
+    }
+    None
 }
 
 /// `w` for an operator. It stops before the word it reaches, and if that word starts a
@@ -731,6 +803,59 @@ fn backward_paragraph(s: &Start) -> Result<Target, Fail> {
         return Err("Beginning of buffer");
     }
     Ok(Target::at(pos))
+}
+
+// ---------------------------------------------------------------- ]] and [[
+
+/// Where sections start, as `beginning-of-defun` finds them in fundamental-mode: an opening
+/// bracket in a line's first column, outside any `"` string. Where a section ends doesn't
+/// matter here, which is your Evil's way only while brackets balance (deviations.json).
+fn sections(t: &TextBuf) -> Vec<usize> {
+    let (mut starts, mut string, mut escaped, mut bol) = (vec![], false, false, true);
+    for (i, b) in t.rope().bytes().enumerate() {
+        if bol && !string && matches!(b, b'(' | b'[' | b'{') {
+            starts.push(i);
+        }
+        if escaped {
+            escaped = false;
+        } else if b == b'\\' {
+            escaped = true;
+        } else if b == b'"' {
+            string = !string;
+        }
+        bol = b == b'\n';
+    }
+    starts
+}
+
+/// `]]`: short of the count, to the text's end, like `}`.
+fn forward_section(s: &Start) -> Result<Target, Fail> {
+    let t = s.text;
+    if s.pos == t.len() || (s.op.is_some() && at_text_end(t, s.pos)) {
+        return Err("End of buffer");
+    }
+    let next = sections(t)
+        .into_iter()
+        .filter(|&q| q > s.pos)
+        .nth(s.n() - 1);
+    let pos = next.unwrap_or(if s.op.is_some() {
+        t.len()
+    } else {
+        normal_pos(t, t.len())
+    });
+    if pos == s.pos {
+        return Err("End of buffer");
+    }
+    Ok(Target::at(pos))
+}
+
+/// `[[`: short of the count, to the text's start.
+fn backward_section(s: &Start) -> Result<Target, Fail> {
+    if s.pos == 0 {
+        return Err("Beginning of buffer");
+    }
+    let mut before = sections(s.text).into_iter().rev().filter(|&q| q < s.pos);
+    Ok(Target::at(before.nth(s.n() - 1).unwrap_or(0)))
 }
 
 #[cfg(test)]
