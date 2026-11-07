@@ -85,14 +85,15 @@ files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 [[module]]
 crate = "die-core"
 name = "workspace, windows, pointer"
-limit = 1320
+limit = 1340
 # 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs.
 files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
 
 [[module]]
 crate = "die-core"
 name = "files"
-limit = 650
+# 650 until U1's `die file:line`: the name parser `gf` shares, and opening at a position.
+limit = 760
 files = ["files.rs", "files/"]
 
 [[module]]
@@ -158,7 +159,7 @@ files = ["check.rs"]
 crate = "die-render"
 name = "platform::macos"
 platforms = ["macos"]
-limit = 1060
+limit = 1160
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it

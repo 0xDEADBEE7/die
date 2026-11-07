@@ -1,6 +1,7 @@
 //! AppKit: the event loop's and the window's macOS options, the window's layer, and the
-//! key monitor. The clipboard (R5) joins here.
+//! key monitor.
 
+use super::catch::guarded;
 use super::metal::{Pipeline, TARGET_FORMAT};
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -40,9 +41,12 @@ const SLASH: u16 = 44;
 const RETURN: u16 = 36;
 
 /// No default menu, and never activate the app on launch. With `dock`, it's a regular app
-/// with a Dock icon, and otherwise an accessory, which has none: a check's window is one.
-pub fn prepare_loop<T: 'static>(builder: &mut EventLoopBuilder<T>, dock: bool) {
-    hold_repeats();
+/// with a Dock icon, and otherwise an accessory, which has none: a check's window is one. An error
+/// says what didn't take, and the loop can run without it.
+pub fn prepare_loop<T: 'static>(
+    builder: &mut EventLoopBuilder<T>,
+    dock: bool,
+) -> Result<(), String> {
     let policy = if dock {
         ActivationPolicy::Regular
     } else {
@@ -52,6 +56,8 @@ pub fn prepare_loop<T: 'static>(builder: &mut EventLoopBuilder<T>, dock: bool) {
         .with_default_menu(false)
         .with_activate_ignoring_other_apps(false)
         .with_activation_policy(policy);
+    // `setVolatileDomain:forName:` raises if the domain is there.
+    guarded("can't make held keys repeat", hold_repeats)
 }
 
 /// Holding a key repeats it, whatever your own defaults say: the process's argument domain
@@ -228,8 +234,10 @@ unsafe extern "C-unwind" fn insert_text(view: &NSView, sel: Sel, text: &AnyObjec
             Some(string) => string.to_string(),
             None => {
                 // SAFETY: AppKit's text is an NSString or an NSAttributedString, which answers
-                // `string`.
-                let string: Option<Retained<NSString>> = unsafe { msg_send![text, string] };
+                // `string`. Were it anything else that raises, and there's no text to take.
+                let string: Result<Option<Retained<NSString>>, String> =
+                    guarded("", || unsafe { msg_send![text, string] });
+                let string = string.ok().flatten();
                 string.map_or_else(String::new, |s| s.to_string())
             }
         };
@@ -278,9 +286,9 @@ fn hook_view(view: &NSView) -> Result<(), String> {
 }
 
 /// A local event monitor: it runs inside `sendEvent:`, before the event is dispatched. It sees
-/// Caps Lock, and hands the chords AppKit traps straight to the first responder. A panic
-/// in it can't unwind into AppKit, so it's caught and counted, and the event goes on as if
-/// the monitor weren't there. It's removed on drop.
+/// Caps Lock, and hands the chords AppKit traps straight to the first responder. A panic or
+/// exception in it can't unwind into AppKit, so it's caught and counted, and the event goes on as
+/// if the monitor weren't there. It's removed on drop.
 pub struct KeyMonitor {
     token: Retained<AnyObject>,
     seen: Rc<Seen>,
@@ -306,10 +314,11 @@ impl KeyMonitor {
         let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit passes a live event for the length of this call.
             let e = unsafe { event.as_ref() };
-            match catch_unwind(AssertUnwindSafe(|| shared.see(e))) {
-                Ok(true) => null_mut(),
-                Ok(false) => event.as_ptr(),
-                Err(_) => {
+            // What it hands on can raise too, and that can't be let reach a `catch_unwind`.
+            match catch_unwind(AssertUnwindSafe(|| guarded("", || shared.see(e)))) {
+                Ok(Ok(true)) => null_mut(),
+                Ok(Ok(false)) => event.as_ptr(),
+                _ => {
                     shared.panics.set(shared.panics.get() + 1);
                     event.as_ptr()
                 }
@@ -338,7 +347,7 @@ impl KeyMonitor {
         self.seen.caps.get()
     }
 
-    /// How many panics it has caught.
+    /// How many panics and exceptions it has caught.
     pub fn panics(&self) -> u64 {
         self.seen.panics.get()
     }
@@ -404,15 +413,18 @@ impl Surface {
         let view = view.ok_or("the window has no view")?;
         let ns_window = view.window().ok_or("the view has no window")?;
         hook_view(&view)?;
-        let layer = CAMetalLayer::new();
-        layer.setDevice(Some(pipeline.device()));
-        layer.setPixelFormat(TARGET_FORMAT);
-        layer.setOpaque(true);
-        layer.setFramebufferOnly(!readable);
-        view.setLayer(Some(&layer));
-        view.setWantsLayer(true);
-        // A window that isn't key yet hasn't made its view the first responder.
-        ns_window.makeFirstResponder(Some(&view));
+        let layer = guarded("can't put a layer on the window", || {
+            let layer = CAMetalLayer::new();
+            layer.setDevice(Some(pipeline.device()));
+            layer.setPixelFormat(TARGET_FORMAT);
+            layer.setOpaque(true);
+            layer.setFramebufferOnly(!readable);
+            view.setLayer(Some(&layer));
+            view.setWantsLayer(true);
+            // A window that isn't key yet hasn't made its view the first responder.
+            ns_window.makeFirstResponder(Some(&view));
+            layer
+        })?;
         Ok(Surface {
             view,
             window: ns_window,
@@ -505,5 +517,19 @@ impl Surface {
     /// Whether this app is the active one.
     pub fn app_active(&self) -> bool {
         NSRunningApplication::currentApplication().isActive()
+    }
+
+    /// Make this the active app, with this window in front and restored from the Dock. The newer
+    /// `activate` only takes what the active app yields, and no terminal yields anything.
+    pub fn come_to_front(&self) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        if self.window.isMiniaturized() {
+            self.window.deminiaturize(None);
+        }
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        self.window.makeKeyAndOrderFront(None);
     }
 }

@@ -52,15 +52,17 @@ pub struct Register {
 
 /// The system clipboard (contract §5). R5 puts macOS's pasteboard behind this, and the harness a
 /// [`crate::FakeClipboard`]. Core calls it on the main thread, and it runs unguarded: it's the host's
-/// code, not an extension's.
+/// code, not an extension's. Core puts an error, which says what failed, in `*messages*`.
 pub trait Clipboard {
-    /// What it holds: charwise for what another app copied, and as written for what DIE did.
-    fn read(&mut self) -> Option<Register>;
+    /// What it holds: charwise for what another app copied, as written for what DIE did, and None
+    /// if that isn't text. On macOS this is what can bring up the pasteboard privacy alert, so core
+    /// calls it only for a paste, and only once [`Clipboard::change_count`] says there's cause.
+    fn read(&mut self) -> Result<Option<Register>, String>;
     /// Replace what it holds.
-    fn write(&mut self, r: &Register);
+    fn write(&mut self, r: &Register) -> Result<(), String>;
     /// A number that changes when what it holds changes, and so when another app copies:
     /// NSPasteboard's `changeCount` on macOS, a count kept by comparing on Linux.
-    fn change_count(&mut self) -> u64;
+    fn change_count(&mut self) -> Result<u64, String>;
 }
 
 /// The clipboard, and what DIE already knows of it.
@@ -274,14 +276,27 @@ impl Ctx {
     pub fn set_clipboard(&mut self, board: impl Clipboard + 'static) {
         self.clip = Clip::new(Box::new(board));
     }
-    /// What the system clipboard holds.
+    /// What the system clipboard holds, if it's text. A failure goes to `*messages*`.
     pub fn clipboard(&mut self) -> Option<Register> {
-        self.clip.board.read()
+        self.clip.board.read().unwrap_or_else(|e| {
+            self.messages.push(e);
+            None
+        })
     }
-    /// Put this on the system clipboard. It isn't news to [`Ctx::clipboard_news`].
+    /// Put this on the system clipboard. It isn't news to [`Ctx::clipboard_news`]. A failure goes to
+    /// `*messages*`, and the caller's copy is the one that counts, so what's there now isn't news
+    /// either: a later paste doesn't put an older copy above this.
     pub fn write_clipboard(&mut self, r: &Register) {
-        self.clip.board.write(r);
-        self.clip.seen_count = Some(self.clip.board.change_count());
+        let written = self.clip.board.write(r);
+        let count = self.clip.board.change_count();
+        match (written, &count) {
+            (Err(e), _) => self.messages.push(e),
+            (Ok(()), Err(e)) => self.messages.push(e.clone()),
+            (Ok(()), Ok(_)) => {}
+        }
+        if let Ok(count) = count {
+            self.clip.seen_count = Some(count);
+        }
         self.clip.seen_text = Some(r.text.clone());
     }
     /// Registers came back from a session, and the newest kill is what DIE last put on the
@@ -292,12 +307,21 @@ impl Ctx {
     /// What another app copied since core last wrote to the clipboard or asked this, once, as
     /// Emacs's `interprogram-paste-function` answers. Copying the text DIE last knew of isn't news.
     pub fn clipboard_news(&mut self) -> Option<Register> {
-        let count = self.clip.board.change_count();
+        let count = match self.clip.board.change_count() {
+            Ok(count) => count,
+            Err(e) => {
+                self.messages.push(e);
+                return None;
+            }
+        };
         if self.clip.seen_count == Some(count) {
             return None;
         }
+        // A read that fails leaves the count, so the next paste looks again and the copy isn't lost.
+        let read = self.clip.board.read().map_err(|e| self.messages.push(e));
+        let r = read.ok()?;
         self.clip.seen_count = Some(count);
-        let r = self.clip.board.read()?;
+        let r = r?;
         if self.clip.seen_text.as_ref() == Some(&r.text) {
             return None;
         }

@@ -43,6 +43,8 @@ use std::path::{Path, PathBuf};
 /// workspace root, which `cargo xtask fonts` fills.
 pub fn font_dir() -> PathBuf {
     let exe = std::env::current_exe().ok();
+    // Through ~/.local/bin/die, the executable's path is the link's.
+    let exe = exe.map(|e| e.canonicalize().unwrap_or(e));
     font_dir_from(std::env::var_os("DIE_FONT_DIR"), exe.as_deref())
 }
 

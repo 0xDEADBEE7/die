@@ -4,16 +4,39 @@
 //! says when its first frame is up, and takes the lock once the old one has gone. If the
 //! connection closes with nothing said, the new one died, and the old one carries on. A new
 //! one that was too late finds the lock still held, and goes.
+//!
+//! A `die file` from a terminal reaches the holder over a second socket, `open.sock`. Only the
+//! lock's holder binds it, once its first frame is up, and it stops listening before a restart
+//! writes the session, so that a file can't land in what's being handed over. Nobody listening
+//! with the lock held is an instance starting or handing over, and the sender tries again. Nobody
+//! listening with the lock free is no instance, whatever file a crash left behind.
 
+use crate::files::FileTarget;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Seek, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::thread::sleep;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle, sleep};
 use std::time::{Duration, Instant};
 
 const FIRST_FRAME: &str = "first-frame\n";
+
+/// The socket a `die file` reaches the running instance on, in the state directory.
+pub const OPEN_SOCKET: &str = "open.sock";
+const OPENED: &[u8] = b"opened\n";
+const FRONT: &[u8] = b"front";
+const BACKGROUND: &[u8] = b"background";
+/// More than any command line, so a stray writer can't fill the instance's memory.
+const MOST_REQUEST: u64 = 16 << 20;
+/// How long the listener waits for a client to finish saying what it wants.
+const REQUEST_LIMIT: Duration = Duration::from_secs(1);
+/// How often a sender tries again while an instance holds the lock and isn't listening.
+const SEND_POLL: Duration = Duration::from_millis(10);
 
 /// How often `Handover::wait` looks for the connection.
 const POLL: Duration = Duration::from_millis(1);
@@ -165,5 +188,161 @@ impl Successor {
         let mut rest = vec![];
         self.stream.read_to_end(&mut rest)?;
         Ok(())
+    }
+}
+
+/// What a `die file` asks the running instance to do.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OpenRequest {
+    /// Come to the front: everything but `--background`.
+    pub front: bool,
+    /// The files, whose paths are absolute.
+    pub targets: Vec<FileTarget>,
+}
+
+impl OpenRequest {
+    /// `front` or `background`, then the targets' arguments, each ended by a NUL.
+    fn to_bytes(&self) -> Vec<u8> {
+        let mode = if self.front { FRONT } else { BACKGROUND };
+        let args = self.targets.iter().flat_map(FileTarget::to_args);
+        let mut bytes = vec![];
+        for arg in std::iter::once(OsStr::from_bytes(mode).to_owned()).chain(args) {
+            bytes.extend_from_slice(arg.as_bytes());
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Option<OpenRequest> {
+        let mut fields = bytes.strip_suffix(b"\0")?.split(|c| *c == 0);
+        let front = match fields.next()? {
+            FRONT => true,
+            BACKGROUND => false,
+            _ => return None,
+        };
+        let args = fields.map(|f| OsString::from_vec(f.to_vec()));
+        let targets = FileTarget::parse_args(args, Path::new("/")).ok()?;
+        Some(OpenRequest { front, targets })
+    }
+}
+
+/// The instance's side of `die file`. It stops listening when it drops.
+#[derive(Debug)]
+pub struct OpenListener {
+    path: PathBuf,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl OpenListener {
+    /// Listen in `dir`, on a thread of its own, and pass each request to `handle`, which says
+    /// whether it was carried out. Hold the lock before calling this: it replaces any socket there.
+    pub fn start(
+        dir: &Path,
+        mut handle: impl FnMut(OpenRequest) -> bool + Send + 'static,
+    ) -> io::Result<OpenListener> {
+        make_dir(dir)?;
+        let path = dir.join(OPEN_SOCKET);
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let thread = thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stopping.load(Ordering::SeqCst) {
+                    return;
+                }
+                if let Ok(stream) = stream {
+                    // A client that's gone can try again, and opening a file twice is harmless.
+                    let _ = answer(stream, &mut handle);
+                }
+            }
+        });
+        Ok(OpenListener {
+            path,
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+fn answer(mut stream: UnixStream, handle: &mut impl FnMut(OpenRequest) -> bool) -> io::Result<()> {
+    stream.set_read_timeout(Some(REQUEST_LIMIT))?;
+    let mut bytes = vec![];
+    Read::by_ref(&mut stream)
+        .take(MOST_REQUEST)
+        .read_to_end(&mut bytes)?;
+    if OpenRequest::from_bytes(&bytes).is_some_and(handle) {
+        stream.write_all(OPENED)?;
+    }
+    Ok(())
+}
+
+impl Drop for OpenListener {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Wakes the thread from its `accept`.
+        let _ = UnixStream::connect(&self.path);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// What came of [`send_open`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Sent {
+    /// The running instance carried it out.
+    Delivered,
+    /// Nothing holds the lock, so there's no instance to ask.
+    NoInstance,
+}
+
+/// Ask the instance in `dir` to open these. While one holds the lock and doesn't answer, as it
+/// doesn't while it starts or hands over to a restart, try again for `patience`. Then an error
+/// says nobody answered.
+pub fn send_open(dir: &Path, request: &OpenRequest, patience: Duration) -> io::Result<Sent> {
+    let deadline = Instant::now() + patience;
+    let bytes = request.to_bytes();
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if deliver(&dir.join(OPEN_SOCKET), &bytes, left.max(SEND_POLL)).is_ok() {
+            return Ok(Sent::Delivered);
+        }
+        if !lock_is_held(dir)? {
+            return Ok(Sent::NoInstance);
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                ErrorKind::TimedOut,
+                "the running DIE didn't answer",
+            ));
+        }
+        sleep(SEND_POLL);
+    }
+}
+
+fn deliver(socket: &Path, bytes: &[u8], limit: Duration) -> io::Result<()> {
+    let mut stream = UnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(limit))?;
+    stream.write_all(bytes)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut answer = vec![];
+    stream.read_to_end(&mut answer)?;
+    if answer == OPENED {
+        Ok(())
+    } else {
+        Err(ErrorKind::ConnectionAborted.into())
+    }
+}
+
+/// Whether an instance holds the lock. It takes the lock for a moment to find out and leaves the
+/// file alone, so an instance starting just then needs [`Instance::take_over`]'s patience.
+fn lock_is_held(dir: &Path) -> io::Result<bool> {
+    match lock_file(dir)?.try_lock() {
+        Ok(()) => Ok(false),
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(e)) => Err(e),
     }
 }

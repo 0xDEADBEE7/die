@@ -363,6 +363,46 @@ mod tests {
     }
 
     #[test]
+    fn a_clipboard_that_fails_loses_no_text_and_says_so() {
+        let mut ctx = ctx();
+        let board = FakeClipboard::default();
+        ctx.set_clipboard(board.clone());
+        board.copy_from_outside("older");
+        board.set_failing(true);
+        save(&mut ctx, None, chars("kill"), false).unwrap();
+        assert_eq!(ctx.messages.last().unwrap(), "the clipboard failed");
+        assert_eq!(read(&mut ctx, None).map(|r| r.text), Ok("kill".into()));
+
+        board.set_failing(false);
+        board.copy_from_outside("copied");
+        board.set_failing(true);
+        assert_eq!(read(&mut ctx, None).map(|r| r.text), Ok("kill".into()));
+        board.set_failing(false);
+        assert_eq!(
+            read(&mut ctx, None).map(|r| r.text),
+            Ok("copied".into()),
+            "the copy waits for the next paste"
+        );
+    }
+
+    #[test]
+    fn only_a_paste_after_a_change_reads_the_clipboard() {
+        let mut ctx = ctx();
+        let board = FakeClipboard::default();
+        ctx.set_clipboard(board.clone());
+        save(&mut ctx, None, chars("kill"), false).unwrap();
+        small_delete(&mut ctx, "small");
+        read(&mut ctx, None).unwrap();
+        assert_eq!(board.reads(), 0, "its own write isn't a reason");
+
+        board.copy_from_outside("copied");
+        assert_eq!(board.reads(), 0, "nor is a copy until something pastes");
+        read(&mut ctx, None).unwrap();
+        read(&mut ctx, None).unwrap();
+        assert_eq!(board.reads(), 1);
+    }
+
+    #[test]
     fn only_the_newest_kill_takes_in_another_apps_copy() {
         let mut ctx = ctx();
         let board = FakeClipboard::default();

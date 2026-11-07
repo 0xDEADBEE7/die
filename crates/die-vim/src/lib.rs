@@ -33,7 +33,9 @@ use die_core::key_notation;
 use die_core::{
     Args, BufferId, Ctx, Dir, Error, Extension, Prefix, Registry, Result, Shape, State,
 };
-use grammar::{Kind, Operator, buffer_window, char_key, count_digit, forget_goal, run_motion};
+use grammar::{
+    CountWas, Kind, Operator, buffer_window, char_key, count_digit, forget_goal, run_motion,
+};
 use insert::{Edit, Entry, Session};
 use motions::{Find, MOTIONS};
 use objects::OBJECTS;
@@ -61,8 +63,10 @@ pub struct Vim {
     visual_register: Option<char>,
     /// What `.` and macros keep, which a key observer shares.
     rec: Rc<RefCell<Recorder>>,
-    /// `C-u` was the last part of the count, so a digit starts a new one, as in Emacs.
-    universal: bool,
+    /// How the count waiting in core's prefix came about.
+    count_was: grammar::CountWas,
+    /// The last `:s`'s replacement and whether it had `g`, which `&` and `~` use.
+    substitute: (String, bool),
 }
 
 #[rustfmt::skip]
@@ -85,6 +89,7 @@ const OPERATORS: &[(&str, &str, &str, Operator, &str)] = &[
     ("y", "y", "vim-yank", Operator::Yank, "Yank what a motion covers."),
     ("<lt>", "<lt>", "vim-shift-left", Operator::ShiftLeft, "Shift lines left."),
     (">", ">", "vim-shift-right", Operator::ShiftRight, "Shift lines right."),
+    ("=", "=", "vim-indent", Operator::Indent, "Indent lines like the line above each."),
     ("g~", "~", "vim-invert-case", Operator::InvertCase, "Invert the case of what a motion covers."),
     ("gU", "U", "vim-upcase", Operator::Upcase, "Upper-case what a motion covers."),
     ("gu", "u", "vim-downcase", Operator::Downcase, "Lower-case what a motion covers."),
@@ -135,14 +140,18 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-goto-definition", "gd: to the first place in the text with the symbol under the cursor, as your Evil's falls back to.", search::definition),
     ("vim-cancel", "Escape after a key that waits for another: only the operator, the count and the goal column go.", operators::cancel),
     ("vim-replace", "r: replace count characters with the next key.", operators::replace),
-    ("vim-join", "J: join count lines.", operators::join),
+    ("vim-join", "J: join count lines.", |ctx, a| operators::join(ctx, a, false)),
+    ("vim-join-whitespace", "gJ: join count lines, keeping their whitespace.", |ctx, a| operators::join(ctx, a, true)),
+    ("vim-what-cursor-position", "ga: say what the character under the cursor is, and where.", operators::what_cursor_position),
+    ("vim-repeat-substitute", "&: the last :s again on this line, or count lines, or the selection, without its flags.", substitute::again),
+    ("vim-repeat-substitute-all", "g&: the last :s again on every line, with its flags.", substitute::again_everywhere),
     ("vim-paste-after", "p: paste after the cursor, or below this line.", |ctx, a| operators::paste(ctx, a, false)),
     ("vim-paste-before", "P: paste before the cursor, or above this line.", |ctx, a| operators::paste(ctx, a, true)),
     ("vim-use-register", "\"x: use a register for the next command.", operators::name_register),
     ("vim-digit-argument", "A count digit.", |ctx, a| count_digit(ctx, a, a.char().and_then(|c| c.to_digit(10)).unwrap_or(0) as usize)),
     ("vim-beginning-of-line", "0: to the start of the line, or a count digit.", zero),
     ("vim-line-beginning", "C-a: to the start of the screen row, as Emacs's global C-a does under your Evil.", |ctx, a| run_motion(ctx, a, Kind::Exclusive, None, motions::row_beginning)),
-    ("vim-universal-argument", "C-u: the prefix argument, 4 or four times the count, as in your Evil.", universal_argument),
+    ("vim-universal-argument", "C-u: the prefix argument, as in your Evil: 4, four times an earlier C-u, or the digits already typed.", universal_argument),
     ("vim-scroll-down", "C-d: scroll half a window down, or count rows, and the cursor with it.", scroll::half_down),
     ("vim-scroll-page-down", "C-f: scroll count windows down, less two rows.", |ctx, a| scroll::page(ctx, a, true)),
     ("vim-scroll-page-up", "C-b: scroll count windows up, less two rows.", |ctx, a| scroll::page(ctx, a, false)),
@@ -271,6 +280,10 @@ impl Extension for Vim {
             }
             k.bind(state, "r<any>", "vim-replace")
                 .bind(state, "J", "vim-join")
+                .bind(state, "gJ", "vim-join-whitespace")
+                .bind(state, "ga", "vim-what-cursor-position")
+                .bind(state, "&", "vim-repeat-substitute")
+                .bind(state, "g&", "vim-repeat-substitute-all")
                 .bind(state, "p", "vim-paste-after")
                 .bind(state, "P", "vim-paste-before")
                 .bind(state, "\"<any>", "vim-use-register")
@@ -415,17 +428,30 @@ fn command(
 
 /// `0`: a count digit if a count has begun, else a motion.
 fn zero(ctx: &mut Ctx, a: &Args) -> Result {
+    let was = ctx.with_ext(|v: &mut Vim, _| v.count_was)?;
     match a.count {
-        Some(_) => count_digit(ctx, a, 0),
-        None => run_motion(ctx, a, Kind::Exclusive, None, motions::beginning_of_line),
+        Some(_) if was != CountWas::Kept => count_digit(ctx, a, 0),
+        _ => run_motion(ctx, a, Kind::Exclusive, None, motions::beginning_of_line),
     }
 }
 
-/// `C-u`: your Evil leaves it Emacs's prefix argument, so it scrolls nothing.
+/// `C-u`: your Evil leaves it Emacs's prefix argument, so it scrolls nothing. It's no motion, so
+/// it ends a waiting operator, and that operator's count goes too.
 fn universal_argument(ctx: &mut Ctx, a: &Args) -> Result {
-    ctx.with_ext(|v: &mut Vim, _| v.universal = true)?;
+    let (b, _) = buffer_window(ctx, a)?;
+    let waiting = ctx.state_of(b) == State::OperatorPending;
+    if waiting {
+        operators::cancel(ctx, a)?;
+    }
+    let was = ctx.with_ext(|v: &mut Vim, _| v.count_was)?;
+    let (count, now) = match a.count.filter(|_| !waiting) {
+        Some(n) if was == CountWas::Universal => (n.saturating_mul(4), CountWas::Universal),
+        Some(n) if was == CountWas::Digits => (n, CountWas::Kept),
+        _ => (4, CountWas::Universal),
+    };
+    ctx.with_ext(|v: &mut Vim, _| v.count_was = now)?;
     ctx.set_prefix(Prefix {
-        count: Some(a.count.unwrap_or(1).saturating_mul(4)),
+        count: Some(count),
         register: a.register,
     });
     Ok(())

@@ -236,8 +236,9 @@ impl Ctx {
             v.rows.last()
         };
         let goal = sel.goal.unwrap_or_else(|| t.display_col(sel.head));
-        // The goal's top bit is its owner's, die-vim's mark for a column on the screen row.
-        let want = (goal & (usize::MAX >> 1)).min(v.geometry.text_w.saturating_sub(1));
+        // The goal's top bit is its owner's, die-vim's mark for a column on the screen row. A
+        // column past the width is a wrapped line's, so it's that column of its own row.
+        let want = (goal & (usize::MAX >> 1)) % v.geometry.text_w.max(1);
         let stops = row.map_or(&[][..], |r| r.stops());
         let Some(stop) = stops.iter().rfind(|s| s.col <= want).or(stops.first()) else {
             return;
