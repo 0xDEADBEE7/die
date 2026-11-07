@@ -45,9 +45,7 @@ fn push(ctx: &mut Ctx, r: Register) {
 
 fn ring_push(ctx: &mut Ctx, r: Register) {
     for i in (1..RING).rev() {
-        if let Some(older) = ctx.register(slot(i - 1)).cloned() {
-            set_slot(ctx, i, older);
-        }
+        ctx.move_register(slot(i - 1), slot(i));
     }
     set_slot(ctx, 0, r);
 }
