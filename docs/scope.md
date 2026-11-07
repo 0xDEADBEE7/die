@@ -351,8 +351,9 @@ None of your existing packages need pixel buffers (scope guard 8). Pixel buffers
 - Replace mode (`R`)
 - Windows: the `C-w` map, and `:sp :vs :only :close`. `:q` closes a split, and quits only from the last window, as in Evil.
 - Ex commands `:w :q :wq :e :b :s` (current line, visual range and `%` only), plus `:N` to jump to a line, and `:w! :e! :q!`: `:w` refuses when the file changed on disk since DIE read it, `:w!` writes anyway, `:e!` reloads and `:q!` quits without saving. `:s` keeps the case of each match, as Emacs does: `:s/foo/bar/` turns `Foo` into `Bar`. Its replacements are Rust's: `$1`, `${1}`, `$name`, and `$$` for a literal `$`. So `$1x` names a group called `1x`, and a group followed by a letter needs `${1}x`. `\n`, `\t` and `\\` are a newline, a tab and a backslash, as in Evil. `n` repeats the pattern of `:s`, and an empty pattern is the last search's.
+- Marks and the jumplist, as your Evil has them: `m{a-z}`, `m{A-Z}` across files, `` ` `` and `'` as motions, with operators and in visual state, and the marks ``` `` ```, `''`, `.`, `[`, `]`, `<`, `>` and `^`. Marks move with edits. `C-o` and `C-i` or `<Tab>` go through a list per window, which `gg G / ? n N * # % { } H M L`, marks, `gi`, `u` and a change of buffer add to, and which a split copies. `:N` adds nothing, as in your Evil. `gi`. `g;` and `g,` are Vim's, as your Evil has no goto-chg. Marks and the jumplist come back after a restart.
 
-**Later, only if you miss them:** marks, the jumplist (`C-o`/`C-i`), an undo tree.
+**Later, only if you miss them:** an undo tree.
 
 **Out:** the full ex range grammar, `:g`/`:v`, `:normal`, `:!` (use a terminal instead), digraphs, search offsets, Vimscript, spell checking. Fold commands (`z…` other than `zz zt zb`) come from the folding extension.
 
