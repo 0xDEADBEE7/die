@@ -32,8 +32,12 @@
 //! insert and replace state as Escape does, moving the cursor by [`Ctx::set_insert_end`]'s rule
 //! and changing no text.
 //!
-//! What die-vim holds itself isn't saved: `.`, `@@`, `;`, `n`, `gv`. Windows outside the tree aren't
-//! either, since only a host that places its own windows has them.
+//! Each buffer's named positions ([`TextBuf::marks`]) and each window's places ([`Ctx::places`])
+//! are kept as positions, which go where they fit if the file changed while DIE was down. A place
+//! in a buffer that isn't kept goes.
+//!
+//! What die-vim holds itself isn't saved: `.`, `@@`, `;`, `n`, `gv`, `g;`. Windows outside the tree
+//! aren't either, since only a host that places its own windows has them.
 
 use crate::ext::catch;
 use crate::files::{FileState, Fingerprint, Uneditable};
@@ -41,10 +45,10 @@ use crate::ids::*;
 use crate::keymap::State;
 use crate::messages::MESSAGES;
 use crate::prompt::HISTORY;
-use crate::windows::{View, Window};
+use crate::windows::{Place, PlaceList, View, Window};
 use crate::workspace::tree::Layout;
 use crate::workspace::{RegKind, Register, ShowIn};
-use crate::{Content, Ctx, Error, Origin, Result, Selection, Shape, TextBuf};
+use crate::{Content, Ctx, Error, Gravity, Origin, Result, Selection, Shape, TextBuf};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -205,14 +209,35 @@ impl ViewRecord {
     }
 }
 
+/// A named position in a buffer.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+struct MarkRecord {
+    name: char,
+    pos: usize,
+    /// It moves after text inserted at it.
+    #[serde(default)]
+    after: bool,
+}
+
+/// One of a window's places.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+struct PlaceRecord {
+    /// Which of the file's `buffers`.
+    buffer: usize,
+    pos: usize,
+}
+
 /// A window in the tree. The file lists them with the one used last at the end.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 struct WindowRecord {
     /// Which of the file's `buffers`. None for what a session doesn't keep.
     buffer: Option<usize>,
     /// It shows `*messages*`, whose text isn't kept but which every instance has.
     messages: bool,
+    #[serde(deserialize_with = "readable")]
+    places: Vec<PlaceRecord>,
+    place_index: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -255,6 +280,8 @@ struct BufferRecord {
     top_row: usize,
     #[serde(deserialize_with = "readable")]
     views: Vec<ViewRecord>,
+    #[serde(deserialize_with = "readable")]
+    marks: Vec<MarkRecord>,
     visual: bool,
     /// It was in insert or replace state, which a restore leaves.
     insert: bool,
@@ -466,9 +493,14 @@ impl Ctx {
             layout: self.tree.layout(&|w| number(w).unwrap_or_default()),
             windows: windows
                 .iter()
-                .map(|w| WindowRecord {
-                    buffer: self.window_buffer(*w).and_then(in_file),
-                    messages: log.is_some() && self.window_buffer(*w) == log,
+                .map(|w| {
+                    let (places, place_index) = self.saved_places(*w, &in_file);
+                    WindowRecord {
+                        buffer: self.window_buffer(*w).and_then(in_file),
+                        messages: log.is_some() && self.window_buffer(*w) == log,
+                        places,
+                        place_index,
+                    }
                 })
                 .collect(),
             focused_window: self.focused.and_then(number),
@@ -479,6 +511,25 @@ impl Ctx {
                 .map(|(name, past)| (name.clone(), past.clone()))
                 .collect(),
         }
+    }
+
+    /// A window's places in buffers the file has. If one goes, so does the window's place among them.
+    fn saved_places(
+        &self,
+        w: WindowId,
+        in_file: &impl Fn(BufferId) -> Option<usize>,
+    ) -> (Vec<PlaceRecord>, Option<usize>) {
+        let Some(list) = self.places(w) else {
+            return (vec![], None);
+        };
+        let kept = |p: &Place| {
+            let buffer = in_file(p.buffer)?;
+            let pos = self.text(p.buffer).ok()?.marker(p.marker)?;
+            Some(PlaceRecord { buffer, pos })
+        };
+        let places: Vec<_> = list.places.iter().filter_map(kept).collect();
+        let index = list.index.filter(|_| places.len() == list.places.len());
+        (places, index)
     }
 
     fn saved_registers(&self) -> SavedRegisters {
@@ -534,6 +585,14 @@ impl Ctx {
                     .filter_map(|(i, w)| {
                         let v = t.views.get(w).or_else(|| t.parked.get(w))?;
                         Some(ViewRecord::new(i, v))
+                    })
+                    .collect(),
+                marks: t
+                    .marks()
+                    .map(|(name, pos, g)| MarkRecord {
+                        name,
+                        pos,
+                        after: g == Gravity::Right,
                     })
                     .collect(),
                 visual: b.state == State::Visual,
@@ -718,6 +777,7 @@ impl Ctx {
                 rows: 0,
                 rect: None,
                 used,
+                places: PlaceList::default(),
             }));
         }
         self.tree.set_layout(layout, &made);
@@ -754,6 +814,10 @@ impl Ctx {
                 }
             }
             t.normalize_views();
+        }
+        for (r, w) in windows.iter().zip(&made) {
+            let list = self.restored_places(r, ids);
+            self.set_places(*w, list);
         }
         let alive: Vec<WindowId> = made
             .iter()
@@ -795,6 +859,23 @@ impl Ctx {
             }
         }
         Ok(true)
+    }
+
+    /// A window's places again, those in buffers that came back.
+    fn restored_places(&mut self, r: &WindowRecord, ids: &[Option<BufferId>]) -> PlaceList {
+        let mut places = vec![];
+        for p in &r.places {
+            let buffer = ids.get(p.buffer).copied().flatten();
+            let Some((buffer, Ok(t))) = buffer.map(|b| (b, self.text_mut(b))) else {
+                continue;
+            };
+            if let Ok(marker) = t.add_marker(fit(t, p.pos), Gravity::Left) {
+                places.push(Place { buffer, marker });
+            }
+        }
+        let index = r.place_index.filter(|i| *i < places.len());
+        let index = index.filter(|_| places.len() == r.places.len());
+        PlaceList { places, index }
     }
 
     /// A saved view, with its positions where the buffer's state lets a cursor rest.
@@ -874,6 +955,15 @@ impl Ctx {
             rows: 0,
         });
         t.normalize_views();
+        for m in &record.marks {
+            let g = if m.after {
+                Gravity::Right
+            } else {
+                Gravity::Left
+            };
+            t.set_mark(m.name, fit(t, m.pos), g)
+                .map_err(|e| e.to_string())?;
+        }
         Ok(Some(id))
     }
 

@@ -49,10 +49,15 @@ pub(crate) fn register_commands(reg: &mut Registry) {
         "find-file",
         "Open a file, starting from this buffer's directory, going down through directories on the way",
         |ctx, _| {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            // An app the Finder opens starts in `/`, and Emacs on macOS goes home from there.
+            let cwd = std::env::current_dir()
+                .ok()
+                .filter(|d| d != Path::new("/"))
+                .or_else(|| home.clone())
+                .unwrap_or_else(|| "/".into());
             let here = ctx.focused_buffer().and_then(|b| ctx.directory(b));
             let dir = here.map_or(cwd, Path::to_path_buf);
-            let home = std::env::var_os("HOME").map(PathBuf::from);
             let line = line_for(&dir, home.as_deref());
             ask_for_file(ctx, dir, home, &line);
             Ok(())
@@ -161,7 +166,7 @@ fn ask_for_file(ctx: &mut Ctx, dir: PathBuf, home: Option<PathBuf>, line: &str) 
     });
 }
 
-fn open_in_window(ctx: &mut Ctx, path: &Path) -> crate::error::Result {
+pub(crate) fn open_in_window(ctx: &mut Ctx, path: &Path) -> crate::error::Result {
     let file = ctx.open_file(path)?;
     ctx.show(file, ShowIn::Current)?;
     Ok(())
@@ -169,7 +174,7 @@ fn open_in_window(ctx: &mut Ctx, path: &Path) -> crate::error::Result {
 
 /// The prompt's starting line for a directory: ending in `/`, and with `~` for the home directory
 /// as Emacs abbreviates it.
-fn line_for(dir: &Path, home: Option<&Path>) -> String {
+pub(crate) fn line_for(dir: &Path, home: Option<&Path>) -> String {
     let shown = home
         .and_then(|h| dir.strip_prefix(h).ok())
         .map(|rest| Path::new("~").join(rest));

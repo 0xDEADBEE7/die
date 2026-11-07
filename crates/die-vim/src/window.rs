@@ -146,6 +146,7 @@ fn mru(ctx: &mut Ctx, a: &Args) -> Result {
 fn split(ctx: &mut Ctx, a: &Args, side: Side, blank: bool) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let new = ctx.split_window(w, side)?;
+    crate::marks::copy_jumps(ctx, w, new);
     match a.count {
         Some(n) => {
             let (cols, rows) = ctx.window_size(new).unwrap_or((1, 1));

@@ -16,6 +16,7 @@
 use crate::Vim;
 use crate::grammar::{Fail, Goal, Kind, Operator, Start, Target, buffer_window, forget_goal};
 use crate::insert::{self, Entry, MAX_REPEAT};
+use crate::marks;
 use crate::motions;
 use crate::objects::Object;
 use crate::registers;
@@ -360,6 +361,7 @@ pub fn apply(
 ) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let head = cursor(ctx.text(b)?, w)?;
+    let end = marks::track(ctx.text_mut(b)?, span.end);
     let session = (op == Operator::Change).then(|| again.clone());
     let done = match op {
         Operator::Delete => delete(ctx, b, w, register, span, how),
@@ -372,6 +374,13 @@ pub fn apply(
             recase(ctx.text_mut(b)?, w, op, span, how.past_end)
         }
     };
+    // Your Evil's `g~` counts its start up to its end as it goes, and sets `[` from that.
+    let start = if op == Operator::InvertCase && !how.past_end {
+        span.end
+    } else {
+        span.beg
+    };
+    marks::operated(ctx.text_mut(b)?, start, end)?;
     // Evil's operators go to the range's start before they act, except `y` and `>`, so that's
     // where one that fails leaves the cursor. Only one that fails: otherwise the edit comes
     // first (call 7).
@@ -503,7 +512,7 @@ fn yank(ctx: &mut Ctx, b: BufferId, w: WindowId, register: Option<char>, span: S
 }
 
 /// Spaces in a shift (scope §10).
-const SHIFT_WIDTH: usize = 4;
+pub const SHIFT_WIDTH: usize = 4;
 
 /// `>` and `<`: each line moves to the next multiple of 4 columns that way. Lines of
 /// nothing but spaces end up empty, and empty lines stay empty. The cursor stays in its
@@ -735,7 +744,9 @@ pub fn replace(ctx: &mut Ctx, a: &Args) -> Result {
         None,
         motion,
     )?;
+    let end = marks::track(t, span.end);
     replace_span(t, w, span, with.as_deref(), enter)?;
+    marks::operated(t, span.beg, end)?;
     repeat::commit(ctx, Change::of(a))
 }
 
@@ -809,6 +820,18 @@ pub fn join_from(ctx: &mut Ctx, a: &Args, start: usize, keep: bool) -> Result {
     } else {
         let joins = a.count.unwrap_or(1).clamp(2, last_line(t) + 1 - here) - 1;
         let bytes = after_line(t, here + joins) - t.line_start(here);
+        // Your Evil's `J` is an operator on count lines, one less than the lines it joins.
+        let lines = a.count.unwrap_or(1).max(1).min(joins + 1);
+        // The newline of one line is what the join takes, and the mark doesn't go past it.
+        let end = marks::track(
+            t,
+            if lines == 1 {
+                line_end(t, here)
+            } else {
+                after_line(t, here + lines - 1)
+            },
+        );
+        let beg = t.line_start(here);
         if joins > 1 && bytes > MAX_REPEAT {
             return Err(Error::Msg("Count too large".into()));
         }
@@ -828,6 +851,7 @@ pub fn join_from(ctx: &mut Ctx, a: &Args, start: usize, keep: bool) -> Result {
             t.set_cursor(w, t.line_start(here + 1));
             return Err(e);
         }
+        marks::operated(t, beg, end)?;
         if was_blank {
             insert::indent_from_above(t, w, here)?;
             cursor(t, w)?
@@ -942,15 +966,19 @@ pub fn paste(ctx: &mut Ctx, a: &Args, before: bool) -> Result {
     let pos = match (r.kind, before) {
         (RegKind::Line, true) => {
             let at = t.line_start(line);
+            let end = at + text.len();
             t.tx(Origin::User).insert(at, text).commit()?;
+            marks::covered(t, at, end.saturating_sub(1))?;
             indent_end(t, line)
         }
         (RegKind::Line, false) => {
             let at = line_end(t, line);
             let body = text.strip_suffix('\n').unwrap_or(&text);
+            let end = at + 1 + body.len();
             t.tx(Origin::User)
                 .insert(at, format!("\n{body}"))
                 .commit()?;
+            marks::covered(t, at + 1, end)?;
             indent_end(t, line + 1)
         }
         (_, _) => {
@@ -961,6 +989,7 @@ pub fn paste(ctx: &mut Ctx, a: &Args, before: bool) -> Result {
             };
             t.tx(Origin::User).insert(at, text.as_str()).commit()?;
             let end = at + text.len();
+            marks::covered(t, at, end)?;
             // `p` doesn't step back over a newline it pasted, and `P` does.
             if !before && t.line_start(t.line_of(end)) == end {
                 end
