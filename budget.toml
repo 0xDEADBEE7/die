@@ -31,9 +31,9 @@ name = "die-vim"
 path = "crates/die-vim"
 # 5,790 until the MVP run: the Evil keys left out of M0, marks and the jumplist. 7,000 until U6:
 # insert state's control keys, with Emacs's dabbrev behind C-p and C-n. 7,800 until W1: a click
-# ends a new line's claim on a blank line. 7,850 until U8: what a restart keeps of `.`, `n`, `;` and `gv`.
-# 8,050 until U3: `gf`, reading a file name at the cursor as ffap does.
-limit = 8100
+# ends a new line's claim on a blank line. 7,850 until U8: what a restart keeps of `.`, `n`, `;` and `gv`. 8,050 until V1: `:wa`, `:qa`, `:wqa`, `:xa` and `:x`.
+# 8,100 until U3: `gf`, reading a file name at the cursor as ffap does.
+limit = 8150
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -83,7 +83,7 @@ files = ["keys.rs", "keymap.rs", "describe.rs", "fed.rs"]
 [[module]]
 crate = "die-core"
 name = "ext, dispatch, rt"
-# 1,500 until U3: what `*grep*` holds, and each turn taking its rows.
+# 1,500 until V1's landing found it at 1,502 from another package, and U3 adds what `*grep*` holds.
 limit = 1510
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 

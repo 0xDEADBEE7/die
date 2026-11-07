@@ -149,6 +149,9 @@ impl Handover {
         let mut line = String::new();
         match BufReader::new(&stream).read_line(&mut line) {
             Ok(_) if line == FIRST_FRAME => {
+                // This process won't drop the handover: it exits holding it. The connection
+                // stands without the name, so each restart doesn't leave a file behind.
+                let _ = fs::remove_file(&self.path);
                 self.successor = Some(stream);
                 Ok(())
             }
