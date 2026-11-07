@@ -1,7 +1,7 @@
 //! The `:` command line. K11a gives it its input; V2 and V5 fill in what it does.
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
-use crate::{insert_keys, marks, substitute, visual, window};
+use crate::{insert_keys, substitute, visual, window};
 use die_core::{Args, BufferId, Ctx, Error, FileTarget, PromptSpec, Result, ShowIn, project_root};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -60,9 +60,9 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
         }
         "e" | "edit" => edit(ctx, rest),
         "b" | "buffer" => buffer(ctx, rest),
-        "cn" | "cne" | "cnex" | "cnext" => step_results(ctx, "next-error"),
+        "cn" | "cne" | "cnex" | "cnext" => ctx.run("next-error", &Args::default()),
         "cp" | "cpr" | "cpre" | "cprev" | "cprevi" | "cprevio" | "cpreviou" | "cprevious" => {
-            step_results(ctx, "previous-error")
+            ctx.run("previous-error", &Args::default())
         }
         "noh" | "nohl" | "nohlsearch" => {
             ctx.set_search_highlight(None);
@@ -76,15 +76,6 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
             ctx.run(name, &args)
         }
     }
-}
-
-/// `:cn` and `:cp`, which set a jump as your Evil's `next-error-hook` does.
-fn step_results(ctx: &mut Ctx, command: &str) -> Result {
-    let a = Args::default();
-    marks::before(ctx, &a, true);
-    let r = ctx.run(command, &a);
-    marks::after(ctx, &a, false);
-    r
 }
 
 /// The line without the range that only `:s` reads. `:'<,'>w` writes only those lines in your
