@@ -270,6 +270,39 @@ impl History {
         self.trim(limit);
     }
 
+    /// [`History::record`] for many changes of one command, in the order they were made.
+    pub fn record_many(
+        &mut self,
+        ops: Vec<Op>,
+        sel_before: Option<Selection>,
+        cmd: u64,
+        limit: Limit,
+    ) {
+        let mut ops = ops.into_iter();
+        let Some(first) = ops.next() else {
+            return;
+        };
+        self.record(
+            first,
+            sel_before,
+            cmd,
+            Limit {
+                steps: limit.steps.max(1),
+                ..limit
+            },
+        );
+        if let Some(Entry::Group(g)) = self.undo.last_mut() {
+            for op in ops {
+                g.bytes += op.removed.len() + op.inserted.len();
+                g.ops.push(op);
+                self.last_state += 1;
+            }
+            self.state = self.last_state;
+            g.after = self.state;
+        }
+        self.trim(limit);
+    }
+
     /// Drop the oldest steps until at most `limit.steps` remain and they hold at most
     /// `limit.bytes`. The newest step stays whatever its size, unless no steps are kept.
     pub(crate) fn trim(&mut self, limit: Limit) {

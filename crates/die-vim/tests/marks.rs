@@ -179,6 +179,67 @@ fn a_session_without_them_still_restores() {
     assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
 }
 
+fn long_buffers(ctx: &mut Ctx) -> WindowId {
+    let text: String = (0..1000).map(|i| format!("l{i}\n")).collect();
+    let a = ctx.create_text("a", &text);
+    ctx.create_text("b", &text);
+    let w = ctx.open_window(a, 80, 24).expect("a window");
+    ctx.focus(w);
+    w
+}
+
+#[test]
+fn a_mark_or_jump_into_another_buffer_shows_where_it_lands() {
+    let mut ctx = editor();
+    let w = long_buffers(&mut ctx);
+    let on_screen = |ctx: &Ctx| {
+        let t = ctx.text(ctx.window_buffer(w).unwrap()).unwrap();
+        let c = t.cursor(w).unwrap();
+        (t.line_of(c), t.screen_pos(w, c).is_some())
+    };
+    ctx.type_keys(":b b<CR>");
+    ctx.type_keys("500GmBgg:b a<CR>");
+    ctx.type_keys("'B");
+    assert_eq!(on_screen(&ctx), (499, true), "the mark");
+
+    ctx.type_keys("gg:b a<CR>");
+    ctx.type_keys("2<C-o>");
+    assert_eq!(on_screen(&ctx), (499, true), "the jump");
+}
+
+/// Your Evil's `evil-swap-out-markers`: a file's `A` to `Z` outlive its buffer.
+#[test]
+fn a_killed_files_mark_visits_the_file_again() {
+    let dir = std::env::temp_dir().join(format!("die-vim-killed-mark-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("f.txt");
+    std::fs::write(&path, "f0\nf1\nf2\nf3\n").unwrap();
+
+    let mut ctx = editor();
+    let (_, _, w) = two_buffers(&mut ctx);
+    let f = ctx.open_file(&path).expect("the file");
+    ctx.show(f, die_core::ShowIn::Current).expect("it shows");
+    ctx.type_keys("ggOnew<Esc>");
+    ctx.type_keys("3GmF");
+    ctx.type_keys(":b b<CR>");
+    assert!(ctx.kill(f));
+    ctx.run_until_idle();
+
+    ctx.type_keys("d`F");
+    assert_eq!(ctx.messages.len(), 1, "no operator: {:?}", ctx.messages);
+    assert_eq!(ctx.find_buffer("f.txt"), None, "and it doesn't open");
+
+    ctx.type_keys("`F");
+    let again = ctx.window_buffer(w).unwrap();
+    assert_eq!(ctx.file(again).map(|i| i.path.clone()), Some(path));
+    assert_eq!(at(&ctx, w).1, 2);
+    ctx.type_keys("ggmF:b b<CR>");
+    ctx.type_keys("'F");
+    assert_eq!(at(&ctx, w), (again, 0), "it's an ordinary mark again");
+    assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `die file:line` from the terminal in the next tile goes far with no key, in the buffer on
 /// screen as much as to another: `C-o` comes back.
 #[test]

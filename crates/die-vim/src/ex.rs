@@ -36,6 +36,9 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     let text = text.trim().trim_start_matches(':').trim_start();
     if let Some((range, rest)) = substitute::parse(text) {
+        // Your Evil gives `:s` `:jump`, and runs it with the hook a key's command gets. `:N` has
+        // no command, so it isn't a jump.
+        crate::marks::before(ctx, &Args::default(), true);
         return substitute::run(ctx, range, rest);
     }
     let text = without_range(text)?;

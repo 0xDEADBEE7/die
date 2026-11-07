@@ -769,14 +769,25 @@ pub fn replace_span(
     }
     let with = with.unwrap_or_default();
     let (mut new, mut last, mut p) = (String::new(), 0, span.beg);
+    let plain = !t
+        .decorations()
+        .any(|(_, d)| matches!(d.deco, die_core::Deco::Hide { .. }));
     while p < span.end {
-        last = new.len();
-        if t.rope().byte(p) == b'\n' {
-            new.push('\n');
-        } else {
-            new.push_str(with);
+        // With nothing hidden, an ASCII character followed by another is a stop by itself, so a
+        // chunk of them needs no question per character, which a whole file can't afford.
+        let (chunk, at, ..) = t.rope().chunk_at_byte(p);
+        let bytes = &chunk.as_bytes()[p - at..chunk.len().min(span.end - at)];
+        let ascii = |b: &&[u8]| plain && b[0].is_ascii() && b[1].is_ascii();
+        let run = bytes.windows(2).take_while(ascii).count();
+        for &c in &bytes[..=run] {
+            last = new.len();
+            if c == b'\n' {
+                new.push('\n');
+            } else {
+                new.push_str(with);
+            }
         }
-        p = next_stop(t, p).unwrap_or(span.end);
+        p = next_stop(t, p + run).unwrap_or(span.end);
     }
     t.tx(Origin::User)
         .replace(span.beg..span.end, new)
