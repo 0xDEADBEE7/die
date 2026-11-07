@@ -91,7 +91,11 @@ fn leader_hk_describes_the_whole_sequence_without_running_it() {
     assert_eq!(text(&h, b), "abc\n", "x deleted nothing");
     assert!(help(&h).contains("x in Normal runs"), "{}", help(&h));
     let screen = h.screen();
-    assert_eq!(screen.lines().last(), Some(""), "the question has gone");
+    assert_eq!(
+        screen.split('\n').next_back(),
+        Some(""),
+        "the question has gone"
+    );
     assert_eq!(h.window_list().len(), 2, "the same window, used again");
 }
 
@@ -113,7 +117,11 @@ fn cmd_v_pastes_a_word_or_a_path_into_every_prompt() {
     h.fake_clipboard().copy_from_outside("bar\n");
 
     typed(&mut h, ":s/<D-v>/X/<CR>");
-    assert_eq!(text(&h, b), "foo X foo\n", "on :, and its last newline goes");
+    assert_eq!(
+        text(&h, b),
+        "foo X foo\n",
+        "on :, and its last newline goes"
+    );
 
     h.fake_clipboard().copy_from_outside("foo");
     typed(&mut h, "$/<D-v><CR>");
@@ -124,7 +132,11 @@ fn cmd_v_pastes_a_word_or_a_path_into_every_prompt() {
     h.fake_clipboard().copy_from_outside("other-b");
     typed(&mut h, "\\]<D-v>");
     assert_eq!(h.prompt_text(), Some("other-b"));
-    assert_eq!(h.prompt_candidates(), ["other-buffer"], "it filters the list");
+    assert_eq!(
+        h.prompt_candidates(),
+        ["other-buffer"],
+        "it filters the list"
+    );
     typed(&mut h, "<CR>");
     assert_eq!(h.focused_buffer(), Some(other));
 

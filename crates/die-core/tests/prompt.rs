@@ -365,14 +365,20 @@ fn messages_follow_their_end_in_a_window_at_the_end() {
 
     ctx.messages.push("newest".into());
     let scene = ctx.scene();
-    let shown = (0..scene.rows).map(|r| scene.row_text(r)).collect::<Vec<_>>();
+    let shown = (0..scene.rows)
+        .map(|r| scene.row_text(r))
+        .collect::<Vec<_>>();
     assert!(shown.iter().any(|r| r == "newest"), "{shown:?}");
     assert_eq!(ctx.text(log).unwrap().cursor(w), Some(start_of(&ctx, 30)));
 
     ctx.text_mut(log).unwrap().set_cursor(w, 0);
     ctx.messages.push("one more".into());
     ctx.scene();
-    assert_eq!(ctx.text(log).unwrap().cursor(w), Some(0), "a cursor elsewhere stays");
+    assert_eq!(
+        ctx.text(log).unwrap().cursor(w),
+        Some(0),
+        "a cursor elsewhere stays"
+    );
 }
 
 #[test]
@@ -591,7 +597,11 @@ fn the_list_covers_the_windows_and_marks_the_chosen_row_and_the_match() {
         ctx.scene();
         ctx.text(long).unwrap().scroll(w).unwrap().0
     };
-    assert_eq!(scroll(&mut ctx, 7), 0, "over the list, nothing under it moves");
+    assert_eq!(
+        scroll(&mut ctx, 7),
+        0,
+        "over the list, nothing under it moves"
+    );
     assert_ne!(scroll(&mut ctx, 0), 0, "above it, the window scrolls");
 }
 
@@ -784,7 +794,11 @@ fn command_palette_runs_what_is_chosen_with_its_count() {
 
     ctx.run("command-palette", &Args::default()).unwrap();
     ctx.type_keys("to<D-h>");
-    assert_eq!(*log.borrow(), [None], "the DIE layer runs with a prompt open");
+    assert_eq!(
+        *log.borrow(),
+        [None],
+        "the DIE layer runs with a prompt open"
+    );
     assert_eq!(ctx.prompt_text(), Some("to"), "and the prompt stays");
     ctx.type_keys("<Esc>");
     log.borrow_mut().clear();
@@ -1108,7 +1122,10 @@ fn kill_buffer_kills_this_one_by_default_or_the_chosen_one() {
         ctx.show(log, ShowIn::Current).unwrap();
         ctx.run("kill-buffer", &Args::default()).unwrap();
         ctx.type_keys("<CR>");
-        assert!(!ctx.is_live(log), "<CR> takes the buffer it's on, even the log");
+        assert!(
+            !ctx.is_live(log),
+            "<CR> takes the buffer it's on, even the log"
+        );
         assert_eq!(ctx.focused_buffer(), Some(t));
 
         ctx.messages.push("again".into());
@@ -1118,7 +1135,10 @@ fn kill_buffer_kills_this_one_by_default_or_the_chosen_one() {
 
         ctx.run("kill-buffer", &Args::default()).unwrap();
         ctx.type_keys("<CR>");
-        assert_eq!(ctx.buffer_name(ctx.focused_buffer().unwrap()), Some("*scratch*"));
+        assert_eq!(
+            ctx.buffer_name(ctx.focused_buffer().unwrap()),
+            Some("*scratch*")
+        );
         assert_eq!(ctx.state(), State::Normal);
 
         ctx.run("switch-buffer", &Args::default()).unwrap();
@@ -1127,7 +1147,10 @@ fn kill_buffer_kills_this_one_by_default_or_the_chosen_one() {
         assert_eq!(ctx.focused_buffer(), Some(log), "the log is on offer");
         ctx.run("kill-buffer", &Args::default()).unwrap();
         ctx.type_keys("<CR>");
-        assert_eq!(ctx.buffer_name(ctx.focused_buffer().unwrap()), Some("*scratch*"));
+        assert_eq!(
+            ctx.buffer_name(ctx.focused_buffer().unwrap()),
+            Some("*scratch*")
+        );
     }
 
     let mut ctx = ctx();

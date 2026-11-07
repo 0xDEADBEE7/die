@@ -219,7 +219,10 @@ impl Ctx {
         if self.prompt.is_some() {
             // The DIE layer stays in reach: `<D-q>` isn't a key to type into a prompt.
             let bound = |(_, km): (String, &Keymap)| km.command_for_exactly(state, &ev);
-            let layer = ev.mods.super_.then(|| self.layers(buf).into_iter().find_map(bound));
+            let layer = ev
+                .mods
+                .super_
+                .then(|| self.layers(buf).into_iter().find_map(bound));
             if let Some(Some(name)) = layer {
                 return self.run_key(&name, vec![ev], win, buf);
             }

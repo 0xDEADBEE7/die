@@ -96,6 +96,6 @@ impl Ctx {
 /// Where the last line with text on it starts: the line after the final newline holds nothing.
 fn last_line_start(t: &TextBuf) -> usize {
     let lines = t.line_count();
-    let ends_in_newline = t.len() > 0 && t.line_start(lines - 1) == t.len();
+    let ends_in_newline = !t.is_empty() && t.line_start(lines - 1) == t.len();
     t.line_start(lines - 1 - usize::from(ends_in_newline))
 }
