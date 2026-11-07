@@ -225,6 +225,7 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
         }
         t.end_undo_group();
     }
+    r = r.and(crate::marks::insert_ended(t, cursor(t)));
     let p = stepped_back(t, w, cursor(t));
     t.set_cursor(w, p);
     ctx.set_state_of(b, State::Normal);
