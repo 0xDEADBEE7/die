@@ -30,8 +30,9 @@ note = "guard 7: 5k per build, 7k in total"
 name = "die-vim"
 path = "crates/die-vim"
 # 5,790 until the MVP run: the Evil keys left out of M0, marks and the jumplist. 7,000 until U6:
-# insert state's control keys, with Emacs's dabbrev behind C-p and C-n.
-limit = 7800
+# insert state's control keys, with Emacs's dabbrev behind C-p and C-n. 7,800 until W1: a click
+# ends a new line's claim on a blank line. 7,850 until U8: what a restart keeps of `.`, `n`, `;` and `gv`.
+limit = 8050
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -120,8 +121,9 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 [[module]]
 crate = "die-core"
 name = "session"
-# 1,250 until U7, whose marks and jump lists in session.json are about 50 lines.
-limit = 1305
+# 1,250 until U7, whose marks and jump lists in session.json are about 50 lines. 1,305 until U8:
+# what an extension keeps, by name, whole and by buffer, is about 80.
+limit = 1385
 # 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
 # held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.

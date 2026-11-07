@@ -18,6 +18,7 @@ mod ex;
 mod grammar;
 mod insert;
 mod insert_keys;
+mod kept;
 mod marks;
 mod motions;
 mod objects;
@@ -34,6 +35,7 @@ mod window;
 pub use window::quit_app;
 
 use die_core::key_notation;
+use die_core::session::Kept;
 use die_core::{
     Args, BufferId, Ctx, Dir, Error, Extension, Prefix, Registry, Result, Shape, State, WindowId,
 };
@@ -233,6 +235,7 @@ impl Extension for Vim {
         ctx.set_cursor_rest(text::rest_pos);
         ctx.set_insert_end(insert::stepped_back);
         ctx.set_jump_rule(marks::before_far_move);
+        ctx.set_prompt_register(registers::for_prompt);
         // A buffer killed in insert state never gets its Escape, nor one with an
         // operator waiting its motion.
         ctx.on_buffer_killed(|ctx, b| {
@@ -247,6 +250,14 @@ impl Extension for Vim {
         })
         .detach();
         Ok(())
+    }
+
+    fn save_session(&self, ctx: &Ctx) -> Kept {
+        kept::save(self, ctx)
+    }
+
+    fn restore_session(&mut self, ctx: &mut Ctx, saved: Kept) -> Result {
+        kept::restore(self, ctx, &saved)
     }
 
     fn register(&mut self, reg: &mut Registry) {

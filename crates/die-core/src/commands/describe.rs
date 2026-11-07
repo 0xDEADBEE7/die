@@ -6,7 +6,7 @@ use crate::ext::*;
 use crate::ids::BufferId;
 use crate::keymap::*;
 use crate::keys::*;
-use crate::prompt::PromptSpec;
+use crate::prompt::{PromptSpec, recent_first};
 use crate::text::Origin;
 use crate::workspace::{ShowIn, Side};
 use std::fmt;
@@ -272,10 +272,11 @@ pub(super) fn register(reg: &mut Registry) {
         "describe-command",
         "Choose a command by name and show its doc, its owner and every key bound to it",
         |ctx, _| {
-            let names: Vec<String> = ctx.command_names().iter().map(|n| n.to_string()).collect();
+            let names = ctx.command_names().iter().map(|n| n.to_string()).collect();
+            // A history of its own: what you looked up isn't what the palette should offer first.
             let spec = PromptSpec::new("Describe command: ")
-                .history("command")
-                .candidates(names);
+                .history("describe-command")
+                .candidates(recent_first(ctx.prompt_history("describe-command"), names));
             ctx.prompt(spec, |ctx, name| {
                 let Some(name) = name.filter(|n| !n.is_empty()) else {
                     return Ok(());
