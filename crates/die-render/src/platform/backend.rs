@@ -148,6 +148,11 @@ pub mod appkit {
         pub fn app_active(&self) -> bool {
             match self.0 {}
         }
+
+        /// Never runs.
+        pub fn come_to_front(&self) {
+            match self.0 {}
+        }
     }
 }
 

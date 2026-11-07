@@ -39,6 +39,7 @@
         { "case": "operators/dj-last-line", "note": "dj acts on the last line, as Evil's does; Vim's fails and deletes nothing", "fixture": "hand-written/operators.json" },
         { "case": "operators/d5j-goes-as-far-as-it-can", "note": "the column is the one d5j started in, as for every linewise d in Evil (S5 row 2)", "fixture": "hand-written/operators.json" },
         { "case": "operators/J-last-line", "note": "Vim's J fails on the last line; Evil's without the final newline does nothing, and with it takes the newline", "fixture": "hand-written/operators.json" },
+        { "case": "operators/gJ-last-line", "note": "the same for gJ", "fixture": "hand-written/operators.json" },
         { "case": "operators/2D-last-line", "note": "Vim's fails, as its count can't be met; Evil's lands on the empty line and takes the whole line", "fixture": "hand-written/operators.json" },
         { "case": "textobjects/dap-before", "note": "the column is the one dap started in", "fixture": "hand-written/textobjects.json" },
         { "case": "textobjects/dap-last-paragraph", "note": "the column is the one dap started in", "fixture": "hand-written/textobjects.json" },
@@ -261,6 +262,23 @@
         { "case": "marks/g-semi-same-line-is-one", "fixture": "hand-written/marks.json" },
         { "case": "marks/g-semi-then-comma", "fixture": "hand-written/marks.json" },
         { "case": "marks/g-semi-three-lines", "fixture": "hand-written/marks.json" }
+      ]
+    },
+    {
+      "rule": "a count of zero",
+      "kind": "emacs-artifact",
+      "evil": "C-u 0 is Emacs's prefix argument of 0, so j moves nothing. Only C-u can type it, since a bare 0 is a motion.",
+      "die_vim": "A count of 0 counts as no count, as for every other motion here, so j moves one line.",
+      "cases": [{ "case": "universal-argument/c-u-zero-is-a-zero-count", "fixture": "hand-written/universal-argument.json" }]
+    },
+    {
+      "rule": "an operator C-u cuts short",
+      "kind": "evil-bug",
+      "evil": "d then C-u deletes an empty range: every kill register and the clipboard end up holding empty text, and what they held is gone. C-u's count then goes to the next command.",
+      "die_vim": "The same, except that the operator kills nothing, so the registers and the clipboard stay as they were.",
+      "cases": [
+        { "case": "universal-argument/operator-then-c-u-drops-the-operator", "fixture": "hand-written/universal-argument.json" },
+        { "case": "universal-argument/operator-count-then-c-u-drops-both", "fixture": "hand-written/universal-argument.json" }
       ]
     }
   ]
