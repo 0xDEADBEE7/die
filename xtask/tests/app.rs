@@ -233,6 +233,117 @@ fn the_restart_loop_refuses_what_is_wrong() {
     assert!(holds_the_seed(&text.replace("Cols", "Rows")).is_err());
 }
 
+/// The `die` a terminal runs, through a link as `~/.local/bin/die` is, from `dir`. It has to
+/// print nothing and exit 0.
+fn die_from_a_terminal(app: &App, args: &[&str]) {
+    let link = app.dir.join("die");
+    if !link.exists() {
+        std::os::unix::fs::symlink(app.app.join("Contents/MacOS/die"), &link).unwrap();
+    }
+    let out = Command::new(link)
+        .arg("--background")
+        .args(args)
+        .current_dir(&app.dir)
+        .env_remove("PWD")
+        .env("DIE_STATE_DIR", &app.state)
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{}: {said}", out.status);
+    assert!(said.is_empty() && out.stdout.is_empty(), "{said}");
+}
+
+/// The bytes before this line of `text`.
+fn offset_of_line(text: &str, line: usize) -> u64 {
+    let lines = text.split_inclusive('\n').take(line - 1);
+    lines.map(str::len).sum::<usize>() as u64
+}
+
+/// The session's cursor in the buffer of this name, once it has one.
+fn cursor_in(app: &App, name: &str) -> Option<u64> {
+    let session = std::fs::read_to_string(app.state.join("session.json")).ok()?;
+    let session: serde_json::Value = serde_json::from_str(&session).ok()?;
+    let buffers = session["buffers"].as_array()?;
+    let found = buffers.iter().find(|b| b["name"] == name)?;
+    found["cursor"].as_u64()
+}
+
+/// With nothing running the terminal's `die` starts an instance through `open`, and exits. After
+/// that it hands each file to that instance, at its line, and is gone: one process stays.
+#[test]
+#[ignore = "window: runs in ci --full"]
+fn die_file_starts_an_instance_and_then_opens_files_in_it_at_their_lines() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let app = App::build("client");
+    let text = "one\ntwo\nthree\nfour\n";
+    std::fs::write(app.dir.join("a.txt"), text).unwrap();
+    std::fs::write(app.dir.join("b.txt"), text).unwrap();
+    die_from_a_terminal(&app, &["a.txt:2"]);
+    app.wait_for("the instance to listen", || {
+        app.state.join("open.sock").exists()
+    });
+    let first = app.holder().unwrap();
+    app.wait_for("the first file at its line", || {
+        cursor_in(&app, "a.txt") == Some(offset_of_line(text, 2))
+    });
+    die_from_a_terminal(&app, &["b.txt:3:2:"]);
+    app.wait_for("the second file at its line and column", || {
+        cursor_in(&app, "b.txt") == Some(offset_of_line(text, 3) + 1)
+    });
+    // A launch through `open` that finds the lock held sends its files on too, and goes.
+    std::fs::write(app.dir.join("c.txt"), text).unwrap();
+    let c = app.dir.join("c.txt:4");
+    app.open(&["-n"], &["--background", c.to_str().unwrap()]);
+    app.wait_for("the third file at its line", || {
+        cursor_in(&app, "c.txt") == Some(offset_of_line(text, 4))
+    });
+    app.wait_for("one process", || app.pids() == [first]);
+}
+
+/// A restart moves the listener: what's sent after one reaches the new instance.
+#[test]
+#[ignore = "window: runs in ci --full"]
+fn die_file_reaches_the_new_instance_after_a_restart() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let app = App::build("client-restart");
+    std::fs::write(app.dir.join("a.txt"), "one\ntwo\n").unwrap();
+    app.open(&[], &["--restart-after-frame"]);
+    app.wait_for("restart", || app.state.join("restart.log").exists());
+    die_from_a_terminal(&app, &["a.txt:2"]);
+    app.wait_for("the file at its line", || {
+        cursor_in(&app, "a.txt") == Some(4)
+    });
+    app.wait_for("old instance gone", || app.pids().len() == 1);
+    assert_eq!(app.pids(), [app.holder().unwrap()]);
+}
+
+#[test]
+fn the_link_goes_on_a_path_that_has_its_directory_and_nothing_is_overwritten() {
+    use xtask::app::link_command;
+    let home = std::env::temp_dir().join(format!("die-app-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let app = home.join("Applications/DIE.app");
+    let link = home.join(".local/bin/die");
+    let line = link_command(&home, &app, "/usr/bin".as_ref()).unwrap();
+    assert!(line.contains("export PATH="), "{line}");
+    assert!(!link.exists() && !link.is_symlink());
+    let on_path = std::env::join_paths(["/usr/bin".as_ref(), home.join(".local/bin").as_path()]);
+    let on_path = on_path.unwrap();
+    // Twice: a link already there is replaced.
+    for _ in 0..2 {
+        link_command(&home, &app, &on_path).unwrap();
+        let to = std::fs::read_link(&link).unwrap();
+        assert_eq!(to, app.join("Contents/MacOS/die"));
+    }
+    std::fs::remove_file(&link).unwrap();
+    std::fs::write(&link, "mine").unwrap();
+    let line = link_command(&home, &app, &on_path).unwrap();
+    assert!(line.contains("left alone"), "{line}");
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "mine");
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
 #[test]
 fn a_restart_hands_over_in_time() {
     let _one = ONE_AT_A_TIME.lock().unwrap();
