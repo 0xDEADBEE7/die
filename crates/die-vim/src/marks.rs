@@ -123,6 +123,21 @@ pub fn after(ctx: &mut Ctx, a: &Args, quiet: bool) {
     let _ = ctx.with_ext(|v: &mut Vim, _| v.seen.insert(w, (b, pos)));
 }
 
+/// [`Ctx::set_jump_rule`]: this window is about to go far with no key. A jump, as ahead of a
+/// command Evil gives `:jump`, and the place counts as seen, so the next key's [`crossed`] doesn't
+/// set an older one on top of it.
+pub fn before_far_move(ctx: &mut Ctx, w: WindowId) {
+    let Some(b) = ctx.window_buffer(w) else {
+        return;
+    };
+    let Some(pos) = cursor_of(ctx, b, w) else {
+        return;
+    };
+    crossed(ctx, w, b);
+    set_jump(ctx, w, (b, pos));
+    let _ = ctx.with_ext(|v: &mut Vim, _| v.seen.insert(w, (b, pos)));
+}
+
 /// A window that shows another buffer than it did last time sets a jump where it was.
 fn crossed(ctx: &mut Ctx, w: WindowId, now: BufferId) {
     let seen = ctx.with_ext(|v: &mut Vim, _| v.seen.get(&w).copied());
