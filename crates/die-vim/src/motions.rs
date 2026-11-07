@@ -334,7 +334,11 @@ fn unmatched(s: &Start, open: u8, close: u8, forward: bool) -> Result<Target, Fa
             was
         })
         .collect();
-    let (want, other) = if forward { (close, open) } else { (open, close) };
+    let (want, other) = if forward {
+        (close, open)
+    } else {
+        (open, close)
+    };
     let side = in_string.get(s.pos).copied().unwrap_or(false);
     let (mut left, mut depth) = (s.n(), 0usize);
     let mut step = |i: usize| {

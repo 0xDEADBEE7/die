@@ -186,8 +186,16 @@ fn quit(ctx: &mut Ctx, a: &Args) -> Result {
 /// `C-^`: the buffer used most recently that no window shows, or else the most recent other.
 pub fn alternate(ctx: &mut Ctx, a: &Args) -> Result {
     let (here, _) = buffer_window(ctx, a)?;
-    let shown: Vec<_> = ctx.window_list().into_iter().filter_map(|w| ctx.window_buffer(w)).collect();
-    let others: Vec<_> = ctx.buffer_list().into_iter().filter(|b| *b != here).collect();
+    let shown: Vec<_> = ctx
+        .window_list()
+        .into_iter()
+        .filter_map(|w| ctx.window_buffer(w))
+        .collect();
+    let others: Vec<_> = ctx
+        .buffer_list()
+        .into_iter()
+        .filter(|b| *b != here)
+        .collect();
     let unseen = others.iter().find(|b| !shown.contains(b));
     let Some(&other) = unseen.or(others.first()) else {
         return Err(Error::Msg("No other buffer".into()));
@@ -200,7 +208,11 @@ pub fn alternate(ctx: &mut Ctx, a: &Args) -> Result {
 /// Evil's follow the window's own history, which core doesn't keep.
 pub fn buffer_step(ctx: &mut Ctx, forward: bool) -> Result {
     let (here, _) = buffer_window(ctx, &Args::default())?;
-    let mut files: Vec<_> = ctx.buffer_list().into_iter().filter(|b| ctx.file(*b).is_some()).collect();
+    let mut files: Vec<_> = ctx
+        .buffer_list()
+        .into_iter()
+        .filter(|b| ctx.file(*b).is_some())
+        .collect();
     files.sort();
     let after = files.iter().position(|b| *b == here);
     let n = files.len();
@@ -225,7 +237,10 @@ pub fn delete_buffer(ctx: &mut Ctx, force: bool) -> Result {
         return Err(Error::Msg(why));
     }
     let list = ctx.window_list();
-    let showing: Vec<_> = list.into_iter().filter(|w| ctx.window_buffer(*w) == Some(b)).collect();
+    let showing: Vec<_> = list
+        .into_iter()
+        .filter(|w| ctx.window_buffer(*w) == Some(b))
+        .collect();
     ctx.kill(b);
     for w in showing {
         // The last window stays, on the buffer that took over.
