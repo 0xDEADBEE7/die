@@ -40,28 +40,17 @@ const CAPS_LOCK: u16 = 57;
 const SLASH: u16 = 44;
 const RETURN: u16 = 36;
 
-/// A process's resource use, as the first version of `proc_pid_rusage`'s record has it.
-#[repr(C)]
-#[derive(Default)]
-struct Rusage {
-    _uuid: [u8; 16],
-    /// User time, system time, then idle-package wakeups and timer interrupt wakeups.
-    _times: [u64; 2],
-    wakeups: [u64; 2],
-    _rest: [u64; 6],
-}
-
 unsafe extern "C" {
-    fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut Rusage) -> i32;
+    fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
 }
 
-/// How many times the OS has woken this process's threads. It's what costs battery, where the
-/// loop's own count sees neither other threads nor a turn that takes no wake.
+/// How many times the OS has woken this process's threads, which is what costs battery.
 pub fn process_wakeups() -> u64 {
-    let mut usage = Rusage::default();
-    // SAFETY: flavor 0 fills exactly this record, which lives through the call.
-    let _ = unsafe { proc_pid_rusage(std::process::id() as i32, 0, &raw mut usage) };
-    usage.wakeups[0] + usage.wakeups[1]
+    // rusage_info_v0: a 16-byte id, user and system time, the two kinds of wakeup, and 6 more.
+    let mut usage = [0u64; 12];
+    // SAFETY: flavor 0 fills 96 bytes, which `usage` is, and it lives through the call.
+    let _ = unsafe { proc_pid_rusage(std::process::id() as i32, 0, usage.as_mut_ptr()) };
+    usage[4] + usage[5]
 }
 
 /// No default menu, and never activate the app on launch. With `dock`, it's a regular app

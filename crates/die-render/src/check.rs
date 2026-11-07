@@ -41,12 +41,9 @@ pub const NAMES: [&str; 11] = [
 const IDLE: Duration = Duration::from_secs(3);
 /// S1's check 4 is this long, which is what makes its CPU figure mean anything.
 const LONG_IDLE: Duration = Duration::from_secs(60);
-/// How long `idle-60` waits before it measures. A new app wakes about 10 times a second for about
-/// 15 s with no event reaching the loop and no timer of DIE's due, and then stops; and core's tick
-/// comes to rest 30 s after the last thing that happened.
+/// How long `idle-60` waits before it measures: a new app wakes about 10 times a second for about
+/// 15 s with no event reaching the loop, and core's tick rests 30 s after the last thing.
 const LONG_IDLE_SETTLE: Duration = Duration::from_secs(35);
-/// What `idle-60` allows of the OS's count: a day of it is what costs battery.
-const MOST_IDLE_WAKES_PER_SECOND: f64 = 1.0;
 const WAKE_SLICES: u32 = 6;
 const TICKS: u32 = 10;
 const RESIZE_STEPS: u32 = 120;
@@ -246,7 +243,7 @@ fn idle(r: &Remote, how_long: Duration) -> Outcome {
     let cpu_percent = (cpu1 - cpu0) / how_long.as_secs_f64() * 100.0;
     let (idle_frames, wakeups) = (f1 - f0, w1 - w0);
     if how_long == LONG_IDLE {
-        ensure(os_wakes < MOST_IDLE_WAKES_PER_SECOND, || {
+        ensure(os_wakes < 1.0, || {
             format!("{os_wakes:.2} wakes a second by the OS's count")
         })?;
     }
