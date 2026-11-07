@@ -156,10 +156,11 @@ fn place(text: &str, needle: &str, n: usize) -> (usize, usize) {
 fn same(got: &str, want: &str) {
     if got != want {
         let (g, w) = (got.lines(), want.lines());
-        let (n, (a, b)) = g.zip(w).enumerate().find(|(_, (a, b))| a != b).unwrap_or((
-            usize::MAX,
-            ("<ran out of lines>", "<ran out of lines>"),
-        ));
+        let (n, (a, b)) = g
+            .zip(w)
+            .enumerate()
+            .find(|(_, (a, b))| a != b)
+            .unwrap_or((usize::MAX, ("<ran out of lines>", "<ran out of lines>")));
         panic!("line {}:\n  got  {a:?}\n  want {b:?}", n.wrapping_add(1));
     }
 }
@@ -202,11 +203,7 @@ fn rename_a_function_across_files() {
     let last = place(&ex, "quit_app", count - 1);
     assert_eq!(
         d.at(),
-        (
-            "ex.rs".to_string(),
-            last.0,
-            last.1 + "leave_app".len() - 1
-        )
+        ("ex.rs".to_string(), last.0, last.1 + "leave_app".len() - 1)
     );
 
     // Through the rest of the results: the lines are where they were, so `:s` needs no search.
@@ -224,7 +221,10 @@ fn rename_a_function_across_files() {
     let call = place(&window, "quit_app", 0);
     assert_eq!(d.at(), ("window.rs".to_string(), call.0, call.1));
     d.keys("cioleave_app<Esc>/quit_app<CR>.:w<CR>");
-    same(&d.disk("window.rs"), &window.replace("quit_app", "leave_app"));
+    same(
+        &d.disk("window.rs"),
+        &window.replace("quit_app", "leave_app"),
+    );
 }
 
 /// Add a match arm: yank one and change it.
@@ -237,7 +237,11 @@ fn add_a_match_arm_by_yanking_and_changing_one() {
     let (line, _) = place(&ex, arm, 0);
 
     d.keys("/\"b\" <CR>yyp");
-    assert_eq!(d.at(), ("ex.rs".to_string(), line + 1, 9), "the pasted line");
+    assert_eq!(
+        d.at(),
+        ("ex.rs".to_string(), line + 1, 9),
+        "the pasted line"
+    );
     d.keys("ci\"bn<Esc>");
     d.keys("f|wci\"bnext<Esc>");
     d.keys("f=wcwnext_buffer<Esc>");
@@ -268,10 +272,7 @@ fn move_a_function_across_a_split() {
     d.keys(":vs<CR>");
     d.keys(":e window.rs<CR>");
     d.keys("/Quit, which<CR>dap");
-    assert_eq!(
-        d.text(),
-        format!("{}{}", &window[..start], &window[end..])
-    );
+    assert_eq!(d.text(), format!("{}{}", &window[..start], &window[end..]));
     d.keys("<C-w>wG");
     assert_eq!(d.at().0, "ex.rs");
     let last = d.at().1;
@@ -353,7 +354,11 @@ fn edit_a_table_with_a_visual_block() {
                    | layout   | size | <\n\
                    | session  | size | <\n";
     assert_eq!(d.text(), changed);
-    assert_eq!(d.at(), ("table.md".to_string(), 1, 17), "on the last character typed");
+    assert_eq!(
+        d.at(),
+        ("table.md".to_string(), 1, 17),
+        "on the last character typed"
+    );
 
     d.keys("uu");
     assert_eq!(d.text(), dropped);
@@ -483,6 +488,11 @@ fn undo_chains_after_all_of_that() {
         assert_eq!(&d.text(), want);
     }
     assert!(!d.h.text(d.h.focused_buffer().unwrap()).unwrap().modified());
+    assert_eq!(
+        d.at(),
+        ("window.rs".to_string(), 1, 1),
+        "back where it began"
+    );
     for want in seen.iter().skip(1) {
         d.keys("<C-r>");
         assert_eq!(&d.text(), want);
@@ -532,15 +542,25 @@ fn cargo_fmt_underneath_a_clean_buffer_and_a_dirty_one() {
     rewrite(&dirty, formatted);
     d.h.check_files();
     assert_eq!(d.text(), formatted, "a clean buffer follows");
-    assert_eq!(d.at(), ("clean.rs".to_string(), 3, 1), "and the cursor keeps its line");
+    assert_eq!(
+        d.at(),
+        ("clean.rs".to_string(), 3, 1),
+        "and the cursor keeps its line"
+    );
     assert_eq!(d.h.take_errors(), Vec::<String>::new());
     d.keys("^cwconst<Esc>:w<CR>");
-    assert_eq!(fs::read_to_string(&clean).unwrap(), formatted.replace("let b", "const b"));
+    assert_eq!(
+        fs::read_to_string(&clean).unwrap(),
+        formatted.replace("let b", "const b")
+    );
 
     d.keys(":b dirty.rs<CR>");
     let mine = format!("{unformatted}// mine\n");
     assert_eq!(d.text(), mine, "a dirty one stays");
-    let said = d.h.messages.iter().any(|m| m.contains("dirty.rs changed on disk"));
+    let said =
+        d.h.messages
+            .iter()
+            .any(|m| m.contains("dirty.rs changed on disk"));
     assert!(said, "{:?}", d.h.messages);
     let refused = d.failing(":w<CR>");
     assert_eq!(refused.len(), 1, "{refused:?}");
@@ -571,7 +591,13 @@ fn a_restart_half_way_and_the_keys_after_it_still_work() {
     let edited: String = edited
         .split_inclusive('\n')
         .enumerate()
-        .map(|(i, l)| if i + 1 == changed { format!("// {l}") } else { l.to_string() })
+        .map(|(i, l)| {
+            if i + 1 == changed {
+                format!("// {l}")
+            } else {
+                l.to_string()
+            }
+        })
         .collect();
     same(&d.text(), &edited);
     let cursor = ("window.rs".to_string(), changed + 1, 1);
@@ -589,12 +615,20 @@ fn a_restart_half_way_and_the_keys_after_it_still_work() {
     assert_eq!(d.at(), ("window.rs".to_string(), next.0, next.1));
     d.keys(".");
     let (l, c) = next;
-    assert_eq!(d.at(), ("window.rs".to_string(), l, c + 2), "typed where the cursor was");
+    assert_eq!(
+        d.at(),
+        ("window.rs".to_string(), l, c + 2),
+        "typed where the cursor was"
+    );
     d.keys("u");
     same(&d.text(), &edited);
     d.keys("0@a");
     let col = edited.lines().nth(l).unwrap().len().clamp(1, 3);
-    assert_eq!(d.at(), ("window.rs".to_string(), l + 1, col), "the macro's own j");
+    assert_eq!(
+        d.at(),
+        ("window.rs".to_string(), l + 1, col),
+        "the macro's own j"
+    );
     d.keys("u");
     same(&d.text(), &edited);
     // Each `u` is a jump, as in your Evil, so `n` is three back.
@@ -648,7 +682,11 @@ fn going_round_the_open_files() {
     d.keys("<C-^>");
     assert_eq!(d.at().0, "window.rs", "and back");
     d.keys(":bn<CR>");
-    assert_eq!(d.at().0, "ex.rs", "the order they opened, round to the first");
+    assert_eq!(
+        d.at().0,
+        "ex.rs",
+        "the order they opened, round to the first"
+    );
     d.keys(":bn<CR>");
     assert_eq!(d.at().0, "lib.rs");
     d.keys(":bp<CR>:bp<CR>");
@@ -664,7 +702,11 @@ fn going_round_the_open_files() {
     assert_eq!(d.h.window_list().len(), 2);
     d.keys(":bd!<CR>");
     assert_eq!(d.h.find_buffer("ex.rs"), None);
-    assert_eq!(d.h.window_list().len(), 1, "the windows that showed it close");
+    assert_eq!(
+        d.h.window_list().len(),
+        1,
+        "the windows that showed it close"
+    );
     same(&d.disk("ex.rs"), &ex);
 
     d.keys("xZZ");
