@@ -4,6 +4,9 @@
 //! after an expansion and another press brings in the word that follows the last one found.
 //!
 //! The case of what goes in follows Emacs's `dabbrev--substitute-expansion` and `replace-match`.
+//!
+//! `C-x C-n` and `C-x C-p`: Emacs's `hippie-expand`, as your Evil calls it. The line up to the
+//! cursor, from its first non-blank, expands to a whole line in the same way.
 
 use crate::Vim;
 use crate::grammar::buffer_window;
