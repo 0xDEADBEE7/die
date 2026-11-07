@@ -108,9 +108,12 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
                 return;
             };
             let _ = remote.call(move |shell, _| {
-                // Launched in front, from the Dock or Finder, it has the app but not yet the keyboard.
-                if frontmost || shell.app_active() {
+                // Launched in front, from the Dock or Finder, it gets the app but not the keyboard,
+                // and the app may come just after this frame.
+                if frontmost {
                     shell.take_focus();
+                } else {
+                    shell.take_focus_when_active();
                 }
                 shell.ctx().resume_session();
             });

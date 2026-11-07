@@ -226,11 +226,25 @@ pub fn char_key(a: &Args) -> Option<char> {
     })
 }
 
+/// How the count waiting in core's prefix came about, as Emacs's prefix argument has it. It's
+/// only read while a count waits, and only digits and `C-u` make one, so going stale does no harm.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum CountWas {
+    /// Digits: `C-u` keeps the number, and another digit adds to it.
+    #[default]
+    Digits,
+    /// `C-u`s: another multiplies by 4, and a digit starts a new number.
+    Universal,
+    /// Digits, then a `C-u` that kept them: a digit still adds, `C-u` starts again at 4, and `0`
+    /// is the motion.
+    Kept,
+}
+
 /// A count digit: `1`-`9`, and `0` after another digit. The count stays core's
 /// prefix for the next command, keeping any register already typed.
 pub fn count_digit(ctx: &mut Ctx, a: &Args, d: usize) -> Result {
-    let fresh = ctx.with_ext(|v: &mut Vim, _| std::mem::take(&mut v.universal))?;
-    let so_far = a.count.filter(|_| !fresh).unwrap_or(0);
+    let was = ctx.with_ext(|v: &mut Vim, _| std::mem::take(&mut v.count_was))?;
+    let so_far = a.count.filter(|_| was != CountWas::Universal).unwrap_or(0);
     ctx.set_prefix(Prefix {
         count: Some(so_far.saturating_mul(10).saturating_add(d)),
         register: a.register,
