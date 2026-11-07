@@ -36,7 +36,7 @@ path = "crates/die-vim"
 # 8,150 until V3: walking text by chunks, `r` over a whole file.
 # 8,200 until U6's review: C-x C-n, C-x C-p, S-Left and S-Right, the last of what your Evil's map
 # binds there.
-limit = 8400
+limit = 8500
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -82,7 +82,8 @@ files = ["layout.rs", "layout/"]
 crate = "die-core"
 name = "keys, keymaps, describe"
 # 650 until V3: a macro calling macros doesn't move what's waiting, and registers move uncopied.
-limit = 660
+# 660 until U6's review: `on_command_ended`, so a C-o can end on a command that isn't die-vim's.
+limit = 675
 files = ["keys.rs", "keymap.rs", "describe.rs", "fed.rs"]
 
 [[module]]
