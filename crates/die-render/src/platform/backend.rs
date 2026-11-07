@@ -22,6 +22,11 @@ pub mod appkit {
     use winit::event_loop::EventLoopBuilder;
     use winit::window::{Window, WindowAttributes};
 
+    /// Not counted here yet.
+    pub fn process_wakeups() -> u64 {
+        0
+    }
+
     /// Nothing to prepare.
     pub fn prepare_loop<T: 'static>(_: &mut EventLoopBuilder<T>, _: bool) -> Result<(), String> {
         Ok(())
