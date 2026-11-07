@@ -4,7 +4,7 @@
 //! the name, colons included, wins over reading them as numbers.
 
 use crate::text::TextBuf;
-use crate::{BufferId, Ctx, Result, ShowIn, State};
+use crate::{BufferId, Ctx, Result, ShowIn, Side, State};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -124,17 +124,15 @@ impl Ctx {
     }
 
     /// Open a target as `:e` would, in the focused window, with a missing file as a new buffer,
-    /// and put the cursor there. A terminal isn't replaced: if the focused window is in
-    /// passthrough or copy state, the one used last that isn't takes the file and the focus.
+    /// and put the cursor there, keeping the place it leaves by [`Ctx::set_jump_rule`]. A terminal
+    /// isn't replaced: if the focused window is in passthrough or copy state, the one used last
+    /// that isn't takes the file and the focus. With none, a new one on its left does, as `C-w v`
+    /// makes, unless it's too small to split.
     pub fn open_target(&mut self, target: &FileTarget) -> Result<BufferId> {
         let buf = self.open_file(&target.path)?;
-        if self.focused_buffer().is_some_and(|b| self.is_terminal(b)) {
-            let others = self.windows.iter();
-            let others = others.filter(|(_, w)| !self.is_terminal(w.buffer));
-            let other = others.max_by_key(|(_, w)| w.used).map(|(id, _)| id);
-            if let Some(other) = other {
-                self.focus(other);
-            }
+        self.leave_terminal();
+        if let (Some(_), Some(w)) = (target.line, self.focused()) {
+            self.keep_place(w);
         }
         let shown = self.show(buf, ShowIn::Current)?;
         if let (Some(w), Some(line)) = (shown, target.line) {
@@ -144,5 +142,18 @@ impl Ctx {
             self.text_mut(buf)?.set_cursor(w, pos);
         }
         Ok(buf)
+    }
+
+    fn leave_terminal(&mut self) {
+        let in_terminal = self.focused_buffer().is_some_and(|b| self.is_terminal(b));
+        let Some(here) = self.focused().filter(|_| in_terminal) else {
+            return;
+        };
+        let others = self.windows.iter();
+        let others = others.filter(|(_, w)| !self.is_terminal(w.buffer));
+        let other = others.max_by_key(|(_, w)| w.used).map(|(id, _)| id);
+        if let Some(w) = other.or_else(|| self.split_window(here, Side::Left).ok()) {
+            self.focus(w);
+        }
     }
 }

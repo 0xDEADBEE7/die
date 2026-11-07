@@ -12,6 +12,7 @@ use crate::insert_keys;
 use crate::operators;
 use crate::text::{Chars, Class, class, normal_pos, same_word};
 use crate::visual;
+use die_core::session::{Value, json};
 use die_core::{Args, Ctx, Dir, Error, Key, KeyEvent, Pattern, PromptSpec, Result, Selection};
 use die_core::{State, TextBuf};
 use std::collections::HashMap;
@@ -21,6 +22,46 @@ use std::collections::HashMap;
 pub struct Last {
     pat: Pattern,
     forward: bool,
+    /// What it was made from, if `*`, `#` or `gd` made it: a pattern doesn't say.
+    word: Option<Word>,
+}
+
+/// The word or symbol under the cursor that a search looks for.
+#[derive(Clone)]
+struct Word {
+    text: String,
+    symbol: bool,
+}
+
+impl Word {
+    fn pattern(&self) -> Result<Pattern> {
+        let test = if self.symbol { is_symbol } else { is_word };
+        Pattern::word(&self.text, ignores_case(&self.text), test)
+    }
+}
+
+impl Last {
+    /// For the session.
+    pub fn saved(&self) -> Value {
+        match &self.word {
+            Some(w) => json!({"word": w.text, "symbol": w.symbol, "forward": self.forward}),
+            None => json!({"pattern": self.pat.as_str(), "forward": self.forward}),
+        }
+    }
+
+    /// From the session. A pattern this build can't compile is dropped.
+    pub fn restored(v: &Value) -> Option<Last> {
+        let forward = v["forward"].as_bool()?;
+        let word = v["word"].as_str().map(|text| Word {
+            text: text.to_owned(),
+            symbol: v["symbol"].as_bool().unwrap_or(false),
+        });
+        let pat = match &word {
+            Some(w) => w.pattern().ok()?,
+            None => compile(v["pattern"].as_str()?).ok()?,
+        };
+        Some(Last { pat, forward, word })
+    }
 }
 
 pub const NONE_YET: &str = "No previous search";
@@ -123,8 +164,13 @@ fn last(ctx: &mut Ctx) -> Result<Option<Last>> {
 /// `:s` leaves its pattern for `n` and keeps the way searches go. Before any search that's
 /// backward, as `isearch-forward` starts out nil in your Evil.
 pub fn remember_pattern(ctx: &mut Ctx, pat: Pattern) -> Result {
-    let forward = last(ctx)?.is_some_and(|l| l.forward);
-    remember(ctx, Last { pat, forward })
+    let was = last(ctx)?;
+    let forward = was.as_ref().is_some_and(|l| l.forward);
+    // An empty `:s` pattern is the last search, which may be `*`'s.
+    let word = was
+        .filter(|l| l.pat.as_str() == pat.as_str())
+        .and_then(|l| l.word);
+    remember(ctx, Last { pat, forward, word })
 }
 
 /// What an empty `:s` pattern means.
@@ -206,6 +252,7 @@ pub fn open(ctx: &mut Ctx, a: &Args, forward: bool) -> Result {
 
 fn answered(ctx: &mut Ctx, a: &Args, answer: Option<String>, forward: bool) -> Result {
     let before = last(ctx)?;
+    let word = before.as_ref().and_then(|l| l.word.clone());
     let Some(text) = answer else {
         ctx.set_search_highlight(before.map(|l| l.pat));
         return operators::cancel(ctx, a);
@@ -229,6 +276,7 @@ fn answered(ctx: &mut Ctx, a: &Args, answer: Option<String>, forward: bool) -> R
         Last {
             pat: pat.clone(),
             forward,
+            word: word.filter(|_| text.is_empty()),
         },
     )?;
     // What `.` replays has to say what was typed into the prompt too.
@@ -258,12 +306,17 @@ pub fn word(ctx: &mut Ctx, a: &Args, forward: bool) -> Result {
         operators::cancel(ctx, a)?;
         return Err(Error::Msg("No word under the cursor".into()));
     };
-    let pat = Pattern::word(&text, ignores_case(&text), is_word)?;
+    let word = Word {
+        text,
+        symbol: false,
+    };
+    let pat = word.pattern()?;
     remember(
         ctx,
         Last {
             pat: pat.clone(),
             forward,
+            word: Some(word),
         },
     )?;
     go(ctx, a, &pat, forward, false)
@@ -279,12 +332,14 @@ pub fn definition(ctx: &mut Ctx, a: &Args) -> Result {
         operators::cancel(ctx, a)?;
         return Err(Error::Msg("No symbol under the cursor".into()));
     };
-    let pat = Pattern::word(&text, ignores_case(&text), is_symbol)?;
+    let word = Word { text, symbol: true };
+    let pat = word.pattern()?;
     remember(
         ctx,
         Last {
             pat: pat.clone(),
             forward: true,
+            word: Some(word),
         },
     )?;
     ctx.set_search_highlight(Some(pat.clone()));

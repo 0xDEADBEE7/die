@@ -176,6 +176,7 @@ impl Ctx {
         };
         self.cleanup(|_| drop(b));
         self.files.forget(buf);
+        self.stop_ticking_if_done();
         let showing: Vec<WindowId> = self.windows_showing(buf);
         for w in showing {
             let next = self.other_buffer();
