@@ -10,6 +10,18 @@
 /// `flex-score-match-tightness`.
 const TIGHTNESS: f64 = 3.0;
 
+/// Whether two characters match. A finder does this tens of millions of times for one key, so
+/// ASCII doesn't go through Unicode's tables.
+#[inline]
+fn same(fold: bool, c: char, q: char) -> bool {
+    c == q
+        || fold
+            && match c.is_ascii() && q.is_ascii() {
+                true => c.eq_ignore_ascii_case(&q),
+                false => c.to_lowercase().eq(q.to_lowercase()),
+            }
+}
+
 /// Call `each` with the character index of each character of `query` in `candidate`, and return
 /// the candidate's length in characters, or None if the query isn't all there.
 fn walk(fold: bool, query: &str, candidate: &str, mut each: impl FnMut(usize)) -> Option<usize> {
@@ -17,10 +29,7 @@ fn walk(fold: bool, query: &str, candidate: &str, mut each: impl FnMut(usize)) -
     let mut len = 0;
     for (i, c) in candidate.chars().enumerate() {
         len = i + 1;
-        let hit = want
-            .peek()
-            .is_some_and(|&q| c == q || (fold && c.to_lowercase().eq(q.to_lowercase())));
-        if hit {
+        if want.peek().is_some_and(|&q| same(fold, c, q)) {
             want.next();
             each(i);
         }
@@ -54,6 +63,13 @@ pub(crate) fn positions(query: &str, candidate: &str) -> Vec<usize> {
     }
 }
 
+/// How good a match this is: its score, and whether it matches in the query's case. None if it
+/// doesn't match.
+pub(crate) fn rate(query: &str, candidate: &str) -> Option<(f64, bool)> {
+    let score = score(query, candidate)?;
+    Some((score, walk(false, query, candidate, |_| {}).is_some()))
+}
+
 /// The indices of the candidates that match, best first. An empty query keeps them all in order.
 pub(crate) fn rank<'a>(query: &str, candidates: impl Iterator<Item = &'a str>) -> Vec<usize> {
     if query.is_empty() {
@@ -62,8 +78,8 @@ pub(crate) fn rank<'a>(query: &str, candidates: impl Iterator<Item = &'a str>) -
     let mut scored: Vec<(f64, bool, usize)> = candidates
         .enumerate()
         .filter_map(|(i, c)| {
-            let in_case = walk(false, query, c, |_| {}).is_some();
-            Some((score(query, c)?, in_case, i))
+            let (score, in_case) = rate(query, c)?;
+            Some((score, in_case, i))
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
