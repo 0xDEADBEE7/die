@@ -365,6 +365,8 @@ pub struct Ctx {
     pub(crate) errors: Option<Vec<String>>,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
+    /// What `*grep*` holds, and the search that's filling it.
+    pub(crate) grep: Option<crate::project::Grep>,
     /// `Ctx::quit` was called.
     pub(crate) quit_wanted: bool,
     /// A restart wrote the session, so a key or a click now would be lost with this instance.
@@ -534,6 +536,7 @@ impl Ctx {
             errors: None,
             faces,
             search_highlight: None,
+            grep: None,
             quit_wanted: false,
             handing_over: false,
         };

@@ -118,15 +118,19 @@ fn position(t: &TextBuf, line: usize, col: usize) -> usize {
 }
 
 impl Ctx {
+    /// Whether a buffer is a terminal, which no file should replace in its window.
+    pub(crate) fn is_terminal(&self, b: BufferId) -> bool {
+        matches!(self.state_of(b), State::Passthrough | State::Copy)
+    }
+
     /// Open a target as `:e` would, in the focused window, with a missing file as a new buffer,
     /// and put the cursor there. A terminal isn't replaced: if the focused window is in
     /// passthrough or copy state, the one used last that isn't takes the file and the focus.
     pub fn open_target(&mut self, target: &FileTarget) -> Result<BufferId> {
         let buf = self.open_file(&target.path)?;
-        let terminal = |ctx: &Ctx, b| matches!(ctx.state_of(b), State::Passthrough | State::Copy);
-        if self.focused_buffer().is_some_and(|b| terminal(self, b)) {
+        if self.focused_buffer().is_some_and(|b| self.is_terminal(b)) {
             let others = self.windows.iter();
-            let others = others.filter(|(_, w)| !terminal(self, w.buffer));
+            let others = others.filter(|(_, w)| !self.is_terminal(w.buffer));
             let other = others.max_by_key(|(_, w)| w.used).map(|(id, _)| id);
             if let Some(other) = other {
                 self.focus(other);

@@ -110,6 +110,7 @@ fn bindings(reg: &mut Registry) {
     keys.bind(State::Normal, "<leader>f", "find-file");
     keys.bind(State::Normal, "<leader>\\", "find-file-home");
     keys.bind(State::Normal, "<leader>p", "find-file-project");
+    keys.bind(State::Normal, "<leader>r", "grep");
     keys.bind(State::Normal, "<leader>/", "switch-buffer");
     keys.bind(State::Normal, "<leader>hk", "describe-key");
     keys.bind(State::Normal, "<leader>hc", "describe-command");
