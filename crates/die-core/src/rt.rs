@@ -334,13 +334,12 @@ impl Ctx {
             self.check_files();
         }
         self.look_at_session();
-        self.stop_ticking_if_done();
         if std::mem::take(&mut self.files.noticed) {
             return;
         }
         self.pace.found_nothing = true;
         let quiet = now.saturating_sub(self.pace.active);
-        if quiet >= REST_AFTER && !self.session_behind() && self.pace.timer.is_some() {
+        if quiet >= REST_AFTER && !self.session_behind() {
             self.arm_tick(RESTING);
         }
     }
@@ -348,10 +347,9 @@ impl Ctx {
     pub(crate) fn touch(&mut self) {
         let now = self.now();
         self.pace.active = now;
-        let fast = self.fast_tick();
-        if self.pace.timer.is_some() && self.pace.due > now.saturating_add(fast) {
+        if self.pace.timer.is_some() && self.pace.due > now.saturating_add(self.fast_tick()) {
             self.pace.files_due = now;
-            self.arm_tick(fast);
+            self.arm_tick(self.fast_tick());
         }
     }
     /// A key's turn ended: every idle timer's wait starts again.
