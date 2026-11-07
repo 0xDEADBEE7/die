@@ -90,3 +90,27 @@ fn slash_and_question_share_a_history_and_cancel_quietly() {
     ctx.type_keys("<Esc>");
     assert_eq!(ctx.state_of(b), die_core::State::Normal);
 }
+
+/// The oracle has one buffer. `C-p` and `C-n` go on to the others, this buffer's words first,
+/// and past a buffer that isn't to be searched.
+#[test]
+fn completion_goes_on_to_other_buffers() {
+    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).expect("die-vim registers");
+    ctx.create_text("*Messages*", "fomessage\n");
+    ctx.create_text("other", "fother fob\n");
+    let b = ctx.create_text("t", "fob\n\n");
+    let w = ctx.open_window(b, 80, 24).expect("a window");
+    ctx.focus(w);
+    let text = |ctx: &Ctx| ctx.text(b).unwrap().rope().to_string();
+
+    ctx.type_keys("jifo<C-p>");
+    assert_eq!(text(&ctx), "fob\nfob\n");
+    ctx.type_keys("<C-p>");
+    assert_eq!(
+        text(&ctx),
+        "fob\nfother\n",
+        "after this buffer's, the others'"
+    );
+    ctx.type_keys("<C-p><Esc>");
+    assert_eq!(text(&ctx), "fob\nfo\n", "not *Messages*, and not fob again");
+}

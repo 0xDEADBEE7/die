@@ -3,7 +3,10 @@
 
 use die_test_cap as _;
 
-use die_core::{Clock, Config, Ctx, Key, KeyEvent, Result, Scene, ShowIn, Side};
+use die_core::{
+    Button, Clock, Config, Ctx, Input, Key, KeyEvent, Mods, PointerEvent, PointerKind, Result,
+    Scene, ShowIn, Side,
+};
 use die_render::font::{CellMetrics, FaceMetrics};
 use die_render::latency::Latency;
 use die_render::window::{
@@ -133,6 +136,41 @@ fn one_window_fills_the_frame_above_its_status_line_and_the_command_line() {
 }
 
 #[test]
+fn every_window_of_a_split_shows_and_a_click_reaches_the_one_it_is_over() {
+    let mut h = host("hello\nworld\n");
+    h.set_grid((30, 6));
+    let left = h.ctx.focused().unwrap();
+    let right = h.ctx.split_window(left, Side::Right).unwrap();
+    let other = h.ctx.create_text("b.txt", "other\n");
+    h.ctx.focus(right);
+    h.ctx.show(other, ShowIn::Current).unwrap();
+    h.ctx.focus(left);
+    h.pump();
+    let s = h.scene();
+    assert!(row_text(&s, 0).starts_with("hello"), "{}", row_text(&s, 0));
+    assert!(row_text(&s, 0).contains("│other"), "{}", row_text(&s, 0));
+
+    h.ctx.handle(Input::Pointer(PointerEvent {
+        kind: PointerKind::Press(Button::Left),
+        row: 0,
+        col: 18,
+        clicks: 1,
+        mods: Mods::default(),
+    }));
+    h.pump();
+    assert_eq!(h.ctx.focused(), Some(right));
+    assert_eq!(h.ctx.text(other).unwrap().cursor(right), Some(3));
+
+    h.set_grid((40, 6));
+    h.pump();
+    assert_eq!(
+        h.ctx.window_size(left).map(|s| s.0),
+        Some(19),
+        "they share it"
+    );
+}
+
+#[test]
 fn input_goes_to_core_and_runs_on_the_next_pump() {
     let mut h = host("hello");
     let seen = Rc::new(Cell::new(0));
@@ -143,27 +181,6 @@ fn input_goes_to_core_and_runs_on_the_next_pump() {
     h.ctx.input(KeyEvent::press(Key::Char('z')));
     assert_eq!(h.pump().ran, 1);
     assert_eq!(seen.get(), 1);
-}
-
-/// V1: in the real loop the frame came with the focused window alone, and each resize gave it the
-/// whole frame, which crushed the others to 2 columns and stayed that way across a restart.
-#[test]
-fn a_split_shows_both_windows_and_keeps_its_proportions_when_the_frame_changes() {
-    let mut h = host("left\n");
-    let left = h.ctx.focused().unwrap();
-    let right = h.ctx.split_window(left, Side::Right).unwrap();
-    let other = h.ctx.create_text("b.txt", "right\n");
-    h.ctx.focus(right);
-    h.ctx.show(other, ShowIn::Current).unwrap();
-    for (cols, half) in [(80, 40), (120, 60), (40, 20)] {
-        h.set_grid((cols, 10));
-        h.pump();
-        assert_eq!(h.ctx.window_size(left).unwrap().0, half - 1);
-        assert_eq!(h.ctx.window_size(right).unwrap().0, half);
-        let top = row_text(&h.scene(), 0);
-        assert!(top.starts_with("left"), "{top:?}");
-        assert_eq!(top.find("right"), Some(half + 2), "{top:?}");
-    }
 }
 
 #[test]

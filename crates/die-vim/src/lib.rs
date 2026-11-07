@@ -6,15 +6,19 @@
 //! together. So far (V1 to V4): motions, counts, insert and replace sessions with their
 //! undo, operators, registers, text objects, visual state (`visual.rs`), `.` and macros
 //! (`repeat.rs`), scrolling (`scroll.rs`), search (`search.rs`), windows (`window.rs`), and
-//! `:e`, `:b` and `:N` (`ex.rs`). `registers.rs` is the one place that touches registers, for K6.
+//! `:e`, `:b` and `:N` (`ex.rs`), and marks and the jump list (`marks.rs`). `registers.rs` is the one
+//! place that touches registers, for K6.
 #![warn(missing_docs)]
 
 #[cfg(test)]
 use die_test_cap as _;
 
+mod complete;
 mod ex;
 mod grammar;
 mod insert;
+mod insert_keys;
+mod marks;
 mod motions;
 mod objects;
 mod operators;
@@ -31,7 +35,7 @@ pub use window::quit_app;
 
 use die_core::key_notation;
 use die_core::{
-    Args, BufferId, Ctx, Dir, Error, Extension, Prefix, Registry, Result, Shape, State,
+    Args, BufferId, Ctx, Dir, Error, Extension, Prefix, Registry, Result, Shape, State, WindowId,
 };
 use grammar::{
     CountWas, Kind, Operator, buffer_window, char_key, count_digit, forget_goal, run_motion,
@@ -63,6 +67,20 @@ pub struct Vim {
     visual_register: Option<char>,
     /// What `.` and macros keep, which a key observer shares.
     rec: Rc<RefCell<Recorder>>,
+    /// Each buffer's `C-o` waiting for its command.
+    once: HashMap<BufferId, insert_keys::Once>,
+    /// Commands run so far, for a command that acts on being run twice in a row.
+    commands: u64,
+    /// What `C-p` and `C-n` remember between presses.
+    dabbrev: complete::Dabbrev,
+    /// The last `C-y` or `C-e`, whose count the next press keeps.
+    last_copy: Option<insert_keys::LastCopy>,
+    /// The code `C-v` has read so far, in octal, and the count for what it puts in.
+    quoted: Option<(u32, Option<usize>)>,
+    /// What each window showed, and where, as the last command left it.
+    seen: HashMap<WindowId, (BufferId, usize)>,
+    /// Each buffer's `g;` and `g,`.
+    changes: HashMap<BufferId, marks::Changes>,
     /// How the count waiting in core's prefix came about.
     count_was: grammar::CountWas,
     /// The last `:s`'s replacement and whether it had `g`, which `&` and `~` use.
@@ -123,6 +141,8 @@ const EDITS: &[(&str, &str, Edit, &str)] = &[
     ("<Right>", "vim-insert-right", Edit::Right, "Right a character."),
     ("<Up>", "vim-insert-up", Edit::Up, "Up a line."),
     ("<Down>", "vim-insert-down", Edit::Down, "Down a line."),
+    ("<Del>", "vim-insert-delete", Edit::Delete, "Delete the character at the cursor."),
+    ("<C-t>", "vim-shift-right-line", Edit::Shift { right: true }, "Shift the line right."),
 ];
 
 pub(crate) type Body = fn(&mut Ctx, &Args) -> Result;
@@ -165,10 +185,18 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-force-normal-state", "Escape in normal state: forget the goal column, as Evil does.", force_normal_state),
     ("vim-undo", "u: undo count changes.", |ctx, a| history(ctx, a, false)),
     ("vim-redo", "C-r: redo count changes.", |ctx, a| history(ctx, a, true)),
-    ("vim-replace-char", "Type over a character.", |ctx, a| insert_edit(ctx, a, Edit::Over(a.typed().unwrap_or_default()))),
+    ("vim-replace-char", "Type over a character.", |ctx, a| typed_char(ctx, a, Edit::Over(a.typed().unwrap_or_default()))),
     ("vim-replace-backspace", "Back a character, and put back what typing over it took.", |ctx, a| insert_edit(ctx, a, Edit::Restore)),
     ("vim-replace-backward-word", "Back to the start of a word, putting back what typing over it took.", |ctx, a| insert_edit(ctx, a, Edit::RestoreWord)),
     ("vim-repeat", ".: repeat the last change.", repeat::dot),
+    ("vim-set-mark", "m: set the named mark at the cursor.", marks::set),
+    ("vim-goto-mark", "`: to the named mark.", |ctx, a| marks::goto(ctx, a, false)),
+    ("vim-goto-mark-line", "': to the first non-blank of the named mark's line.", |ctx, a| marks::goto(ctx, a, true)),
+    ("vim-jump-backward", "C-o: to an older place in the jump list.", |ctx, a| marks::jump(ctx, a, true)),
+    ("vim-jump-forward", "C-i, which is Tab: to a newer place in the jump list.", |ctx, a| marks::jump(ctx, a, false)),
+    ("vim-insert-resume", "gi: insert where insert state last ended.", marks::insert_resume),
+    ("vim-goto-last-change", "g;: to an older place in the change list.", |ctx, a| marks::change_step(ctx, a, true)),
+    ("vim-goto-last-change-reverse", "g,: to a newer place in the change list.", |ctx, a| marks::change_step(ctx, a, false)),
     ("vim-record-macro", "q: stop recording, or ask which register to record into.", repeat::q),
     ("vim-record-macro-into", "The key after q: start recording into that register.", repeat::start_recording),
     ("vim-execute-macro", "@x: type register x, count times. @@ repeats the last.", repeat::at),
@@ -181,7 +209,17 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-visual-swap-corner", "O: to the block's other corner on this line.", |ctx, a| visual::swap(ctx, a, true)),
     ("vim-visual-insert", "I: insert at the selection's start, on each line of a block or of whole lines.", |ctx, a| visual::insert(ctx, a, false)),
     ("vim-visual-append", "A: insert after the selection, on each line of a block or of whole lines.", |ctx, a| visual::insert(ctx, a, true)),
-    ("vim-insert-char", "Insert the typed text.", |ctx, a| insert_edit(ctx, a, Edit::Text(a.typed().unwrap_or_default()))),
+    ("vim-insert-char", "Insert the typed text.", |ctx, a| typed_char(ctx, a, Edit::Text(a.typed().unwrap_or_default()))),
+    ("vim-execute-normal", "C-o: one command in normal state, then back.", insert_keys::execute_normal),
+    ("vim-complete-previous", "C-p: complete from words before the cursor, then after it, then in other buffers.", complete::previous),
+    ("vim-complete-next", "C-n: complete from words after the cursor, then other buffers, then before it.", complete::next),
+    ("vim-shift-left-line", "C-d: shift the line left. After a typed 0, take away its indentation.", insert_keys::shift_left),
+    ("vim-paste-from-register", "C-r x: put in a register's text.", insert_keys::paste_register),
+    ("vim-paste-last-insertion", "C-a: put in the last insertion.", |ctx, a| insert_keys::paste(ctx, a, '.')),
+    ("vim-paste-last-insertion-stop", "C-@: put in the last insertion, and go to normal state.", insert_keys::paste_and_stop),
+    ("vim-copy-from-above", "C-y: copy from the line above.", |ctx, a| insert_keys::copy(ctx, a, true)),
+    ("vim-copy-from-below", "C-e: copy from the line below.", |ctx, a| insert_keys::copy(ctx, a, false)),
+    ("vim-quoted-insert", "C-v x: put in the next key as it is, or a code in octal.", insert_keys::quoted),
     ("vim-normal-state", "Escape: back to normal state.", end_session),
 ];
 
@@ -194,13 +232,16 @@ impl Extension for Vim {
         repeat::observe(ctx, self.rec.clone());
         ctx.set_cursor_rest(text::rest_pos);
         ctx.set_insert_end(insert::stepped_back);
+        ctx.set_prompt_register(registers::for_prompt);
         // A buffer killed in insert state never gets its Escape, nor one with an
         // operator waiting its motion.
         ctx.on_buffer_killed(|ctx, b| {
             ctx.with_ext(|v: &mut Vim, _| {
                 v.inserts.remove(&b);
+                v.once.remove(&b);
                 v.pending.remove(&b);
                 v.last_visual.remove(&b);
+                v.changes.remove(&b);
             })?;
             Ok(())
         })
@@ -243,7 +284,11 @@ impl Extension for Vim {
                 .bind(state, ";", "vim-repeat-find-char")
                 .bind(state, ",", "vim-repeat-find-char-reverse")
                 .bind(state, "<C-a>", "vim-line-beginning")
-                .bind(state, "<C-u>", "vim-universal-argument");
+                .bind(state, "<C-u>", "vim-universal-argument")
+                .bind(state, "`<any>", "vim-goto-mark")
+                .bind(state, "'<any>", "vim-goto-mark-line")
+                .bind(state, "<C-o>", "vim-jump-backward")
+                .bind(state, "<Tab>", "vim-jump-forward");
         }
         k.bind(Normal, "u", "vim-undo")
             .bind(Normal, "<C-r>", "vim-redo")
@@ -290,6 +335,10 @@ impl Extension for Vim {
                 .bind(state, "V", "vim-visual-line")
                 .bind(state, "<C-v>", "vim-visual-block")
                 .bind(state, "gv", "vim-visual-restore")
+                .bind(state, "m<any>", "vim-set-mark")
+                .bind(state, "gi", "vim-insert-resume")
+                .bind(state, "g;", "vim-goto-last-change")
+                .bind(state, "g,", "vim-goto-last-change-reverse")
                 .bind(state, "<C-d>", "vim-scroll-down")
                 .bind(state, "<C-f>", "vim-scroll-page-down")
                 .bind(state, "<C-b>", "vim-scroll-page-up")
@@ -332,11 +381,12 @@ impl Extension for Vim {
             .bind(Visual, "X", "vim-delete-line");
         k.bind(Replace, "<char>", "vim-replace-char")
             .bind(Replace, "<BS>", "vim-replace-backspace")
+            .bind(Replace, "<Del>", "vim-replace-backspace")
             .bind(Replace, "<C-w>", "vim-replace-backward-word")
             .bind(Replace, "<Esc>", "vim-normal-state");
         // The rest of insert state's edits do the same here, as your Evil's replace state has them.
         for (keys, name, edit, _) in EDITS {
-            if !matches!(edit, Edit::Backspace | Edit::DeleteWord) {
+            if !matches!(edit, Edit::Backspace | Edit::DeleteWord | Edit::Delete) {
                 k.bind(Replace, keys, name);
             }
         }
@@ -344,6 +394,20 @@ impl Extension for Vim {
             .bind(Insert, "<Esc>", "vim-normal-state");
         for (keys, name, ..) in EDITS {
             k.bind(Insert, keys, name);
+        }
+        for state in [Insert, Replace] {
+            k.bind(state, "<C-o>", "vim-execute-normal")
+                .bind(state, "<C-p>", "vim-complete-previous")
+                .bind(state, "<C-n>", "vim-complete-next")
+                .bind(state, "<C-d>", "vim-shift-left-line")
+                .bind(state, "<C-a>", "vim-paste-last-insertion")
+                .bind(state, "<C-@>", "vim-paste-last-insertion-stop")
+                .bind(state, "<C-y>", "vim-copy-from-above")
+                .bind(state, "<C-e>", "vim-copy-from-below")
+                .bind(state, "<C-r><any>", "vim-paste-from-register")
+                .bind(state, "<C-v><any>", "vim-quoted-insert")
+                .bind(state, "<C-q><any>", "vim-quoted-insert")
+                .bind(state, "<C-u>", "vim-universal-argument");
         }
 
         for m in MOTIONS {
@@ -354,11 +418,13 @@ impl Extension for Vim {
                     command(reg, m.name, m.doc, move |ctx, a| {
                         let find = Find::new(key, char_key(a));
                         ctx.with_ext(|v: &mut Vim, _| v.find = Some(find))?;
-                        run_motion(ctx, a, m.kind, char_key(a), m.run)
+                        insert_keys::motion(ctx, a, |ctx| {
+                            run_motion(ctx, a, m.kind, char_key(a), m.run)
+                        })
                     });
                 }
                 None => command(reg, m.name, m.doc, move |ctx, a| {
-                    run_motion(ctx, a, m.kind, None, m.run)
+                    insert_keys::motion(ctx, a, |ctx| run_motion(ctx, a, m.kind, None, m.run))
                 }),
             }
         }
@@ -409,18 +475,23 @@ impl Extension for Vim {
     }
 }
 
-/// Register a command. Every one goes through here so that [`repeat::before`] runs first, and
-/// [`scroll::reveal`] after it.
+/// Register a command. Every one goes through here so that [`repeat::before`] runs first, with
+/// [`marks::before`], and [`scroll::reveal`] after it, with [`marks::after`].
 fn command(
     reg: &mut Registry,
     name: &str,
     doc: &'static str,
     f: impl Fn(&mut Ctx, &Args) -> Result + 'static,
 ) {
+    let (jump, quiet) = (marks::sets_jump(name), marks::says_its_jump(name));
     reg.command(name, doc, move |ctx, a| {
         repeat::before(ctx)?;
+        ctx.with_ext(|v: &mut Vim, _| v.commands += 1)?;
+        marks::before(ctx, a, jump);
         let r = f(ctx, a);
+        marks::after(ctx, a, quiet);
         scroll::reveal(ctx, a);
+        insert_keys::after_command(ctx, a, &r);
         r
     });
 }
@@ -456,6 +527,14 @@ fn universal_argument(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
+/// A printable key in insert or replace state: a digit of `C-u`'s count, while there's one.
+fn typed_char(ctx: &mut Ctx, a: &Args, e: Edit) -> Result {
+    match a.char().and_then(|c| c.to_digit(10)) {
+        Some(d) if a.count.is_some() => count_digit(ctx, a, d as usize),
+        _ => insert_edit(ctx, a, e),
+    }
+}
+
 fn force_normal_state(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     forget_goal(ctx.text_mut(b)?, w);
@@ -463,7 +542,7 @@ fn force_normal_state(ctx: &mut Ctx, a: &Args) -> Result {
 }
 
 /// Escape from a session. Its keys, with this one, are what `.` repeats.
-fn end_session(ctx: &mut Ctx, a: &Args) -> Result {
+pub(crate) fn end_session(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, _) = buffer_window(ctx, a)?;
     let mut s = ctx.with_ext(|v: &mut Vim, _| v.inserts.remove(&b))?;
     let again = s.as_mut().and_then(|s| s.repeat.take());
@@ -477,15 +556,19 @@ fn end_session(ctx: &mut Ctx, a: &Args) -> Result {
 
 /// One insert-state edit. The session is checked out of `Vim` while it's applied
 /// (contract §9: read state, release it, act, write it back).
-fn insert_edit(ctx: &mut Ctx, a: &Args, e: Edit) -> Result {
+pub(crate) fn insert_edit(ctx: &mut Ctx, a: &Args, e: Edit) -> Result {
     let (b, _) = buffer_window(ctx, a)?;
     let s = ctx.with_ext(|v: &mut Vim, _| v.inserts.remove(&b))?;
     let mut s = s.unwrap_or_else(Session::bare);
-    let r = insert::edit(ctx, a, &mut s, e);
+    let kill = insert::killed(ctx, a, &e);
+    let r = kill.clone().and_then(|_| insert::edit(ctx, a, &mut s, e));
     if let (Ok(()), Some(c)) = (&r, &mut s.repeat) {
         c.keys.push_str(&key_notation(&a.keys));
     }
     ctx.with_ext(|v: &mut Vim, _| v.inserts.insert(b, s))?;
+    if let (Ok(()), Ok(Some(k))) = (&r, kill) {
+        registers::save(ctx, None, k, false)?;
+    }
     r
 }
 

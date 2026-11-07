@@ -9,9 +9,13 @@
 //!   either end of the line with `<C-u>` and `<C-k>`.
 //! - History: `<Up>` `<C-p>` `<PageUp>` for older, `<Down>` `<C-n>` `<PageDown>` for newer, when
 //!   there are no candidates. Going past the newest brings back what you were typing.
+//! - Paste at the cursor: `<D-v>` the clipboard, without the newlines it ends in, `<C-y>` the
+//!   newest kill, and `<C-r>` the register the next key names ([`Ctx::set_prompt_register`]).
+//! - A key with super goes to the keymaps first, so the DIE layer works with a prompt open.
 //!
 //! [`PromptSpec::evil_keys`] changes `<Up>`, `<Down>`, `<C-u>` and `<C-b>` to Evil's, for `:` and
-//! `/`. The other Emacs keys stay on those too (scope §10).
+//! `/`, and `<C-v>` inserts the next key as it is. The other Emacs keys stay on those too
+//! (scope §10).
 //!
 //! A prompt with candidates shows up to 20 of them under its line, flex matched against what's
 //! typed, and some keys change:
@@ -31,13 +35,14 @@
 //! alphanumerics and `_`, or a run of other non-blanks, as in Vim, so `<C-w>` on `a/b` takes `b`.
 #![warn(missing_docs)]
 mod draw;
-mod flex;
+pub(crate) mod flex;
 pub use flex::flex_rank;
 
 use crate::error::*;
 use crate::ext::*;
 use crate::keymap::*;
 use crate::keys::*;
+use crate::project::{Feed, Ranked};
 use crate::rt::*;
 use std::cell::RefCell;
 use std::ops::Range;
@@ -69,6 +74,8 @@ pub struct PromptSpec {
 enum Source {
     Fixed(Vec<String>),
     Live(LiveFn),
+    /// Another thread matches, and the list shows what it last said.
+    Fed(Feed),
 }
 
 impl PromptSpec {
@@ -134,6 +141,11 @@ impl PromptSpec {
         self.source = Some(Source::Live(Rc::new(RefCell::new(f))));
         self
     }
+    /// Candidates and their matching come from a finder's threads.
+    pub(crate) fn fed(mut self, feed: Feed) -> Self {
+        self.source = Some(Source::Fed(feed));
+        self
+    }
     /// `<CR>` and `<M-CR>` answer only with a candidate or an empty line. Anything else stays on
     /// the line, with a note until the next key, as a prompt that requires a match does in Vertico.
     pub fn require_match(mut self) -> Self {
@@ -173,6 +185,12 @@ pub fn recent_first(history: &[String], mut items: Vec<String>) -> Vec<String> {
 /// A prompt's candidates, and which of them match the text now.
 struct List {
     live: Option<LiveFn>,
+    feed: Option<Feed>,
+    /// With a feed: the text its last answer was for, how many matches didn't come with it, and
+    /// whether more paths may come.
+    answered: u64,
+    more: usize,
+    walking: bool,
     items: Vec<String>,
     /// How many bytes of the text aren't matched against `items`.
     base: usize,
@@ -190,12 +208,17 @@ struct List {
 
 impl List {
     fn new(source: Source, line_row: bool) -> List {
-        let (live, items) = match source {
-            Source::Fixed(items) => (None, items),
-            Source::Live(f) => (Some(f), vec![]),
+        let (live, feed, items) = match source {
+            Source::Fixed(items) => (None, None, items),
+            Source::Live(f) => (Some(f), None, vec![]),
+            Source::Fed(feed) => (None, Some(feed), vec![]),
         };
         List {
             live,
+            walking: feed.is_some(),
+            feed,
+            answered: 0,
+            more: 0,
             items,
             base: 0,
             matches: vec![],
@@ -214,6 +237,24 @@ impl List {
         let on_line = self.line_row && query.is_empty();
         self.chosen = (!self.matches.is_empty() && !on_line).then_some(0);
         self.top = 0;
+        self.height = self.height.max(self.matches.len().min(ROWS));
+    }
+    /// Show what a feed answered. While it's answering the same text, a row you moved to stays
+    /// chosen as the rows shift. Otherwise the best row is.
+    fn install(&mut self, r: Ranked) {
+        let same = r.asked == self.answered;
+        let keep = (same && self.chosen.is_some_and(|c| c > 0))
+            .then(|| self.chosen_item().map(str::to_string))
+            .flatten();
+        (self.answered, self.walking) = (r.asked, r.walking);
+        self.more = r.total - r.items.len();
+        self.items = r.items;
+        self.matches = (0..self.items.len()).collect();
+        let kept = keep.and_then(|k| self.items.iter().position(|i| *i == k));
+        self.chosen = kept.or((!self.items.is_empty()).then_some(0));
+        if !same {
+            self.top = 0;
+        }
         self.height = self.height.max(self.matches.len().min(ROWS));
     }
     fn chosen_item(&self) -> Option<&str> {
@@ -242,6 +283,31 @@ impl List {
     }
 }
 
+/// What the next key means, after a key that reads one.
+enum Reading {
+    /// The name of a register to paste, after `<C-r>`.
+    Register,
+    /// A character to insert, after `<C-v>`.
+    Literal,
+}
+
+/// The character a key stands for when it's read as one, as Emacs's `read-char` has it: `<C-w>`
+/// is `^W`. None for a key with no character, such as `<Up>`.
+fn key_char(ev: &KeyEvent) -> Option<char> {
+    let c = ev.chord();
+    match c.key {
+        _ if ev.printable().is_some() => ev.printable()?.chars().next(),
+        Key::Esc => Some('\x1b'),
+        Key::Enter => Some('\r'),
+        Key::Tab => Some('\t'),
+        Key::Backspace => Some('\x7f'),
+        Key::Char(k) if c.mods.ctrl && k.is_ascii_alphabetic() => {
+            Some(char::from(k.to_ascii_lowercase() as u8 - b'`'))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) struct Prompt {
     spec: PromptSpec,
     text: String,
@@ -254,6 +320,7 @@ pub(crate) struct Prompt {
     list: Option<List>,
     /// `<CR>` was refused, until the next key.
     refused: bool,
+    reading: Option<Reading>,
     ext: ExtIdx,
     prev: State,
     f: PromptFn,
@@ -397,6 +464,7 @@ impl Ctx {
             draft: String::new(),
             list,
             refused: false,
+            reading: None,
             ext: self.cur_ext(),
             prev,
             f: Box::new(f),
@@ -418,6 +486,12 @@ impl Ctx {
     pub fn prompt_chosen(&self) -> Option<&str> {
         self.prompt.as_ref()?.list.as_ref()?.chosen_item()
     }
+    /// Choose the row `by` rows on in the open prompt's list.
+    pub(crate) fn prompt_step(&mut self, by: isize) {
+        if let Some(p) = self.prompt.as_mut() {
+            p.step(by);
+        }
+    }
     /// The rows the open prompt's list has taken.
     pub(crate) fn prompt_list_height(&self) -> usize {
         let list = self.prompt.as_ref().and_then(|p| p.list.as_ref());
@@ -430,7 +504,8 @@ impl Ctx {
         let label = &p.spec.label;
         Some(match &p.list {
             Some(l) => {
-                let total = l.matches.len();
+                let total = l.matches.len() + l.more;
+                let total = format!("{total}{}", if l.walking { "+" } else { "" });
                 let at = l.chosen.map_or("*".to_string(), |c| (c + 1).to_string());
                 format!("{:<6} {label}", format!("{at}/{total}"))
             }
@@ -439,9 +514,14 @@ impl Ctx {
     }
     /// What shows after the prompt's text, for now.
     pub(crate) fn prompt_note(&self) -> &'static str {
-        match self.prompt.as_ref().is_some_and(|p| p.refused) {
-            true => " [Match required]",
-            false => "",
+        let Some(p) = self.prompt.as_ref() else {
+            return "";
+        };
+        match p.reading {
+            Some(Reading::Register) => "\"",
+            Some(Reading::Literal) => "^",
+            None if p.refused => " [Match required]",
+            None => "",
         }
     }
     /// The list's rows, `room` at most, scrolled to the chosen one: each candidate, the characters
@@ -480,6 +560,47 @@ impl Ctx {
     pub fn prompt_history(&self, name: &str) -> &[String] {
         self.histories.get(name).map_or(&[], Vec::as_slice)
     }
+    /// How a prompt reads a register, for `<C-r>` and `<C-y>`: `rule` takes the register's name,
+    /// a control character standing for its key, and gives the text, or an error to report with
+    /// the prompt staying open. Which registers there are is the keymap's business, as in
+    /// [`Ctx::set_cursor_rest`]. With no rule, they're the ones [`Ctx::register`] holds.
+    pub fn set_prompt_register(&mut self, rule: fn(&mut Ctx, char) -> Result<String>) {
+        self.prompt_register = Some(rule);
+    }
+    /// Put this at the prompt's cursor.
+    fn prompt_insert(&mut self, s: &str) {
+        let Some(p) = self.prompt.as_mut() else {
+            return;
+        };
+        let before = p.text.clone();
+        p.replace(p.cursor..p.cursor, s);
+        self.prompt_changed(&before);
+    }
+    /// Paste this register at the prompt's cursor. A register that can't be read is an error for
+    /// the key, as in your Evil, and the prompt stays open.
+    fn prompt_paste(&mut self, name: Option<char>) {
+        let Some(ext) = self.prompt.as_ref().map(|p| p.ext) else {
+            return;
+        };
+        let rule = self.prompt_register;
+        let read = name
+            .ok_or_else(|| Error::Msg("Non-character input-event".into()))
+            .and_then(|c| match rule {
+                Some(rule) => self.guarded(ext, |ctx| rule(ctx, c)),
+                None => self.register(c).map(|r| r.text.clone()).ok_or_else(|| {
+                    let shown = c.escape_debug();
+                    Error::Msg(format!("Register {shown} is empty"))
+                }),
+            });
+        match read {
+            Ok(text) => self.prompt_insert(&text),
+            Err(Error::Panicked { .. }) => self.drop_fed(),
+            Err(e) => {
+                self.drop_fed();
+                self.log_error(e.to_string());
+            }
+        }
+    }
     /// Queue the answer. `keyed` says a key submitted it, so it's part of the key stream (contract
     /// §6): if it fails, the rest of what was fed drops.
     fn finish_prompt(&mut self, answer: Option<String>, keyed: bool) {
@@ -505,10 +626,24 @@ impl Ctx {
 
     pub(crate) fn prompt_key(&mut self, ev: KeyEvent) {
         let c = ev.chord();
+        // Better a key that does nothing than one that opens the match for an older line.
+        if matches!(c.key, Key::Enter | Key::Tab) && !self.prompt_settle() {
+            return;
+        }
         let (ctrl, alt, shift) = (c.mods.ctrl, c.mods.alt, c.mods.shift);
         let Some(p) = self.prompt.as_mut() else {
             return;
         };
+        match p.reading.take() {
+            Some(Reading::Register) => return self.prompt_paste(key_char(&ev)),
+            Some(Reading::Literal) => {
+                if let Some(k) = key_char(&ev) {
+                    self.prompt_insert(k.encode_utf8(&mut [0; 4]));
+                }
+                return;
+            }
+            None => {}
+        }
         let (at, end) = (p.cursor, p.text.len());
         let evil = p.spec.evil_keys;
         let before = p.text.clone();
@@ -528,6 +663,12 @@ impl Ctx {
                 }
             }
             Key::Esc => return self.finish_prompt(None, true),
+            Key::Char('v') if c.mods.super_ => {
+                if let Some(r) = self.clipboard() {
+                    self.prompt_insert(r.text.trim_end_matches(['\n', '\r']));
+                }
+                return;
+            }
             Key::Char('g' | 'c') if ctrl => return self.finish_prompt(None, true),
             Key::Backspace if end == 0 && p.spec.backspace_cancels => {
                 return self.finish_prompt(None, true);
@@ -563,6 +704,9 @@ impl Ctx {
                 'k' => p.replace(at..end, ""),
                 'p' if listed => p.step(-1),
                 'n' if listed => p.step(1),
+                'r' => p.reading = Some(Reading::Register),
+                'y' => return self.prompt_paste(Some('"')),
+                'v' if evil => p.reading = Some(Reading::Literal),
                 'v' => p.step(p.page()),
                 'p' => self.prompt_recall(true, false),
                 'n' => self.prompt_recall(false, false),
@@ -601,15 +745,40 @@ impl Ctx {
         self.prompt = Some(p);
     }
 
+    /// Show what the open prompt's finder has answered, if it has news, as each turn does.
+    pub(crate) fn prompt_take_feed(&mut self) -> bool {
+        self.prompt_install(false)
+    }
+    /// Wait for the open prompt's finder to answer the line as it is, and show that. `<CR>` and
+    /// `<Tab>` do this first, so they act on the list for what's on the line. False if the finder
+    /// ran out of time, with its list still for an older line.
+    pub fn prompt_settle(&mut self) -> bool {
+        self.prompt_install(true);
+        let list = self.prompt.as_ref().and_then(|p| p.list.as_ref());
+        let feed = list.and_then(|l| l.feed.as_ref());
+        feed.is_none_or(Feed::settled)
+    }
+    fn prompt_install(&mut self, settle: bool) -> bool {
+        let list = self.prompt.as_mut().and_then(|p| p.list.as_mut());
+        let Some(l) = list else {
+            return false;
+        };
+        let news = l.feed.as_ref().and_then(|f| f.take(settle));
+        news.map(|r| l.install(r)).is_some()
+    }
+
     /// Match the candidates against the text, asking for them again if they depend on it. The
     /// asking is extension code, so it's guarded, and if it panics the list is empty.
     fn prompt_refilter(&mut self) {
-        let Some(p) = self.prompt.as_ref() else {
+        let Some(p) = self.prompt.as_mut() else {
             return;
         };
-        let Some(l) = p.list.as_ref() else {
+        let Some(l) = p.list.as_mut() else {
             return;
         };
+        if let Some(feed) = l.feed.as_mut() {
+            return feed.ask(&p.text);
+        }
         let text = p.text.clone();
         let (ext, live) = (p.ext, l.live.clone());
         let asked = live.map(|f| self.guarded(ext, |_| Ok((f.borrow_mut())(&text))));
