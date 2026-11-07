@@ -61,7 +61,8 @@ dev = true
 [[module]]
 crate = "die-core"
 name = "text and undo"
-limit = 1265
+# 1,265 until U7, whose named positions are about 20 lines.
+limit = 1285
 files = ["text.rs", "undo.rs", "text/", "undo/"]
 
 [[module]]
@@ -85,8 +86,8 @@ files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 [[module]]
 crate = "die-core"
 name = "workspace, windows, pointer"
-limit = 1320
-# 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs.
+limit = 1345
+# 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs. 1,320 until U7, whose lists of places are about 20.
 files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
 
 [[module]]
