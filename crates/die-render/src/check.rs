@@ -11,8 +11,8 @@
 use crate::driver;
 use crate::latency;
 use crate::window::{Remote, Script, Shell, floating_window};
+use die_core::{BufferId, ShowIn, Underline};
 use die_core::{Cell, Ctx, Glyph, Key, KeyEvent, Origin, Result as CoreResult, Rgb, Scene};
-use die_core::{Underline, WindowId};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -539,15 +539,12 @@ fn unreadable_refuses(s: &mut Shell, el: &ActiveEventLoop) -> Result<bool, Strin
     Ok(surface.read_next_frame().is_err())
 }
 
-/// Put a window on a buffer of a check's own in front. The window that was there, to go
-/// back to.
-fn open_own_buffer(s: &mut Shell, name: &str, text: &str) -> Result<WindowId, String> {
+/// Put a buffer of a check's own in the focused window. The buffer that was there, to go back to.
+fn open_own_buffer(s: &mut Shell, name: &str, text: &str) -> Result<BufferId, String> {
     let ctx = &mut s.host.ctx;
-    let back = ctx.focused().ok_or("no window")?;
-    let (cols, rows) = ctx.window_size(back).ok_or("no window")?;
+    let back = ctx.focused_buffer().ok_or("no window")?;
     let buf = ctx.create_text(name, text);
-    ctx.open_window(buf, cols, rows)
-        .map_err(|e| e.to_string())?;
+    ctx.show(buf, ShowIn::Current).map_err(|e| e.to_string())?;
     Ok(back)
 }
 
@@ -581,7 +578,7 @@ fn show(r: &Remote) -> Outcome {
     sleep(LATER + THEN);
     let f2 = frames(r)?;
     let (timer_frames, job_frames) = (f1 - f0, f2 - f1);
-    r.call(move |s, _| s.host.ctx.focus(back))?;
+    r.call(move |s, _| s.host.ctx.show(back, ShowIn::Current).is_ok())?;
     let Shown {
         differ,
         colors,
@@ -684,7 +681,7 @@ fn typing(r: &Remote) -> Outcome {
     })?;
     tap(r, ESC_KEY)?;
     r.call(move |s, _| {
-        s.host.ctx.focus(back);
+        let _ = s.host.ctx.show(back, ShowIn::Current);
         reattach(s, true)
     })??;
     ensure(text.as_deref().map(str::trim_end) == Some(&typed), || {
