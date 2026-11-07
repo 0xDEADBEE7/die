@@ -58,4 +58,5 @@ pub use prompt::{PromptSpec, flex_rank, recent_first};
 pub use rt::*;
 pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
 pub use text::*;
+pub use windows::{Place, PlaceList};
 pub use workspace::{Clipboard, RegKind, Register, ShowIn, Side};
