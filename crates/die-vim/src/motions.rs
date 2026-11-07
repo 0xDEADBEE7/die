@@ -680,7 +680,7 @@ fn percent(s: &Start, n: usize) -> Result<Target, Fail> {
 
 /// `}`: past this paragraph to the next blank line (spaces count as blank, as in
 /// Evil). With no blank line after, to the end of the last line, as in Vim.
-fn forward_paragraph(s: &Start) -> Result<Target, Fail> {
+pub fn forward_paragraph(s: &Start) -> Result<Target, Fail> {
     let t = s.text;
     if s.pos == t.len() || (s.op.is_some() && at_text_end(t, s.pos)) {
         return Err("End of buffer");
@@ -712,7 +712,7 @@ fn forward_paragraph(s: &Start) -> Result<Target, Fail> {
 }
 
 /// `{`: back past this paragraph to the previous blank line, or the first line.
-fn backward_paragraph(s: &Start) -> Result<Target, Fail> {
+pub fn backward_paragraph(s: &Start) -> Result<Target, Fail> {
     let t = s.text;
     let mut line = t.line_of(s.pos);
     for _ in 0..s.n() {

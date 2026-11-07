@@ -223,6 +223,27 @@
       "evil": "The oracle's batch Emacs dies when isearch fails inside a keyboard macro, so there's no fixture of what your Evil does.",
       "die_vim": "The macro stops at the search: the keys after it don't run.",
       "cases": [{ "case": "macros/failed-search-stops", "fixture": "hand-written/macros.json" }]
+    },
+    {
+      "rule": "the change list",
+      "kind": "evil-gap",
+      "evil": "`g;`, `g,` and the mark `.` call goto-chg, which your Emacs doesn't have, so each signals that goto-last-change is void and nothing moves.",
+      "die_vim": "Vim's: a list per buffer of where changes were, where a change on the same line and fewer than 79 columns from the last replaces it. `.` is the newest. A count that goes too far stops at the list's end, and going on from that end is an error.",
+      "cases": [
+        { "case": "marks/dot-mark", "fixture": "hand-written/marks.json" },
+        { "case": "marks/dot-mark-insert", "fixture": "hand-written/marks.json" },
+        { "case": "marks/dot-mark-moves", "fixture": "hand-written/marks.json" },
+        { "case": "marks/dot-mark-undo", "fixture": "hand-written/marks.json" },
+        { "case": "marks/quote-dot", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-comma", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-comma-newest", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-count", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-oldest", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-same-line-is-one", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-then-comma", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-three-lines", "fixture": "hand-written/marks.json" }
+      ]
     }
   ]
 }

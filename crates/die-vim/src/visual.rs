@@ -182,6 +182,7 @@ fn leave(ctx: &mut Ctx, b: BufferId, w: WindowId, sel: Selection) -> Result {
     ctx.set_state_of(b, State::Normal);
     ctx.with_ext(|v: &mut Vim, _| v.visual_register = None)?;
     let t = ctx.text_mut(b)?;
+    crate::marks::selection_left(t, sel)?;
     let last = Last::of(t, sel)?;
     // Off the selection, so the window draws a plain cursor whatever happens next.
     t.set_selection(w, Selection::cursor(sel.head).with_goal(sel.goal));
@@ -543,8 +544,11 @@ pub fn operate(ctx: &mut Ctx, a: &Args, op: Operator, take: Take) -> Result {
     if sel.shape == Shape::Block && !whole {
         let blk = Block::of(t, sel, take == Take::Lines && op != Operator::Yank);
         let corner = blk.corner(t);
+        let last = blk.row(t, blk.last).end;
         leave_for_operator(ctx, b, w, sel)?;
+        let end = crate::marks::track(ctx.text_mut(b)?, last);
         let r = on_block(ctx, a, op, &blk, corner, change);
+        crate::marks::operated(ctx.text_mut(b)?, corner, end)?;
         return or_at(ctx, b, w, corner, r);
     }
     // Your Evil's `.` shifts once, whatever count the selection's shift had.
@@ -817,7 +821,9 @@ pub fn paste(ctx: &mut Ctx, a: &Args, keep: bool) -> Result {
         Shape::Char => next_stop(t, hi).unwrap_or(hi),
     };
     leave_for_operator(ctx, b, w, sel)?;
-    ctx.text_mut(b)?.set_cursor(w, past);
+    let t = ctx.text_mut(b)?;
+    let (len, line_start) = (t.len(), t.line_start(t.line_of(lo)));
+    t.set_cursor(w, past);
     let r = match sel.shape {
         Shape::Block => over_block(ctx, b, w, &blk, kill, &r, n),
         Shape::Line => over_lines(ctx, b, w, lo, hi, kill, &r, n),
@@ -829,6 +835,13 @@ pub fn paste(ctx: &mut Ctx, a: &Args, keep: bool) -> Result {
         lo
     };
     or_at(ctx, b, w, start, r)?;
+    let t = ctx.text_mut(b)?;
+    let end = (past + t.len()).saturating_sub(len);
+    match sel.shape {
+        Shape::Block => {}
+        Shape::Line => crate::marks::covered(t, line_start, end.saturating_sub(1))?,
+        Shape::Char => crate::marks::covered(t, lo, end)?,
+    }
     repeat::commit(ctx, change)
 }
 

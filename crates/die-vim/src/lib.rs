@@ -6,7 +6,8 @@
 //! together. So far (V1 to V4): motions, counts, insert and replace sessions with their
 //! undo, operators, registers, text objects, visual state (`visual.rs`), `.` and macros
 //! (`repeat.rs`), scrolling (`scroll.rs`), search (`search.rs`), windows (`window.rs`), and
-//! `:e`, `:b` and `:N` (`ex.rs`). `registers.rs` is the one place that touches registers, for K6.
+//! `:e`, `:b` and `:N` (`ex.rs`), and marks and the jump list (`marks.rs`). `registers.rs` is the one
+//! place that touches registers, for K6.
 #![warn(missing_docs)]
 
 #[cfg(test)]
@@ -15,6 +16,7 @@ use die_test_cap as _;
 mod ex;
 mod grammar;
 mod insert;
+mod marks;
 mod motions;
 mod objects;
 mod operators;
@@ -31,7 +33,7 @@ pub use window::quit_app;
 
 use die_core::key_notation;
 use die_core::{
-    Args, BufferId, Ctx, Dir, Error, Extension, Prefix, Registry, Result, Shape, State,
+    Args, BufferId, Ctx, Dir, Error, Extension, Prefix, Registry, Result, Shape, State, WindowId,
 };
 use grammar::{Kind, Operator, buffer_window, char_key, count_digit, forget_goal, run_motion};
 use insert::{Edit, Entry, Session};
@@ -63,6 +65,10 @@ pub struct Vim {
     rec: Rc<RefCell<Recorder>>,
     /// `C-u` was the last part of the count, so a digit starts a new one, as in Emacs.
     universal: bool,
+    /// What each window showed, and where, as the last command left it.
+    seen: HashMap<WindowId, (BufferId, usize)>,
+    /// Each buffer's `g;` and `g,`.
+    changes: HashMap<BufferId, marks::Changes>,
 }
 
 #[rustfmt::skip]
@@ -159,6 +165,14 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-replace-backspace", "Back a character, and put back what typing over it took.", |ctx, a| insert_edit(ctx, a, Edit::Restore)),
     ("vim-replace-backward-word", "Back to the start of a word, putting back what typing over it took.", |ctx, a| insert_edit(ctx, a, Edit::RestoreWord)),
     ("vim-repeat", ".: repeat the last change.", repeat::dot),
+    ("vim-set-mark", "m: set the named mark at the cursor.", marks::set),
+    ("vim-goto-mark", "`: to the named mark.", |ctx, a| marks::goto(ctx, a, false)),
+    ("vim-goto-mark-line", "': to the first non-blank of the named mark's line.", |ctx, a| marks::goto(ctx, a, true)),
+    ("vim-jump-backward", "C-o: to an older place in the jump list.", |ctx, a| marks::jump(ctx, a, true)),
+    ("vim-jump-forward", "C-i, which is Tab: to a newer place in the jump list.", |ctx, a| marks::jump(ctx, a, false)),
+    ("vim-insert-resume", "gi: insert where insert state last ended.", marks::insert_resume),
+    ("vim-goto-last-change", "g;: to an older place in the change list.", |ctx, a| marks::change_step(ctx, a, true)),
+    ("vim-goto-last-change-reverse", "g,: to a newer place in the change list.", |ctx, a| marks::change_step(ctx, a, false)),
     ("vim-record-macro", "q: stop recording, or ask which register to record into.", repeat::q),
     ("vim-record-macro-into", "The key after q: start recording into that register.", repeat::start_recording),
     ("vim-execute-macro", "@x: type register x, count times. @@ repeats the last.", repeat::at),
@@ -191,6 +205,7 @@ impl Extension for Vim {
                 v.inserts.remove(&b);
                 v.pending.remove(&b);
                 v.last_visual.remove(&b);
+                v.changes.remove(&b);
             })?;
             Ok(())
         })
@@ -233,7 +248,11 @@ impl Extension for Vim {
                 .bind(state, ";", "vim-repeat-find-char")
                 .bind(state, ",", "vim-repeat-find-char-reverse")
                 .bind(state, "<C-a>", "vim-line-beginning")
-                .bind(state, "<C-u>", "vim-universal-argument");
+                .bind(state, "<C-u>", "vim-universal-argument")
+                .bind(state, "`<any>", "vim-goto-mark")
+                .bind(state, "'<any>", "vim-goto-mark-line")
+                .bind(state, "<C-o>", "vim-jump-backward")
+                .bind(state, "<Tab>", "vim-jump-forward");
         }
         k.bind(Normal, "u", "vim-undo")
             .bind(Normal, "<C-r>", "vim-redo")
@@ -275,6 +294,10 @@ impl Extension for Vim {
                 .bind(state, "V", "vim-visual-line")
                 .bind(state, "<C-v>", "vim-visual-block")
                 .bind(state, "gv", "vim-visual-restore")
+                .bind(state, "m<any>", "vim-set-mark")
+                .bind(state, "gi", "vim-insert-resume")
+                .bind(state, "g;", "vim-goto-last-change")
+                .bind(state, "g,", "vim-goto-last-change-reverse")
                 .bind(state, "<C-d>", "vim-scroll-down")
                 .bind(state, "<C-f>", "vim-scroll-page-down")
                 .bind(state, "<C-b>", "vim-scroll-page-up")
@@ -393,17 +416,20 @@ impl Extension for Vim {
     }
 }
 
-/// Register a command. Every one goes through here so that [`repeat::before`] runs first, and
-/// [`scroll::reveal`] after it.
+/// Register a command. Every one goes through here so that [`repeat::before`] runs first, with
+/// [`marks::before`], and [`scroll::reveal`] after it, with [`marks::after`].
 fn command(
     reg: &mut Registry,
     name: &str,
     doc: &'static str,
     f: impl Fn(&mut Ctx, &Args) -> Result + 'static,
 ) {
+    let (jump, quiet) = (marks::sets_jump(name), marks::says_its_jump(name));
     reg.command(name, doc, move |ctx, a| {
         repeat::before(ctx)?;
+        marks::before(ctx, a, jump);
         let r = f(ctx, a);
+        marks::after(ctx, a, quiet);
         scroll::reveal(ctx, a);
         r
     });
