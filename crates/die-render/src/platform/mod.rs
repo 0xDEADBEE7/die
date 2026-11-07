@@ -18,11 +18,14 @@
 //! with only the items neutral code names, each saying "no window backend on this
 //! platform yet", until Linux gets the portable backend and `platform::linux`.
 //!
-//! Two rules for the code R3 and R4 bring:
+//! Three rules for the code R3 and R4 bring:
 //! - A Rust closure that Objective-C or C calls (a block, a delegate method, a
 //!   display-link callback) runs its body in `catch_unwind`. It logs and drops the
 //!   event, and never lets a panic unwind into the framework. winit's own event
 //!   handlers already do this, so the rule is for DIE's own closures.
+//! - An AppKit call that can raise goes through `macos::catch::guarded`, and the
+//!   error goes to `*messages*`. An Objective-C exception that reaches a
+//!   `catch_unwind` aborts the app.
 //! - AppKit calls take a `MainThreadMarker`, so they can't compile off the main
 //!   thread.
 
