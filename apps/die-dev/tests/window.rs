@@ -279,6 +279,7 @@ fn a_minute_idle_and_twenty_occlusions_hold_on_the_real_app() {
     let idle = run.passed("idle-60").expect("idle can always run");
     assert_eq!(num(&idle, "frames"), 0.0, "{idle:?}");
     assert!(num(&idle, "cpu_percent") < 0.3 * ALLOWANCE, "{idle:?}");
+    assert!(num(&idle, "os_wakes_per_second") < 1.0, "{idle:?}");
     if let Some(occ) = run.passed("occlusion-20") {
         assert_eq!(num(&occ, "cycles"), 20.0, "{occ:?}");
         assert_eq!(num(&occ, "frames_while_covered"), 0.0, "{occ:?}");
