@@ -506,4 +506,18 @@ impl Surface {
     pub fn app_active(&self) -> bool {
         NSRunningApplication::currentApplication().isActive()
     }
+
+    /// Make this the active app, with this window in front and restored from the Dock. The newer
+    /// `activate` only takes what the active app yields, and no terminal yields anything.
+    pub fn come_to_front(&self) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        if self.window.isMiniaturized() {
+            self.window.deminiaturize(None);
+        }
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        self.window.makeKeyAndOrderFront(None);
+    }
 }

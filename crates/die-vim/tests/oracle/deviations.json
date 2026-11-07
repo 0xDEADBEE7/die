@@ -39,6 +39,7 @@
         { "case": "operators/dj-last-line", "note": "dj acts on the last line, as Evil's does; Vim's fails and deletes nothing", "fixture": "hand-written/operators.json" },
         { "case": "operators/d5j-goes-as-far-as-it-can", "note": "the column is the one d5j started in, as for every linewise d in Evil (S5 row 2)", "fixture": "hand-written/operators.json" },
         { "case": "operators/J-last-line", "note": "Vim's J fails on the last line; Evil's without the final newline does nothing, and with it takes the newline", "fixture": "hand-written/operators.json" },
+        { "case": "operators/gJ-last-line", "note": "the same for gJ", "fixture": "hand-written/operators.json" },
         { "case": "operators/2D-last-line", "note": "Vim's fails, as its count can't be met; Evil's lands on the empty line and takes the whole line", "fixture": "hand-written/operators.json" },
         { "case": "textobjects/dap-before", "note": "the column is the one dap started in", "fixture": "hand-written/textobjects.json" },
         { "case": "textobjects/dap-last-paragraph", "note": "the column is the one dap started in", "fixture": "hand-written/textobjects.json" },
