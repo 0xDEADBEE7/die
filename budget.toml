@@ -175,7 +175,9 @@ crate = "die-render"
 name = "platform::macos"
 platforms = ["macos"]
 # 1,160 until U7's landing found it at 1,169 from another package, and V5's OS wake count needs 8.
-limit = 1180
+# 1,180 until V6's exception catch moved its 86 lines of assembly here from a `.s` file, which
+# neither this budget nor `cargo xtask lint` read.
+limit = 1270
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it

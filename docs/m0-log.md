@@ -2,10 +2,10 @@
 
 What merged, what waits on you, what changed in die-core's API, and where the budget stands ([m0-plan.md](m0-plan.md) §3). Newest first.
 
-## 2026-11-08: the MVP run, 17 packages on `m0/integration`, and no terminal
+## 2026-11-08: the MVP run, 17 packages on `m0/integration`
 
 **Waiting on you:**
-1. **The terminal.** This run's goal was a whole day in DIE with a terminal in the next tile. No package built one: there's no `die-term` crate and no real `Surface` in the tree, and §7 of the plan still has it in M2. The editing half is here. cargo and git still need a terminal of your own, with `die file:line` from it. `EDITOR=die` doesn't work for `git commit`, as there's no `--wait`.
+1. **A day in it.** Exit test (a) needs you. Keep any terminal in the next tile for cargo and git, and use `die file:line` from it to reach a file. DIE's own terminal stays in M2, as planned. `EDITOR=die` doesn't work for `git commit`, as there's no `--wait`.
 2. **Whether this reaches `main`.** Nothing in this run has.
 3. **The hand checks** below.
 4. **Any call below.** The ones I'd read first: 444 (project search and the finder are in core), 445 (die-vim is at 8,801, against 5,000 at the guard's start), 449 (`platform::macos`'s limit and the test that holds it), 467 (`<CR>` in a finder waits on the main thread for up to 2 s), 472 (`gf` isn't your Evil's `gf`), 478 (`*grep*` doesn't survive a restart) and 530 (a whole big file yanked doesn't survive one either).
@@ -50,9 +50,9 @@ What merged, what waits on you, what changed in die-core's API, and where the bu
 | Linux build | 3,088 | 3,135 | 5k |
 | neutral | 2,232 | 2,255 | 2,300 |
 | checks | 699 | 715 | 720, was 700 |
-| `platform::macos` | 1,040 | 1,177 | 1,180, was 1,060 |
+| `platform::macos` | 1,040 | 1,266 | 1,270, was 1,060 |
 | platform stub | 157 | **165** | 165, was 160 |
-| die-vim | 5,789 | **8,801, over** | 8,800, was 5,790 |
+| die-vim | 5,789 | **8,801** | 8,810, was 5,790 |
 | die | 358 | 493 | none |
 | die-dev | 181 | 189 | none |
 | product code | 20,426 | 25,549 | none |
@@ -108,7 +108,7 @@ These stand with the entry below's list, which no one has worked through.
 
 **V3, hostile input.** No review. Fixed: out of memory on `*` on a 100 MB word. `ggVGrX` on 100 MB never finished, now 0.4 s. `gg<C-v>G$d` 300 s to 5 s, `:%s` 6.2 s to 0.66 s, `gg>G` 71 s to 1.5 s, a macro fan-out 74 s to 0.3 s, `w` in a 5 MB word 2-10 s to 0.2 s, lines of combining marks 15 s to 190 ms, and `:noh` on a highlighted 5 MB line 3.7 s to under 30 ms. Odd files, resizes and regex blow-ups held with no change. API: `Ctx::move_register`. A `Tx` of 4,096 changes or more runs in one pass and may leave `edits_since` returning None. `Pattern::new` refuses over 64 KiB. Open: on 100 MB, `di"` takes 4-6 s, `#` up to 7 s, `dap` 1.4 s, all uninterruptible. A dirty 100 MB buffer rewrites 100 MB to session.json each quiet second, and RSS reached 2.9 GB. The 100 MB one-line sweep died on the probe's own memory and wasn't rerun.
 
-**V4, looks.** No review. 36 scenes rendered offscreen and looked at, and `apps/die-dev/tests/looks.rs` makes them again. Theme faces match mono-dark by value. One defect fixed: a status line or a prompt's row stopped up to a cell short of the right edge. API: `Frames::build` extends a row's last run. Open: no syntax highlighting, the biggest visible difference from Emacs. `:b *messages*` fails until there's a message, and the colorspace is unset. A block cursor on an emoji and the status bar at the edge weren't seen in a picture.
+**V4, looks.** No review. 36 scenes rendered offscreen and looked at, and `apps/die-dev/tests/looks.rs` makes them again. Theme faces match mono-dark by value. One defect fixed: a status line or a prompt's row stopped up to a cell short of the right edge. API: `Frames::build` extends a row's last run. Open: no syntax highlighting. That's no difference for Rust, since your Emacs opens `.rs` in fundamental-mode with no colours, but other languages lose theirs until M1. `:b *messages*` fails until there's a message, and the colorspace is unset. A block cursor on an emoji and the status bar at the edge weren't seen in a picture.
 
 **V5, idle.** No review. Steady wakes fell from 2.4 to 0.55-0.6 a second: the session look and file poll are one timer, resting at 5 s after 30 s of nothing. The "20 a second" was a launch transient of about 10 OS wakes for 15 s, inside AppKit, not fixed. `--check idle-60` now reads the OS's count, fails at 1 a second, and takes about 95 s. API: `driver::process_wakeups`. Open: `idle-60` was never seen failing on a real regression. An occluded window wasn't measured for wakes.
 
