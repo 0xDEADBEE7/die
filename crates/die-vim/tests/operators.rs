@@ -61,7 +61,8 @@ fn keys_that_cancel_an_operator_do_so_quietly_and_take_the_counts() {
     for op in ["d", "c", "y", ">", "<lt>", "g~", "gU", "gu"] {
         for keys in [
             "<Esc>", "2<Esc>", "<F5>", "2<F5>", "i<Esc>", "a<Esc>", "iq", "ax", "i<F5>", "g<Esc>",
-            "gq", "f<Esc>", "F<Esc>", "t<Esc>", "T<Esc>", "f<F5>", "F<F5>", "t<F5>", "T<F5>", "\"",
+            "gq", "[<Esc>", "]x", "f<Esc>", "F<Esc>", "t<Esc>", "T<Esc>", "f<F5>", "F<F5>",
+            "t<F5>", "T<F5>", "\"",
         ] {
             let all = format!("3{op}{keys}");
             let keys = format!("{all}{}", if keys == "\"" { "<Esc>l" } else { "l" });

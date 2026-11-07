@@ -320,3 +320,22 @@ fn the_command_line_and_search_take_evils_line_keys() {
         assert_eq!(ctx.prompt_text(), Some(""), "{again}");
     }
 }
+
+/// `ga` says what `what-cursor-position` says (batch Emacs on a utf-8 file). The oracle compares
+/// no messages, so its cases only hold it to changing nothing.
+#[test]
+fn ga_says_what_emacs_says() {
+    let text = "a \u{e9}\t\n\u{1}\u{1F600}z\n";
+    for (at, said) in [
+        (0, "Char: a (97, #o141, #x61) point=1 of 9 (0%) column=0"),
+        (1, "Char: SPC (32, #o40, #x20) point=2 of 9 (11%) column=1"),
+        (
+            2,
+            "Char: \u{e9} (233, #o351, #xe9, file ...) point=3 of 9 (22%) column=2",
+        ),
+        (4, "Char: TAB (9, #o11, #x9) point=4 of 9 (33%) column=3"),
+        (6, "Char: C-a (1, #o1, #x1) point=6 of 9 (56%) column=0"),
+    ] {
+        assert_eq!(run(text, at, "ga").1, [said]);
+    }
+}
