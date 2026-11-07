@@ -444,3 +444,19 @@ fn a_target_takes_a_missing_file_as_a_new_buffer_and_leaves_a_terminal_alone() {
     assert_eq!(text_of(&c, b), "");
     assert_eq!(c.text(b).unwrap().cursor(left), Some(0));
 }
+
+#[test]
+fn a_target_splits_a_terminal_that_has_no_other_window_to_go_to() {
+    let d = Dir::new("only-terminal");
+    let mut c = ctx();
+    let term = c.create_text("term", "");
+    let w = c.open_window(term, 80, 24).unwrap();
+    c.focus(w);
+    c.set_state_of(term, State::Passthrough);
+    let b = c
+        .open_target(&at(d.0.join("new.txt"), None, None))
+        .unwrap();
+    assert_eq!(c.window_buffer(w), Some(term), "it stays on screen");
+    assert_eq!(c.focused_buffer(), Some(b));
+    assert_ne!(c.focused(), Some(w));
+}
