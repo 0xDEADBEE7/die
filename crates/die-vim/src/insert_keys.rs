@@ -1,6 +1,6 @@
 //! The control keys of insert and replace state that aren't plain edits, as your Evil's
 //! `evil-insert-state-map` has them: `C-o`, `C-r`, `C-a`, `C-@`, `C-v`, `C-q`, `C-y`, `C-e`, and
-//! the special case of `C-d`. `C-p` and `C-n` are in `complete.rs`.
+//! the special case of `C-d`. `C-p`, `C-n`, `C-x C-n` and `C-x C-p` are in `complete.rs`.
 //!
 //! **`C-o`** ends the insert step: the session's count is dropped, its other lines get what
 //! was typed, and `.` keeps its keys so far. [`command_ended`] goes back when the next
@@ -118,7 +118,8 @@ pub fn command_ended(ctx: &mut Ctx) -> Result {
         v.once.keys().copied().collect()
     })?;
     for b in waiting {
-        back_from_once(ctx, b)?;
+        // A failure here has no command to answer for it. A buffer it killed has nothing to do.
+        let _ = back_from_once(ctx, b);
     }
     Ok(())
 }

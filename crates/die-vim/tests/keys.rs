@@ -159,7 +159,11 @@ fn c_o_ends_with_whatever_comes_next() {
     ctx.focus(w);
     ctx.scene();
     ctx.type_keys("i<C-o><F5>");
-    assert_eq!(ctx.state(), State::Insert, "after another extension's command");
+    assert_eq!(
+        ctx.state(),
+        State::Insert,
+        "after another extension's command"
+    );
     ctx.type_keys("Z");
     assert_eq!(ctx.text(b).unwrap().rope().to_string(), "Zabc\n");
     ctx.type_keys("<C-o>");
@@ -198,16 +202,13 @@ fn completion_after_a_click_starts_anew() {
     click(&mut ctx, 0, 1);
     ctx.type_keys("<C-p>");
     assert_eq!(ctx.messages, Vec::<String>::new());
-    assert_eq!(
-        ctx.text(b).unwrap().rope().to_string(),
-        "foboo fob\nfob\n"
-    );
+    assert_eq!(ctx.text(b).unwrap().rope().to_string(), "foboo fob\nfob\n");
 }
 
-/// `k` is one byte and a Kelvin sign three, and the one completes to the other.
+/// A capital sharp s is three bytes and the small one two, and the one completes to the other.
 #[test]
 fn completion_folds_case_across_lengths() {
-    let (_, messages) = run("\u{212a}x\n\nkb\n", "jik<C-p>");
+    let (_, messages) = run("\u{df}\u{e9}x\n\n", "ji\u{1e9e}<C-p>");
     assert_eq!(messages, Vec::<String>::new());
 }
 
