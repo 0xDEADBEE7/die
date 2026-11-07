@@ -754,3 +754,17 @@ fn keys_and_clicks_dont_count_while_a_restart_hands_over() {
     );
     assert_eq!(c.text(b).unwrap().cursor(w), Some(8));
 }
+
+#[test]
+fn a_cursor_scrolled_off_a_wrapped_line_keeps_its_column_on_the_screen() {
+    let (mut c, _, a, _) = world(20, 6);
+    let b = c.create_text("long", &format!("{}\nend\n", "x".repeat(200)));
+    c.show(b, ShowIn::Current).unwrap();
+    c.scene();
+    c.text_mut(b).unwrap().set_cursor(a, 65);
+    c.scene();
+    press(&mut c, PointerKind::Scroll { dx: 0.0, dy: 8.0 }, 0, 5);
+    let t = c.text(b).unwrap();
+    let cursor = t.cursor(a).unwrap();
+    assert_eq!(t.screen_pos(a, cursor), Some((0, 5)), "at {cursor}");
+}

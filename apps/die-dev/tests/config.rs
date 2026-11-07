@@ -197,6 +197,9 @@ fn arguments_are_files_and_checks() {
     };
     assert_eq!(parse(&[]), Ok(args(None, &[])));
     assert_eq!(parse(&["a", "b"]), Ok(args(None, &["a", "b"])));
+    let background = parse(&["--background", "+3", "a"]).unwrap();
+    assert!(background.launch.background);
+    assert_eq!(background.files, [PathBuf::from("+3"), PathBuf::from("a")]);
     assert_eq!(
         parse(&["--check", "idle,scale"]),
         Ok(args(Some(&["idle", "scale"]), &[]))
