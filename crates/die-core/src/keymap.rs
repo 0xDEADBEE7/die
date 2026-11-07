@@ -305,6 +305,12 @@ impl Keymap {
             .map_or(Lookup::None, |t| t.lookup(keys))
     }
 
+    /// The command bound to this one key by name, leaving out `<any>` and `<char>`.
+    pub(crate) fn command_for_exactly(&self, state: State, key: &KeyEvent) -> Option<Rc<str>> {
+        let node = self.tries.get(&state)?.exact.get(&key.chord())?;
+        Some(node.cmd.as_ref()?.0.clone())
+    }
+
     /// Every binding as (state, keys, command), in registration order, including shadowed
     /// and unbound ones.
     pub fn bindings(&self) -> impl Iterator<Item = (State, &str, &str)> {
