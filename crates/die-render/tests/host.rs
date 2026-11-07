@@ -6,7 +6,9 @@ use die_test_cap as _;
 use die_core::{Clock, Config, Ctx, Key, KeyEvent, Result, Scene};
 use die_render::font::{CellMetrics, FaceMetrics};
 use die_render::latency::Latency;
-use die_render::window::{Host, Sleep, TURN_LIMIT, grid, holds_frame, sleep_for};
+use die_render::window::{
+    Host, RETRY_DRAW, Sleep, TURN_LIMIT, grid, holds_frame, sleep_for, sleep_or_retry,
+};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -211,4 +213,16 @@ fn the_latency_log_has_a_line_for_each_stage_and_key_and_says_if_it_cannot_open(
     let err = Latency::open(&dir.join("no/such/dir")).err().unwrap();
     assert!(err.contains("DIE_LATENCY_LOG"), "{err}");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_frame_that_couldnt_draw_wakes_the_loop_again() {
+    assert_eq!(sleep_or_retry(Sleep::Forever, true), Sleep::For(RETRY_DRAW));
+    assert_eq!(sleep_or_retry(Sleep::For(ms(5)), true), Sleep::For(ms(5)));
+    assert_eq!(
+        sleep_or_retry(Sleep::For(ms(5000)), true),
+        Sleep::For(RETRY_DRAW)
+    );
+    assert_eq!(sleep_or_retry(Sleep::No, true), Sleep::No);
+    assert_eq!(sleep_or_retry(Sleep::Forever, false), Sleep::Forever);
 }

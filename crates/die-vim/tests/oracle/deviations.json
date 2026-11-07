@@ -223,6 +223,23 @@
       "evil": "The oracle's batch Emacs dies when isearch fails inside a keyboard macro, so there's no fixture of what your Evil does.",
       "die_vim": "The macro stops at the search: the keys after it don't run.",
       "cases": [{ "case": "macros/failed-search-stops", "fixture": "hand-written/macros.json" }]
+    },
+    {
+      "rule": "a count of zero",
+      "kind": "emacs-artifact",
+      "evil": "C-u 0 is Emacs's prefix argument of 0, so j moves nothing. Only C-u can type it, since a bare 0 is a motion.",
+      "die_vim": "A count of 0 counts as no count, as for every other motion here, so j moves one line.",
+      "cases": [{ "case": "universal-argument/c-u-zero-is-a-zero-count", "fixture": "hand-written/universal-argument.json" }]
+    },
+    {
+      "rule": "an operator C-u cuts short",
+      "kind": "evil-bug",
+      "evil": "d then C-u deletes an empty range: every kill register and the clipboard end up holding empty text, and what they held is gone. C-u's count then goes to the next command.",
+      "die_vim": "The same, except that the operator kills nothing, so the registers and the clipboard stay as they were.",
+      "cases": [
+        { "case": "universal-argument/operator-then-c-u-drops-the-operator", "fixture": "hand-written/universal-argument.json" },
+        { "case": "universal-argument/operator-count-then-c-u-drops-both", "fixture": "hand-written/universal-argument.json" }
+      ]
     }
   ]
 }
