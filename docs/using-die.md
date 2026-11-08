@@ -39,7 +39,7 @@ The leader is `\`, in normal state.
 | `\f` | `find-file` | Find a file, going down from the buffer's directory |
 | `\/`, `\]` | `switch-buffer` | Switch buffer |
 | `\r` | `grep` | Search the project |
-| `\x` | `command-palette` | Run any command by name, recent first |
+| `\x`, `M-x` | `command-palette` | Run any command by name, recent first. `M-x` works in insert and visual too |
 | `\z` | `toggle-max-width` | Turn the 80-column centered text on or off |
 | `\hk` | `describe-key` | What a key does |
 | `\hc` | `describe-command` | What a command does |

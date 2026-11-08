@@ -98,6 +98,17 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         ] {
             reg.global_keymap().bind(state, "<D-q>", "quit");
         }
+        // Emacs's M-x, which Evil leaves in its states. Not in a prompt, where Emacs refuses it
+        // too, nor in operator-pending, where it ends the operator.
+        for state in [
+            State::Normal,
+            State::Insert,
+            State::Replace,
+            State::Visual,
+            State::Copy,
+        ] {
+            reg.global_keymap().bind(state, "<A-x>", "command-palette");
+        }
         if let Some(register) = register {
             register(reg);
         }

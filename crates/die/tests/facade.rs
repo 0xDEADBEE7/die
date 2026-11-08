@@ -255,6 +255,23 @@ fn a_bundle_uses_its_own_fonts_unless_told_otherwise() {
 }
 
 #[test]
+fn m_x_opens_the_command_palette_in_normal_insert_replace_and_visual() {
+    for keys in ["<A-x>", "i<A-x>", "R<A-x>", "v<A-x>"] {
+        let mut ctx = start(Config::default()).unwrap();
+        ctx.type_keys(keys);
+        ctx.step();
+        assert_eq!(ctx.prompt_text(), Some(""), "{keys}: {:?}", ctx.messages);
+        assert!(ctx.messages.is_empty(), "{keys}: {:?}", ctx.messages);
+    }
+    let mut ctx = start(Config::default()).unwrap();
+    let b = ctx.focused_buffer().unwrap();
+    ctx.type_keys("iab<Esc><A-x>vim-undo<CR>");
+    ctx.step();
+    assert_eq!(ctx.prompt_text(), None);
+    assert_eq!(ctx.text(b).unwrap().len(), 0, "{:?}", ctx.messages);
+}
+
+#[test]
 fn colon_q_in_the_last_window_and_cmd_q_ask_the_loop_to_stop() {
     for keys in [":q<CR>", "<D-q>", "i<D-q>"] {
         let mut ctx = start(Config::default()).unwrap();
