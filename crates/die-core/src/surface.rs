@@ -539,12 +539,15 @@ impl Ctx {
     }
 }
 
+/// The most `surface-paste` sends, its count's copies together.
+const PASTE_MAX: usize = 64 << 20;
+
 pub(crate) fn register_commands(reg: &mut Registry) {
     reg.command(
         "surface-paste",
         "Paste into this buffer's surface as one piece, which a terminal brackets: the register \
          given, as the keymap reads it (die-vim's `+` is the clipboard), or else what the system \
-         clipboard holds",
+         clipboard holds, as many times as the count says",
         |ctx, a| {
             let buf = a.buffer.or_else(|| ctx.focused_buffer());
             let buf = buf.ok_or_else(|| Error::Msg("No buffer to paste into".into()))?;
@@ -563,8 +566,13 @@ pub(crate) fn register_commands(reg: &mut Registry) {
                     "This buffer shows no surface to paste into".into(),
                 ));
             }
+            // `3p` pastes it three times, as evil-ghostel's `p` does.
+            let n = a.count.unwrap_or(1);
+            if text.len().saturating_mul(n) > PASTE_MAX {
+                return Err(Error::Msg("That's more than 64 MiB to paste".into()));
+            }
             if !text.is_empty() {
-                ctx.surface_event(buf, &Event::Paste(text))?; // `_` pastes nothing
+                ctx.surface_event(buf, &Event::Paste(text.repeat(n)))?; // `_` pastes nothing
             }
             Ok(())
         },

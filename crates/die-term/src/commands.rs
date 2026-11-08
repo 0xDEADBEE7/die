@@ -2,11 +2,12 @@
 //! state has (scope §6, D18).
 //!
 //! `term` opens your `$SHELL` as a login shell in the buffer's directory, in this window, in
-//! insert state; more are `*terminal*<2>` and so on. `term-switch` goes to `*terminal*` and
-//! opens it if it isn't there, as ghostel does. In normal state, Esc goes to the program, as
-//! your `vterm-send-escape` binding has it, `i`, `a`, `I` and `A` go back to insert at the live
-//! screen, `p` and `P` paste, and `C-c C-r` changes where insert state's Esc goes, as
-//! evil-ghostel's `evil-ghostel-toggle-send-escape` does. The program's exit closes the buffer.
+//! insert state, and `:term cmd` runs `cmd` through it; more are `*terminal*<2>` and so on.
+//! `term-switch` goes to `*terminal*` and opens it if it isn't there, as ghostel does. In normal
+//! state, Esc goes to the program, as your `vterm-send-escape` binding has it, `i`, `a`, `I` and
+//! `A` go back to insert at the live screen, `p` and `P` paste, `G` goes to the terminal's
+//! cursor, and `C-c C-r` changes where insert state's Esc goes, as evil-ghostel's
+//! `evil-ghostel-toggle-send-escape` does. The program's exit closes the buffer.
 use crate::Term;
 use crate::surface::{CopyFn, Escape, KIND, TermSurface};
 use die_core::{
@@ -107,7 +108,8 @@ pub fn open(ctx: &mut Ctx, spec: Spec, how: ShowIn) -> Result<BufferId> {
     open_with(ctx, spec, how, copy.unwrap_or(to_clipboard))
 }
 
-fn open_with(ctx: &mut Ctx, spec: Spec, how: ShowIn, copy: CopyFn) -> Result<BufferId> {
+fn open_with(ctx: &mut Ctx, mut spec: Spec, how: ShowIn, copy: CopyFn) -> Result<BufferId> {
+    crate::shell::integrate(&mut spec);
     let window = ctx.focused();
     let (cols, rows) = window.and_then(|w| ctx.window_size(w)).unwrap_or((80, 24));
     let cell = ctx.cell_pixels();
@@ -248,8 +250,15 @@ impl Terminals {
         Spec::shell(&shell.unwrap_or_else(|| PathBuf::from("/bin/sh")))
     }
 
-    fn term(&mut self, ctx: &mut Ctx, _: &Args) -> Result {
-        open_with(ctx, self.shell_spec(), ShowIn::Current, self.on_copy).map(drop)
+    /// `:term`, or with a command, `:term top`, that command through the shell, as Vim's
+    /// `:terminal top` runs it, and the buffer closes when it ends.
+    fn term(&mut self, ctx: &mut Ctx, a: &Args) -> Result {
+        let mut spec = self.shell_spec();
+        if let Some(cmd) = a.text.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            spec.args = vec!["-c".into(), cmd.into()];
+            spec.login = false;
+        }
+        open_with(ctx, spec, ShowIn::Current, self.on_copy).map(drop)
     }
 
     fn switch(&mut self, ctx: &mut Ctx, _: &Args) -> Result {
@@ -268,6 +277,22 @@ fn send_escape(ctx: &mut Ctx, a: &Args) -> Result {
         let bytes = s.term.key(&KeyEvent::press(Key::Esc));
         s.write(&bytes);
     })
+}
+
+/// `G` in normal state: with no count, die-vim's `G` and then on to the terminal's cursor, as
+/// evil-ghostel's `evil-ghostel-goto-cursor` does, so the cursor follows it; with a count, or
+/// on the alternate screen, die-vim's `G` alone.
+fn goto_cursor(ctx: &mut Ctx, a: &Args) -> Result {
+    ctx.run("vim-goto-line", a)?;
+    let buf = this(ctx, a)?;
+    let alt = with_term(ctx, a, |s, _| s.term.alt_screen())?;
+    let (Some(w), Some(at)) = (a.window.or(ctx.focused()), ctx.surface_cursor(buf)) else {
+        return Ok(());
+    };
+    if a.count.is_none() && !alt {
+        ctx.text_mut(buf)?.set_cursor(w, at);
+    }
+    Ok(())
 }
 
 /// `i`, `a`, `I` and `A`: back to insert state at the live screen.
@@ -315,7 +340,8 @@ impl Extension for Terminals {
 
     fn register(&mut self, reg: &mut Registry) {
         let doc = "Open a terminal: your $SHELL as a login shell, in this buffer's directory, in \
-                   this window, in insert state. Another is *terminal*<2>, and so on";
+                   this window, in insert state, or with a command, as `:term top`, that command \
+                   through it. Another is *terminal*<2>, and so on";
         reg.ext_command("term", doc, Terminals::term);
         reg.ext_command("terminal", doc, Terminals::term);
         reg.ext_command(
@@ -327,6 +353,12 @@ impl Extension for Terminals {
             "term-send-escape",
             "Esc in a terminal's normal state: send Esc to the program, and stay in normal state",
             send_escape,
+        );
+        reg.command(
+            "term-goto-cursor",
+            "G in a terminal's normal state: to the terminal's cursor, or with a count to that \
+             line, as evil-ghostel's G does",
+            goto_cursor,
         );
         reg.command(
             "term-insert",
@@ -345,7 +377,8 @@ impl Extension for Terminals {
             .bind(State::Normal, "<C-c><C-r>", "term-toggle-send-escape")
             .bind(State::Normal, "p", "surface-paste")
             .bind(State::Normal, "P", "surface-paste")
-            .bind(State::Normal, "<D-v>", "surface-paste");
+            .bind(State::Normal, "<D-v>", "surface-paste")
+            .bind(State::Normal, "G", "term-goto-cursor");
         for key in ["i", "a", "I", "A"] {
             k.bind(State::Normal, key, "term-insert");
         }

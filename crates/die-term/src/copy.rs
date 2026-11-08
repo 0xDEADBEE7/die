@@ -1,9 +1,10 @@
 //! Copy state's side of a terminal (scope §5.5, D19): the scrollback and screen as die-core's
 //! [`SurfaceText`], and the snapshot's lines as the rows the viewport shows.
 //!
-//! Normal state starts with the whole text. While core follows the bottom, an update reads only
-//! from the row that was the screen's top at the last read, since rows above it are history and
-//! don't change, and says how many of the oldest lines left the scrollback. A resize, a switch of
+//! Normal state starts with the whole text, at the viewport the wheel left in insert state if it
+//! isn't the live screen. As output comes, an update reads only from the row that was the
+//! screen's top at the last read, since rows above it are history and don't change, and says
+//! how many of the oldest lines left the scrollback. A resize, a switch of
 //! screens or a flood past what the marks can count reads the whole text again.
 //!
 //! The snapshot ends at the cursor's line, or at the last line with something on it below that:
@@ -69,6 +70,8 @@ impl CopyText {
             }
         };
         st.live_top = (screen_top - first) as usize;
+        let shown = term.viewport();
+        st.shown_top = (!shown.at_bottom).then(|| shown.top.saturating_sub(first) as usize);
         (self.first, self.screen_top) = (first, screen_top);
         st
     }

@@ -170,10 +170,12 @@ fn following_reads_only_what_changed_and_matches_a_whole_read() {
         .unwrap();
     assert_eq!(followed, whole, "updates come to what reading it all gives");
     errors(&mut ctx, "5k");
+    let held = cursor(&ctx, buf, w).1;
     print(&mut ctx, buf, "\r\nlater\r\n$ ");
+    assert_eq!(cursor(&ctx, buf, w).1, held, "frozen on its line");
     assert!(
-        !ctx.text(buf).unwrap().rope().to_string().contains("later"),
-        "frozen"
+        ctx.text(buf).unwrap().rope().to_string().contains("later"),
+        "with what's new read"
     );
     shown_where_it_is(&mut ctx, buf, w);
     errors(&mut ctx, "G");
