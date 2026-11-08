@@ -2,8 +2,8 @@
 //! cells; Esc leaves insert on the main screen, goes to the program in normal state and on the
 //! alternate screen, and the toggle routes it; a resize reaches `stty size`; a paste is bracketed;
 //! a flood doesn't hold up a key; the wheel scrolls back; the program's exit closes the buffer;
-//! normal state is your Evil over the scrollback; and nothing is left running after a quit, with
-//! no terminal in the session.
+//! normal state is your Evil over the scrollback, follows output at the bottom and keeps the
+//! program's colors; and nothing is left running after a quit, with no terminal in the session.
 //!
 //! A PTY's program starts through this binary's own trampoline, as it does through DIE's, so
 //! this has no test harness: `main` is the trampoline first, then runs the tests itself.
@@ -525,6 +525,126 @@ fn normal_state_is_your_evil_over_the_scrollback() {
     assert!(with(&mut ctx, buf, |s| s.term().viewport().at_bottom));
 }
 
+/// Copy state's snapshot, and the cursor's line in it.
+fn snapshot(ctx: &mut Ctx, buf: BufferId) -> (String, String) {
+    ctx.scene();
+    let w = ctx.focused().unwrap();
+    let t = ctx.text(buf).expect("a snapshot");
+    let line = t.line_of(t.cursor(w).unwrap());
+    let at = t.rope().line(line).to_string().trim_end().to_string();
+    (t.rope().to_string(), at)
+}
+
+/// The row the cursor is drawn on shows the cursor's line: the window shows the engine's cells
+/// where the snapshot is.
+fn cursor_row_shows(ctx: &mut Ctx, buf: BufferId, line: &str) {
+    let s = ctx.scene();
+    let row = s.row_text(s.cursors[0].row);
+    assert_eq!(row.trim_end(), line, "the cursor's row");
+    assert_eq!(snapshot(ctx, buf).1, line, "the cursor's line");
+}
+
+fn seq_20000_then_search_yank_and_back_to_the_bottom() {
+    let (mut ctx, buf) = shell();
+    ctx.type_keys("seq 1 20000<CR>");
+    wait_until(&mut ctx, "a prompt after 20000", |ctx| {
+        let s = screen(ctx);
+        let after = s.split("\n20000\n").nth(1).unwrap_or_default();
+        after.lines().next().is_some_and(|l| l.ends_with('$'))
+    });
+    let took = Instant::now();
+    ctx.type_keys("<Esc>");
+    ctx.scene();
+    let took = took.elapsed();
+    let (text, at) = snapshot(&mut ctx, buf);
+    let lines = text.lines().count();
+    println!("  copy state: Esc over {lines} lines took {took:?}, with its frame");
+    assert!((9_000..=10_001).contains(&lines), "{lines} lines");
+    assert!(at.ends_with('$'), "on the shell's cursor: {at:?}");
+    ctx.type_keys("gg");
+    let first = text.lines().next().unwrap().to_string();
+    assert_eq!(
+        ctx.scene().row_text(0),
+        first,
+        "the scrollback's top on screen"
+    );
+    ctx.type_keys("/19999<CR>");
+    cursor_row_shows(&mut ctx, buf, "19999");
+    ctx.type_keys("yy");
+    assert_eq!(ctx.register('"').unwrap().text, "19999\n");
+    ctx.type_keys("G");
+    assert!(
+        snapshot(&mut ctx, buf).1.ends_with('$'),
+        "back at the bottom"
+    );
+    assert!(with(&mut ctx, buf, |s| s.term().viewport().at_bottom));
+    ctx.type_keys("k0vey");
+    assert_eq!(ctx.register('"').unwrap().text, "20000");
+    assert_eq!(ctx.state(), State::Normal);
+}
+
+fn new_output_is_followed_at_the_bottom_and_not_after_k() {
+    let (mut ctx, buf) = shell();
+    ctx.type_keys("sleep 0.3; echo later; echo again<CR>");
+    ctx.type_keys("<Esc>");
+    assert_eq!(ctx.state(), State::Normal);
+    wait_until(&mut ctx, "the output followed", |ctx| {
+        let (text, at) = snapshot(ctx, buf);
+        text.contains("later\nagain\n") && at.ends_with('$')
+    });
+    let (text, at) = snapshot(&mut ctx, buf);
+    assert_eq!(
+        text.lines().last().unwrap().trim_end(),
+        at,
+        "on the last line"
+    );
+    cursor_row_shows(&mut ctx, buf, &at);
+    ctx.type_keys("i");
+    ctx.type_keys("sleep 0.3; echo second<CR>");
+    ctx.type_keys("<Esc>k");
+    let before = snapshot(&mut ctx, buf);
+    wait_for(&mut ctx, "\nsecond\n");
+    settle(&mut ctx, Duration::from_millis(200));
+    let after = snapshot(&mut ctx, buf);
+    assert_eq!(after, before, "frozen after k");
+    assert!(!after.0.contains("second\n"));
+    cursor_row_shows(&mut ctx, buf, &before.1);
+    ctx.type_keys("G");
+    let (text, at) = snapshot(&mut ctx, buf);
+    assert!(text.contains("\nsecond\n"), "G caught up:\n{text}");
+    assert!(at.ends_with('$'), "{at:?}");
+    cursor_row_shows(&mut ctx, buf, &at);
+}
+
+fn normal_state_keeps_the_programs_colors() {
+    let (mut ctx, buf) = shell();
+    ctx.type_keys("printf 'plain \\033[31mred\\033[0m\\n'<CR>");
+    wait_until(&mut ctx, "red printed", |ctx| {
+        screen(ctx).lines().any(|l| l == "plain red")
+    });
+    let row = |ctx: &mut Ctx| {
+        let s = ctx.scene();
+        let r = (0..s.rows).find(|&r| s.row_text(r) == "plain red").unwrap();
+        s.row(r).to_vec()
+    };
+    let before = row(&mut ctx);
+    assert_ne!(before[6].fg, before[0].fg, "red is red");
+    ctx.type_keys("<Esc>");
+    assert_eq!(row(&mut ctx), before, "the same cells in normal state");
+    ctx.type_keys("/^plain<CR>v$");
+    let after = row(&mut ctx);
+    let selection = ctx.face_style("selection").and_then(|s| s.bg).unwrap();
+    assert_eq!((after[0].bg, after[6].bg), (selection, selection));
+    assert_eq!(after[6].fg, before[6].fg, "the selection keeps the red");
+    for keys in ["<Esc>x", "dd", "o", "cw", "rx", "J"] {
+        ctx.type_keys(keys);
+        let said = ctx.messages.last().unwrap();
+        assert!(said.contains("read-only"), "{keys}: {said}");
+        assert_eq!(ctx.state(), State::Normal, "{keys}");
+    }
+    assert!(snapshot(&mut ctx, buf).0.contains("plain red\n"));
+}
+
 fn mouse_reports_go_to_a_program_that_tracks_the_mouse() {
     let (mut ctx, _) = shell();
     ctx.set_cell_pixels(CellPixels {
@@ -673,6 +793,18 @@ fn main() {
         (
             "normal_state_is_your_evil_over_the_scrollback",
             normal_state_is_your_evil_over_the_scrollback,
+        ),
+        (
+            "seq_20000_then_search_yank_and_back_to_the_bottom",
+            seq_20000_then_search_yank_and_back_to_the_bottom,
+        ),
+        (
+            "new_output_is_followed_at_the_bottom_and_not_after_k",
+            new_output_is_followed_at_the_bottom_and_not_after_k,
+        ),
+        (
+            "normal_state_keeps_the_programs_colors",
+            normal_state_keeps_the_programs_colors,
         ),
         (
             "mouse_reports_go_to_a_program_that_tracks_the_mouse",

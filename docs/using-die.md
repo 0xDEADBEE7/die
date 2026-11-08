@@ -239,12 +239,12 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 **Normal state** in a terminal is your Evil over what it shows: the scrollback and the screen, as text you can read, search and yank but not change. Esc from insert state goes there (Cmd-Esc while a program is on the alternate screen), with the cursor on the terminal's own.
 
-- [Moving](#moving) and [Selecting](#selecting) work as in a file: counts, objects, `/ ? n N * #`, marks, `v V C-v`, and `y` into registers and the clipboard, `"x` too. So do `:` and the `C-w` keys.
+- [Moving](#moving) and [Selecting](#selecting) work as in a file: counts, objects, `/ ? n N * #`, marks, `v V C-v`, and `y` into registers and the clipboard, `"x` too. So do `:`, the `C-w` keys and your leader's.
 - **Scrolling:** `C-d C-f C-b C-e C-y`, `zz zt zb`, `gg` and `G` go over the scrollback as over a file's lines, never lower than the live screen. `C-u` is the prefix argument there too, as in your Evil.
 - **What shows** is the terminal's own cells and colors, scrolled to where you are, with the cursor, the selection and the search's matches drawn over them.
 - **New output:** while the cursor is on the terminal's cursor line or below it, normal state follows the output, and a cursor on the terminal's stays on it. Move up and it holds still while the program goes on printing. `G` comes back to the bottom and catches up. A selection or a waiting operator holds it too, until it ends.
 - **Lines are rows:** a line the program wrapped is a line per row, and the screen's empty rows below the prompt aren't lines, so `G` and `j` stop at the prompt.
-- **Edits** (`x d c o r J p`'s Evil meanings, and the rest) say "Buffer is read-only".
+- **Edits** (`x d c o r J` and the rest) say "Buffer is read-only", and `u` that there's nothing to undo.
 - **The program's keys:** `<Esc>` goes to the program and stays in normal state, as your `vterm-send-escape` binding does, so Esc Esc from insert reaches Claude Code. `i a I A` go back to insert, at the live screen. `p P` and Cmd-V paste into the program, the clipboard or `"x`. `C-c C-r` is the toggle above.
 - **The mouse** is a file's: a click moves the cursor, a drag selects, the wheel scrolls the scrollback. The program hears none of it in normal state.
 

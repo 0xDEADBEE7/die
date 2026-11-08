@@ -641,6 +641,16 @@ These stand with the entry below's list, which no one has worked through.
 815. Measured during the 50 MB flood, a frame being the host's turns then its scene, at load 5 to 6: in insert, 66 µs a frame and at most 0.23 ms. Esc ran in the first frame after it was typed, 27 ms later, most of it copy state's first read of 10,000 rows. In normal state, following the flood took 9.2 ms a frame, at most 10.5 ms, since each frame reads what's new (copy state's cost, for its package). `i` ran in the first frame, 10 ms. C-c stopped `yes` with the prompt back in 0.11 ms. Under 300,000 DECALNs, 2.2 ms a frame, at most 8.8 ms, and Esc ran in the first frame, 9.4 ms.
 816. Open: D20's holder and helper, so terminals survive restarts. Following a flood in normal state costs about 9 ms a frame (815). Cmd-C, selecting in insert state, kitty images, OSC 8, shell integration (bash 3.2's, scope §6) and a terminal on Linux wait. Not tried in your DIE.app: Claude Code, htop with the mouse, and a Retina window's pixel sizes, which the tests give as 8 × 16.
 
+**Copy state on the real terminal**
+
+817. The terminal package wired copy state into die-term's surface (801), which was 775's first open item. Real-PTY tests now cover it. Three are in `crates/die-term/tests/terminal.rs`:
+     - `seq 1 20000` through `/bin/sh`, then Esc, `gg` (the scrollback's first line on the window's top row), `/19999<CR>` (the cursor's row shows 19999), `yy`, `G` (the live screen) and `k0vey`
+     - output from `sleep 0.3; echo` followed in normal state, frozen after `k` with the cells pinned where they were, and caught up by `G`
+     - `printf`'s red unchanged by Esc and kept under the selection, with six edit keys refused
+     One in `crates/die/tests/terminals.rs`, with `die::start`, checks your leader (bound globally, as your config binds it), then `"ayiw` and `"ap` into the program. That's the test 796 left open.
+818. Timing on the real terminal: Esc over 9,955 lines of `seq` output takes 14.0 to 15.5 ms with its frame, in six runs at load 5 to 15. Following a flood still costs about 9 ms a frame (815), since each frame reads the new lines, about 1 µs a line. I left that as it is: reading less often would leave the window behind the live screen while it follows.
+819. Open, besides 775's other items: when two windows share a terminal at the smaller one's size (804), copy state in the taller one can put the cursor on rows below the grid, which show nothing.
+
 ## 2026-11-07: 28 packages on `m0/integration`, and none of them on `main`
 
 **Waiting on you:**
