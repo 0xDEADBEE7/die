@@ -3,7 +3,7 @@
 //! ([`Ctx::shell_output`]). Without a range, `:!` is Emacs's `shell-command`. With one, the lines
 //! go to the command and what it prints, errors too, takes their place, as one change. `:r !`
 //! puts what it prints below the line. A command that outlasts core's wait finishes later, and if
-//! the text has changed by then, it's left alone.
+//! the text has changed by then, it's left alone, as it is if what it printed isn't UTF-8.
 use crate::ex::{abbreviates, absolute};
 use crate::grammar::buffer_window;
 use crate::operators::Span;
@@ -114,8 +114,13 @@ fn run(
     let what = line.to_string();
     ctx.shell_output(&dir, line, input, move |ctx, ran: Ran| {
         ran.status.map_err(|e| Error::Msg(e.to_string()))?;
-        if ran.cut {
-            let why = format!("`{what}` printed more than DIE keeps, so the text is as it was");
+        // As DIE edits only UTF-8, bytes that aren't don't go in as replacements.
+        let refused = [
+            (ran.cut, "printed more than DIE keeps"),
+            (ran.lossy, "printed bytes that aren't UTF-8"),
+        ];
+        if let Some((_, why)) = refused.iter().find(|r| r.0) {
+            let why = format!("`{what}` {why}, so the text is as it was");
             return Err(Error::Msg(why));
         }
         if ctx.text(b)?.rev() != rev {

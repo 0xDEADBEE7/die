@@ -16,7 +16,6 @@ mod compile;
 mod errors;
 mod shell;
 
-pub(crate) use compile::COMPILATION;
 pub(crate) use errors::Results;
 pub use shell::Ran;
 
@@ -26,6 +25,7 @@ use crate::ids::BufferId;
 use crate::rt::{Sub, Waker};
 use crate::text::{Origin, TextBuf};
 use crate::workspace::{ShowIn, Side};
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
@@ -42,6 +42,8 @@ pub(crate) const LIMIT: usize = 8 << 20;
 const DRAIN: Duration = Duration::from_millis(500);
 /// How long a login shell gets to say its PATH.
 const LOGIN_WAIT: Duration = Duration::from_secs(3);
+/// How long the commands still running at quit get to end on a hangup, before they're killed.
+const HANGUP_WAIT: Duration = Duration::from_millis(300);
 
 /// What a command has printed so far, up to [`LIMIT`].
 #[derive(Default)]
@@ -50,6 +52,8 @@ pub(crate) struct Output {
     /// Something came since the last take.
     fresh: AtomicBool,
     cut: AtomicBool,
+    /// Some of it wasn't UTF-8.
+    lossy: AtomicBool,
 }
 
 impl Output {
@@ -66,25 +70,77 @@ impl Output {
         }
         kept.len() == chunk.len()
     }
-    /// What came since the last take, in whole lines, or with `all` everything. Bytes that
-    /// aren't UTF-8 show as replacements.
+    /// What came since the last take, or with `all` everything. Without it, a character whose
+    /// bytes haven't all come waits for the rest. Bytes that aren't UTF-8 show as replacements.
     pub(crate) fn take(&self, all: bool) -> String {
         let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
         self.fresh.store(false, Ordering::Release);
-        let end = match all {
-            true => said.0.len(),
-            false => said
-                .0
-                .iter()
-                .rposition(|b| *b == b'\n')
-                .map_or(0, |at| at + 1),
+        let b = &said.0;
+        // The last character's first byte, and how many bytes it says the character has.
+        let lead = b.iter().rev().take(4).position(|c| c & 0xC0 != 0x80);
+        let lead = lead.map(|i| (b.len() - 1 - i, b[b.len() - 1 - i].leading_ones().max(1)));
+        let end = match lead {
+            Some((at, n)) if !all && b.len() - at < n as usize => at,
+            _ => b.len(),
         };
         let taken: Vec<u8> = said.0.drain(..end).collect();
-        String::from_utf8_lossy(&taken).into_owned()
+        String::from_utf8(taken).unwrap_or_else(|e| {
+            self.lossy.store(true, Ordering::Release);
+            String::from_utf8_lossy(e.as_bytes()).into_owned()
+        })
     }
     /// Whether output past [`LIMIT`] was dropped.
     pub(crate) fn cut(&self) -> bool {
         self.cut.load(Ordering::Acquire)
+    }
+    /// Whether what was taken had bytes that aren't UTF-8.
+    pub(crate) fn lossy(&self) -> bool {
+        self.lossy.load(Ordering::Acquire)
+    }
+}
+
+/// How a streamed command's carriage returns move its last line, as comint's
+/// `comint-carriage-motion` has them in Emacs's `*compilation*`: one with more of the line after
+/// it wipes the line so far, so a progress line shows its last state, and one before a newline
+/// goes. The line so far shows before its newline comes.
+#[derive(Default)]
+pub(crate) struct Carriage {
+    /// Bytes of the unfinished last line that are shown.
+    shown: usize,
+    /// That line ends in a carriage return so far.
+    cr: bool,
+}
+
+impl Carriage {
+    /// For `text` coming after what's shown: how many bytes at the end go, and what goes after.
+    pub(crate) fn feed(&mut self, text: &str) -> (usize, String) {
+        let (mut cut, mut out) = (0, String::new());
+        for piece in text.split_inclusive('\n') {
+            let (body, ends) = match piece.strip_suffix('\n') {
+                Some(body) => (body, true),
+                None => (piece, false),
+            };
+            let kept = body.trim_end_matches('\r');
+            let wipe = kept
+                .rfind('\r')
+                .or((self.cr && !kept.is_empty()).then_some(0));
+            let kept = match wipe {
+                Some(at) => {
+                    // Only the first piece's line has any of it shown, in the buffer.
+                    cut += std::mem::take(&mut self.shown);
+                    kept[at..].trim_start_matches('\r')
+                }
+                None => kept,
+            };
+            out += kept;
+            self.shown += kept.len();
+            self.cr = kept.len() < body.len() || self.cr && body.is_empty();
+            if ends {
+                out.push('\n');
+                (self.shown, self.cr) = (0, false);
+            }
+        }
+        (cut, out)
     }
 }
 
@@ -93,6 +149,11 @@ impl Output {
 pub(crate) struct Group(Arc<AtomicU32>);
 
 impl Group {
+    /// Whether its command has started and not yet ended.
+    fn running(&self) -> bool {
+        self.0.load(Ordering::Acquire) != 0
+    }
+
     /// Send `signal` (`INT`, `KILL`) to the group, if it has started. `die-core` has no `unsafe`,
     /// so `/bin/kill` sends it until M2's `sys` can.
     pub(crate) fn signal(&self, signal: &str) {
@@ -236,6 +297,8 @@ pub(crate) fn run(
     });
     let status = child.wait();
     let _ = all_read.recv_timeout(DRAIN);
+    // Its id may be another process's from now on.
+    group.0.store(0, Ordering::Release);
     status
 }
 
@@ -259,6 +322,7 @@ struct Stream {
     id: u64,
     buf: BufferId,
     out: Arc<Output>,
+    carriage: Carriage,
     group: Group,
     _job: Sub,
 }
@@ -271,6 +335,10 @@ pub(crate) struct Procs {
     /// The results `next-error` can go through, the last made or gone to first.
     results: Vec<Results>,
     streams: Vec<Stream>,
+    /// The `:!` commands that went on in the background.
+    background: Vec<Group>,
+    /// The buffers [`Ctx::output_buffer`] made, which the session doesn't keep.
+    pub(crate) outputs: HashSet<BufferId>,
     compile: compile::Compile,
     next_id: u64,
 }
@@ -304,8 +372,9 @@ impl Ctx {
                 let Some(at) = ctx.procs.streams.iter().position(|s| s.id == id) else {
                     return Ok(());
                 };
-                let s = ctx.procs.streams.remove(at);
-                ctx.append_output(s.buf, &s.out.take(true));
+                let mut s = ctx.procs.streams.remove(at);
+                let (gone, add) = s.carriage.feed(&s.out.take(true));
+                ctx.put_output(s.buf, gone, &add);
                 let cut = s.out.cut();
                 if cut {
                     let note = format!("\n[DIE kept the first {} MiB of this.]\n", LIMIT >> 20);
@@ -324,6 +393,7 @@ impl Ctx {
             id,
             buf,
             out,
+            carriage: Carriage::default(),
             group,
             _job: job,
         });
@@ -351,23 +421,39 @@ impl Ctx {
     /// that was news.
     pub(crate) fn streams_take(&mut self) -> bool {
         let fresh = |s: &Stream| s.out.fresh.load(Ordering::Acquire);
-        let news: Vec<_> = self
-            .procs
-            .streams
-            .iter()
+        let news: Vec<_> = (self.procs.streams.iter_mut())
             .filter(|s| fresh(s))
-            .map(|s| (s.buf, s.out.clone()))
+            .map(|s| (s.buf, s.carriage.feed(&s.out.take(false))))
             .collect();
-        for (buf, out) in &news {
-            self.append_output(*buf, &out.take(false));
+        for (buf, (gone, add)) in &news {
+            self.put_output(*buf, *gone, add);
         }
         !news.is_empty()
+    }
+
+    /// Stop every command still running, at quit or a restart, so none outlives DIE unseen: a
+    /// hangup to each one's group, as a closing terminal sends, then a kill to what's left.
+    pub(crate) fn stop_processes(&mut self) {
+        let streams = self.procs.streams.drain(..).map(|s| s.group);
+        let groups: Vec<_> = streams.chain(self.procs.background.drain(..)).collect();
+        let groups: Vec<_> = groups.into_iter().filter(Group::running).collect();
+        groups.iter().for_each(|g| g.signal("HUP"));
+        let start = Instant::now();
+        while groups.iter().any(Group::running) && start.elapsed() < HANGUP_WAIT {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        groups.iter().for_each(|g| g.signal("KILL"));
     }
 
     /// Add `text` to the end of an output buffer, unsaved and with no undo. A window whose cursor
     /// is on its last line follows it there, as `*messages*` does.
     pub fn append_output(&mut self, buf: BufferId, text: &str) {
-        if text.is_empty() {
+        self.put_output(buf, 0, text);
+    }
+
+    /// [`Ctx::append_output`], with as much as `gone` bytes of the last line taken off first.
+    fn put_output(&mut self, buf: BufferId, gone: usize, text: &str) {
+        if text.is_empty() && gone == 0 {
             return;
         }
         let windows = self.windows_showing(buf);
@@ -378,7 +464,12 @@ impl Ctx {
             .filter(|w| t.cursor(*w).is_some_and(|at| at >= last))
             .collect();
         let end = t.len();
-        let _ = t.tx(Origin::Extension).silent().insert(end, text).commit();
+        let from = end.saturating_sub(gone).max(t.line_start(t.line_of(end)));
+        let _ = t
+            .tx(Origin::Extension)
+            .silent()
+            .replace(from..end, text)
+            .commit();
         t.set_modified(false);
         let last = last_line_start(t);
         for w in following {
@@ -415,6 +506,7 @@ impl Ctx {
             Some(buf) => buf,
             None => self.create_text(name, ""),
         };
+        self.procs.outputs.insert(buf);
         let t = self.text_mut(buf)?;
         let settings = t.settings_mut();
         (settings.read_only, settings.max_width, settings.center) = (true, None, false);
@@ -480,17 +572,47 @@ mod tests {
     }
 
     #[test]
-    fn output_comes_in_whole_lines_up_to_the_limit() {
+    fn output_comes_in_whole_characters_up_to_the_limit() {
         let out = Output::default();
-        assert!(out.put(b"one\ntw"));
-        assert_eq!(out.take(false), "one\n");
-        assert_eq!(out.take(true), "tw");
+        assert!(out.put(b"one\ntw\xc3"));
+        assert_eq!(out.take(false), "one\ntw", "half an \u{e9} waits");
+        assert!(out.put(b"\xa9\xe2\x82"));
+        assert_eq!(out.take(false), "\u{e9}");
+        assert!(!out.lossy());
+        assert_eq!(out.take(true), "\u{fffd}", "at the end, it's all taken");
+        assert!(out.lossy());
+        assert!(out.put(b"x\xffy"));
+        assert_eq!(out.take(false), "x\u{fffd}y");
         assert!(!out.put(&vec![b'x'; LIMIT + 1]));
         assert!(out.cut());
         assert_eq!(
             out.take(true).len(),
-            LIMIT - 6,
+            LIMIT - 13,
             "the limit counts what was taken"
+        );
+    }
+
+    #[test]
+    fn carriage_returns_wipe_the_line_as_comint_has_them() {
+        let mut c = Carriage::default();
+        let mut shown = String::new();
+        let mut feed = |text: &str| {
+            let (gone, add) = c.feed(text);
+            shown.truncate(shown.len() - gone);
+            shown += &add;
+            shown.clone()
+        };
+        assert_eq!(feed("PART"), "PART", "a line shows before its newline");
+        assert_eq!(feed("IAL done\n"), "PARTIAL done\n");
+        assert_eq!(feed("10%\r50%\r"), "PARTIAL done\n50%");
+        assert_eq!(feed("\r"), "PARTIAL done\n50%");
+        assert_eq!(feed("100%\nnext"), "PARTIAL done\n100%\nnext");
+        assert_eq!(feed("\rlast\r\n"), "PARTIAL done\n100%\nlast\n");
+        assert_eq!(feed("crlf\r"), "PARTIAL done\n100%\nlast\ncrlf");
+        assert_eq!(feed("\n"), "PARTIAL done\n100%\nlast\ncrlf\n");
+        assert_eq!(
+            feed("a\rb\nc\rd\n"),
+            "PARTIAL done\n100%\nlast\ncrlf\nb\nd\n"
         );
     }
 }

@@ -8,6 +8,7 @@ use die_test_cap as _;
 use die::core::{BufferId, Ctx, ShowIn};
 use die::{Config, start};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const OUTPUT: &str = "*Shell Command Output*";
@@ -144,18 +145,43 @@ fn it_runs_in_the_buffers_directory_with_its_file_for_percent() {
     assert_eq!(last(&ctx), "%");
 }
 
+/// `SHELL`, `PATH` and `HOME` are the process's, and the PATH is asked for once, so this runs
+/// in a process of its own: with launchd's PATH, as DIE.app from the Dock has, and a login shell
+/// that adds a directory of its own, as your `.zprofile` adds Homebrew's.
 #[test]
 fn commands_get_the_path_a_login_shell_has_with_cargo_and_local_bin() {
-    let d = Dir::new("path");
-    let (mut ctx, _) = editor(&d.write("a.txt", "x\n"));
+    const CHILD: &str = "DIE_TEST_LOGIN_SHELL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let d = Dir::new("path");
+        d.write("a.txt", "x\n");
+        let login = "#!/bin/sh
+if [ \"$1\" = -l ]; then echo welcome; printf '\\n%s' /only/from/login:/usr/bin:/bin; exit; fi
+exec /bin/sh \"$@\"
+";
+        let shell = d.write("login.sh", login);
+        let chmod = Command::new("chmod").arg("+x").arg(&shell).status();
+        assert!(chmod.unwrap().success());
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands_get_the_path_a_login_shell_has_with_cargo_and_local_bin",
+            ])
+            .env(CHILD, "1")
+            .env("SHELL", &shell)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("HOME", &d.0)
+            .stdout(Stdio::null())
+            .status();
+        assert!(status.unwrap().success());
+        return;
+    }
+    let home = std::env::home_dir().unwrap();
+    let (mut ctx, _) = editor(&home.join("a.txt"));
     // `%` is the file's name, as in your Evil, unless `\` comes before.
     ctx.type_keys(":!printf \\%s \"$PATH\"<CR>");
-    let path = last(&ctx).to_string();
-    let home = std::env::home_dir().unwrap();
-    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
-    for own in [".local/bin", ".cargo/bin"] {
-        assert!(dirs.contains(&home.join(own)), "{own}: {path}");
-    }
+    let h = home.display();
+    let want = format!("{h}/.local/bin:{h}/.cargo/bin:/only/from/login:/usr/bin:/bin");
+    assert_eq!(last(&ctx), want);
 }
 
 #[test]
@@ -240,4 +266,29 @@ fn a_runaway_command_is_stopped_at_the_limit() {
         ctx.messages
     );
     assert_eq!(text(&ctx, b), "x\n");
+}
+
+#[test]
+fn a_filter_that_prints_bytes_that_arent_utf8_leaves_the_text_alone() {
+    let d = Dir::new("bytes");
+    let (mut ctx, b) = editor(&d.write("a.txt", "a\nb\n"));
+    ctx.type_keys(":%!printf 'x\\377y\\n'<CR>");
+    assert_eq!(text(&ctx, b), "a\nb\n");
+    let why = "`printf 'x\\377y\\n'` printed bytes that aren't UTF-8, so the text is as it was";
+    assert_eq!(last(&ctx), why);
+    ctx.type_keys(":%!printf '\\303\\251\\n'<CR>");
+    assert_eq!(text(&ctx, b), "\u{e9}\n");
+}
+
+#[test]
+fn the_session_keeps_no_output() {
+    let d = Dir::new("session");
+    let (mut ctx, _) = editor(&d.write("a.txt", "x\n"));
+    ctx.type_keys(":!yes | head -c 3000000<CR>");
+    until(&mut ctx, "the output", |ctx| {
+        ctx.find_buffer(OUTPUT).is_some()
+    });
+    let json = ctx.session_json();
+    assert!(json.len() < 100_000, "{}", json.len());
+    assert!(!json.contains(OUTPUT));
 }

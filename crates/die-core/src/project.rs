@@ -10,7 +10,7 @@
 //!   they act on the list, and it should be the list for what's on the line.
 #![warn(missing_docs)]
 mod grep;
-pub(crate) use grep::{GREP, Grep, parse_row};
+pub(crate) use grep::{Grep, parse_row};
 
 use crate::commands::{line_for, open_in_window};
 use crate::ext::{Ctx, Registry};

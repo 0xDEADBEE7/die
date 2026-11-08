@@ -3,7 +3,8 @@
 //! `Compilation finished` line at the end. One runs at a time. The buffer has evil-collection's
 //! keys for it: `<CR>` opens the error on its line, `gj` `gk` `<C-j>` `<C-k>` `<Tab>` `<S-Tab>`
 //! move between errors, `gr` compiles again and `C-c C-k` stops it. Like `*grep*`, it isn't
-//! kept by the session, but the command is, in the `compile` history.
+//! kept by the session, but the command is, in the `compile` history, and so is where the last
+//! one ran, which `recompile` runs it in after a restart too.
 use super::errors::Locus;
 use super::{Finished, ended, shell};
 use crate::error::{Error, Result};
@@ -19,6 +20,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub(crate) const COMPILATION: &str = "*compilation*";
 /// Emacs's `compile-command`, until one is run.
 const DEFAULT_COMMAND: &str = "make -k ";
+/// The history that holds the last command run and its directory, which `recompile` runs again,
+/// so that the session keeps them with the prompts' histories.
+const RAN: &str = "compile-ran";
 /// The keys `*compilation*` has, as evil-collection gives them in normal state.
 const KEYS: &[(&str, &str)] = &[
     ("<CR>", "compile-goto-error"),
@@ -44,52 +48,55 @@ const NOTES: [&str; 8] = [
     "required from",
 ];
 
-/// The compilation last run, and whether it's running.
+/// The compilation last run, if it's running.
 #[derive(Default)]
 pub(crate) struct Compile {
-    /// Its command and directory, which `recompile` runs again.
-    last: Option<(String, PathBuf)>,
     stream: Option<u64>,
 }
 
 /// The place a compilation's line names, as Emacs's `compilation-error-regexp-alist` finds them,
-/// with rustc's and cargo's own forms: ` --> path:line:col` (and ` ::: `) under its `error`,
-/// `warning` or `note` line, which a `note` or `help` makes a note, `thread 'name' panicked at
-/// path:line:col:`, and GNU's `path:line:col: message` or `path:line: message`, whose message
-/// makes it a note if it starts with one. A path has no spaces and isn't only digits.
+/// with rustc's and cargo's own forms: ` --> path:line:col` and ` ::: path:line:col` under its
+/// `error`, `warning`, `note` or `help` line, `thread 'name' panicked at path:line:col:`, and GNU's
+/// `path:line:col: message` or `path:line: message`, whose message makes it a note if it starts
+/// with one. Only the first `-->` under an `error` or `warning` is the error's place: a `:::`, a
+/// later `-->`, and a `-->` under a `note` or `help` are notes, the spans that explain it, as
+/// rust-mode has `:::`. A path has no spaces and isn't only digits.
 pub(crate) fn locus(t: &TextBuf, line: usize, text: &str) -> Option<Locus> {
     let text = text.trim_end_matches(['\n', '\r']);
     let indented = text.trim_start();
-    if let Some(at) = indented
-        .strip_prefix("--> ")
-        .or(indented.strip_prefix("::: "))
-    {
-        let (path, line_no, col) = place(at)?;
-        let head = (0..line).rev().take(200).find_map(|l| {
-            let l = t.rope().line(l).to_string();
-            l.starts_with(|c: char| c.is_ascii_alphabetic())
-                .then_some(l)
-        });
-        let note = head.is_some_and(|h| h.starts_with("note") || h.starts_with("help"));
-        return Some(Locus {
+    let span = |at: &str, note: bool| {
+        let (path, line, col) = place(at)?;
+        Some(Locus {
             path,
-            line: line_no,
+            line,
             col,
             note,
+            cargo: true,
+        })
+    };
+    if let Some(at) = indented.strip_prefix("::: ") {
+        return span(at, true);
+    }
+    if let Some(at) = indented.strip_prefix("--> ") {
+        // Its head is the nearest line before it that starts with a letter. Only a line's start
+        // is read, so a long line costs nothing here.
+        let mut first = true;
+        let head = (0..line).rev().take(200).find_map(|l| {
+            let start: String = t.rope().line(l).chars().take(16).collect();
+            first &= !start.trim_start().starts_with("--> ");
+            start
+                .starts_with(|c: char| c.is_ascii_alphabetic())
+                .then_some(start)
         });
+        let explains = head.is_some_and(|h| h.starts_with("note") || h.starts_with("help"));
+        return span(at, explains || !first);
     }
     // The test harness puts the thread's id after its name: `thread 'a' (1234) panicked at`.
     let panicked = text
         .strip_prefix("thread '")
         .and_then(|r| r.split_once(" panicked at "));
     if let Some((_, at)) = panicked {
-        let (path, line, col) = place(at.strip_suffix(':').unwrap_or(at))?;
-        return Some(Locus {
-            path,
-            line,
-            col,
-            note: false,
-        });
+        return span(at.strip_suffix(':').unwrap_or(at), false);
     }
     gnu(text)
 }
@@ -108,16 +115,19 @@ fn place(s: &str) -> Option<(String, usize, Option<usize>)> {
     })?
 }
 
-/// GNU's `path:line:col: message` or `path:line: message`, or nothing after the last `:`.
+/// GNU's `path:line:col: message` or `path:line: message`, or nothing after the last `:`. In time
+/// linear in the line, so that a long one, as minified JSON is, costs no more than reading it.
 fn gnu(text: &str) -> Option<Locus> {
     fn number(s: &str) -> Option<(usize, &str)> {
         let n = s.bytes().take_while(u8::is_ascii_digit).count();
         Some((s[..n].parse().ok()?, s[n..].strip_prefix(':')?))
     }
-    text.match_indices(':').find_map(|(at, _)| {
-        let path = &text[..at];
-        let bad = path.is_empty() || path.contains(char::is_whitespace);
-        if bad || path.bytes().all(|b| b.is_ascii_digit()) {
+    // A path has no whitespace, so only a colon before the first can end one, and it's only
+    // digits if it ends within the digits the line starts with.
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+    text[..end].match_indices(':').find_map(|(at, _)| {
+        if at <= digits {
             return None;
         }
         let (line, rest) = number(&text[at + 1..])?;
@@ -131,10 +141,11 @@ fn gnu(text: &str) -> Option<Locus> {
         let said = rest.trim_start();
         let note = NOTES.iter().any(|n| said.starts_with(n));
         Some(Locus {
-            path: path.to_string(),
+            path: text[..at].to_string(),
             line,
             col,
             note,
+            cargo: false,
         })
     })
 }
@@ -142,9 +153,17 @@ fn gnu(text: &str) -> Option<Locus> {
 impl Ctx {
     /// The command `compile` offers: the last one run, or the newest in its history, or Emacs's.
     fn compile_command(&self) -> String {
-        let last = self.procs.compile.last.as_ref().map(|l| l.0.clone());
+        let last = self.last_compile().map(|l| l.0);
         let past = self.prompt_history("compile").last().cloned();
         last.or(past).unwrap_or_else(|| DEFAULT_COMMAND.into())
+    }
+
+    /// The last command run and where, in this instance or before a restart.
+    fn last_compile(&self) -> Option<(String, PathBuf)> {
+        match self.prompt_history(RAN) {
+            [command, dir] => Some((command.clone(), dir.into())),
+            _ => None,
+        }
     }
 
     /// Compile, as Emacs does: unsaved files first, then a running one is stopped if you say so.
@@ -217,10 +236,9 @@ impl Ctx {
         let started = Instant::now();
         let cmd = shell(&command, &dir);
         let id = self.stream(buf, cmd, move |ctx, f| compile_ended(ctx, buf, f, started));
-        self.procs.compile = Compile {
-            last: Some((command, dir)),
-            stream: Some(id),
-        };
+        self.procs.compile = Compile { stream: Some(id) };
+        let ran = vec![command, dir.to_string_lossy().into_owned()];
+        self.histories.insert(RAN.into(), ran);
         Ok(())
     }
 }
@@ -358,7 +376,7 @@ pub(super) fn register(reg: &mut Registry) {
         "recompile",
         "Run the last compile command again, where it ran",
         |ctx, _| {
-            let last = ctx.procs.compile.last.clone();
+            let last = ctx.last_compile();
             let (command, dir) = last.unwrap_or_else(|| (ctx.compile_command(), here_dir(ctx)));
             ctx.compile(command, dir)
         },
@@ -420,5 +438,23 @@ mod tests {
         ] {
             assert_eq!(at(prose), None, "{prose}");
         }
+    }
+
+    #[test]
+    fn a_long_line_of_colons_reads_in_linear_time() {
+        let mut json = String::from("{");
+        for i in 0.. {
+            if json.len() > 1 << 18 {
+                break;
+            }
+            json += &format!("\"k{i}\":{i},");
+        }
+        let digits = "1".repeat(1 << 18) + &":2:x".repeat(1 << 16);
+        let start = Instant::now();
+        assert_eq!(gnu(&json).map(|l| l.line), None);
+        assert_eq!(gnu(&digits).map(|l| l.line), None);
+        let took = start.elapsed();
+        // The JSON took 10 s, as each colon read the whole line before it.
+        assert!(took < Duration::from_millis(500), "{took:?}");
     }
 }

@@ -346,3 +346,168 @@ fn output_past_the_limit_is_cut_with_a_note() {
     assert!(said.contains("\n[DIE kept the first 8 MiB of this.]\n"));
     assert!(said.contains("\nCompilation finished at "));
 }
+
+/// The focused buffer's file, and its cursor's line and column from 1.
+fn in_file(ctx: &Ctx) -> (PathBuf, usize, usize) {
+    let (_, line, col) = at(ctx);
+    let b = ctx.focused_buffer().unwrap();
+    (ctx.file(b).unwrap().path.clone(), line, col)
+}
+
+#[test]
+fn rustcs_paths_are_from_the_cargo_workspace_and_only_an_errors_first_span_is_a_stop() {
+    // A workspace whose root is a package too, in a bigger repository: from a member, cargo
+    // names the root's files and the member's from the root, and GNU's lines from where it ran.
+    let d = Dir::new("workspace");
+    let ws = d.0.join("ws");
+    std::fs::create_dir_all(ws.join("crates/foo/src")).unwrap();
+    std::fs::create_dir_all(ws.join("src")).unwrap();
+    let manifest = "[package]\nname = \"ws\"\n\n[workspace]\nmembers = [\"crates/foo\"]\n";
+    d.write("ws/Cargo.toml", manifest);
+    d.write("ws/src/lib.rs", "one\n    two\n");
+    d.write("ws/crates/foo/Cargo.toml", "[package]\nname = \"foo\"\n");
+    let lib = "a\nb\nc\n    t.nope();\n";
+    d.write("ws/crates/foo/src/lib.rs", lib);
+    d.write(
+        "ws/crates/foo/src/inner.rs",
+        "pub struct T;\nb\n    f.write_all();\n",
+    );
+    // What rustc 1.96 prints, with the second `-->` and the `:::` it gives for E0599.
+    let said = "error[E0425]: cannot find value `two` in this scope
+ --> src/lib.rs:2:5
+  |
+2 |     two
+  |     ^^^ not found in this scope
+
+error[E0599]: no method named `nope` found for struct `T` in the current scope
+ --> crates/foo/src/lib.rs:4:7
+  |
+4 |     t.nope();
+  |       ^^^^ method not found in `T`
+  |
+ ::: crates/foo/src/inner.rs:1:1
+  |
+1 | pub struct T;
+  | ------------ method `nope` not found for this struct
+
+error[E0599]: no method named `write_all` found for struct `File` in the current scope
+ --> crates/foo/src/inner.rs:3:7
+  |
+3 |     f.write_all(b\"x\");
+  |       ^^^^^^^^^
+  |
+ --> /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/io/mod.rs:1857:7
+  |
+  = note: the method is available for `File` here
+  |
+help: there is a method `write_all_at` with a similar name, but with different arguments
+ --> /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/os/unix/fs.rs:330:4
+
+error: gone
+ --> crates/foo/src/gone.rs:1:1
+src/inner.rs:2: error: from where it ran";
+    d.write("cargo.txt", said);
+    let (mut ctx, _) = editor(&ws.join("crates/foo/Cargo.toml"));
+    ctx.type_keys(&format!(
+        ":make cat {}<CR>",
+        d.0.join("cargo.txt").display()
+    ));
+    let foo = ws.join("crates/foo");
+    let steps = [
+        (ws.join("src/lib.rs"), 2, 5),
+        (foo.join("src/lib.rs"), 4, 7),
+        (foo.join("src/inner.rs"), 3, 7),
+    ];
+    for want in steps {
+        ctx.type_keys(":cn<CR>");
+        assert_eq!(in_file(&ctx), want, "{:?}", ctx.messages);
+    }
+    ctx.type_keys(":cn<CR>");
+    let lost = format!("Can't find crates/foo/src/gone.rs from {}", foo.display());
+    assert_eq!(ctx.messages.last().unwrap(), &lost);
+    ctx.type_keys(":cn<CR>");
+    assert_eq!(in_file(&ctx), (foo.join("src/inner.rs"), 2, 1));
+    ctx.type_keys(":cn<CR>");
+    assert_eq!(ctx.messages.last().unwrap(), "Moved past last error");
+}
+
+#[test]
+fn a_bare_make_after_a_restart_runs_where_the_last_one_ran() {
+    let (a, b) = (Dir::new("restart-a"), Dir::new("restart-b"));
+    let (mut ctx, _) = editor(&a.0.join("src/lib.rs"));
+    ctx.type_keys(":make pwd<CR>");
+    let json = ctx.session_json();
+    drop(ctx);
+    let mut ctx = start(Config::default()).unwrap();
+    ctx.restore_session(&json).unwrap();
+    ctx.run_until_idle();
+    let there = ctx.open_file(&b.0.join("src/main.rs")).unwrap();
+    ctx.show(there, die::core::ShowIn::Current).unwrap();
+    ctx.type_keys(":make<CR>");
+    let said = output(&ctx);
+    let ran = format!("\npwd\n{}\n", a.0.join("src").display());
+    assert!(said.contains(&ran), "{said}");
+}
+
+#[test]
+fn a_line_shows_before_its_newline_and_a_carriage_return_wipes_it() {
+    let d = Dir::new("carriage");
+    let (mut ctx, _) = editor(&d.0.join("src/lib.rs"));
+    let body = "printf PARTIAL; sleep 1; echo ' done'; printf '10%%\\r50%%\\rall done\\r\\n'";
+    ctx.run("compile", &text(&d.script("progress.sh", body)))
+        .unwrap();
+    until(&mut ctx, "the line so far", |ctx| {
+        output(ctx).ends_with("\nPARTIAL")
+    });
+    ctx.run_until_idle();
+    let said = output(&ctx);
+    let lines = "\nPARTIAL done\nall done\n\nCompilation finished at ";
+    assert!(said.contains(lines), "{said:?}");
+    assert!(!said.contains('\r'), "{said:?}");
+}
+
+fn alive(pid: &str) -> bool {
+    let mut kill = std::process::Command::new("/bin/kill");
+    kill.args(["-0", pid]).stderr(std::process::Stdio::null());
+    kill.status().unwrap().success()
+}
+
+#[test]
+fn commands_still_running_end_with_the_editor() {
+    let d = Dir::new("quit");
+    let (mut ctx, _) = editor(&d.0.join("src/lib.rs"));
+    // This one ignores the hangup, so the kill after it ends it.
+    let deaf = d.script("deaf.sh", "trap '' HUP; echo $$ > deaf; exec sleep 30");
+    ctx.run("compile", &text(&deaf)).unwrap();
+    ctx.feed_keys(":!echo $$ > bang; exec sleep 30<CR>")
+        .unwrap();
+    while ctx.step() {}
+    let pids: Vec<String> = ["deaf", "bang"]
+        .iter()
+        .map(|name| {
+            let file = d.0.join("src").join(name);
+            let read = || std::fs::read_to_string(&file).unwrap_or_default();
+            until(&mut ctx, name, |_| read().ends_with('\n'));
+            read().trim().to_string()
+        })
+        .collect();
+    assert!(
+        last_message(&ctx).contains("is still running"),
+        "{:?}",
+        ctx.messages
+    );
+    assert!(pids.iter().all(|p| alive(p)));
+    let start = Instant::now();
+    ctx.shutdown();
+    while pids.iter().any(|p| alive(p)) {
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "{pids:?} outlived it"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn last_message(ctx: &Ctx) -> &str {
+    ctx.messages.last().map_or("", String::as_str)
+}
