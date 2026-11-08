@@ -56,16 +56,17 @@ The leader is `\`, in normal state.
 - `:cn`, `:cp` go to the next and previous result, from any window.
 - `gf` and `gF` open `path:line:col`, `path:line`, `path(line)` or `path(line,col)` under the cursor, trying the buffer's directory and then the project root. `]f [f ]F [F` do the same. `gf` in Visual takes the selection as the name.
 
-**The Buffer List**, `\}`, `\?`, `:ls` or `:buffers`, shows `*Buffer List*` in this window, as your Emacs's `buffer-menu` does. `:files`, or a count first, lists only buffers with files. A row per buffer, the one used last first, leaving out the menu and names starting with a space. Its columns are Emacs's: `C` is `.` for the buffer you came from, `>` for one marked to show, `D` to kill; `R` is `%` for read-only; `M` is `*` for unsaved changes, `S` to save; then the name, the size in characters, the mode (Fundamental, as DIE has no major modes yet) and the file. The titles are its first line. Evil's keys work there, except these, which are evil-collection's:
+**The Buffer List**, `\}`, `\?`, `:ls` or `:buffers`, shows `*Buffer List*` in this window, as your Emacs's `buffer-menu` does. `:files`, or a count first, lists only buffers with files. A row per buffer, the one used last first, leaving out the menu and names starting with a space. Its columns are Emacs's: `C` is `.` for the buffer you came from, `>` for one marked to show, `D` to kill; `R` is `%` for read-only; `M` is `*` for unsaved changes, `S` to save; then the name, the size in characters, the mode (Fundamental, as DIE has no major modes yet) and the file. A line break in a name or a path shows as `^J`. The titles are its first line. Evil's keys work there, except these, which are evil-collection's:
 
 - `d` and `C-k` mark the line's buffer to kill and move down, `C-d` moving up, a count marking that many. `s` marks it to save and `m` to show, each moving down.
 - `u` takes the line's marks off and moves down, or up with a count. `<Del>` moves up and takes that line's off. `U` takes every mark off.
 - `x` saves what's marked `S` and kills what's marked `D`, asking as `:kill-buffer` does when that loses changes to a file. `no` keeps that one and goes on, `Esc` stops there.
 - `~` marks the buffer as having no unsaved changes, or with a count as having some. `%` turns its read-only on or off.
-- `go` and `<CR>` show the buffer in this window, `gO` in another (a split if this one is alone), `1` alone, `2` with the buffer before it above, and `gv` alone with each one marked `>` in a window below.
+- `go` and `<CR>` show the buffer in this window, `gO` in another (a split if this one is alone), `1` alone, `2` with the buffer before it above, and `gv` alone with each one marked `>` in a window below, sized as Emacs sizes them. When they'd leave a window no row of text, `gv` does nothing.
 - `o` and `S` sort by the column under the cursor, or by a count's column from 0 (`3o` by name), and the other way when pressed again. `T` lists only buffers with files, or all of them again. `gr` lists the buffers again. `X` puts the buffer last in the buffer list, and its row at the end.
 - `q` and `ZZ` show what the window showed before and put the menu last. `ZQ` closes the window, as elsewhere.
-- `1` and `2` aren't counts there, and `gg` goes to the titles.
+- `1` and `2` aren't counts there, but after a count's first digit they're digits of it, so `31d` marks 31 rows. `gg` goes to the titles.
+- Evil's insert and edit keys do nothing there, as your evil-collection makes them in a read-only list: `i I a A c C D r O p P J = < >`.
 
 ## Prompts
 
@@ -179,7 +180,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **Not honoured:** `.gitignore` in the finders and `:grep`.
 - **Opening:** `open -a DIE file`, a Finder double-click, `EDITOR=die` (no `--wait`).
 - **Editing CRLF and non-UTF-8 files.** They open read-only.
-- **The Buffer List's** `gV` (View mode), `t` (tags tables, so `t` is Evil's), `M-s a C-s`, `M-s a C-M-s` and `M-s a C-o` (searching the marked buffers), `M-DEL`, a middle click, and the column keys `gl gh { }`.
+- **The Buffer List's** `.` after its keys (your Evil repeats them, as it repeats any key that isn't Evil's), `gV` (View mode), `t` (tags tables, so `t` is Evil's), `M-s a C-s`, `M-s a C-M-s` and `M-s a C-o` (searching the marked buffers), `M-DEL`, a middle click, and the column keys `gl gh { }`.
 - **Keeping across a restart:** `*grep*`, `*Buffer List*`, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.
 - **Interrupting** a slow command on a huge file. `C-g` stops only macros.
 - **Mouse:** double-click and drag autoscroll.
