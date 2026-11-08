@@ -63,10 +63,18 @@ fn recording_shows_on_the_bottom_row_until_q_stops_it() {
     assert!(bottom(&mut h).ends_with("recording @a"));
     keys(&mut h, "q");
     assert!(!bottom(&mut h).contains("recording"), "{:?}", h.screen());
+    assert_eq!(bottom(&mut h).trim(), "Recorded @a", "stopping says so");
     keys(&mut h, "qA");
     assert!(bottom(&mut h).ends_with("recording @A"));
-    keys(&mut h, "q");
-    assert_eq!(h.register('a').map(|r| r.text.as_str()), Some("kjx:<Esc>"));
+    keys(&mut h, "jq");
+    assert_eq!(bottom(&mut h).trim(), "Added to @a");
+    assert_eq!(h.register('a').map(|r| r.text.as_str()), Some("kjx:<Esc>j"));
+    keys(&mut h, "qAq");
+    assert_eq!(bottom(&mut h).trim(), "Added nothing to @a");
+    keys(&mut h, "qaq");
+    assert_eq!(bottom(&mut h).trim(), "Recorded nothing, so @a is empty");
+    let left = h.register('a').map(|r| r.text.clone()).unwrap_or_default();
+    assert_eq!(left, "", "the idiom that clears a register");
 }
 
 #[test]
