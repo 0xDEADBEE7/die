@@ -117,8 +117,9 @@ fn tier(name: &str, item: &str) -> usize {
 
 /// `:`: read a line and run it, with your Evil's line keys. `<BS>` on an empty line leaves it,
 /// as your Evil's `evil-ex-delete-backward-char` does. From a selection, the selection ends and
-/// the line starts with its range. While the line is a command's name, after any range, a list
-/// of commands matches it, as the command palette's does.
+/// the line starts with its range, and after a count it starts with as many lines from the
+/// cursor's, `.,.+2` for 3, as your Evil's `evil-ex` does. While the line is a command's name,
+/// after any range, a list of commands matches it, as the command palette's does.
 pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
     let mut spec = PromptSpec::new(":")
         .history("ex")
@@ -130,6 +131,12 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
     if ctx.focused_buffer().is_some_and(|b| visual::is_on(ctx, b)) {
         visual::escape(ctx, a)?;
         spec = spec.initial(substitute::VISUAL);
+    } else if let Some(n) = a.count {
+        let range = match n {
+            0 | 1 => ".".to_string(),
+            n => format!(".,.+{}", n - 1),
+        };
+        spec = spec.initial(&range);
     }
     ctx.prompt(spec, |ctx, answer| match answer {
         Some(text) => run(ctx, &text),

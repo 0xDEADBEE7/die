@@ -95,8 +95,6 @@ pub struct Vim {
     substitute: (String, bool),
     /// The `:norm` and `:g` running, the one started last last.
     each: Vec<each::Run>,
-    /// While they run, what looks for a line's last key waiting for another.
-    stalled: Option<die_core::Sub>,
 }
 
 #[rustfmt::skip]

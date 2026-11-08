@@ -1,6 +1,7 @@
 //! Macros where the Evil oracle can't reach: what the screen shows while `q` records, the
-//! `*registers*` buffer `:reg` opens, `:norm!`, a typed `C-g` and a search inside `:norm`, and keys
-//! a line leaves waiting. tools/evil-oracle/cases/macros.json holds the rest.
+//! `*registers*` buffer `:reg` opens, `:norm!`, a typed `C-g`, keys typed while `:norm` runs and a
+//! search inside it, and keys a line leaves waiting. tools/evil-oracle/cases/macros.json holds the
+//! rest.
 
 use die_core::{BufferId, Harness, Input, RegKind, Register, State, parse_keys};
 use die_vim::Vim;
@@ -26,6 +27,13 @@ fn text(h: &Harness, b: BufferId) -> String {
 
 fn bottom(h: &mut Harness) -> String {
     h.screen().lines().last().unwrap_or_default().to_string()
+}
+
+/// Queue keys as if typed all at once, before any of them has run.
+fn queue(h: &mut Harness, k: &str) {
+    for k in parse_keys(k).unwrap() {
+        h.handle(Input::Key(k));
+    }
 }
 
 fn watchdog(secs: u64) {
@@ -151,6 +159,47 @@ fn a_typed_c_g_stops_the_whole_norm() {
 }
 
 #[test]
+fn a_typed_c_g_after_a_line_stops_the_rest() {
+    watchdog(120);
+    let (mut h, b) = editor("abc\ndef\nghi\n");
+    queue(&mut h, ":%norm A!<C-v><Esc><CR>");
+    // A turn at a time, until the first line's keys have run.
+    while text(&h, b) == "abc\ndef\nghi\n" {
+        assert!(h.step(), "the first line never ran");
+    }
+    while h.state() != State::Normal {
+        assert!(h.step());
+    }
+    queue(&mut h, "<C-g>");
+    while h.run_ready() {}
+    assert_eq!(text(&h, b), "abc!\ndef\nghi\n", "no line after the quit");
+    assert_eq!(h.messages.last().map(String::as_str), Some("Quit"));
+    assert_eq!(h.state(), State::Normal);
+    // The line that ran is one step for `u`, and what's typed next isn't hushed.
+    keys(&mut h, "u");
+    assert_eq!(text(&h, b), "abc\ndef\nghi\n");
+    assert_eq!(keys(&mut h, "0h").len(), 1);
+}
+
+#[test]
+fn keys_typed_while_a_norm_runs_wait_for_it() {
+    // They're queued before the run starts, so they're there when a line's keys run out, a
+    // prompt still open. The prompt takes its line as it is, and they go after.
+    let (mut h, b) = editor("abc\ndef\nghi\n");
+    queue(&mut h, ":%norm :s/./X/<CR>x");
+    while h.run_ready() {}
+    assert_eq!(text(&h, b), "Xbc\nXef\nhi\n");
+    assert_eq!(h.state(), State::Normal);
+    queue(&mut h, ":%norm f<CR>x");
+    while h.run_ready() {}
+    assert_eq!(
+        text(&h, b),
+        "Xbc\nXef\ni\n",
+        "x after the f, not its character"
+    );
+}
+
+#[test]
 fn a_search_runs_on_each_line_of_a_norm() {
     // The oracle's batch Emacs dies on a search in `:norm`.
     let (mut h, b) = editor("abc\ndef\ncgh\n");
@@ -220,6 +269,7 @@ fn a_norm_that_starts_itself_ends() {
     assert_eq!(h.state(), State::Normal);
     assert!(keys(&mut h, "x").is_empty());
     assert_eq!(text(&h, b), "bc\n");
+    assert_eq!(keys(&mut h, "0h").len(), 1, "a failure says so again");
 }
 
 #[test]
@@ -233,4 +283,16 @@ fn using_dies_examples_do_what_it_says() {
     assert_eq!(h.register('q').map(|r| r.text.as_str()), Some("A!?\u{1b}"));
     keys(&mut h, "gg@q");
     assert_eq!(text(&h, b), "a;!?\n\nb;\nc;!\n");
+    let (mut h, b) = editor("TODO a\nb\nTODO c\nd\ne\nf\n");
+    assert!(keys(&mut h, ":%norm A;<CR>").is_empty());
+    assert_eq!(text(&h, b), "TODO a;\nb;\nTODO c;\nd;\ne;\nf;\n");
+    // Recorded on the last line, where `:norm` ended.
+    keys(&mut h, "qqI-<Esc>q");
+    assert!(keys(&mut h, ":g/TODO/norm @q<CR>").is_empty());
+    assert_eq!(text(&h, b), "-TODO a;\nb;\n-TODO c;\nd;\ne;\n-f;\n");
+    assert!(keys(&mut h, "jVj:norm @q<CR>").is_empty());
+    assert_eq!(text(&h, b), "-TODO a;\nb;\n-TODO c;\n-d;\n-e;\n-f;\n");
+    keys(&mut h, "ggx");
+    assert!(keys(&mut h, ":5,$norm .<CR>").is_empty());
+    assert_eq!(text(&h, b), "TODO a;\nb;\n-TODO c;\n-d;\ne;\nf;\n");
 }

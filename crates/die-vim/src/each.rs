@@ -2,10 +2,12 @@
 //! and `evil-ex-global` run them. The lines are found first, each kept as a marker, so what an
 //! earlier line adds or takes away doesn't move the rest. One `u` undoes the whole run.
 //!
-//! `:norm` feeds a line's keys and waits for them to run (`repeat.rs`), so the loop goes on in
-//! [`advance`], after each command. A line whose keys fail ends there and the next one starts, as
-//! your Evil's ignores the error. A typed `C-g` stops the whole run. `:g` runs its ex line on each
-//! line in turn, which waits too when the line is a `:norm`, and the first error ends it.
+//! `:norm` feeds a line's keys kept apart from what's fed behind them (`repeat.rs`), as your Evil
+//! runs each line's keyboard macro inside `ignore-errors`, and goes on in [`advance`] when die-core
+//! says they've run out or failed. A line whose keys fail ends there and the next one starts, and
+//! what fed the `:norm`, a macro or another `:norm`'s line, goes on after it. A typed `C-g` stops
+//! the whole run. `:g` runs its ex line on each line in turn, which waits too when the line is a
+//! `:norm`, and the first error ends it.
 
 use crate::grammar::buffer_window;
 use crate::substitute::{self, Lines};
@@ -13,9 +15,8 @@ use crate::text::rest_pos;
 use crate::{Vim, ex, operators, repeat, search};
 use die_core::{Args, BufferId, Ctx, Error, Gravity, MarkerId, Pattern, Prefix, Result, State};
 use die_core::{TextBuf, WindowId};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::ops::Range;
-use std::time::Duration;
 
 /// How deep `:norm` and `:g` can start inside each other, as in `:norm @a` with `a` holding
 /// `:norm @a`. Your Evil's run out of Lisp nesting, and nothing else would end these.
@@ -34,13 +35,15 @@ pub struct Run {
     /// Where each line's turn starts, in order.
     marks: VecDeque<MarkerId>,
     what: Each,
-    /// While a line's keys run: how many fed keys are left once they have.
+    /// While a line's keys run: how many fed keys are behind them, to run once they have.
     running: Option<usize>,
     /// Whether a change the keys make is what `.` repeats after, and how many macros had run.
     top: bool,
     runs: usize,
-    /// A prompt the line's keys left open has been sent `C-g`.
-    cancelled: bool,
+    /// Keys fed after the line's own ran out, to end what they left waiting.
+    tries: u8,
+    /// From `@:` with a count: its ex line, and how many more times to run it once this is over.
+    again: Option<(String, usize)>,
 }
 
 #[derive(Clone)]
@@ -93,7 +96,7 @@ fn normal(ctx: &mut Ctx, lines: &Lines, keys: &str) -> Result {
 
 /// `:g/pattern/command`, or with `invert` the lines that don't match. Any delimiter will do, an
 /// empty pattern is the last search's, and the pattern becomes the last search, as in your Evil.
-/// A match must lie within its line. The command runs from where the line's match starts, and
+/// A match must end by its line's end. The command runs from where the line's match starts, and
 /// with no line to run on the cursor goes to the range's end, as your Evil leaves it.
 fn global(ctx: &mut Ctx, lines: &Lines, arg: &str, invert: bool) -> Result {
     let (from, command) = parts(arg.trim_start());
@@ -116,18 +119,12 @@ fn global(ctx: &mut Ctx, lines: &Lines, arg: &str, invert: bool) -> Result {
     };
     let range = substitute::line_range(ctx, b, w, lines)?;
     let t = ctx.text_mut(b)?;
-    // Each line's first match, as `:s` finds them.
-    let hits: HashMap<usize, usize> = t
-        .substitutions(&pat, range.clone(), "", false)
-        .into_iter()
-        .map(|(m, _)| (t.line_of(m.start), m))
-        .filter(|(line, m)| t.line_of(m.end) == *line)
-        .map(|(line, m)| (line, m.start))
-        .collect();
+    // Each line's first match ending by the line's end, as your Evil's `re-search-forward` finds
+    // it, bounded there.
     let marks = markers(t, range.clone(), |t, line| {
-        let hit = hits.get(&t.line_of(line.start));
+        let hit = t.first_match_in(&pat, line.clone());
         match (hit, invert) {
-            (Some(&at), false) => Some(at),
+            (Some(m), false) => Some(m.start),
             (None, true) => Some(line.start),
             _ => None,
         }
@@ -190,7 +187,8 @@ fn markers(
     Ok(marks)
 }
 
-/// Start a run. Inside another, the one that's running takes it up.
+/// Start a run, and take it as far as its first line's keys. Inside another, that's before the
+/// key that started it is over, so an error in a `:g` a `:norm` line started is that line's.
 fn start(
     ctx: &mut Ctx,
     buffer: BufferId,
@@ -198,6 +196,7 @@ fn start(
     marks: VecDeque<MarkerId>,
     what: Each,
 ) -> Result {
+    let depth = ctx.with_ext(|v: &mut Vim, _| v.each.len())?;
     let outer = ctx.with_ext(|v: &mut Vim, _| v.each.first().map(|r| (r.top, r.runs)))?;
     let (top, runs) = match outer {
         Some(outer) => outer,
@@ -211,41 +210,59 @@ fn start(
         running: None,
         top,
         runs,
-        cancelled: false,
+        tries: 0,
+        again: None,
     };
-    if outer.is_none() {
-        let stalled = ctx.idle(Duration::ZERO, |ctx| {
-            ctx.defer(stalled);
-            Ok(())
-        });
-        ctx.with_ext(|v: &mut Vim, _| v.stalled = Some(stalled))?;
-    }
     ctx.with_ext(|v: &mut Vim, _| v.each.push(run))?;
-    match outer {
-        Some(_) => Ok(()),
-        None => advance(ctx),
-    }
+    advance(ctx, depth)
 }
 
-/// After every command: if a line's keys may have run, see once what's queued has.
-pub fn command_ended(ctx: &mut Ctx) -> Result {
-    if ctx.with_ext(|v: &mut Vim, _| !v.each.is_empty())? {
-        // After the call that says the keys were dropped, if they were.
-        ctx.defer(advance);
+/// `@:` with a count: the ex line `n` times, each after the last is over, as your Evil's run one
+/// after another. A `:norm` or `:g` that waits for its keys runs the rest when it's done.
+pub fn repeat_ex(ctx: &mut Ctx, line: &str, n: usize) -> Result {
+    for more in (0..n).rev() {
+        let depth = ctx.with_ext(|v: &mut Vim, _| v.each.len())?;
+        ex::run(ctx, line)?;
+        let again = Some((line.to_string(), more));
+        let waits =
+            ctx.with_ext(|v: &mut Vim, _| v.each.get_mut(depth).map(|r| r.again = again))?;
+        if waits.is_some() {
+            break;
+        }
     }
     Ok(())
 }
 
-/// The keys stopped. If a line's last key waits for another, as `:norm f` leaves it, that's over,
-/// as when your Evil's run out: an Escape ends it, or isn't bound after it, and the line is over.
-fn stalled(ctx: &mut Ctx) -> Result {
-    let running = ctx.with_ext(|v: &mut Vim, _| v.each.last().and_then(|r| r.running))?;
-    match running {
-        Some(left) if repeat::fed_left(ctx)? <= left && ctx.prompt_text().is_none() => {
-            repeat::feed_more(ctx, "<Esc>")
-        }
-        _ => Ok(()),
+/// The newest line's keys have all run (contract §6). What they left waiting ends as when your
+/// Evil's run out: a key waiting for another gets an Escape, and a prompt takes its line as it is,
+/// then a `C-g` if it's still open. Then the line is over.
+pub fn ran_out(ctx: &mut Ctx) -> Result {
+    let tries = ctx.with_ext(|v: &mut Vim, _| {
+        let r = v.each.last()?;
+        r.running.map(|_| r.tries)
+    })?;
+    let Some(tries) = tries else {
+        return Ok(());
+    };
+    let key = match () {
+        _ if ctx.prompt_text().is_some() && tries == 0 => "<CR>",
+        _ if ctx.prompt_text().is_some() => "<C-g>",
+        _ if ctx.keys_pending() => "<Esc>",
+        _ => return line_over(ctx),
+    };
+    if tries >= 2 {
+        while abort(ctx) {}
+        return Err(Error::Msg(
+            "What a :norm line left waiting won't end".into(),
+        ));
     }
+    ctx.with_ext(|v: &mut Vim, _| v.each.last_mut().map(|r| r.tries += 1))?;
+    repeat::feed_apart(ctx, key)
+}
+
+/// While a line's keys run, how many fed keys are behind them.
+pub fn behind(ctx: &mut Ctx) -> Result<Option<usize>> {
+    Ok(ctx.with_ext(|v: &mut Vim, _| v.each.last().and_then(|r| r.running))?)
 }
 
 /// What was fed is gone. After an error the line is over, and after a quit everything is.
@@ -254,43 +271,56 @@ pub fn dropped(ctx: &mut Ctx, quit: bool) -> Result {
         while abort(ctx) {}
         return Ok(());
     }
-    advance(ctx)
+    line_over(ctx)
 }
 
-/// Go on with the newest run, and the ones it was started from, until keys are left to run.
-pub fn advance(ctx: &mut Ctx) -> Result {
+/// The newest run's line is over: back to normal state, and on to the next.
+fn line_over(ctx: &mut Ctx) -> Result {
+    let was = ctx.with_ext(|v: &mut Vim, _| {
+        let r = v.each.last_mut()?;
+        r.tries = 0;
+        r.running.take()
+    })?;
+    if was.is_none() {
+        return Ok(());
+    }
+    // What can't be ended stays, and the next line goes ahead.
+    let _ = end_line(ctx);
+    advance(ctx, 0)
+}
+
+/// Go on with the newest run, and the ones it was started from down to `depth` of them, until a
+/// line's keys are left to run.
+fn advance(ctx: &mut Ctx, depth: usize) -> Result {
     loop {
         let newest = ctx.with_ext(|v: &mut Vim, _| {
-            let r = v.each.last()?;
-            Some((r.buffer, r.window, r.running, r.top, r.runs, r.cancelled))
+            let r = v.each.last().filter(|_| v.each.len() > depth)?;
+            Some((r.buffer, r.window, r.running.is_some(), r.top, r.runs))
         })?;
-        let Some((b, w, running, top, runs, cancelled)) = newest else {
+        let Some((b, w, running, top, runs)) = newest else {
             return Ok(());
         };
-        if let Some(left) = running {
-            if repeat::fed_left(ctx)? > left {
-                return Ok(());
-            }
-            // Your Evil's prompt fails when the keys run out, so one left open is cancelled.
-            if ctx.prompt_text().is_some() {
-                if cancelled {
-                    while abort(ctx) {}
-                    return Err(Error::Msg("A prompt :norm left open won't close".into()));
-                }
-                ctx.with_ext(|v: &mut Vim, _| v.each.last_mut().map(|r| r.cancelled = true))?;
-                return repeat::feed_more(ctx, "<C-g>");
-            }
-            // What can't be ended stays, and the next line goes ahead.
-            let _ = end_line(ctx);
+        if running {
+            return Ok(());
         }
         let next = ctx.with_ext(|v: &mut Vim, _| {
             let r = v.each.last_mut()?;
-            (r.running, r.cancelled) = (None, false);
-            Some((r.marks.pop_front()?, r.what.clone()))
+            Some(match r.marks.pop_front() {
+                Some(m) => Ok((m, r.what.clone())),
+                None => Err(r.again.take()),
+            })
         })?;
-        let Some((m, what)) = next else {
-            abort(ctx);
-            continue;
+        let (m, what) = match next {
+            Some(Ok(next)) => next,
+            Some(Err(again)) => {
+                // It's over, and `@:` with a count may run its line again.
+                abort(ctx);
+                if let Some((line, n)) = again.filter(|a| a.1 > 0) {
+                    repeat_ex(ctx, &line, n)?;
+                }
+                continue;
+            }
+            None => return Ok(()),
         };
         let at = ctx.text_mut(b).ok().and_then(|t| t.remove_marker(m));
         let Some(at) = at.filter(|_| ctx.window_buffer(w) == Some(b)) else {
@@ -298,6 +328,7 @@ pub fn advance(ctx: &mut Ctx) -> Result {
             abort(ctx);
             continue;
         };
+        let was = ctx.text(b)?.cursor(w);
         ctx.text_mut(b)?.set_cursor(w, at);
         match what {
             Each::Keys(keys) => {
@@ -310,10 +341,15 @@ pub fn advance(ctx: &mut Ctx) -> Result {
                 return Ok(());
             }
             Each::Ex(line) => {
-                let depth = ctx.with_ext(|v: &mut Vim, _| v.each.len())?;
+                let own = ctx.with_ext(|v: &mut Vim, _| v.each.len())?;
                 if let Err(e) = ex::run(ctx, &line) {
+                    // Your Evil's reads the command before the cursor moves, so one it doesn't
+                    // know leaves the cursor be.
+                    if let (Error::NoCommand(_), Some(was)) = (&e, was) {
+                        ctx.text_mut(b)?.set_cursor(w, was);
+                    }
                     // Your Evil's `:g` stops at an error, and so does a `:norm` it started.
-                    while ctx.with_ext(|v: &mut Vim, _| v.each.len())? >= depth && abort(ctx) {}
+                    while ctx.with_ext(|v: &mut Vim, _| v.each.len())? >= own && abort(ctx) {}
                     return Err(e);
                 }
             }
@@ -331,13 +367,7 @@ fn abort(ctx: &mut Ctx) -> bool {
             t.remove_marker(m);
         }
     }
-    let none_left = ctx.with_ext(|v: &mut Vim, _| {
-        let none = v.each.is_empty();
-        if none {
-            v.stalled = None;
-        }
-        none
-    });
+    let none_left = ctx.with_ext(|v: &mut Vim, _| v.each.is_empty());
     if none_left.unwrap_or(true) {
         let _ = repeat::end_lines(ctx);
     }
