@@ -327,6 +327,10 @@ pub struct Ctx {
     pub(crate) fed: VecDeque<KeyEvent>,
     /// Where the next key fed from inside a call goes. Each turn starts it at the front.
     pub(crate) fed_at: usize,
+    /// A typed `C-g` ended what was fed, since [`Ctx::take_quit`] last looked.
+    pub(crate) quit: bool,
+    /// [`Ctx::hush_key_errors`].
+    pub(crate) hushed: bool,
     pub(crate) pending: Vec<KeyEvent>,
     /// The keys `describe-key` has read so far, while it's reading them.
     pub(crate) describing: Option<Vec<KeyEvent>>,
@@ -515,6 +519,8 @@ impl Ctx {
             typed: VecDeque::new(),
             fed: VecDeque::new(),
             fed_at: 0,
+            quit: false,
+            hushed: false,
             pending: vec![],
             describing: None,
             prompt_register: None,
@@ -721,6 +727,12 @@ impl Ctx {
         match r {
             Ok(()) | Err(Error::Panicked { .. }) => {}
             Err(e) => self.log_error(e.to_string()),
+        }
+    }
+    /// Report a failure in the key stream, unless it's hushed.
+    pub(crate) fn report_key(&mut self, r: Result) {
+        if !self.hushed {
+            self.report(r);
         }
     }
     /// Log a key's or a call's failure, as opposed to news such as "Wrote foo".

@@ -516,6 +516,7 @@ impl Ctx {
         };
         if let Some(i) = self.typed.iter().position(is_quit) {
             self.typed.remove(i);
+            self.quit = true;
             self.drop_fed();
             self.messages.push("Quit".into());
         }
@@ -542,8 +543,10 @@ impl Ctx {
                     if r.is_err() {
                         self.drop_fed();
                     }
+                    self.report_key(r);
+                } else {
+                    self.report(r);
                 }
-                self.report(r);
                 if !std::mem::take(&mut self.pace.found_nothing) {
                     self.touch();
                 }
