@@ -26,6 +26,8 @@ pub struct Ran {
     pub status: io::Result<ExitStatus>,
     /// It printed more than the limit, and was stopped there.
     pub cut: bool,
+    /// Some of what it printed wasn't UTF-8, and shows as replacements in `text`.
+    pub lossy: bool,
 }
 
 impl Ctx {
@@ -39,16 +41,17 @@ impl Ctx {
         done: impl FnOnce(&mut Ctx, Ran) -> Result + 'static,
     ) -> Result {
         let (tx, rx) = mpsc::channel();
-        let out = Arc::new(Output::default());
-        let (cmd, o) = (shell(line, dir), out.clone());
+        let (out, group) = (Arc::new(Output::default()), Group::default());
+        let (cmd, o, g) = (shell(line, dir), out.clone(), group.clone());
         std::thread::spawn(move || {
             let input = input.map(String::into_bytes);
-            let _ = tx.send(run(cmd, input, o, &Group::default(), None, true));
+            let _ = tx.send(run(cmd, input, o, &g, None, true));
         });
         let ran = move |status| Ran {
             text: out.take(true),
             status,
             cut: out.cut(),
+            lossy: out.lossy(),
         };
         let gone = || Err(io::Error::other("the command's thread stopped"));
         match rx.recv_timeout(WAIT) {
@@ -58,6 +61,9 @@ impl Ctx {
                 self.messages.push(format!(
                     "`{line}` is still running; what it prints comes when it's done"
                 ));
+                // So that it ends when DIE does.
+                self.procs.background.retain(Group::running);
+                self.procs.background.push(group);
                 let job = self.spawn(
                     move || rx.recv().unwrap_or_else(|_| gone()),
                     move |ctx, s| done(ctx, ran(s)),

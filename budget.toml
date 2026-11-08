@@ -46,7 +46,8 @@ path = "crates/die-vim"
 # 10,160 until `:!`, `:{range}!`, `:r`, the `!` operator and `:make`.
 # 10,330 until `:cq` gave up on a `die --wait` client's file, so that git stops.
 # 10,340 until the review fixes of the ex commands on lines and insert state's Emacs keys: `C-g`, `C-u n <Home>`, Emacs's words for `C-Left`.
-limit = 10383
+# 10,383 until the review fixes of `:!`: a filter whose output isn't UTF-8 leaves the text alone.
+limit = 10387
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -144,10 +145,12 @@ files = ["project.rs", "project/"]
 
 # New with `compile` and `:!`: commands run without a terminal, `*compilation*` and its errors,
 # and `next-error` over them and `*grep*`'s rows, which came here from grep.
+# 1,020 until its review: lines shown before their newline with comint's carriage returns,
+# commands stopped at quit, cargo's workspace root, rustc's secondary spans, linear GNU lines.
 [[module]]
 crate = "die-core"
 name = "processes: compile, shell commands, next-error"
-limit = 1020
+limit = 1110
 files = ["process.rs", "process/"]
 
 # New with `buffer-menu`: Emacs's Buffer List, with evil-collection's keys for it.

@@ -9,7 +9,7 @@ use crate::files::FileTarget;
 use crate::ids::{BufferId, WindowId};
 use crate::project::{parse_row, project_root};
 use crate::workspace::Side;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// How a results buffer's lines name places.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,6 +65,8 @@ pub(crate) struct Locus {
     pub(crate) line: usize,
     pub(crate) col: Option<usize>,
     pub(crate) note: bool,
+    /// Its path is rustc's, which under cargo is from the workspace's root.
+    pub(crate) cargo: bool,
 }
 
 impl Ctx {
@@ -91,6 +93,7 @@ impl Ctx {
                     line,
                     col,
                     note: false,
+                    cargo: false,
                 })
             }
             Kind::Compile => compile::locus(t, at, &text),
@@ -107,26 +110,26 @@ impl Ctx {
     /// `compilation-goto-locus` does: in the focused window unless that has the results or a
     /// terminal, then in the one that has the file, or the one used last that has neither, or else
     /// a split. That window takes the focus. A file that's gone since is an error, not a new empty
-    /// buffer, and the line still counts as visited, so `:cn` goes on past it. A path that isn't
-    /// from the results' directory is tried from its project, as `cargo` names files from the
-    /// workspace wherever it runs.
+    /// buffer, and the line still counts as visited, so `:cn` goes on past it. A path is tried
+    /// from the results' directory, then from its project. rustc's are tried from the cargo
+    /// workspace first, since cargo runs rustc there wherever it's run from.
     fn visit_locus(&mut self, line: usize) -> Result {
         let r = self.procs.results.first().ok_or_else(no_results)?;
-        let (buf, noun) = (r.buf, r.noun().0);
+        let (buf, noun, dir) = (r.buf, r.noun().0, r.dir.clone());
         let here = self
             .locus(r, line)
             .ok_or_else(|| Error::Msg(format!("No {noun} here")))?;
-        let tries = [
-            r.dir.join(&here.path),
-            project_root(&r.dir).join(&here.path),
-        ];
-        let found = tries.iter().find(|p| p.is_file()).cloned();
+        let (project, workspace) = (project_root(&dir), cargo_root(&dir));
+        let tries = workspace.filter(|_| here.cargo).into_iter();
+        let tries = tries.chain([dir.as_path(), &project]);
+        let found = tries.map(|d| d.join(&here.path)).find(|p| p.is_file());
         let at = self.text(buf)?.line_start(line);
         for w in self.windows_showing(buf) {
             self.text_mut(buf)?.set_cursor(w, at);
         }
         self.procs.results[0].current = Some(line);
-        let path = found.ok_or_else(|| Error::Msg(format!("{} no longer exists", here.path)))?;
+        let lost = || format!("Can't find {} from {}", here.path, dir.display());
+        let path = found.ok_or_else(|| Error::Msg(lost()))?;
         let target = FileTarget {
             path,
             line: Some(here.line),
@@ -206,6 +209,22 @@ impl Ctx {
         let line = self.next_locus(current, forward)?;
         self.visit_locus(line)
     }
+}
+
+/// The cargo workspace `dir` is in, as cargo finds it: the nearest directory up with a
+/// `Cargo.toml` that has a `[workspace]`, or else with a `Cargo.toml`.
+fn cargo_root(dir: &Path) -> Option<&Path> {
+    let workspace = |d: &Path| {
+        let toml = std::fs::read_to_string(d.join("Cargo.toml")).unwrap_or_default();
+        let mut tables = toml.lines().map(str::trim_start);
+        tables.any(|l| l.starts_with("[workspace]") || l.starts_with("[workspace."))
+    };
+    let mut manifests = dir.ancestors().filter(|d| d.join("Cargo.toml").is_file());
+    let nearest = manifests.next()?;
+    let root = std::iter::once(nearest)
+        .chain(manifests)
+        .find(|d| workspace(d));
+    Some(root.unwrap_or(nearest))
 }
 
 fn no_results() -> Error {
