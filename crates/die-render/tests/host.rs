@@ -156,6 +156,7 @@ fn every_window_of_a_split_shows_and_a_click_reaches_the_one_it_is_over() {
         col: 18,
         clicks: 1,
         mods: Mods::default(),
+        px: None,
     }));
     h.pump();
     assert_eq!(h.ctx.focused(), Some(right));

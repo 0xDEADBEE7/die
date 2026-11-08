@@ -99,6 +99,9 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         ] {
             reg.global_keymap().bind(state, "<D-q>", "quit");
         }
+        // Cmd-V in a terminal's insert state pastes, bracketed, rather than going to the program.
+        reg.global_keymap()
+            .bind(State::Passthrough, "<D-v>", "surface-paste");
         // Emacs's M-x and M-!, which Evil leaves in its states. Not in a prompt, where Emacs
         // refuses them too, nor in operator-pending, where they end the operator.
         for state in [
@@ -142,6 +145,13 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         shown.map_err(|e| vec![e.to_string()])?;
     }
     Ok(ctx)
+}
+
+/// If this run is one of the modes DIE's binary has besides the editor, run it and give its exit
+/// code: today a PTY's trampoline (`die_core::pty::trampoline`). Your config's `main` calls this
+/// first, before it reads its arguments, or no terminal can start.
+pub fn other_mode() -> Option<i32> {
+    die_core::pty::trampoline()
 }
 
 /// Run DIE until its window closes. The window opens without taking focus. The exit code:

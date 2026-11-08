@@ -127,7 +127,8 @@ impl Host {
 
     /// How long the loop may sleep, given whether the last pump left `more`.
     pub fn sleep(&mut self, more: bool) -> Sleep {
-        if more {
+        // A PTY's output past one turn's batch waits for the next pump, not for a wake.
+        if more || self.ctx.pty_output_waiting() {
             return Sleep::No;
         }
         sleep_for(self.ctx.next_timer(), self.ctx.now())
@@ -640,7 +641,13 @@ impl Shell {
         if px != live.px {
             live.px = px;
             live.surface.resize(px, live.scale);
-            self.host.set_grid(grid(px, live.renderer.cell()));
+            let cell = live.renderer.cell();
+            self.host.ctx.set_cell_pixels(die_core::CellPixels {
+                width: cell.w,
+                height: cell.h,
+                scale: live.scale,
+            });
+            self.host.set_grid(grid(px, cell));
             self.host.pump();
             self.stale = true;
             self.resized = true;

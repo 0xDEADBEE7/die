@@ -251,8 +251,12 @@ impl Ctx {
         }
     }
 
+    /// Passthrough is insert state on a surface (scope D18): the DIE layer's Esc leaves it for
+    /// normal state, and so does a plain Esc the surface doesn't take now. Each swallows its
+    /// repeats and release.
     fn dispatch_passthrough(&mut self, win: WindowId, buf: BufferId, ev: KeyEvent) {
-        if ev.key == Key::Esc && ev.mods.super_ && ev.kind == KeyKind::Press {
+        let plain = |ctx: &Ctx| ev.mods == Mods::default() && !ctx.surface_takes_esc(buf);
+        if ev.key == Key::Esc && ev.kind == KeyKind::Press && (ev.mods.super_ || plain(self)) {
             self.buffers[buf].state = State::Normal;
             self.swallow.push(Key::Esc);
             return;
@@ -274,7 +278,7 @@ impl Ctx {
 
     /// Give a surface input, guarded, for the extension that made it. A text buffer has no
     /// surface, so it handles nothing.
-    fn surface_event(&mut self, buf: BufferId, ev: &Event) -> Result<bool> {
+    pub(crate) fn surface_event(&mut self, buf: BufferId, ev: &Event) -> Result<bool> {
         let owner = match self.buffers.get(buf).map(|b| &b.content) {
             Some(Content::Custom { owner, .. }) => *owner,
             _ => return Ok(false),

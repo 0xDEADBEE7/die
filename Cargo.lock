@@ -283,6 +283,7 @@ dependencies = [
  "regex-automata",
  "regex-syntax",
  "ropey",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "slotmap",

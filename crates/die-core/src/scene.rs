@@ -331,6 +331,7 @@ impl Ctx {
     /// window is scrolled to show its cursor first (C5).
     pub fn compose(&mut self, cols: usize, rows: usize, placements: &[WindowPlacement]) -> Scene {
         self.sync_messages();
+        self.sweep_frames();
         let base = self
             .faces
             .get("default")
@@ -372,14 +373,14 @@ impl Ctx {
             // A cursor past an unwrapped window's edge isn't drawn (M0 has no
             // horizontal scrolling), nor one outside the frame.
             let cursor = cursor
-                .filter(|&(r, c, _)| r < wr && c < wc)
-                .map(|(r, c, past)| (p.row + r, p.col + c, past))
-                .filter(|&(r, c, _)| r < rows && c < cols);
-            if let Some((row, col, past_end)) = cursor {
+                .filter(|&(r, c, ..)| r < wr && c < wc)
+                .map(|(r, c, past, own)| (p.row + r, p.col + c, past, own))
+                .filter(|&(r, c, ..)| r < rows && c < cols);
+            if let Some((row, col, past_end, own)) = cursor {
                 let state = self.buffers.get(bid).map_or(State::Normal, |b| b.state);
                 let takes_input = focused && !input_in_prompt;
                 let shape = if takes_input && self.app_focused {
-                    shape_for(state)
+                    own.unwrap_or(CursorShape::for_state(state))
                 } else {
                     CursorShape::Hollow
                 };
@@ -495,20 +496,29 @@ impl Ctx {
             scene.put(row, p.col + x, Cell::styled(Glyph::Char(' '), style));
         }
         if self.buffers.contains_key(buffer) {
-            let text = self.status_text(buffer);
-            put_text(scene, row, p.col + 1, p.col + cols, glyphs(&text, style));
+            let (text, tag) = self.status_line(buffer);
+            let at = (p.col + cols).saturating_sub(tag.len() + 1).max(p.col + 1);
+            let room = if tag.is_empty() { p.col + cols } else { at - 1 };
+            put_text(
+                scene,
+                row,
+                p.col + 1,
+                room.max(p.col + 1),
+                glyphs(&text, style),
+            );
+            put_text(scene, row, at, p.col + cols, glyphs(tag, style));
         }
     }
 
-    /// Draw one window's content; returns its cursor's (row, col) in the window, and whether
-    /// it's past the end of its row.
+    /// Draw one window's content; returns its cursor's (row, col) in the window, whether it's
+    /// past the end of its row, and the shape a surface asks for.
     fn draw_window(
         &mut self,
         scene: &mut Scene,
         p: &WindowPlacement,
         base: Style,
         focused: bool,
-    ) -> Option<(usize, usize, bool)> {
+    ) -> Option<(usize, usize, bool, Option<CursorShape>)> {
         let win = self.windows.get(p.window)?;
         let (cols, rows) = (win.cols, win.rows);
         let b = self.buffers.get_mut(win.buffer)?;
@@ -523,19 +533,9 @@ impl Ctx {
                     visual: state == State::Visual && focused,
                 };
                 draw_text(scene, p, (cols, rows), t, modes, &look, &mut self.messages)
+                    .map(|(r, c, past)| (r, c, past, None))
             }
-            Content::Custom { obj, .. } => {
-                let mut out = vec![];
-                if let Some(s) = obj
-                    && catch_unwind(AssertUnwindSafe(|| s.render(cols, rows, &mut out))).is_err()
-                {
-                    out = vec!["<render panicked>".into()]; // until the next good render (§15)
-                }
-                for (r, line) in out.iter().enumerate().take(rows) {
-                    put_text(scene, p.row + r, p.col, p.col + cols, glyphs(line, base));
-                }
-                None
-            }
+            Content::Custom { .. } => self.draw_surface(scene, p, base, focused),
         }
     }
 }
@@ -574,17 +574,6 @@ pub(crate) fn put_text(
         col += w;
     }
     col
-}
-
-fn shape_for(state: State) -> CursorShape {
-    match state {
-        State::Insert => CursorShape::Bar,
-        State::Replace => CursorShape::Underline,
-        State::OperatorPending => CursorShape::HalfBlock,
-        State::Normal | State::Visual | State::CommandLine | State::Copy | State::Passthrough => {
-            CursorShape::Block
-        }
-    }
 }
 
 fn draw_text(

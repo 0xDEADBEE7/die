@@ -30,7 +30,10 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod matrix {
-    use die_core::{Ctx, Key, KeyEvent, KeyKind, ModifierKey, Mods};
+    use die_core::{
+        Ctx, Event, Frame, Key, KeyEvent, KeyKind, ModifierKey, Mods, RenderInfo, ShowIn, State,
+        Surface,
+    };
     use die_render::driver::{self, Config};
     use die_render::window::{self, Remote};
     use objc2::MainThreadMarker;
@@ -38,6 +41,7 @@ mod matrix {
     use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventType};
     use objc2_foundation::{NSPoint, NSString, NSUserDefaults};
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
@@ -421,6 +425,50 @@ mod matrix {
         Ok(())
     }
 
+    /// Keeps what a surface hears, for the script's thread to read.
+    struct Recorder(Arc<Mutex<Vec<KeyEvent>>>);
+    impl Surface for Recorder {
+        fn kind(&self) -> &'static str {
+            "term"
+        }
+        fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
+        fn event(&mut self, ev: &Event, _: &mut Ctx) -> bool {
+            if let Event::Key(k) = ev {
+                self.0.lock().unwrap().push(k.clone());
+            }
+            true
+        }
+        fn initial_state(&self) -> State {
+            State::Passthrough
+        }
+    }
+
+    /// Contract §7: in passthrough a surface hears every event of a key, its repeats and its
+    /// release among them, and modifier keys alone, as the matrix has them reach core.
+    fn a_surface_in_passthrough_hears_repeats_and_releases(r: &Remote) -> Result<(), String> {
+        let seen = Arc::new(Mutex::new(vec![]));
+        let heard = seen.clone();
+        r.call(move |s, _| {
+            let ctx = s.ctx();
+            let buf = ctx.create_surface("term", Recorder(heard));
+            ctx.show(buf, ShowIn::Current).map(drop)
+        })?
+        .map_err(|e| e.to_string())?;
+        for name in ["hold j", "C-a", "LShift alone", "Esc"] {
+            let chord = MATRIX.iter().find(|c| c.name == name).unwrap();
+            let want = expected(chord);
+            post_chord(r, chord)?;
+            keys(r, want.len())?;
+            let got = std::mem::take(&mut *seen.lock().unwrap());
+            // Esc leaves passthrough, swallowing its own release.
+            let want = if name == "Esc" { vec![] } else { want };
+            if got != want {
+                return Err(format!("{name}\n  got  {got:?}\n  want {want:?}"));
+            }
+        }
+        Ok(())
+    }
+
     /// A test failed. A quit ends the loop with 0, so this keeps that from hiding it.
     static FAILED: AtomicBool = AtomicBool::new(false);
 
@@ -454,7 +502,7 @@ mod matrix {
             println!("{e}");
             return 1;
         }
-        let tests: [(&str, Test); 3] = [
+        let tests: [(&str, Test); 4] = [
             ("the_matrix_holds", the_matrix_holds),
             (
                 "a_panic_in_the_key_monitor_is_caught",
@@ -463,6 +511,10 @@ mod matrix {
             (
                 "text_inserted_without_a_key_reaches_core",
                 text_inserted_without_a_key_reaches_core,
+            ),
+            (
+                "a_surface_in_passthrough_hears_repeats_and_releases",
+                a_surface_in_passthrough_hears_repeats_and_releases,
             ),
         ];
         let mut code = 0;

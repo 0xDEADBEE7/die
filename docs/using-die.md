@@ -61,6 +61,7 @@ The leader is `\`, in normal state.
 | `\hk` | `describe-key` | What a key does |
 | `\hc` | `describe-command` | What a command does |
 | Cmd-Q | `quit` | Quit, in every state |
+| Cmd-V in a terminal's insert state | `surface-paste` | Paste the clipboard into the program, as one piece it sees bracketed. `:surface-paste` pastes a register given with `"a`, or the clipboard |
 
 `:name` runs any command by name, so also `:restart`, `:kill-buffer`, `:quit`. While you type the name, `:` lists commands as `M-x` does: see [Prompts](#prompts).
 
@@ -223,7 +224,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 ## What isn't there yet
 
-- **A terminal.** No terminal buffers exist. `:make` and `:!` run commands, but anything that reads keys, as Claude Code, a REPL or a pager, runs in a terminal of your own next to DIE, and `die file:line` from there.
+- **A terminal.** No terminal buffers exist yet. `:make` and `:!` run commands, but anything that reads keys, as Claude Code, a REPL or a pager, runs in a terminal of your own next to DIE, and `die file:line` from there. Core's half is in: once die-term is connected, a terminal starts in insert state, shown `<I>` at the right of its status line with its title, where every key but Cmd's goes to the program, the leader and `C-c` too. Esc goes to normal state (`<N>`), except while a program such as vim is on the alternate screen; Cmd-Esc always does. Cmd-V pastes and Cmd-Q quits.
 - **Running commands:** `M-&` and a command ending in `&` (Emacs's async shell commands), `C-u M-!` (output at the cursor), completion in the command prompts, stopping a `:!` that went on in the background before DIE quits, asking before quitting stops a command, and in `*compilation*` `go` (show an error without going there), `[[` `]]` (by file) and `q`. `:w !cmd`. Backspaces in output aren't moved over, as comint does.
 - **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`, `<Insert>`.
 - **Ex:** `:p`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, a `/pattern/` as an address, `:marks :jumps :pwd :cd`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`. `:pu =` and `C-r =` aren't built anywhere. A range given backward, as `:3,1d`, is refused, where your Evil asks whether to swap it.

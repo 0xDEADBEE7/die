@@ -182,13 +182,14 @@ args
   5. global
   6. the surface's `event()` (§10)
   7. otherwise, an "unbound" message
-- **Passthrough has its own dispatch rule.**
-  - The DIE layer's Esc is checked first; it leaves passthrough for copy state and is never sent to the program.
-  - Plain Esc leaves passthrough for copy state too, unless the surface asks for it: a terminal on the alternate screen, or one whose per-buffer toggle sends Esc to the program (scope D18). Then it goes to `event()`.
-  - The rest of the DIE layer is looked up in DIE's keymaps (scope D18).
-  - Every other key goes straight to the surface's `event()`.
+- **Passthrough has its own dispatch rule.** It's insert state on a surface, and `describe-key`, the status line and the cursor say insert (scope D18).
+  - The DIE layer's Esc is checked first; it leaves passthrough for normal state (a terminal's copy state) and is never sent to the program.
+  - A plain Esc, with no modifier, leaves for normal state too, unless the surface's `takes_esc()` says it's its own now: a terminal on the alternate screen, or one whose per-buffer toggle sends Esc to the program (scope D18). Then it goes to `event()`. Shift-, Ctrl- and Alt-Esc always go to `event()`.
+  - The rest of the DIE layer is looked up in DIE's keymaps, in their passthrough bindings: the `die` facade binds `<D-q>` to `quit` and `<D-v>` to `surface-paste` there. A DIE-layer chord nothing binds goes to `event()`.
+  - Every other key goes straight to the surface's `event()`: the leader, `C-c`, `C-z`, `C-g`, and every key die-vim's insert state binds in text.
   - A surface declares which keys it handles there, so `describe-key` can report them.
-- **Press, repeat and release.** Keymaps match press and repeat. Release events, modifier keys pressed alone and keys DIE has no name for reach only surfaces in passthrough. Binding a modifier key alone, or making one the leader, is a startup error. Any key DIE takes in passthrough, the DIE layer's Esc or a DIE-layer binding, swallows its own repeat and release, so a program never sees a release without its press.
+  - In normal state a surface's buffer looks keys up as any buffer does, its kind's keymap among them, so die-term binds `<Esc>` (sending it to the program), `i a I A` and `p P` there.
+- **Press, repeat and release.** Keymaps match press and repeat. Release events, modifier keys pressed alone and keys DIE has no name for reach only surfaces in passthrough. Binding a modifier key alone, or making one the leader, is a startup error. Any key DIE takes in passthrough, either Esc that leaves or a DIE-layer binding, swallows its own repeat and release, so a program never sees a release without its press. die-render delivers every press, repeat and release, as `crates/die-render/tests/keys.rs` checks on a real event loop.
 - **Initial state.** A surface kind or mode can declare the state a buffer starts in, as `evil-set-initial-state` does. Text buffers start in normal, `die-term` in passthrough (shown as insert, scope D18), and orchid's conversation mode might choose insert.
 - **Conflicts.** Within a keymap, later registration wins, and `describe-key` lists what was shadowed. Your config is applied last, and your bindings go into the keymap they name (global by default). To free a key an extension bound, your config unbinds it. That removes the binding and every longer one that starts with it, and `describe-key` lists them as shadowed. This is how config binds a key alone where an extension uses it as a prefix, or the reverse.
 
@@ -443,34 +444,40 @@ This is the canonical Surface trait; scope §5.4 points here.
 ```
 Surface
   kind()                          "term"; used for keymaps, restore and describe
-  render(area, frame, info)       write cells and placements into area
-                                  info: focused or not, modal state, scale factor
+  render(frame, info)             write the window's whole area into a DIE-owned cell frame
+                                  info: the window, whether it takes input, modal state, cells in pixels
+  cursor(info)                    optional: where the cursor is in the area, and how it looks
+  status()                        optional: a segment for the window's status line, as a terminal's title
   event(event, ctx) -> handled    input that keymaps didn't take (below)
+  handles(key)                    optional: which keys it takes in passthrough, for describe-key
+  takes_esc()                     optional: whether a plain Esc in passthrough is its own now (§7)
   initial_state()                 default normal; die-term returns passthrough
-  cursor()                        optional: where to draw the cursor
-  status()                        optional: a segment for the window's status line
-  text(done)                      optional: full text, so copy state can search and yank beyond the viewport;
+  text(done)                      later: full text, so copy state can search and yank beyond the viewport;
                                   may complete asynchronously (a terminal's scrollback lives with its engine),
                                   and copy state opens when it arrives
-  scroll_to(position)             optional: move the view, for copy state and search
-  reveal(range)                   optional: make a range visible
-  save() -> data                  optional (§14)
+  scroll_to(position)             later: move the view, for copy state and search
+  reveal(range)                   later: make a range visible
+  save() -> data                  later (§14)
 ```
 
 **Rendering.**
-- `render` writes into a DIE-owned cell frame clipped to `area` (scope D8). A cell holds a character, colors, attributes, an underline style and color, and wide-character continuation.
-- A producer resolves what a cell doesn't hold. Reverse video swaps the colors, faint blends the foreground toward the background (65 %, as ghostel does), invisible text draws a space, and blinking text draws steadily.
-- Cells are built with `Cell::new(glyph, fg, bg)` and then their fields set, since a struct literal doesn't compile outside die-core. So overline and the link id can arrive with die-term (M2) without breaking a producer.
-- `render` also places images and pixel buffers on rectangles of cells, each with a source rectangle, a pixel offset and a z-order. A negative z draws below text.
-- `render` can't change the workspace. It gets the surface mutably, so it can update its own caches, but it doesn't get `Ctx`.
+- `render` writes into a `Frame`, DIE's cell frame for the window's whole area (scope D8): no gutter, margins or centered width, whatever a text buffer's settings are. Core keeps each surface's frame between frames, so a surface can rewrite only the rows that changed. `frame.is_new()` says it holds nothing the surface wrote: its first render, a new size, or another window of another size drew it last. `frame.put(row, col, cell)`, `frame.row_mut(r)` and `frame.text(row, col, text, style)` write it; `text` lays text out as a text window does, a wide character's second cell a continuation.
+- A `FrameCell` holds a glyph (a grapheme, or `Glyph::Continuation` for a wide character's second cell), `fg` and `bg` (`Color::Rgb`, or `Color::Default` for the `default` face's), bold, italic, faint, reverse, invisible, strikethrough, blink, and an underline style and color (`Color::Default` is the foreground). So a surface needs no theme.
+- Core resolves what the scene's cell doesn't hold. Reverse video swaps the colors, the defaults too. Faint blends the foreground toward the background, 65 % foreground as ghostel does, before the swap. Invisible text draws a space with no underline or strikethrough, and blinking text draws steadily.
+- Cells are built with `FrameCell::new(glyph, fg, bg)` and then their fields set, since a struct literal doesn't compile outside die-core. So overline and the link id can arrive with die-term without breaking a producer.
+- `cursor(info)` gives a `SurfaceCursor`: row and column in the area, a `CursorShape` (block, bar, underline or hollow, as DECSCUSR sets them), visible (DECTCEM) and blinking, which draws steadily for now. Core draws it hollow in a window that doesn't take input: not focused, a prompt open, or DIE's window without the keyboard. It draws no cursor that isn't visible, and none for `None`. `CursorShape::for_state(state)` is a text window's shape in a state, passthrough's as insert's bar, for a terminal that follows the modal state on the main screen as evil-ghostel does.
+- A surface window's status line shows the buffer's status text, then the surface's `status()`, and at the right the buffer's state as Evil's tag: `<I>` in passthrough and insert, `<N>` in normal. A terminal's cursor is the program's, so it can't always say. Text windows show no tag.
+- Images and pixel buffers on rectangles of cells, each with a source rectangle, a pixel offset and a z-order (a negative z draws below text), come with placements (M3).
+- `render` can't change the workspace. It gets the surface mutably, so it can update its own caches, but it doesn't get `Ctx`. A panic in it draws `<render panicked>` until the next good render (§15).
 - **Components are plain Rust types that render into part of an area,** so a new graphical extension can be assembled from reusable pieces. The contract needs nothing extra for this. Your existing browsers don't use custom surfaces at all (§9).
 
-**What `event()` receives:**
-- Keys no keymap took (§7), so a surface can implement its own `j`/`k` without registering them.
-- In passthrough, every key outside the DIE layer (scope D18), including release events.
+**What `event()` receives** (`Event`, which is `#[non_exhaustive]`, so a match needs a `_` arm):
+- `Key`: keys no keymap took (§7), so a surface can implement its own `j`/`k` without registering them. In passthrough, every key outside the DIE layer (scope D18), with its repeats and releases, modifier keys alone, and keys DIE has no name for.
+- `Resize { window, cols, rows, cell }`: when the surface goes into a window (`open_window`'s caller already gave the size), when the window changes size, and when the host says the cells' pixels changed (`Ctx::set_cell_pixels`). `cell` is a `CellPixels`: a cell's width and height in physical pixels and the display's scale, 0 until the host says, as XTWINOPS answers want them. `PtySize::new(cols, rows, cell)` is that as a PTY's size.
+- `Focus(bool)`: a window showing it gained or lost the focus.
+- `Pointer(SurfacePointer)`: a press, release, motion (`Move`, or `Drag` with a button held) or a precise scroll (`dx`, `dy` in cells), with the cell in the area, the pixel in the area (`x`, `y`, physical), the click count and the modifiers. A press focuses the window, ending a waiting command as a press on text does. Drags and the release go to the window that had the press, held inside its area. While a prompt is open only those reach it.
+- `Paste(text)`: text to paste as one piece, which a terminal brackets. The DIE layer's V in passthrough sends it (the `die` facade binds `<D-v>` there to `surface-paste`), and `surface-paste` with a register does, so die-term can bind `p` and `P` in normal state to it.
 - Typed text in insert state, for example a search field in a graphical view.
-- Pointer events, with the cell position, the pixel position inside a placement, a click count and precise scroll deltas.
-- Resize (in cells and in physical pixels, with the scale factor), and focus in and out.
 
 `event()` receives `Ctx`. Core checks the surface out of its buffer for the duration of the call (C2).
 
@@ -496,7 +503,7 @@ All callbacks run on the main thread, receive `Ctx`, and are queued (C3). Every 
 |---|---|---|
 | `spawn(work, done)` | `work` runs on a thread of its own and returns a value; `done(ctx, value)` runs on the main thread | Anything slow, such as scrib's blocking `call-process` or delta's `shell-command-to-string` |
 | `process(cmd)` | A builder for args, environment and working directory, with callbacks for stdout (lines or chunks), stderr and exit. Returns a handle for writing to stdin or killing the process. | `make-process` with a filter and sentinel |
-| `pty(cmd, size)` | The same, on a PTY. Used by `die-term`, which hands the PTY to the terminal's helper process, so its output never passes through DIE. | |
+| `pty(cmd, size)` | The same, on a PTY: `ctx.pty(PtyCommand, PtySize) -> Pty`. Used by `die-term`. Until D20's helper, its output reaches DIE's main thread; then die-term hands the PTY to the terminal's helper process, so its output never passes through DIE. | |
 | `watch(path, f)` | File-system events | `file-notify-add-watch` |
 | `after(d, f)`, `every(d, f)`, `idle(d, f)` | Timers | `run-with-timer`, `run-at-time`, `run-with-idle-timer` |
 | `prompt(spec, f)` | A command-line prompt with optional completion candidates. `f(ctx, answer)` runs with the answer on submit, and with nothing on cancel, so a multi-step flow can clean up. | `completing-read`, `read-string` |
@@ -517,12 +524,15 @@ All callbacks run on the main thread, receive `Ctx`, and are queued (C3). Every 
 **Waking the loop.** A background thread never touches the editor. It posts to a channel, and a `Waker` tells whatever runs the loop. The waker names no event loop: the host connects its own, once. Any thread can call it, and however many jobs finish between two turns of the loop, the host hears once. A turn of the loop never waits for a job, so `work` can take as long as it needs.
 
 **PTYs** need more than pipes do:
-- A PTY is registered with the holder when `pty()` creates it, so it survives restarts and crashes (scope §5.9). The holder takes labelled fds from any DIE process (`term/<id>/pty`, `term/<id>/engine`), so a terminal's helper process can reach its PTY, and a restarted DIE can reach the helper.
-- After a restart DIE isn't the shell's parent. The exit callback still gets the status: core watches the pid with kqueue (macOS, `NOTE_EXIT | NOTE_EXITSTATUS`) or a pidfd held by the holder (Linux); on Linux kernels before 6.15 the status after a restart is unknown. The end of output on the PTY marks the final text.
-- Children are started with `posix_spawn` (on macOS and glibc) and close-on-exec by default, so no child holds another terminal open after you kill its buffer.
-- Resizes carry pixel sizes as well as cells.
-- The owner can read the terminal mode, to spot password prompts, and the foreground process group, to confirm before killing a running command.
-- A terminal's output is parsed in its helper process and reaches the main thread as finished frames: the changed rows as DIE cells, the placements, and images as shared memory (scope §5.8). Other PTY users get main-thread callbacks like `process`.
+- **The API.** `PtyCommand::new(program)` takes `arg`, `args`, `arg0` (`-zsh` for a login shell), `current_dir`, `env`, `env_remove`, `on_output(|ctx, bytes|)` and `on_exit(|ctx, status|)`. `ctx.pty(cmd, size)` returns a `Pty`, or an error if there's no PTY or no such directory. `Pty` has `write(bytes)`, which never waits, `resize(size)` (TIOCSWINSZ, cells and pixels), `pid()`, `foreground_group()`, `echoes()` and `close()`. Dropping it closes it, and no callback runs after (C4). die-term sees nothing of where the PTY lives, so D20's holder can take it with no change there.
+- **Starting it.** A child needs code run before `exec` to get a controlling terminal, which std offers only through `unsafe`, and die-core is `forbid(unsafe_code)`. So DIE's own binary does it, in a short mode: `die --pty-exec name program args`, started with the PTY as its stdin, stdout and stderr, calls `setsid`, makes the PTY its controlling terminal (TIOCSCTTY) and `exec`s the program, which keeps its pid. A binary that opens PTYs calls `die::other_mode()` (`die_core::pty::trampoline()`) first in `main`, as your config's does, and a test binary with no harness does too. On Linux the trampoline is `/proc/self/exe`, which a rebuild can't remove. An `exec` that fails says why on the terminal and exits 127 or 126, as a shell does.
+- **The environment** is DIE's, with the PATH your login shell sets (the one `:make` gets), `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=DIE` and `TERM_PROGRAM_VERSION`, less what a terminal DIE was started from would have left that's wrong in DIE's (its size, `TERMINFO`, and Ghostty's, kitty's, iTerm's, WezTerm's, Alacritty's and VTE's variables), then the command's own.
+- **Output** is read on a thread of the PTY's own and handed to `on_output` from the top of the loop (C3), at most 256 KiB a turn per PTY, after which a key or the frame goes, as timers do. So a flood can't hold up a key. The reader keeps at most 1 MiB waiting; past that the program waits in the kernel. While output waits for its turn, `Ctx::pty_output_waiting` says so, and the host doesn't sleep. Input is written from the same thread, so a program that doesn't read never blocks DIE.
+- **The exit** comes to `on_exit` after the last output: the end of output on the PTY marks it, or 200 ms after the program exits if something it left holds the terminal. A failure to start comes there too.
+- **Closing** a `Pty` hangs the terminal up, as closing a terminal window does, and kills the program's process group 300 ms later if it's still there. Quitting DIE closes every PTY that way, before it stops its other commands.
+- Every fd DIE opens is close-on-exec, PTYs included, and no other terminal's fd reaches a program. A test runs `ls -l /dev/fd/` on one terminal while another is open. The holder's received fds will arrive without close-on-exec on macOS (S3), so the trampoline sweeps them when D20 lands, in `sys`.
+- **With D20 (next round):** a PTY is registered with the holder when `pty()` creates it, so it survives restarts and crashes (scope §5.9). The holder takes labelled fds from any DIE process (`term/<id>/pty`, `term/<id>/engine`), so a terminal's helper process can reach its PTY, and a restarted DIE can reach the helper. After a restart DIE isn't the shell's parent; the exit callback still gets the status: core watches the pid with kqueue (macOS, `NOTE_EXIT | NOTE_EXITSTATUS`) or a pidfd held by the holder (Linux); on Linux kernels before 6.15 the status after a restart is unknown.
+- A terminal's output is then parsed in its helper process and reaches the main thread as finished frames: the changed rows as DIE cells, the placements, and images as shared memory (scope §5.8). Other PTY users keep main-thread callbacks.
 
 There are no blocking calls. A command that waited on a process would freeze everything, including your terminals, so the API doesn't offer one. The main thread never waits on a terminal's helper either.
 

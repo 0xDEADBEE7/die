@@ -145,6 +145,7 @@ fn click(ctx: &mut Ctx, row: usize, col: usize) {
             col,
             clicks: 1,
             mods: Mods::default(),
+            px: None,
         }));
         ctx.run_ready();
     }

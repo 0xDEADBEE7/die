@@ -16,7 +16,8 @@
 [[crate]]
 name = "die-core"
 path = "crates/die-core"
-limit = 14000
+# 14,000 until the terminal's core half: surfaces' styled cells, cursor and events, and PTYs (about 1,030).
+limit = 14790
 
 [[crate]]
 name = "die-render"
@@ -124,7 +125,8 @@ name = "ext, dispatch, rt"
 # 1,510 until V3: a typed C-g ends a macro.
 # 1,525 until the macro work: a quit noted for `take_quit`, and key errors `hush_key_errors` hushes.
 # 1,535 until the macro review: the loop says when keys fed apart have run out, before the next key.
-limit = 1545
+# 1,545 until the terminal: `Surface`'s cursor, status and Esc, its events, and a PTY's turn.
+limit = 1575
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
@@ -147,10 +149,11 @@ files = ["files.rs", "files/"]
 # 1,310 until a prompt's candidates could match only part of its line, for `:`'s list.
 # 1,331 until kill-buffer's question was shared with the Buffer List's `x`.
 # 1,339 until `:`'s list kept Evil's history keys and put first the command a name runs.
+# 1,370 until `describe-key` said a terminal's passthrough is insert, and which Esc leaves it.
 [[module]]
 crate = "die-core"
 name = "command line, prompt, core commands"
-limit = 1370
+limit = 1390
 files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "commands/"]
 
 [[module]]
@@ -186,6 +189,15 @@ name = "clients"
 limit = 145
 files = ["clients.rs"]
 
+# New with the terminal: what a surface draws (styled cells over the whole area, its cursor and
+# status segment) and hears (pointer, paste, resize in pixels), and the PTYs die-term runs
+# programs on, with the trampoline that gives one its controlling terminal without `unsafe`.
+[[module]]
+crate = "die-core"
+name = "surfaces and PTYs"
+limit = 975
+files = ["surface.rs", "pty.rs", "surface/", "pty/"]
+
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
 # 965 until a list had the status lines above it, as Emacs's minibuffer has the mode line.
 [[module]]
@@ -200,8 +212,9 @@ name = "session"
 # 1,250 until U7, whose marks and jump lists in session.json are about 50 lines. 1,305 until U8:
 # what an extension keeps, by name, whole and by buffer, is about 80. 1,385 until `die --wait`
 # kept its connection after the answer, to hear `done` on. 1,425 until a waiting client heard
-# `failed` and `moved`, and asked the next instance to wait on its files `again`.
-limit = 1480
+# `failed` and `moved`, and asked the next instance to wait on its files `again`. 1,480 until
+# `sys` said where DIE's own binary is, for a PTY's trampoline.
+limit = 1490
 # 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
 # held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
@@ -219,10 +232,11 @@ files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
 # the portable backend (`backend::wgpu`, `text::fontations`), join with their code,
 # and replace the stub.
 
+# 2,300 until a pointer event said its pixel, and core heard the cells' pixels, for terminals.
 [[module]]
 crate = "die-render"
 name = "neutral"
-limit = 2300
+limit = 2305
 files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "input.rs", "sprite.rs", "window.rs", "latency.rs"]
 
 # `die --check`: the window's own checks, which ship in the binary. R3's are about 420

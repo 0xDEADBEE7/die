@@ -23,14 +23,14 @@ impl Surface for Surf {
     fn kind(&self) -> &'static str {
         "surf"
     }
-    fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
+    fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
 }
 struct OtherSurf;
 impl Surface for OtherSurf {
     fn kind(&self) -> &'static str {
         "other"
     }
-    fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
+    fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
 }
 
 #[derive(Default)]

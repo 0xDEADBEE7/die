@@ -394,14 +394,7 @@ impl Ctx {
         };
         match &mut b.content {
             Content::Text(t) => t.resize_view(w, cols, rows),
-            Content::Custom { owner, .. } => {
-                let owner = *owner;
-                self.defer_as(owner, move |ctx| {
-                    let ev = Event::Resize { cols, rows };
-                    ctx.checkout_surface(buf, |s, ctx| s.event(&ev, ctx))?;
-                    Ok(())
-                });
-            }
+            Content::Custom { .. } => self.surface_resized(w, buf),
         }
         let modes: Vec<(TypeId, ExtIdx)> = self.buffers[buf]
             .modes
