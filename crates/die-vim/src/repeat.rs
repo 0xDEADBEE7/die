@@ -403,6 +403,14 @@ pub fn q(ctx: &mut Ctx, a: &Args) -> Result {
         Some((name, mut keys)) => {
             keys.pop();
             ctx.set_note(None);
+            // Where your Emacs says "Keyboard macro defined", with the register named.
+            let (to, add) = (name.to_ascii_lowercase(), name.is_ascii_uppercase());
+            ctx.messages.push(match (keys.is_empty(), add) {
+                (false, false) => format!("Recorded @{to}"),
+                (false, true) => format!("Added to @{to}"),
+                (true, false) => format!("Recorded nothing, so @{to} is empty"),
+                (true, true) => format!("Added nothing to @{to}"),
+            });
             registers::record(ctx, name, key_notation(&keys))
         }
         None => {
