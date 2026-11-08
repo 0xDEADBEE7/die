@@ -15,7 +15,7 @@
 //! one through `open` with those files, and exits, so that no window lives as a terminal's child.
 //! A launch that finds the lock held sends on any files it was given, and otherwise goes.
 
-use crate::{Config, launch, started_dir};
+use crate::{Config, launch, rebuild, started_dir};
 use die_core::instance::{
     Handover, Instance, OPEN_SOCKET, OpenListener, OpenRequest, Sent, Successor, send_open,
 };
@@ -202,14 +202,32 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
     let again = asked.restart_loop.then(|| restart.clone());
     let register = config.core.register.take();
     let rebuilt = restart.clone();
+    let (installed, last) = (bundle.clone(), dir.join("rebuild-root"));
     config.core.register = Some(Box::new(move |reg| {
         reg.command("restart", "Start DIE again.", move |_, _| {
             let _ = restart.send(());
             Ok(())
         });
-        crate::rebuild::register(reg, crate::rebuild::xtask_app, move || {
+        let home = rebuild::home_of(&installed);
+        let command = move |root: &Path| match &home {
+            Some(home) => Ok(rebuild::xtask_app(root, home)),
+            None => Err(die_core::Error::Msg(format!(
+                "This DIE runs from {}, which `cargo xtask app` doesn't install",
+                installed.display()
+            ))),
+        };
+        let restart = Box::new(move || {
             let _ = rebuilt.send(());
         });
+        let command = Box::new(command);
+        rebuild::register(
+            reg,
+            rebuild::Setup {
+                command,
+                restart,
+                last,
+            },
+        );
         if let Some(register) = register {
             register(reg);
         }
