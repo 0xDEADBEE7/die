@@ -46,7 +46,7 @@ The leader is `\`, in normal state.
 | `\hc` | `describe-command` | What a command does |
 | Cmd-Q | `quit` | Quit, in every state |
 
-`:name` runs any command by name, so also `:restart`, `:kill-buffer`, `:quit`.
+`:name` runs any command by name, so also `:restart`, `:kill-buffer`, `:quit`. While you type the name, `:` lists commands as `M-x` does: see [Prompts](#prompts).
 
 **The finders** list files while you type. They skip `.git`, `target`, `Library`, `.cargo/registry`, `.claude/worktrees` and a fixed set of others, and they don't read `.gitignore`. Only the best 1,000 matches can be reached.
 
@@ -71,7 +71,18 @@ These work on `:`, `/`, `?` and the finders.
 | `<BS>` `C-h`, `<Del>` `C-d`, `C-w` `M-BS`, `M-d` | Delete a character, a word |
 | `C-u`, `C-k` | Delete to the line's start, to its end |
 
-On `:`, `/` and `?` only: `C-v` inserts the next key literally, `<Up>` `<Down>` recall history matching what's typed, `C-b` goes to the start, and `C-u` deletes the whole line. `C-p` `C-n` also go through history.
+On `:`, `/` and `?` only: `C-v` inserts the next key literally, `<Up>` `<Down>` recall history matching what's typed, `C-b` goes to the start, and `C-u` deletes the whole line. `C-p` `C-n` also go through history. On `:` these four do that only while it shows no list.
+
+**`:`'s list.** While the line is a command's name, after any range (`%`, `'<,'>`, `2,5`), `:` shows a list like `M-x`'s, flex matched against the name: the ex commands under their whole names (`write`, `quit`, `substitute`, `vsplit`, `nohlsearch`) and every other command, the ones you ran from `:` first.
+
+| Keys | What they do on `:` |
+|---|---|
+| `<CR>` | Run the line as typed, so `:w` writes. Once you've moved to a row, run that row, with the range kept |
+| `<Down>` `C-n`, `<Up>` `C-p`, `<PageDown>` `<PageUp>`, `M-<` `M->` | Move in the list. No row is chosen until you do, and `<Up>` from the first goes back to the line |
+| `<Tab>` | Put the chosen row, or else the top one, in place of the name, with nothing after it |
+| `M-p` `M-n` | History, list or not |
+
+Once anything follows the name (a space, a `!`, or `/` after `s`), the list goes and the keys are as above. With nothing typed the list is every command, the last run first, so `:` then `<Up>` doesn't bring back the last line as in Vim: `M-p` does.
 
 In `\f`, `<S-Tab>` goes up a directory: a name you've half typed goes first, then the directory on the line, and from `~/` it goes to `/Users/`.
 
@@ -138,7 +149,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 ## Windows and buffers
 
 - **`C-w` then:** `h j k l` and arrows, `w W t b p` to move; `s S v n` to split; `c q o` to close; `= + - > < _ |` to size; `H J K L` to move the window; `r R x` to rotate and exchange; `:` for ex; digits for a count. A key with Control does the same, as `C-w C-h`.
-- **Ex:** `:sp[lit]`, `:vs[plit]`, `:new`, `:vne[w]`, each with a file; `:clo[se]`, `:on[ly]`.
+- **Ex:** `:sp[lit]`, `:vs[plit]`, `:new`, `:vne[w]`, each with a file; `:clo[se]`, `:on[ly]`. Every ex command takes Vim's short forms, as `:wri`, `:bdel`, `:nohls`, `:sub/a/b/`.
 - **Buffers:** `:e file`, `:e!`, `:b name`, `:bn`, `:bp`, `C-^`, `:bd`, `:bw` (`!` to drop unsaved text), `:kill-buffer`. `:bn` and `:bp` go through file buffers. `:ls` (or `:buffers`) lists every buffer in `*messages*` and shows it there, the one used last first, `.` for this one, `%` read-only, `*` unsaved. `:files` lists only those with a file.
 - **Files:** `:w`, `:w!` over a file changed on disk, `:up`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:wqa`, `:xa`, `:qa`, `ZZ`, `ZQ`. Files changed on disk reload by themselves if you have no unsaved text there, and `:w` refuses if you have.
 - **Saving elsewhere:** `:w path` from a buffer with no file, such as `:new`'s, saves it there, and the buffer then visits that file. From a buffer with a file it writes a copy, and the buffer keeps its file and its unsaved changes, as in your Evil. `:sav[eas] path` saves and moves the buffer to the new file. A path is taken from the buffer's directory, as `:e` takes it, and `~/` is your home. A file that's already there is written over only with `!` (`:w! path`, `:saveas! path`). `:wq path` and `:x path` write there, then close.

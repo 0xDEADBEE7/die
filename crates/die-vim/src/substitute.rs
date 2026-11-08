@@ -10,6 +10,9 @@ use std::ops::Range;
 /// What `:` puts on the line from a selection.
 pub const VISUAL: &str = "'<,'>";
 
+/// `:s[ubstitute]`'s shortest and whole name.
+pub const NAME: (&str, &str) = ("s", "substitute");
+
 /// `&` and `:&`, as your Evil writes them: the last pattern, the last replacement, no flags.
 const AGAIN: &str = "//~/";
 /// `g&` and `:&&`: with the last flags.
@@ -113,7 +116,8 @@ pub fn parse(text: &str) -> Option<(Lines, &str)> {
         "&&" => return Some((range, AGAIN_WITH_FLAGS)),
         _ => {}
     }
-    let rest = rest.strip_prefix('s')?;
+    let typed = rest.bytes().zip(NAME.1.bytes()).take_while(|(a, b)| a == b);
+    let rest = rest.get(typed.count()..).filter(|r| r.len() < rest.len())?;
     // `-` and `_` carry on a command's name, such as `s-foo`.
     let delimiter = rest
         .chars()

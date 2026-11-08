@@ -37,7 +37,8 @@ path = "crates/die-vim"
 # 8,200 until U6's review: C-x C-n, C-x C-p, S-Left and S-Right, the last of what your Evil's map
 # binds there. 8,500 until V2: the keys a day of editing reached for, `:2,5s` and `:bn :bp :bd`. 8,800 until the merges after V2 left it one over.
 # 8,810 until X1: `:w path`, `:saveas`, `:f` and `C-g`, and `:ls`.
-limit = 8876
+# 8,876 until `:` listed commands as M-x does, from a table of ex names with Vim's short forms.
+limit = 8912
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -112,10 +113,11 @@ limit = 833
 files = ["files.rs", "files/"]
 
 # 1,300 until `<S-Tab>` went up a directory in the file prompt.
+# 1,310 until a prompt's candidates could match only part of its line, for `:`'s list.
 [[module]]
 crate = "die-core"
 name = "command line, prompt, core commands"
-limit = 1310
+limit = 1331
 files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "commands/"]
 
 [[module]]
