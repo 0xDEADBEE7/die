@@ -41,7 +41,7 @@ The leader is `\`, in normal state.
 | `\/`, `\]` | `switch-buffer` | Switch buffer |
 | `\r` | `grep` | Search the project |
 | `\x`, `M-x` | `command-palette` | Run any command by name, recent first. `M-x` works in insert and visual too |
-| `\z` | `toggle-max-width` | Turn the 80-column centered text on or off |
+| `\z` | `toggle-max-width` | Turn the 80-column centered text on or off. The prompts, their lists and the messages line up with it |
 | `\hk` | `describe-key` | What a key does |
 | `\hc` | `describe-command` | What a command does |
 | Cmd-Q | `quit` | Quit, in every state |
