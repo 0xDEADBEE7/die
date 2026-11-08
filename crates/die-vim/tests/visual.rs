@@ -165,7 +165,11 @@ fn an_empty_register_fails_unless_recording() {
     assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
     ctx.messages.clear();
     ctx.type_keys("qb@zxq");
-    assert_eq!(ctx.messages, Vec::<String>::new());
+    assert_eq!(
+        ctx.messages,
+        ["Recorded @b"],
+        "no error, only q saying it stopped"
+    );
     assert_eq!(text(&ctx, b), "\n");
 }
 

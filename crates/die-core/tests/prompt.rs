@@ -404,6 +404,46 @@ fn the_prompt_its_list_and_messages_line_up_with_the_text_above() {
     );
 }
 
+/// As the owner's Emacs draws M-x under a `\z` window: the window's status line runs from edge
+/// to edge just above the list, and the list's content starts at the margin, where the line
+/// numbers do, and ends where the text does.
+#[test]
+fn a_list_has_the_status_line_above_it_and_its_content_inside_the_margins() {
+    let mut ctx = ctx();
+    ctx.set_frame_size(40, 12);
+    let (red, grey) = (Rgb::hex("#c80000"), Rgb::hex("#333333"));
+    let theme = Theme::new("t", [Rgb::hex("#000000"); 16])
+        .face("prompt-current", Style::new().bg(red))
+        .face("status-line", Style::new().bg(grey));
+    ctx.set_theme(theme);
+    let lines: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+    let b = ctx.create_text("lines", &lines);
+    ctx.show(b, ShowIn::Current).unwrap();
+    let settings = ctx.text_mut(b).unwrap().settings_mut();
+    settings.line_numbers = die_core::LineNumbers::Absolute;
+    (settings.max_width, settings.center) = (Some(20), true);
+    let status_row = ctx.window_size(ctx.focused().unwrap()).unwrap().1;
+    let status = ctx.scene().row(status_row).to_vec();
+    assert!(status.iter().all(|c| c.bg == grey), "{status:?}");
+
+    let pick = PromptSpec::new("Pick: ").candidates(["alpha", "beta", "gamma"]);
+    ask(&mut ctx, pick);
+    let scene = ctx.scene();
+    let shown: Vec<String> = (0..scene.rows).map(|r| scene.row_text(r)).collect();
+    let line = shown.iter().position(|r| r.contains("Pick:")).unwrap();
+    assert!(line < status_row, "the list is over the window: {shown:?}");
+    assert_eq!(scene.row(line - 1), status.as_slice(), "{shown:?}");
+    // The gutter is 4 wide (3 digits and a space), so the text is 36 - 20 = 16 narrower than
+    // the window, and the margin is 8 on each side.
+    let starts = |r: &String| r.find(|c| c != ' ');
+    assert_eq!(starts(&shown[line]), Some(8), "{shown:?}");
+    assert_eq!(starts(&shown[line + 1]), Some(8), "{shown:?}");
+    let chosen = scene.row(line + 1);
+    let lit: Vec<usize> = (0..40).filter(|&c| chosen[c].bg == red).collect();
+    let span = (lit.first(), lit.last());
+    assert_eq!(span, (Some(&8), Some(&31)), "4 + 20 wide: {shown:?}");
+}
+
 /// As Emacs's `*Messages*`: opened at its end, and a cursor there stays there, in any window.
 #[test]
 fn messages_follow_their_end_in_a_window_at_the_end() {
