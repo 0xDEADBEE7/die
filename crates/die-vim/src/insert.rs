@@ -8,8 +8,8 @@ use crate::motions::{row_start, word_back, word_begin};
 use crate::operators::SHIFT_WIDTH;
 use crate::repeat::{Change, keys_of};
 use crate::text::{
-    Chars, blank_line, indent_end, indent_stops, indentation, line_end, next_stop, pos_at_col,
-    prev_stop, rest_pos,
+    Chars, Class, blank_line, class, indent_end, indent_stops, indentation, line_end, next_stop,
+    pos_at_col, prev_stop, rest_pos, same_word,
 };
 use die_core::{
     Args, BufferId, Ctx, Error, Origin, RegKind, Register, Result, Selection, State, TextBuf,
@@ -72,6 +72,14 @@ pub enum Edit {
     WordLeft,
     /// `<S-Right>`
     WordRight,
+    /// `<Home>` and `<End>`, your Emacs's `beginning-of-buffer` and `end-of-buffer` on macOS.
+    Home,
+    End,
+    /// `<C-Left>` and `<C-Right>`, your Emacs's `left-word` and `right-word`.
+    BackwardWord,
+    ForwardWord,
+    /// `<C-j>`: a newline, and no indentation.
+    BareNewline,
     /// `<C-t>` (right) and `<C-d>`: the line moves a shift, and the cursor with it.
     Shift {
         right: bool,
@@ -235,7 +243,12 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
     s.drop_indent &= s.left == Some(p);
     let once = matches!(
         e,
-        Edit::DeleteWord | Edit::Tab | Edit::Restore | Edit::RestoreWord | Edit::ZeroIndent
+        Edit::DeleteWord
+            | Edit::Tab
+            | Edit::Restore
+            | Edit::RestoreWord
+            | Edit::ZeroIndent
+            | Edit::BareNewline
     );
     let n = if once { 1 } else { a.count.unwrap_or(1) };
     if n > MAX_REPLAY {
@@ -274,7 +287,7 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
             // again, or just past it, forgets what the key before took there.
             s.restore.retain(|r| r.at != p);
             moved_after(s, p, t.len() as isize - len as isize);
-            if matches!(e, Edit::Over(_) | Edit::Newline) {
+            if matches!(e, Edit::Over(_) | Edit::Newline | Edit::BareNewline) {
                 let end = t.cursor(w).unwrap_or(p);
                 s.restore.push(Taken { at: p, end, old });
             }
@@ -381,6 +394,34 @@ pub fn pause(ctx: &mut Ctx, a: &Args, s: &mut Session) -> Result {
     let r = r.and(crate::marks::insert_ended(t, p));
     t.set_cursor(w, rest_pos(t, p));
     ctx.set_state_of(b, State::Normal);
+    r
+}
+
+/// `<Insert>`: the session goes on in `to`, replace state from insert state and back, as your
+/// Evil's `evil-enter-replace-state` and `evil-append` take it. Its count goes, and the new state is
+/// an undo step of its own. Leaving replace state steps back off a line's end.
+pub fn switch(ctx: &mut Ctx, a: &Args, s: &mut Session, to: State) -> Result {
+    let (b, w) = buffer_window(ctx, a)?;
+    let t = ctx.text_mut(b)?;
+    s.count = 1;
+    let r = close(t, w, s);
+    (s.rows, s.drop_indent, s.insertion) = (None, false, None);
+    s.restore.clear();
+    s.edits.clear();
+    let p = t.cursor(w).unwrap_or(0);
+    let line = t.line_of(p);
+    if to == State::Insert && p == line_end(t, line) && p > t.line_start(line) {
+        let back = prev_stop(t, p).unwrap_or(p);
+        t.set_cursor(w, back);
+    }
+    s.entry = match to {
+        State::Replace => Entry::Replace,
+        _ => Entry::Insert,
+    };
+    s.left = t.cursor(w);
+    t.undo_boundary();
+    t.begin_undo_group();
+    ctx.set_state_of(b, to);
     r
 }
 
@@ -577,7 +618,7 @@ fn restore(t: &mut TextBuf, w: WindowId, s: &mut Session) -> Result {
 
 /// [`apply`], noting the change for register `.`.
 fn tracked(t: &mut TextBuf, w: WindowId, s: &mut Session, e: &Edit) -> Result {
-    if matches!(e, Edit::Left | Edit::Right | Edit::Up | Edit::Down) {
+    if moves(e) {
         return apply(t, w, e);
     }
     let (p, len) = (t.cursor(w).unwrap_or(0), t.len());
@@ -599,6 +640,43 @@ fn tracked(t: &mut TextBuf, w: WindowId, s: &mut Session, e: &Edit) -> Result {
         s.note(beg, ((q - beg) as isize - by).max(0) as usize, q);
     }
     r
+}
+
+/// An edit that only moves the cursor.
+fn moves(e: &Edit) -> bool {
+    use Edit::*;
+    matches!(
+        e,
+        Left | Right | Up | Down | Home | End | BackwardWord | ForwardWord
+    )
+}
+
+/// Where your Emacs's `forward-word` or `backward-word` goes from `p`: over what isn't a word, then
+/// to the far end of the word, as far as the text goes and never failing.
+fn emacs_word(t: &TextBuf, p: usize, forward: bool) -> usize {
+    let word = |c: char| class(c, false) == Class::Word;
+    let mut c = Chars::at(t, p);
+    if forward {
+        while c.ch().is_some_and(|ch| !word(ch)) && c.fwd() {}
+        while let Some(ch) = c.ch() {
+            c.fwd();
+            if !c.ch().is_some_and(|n| word(n) && same_word(ch, n, false)) {
+                break;
+            }
+        }
+    } else {
+        while c.prev_ch().is_some_and(|ch| !word(ch)) && c.back() {}
+        while let Some(ch) = c.prev_ch() {
+            c.back();
+            if !c
+                .prev_ch()
+                .is_some_and(|b| word(b) && same_word(b, ch, false))
+            {
+                break;
+            }
+        }
+    }
+    c.pos()
 }
 
 /// [`Edit::Literal`] in replace state. `<BS>` puts back what each of its characters took.
@@ -808,6 +886,14 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
         // Past the last word it's the text's end, the empty line after a final newline.
         Edit::WordRight if p == t.len() => return fail("End of buffer"),
         Edit::WordRight => word_begin(t, p, false).unwrap_or(t.len()),
+        Edit::Home => 0,
+        Edit::End => t.len(),
+        Edit::BackwardWord => emacs_word(t, p, false),
+        Edit::ForwardWord => emacs_word(t, p, true),
+        Edit::BareNewline => {
+            t.tx(Origin::User).insert(p, "\n").commit()?;
+            p + 1
+        }
         Edit::Shift { right } => return shift_line(t, w, p, *right),
         Edit::ZeroIndent => {
             let line = t.line_of(p);

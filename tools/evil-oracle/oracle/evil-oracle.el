@@ -51,7 +51,9 @@
     ("lt" . ?<) ("Bslash" . ?\\) ("Bar" . ?|) ("Del" . delete)
     ("Up" . up) ("Down" . down) ("Left" . left) ("Right" . right)
     ("Home" . home) ("End" . end) ("Insert" . insert)
-    ("S-Left" . S-left) ("S-Right" . S-right))
+    ("S-Left" . S-left) ("S-Right" . S-right)
+    ("C-Left" . C-left) ("C-Right" . C-right)
+    ("PageUp" . prior) ("PageDown" . next) ("S-Tab" . S-tab))
   "Vim key names the oracle understands, with their Emacs events.
 Matching is case-insensitive.  `<Esc>' must be the `escape' symbol:
 a raw ESC character in a keyboard macro becomes a Meta prefix.")

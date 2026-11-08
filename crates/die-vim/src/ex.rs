@@ -2,7 +2,7 @@
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
 use crate::substitute::{self, Lines};
-use crate::{each, registers, visual, window};
+use crate::{each, lines, registers, sort, visual, window};
 use die_core::{
     Args, BufferId, Ctx, Error, FileTarget, Origin, PromptSpec, Result, ShowIn, Side, project_root,
     recent_first,
@@ -11,43 +11,59 @@ use std::ffi::OsStr;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-/// What an ex command does, given whether a `!` follows its name, and the rest of the line.
-type ExFn = fn(&mut Ctx, bool, &str) -> Result;
+/// What an ex command does, given whether a `!` follows its name, and the rest of the line. One
+/// that acts on lines gets the lines its range names first.
+#[derive(Clone, Copy)]
+enum ExFn {
+    P(fn(&mut Ctx, bool, &str) -> Result),
+    L(fn(&mut Ctx, &Lines, bool, &str) -> Result),
+}
+use ExFn::{L, P};
 
 /// Ex commands, as `w[rite]` gives the shortest name and the whole one, and what they run. `:`'s
 /// list shows the whole names. `:s`, `:N`, `:$` and the window commands are read before these, and
 /// a command read before them adds its names in [`ex_names`], so the list has it too.
 #[rustfmt::skip]
 const EX: &[(&str, &str, ExFn)] = &[
-    ("w", "write", |c, bang, rest| file_command(c, "w", bang, rest)),
-    ("q", "quit", |c, bang, rest| file_command(c, "q", bang, rest)),
-    ("wq", "wq", |c, bang, rest| file_command(c, "wq", bang, rest)),
-    ("x", "xit", |c, bang, rest| file_command(c, "wq", bang, rest)),
+    ("w", "write", P(|c, bang, rest| file_command(c, "w", bang, rest))),
+    ("q", "quit", P(|c, bang, rest| file_command(c, "q", bang, rest))),
+    ("wq", "wq", P(|c, bang, rest| file_command(c, "wq", bang, rest))),
+    ("x", "xit", P(|c, bang, rest| file_command(c, "wq", bang, rest))),
     // Your Evil's `evil-update` takes no bang: `:up!` is `:up`.
-    ("up", "update", |c, _, rest| file_command(c, "w", false, rest)),
-    ("wa", "wall", |c, bang, _| write_all(c, bang)),
-    ("qa", "qall", |c, bang, _| window::quit_app(c, bang)),
-    ("quita", "quitall", |c, bang, _| window::quit_app(c, bang)),
-    ("wqa", "wqall", |c, bang, _| write_all(c, bang).and_then(|_| window::quit_app(c, false))),
-    ("xa", "xall", |c, bang, _| write_all(c, bang).and_then(|_| window::quit_app(c, false))),
-    ("sav", "saveas", |c, bang, rest| write(c, buffer_window(c, &Args::default())?.0, rest, bang, true)),
-    ("f", "file", |c, _, _| show_file_info(c, &Args::default())),
-    ("ls", "ls", |c, _, _| c.run("buffer-menu", &Args::default())),
-    ("buffers", "buffers", |c, _, _| c.run("buffer-menu", &Args::default())),
-    ("files", "files", |c, _, _| c.run("buffer-menu", &Args { count: Some(1), ..Args::default() })),
-    ("reg", "registers", |c, _, rest| show_registers(c, rest)),
-    ("di", "display", |c, _, rest| show_registers(c, rest)),
-    ("bn", "bnext", |c, _, _| window::buffer_step(c, true)),
-    ("bp", "bprevious", |c, _, _| window::buffer_step(c, false)),
-    ("bN", "bNext", |c, _, _| window::buffer_step(c, false)),
-    ("bd", "bdelete", |c, bang, _| window::delete_buffer(c, bang)),
-    ("bw", "bwipeout", |c, bang, _| window::delete_buffer(c, bang)),
-    ("u", "undo", |c, _, _| c.run("vim-undo", &Args::default())),
-    ("e", "edit", |c, bang, rest| if bang { file_command(c, "e", true, rest) } else { edit(c, rest) }),
-    ("b", "buffer", |c, _, rest| buffer(c, rest)),
-    ("cn", "cnext", |c, _, _| c.run("next-error", &Args::default())),
-    ("cp", "cprevious", |c, _, _| c.run("previous-error", &Args::default())),
-    ("noh", "nohlsearch", |c, _, _| { c.set_search_highlight(None); Ok(()) }),
+    ("up", "update", P(|c, _, rest| file_command(c, "w", false, rest))),
+    ("wa", "wall", P(|c, bang, _| write_all(c, bang))),
+    ("qa", "qall", P(|c, bang, _| window::quit_app(c, bang))),
+    ("quita", "quitall", P(|c, bang, _| window::quit_app(c, bang))),
+    ("wqa", "wqall", P(|c, bang, _| write_all(c, bang).and_then(|_| window::quit_app(c, false)))),
+    ("xa", "xall", P(|c, bang, _| write_all(c, bang).and_then(|_| window::quit_app(c, false)))),
+    ("sav", "saveas", P(|c, bang, rest| write(c, buffer_window(c, &Args::default())?.0, rest, bang, true))),
+    ("f", "file", P(|c, _, _| show_file_info(c, &Args::default()))),
+    ("ls", "ls", P(|c, _, _| c.run("buffer-menu", &Args::default()))),
+    ("buffers", "buffers", P(|c, _, _| c.run("buffer-menu", &Args::default()))),
+    ("files", "files", P(|c, _, _| c.run("buffer-menu", &Args { count: Some(1), ..Args::default() }))),
+    ("reg", "registers", P(|c, _, rest| show_registers(c, rest))),
+    ("di", "display", P(|c, _, rest| show_registers(c, rest))),
+    ("bn", "bnext", P(|c, _, _| window::buffer_step(c, true))),
+    ("bp", "bprevious", P(|c, _, _| window::buffer_step(c, false))),
+    ("bN", "bNext", P(|c, _, _| window::buffer_step(c, false))),
+    ("bd", "bdelete", P(|c, bang, _| window::delete_buffer(c, bang))),
+    ("bw", "bwipeout", P(|c, bang, _| window::delete_buffer(c, bang))),
+    ("u", "undo", P(|c, _, _| c.run("vim-undo", &Args::default()))),
+    ("e", "edit", P(|c, bang, rest| if bang { file_command(c, "e", true, rest) } else { edit(c, rest) })),
+    ("b", "buffer", P(|c, _, rest| buffer(c, rest))),
+    ("cn", "cnext", P(|c, _, _| c.run("next-error", &Args::default()))),
+    ("cp", "cprevious", P(|c, _, _| c.run("previous-error", &Args::default()))),
+    ("noh", "nohlsearch", P(|c, _, _| { c.set_search_highlight(None); Ok(()) })),
+    ("d", "delete", L(|c, l, _, rest| lines::delete(c, l, rest))),
+    ("y", "yank", L(|c, l, _, rest| lines::yank(c, l, rest))),
+    ("pu", "put", L(lines::put)),
+    ("m", "move", L(|c, l, _, rest| lines::move_to(c, l, rest))),
+    ("t", "t", L(|c, l, _, rest| lines::copy_to(c, l, rest))),
+    ("co", "copy", L(|c, l, _, rest| lines::copy_to(c, l, rest))),
+    ("j", "join", L(lines::join)),
+    (">", ">", L(|c, l, _, _| lines::shift(c, l, true))),
+    ("<", "<", L(|c, l, _, _| lines::shift(c, l, false))),
+    ("sor", "sort", L(sort::sort)),
 ];
 
 /// Whether `name` is the command with this shortest and whole name, as `wri` is `w[rite]`.
@@ -145,10 +161,10 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
-/// Run an ex line: `:s`, `:norm` or `:g` with its range, `:N`, one of die-vim's own, or a
-/// command's name with the rest of the line as its [`Args::text`]. Any command in the registry can
-/// be called this way (contract §6), and from a selection: the others take no range, so it's
-/// ignored.
+/// Run an ex line: `:s`, `:norm`, `:g` or a command on lines with its range, `:N`, one of
+/// die-vim's own, or a command's name with the rest of the line as its [`Args::text`]. Any command
+/// in the registry can be called this way (contract §6), and from a selection: the others take no
+/// range, so it's ignored.
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     let line = text.trim_start().trim_start_matches(':').trim_start();
     let text = line.trim_end();
@@ -161,6 +177,9 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     // `:norm`'s keys keep the spaces at their end, as your Evil's do.
     let (lines, rest) = substitute::range(line);
     if let Some(done) = each::ex(ctx, &lines, rest) {
+        return done;
+    }
+    if let Some(done) = on_lines(ctx, &lines, rest.trim()) {
         return done;
     }
     let text = without_range(text)?;
@@ -180,8 +199,10 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
             goto_line(s, n)
         });
     }
-    if let Some(&(.., f)) = ex_command(name) {
-        return f(ctx, name.ends_with('!'), rest);
+    match ex_command(name) {
+        Some(&(.., P(f))) => return f(ctx, name.ends_with('!'), rest),
+        Some(&(.., L(f))) => return f(ctx, &Lines::Cursor, name.ends_with('!'), rest),
+        None => {}
     }
     let args = Args {
         text: (!rest.is_empty()).then(|| rest.to_string()),
@@ -190,7 +211,28 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     ctx.run(name, &args)
 }
 
-/// The line without the range that only `:s`, `:norm` and `:g` read. A line number alone goes
+/// A command on lines, with its range and what follows its name. As your Evil reads a name, it's
+/// a run of letters, or of `~&*@<>=:#`, so `:m0`, `:t.`, `:d2` and `:>` need no space, and `:>>` is
+/// no command. A name that carries on with `-`, as `kill-buffer` does, is that command's.
+fn on_lines(ctx: &mut Ctx, lines: &Lines, after: &str) -> Option<Result> {
+    let symbol = |c: char| "~&*@<>=:#".contains(c);
+    let end = match after.chars().next()? {
+        c if symbol(c) => after.find(|c| !symbol(c)),
+        _ => after.find(|c: char| !(c.is_alphabetic() || c == '_')),
+    };
+    let (name, rest) = after.split_at(end.unwrap_or(after.len()));
+    let whole = after.split(char::is_whitespace).next().unwrap_or(after);
+    if rest.starts_with('-') && ctx.command_names().contains(&whole) {
+        return None;
+    }
+    let Some(&(.., L(f))) = EX.iter().find(|e| abbreviates(name, (e.0, e.1))) else {
+        return None;
+    };
+    let bang = rest.strip_prefix('!');
+    Some(f(ctx, lines, bang.is_some(), bang.unwrap_or(rest).trim()))
+}
+
+/// The line without the range that only `:s`, `:norm`, `:g` and the commands on lines read. A line number alone goes
 /// there, and a window command keeps its count. `:'<,'>w` and `:'<,'>up` write only those lines in
 /// your Evil, and that isn't built, so they're refused: writing the whole file would be wrong.
 fn without_range(text: &str) -> Result<&str> {

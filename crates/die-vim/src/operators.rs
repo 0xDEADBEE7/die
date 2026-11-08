@@ -519,7 +519,7 @@ pub const SHIFT_WIDTH: usize = 4;
 /// column, or at the line's end after `$`. It stays on its line with `>`, and with `<`
 /// goes to the first line shifted, as in Evil, where only `>` says not to move. From visual
 /// state a count is how many shifts, and it lands from where `visual` says.
-fn shift(
+pub(crate) fn shift(
     t: &mut TextBuf,
     w: WindowId,
     span: Span,

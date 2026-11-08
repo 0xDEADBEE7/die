@@ -48,7 +48,7 @@ enum Base {
 
 impl Address {
     /// An address at the start of `text`, and what follows it.
-    fn parse(text: &str) -> Option<(Address, &str)> {
+    pub(crate) fn parse(text: &str) -> Option<(Address, &str)> {
         let digits = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
         let mut chars = text.chars();
         let (base, mut rest) = match chars.next()? {
@@ -81,19 +81,33 @@ impl Address {
     }
 
     /// The line it names, from 0, in the text.
-    fn line(self, ctx: &Ctx, b: BufferId, w: WindowId) -> Result<usize> {
+    pub(crate) fn line(self, ctx: &Ctx, b: BufferId, w: WindowId) -> Result<usize> {
+        let at = self.base_number(ctx, b, w)?.saturating_sub(1);
+        Ok(at
+            .saturating_add_signed(self.offset)
+            .min(last_line(ctx.text(b)?)))
+    }
+
+    /// The line it names, from 1, where 0 is before the first, as `:m` and `:t` take it.
+    pub(crate) fn number(self, ctx: &Ctx, b: BufferId, w: WindowId) -> Result<usize> {
+        let at = self.base_number(ctx, b, w)?;
+        Ok(at
+            .saturating_add_signed(self.offset)
+            .min(last_line(ctx.text(b)?) + 1))
+    }
+
+    fn base_number(self, ctx: &Ctx, b: BufferId, w: WindowId) -> Result<usize> {
         let t = ctx.text(b)?;
         let cursor = t.line_of(t.cursor(w).unwrap_or(0));
-        let at = match self.base {
-            Base::Cursor => cursor,
-            Base::Last => last_line(t),
-            Base::Line(n) => n.saturating_sub(1),
+        Ok(match self.base {
+            Base::Cursor => cursor + 1,
+            Base::Last => last_line(t) + 1,
+            Base::Line(n) => n,
             Base::Mark(c) => {
                 let not_set = || Error::Msg(format!("Marker `{c}' is not set"));
-                t.line_of(t.mark(c).ok_or_else(not_set)?)
+                t.line_of(t.mark(c).ok_or_else(not_set)?) + 1
             }
-        };
-        Ok(at.saturating_add_signed(self.offset).min(last_line(t)))
+        })
     }
 }
 
