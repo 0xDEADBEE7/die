@@ -201,10 +201,14 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
     }
     let again = asked.restart_loop.then(|| restart.clone());
     let register = config.core.register.take();
+    let rebuilt = restart.clone();
     config.core.register = Some(Box::new(move |reg| {
         reg.command("restart", "Start DIE again.", move |_, _| {
             let _ = restart.send(());
             Ok(())
+        });
+        crate::rebuild::register(reg, crate::rebuild::xtask_app, move || {
+            let _ = rebuilt.send(());
         });
         if let Some(register) = register {
             register(reg);

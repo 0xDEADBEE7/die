@@ -311,6 +311,7 @@ These stand with the entry below's list, which no one has worked through.
 569. `:ls` shows `*messages*` in the window, as Evil's buffer menu takes it. The format is DIE's: marks, the name padded to 20, then the path.
 570. The restart loop's 1 s limit stays, though one restart took 1,021.6 ms under the full suite's load.
 571. `M-x` opens the command palette in normal, insert, replace, visual and copy, bound by `die` beside Cmd-Q, as Emacs's global map has it under Evil. Not in a prompt, where Emacs refuses it, nor in operator-pending, where it ends the operator. Your first `M-x` in the app said `<A-x> is undefined`.
+572. `:rebuild` runs `cargo xtask app` from inside DIE, in the DIE checkout of the focused buffer (one with `crates/die` and `xtask`), or else the workspace this DIE was built from. Its output streams into `*rebuild*`, split below with the focus staying. Exit 0 closes that window and restarts. Otherwise the errors stay. It finds rustup's cargo in `~/.cargo/bin`, since a DIE started from the Dock has launchd's PATH. There's no way to stop a build from DIE, killing `*rebuild*` doesn't stop cargo, and it lives in the `die` crate, so a plain `die::run` without the bundle hasn't got it.
 
 ## 2026-11-07: 28 packages on `m0/integration`, and none of them on `main`
 

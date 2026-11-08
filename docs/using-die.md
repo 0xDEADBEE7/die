@@ -11,7 +11,8 @@ open ~/Applications/DIE.app
 
 - `cargo xtask app` links `~/.local/bin/die` if that directory is on your PATH. Otherwise it prints the one line to add to your shell config. It replaces a link there but never a file. `--home DIR` installs under DIR instead, to try it without touching yours.
 - There is one instance. Launching it again from the Dock or Finder does nothing.
-- **After a rebuild:** run `cargo xtask app`, then `:restart` in DIE. The new build comes up with your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search. `*grep*` doesn't come back. A failed restart leaves the old instance running.
+- **After changing DIE or your config:** `:rebuild` in DIE. It runs `cargo xtask app` in the DIE checkout of the buffer you're in, or else the one DIE was built from, with cargo's output in `*rebuild*` below. If it builds, DIE restarts into it. If not, nothing is installed, the errors stay on screen, and `gf` on an error's `-->` line opens the file there. A change to your config takes about 2 s. By hand it's `cargo xtask app` in a terminal, then `:restart`.
+- **What a restart keeps:** your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search. `*grep*` doesn't come back. A new build that fails to start leaves the old instance running.
 - **Quit:** `:q` on the last window, `:qa`, or Cmd-Q. Each refuses if a file is unsaved. `:qa!` doesn't.
 
 From a terminal, `die` opens files in the running DIE and returns at once. If none is running, it starts one.
