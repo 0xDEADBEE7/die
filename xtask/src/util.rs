@@ -1,5 +1,6 @@
 //! Paths, commands, temporary directories and git.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -97,6 +98,66 @@ pub fn git(root: &Path) -> Command {
     let mut c = Command::new("git");
     c.arg("-C").arg(root);
     c
+}
+
+/// Where `task` keeps its working files and build cache. Under `CARGO_TARGET_DIR` when
+/// that's set, so a worktree whose cache is a clone of a warm one starts warm; under `root`'s
+/// own `target` otherwise.
+pub fn task_dir(root: &Path, task: &str) -> PathBuf {
+    task_dir_in(std::env::var_os("CARGO_TARGET_DIR"), root, task)
+}
+
+/// `task_dir`, given the variable's value.
+pub fn task_dir_in(target_dir: Option<OsString>, root: &Path, task: &str) -> PathBuf {
+    match target_dir {
+        Some(dir) if !dir.is_empty() => root.join(dir),
+        _ => root.join("target"),
+    }
+    .join("xtask")
+    .join(task)
+}
+
+/// The merge base of `rev` and main.
+pub fn merge_base(root: &Path, rev: &str) -> Result<String> {
+    Ok(output(git(root).args(["merge-base", rev, "main"]))?
+        .trim()
+        .to_string())
+}
+
+/// The files that differ between `from` and `to`, or the working tree with no `to`. A rename
+/// counts as both its names, so whatever names the old one still sees a change.
+fn diff_names(root: &Path, from: &str, to: Option<&str>) -> Result<Vec<String>> {
+    let mut cmd = git(root);
+    cmd.args(["diff", "--name-only", "--no-renames", "-z", from]);
+    cmd.args(to);
+    Ok(split_paths(&output(&mut cmd)?))
+}
+
+fn split_paths(out: &str) -> Vec<String> {
+    out.split('\0')
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// The files `rev` changed since its merge base with main.
+pub fn changed_at_rev(root: &Path, rev: &str) -> Result<Vec<String>> {
+    diff_names(root, &merge_base(root, rev)?, Some(rev))
+}
+
+/// The files changed since HEAD's merge base with main, in the working tree as git would
+/// commit it: edited, staged, untracked or deleted, and not ignored.
+pub fn changed_in_worktree(root: &Path) -> Result<Vec<String>> {
+    let mut files = diff_names(root, &merge_base(root, "HEAD")?, None)?;
+    files.extend(split_paths(&output(git(root).args([
+        "ls-files",
+        "-z",
+        "--others",
+        "--exclude-standard",
+    ]))?));
+    files.sort();
+    files.dedup();
+    Ok(files)
 }
 
 /// A directory under the system's temporary directory, removed on drop

@@ -14,5 +14,15 @@
   {"id": "p-dot", "keys": "yyp.", "text": ["|a", "b"]},
   {"id": "dd-j-dot", "keys": "ddj.", "text": ["|1", "2", "3", "4"]},
   {"id": "R-dot", "keys": "Rxy<Esc>ll.", "text": ["|abcdefg"]},
-  {"id": "cw-dot-on-shorter-word", "keys": "cwbar<Esc>w.", "text": ["|foo a"]}
- ]}
+  {"id": "cw-dot-on-shorter-word", "keys": "cwbar<Esc>w.", "text": ["|foo a"]},
+  {"id": "block-dollar-dot", "keys": "<C-v>$jAX<Esc>.", "text": ["|abc", "de"]},
+  {"id": "block-dollar-d-dot", "keys": "<C-v>$jdjj.", "text": ["|abc", "de", "fgh", "i"]},
+  {"id": "v-D-dot", "keys": "vlDj.", "text": ["|ab", "cd", "ef"]},
+  {"id": "v-D-dot-mid", "keys": "vlDj.", "text": ["|ab", "cd", "ef", "gh"]},
+  {"id": "V-count-gt-dot-count", "keys": "V2>3.", "text": ["|a"]},
+  {"id": "ciw-dot-next-line", "keys": "ciwfoo<Esc>j.", "text": ["|one two", "three four", "c"]},
+  {"id": "find-ci-quote-semicolon-dot", "keys": "f\"ci\"x<Esc>;;.", "text": ["|a \"b\" \"c\" d", "e"]},
+  {"id": "star-ciw-n-dot", "keys": "*Nciwx<Esc>n.", "text": ["|foo bar foo", "foo", "c"]},
+  {"id": "shift-paragraph-dot", "keys": ">ip.", "text": ["|a", "b", "", "c"]},
+  {"id": "block-insert-dot", "keys": "<C-v>jI# <Esc>jj.", "text": ["|a", "b", "c", "d", "e"]}
+]}

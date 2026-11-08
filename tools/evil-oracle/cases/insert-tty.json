@@ -17,5 +17,11 @@
   {"id": "failed-right-clears-the-column", "vim": "goal: Vim's failed Right keeps the column; Evil's forgets it (Emacs's goal column)", "keys": "i<Down><Right><Up>X<Esc>", "text": "abcd|ef\nab"},
   {"id": "failed-left-clears-the-column", "vim": "goal: Vim's failed Left keeps the column; Evil's forgets it (Emacs's goal column)", "keys": "i<Up><Left><Down>X<Esc>", "text": "\nabc|d"},
   {"id": "failed-backspace-clears-the-column", "vim": "goal: Vim's failed Backspace keeps the column; Evil's forgets it (Emacs's goal column)", "keys": "i<Up><BS><Down>X<Esc>", "text": "\nabc|d"},
-  {"id": "failed-ctrl-w-clears-the-column", "vim": "goal: Vim's failed C-w keeps the column; Evil's forgets it (Emacs's goal column)", "keys": "i<Up><C-w><Down>X<Esc>", "text": "\nabc|d"}
- ]}
+  {"id": "failed-ctrl-w-clears-the-column", "vim": "goal: Vim's failed C-w keeps the column; Evil's forgets it (Emacs's goal column)", "keys": "i<Up><C-w><Down>X<Esc>", "text": "\nabc|d"},
+  {"id": "replace-up", "keys": "R<Up>x<Esc>", "text": ["ab", "c|d"]},
+  {"id": "replace-down", "keys": "R<Down>x<Esc>", "text": ["a|b", "cd"]},
+  {"id": "replace-up-dot", "keys": "R<Up>x<Esc>j.", "text": ["ab", "c|d", "ef"]},
+  {"id": "replace-down-bs", "keys": "R<Down>x<BS><Esc>", "text": ["a|b", "cd"]},
+  {"id": "replace-up-at-top-in-macro", "keys": "@a", "text": ["|ab"], "registers": {"a": {"text": "R<Up>x", "type": "macro"}}},
+  {"id": "dot-fails-in-insert", "keys": "ix<Up>y<Esc>.", "text": ["ab", "|cd"]}
+]}

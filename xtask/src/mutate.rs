@@ -11,8 +11,16 @@
 //! A run has a process group of its own. On expiry the whole group is killed, because
 //! killing cargo alone leaves the test binary running. That group doesn't get a terminal's
 //! ^C, so a small watchdog in it kills the group if xtask itself goes away.
+//!
+//! A mutant needs catching, not explaining, so the first test to fail ends a run, the tests
+//! don't shrink what they find, and the build has no debug info. A mutant's time is then
+//! nearly all its build, which debug info made about 3 times the CPU.
+//!
+//! `--changed` runs only the mutants whose file changed since the merge base with main.
 
-use crate::util::{Result, TempDir, cargo, copy_worktree, read, show, write};
+use crate::util::{
+    Result, TempDir, cargo, changed_in_worktree, copy_worktree, read, show, task_dir, write,
+};
 use serde::Deserialize;
 use std::fs::File;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -39,20 +47,107 @@ struct Mutants {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Mutant {
-    name: String,
-    /// Relative to `crates/die-core`.
-    file: String,
+pub struct Mutant {
+    pub name: String,
+    /// Relative to `CRATE`.
+    pub file: String,
     old: String,
     new: String,
 }
 
-pub fn run(root: &Path, cases: u32) -> Result {
+/// The crate the mutants live in, and `file` is relative to.
+const CRATE: &str = "crates/die-core";
+
+/// `DIE_PROP_CASES` in a run with no `--cases`. Since the first failure ends a run, this costs
+/// little but the unmutated run. It stays here for M48, which took about 600 cases in both runs
+/// measured, so 1,000 would often miss it. The other 47 failed within about 200.
+pub const DEFAULT_CASES: u32 = 2000;
+
+/// What `cargo xtask mutate` was asked for.
+#[derive(Debug, PartialEq)]
+pub struct Options {
+    pub cases: u32,
+    /// Only the mutants whose file changed since the merge base with main.
+    pub changed: bool,
+}
+
+impl Options {
+    /// `None` if these aren't `mutate`'s arguments.
+    pub fn parse(args: &[&str]) -> Option<Options> {
+        let mut options = Options {
+            cases: DEFAULT_CASES,
+            changed: false,
+        };
+        let mut args = args.iter();
+        while let Some(arg) = args.next() {
+            match *arg {
+                "--changed" => options.changed = true,
+                "--cases" => options.cases = args.next()?.parse().ok()?,
+                _ => return None,
+            }
+        }
+        Some(options)
+    }
+}
+
+pub fn parse(text: &str) -> Result<Vec<Mutant>> {
+    let m: Mutants = toml::from_str(text).map_err(|e| e.to_string())?;
+    Ok(m.mutants)
+}
+
+pub fn load(spec: &Path) -> Result<Vec<Mutant>> {
+    parse(&read(spec)?).map_err(|e| format!("{}: {e}", spec.display()))
+}
+
+/// The mutants a run takes, and how many it leaves out.
+pub struct Selection {
+    pub run: Vec<Mutant>,
+    pub skipped: usize,
+}
+
+/// With `changed`, paths from the repository's root, only the mutants on those files.
+/// With none, all of them.
+pub fn select(mutants: Vec<Mutant>, changed: Option<&[String]>) -> Selection {
+    let total = mutants.len();
+    let run: Vec<Mutant> = match changed {
+        None => mutants,
+        Some(changed) => mutants
+            .into_iter()
+            .filter(|m| {
+                let path = format!("{CRATE}/{}", m.file);
+                changed.contains(&path)
+            })
+            .collect(),
+    };
+    let skipped = total - run.len();
+    Selection { run, skipped }
+}
+
+pub fn run(root: &Path, options: Options) -> Result {
     let start = Instant::now();
-    let spec = root.join("crates/die-core/tests/mutants.toml");
-    let m: Mutants =
-        toml::from_str(&read(&spec)?).map_err(|e| format!("{}: {e}", spec.display()))?;
-    let work = root.join("target/xtask/mutate");
+    let cases = options.cases;
+    let all = load(&root.join(CRATE).join("tests/mutants.toml"))?;
+    let changed = match options.changed {
+        false => None,
+        // What can't be told can't be skipped.
+        true => changed_in_worktree(root)
+            .inspect_err(|e| println!("mutate: running them all, for git can't say: {e}"))
+            .ok(),
+    };
+    let Selection {
+        run: mutants,
+        skipped,
+    } = select(all, changed.as_deref());
+    if changed.is_some() {
+        println!(
+            "mutate --changed: {} mutants on changed files, {skipped} skipped",
+            mutants.len()
+        );
+        if mutants.is_empty() {
+            return Ok(());
+        }
+    }
+    let work = task_dir(root, "mutate");
     let tmp = TempDir::at(work.join("tree"))?;
     let tree = tmp.path();
     copy_worktree(root, tree)?;
@@ -61,7 +156,10 @@ pub fn run(root: &Path, cases: u32) -> Result {
 
     println!("mutate: the unmutated tree first");
     let first = Instant::now();
-    match prop_tests(tree, &target, cases, FIRST_RUN_TIME, &log)?.verdict() {
+    let unmutated = prop_tests(tree, &target, cases, FIRST_RUN_TIME, &log)?;
+    let first = first.elapsed();
+    let built = build_secs(&unmutated.text).map_or(Duration::ZERO, Duration::from_secs_f64);
+    match unmutated.verdict() {
         Verdict::Passed => {}
         Verdict::Caught(why) | Verdict::Broken(why) => {
             return Err(format!(
@@ -69,12 +167,17 @@ pub fn run(root: &Path, cases: u32) -> Result {
             ));
         }
     }
-    let limit = time_limit(first.elapsed());
-    println!("mutate: each mutant gets {} s", limit.as_secs());
+    let limit = time_limit(first, built);
+    println!(
+        "mutate: the unmutated run took {}, and each mutant gets {} s",
+        timing(first, &unmutated.text),
+        limit.as_secs()
+    );
 
     let mut missed = Vec::new();
-    for mu in &m.mutants {
-        let path = tree.join("crates/die-core").join(&mu.file);
+    for mu in &mutants {
+        let t = Instant::now();
+        let path = tree.join(CRATE).join(&mu.file);
         let orig = read(&path)?;
         if orig.matches(&mu.old).count() != 1 {
             return Err(format!(
@@ -85,10 +188,12 @@ pub fn run(root: &Path, cases: u32) -> Result {
         write(&path, &orig.replacen(&mu.old, &mu.new, 1))?;
         let res = prop_tests(tree, &target, cases, limit, &log);
         write(&path, &orig)?;
-        match res?.verdict() {
-            Verdict::Caught(how) => println!("caught      {}  <- {how}", mu.name),
+        let res = res?;
+        let time = timing(t.elapsed(), &res.text);
+        match res.verdict() {
+            Verdict::Caught(how) => println!("caught      {}  <- {how}  ({time})", mu.name),
             Verdict::Passed => {
-                println!("NOT CAUGHT  {}", mu.name);
+                println!("NOT CAUGHT  {}  ({time})", mu.name);
                 missed.push(mu.name.clone());
             }
             Verdict::Broken(why) => return Err(format!("mutate: {}: {why}", mu.name)),
@@ -96,8 +201,8 @@ pub fn run(root: &Path, cases: u32) -> Result {
     }
     let secs = start.elapsed().as_secs();
     if missed.is_empty() {
-        let n = m.mutants.len();
-        println!("mutate: {n} of {n} caught in {secs} s");
+        let n = mutants.len();
+        println!("mutate: {n} of {n} caught in {secs} s, {skipped} skipped");
         Ok(())
     } else {
         Err(format!(
@@ -107,9 +212,32 @@ pub fn run(root: &Path, cases: u32) -> Result {
     }
 }
 
-/// The time limit for a mutant, given how long the unmutated run took.
-fn time_limit(unmutated: Duration) -> Duration {
-    (unmutated * TIME_FACTOR).max(LEAST_TIME)
+/// A run's time, and how much of it cargo spent building.
+fn timing(total: Duration, text: &str) -> String {
+    match build_secs(text) {
+        Some(build) => format!("{:.1} s, {build:.1} s of it building", total.as_secs_f64()),
+        None => format!("{:.1} s", total.as_secs_f64()),
+    }
+}
+
+/// How long cargo says it took to build: `Finished ... target(s) in 1m 02s`, or `in 2.51s`.
+fn build_secs(text: &str) -> Option<f64> {
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("Finished "))?;
+    let (_, time) = line.rsplit_once(" in ")?;
+    let (minutes, secs) = match time.split_once("m ") {
+        Some((m, s)) => (m.parse::<f64>().ok()?, s),
+        None => (0.0, time),
+    };
+    Some(minutes * 60.0 + secs.strip_suffix('s')?.parse::<f64>().ok()?)
+}
+
+/// The time limit for a mutant, given how long the unmutated run took and how much of that
+/// was building. Only the tests' part is multiplied: a first run in a cold cache once gave
+/// each mutant 76 minutes, nearly all of it for a build the mutants don't repeat.
+fn time_limit(unmutated: Duration, built: Duration) -> Duration {
+    (built + unmutated.saturating_sub(built) * TIME_FACTOR).max(LEAST_TIME)
 }
 
 /// Run the property tests, for at most `limit`.
@@ -126,7 +254,11 @@ fn prop_tests(tree: &Path, target: &Path, cases: u32, limit: Duration, log: &Pat
             "--target-dir",
         ])
         .arg(target)
-        .env("DIE_PROP_CASES", cases.to_string());
+        // A test `ci` leaves out for its time still catches mutants here.
+        .args(["--", "--include-ignored"])
+        .env("DIE_PROP_CASES", cases.to_string())
+        .env("DIE_PROP_SHRINK", "0")
+        .env("CARGO_PROFILE_TEST_DEBUG", "false");
     run_limited(&mut cmd, limit, log)
 }
 
@@ -136,6 +268,8 @@ struct Run {
     status: ExitStatus,
     /// It reached its time limit, and was killed for it.
     timed_out: bool,
+    /// A test failed, and the run was killed for that rather than left to finish.
+    stopped_at_failure: bool,
     /// Its stdout and stderr.
     text: String,
 }
@@ -154,6 +288,9 @@ impl Run {
     fn verdict(&self) -> Verdict {
         if self.timed_out {
             return Verdict::Caught("time limit".into());
+        }
+        if self.stopped_at_failure {
+            return Verdict::Caught(failed_tests(&self.text).unwrap_or_default());
         }
         if self.status.success() {
             return Verdict::Passed;
@@ -216,9 +353,9 @@ fn tail(text: &str) -> String {
     lines[lines.len().saturating_sub(20)..].join("\n")
 }
 
-/// Run `cmd` in a process group of its own, for at most `limit`, with its output in `log`.
-/// A file can't block as a pipe can, if something in the group outlives the run. When the
-/// run ends, for any reason, whatever's left in the group is killed.
+/// Run `cmd` in a process group of its own, for at most `limit`, with its output in `log`,
+/// and until a test fails. A file can't block as a pipe can, if something in the group
+/// outlives the run. When the run ends, for any reason, whatever's left in the group is killed.
 fn run_limited(cmd: &mut Command, limit: Duration, log: &Path) -> Result<Run> {
     let what = show(cmd);
     let err = |e: std::io::Error| format!("mutate: {what}: {e}");
@@ -234,6 +371,7 @@ fn run_limited(cmd: &mut Command, limit: Duration, log: &Path) -> Result<Run> {
     let group = child.id();
     let mut watchdog = watchdog(group, std::process::id()).map_err(err)?;
     let start = Instant::now();
+    let mut stopped_at_failure = false;
     let finished = loop {
         if let Some(status) = child.try_wait().map_err(err)? {
             break Some(status);
@@ -241,10 +379,15 @@ fn run_limited(cmd: &mut Command, limit: Duration, log: &Path) -> Result<Run> {
         if start.elapsed() >= limit {
             break None;
         }
+        let text = std::fs::read(log).map_err(err)?;
+        if failed_tests(&String::from_utf8_lossy(&text)).is_some() {
+            stopped_at_failure = true;
+            break None;
+        }
         std::thread::sleep(Duration::from_millis(50));
     };
     kill_group(group);
-    let timed_out = finished.is_none();
+    let timed_out = finished.is_none() && !stopped_at_failure;
     let status = match finished {
         Some(status) => status,
         None => {
@@ -258,6 +401,7 @@ fn run_limited(cmd: &mut Command, limit: Duration, log: &Path) -> Result<Run> {
     Ok(Run {
         status,
         timed_out,
+        stopped_at_failure,
         text: String::from_utf8_lossy(&text).into_owned(),
     })
 }
@@ -303,6 +447,7 @@ mod tests {
         let run = Run {
             status,
             timed_out: false,
+            stopped_at_failure: false,
             text: text.into(),
         };
         run.verdict()
@@ -413,6 +558,7 @@ mod tests {
             let run = Run {
                 status,
                 timed_out: true,
+                stopped_at_failure: false,
                 text: killed(SIGKILL),
             };
             assert_eq!(run.verdict(), Verdict::Caught("time limit".into()));
@@ -428,12 +574,19 @@ mod tests {
     }
 
     #[test]
-    fn a_mutant_gets_five_times_the_first_run_and_at_least_two_minutes() {
-        let limit = |secs| time_limit(Duration::from_secs(secs)).as_secs();
-        assert_eq!(limit(1), 120);
-        assert_eq!(limit(24), 120);
-        assert_eq!(limit(25), 125);
-        assert_eq!(limit(200), 1000);
+    fn a_mutant_gets_five_times_the_first_tests_and_at_least_two_minutes() {
+        let limit = |secs, built| {
+            time_limit(Duration::from_secs(secs), Duration::from_secs(built)).as_secs()
+        };
+        assert_eq!(limit(1, 0), 120);
+        assert_eq!(limit(24, 0), 120);
+        assert_eq!(limit(25, 0), 125);
+        assert_eq!(limit(200, 0), 1000);
+        // Only the tests' part is multiplied.
+        assert_eq!(limit(900, 500), 500 + 5 * 400);
+        assert_eq!(limit(60, 60), 120);
+        // A build that says it took longer than the run isn't negative.
+        assert_eq!(limit(200, 300), 300);
     }
 
     /// `pid` is gone within a few seconds. A killed process is a zombie until `init`
@@ -492,6 +645,46 @@ mod tests {
             gone(&orphan_pid(&dir)),
             "the group's other process lives on"
         );
+    }
+
+    #[test]
+    #[ignore = "speed: runs in ci --full"]
+    fn the_first_failure_ends_a_run_and_the_whole_group() {
+        let dir = TempDir::new("mutate-failure").unwrap();
+        let log = dir.path().join("log");
+        let mut cmd = with_orphan(&dir, "echo 'test a ... ok'; echo 'test b ... FAILED'; wait");
+        let t = Instant::now();
+        let run = run_limited(&mut cmd, Duration::from_secs(60), &log).unwrap();
+        assert!(t.elapsed() < Duration::from_secs(50), "it ran to its limit");
+        assert!(run.stopped_at_failure && !run.timed_out, "{run:?}");
+        assert_eq!(run.verdict(), Verdict::Caught("b".into()));
+        assert!(
+            gone(&orphan_pid(&dir)),
+            "the group's other process lives on"
+        );
+    }
+
+    #[test]
+    fn a_tests_output_that_mentions_failure_doesnt_end_a_run() {
+        let dir = TempDir::new("mutate-mention").unwrap();
+        let log = dir.path().join("log");
+        let mut cmd = with_orphan(&dir, "echo 'it says FAILED'; echo 'test a ... ok'; exit 0");
+        let run = run_limited(&mut cmd, Duration::from_secs(60), &log).unwrap();
+        assert!(!run.stopped_at_failure, "{run:?}");
+        assert_eq!(run.verdict(), Verdict::Passed);
+    }
+
+    #[test]
+    fn a_runs_build_time_comes_from_cargos_sentence() {
+        let finished = |time: &str| {
+            format!(
+                "   Compiling die-core v0.0.0\n    Finished `test` profile [optimized + \
+                 debuginfo] target(s) in {time}\n     Running tests/prop.rs\n"
+            )
+        };
+        assert_eq!(build_secs(&finished("2.51s")), Some(2.51));
+        assert_eq!(build_secs(&finished("1m 02s")), Some(62.0));
+        assert_eq!(build_secs("running 4 tests\n"), None);
     }
 
     #[test]

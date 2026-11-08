@@ -4,48 +4,70 @@
 use crate::scripts::{FULL_GREEK, FULL_WIDTH, HALF_KANA, HIRAGANA, KANJI, KATAKANA, RANGES, ROMAN};
 use die_core::{Dir, TextBuf};
 
-/// A character's position in the text, stepping by characters.
+/// A character's position in the text, stepping by characters. It keeps the rope's chunk it's
+/// in, so walking a long line doesn't search the rope at every step.
 pub struct Chars<'a> {
     t: &'a TextBuf,
-    ci: usize,
+    chunk: &'a str,
+    /// Where `chunk` starts in the text.
+    start: usize,
+    /// The byte position.
+    at: usize,
 }
 
 impl<'a> Chars<'a> {
     pub fn at(t: &'a TextBuf, pos: usize) -> Self {
+        let mut at = pos.min(t.len());
+        let (chunk, start, ..) = t.rope().chunk_at_byte(at);
+        // Off a character boundary it counts as the character `pos` is in, as the rope does.
+        while !chunk.is_char_boundary(at - start) {
+            at -= 1;
+        }
         Chars {
             t,
-            ci: t.rope().byte_to_char(pos.min(t.len())),
+            chunk,
+            start,
+            at,
         }
     }
     /// The byte position.
     pub fn pos(&self) -> usize {
-        self.t.rope().char_to_byte(self.ci)
+        self.at
     }
     /// The character here; None at the end of the text.
     pub fn ch(&self) -> Option<char> {
-        self.t.rope().get_char(self.ci)
+        self.chunk[self.at - self.start..].chars().next()
     }
     /// The character before this one.
     pub fn prev_ch(&self) -> Option<char> {
-        self.ci
-            .checked_sub(1)
-            .and_then(|i| self.t.rope().get_char(i))
+        match self.chunk[..self.at - self.start].chars().next_back() {
+            None if self.at > 0 => Chars::at(self.t, self.at - 1).ch(),
+            c => c,
+        }
     }
     /// Step forward; false at the end of the text.
     pub fn fwd(&mut self) -> bool {
-        let ok = self.ci < self.t.rope().len_chars();
-        if ok {
-            self.ci += 1;
+        let Some(c) = self.ch() else {
+            return false;
+        };
+        self.at += c.len_utf8();
+        if self.at - self.start == self.chunk.len() && self.at < self.t.len() {
+            *self = Chars::at(self.t, self.at);
         }
-        ok
+        true
     }
     /// Step back; false at the start of the text.
     pub fn back(&mut self) -> bool {
-        let ok = self.ci > 0;
-        if ok {
-            self.ci -= 1;
+        if self.at == self.start {
+            if self.at == 0 {
+                return false;
+            }
+            *self = Chars::at(self.t, self.at - 1);
+            return true;
         }
-        ok
+        let c = self.chunk[..self.at - self.start].chars().next_back();
+        self.at -= c.map_or(0, char::len_utf8);
+        true
     }
     /// At the start of a line: the text's start, or just after a newline.
     pub fn at_line_start(&self) -> bool {
@@ -234,8 +256,8 @@ pub fn normal_pos(t: &TextBuf, pos: usize) -> usize {
 }
 
 /// Whether `pos` is on the empty line after a final newline, or in an empty text.
-/// Motions never take the cursor there, but an insert session or an undo can leave
-/// it there, and motions along that line keep it.
+/// Only a search takes the cursor there, but an insert session or an undo can leave
+/// it there too, and motions along that line keep it.
 pub fn on_last_empty_line(t: &TextBuf, pos: usize) -> bool {
     pos == t.len() && t.line_start(t.line_of(pos)) == pos
 }

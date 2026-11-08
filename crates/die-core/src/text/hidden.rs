@@ -16,7 +16,7 @@ pub(crate) struct Span {
 /// The decorations that shape rows, in the order layout reads them.
 #[derive(Default, Debug)]
 pub(crate) struct Hidden {
-    spans: Vec<Span>, // sorted, non-overlapping
+    pub spans: Vec<Span>, // sorted, non-overlapping
     /// Virtual text, by position and then in the order it was added.
     pub virt: Vec<(usize, DecorationId)>,
 }

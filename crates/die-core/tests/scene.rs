@@ -188,7 +188,7 @@ fn a_theme_replaces_a_declared_style_and_keeps_the_parent() {
 fn base_and_ui_faces_inherit_from_their_parents() {
     let ctx = ctx_with(vec![]);
     let names: Vec<&str> = BASE_FACES.iter().chain(UI_FACES).map(|f| f.0).collect();
-    assert_eq!(names.len(), 20);
+    assert_eq!(names.len(), 22);
     assert!(names.iter().all(|n| ctx.face_style(n).is_some()));
     assert_eq!(
         ctx.face_style("heading").unwrap(),
@@ -914,6 +914,47 @@ fn a_block_selection_skips_a_short_lines_newline() {
         blocks("abc\nab", 2, 6),
         ["..#...", "......", "......"],
         "nor at the end of the buffer"
+    );
+}
+
+/// TEXT-3: on a block, the goal `$` sets reaches each line's end, however far.
+#[test]
+fn a_block_selection_with_the_end_of_line_goal_reaches_each_lines_end() {
+    let blocks = |goal| {
+        let (mut ctx, b, w) = one("ab\nabcd\nabc\n", 10, 3);
+        ctx.set_state(State::Visual);
+        let sel = Selection {
+            anchor: 1,
+            head: 5,
+            shape: Shape::Block,
+            goal,
+        };
+        ctx.text_mut(b).unwrap().set_selection(w, sel);
+        selected_cells(&compose_one(&mut ctx, w), 3, 6)
+    };
+    assert_eq!(blocks(None), [".#....", ".##...", "......"]);
+    assert_eq!(
+        blocks(Some(usize::MAX)),
+        [".#....", ".###..", "......"],
+        "and no further: not its newline"
+    );
+}
+
+/// TEXT-3: a block takes a tab or a wide character it covers any part of.
+#[test]
+fn a_block_selection_takes_a_tab_or_wide_character_it_only_starts_in() {
+    let blocks = |text, anchor, head| {
+        selected_cells(&with_selection(text, 2, anchor, head, Shape::Block), 2, 8)
+    };
+    assert_eq!(
+        blocks("a\tb\nabcdefgh\n", 8, 2),
+        [".#######", "....####"],
+        "the tab covers columns 1 to 7, and the block starts at 4"
+    );
+    assert_eq!(
+        blocks("世x\nabcd\n", 6, 3),
+        ["###.....", ".##....."],
+        "the wide character covers columns 0 and 1, and the block starts at 1"
     );
 }
 
@@ -1907,6 +1948,7 @@ fn within_three_tries(limit: f64, mut measure: impl FnMut() -> f64) {
 }
 
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn an_80_column_window_with_4000_faces_and_a_one_letter_search_composes_within_1ms() {
     let mut ctx = speed_ctx();
     let w = dense(&mut ctx, 84, true);

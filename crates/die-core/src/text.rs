@@ -7,11 +7,11 @@ use crate::ids::*;
 use crate::layout::LayoutCache;
 use crate::undo::{History, Limit, Op};
 use crate::windows::View;
-use ropey::Rope;
+use ropey::{Rope, RopeBuilder};
 use slotmap::SlotMap;
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -22,6 +22,9 @@ pub use search::{Found, Pattern};
 
 /// How many changes `edits_since` can reach back.
 pub const LOG_CAP: usize = 1024;
+
+/// From how many changes at once one pass over the text beats making them one at a time.
+const MANY: usize = 4 * LOG_CAP;
 
 /// Who made an edit (C14). Read-only ranges block `User` edits only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,7 +84,7 @@ pub enum Gravity {
 }
 
 /// A selection's shape.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Shape {
     /// The characters between the two ends.
     Char,
@@ -101,7 +104,8 @@ pub struct Selection {
     pub head: usize,
     /// How the two ends select text.
     pub shape: Shape,
-    /// Goal column for vertical motion. die-vim decides what it means.
+    /// Goal column for vertical motion. die-vim decides what it means, except that on a
+    /// `Block` selection `Some(usize::MAX)` means each line to its end, as `$` does there.
     pub goal: Option<usize>,
 }
 
@@ -266,6 +270,40 @@ impl Default for Settings {
     }
 }
 
+/// A step's changes, each in the coordinates of the text after the one before it, as changes of
+/// `rope` as it is now, in order, for [`TextBuf::apply_many`]. None unless they all go one way and
+/// find the text they expect.
+fn one_pass(rope: &Rope, ops: &[Op]) -> Option<Vec<(Range<usize>, String)>> {
+    let down = ops
+        .windows(2)
+        .all(|p| p[1].pos + p[1].removed.len() <= p[0].pos);
+    let up = ops
+        .windows(2)
+        .all(|p| p[1].pos >= p[0].pos + p[0].inserted.len());
+    let mut out = Vec::with_capacity(ops.len());
+    let mut grew = 0isize;
+    for o in ops {
+        let pos = if up {
+            o.pos.checked_add_signed(-grew)?
+        } else {
+            o.pos
+        };
+        let r = pos..pos + o.removed.len();
+        if !(up || down)
+            || r.end > rope.len_bytes()
+            || rope.byte_slice(r.clone()) != o.removed.as_str()
+        {
+            return None;
+        }
+        out.push((r, o.inserted.clone()));
+        grew += o.inserted.len() as isize - o.removed.len() as isize;
+    }
+    if !up {
+        out.reverse();
+    }
+    Some(out)
+}
+
 #[derive(Clone, Copy)]
 enum Rec {
     Record(Option<Selection>),
@@ -282,9 +320,17 @@ pub struct TextBuf {
     log: VecDeque<Change>,
     history: History,
     markers: SlotMap<MarkerId, (usize, Gravity)>,
+    /// Markers with a one-character name. The session keeps these (K12), and no other marker.
+    marks: BTreeMap<char, MarkerId>,
     decos: SlotMap<DecorationId, Decoration>,
     next_seq: u64,
     pub(crate) views: HashMap<WindowId, View>,
+    /// Views of windows that don't show this buffer now, moved through edits as the others are,
+    /// so going back to a buffer finds the cursor and scroll position it left.
+    pub(crate) parked: HashMap<WindowId, View>,
+    /// The view the last window to leave this buffer left, Emacs's buffer point: where a window
+    /// with no view of its own starts, if no window shows the buffer.
+    pub(crate) rest: Option<View>,
     pub(crate) settings: Settings,
     /// The maximum width `toggle-max-width` turned off.
     pub(crate) max_width_off: Option<usize>,
@@ -364,9 +410,12 @@ impl TextBuf {
             log: VecDeque::new(),
             history: History::default(),
             markers: SlotMap::with_key(),
+            marks: BTreeMap::new(),
             decos: SlotMap::with_key(),
             next_seq: 0,
             views: HashMap::new(),
+            parked: HashMap::new(),
+            rest: None,
             settings: Settings::default(),
             max_width_off: None,
             cmd: 0,
@@ -504,11 +553,47 @@ impl TextBuf {
         } else {
             Rec::Record(self.actor_selection())
         };
+        if let (Rec::Record(sel), true) = (rec, ops.len() >= MANY) {
+            let rest = ops.split_off(LOG_CAP);
+            let recorded = rest.iter().rev().map(|(r, s)| Op {
+                pos: r.start,
+                removed: String::from(self.rope.byte_slice(r.clone())),
+                inserted: s.clone(),
+            });
+            let recorded: Vec<Op> = recorded.collect();
+            self.apply_many(&rest);
+            let (cmd, limit) = (self.cmd, self.undo_limit());
+            self.history.record_many(recorded, sel, cmd, limit);
+        }
         for (r, s) in ops.into_iter().rev() {
             self.apply_one(r, s, origin, rec);
         }
         self.normalize_views();
         Ok(self.rev)
+    }
+
+    /// Make `ops`, in order and without overlaps, in one pass over the text. They leave no log
+    /// (C15): a reader that's behind starts again. The caller makes the last `LOG_CAP` changes of
+    /// a transaction the usual way. Markers and views move as if these went last to first.
+    fn apply_many(&mut self, ops: &[(Range<usize>, String)]) {
+        let mut new = RopeBuilder::new();
+        let mut at = 0;
+        for (r, s) in ops {
+            let same = self.rope.byte_slice(at..r.start);
+            same.chunks().for_each(|c| new.append(c));
+            new.append(s);
+            at = r.end;
+        }
+        let same = self.rope.byte_slice(at..);
+        same.chunks().for_each(|c| new.append(c));
+        self.rope = new.finish();
+        *self.flat.get_mut() = None;
+        self.cache.get_mut().clear();
+        self.log.clear();
+        self.rev += ops.len() as u64;
+        for (r, s) in ops.iter().rev() {
+            self.map_all(r.start, r.end, r.start + s.len());
+        }
     }
 
     fn actor_selection(&self) -> Option<Selection> {
@@ -591,10 +676,25 @@ impl TextBuf {
     pub fn end_undo_group(&mut self) {
         self.history.end();
     }
+    /// Whether the text has changed since it was last saved, Emacs's `buffer-modified-p`. Undoing
+    /// or redoing back to the saved text clears it. Text replaced by itself sets it, as any undo
+    /// step does. A silent edit sets it too, and undo can't clear that: it isn't in the history.
+    pub fn modified(&self) -> bool {
+        self.history.modified()
+    }
+    /// Set the flag: `false` says the text as it is now is what's saved (a save, a revert),
+    /// `true` that it differs, until a later `false`.
+    pub fn set_modified(&mut self, modified: bool) {
+        self.history.set_modified(modified);
+    }
     /// End the current undo step here: the next edit starts a new step, even in the same
     /// command or inside an open group (which stays open, as a new step).
     pub fn undo_boundary(&mut self) {
         self.history.boundary();
+    }
+    /// Whether an undo group is open: an insert session, say.
+    pub(crate) fn undo_group_open(&self) -> bool {
+        self.history.group_open()
     }
     /// Undo the last step and return the range it changed, in the text after the undo:
     /// every change the step made lies inside it. The acting window's selection goes back
@@ -634,11 +734,20 @@ impl TextBuf {
                 x.end = map_pos(x.end, r.start, r.end, new_end, Gravity::Left).max(x.start);
             }
         }
+        let in_pass = plan.ops.len().saturating_sub(LOG_CAP);
+        let pass = (plan.ops.len() >= MANY)
+            .then(|| one_pass(&self.rope, &plan.ops[..in_pass]))
+            .flatten();
+        let passed = pass.as_ref().map_or(0, |_| in_pass);
+        if let Some(pass) = pass {
+            self.apply_many(&pass);
+        }
         // The changed range: the hull of every change, each moved through the later ones.
         let mut hull: Option<Range<usize>> = None;
-        for op in &plan.ops {
+        for (i, op) in plan.ops.iter().enumerate() {
             let r = op.pos..op.pos + op.removed.len();
-            let ok = r.end <= self.len() && self.rope.byte_slice(r.clone()) == op.removed.as_str();
+            let ok = i < passed
+                || r.end <= self.len() && self.rope.byte_slice(r.clone()) == op.removed.as_str();
             debug_assert!(ok, "undo rebase produced a mismatch at {}", op.pos);
             if !ok {
                 self.history.truncate(redo);
@@ -653,7 +762,9 @@ impl TextBuf {
                     start.min(op.pos)..end.max(new_end)
                 }
             });
-            self.apply_one(r, op.inserted.clone(), Origin::User, Rec::History);
+            if i >= passed {
+                self.apply_one(r, op.inserted.clone(), Origin::User, Rec::History);
+            }
         }
         let hull = hull.unwrap_or(0..0);
         let sel = if redo {
@@ -696,6 +807,31 @@ impl TextBuf {
     /// Remove a marker; its last position, or None if `id` was already dead.
     pub fn remove_marker(&mut self, id: MarkerId) -> Option<usize> {
         self.markers.remove(id).map(|m| m.0)
+    }
+
+    /// Name a position that moves with edits, in place of what had that name. Errors as for
+    /// [`TextBuf::add_marker`].
+    pub fn set_mark(&mut self, name: char, pos: usize, g: Gravity) -> Result {
+        let id = self.add_marker(pos, g)?;
+        if let Some(old) = self.marks.insert(name, id) {
+            self.remove_marker(old);
+        }
+        Ok(())
+    }
+    /// Where a named position is now.
+    pub fn mark(&self, name: char) -> Option<usize> {
+        self.marker(*self.marks.get(&name)?)
+    }
+    /// Forget a named position.
+    pub fn remove_mark(&mut self, name: char) {
+        if let Some(id) = self.marks.remove(&name) {
+            self.remove_marker(id);
+        }
+    }
+    /// Every named position, in order of name, with its gravity.
+    pub fn marks(&self) -> impl Iterator<Item = (char, usize, Gravity)> + '_ {
+        let at = |(n, id): (&char, &MarkerId)| self.markers.get(*id).map(|m| (*n, m.0, m.1));
+        self.marks.iter().filter_map(at)
     }
 
     // ---- decorations

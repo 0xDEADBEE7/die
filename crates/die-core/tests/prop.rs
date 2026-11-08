@@ -1188,7 +1188,7 @@ fn the_gutter_agrees_with_the_naive_layout_where_it_grows() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: naive_layout_cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: naive_layout_cases(), max_shrink_iters: shrink_iters(), ..ProptestConfig::default() })]
     /// K4's second check: rows, positions, numbers and queries match the naive layout, across edits
     /// and decoration changes, so a stale cache shows too.
     #[test]
@@ -1262,6 +1262,7 @@ proptest! {
     // About a second a case, so a fixed few however many the others run.
     #![proptest_config(ProptestConfig { cases: 5, max_shrink_iters: 200, ..ProptestConfig::default() })]
     #[test]
+    #[ignore = "slow: runs in ci --full"]
     fn long_text_across_a_ropes_chunks_agrees_with_the_naive_layout(
         init in long_rich_text(1600),
         width in 2u8..40,
@@ -1310,8 +1311,17 @@ fn prop_cases() -> Option<u32> {
     std::env::var("DIE_PROP_CASES").ok()?.parse().ok()
 }
 
+/// `cargo xtask mutate` sets `DIE_PROP_SHRINK=0`: a planted bug needs catching, not explaining,
+/// and shrinking a failure took longer than finding it.
+fn shrink_iters() -> u32 {
+    std::env::var("DIE_PROP_SHRINK")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(20_000)
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: shrink_iters(), ..ProptestConfig::default() })]
     #[test]
     fn cursor_never_hidden_and_render_agrees_with_motions(init in text_s(80), ops in prop::collection::vec(op(), 1..40)) {
         run(init, ops);
@@ -1320,6 +1330,7 @@ proptest! {
 
 /// Not a pass criterion: shows what the random sequences actually exercise.
 #[test]
+#[ignore = "slow: runs in ci --full"]
 fn coverage_stats() {
     use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
     let cfg = Config {
@@ -1526,7 +1537,7 @@ fn text_of(ctx: &Ctx, b: BufferId) -> String {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: 20_000, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: cases(), max_shrink_iters: shrink_iters(), ..ProptestConfig::default() })]
     #[test]
     fn undo_is_exact_around_silent_edits(init in text_s(30), start in any::<u16>(), del_len in 0u8..5, deletion in any::<bool>(),
                                          shape in 0u8..3, steps in prop::collection::vec(u_step(), 1..20)) {
@@ -1991,5 +2002,529 @@ fn run_history(init: String, steps_cap: usize, bytes_cap: usize, hs: Vec<H>) {
             assert_eq!((c.origin, c.silent), logged, "how the change was logged");
         }
         assert_eq!(replayed, text_of(&ctx, b), "the log replays to the text");
+    }
+}
+
+// ---------------------------------------------------------------- K6: windows and the modified flag
+
+#[derive(Clone, Debug)]
+enum WinOp {
+    Split(u8, Side),
+    Close(u8),
+    Only(u8),
+    Resize(u8, u8, u8),
+    Frame(u8, u8),
+    Balance(u8),
+    Show(u8, u8),
+    Focus(u8),
+    Dir(Side),
+}
+
+fn side() -> impl Strategy<Value = Side> {
+    prop_oneof![
+        Just(Side::Left),
+        Just(Side::Right),
+        Just(Side::Above),
+        Just(Side::Below)
+    ]
+}
+
+fn win_op() -> impl Strategy<Value = WinOp> {
+    prop_oneof![
+        5 => (any::<u8>(), side()).prop_map(|(w, s)| WinOp::Split(w, s)),
+        3 => any::<u8>().prop_map(WinOp::Close),
+        1 => any::<u8>().prop_map(WinOp::Only),
+        4 => (any::<u8>(), any::<u8>(), any::<u8>()).prop_map(|(w, c, r)| WinOp::Resize(w, c, r)),
+        2 => (0u8..120, 0u8..60).prop_map(|(c, r)| WinOp::Frame(c, r)),
+        1 => any::<u8>().prop_map(WinOp::Balance),
+        2 => (any::<u8>(), any::<u8>()).prop_map(|(w, b)| WinOp::Show(w, b)),
+        2 => any::<u8>().prop_map(WinOp::Focus),
+        2 => side().prop_map(WinOp::Dir),
+    ]
+}
+
+/// Whatever was done to them, the windows divide the frame above the command line: every cell is
+/// in exactly one window's text, status line or divider, and the frame's right edge has no divider.
+/// In a frame too small for them they can't all fit, and they still don't overlap.
+fn check_tiling(ctx: &mut Ctx) -> Result<(), TestCaseError> {
+    let (cols, rows) = ctx.frame_size();
+    let area = rows.saturating_sub(1);
+    let mut owner = vec![0u8; cols * area];
+    let list = ctx.window_list();
+    let placed = ctx.placements();
+    for p in &placed {
+        let (c, r) = ctx.window_size(p.window).unwrap();
+        prop_assert!(c > 0 && r > 0);
+        let reach = if p.col + c == cols { c } else { c + 1 };
+        prop_assert!(p.col + reach <= cols, "{p:?} {c}x{r} in {cols}x{rows}");
+        prop_assert!(p.row + r < area, "{p:?} {c}x{r} in {cols}x{rows}");
+        for y in p.row..=p.row + r {
+            for x in p.col..p.col + reach {
+                owner[y * cols + x] += 1;
+                prop_assert_eq!(owner[y * cols + x], 1, "({}, {}) twice", x, y);
+            }
+        }
+    }
+    // A frame with room for every window at its minimum is covered, with nothing left over.
+    let room = list.len() * 2;
+    if cols >= room && area >= room {
+        prop_assert_eq!(placed.len(), list.len(), "every window is placed");
+        prop_assert!(owner.iter().all(|n| *n == 1), "a cell has no window");
+    }
+    for w in &list {
+        // Each view is the window's size.
+        let b = ctx.window_buffer(*w).unwrap();
+        let (c, r) = ctx.window_size(*w).unwrap();
+        let g = ctx.text(b).unwrap().geometry(*w).unwrap();
+        prop_assert_eq!((g.cols, g.rows), (c, r));
+    }
+    prop_assert!(
+        list.contains(&ctx.focused().unwrap()),
+        "the focus is on a live window"
+    );
+    let s = ctx.scene();
+    prop_assert_eq!((s.cols, s.rows), (cols, rows));
+    Ok(())
+}
+
+fn run_windows(ops: Vec<WinOp>) -> Result<(), TestCaseError> {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    ctx.set_frame_size(100, 40);
+    let bufs: Vec<BufferId> = ["a\nb\nc\n", "", "long line here\n"]
+        .iter()
+        .map(|t| ctx.create_text("t", t))
+        .collect();
+    ctx.show(bufs[0], ShowIn::Current).unwrap();
+    let pick = |ctx: &Ctx, i: u8| {
+        let l = ctx.window_list();
+        l[i as usize % l.len()]
+    };
+    for op in ops {
+        match op {
+            WinOp::Split(w, s) => {
+                let w = pick(&ctx, w);
+                let _ = ctx.split_window(w, s);
+            }
+            WinOp::Close(w) => {
+                let w = pick(&ctx, w);
+                let sole = ctx.window_list().len() == 1;
+                prop_assert_eq!(ctx.close_window(w).is_err(), sole);
+            }
+            WinOp::Only(w) => {
+                let w = pick(&ctx, w);
+                ctx.only_window(w).unwrap();
+                prop_assert_eq!(ctx.window_list(), [w]);
+            }
+            WinOp::Resize(w, c, r) => {
+                let w = pick(&ctx, w);
+                ctx.resize(w, c as usize, r as usize).unwrap();
+            }
+            WinOp::Frame(c, r) => ctx.set_frame_size(c as usize, r as usize),
+            WinOp::Balance(w) => {
+                let w = pick(&ctx, w);
+                ctx.balance_windows(w);
+            }
+            WinOp::Show(w, b) => {
+                let w = pick(&ctx, w);
+                ctx.focus(w);
+                ctx.show(bufs[b as usize % bufs.len()], ShowIn::Current)
+                    .unwrap();
+            }
+            WinOp::Focus(w) => {
+                let w = pick(&ctx, w);
+                ctx.focus(w);
+            }
+            WinOp::Dir(s) => {
+                if let Some(next) = ctx.focus_direction(s) {
+                    prop_assert_eq!(ctx.focused(), Some(next));
+                }
+            }
+        }
+        check_tiling(&mut ctx)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum ModOp {
+    Insert(u8, bool),
+    Delete(u8),
+    Silent(u8),
+    Undo,
+    Redo,
+    Save,
+    Boundary,
+    Group(bool),
+}
+
+fn mod_op() -> impl Strategy<Value = ModOp> {
+    prop_oneof![
+        5 => (any::<u8>(), any::<bool>()).prop_map(|(a, s)| ModOp::Insert(a, s)),
+        3 => any::<u8>().prop_map(ModOp::Delete),
+        1 => any::<u8>().prop_map(ModOp::Silent),
+        4 => Just(ModOp::Undo),
+        3 => Just(ModOp::Redo),
+        2 => Just(ModOp::Save),
+        3 => Just(ModOp::Boundary),
+        1 => any::<bool>().prop_map(ModOp::Group),
+    ]
+}
+
+/// The flag is clear only when the text is what was saved. The other way round, an edit and its
+/// inverse leave the same text with the flag set, as in Emacs.
+fn run_modified(ops: Vec<ModOp>) -> Result<(), TestCaseError> {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    let b = ctx.create_text("t", "start");
+    let w = ctx.open_window(b, 20, 5).unwrap();
+    ctx.focus(w);
+    let mut saved = "start".to_string();
+    for op in ops {
+        // Each op is a command of its own.
+        ctx.run_until_idle();
+        let t = ctx.text_mut(b).unwrap();
+        match op {
+            ModOp::Insert(at, end_step) => {
+                let n = t.rope().len_chars();
+                let at = t.rope().char_to_byte(at as usize % (n + 1));
+                t.tx(Origin::User).insert(at, "xy").commit().unwrap();
+                if end_step {
+                    t.undo_boundary();
+                }
+            }
+            ModOp::Delete(at) => {
+                let n = t.rope().len_chars();
+                if n > 0 {
+                    let at = at as usize % n;
+                    let (s, e) = (t.rope().char_to_byte(at), t.rope().char_to_byte(at + 1));
+                    t.tx(Origin::User).delete(s..e).commit().unwrap();
+                }
+            }
+            ModOp::Silent(at) => {
+                let n = t.rope().len_chars();
+                let at = t.rope().char_to_byte(at as usize % (n + 1));
+                t.tx(Origin::Extension)
+                    .silent()
+                    .insert(at, "S")
+                    .commit()
+                    .unwrap();
+            }
+            ModOp::Undo => {
+                let _ = t.undo();
+            }
+            ModOp::Redo => {
+                let _ = t.redo();
+            }
+            ModOp::Save => {
+                t.set_modified(false);
+                saved = t.rope().to_string();
+            }
+            ModOp::Boundary => t.undo_boundary(),
+            ModOp::Group(open) => {
+                if open {
+                    t.begin_undo_group();
+                } else {
+                    t.end_undo_group();
+                }
+            }
+        }
+        let t = ctx.text(b).unwrap();
+        if !t.modified() {
+            prop_assert_eq!(t.rope().to_string(), saved.clone(), "unmodified");
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: prop_cases().unwrap_or(2_000), max_shrink_iters: 5_000, ..ProptestConfig::default() })]
+    #[test]
+    fn windows_tile_the_frame(ops in prop::collection::vec(win_op(), 1..30)) {
+        run_windows(ops)?;
+    }
+    #[test]
+    fn unmodified_means_the_saved_text(ops in prop::collection::vec(mod_op(), 1..40)) {
+        run_modified(ops)?;
+    }
+}
+
+/// K10b: random saves, reloads and outside changes against a model of the disk. Here and not
+/// in `tests/save.rs` because `cargo xtask mutate` runs this binary.
+mod saves {
+    use die_core::*;
+    use proptest::prelude::*;
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, SystemTime};
+
+    /// Every save flushes to the disk, so this is capped below the other properties' counts.
+    fn file_cases() -> u32 {
+        super::prop_cases().map_or(300, |c| c.min(300))
+    }
+
+    const MODE: u32 = 0o750;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Visit {
+        Plain,
+        Symlink,
+        HardLink,
+    }
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Type(String),
+        TypeAndUndo,
+        Save,
+        SaveForce,
+        Revert,
+        Poll,
+        Rewrite(String),
+        SameBytes,
+        RenameOver(String),
+        Delete,
+    }
+
+    fn text() -> impl Strategy<Value = String> {
+        let piece = prop_oneof![
+            Just("a\n"),
+            Just("b\n"),
+            Just("é\n"),
+            Just("🦀"),
+            Just("\n"),
+            Just("c"),
+            Just("\u{FEFF}"),
+        ];
+        prop::collection::vec(piece, 0..6).prop_map(|v| v.concat())
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            text().prop_map(Op::Type),
+            Just(Op::TypeAndUndo),
+            Just(Op::Save),
+            Just(Op::SaveForce),
+            Just(Op::Revert),
+            Just(Op::Poll),
+            text().prop_map(Op::Rewrite),
+            Just(Op::SameBytes),
+            text().prop_map(Op::RenameOver),
+            Just(Op::Delete),
+        ]
+    }
+
+    struct Dir(PathBuf);
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// What the buffer and the disk should hold, and what the buffer should know.
+    struct Model {
+        text: String,
+        disk: Option<String>,
+        /// The text has changes the file doesn't.
+        unsaved: bool,
+        /// The file changed since DIE last read or wrote it.
+        changed: bool,
+        /// The other hard link still names the file.
+        linked: bool,
+        /// The mode a save has to keep, until an outside change makes a new file.
+        mode: Option<u32>,
+    }
+
+    /// Change the file's bytes and give it a time of its own, however coarse the clock.
+    fn stamp(p: &Path, bytes: &[u8], tick: &mut u64) {
+        fs::write(p, bytes).unwrap();
+        *tick += 1;
+        let at = SystemTime::now() + Duration::from_secs(1000 + *tick);
+        let f = fs::File::options().write(true).open(p).unwrap();
+        f.set_modified(at).unwrap();
+    }
+
+    fn run(visit: Visit, init: String, ops: Vec<Op>) {
+        static CASE: AtomicU32 = AtomicU32::new(0);
+        let n = CASE.fetch_add(1, Ordering::Relaxed);
+        let name = format!("die-prop-saves-{}-{n}", std::process::id());
+        let dir = Dir(std::env::temp_dir().join(name));
+        fs::create_dir_all(dir.0.join("store")).unwrap();
+        let real = dir.0.join("store/file");
+        let other = dir.0.join("other");
+        let link = dir.0.join("link");
+        fs::write(&real, &init).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(MODE)).unwrap();
+        let open_at = match visit {
+            Visit::Plain => real.clone(),
+            Visit::Symlink => {
+                symlink("store/file", &link).unwrap();
+                link.clone()
+            }
+            Visit::HardLink => {
+                fs::hard_link(&real, &other).unwrap();
+                real.clone()
+            }
+        };
+
+        let mut c = Ctx::new(vec![]).unwrap();
+        let b = c.open_file(&open_at).unwrap();
+        // A leading mark on disk is a BOM, which isn't in the text, and a save puts it back.
+        let shown = |s: &str, bom: bool| {
+            if bom {
+                format!("\u{FEFF}{s}")
+            } else {
+                s.to_string()
+            }
+        };
+        let strip = |s: &str| s.strip_prefix('\u{FEFF}').unwrap_or(s).to_string();
+        let mut m = Model {
+            text: strip(&init),
+            disk: Some(init.clone()),
+            unsaved: false,
+            changed: false,
+            linked: matches!(visit, Visit::HardLink),
+            mode: Some(MODE),
+        };
+        let mut tick = 0;
+
+        for op in ops {
+            let rev = c.text(b).unwrap().rev();
+            let reload = match &op {
+                Op::Type(s) => {
+                    if !s.is_empty() {
+                        let end = c.text(b).unwrap().len();
+                        let t = c.text_mut(b).unwrap();
+                        t.tx(Origin::User).insert(end, s.as_str()).commit().unwrap();
+                        m.text.push_str(s);
+                        m.unsaved = true;
+                    }
+                    false
+                }
+                // The text is what it was, and so is whether it's saved.
+                Op::TypeAndUndo => {
+                    let end = c.text(b).unwrap().len();
+                    let t = c.text_mut(b).unwrap();
+                    t.undo_boundary();
+                    t.tx(Origin::User).insert(end, "x").commit().unwrap();
+                    t.undo().unwrap();
+                    false
+                }
+                Op::Save => {
+                    let refuse = m.disk.is_some() && m.unsaved && m.changed;
+                    let write = !refuse && (m.disk.is_none() || m.unsaved);
+                    let bom = c.file(b).unwrap().bom;
+                    assert_eq!(c.save(b).is_err(), refuse, "{op:?}");
+                    if write {
+                        m.disk = Some(shown(&m.text, bom));
+                        m.unsaved = false;
+                        m.changed = false;
+                    }
+                    false
+                }
+                Op::SaveForce => {
+                    let bom = c.file(b).unwrap().bom;
+                    c.save_force(b).unwrap();
+                    m.disk = Some(shown(&m.text, bom));
+                    m.unsaved = false;
+                    m.changed = false;
+                    false
+                }
+                Op::Revert => {
+                    assert_eq!(c.revert_file(b).is_err(), m.disk.is_none());
+                    m.disk.is_some()
+                }
+                Op::Poll => {
+                    c.check_files();
+                    m.disk.is_some() && m.changed && !m.unsaved
+                }
+                Op::Rewrite(s) => {
+                    stamp(&real, s.as_bytes(), &mut tick);
+                    m.disk = Some(s.clone());
+                    m.changed = true;
+                    false
+                }
+                Op::SameBytes => {
+                    if let Some(d) = &m.disk {
+                        stamp(&real, d.as_bytes(), &mut tick);
+                        m.changed = true;
+                    }
+                    false
+                }
+                Op::RenameOver(s) => {
+                    let tmp = dir.0.join("incoming");
+                    stamp(&tmp, s.as_bytes(), &mut tick);
+                    if let Some(mode) = m.mode {
+                        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode)).unwrap();
+                    }
+                    fs::rename(&tmp, &real).unwrap();
+                    m.disk = Some(s.clone());
+                    m.changed = true;
+                    m.linked = false;
+                    false
+                }
+                Op::Delete => {
+                    if m.disk.take().is_some() {
+                        fs::remove_file(&real).unwrap();
+                    }
+                    m.linked = false;
+                    m.mode = None;
+                    false
+                }
+            };
+            if reload {
+                let new = strip(m.disk.as_ref().unwrap());
+                if new == m.text {
+                    assert_eq!(c.text(b).unwrap().rev(), rev, "the same text: no change");
+                }
+                m.text = new;
+                m.unsaved = false;
+                m.changed = false;
+            }
+
+            assert_eq!(text_of(&c, b), m.text, "the text after {op:?}");
+            let disk = fs::read(&real).ok().map(|d| String::from_utf8(d).unwrap());
+            assert_eq!(disk, m.disk, "the file after {op:?}");
+            if m.linked {
+                assert_eq!(
+                    fs::read(&other).ok(),
+                    disk.map(String::into_bytes),
+                    "{op:?}"
+                );
+                assert_eq!(fs::metadata(&real).unwrap().nlink(), 2, "{op:?}");
+            }
+            if let (Some(mode), true) = (m.mode, real.exists()) {
+                let now = fs::metadata(&real).unwrap().permissions().mode() & 0o7777;
+                assert_eq!(now, mode, "the mode after {op:?}");
+            }
+            if let Visit::Symlink = visit {
+                let to = fs::read_link(&link).expect("still a symlink");
+                assert_eq!(to, Path::new("store/file"), "{op:?}");
+            }
+            for d in [&dir.0, &dir.0.join("store")] {
+                let mut names = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name());
+                assert!(
+                    names.all(|n| !n.to_string_lossy().contains("die-save")),
+                    "{op:?}"
+                );
+            }
+        }
+    }
+
+    fn text_of(c: &Ctx, b: BufferId) -> String {
+        c.text(b).unwrap().rope().to_string()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: file_cases(), ..ProptestConfig::default() })]
+        #[test]
+        fn saves_and_reloads_agree_with_a_model_of_the_disk(
+            visit in prop_oneof![Just(Visit::Plain), Just(Visit::Symlink), Just(Visit::HardLink)],
+            init in text(),
+            ops in prop::collection::vec(op(), 1..16),
+        ) {
+            run(visit, init, ops);
+        }
     }
 }

@@ -35,9 +35,9 @@ The exit test is scope §12's. (f) was added for Linux on 2026-10-19 (question 1
 | (a) | You edit DIE's own source in DIE for a full day, with Emacs's vterm in an adjacent tile as the terminal. | A working day. Each switch to Emacs to edit becomes a test, and the day is tried again. | everything |
 | (b) | 20 rebuild-and-restarts restore files, splits, per-window cursors and scroll, unsaved text and registers, within 1 s from `restart` to the first frame. | `cargo xtask restart-loop 20`. After each restore, DIE writes a digest of its session state. The driver checks that all 20 match and that each restart took under 1 s. | K12, K13, F4a, F4b |
 | (c) | `cargo fmt` on an open file reloads an unmodified buffer, and `:w` refuses on a modified one. | Harness tests on a temporary directory, then once by hand. | K10b, V5 |
-| (d) | Every Evil-oracle case passes (1,075 today), except the deliberate deviations, which are listed by name and have hand-written fixtures. | `cargo test -p die-vim --test oracle` with an empty pending list. The 58 excluded cases are named in `deviations.json`, each with a hand-written fixture. | V0–V7 |
+| (d) | Every Evil-oracle case passes (1,410 at V7's close-out), except the deliberate deviations, which are listed by name and have hand-written fixtures. | `cargo test -p die-vim --test oracle` with an empty pending list, which the test now enforces. The 68 excluded cases are named in `deviations.json`, each with a hand-written fixture, and one more fixture stands for a case the oracle can't run: 69 fixtures. | V0–V7 |
 | (e) | The budgets in guard 7 hold. | `cargo xtask budget` | F2 |
-| (f) | The workspace cross-checks for x86_64 and aarch64 Linux, and die-core, die-vim and the oracle pass their tests on aarch64 Linux. | `cargo xtask ci` cross-checks on every merge; `cargo xtask ci --linux` runs the tests in colima | F1, F2, R1 |
+| (f) | The workspace cross-checks for x86_64 and aarch64 Linux, and die-core, die-vim and the oracle pass their tests on aarch64 Linux. | `cargo xtask ci` cross-checks at each checkpoint; `cargo xtask ci --linux` runs the tests in colima | F1, F2, R1 |
 
 How they're judged:
 
@@ -120,10 +120,13 @@ The five scheduled reviews each read a whole surface at once. The other three ru
 
 ### How work lands
 
-- Each work package is a branch, and up to four AI sessions work at once.
-- Nothing merges until `cargo xtask ci` passes in a fresh clone: the tests, the oracle's pending list, the budget and the clean build.
-- `cargo xtask api-diff` lists every public item a branch adds, removes or changes in die-core, and every change to die-vim's grammar module. Under 09-B, a branch with a non-empty list waits for you. Everything else merges when the checks pass.
-- Each package an AI drafts starts with a test plan. That's 08's "under tests you review".
+- Each work package is a branch, and many AI sessions work at once.
+- A package lands on an integration branch, not on main, when its own gate passes: `cargo fmt --all --check`, `cargo xtask lint`, `cargo xtask budget`, `cargo check --workspace --all-targets`, and clippy and the tests of the crates it touched. It merges the integration branch first, and if the push is refused, it merges again, checks again and retries. A review runs behind the landing and doesn't hold it.
+- `cargo xtask ci --full`, `cargo xtask ci --linux` and `cargo xtask mutate` run at checkpoints. `--full` runs every step and every test at the old counts, and `ci --linux` and `mutate` run the ignored tests too.
+- `cargo xtask ci` is the same checks in a fresh clone, for when one is wanted: the tests, the oracle's pending list and the budget, with the properties at 100 cases unless `DIE_PROP_CASES` is set. It leaves out the tests marked `#[ignore]`. `guards` and the clean build run only when the diff from the merge base with main touches a `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain.toml`, a build script, `xtask/` or `tools/test-cap/`.
+- `cargo test` leaves three kinds of test for the checkpoints, each marked by the reason in its `#[ignore]`. `speed`: an absolute limit in ms or s, which load alone fails. `window`: it puts a window on your screen. `slow`: over 5 s. A limit on a ratio stays in, as long as load doesn't fail it.
+- `cargo xtask api-diff` lists every public item a branch adds, removes or changes in die-core, and every change to die-vim's grammar module. Under 09-B, a branch with a non-empty list waits for you. Everything else lands when its gate passes.
+- A package states its tests by writing them, in what it lands. No test plan comes first or waits for you, and the tests are yours to read in the review behind it.
 - A weekly note in `docs/m0-log.md` says what merged, what waits on you, what changed in the API, and where the budget stands.
 - Every problem you hit while dogfooding becomes a test first: an oracle case for die-vim, a harness test for core.
 - Every test binary has a memory limit (scope §12). A new `tests/*.rs` file starts with `use die_test_cap as _;`, and `cargo xtask lint` fails one that doesn't.
@@ -171,7 +174,7 @@ Sizes are AI-assisted effort: S is up to 2 days, M 3–7 days, L 1.5–3 weeks. 
 | ID | Deliverable | Needs | Size | Proven by | Owner |
 |---|---|---|---|---|---|
 | F1 | The workspace: edition 2024, resolver 3, rustc pinned to 1.96, with the x86_64 and aarch64 Linux gnu targets in `rust-toolchain.toml`. Crates `die-core`, `die-render`, `die-vim`, `die`, `apps/die-dev`, `xtask`, `tools/evil-oracle`. `unsafe` denied outside `die_render::platform`, a `compile_error!` under `panic = "abort"`, exact version pins, a committed lockfile, license files | – | S | `cargo test` passes. An `unsafe` block outside `platform` fails to build, and so does `-Cpanic=abort`, with the guard's message | AI |
-| F2 | xtask: `budget` (its own counter, with limits and platform tags in `budget.toml`; it reports each build and the total), `api-diff`, `fonts`, `clean-build` and `ci` (every check in a fresh clone). `clean-build` uses an empty environment and `--locked --offline`, names the linker by its full path, puts failing `cc`, `c++`, `clang`, `clang++`, `gcc`, `g++`, `zig` and `pkg-config` first on PATH, sets failing `CC`, `CXX` and `AR`, and finds no `cc` in the macOS build graph. D15's lint covers every dependency table, target tables included. xtask hashes with sha2 instead of `/usr/bin/shasum`, and finds curl, unzip and the oracle's Emacs on PATH. For Linux: a platform lint (no `target_os` and no OS-specific `std::os` modules in die-core, die-vim or the oracle outside `die-core/src/sys/`), a dependency denylist that keeps window and GPU crates out of die-core and die-vim on every target, `ci` cross-checking and linting the workspace for x86_64 and aarch64 Linux, `ci --linux` in an aarch64 container on colima with the fonts mounted through `DIE_FONT_DIR`, and clean-build's Linux mode (the same stand-ins, and a per-target graph check with an allowlist) | F1 | S | Counter tests on sample sources. `clean-build` passes, and fails on a planted build script that calls a C compiler. The platform lint fails on a planted `target_os` in die-core | AI |
+| F2 | xtask: `budget` (its own counter, with limits and platform tags in `budget.toml`; it reports each build and the total), `api-diff`, `fonts`, `clean-build` and `ci` (the checks in a fresh clone, all of them with `--full`). `clean-build` uses an empty environment and `--locked --offline`, names the linker by its full path, puts failing `cc`, `c++`, `clang`, `clang++`, `gcc`, `g++`, `zig` and `pkg-config` first on PATH, sets failing `CC`, `CXX` and `AR`, and finds no `cc` in the macOS build graph. D15's lint covers every dependency table, target tables included. xtask hashes with sha2 instead of `/usr/bin/shasum`, and finds curl, unzip and the oracle's Emacs on PATH. For Linux: a platform lint (no `target_os` and no OS-specific `std::os` modules in die-core, die-vim or the oracle outside `die-core/src/sys/`), a dependency denylist that keeps window and GPU crates out of die-core and die-vim on every target, `ci` cross-checking and linting the workspace for x86_64 and aarch64 Linux, `ci --linux` in an aarch64 container on colima with the fonts mounted through `DIE_FONT_DIR`, and clean-build's Linux mode (the same stand-ins, and a per-target graph check with an allowlist) | F1 | S | Counter tests on sample sources. `clean-build` passes, and fails on a planted build script that calls a C compiler. The platform lint fails on a planted `target_os` in die-core | AI |
 | F3 | The `die` facade and `apps/die-dev`: `die::run(config)`, the config type with a field for the status line's text (the buffer's name by default), files named at startup. Your config: the file's directory in the status line, as your mode line shows it, leader `\`, mono-dark, Ioskeley Mono Term with braille pinned, per-pattern wrap, width and line numbers, and bindings that grow with each checkpoint (`\f \] \/ \x \z`) | K9 | S | Contract C8's check (every bound command exists) at every checkpoint. A startup snapshot | AI drafts it from `init.el`; yours after |
 | F4a | DIE.app: `cargo xtask app` builds `~/Applications/DIE.app` with a fixed bundle id and the fonts, launched through LaunchServices. A lock file keeps one instance. A stub `restart`, timed end to end. The first-frame handshake runs over a Unix socket, not through LaunchServices | R3, F3 | S | Two launches leave one instance. A stub restart under 500 ms. One Dock icon, and tiled by your AeroSpace rule (by hand, once) | AI |
 | F4b | The restart loop: under a flag, DIE writes a digest of its session state after each restore and then runs `restart`. `cargo xtask restart-loop 20` compares the digests and logs each restart's time | K13 | S | 20 equal digests, each restart under 1 s | AI |
@@ -188,7 +191,7 @@ Sizes are AI-assisted effort: S is up to 2 days, M 3–7 days, L 1.5–3 weeks. 
 | K6 | Workspace and windows: buffers, names, `directory`, the modified flag, the split tree, `show(ShowIn)`, focus by direction, close, only, resize. Typed registers, and the `Clipboard` trait with a change count that changes when another app copies | K5 | M | A split-tree property (windows tile the frame with no overlap). Focus by direction. Killing a buffer shown in two windows | API |
 | K7 | The public harness (contract §16): typed keys and pointer events with an error log per key, a fake clock and clipboard, window size and top line, the screen as text plus a style dump, save and restore | K6, K9; K12 for restore | S–M | Every S4 test and every oracle case runs through it | API |
 | K8 | Faces, themes and the scene: 14 base faces with parents, themes as data with the 16 ANSI colors, `Cell` with resolved colors, one composed grid with gutters, status lines, dividers, command-line rows and the cursor shape. The search, selection and bracket highlights computed at render time, moved here from K4. The search highlight takes K2's `Pattern`, and V2 decides smartcase | K1 | M | Screen and style snapshots. Face inheritance | API (types) |
-| K9 | The calls die-render drives core through: `handle(input)`, `run_until_idle(now)`, `next_deadline()`, `scene()`. Pointer cells map to a window and a position | K6, K8 | S | Headless tests of the loop and the deadline | API |
+| K9 | The calls die-render drives core through: `handle(input)`, `run_ready()`, `next_deadline()`, `scene()`. Pointer cells map to a window and a position | K6, K8 | S | Headless tests of the loop and the deadline | API |
 | K10a | Files, read side: open into a buffer, the UTF-8 check (other files open read-only), the fingerprint, and your per-pattern settings applied on open | K1 | S | Temp-directory tests | AI |
 | K10b | Files, write side: save through symlinks keeping permissions, a hard-linked file written in place, the `:w` refusal, auto-revert by polling | K10a | M | Temp-directory tests: a symlink and mode 0755 survive a save, a byte-exact round trip, a rename-over reverts, `:w` refuses and `:w!` writes, a rewrite with the same bytes leaves no undo step | AI; rules checked at the Files and session review |
 | K11a | The command line: line editing and history, `:` and `/` input, `prompt` without candidates, `*messages*` | K8, K9 | S–M | A harness test per editing key. Cancel gives none | API (prompt) |
@@ -223,7 +226,7 @@ Each case's tranche comes from the keys it uses, not its topic file: a case land
 | V4 | Visual mode including block, `.`, macros, `R` (about 59) | V3, K5 | M | Same | Grammar |
 | V5 | The rest of ex: `:w :q :wq :s`, and `:w! :e! :q!` (about 12) | V3, K10b, K11a | S–M | Same, plus harness tests for the file commands | Grammar |
 | V6 | Geometry and windows (44): scrolling and recentering, `H M L`, wrapped lines, the `C-w` map, `:sp :vs :only :close`, `:q` on a split | V3, K4, K6 | M | Same, plus about 15 harness tests for window commands | Grammar |
-| V7 | Close-out: every case outside `deviations.json` passes, the pending list is empty, the 58 hand-written fixtures pass, and dogfooding has added cases | V1–V6 | S–M | Exit test (d) | Grammar |
+| V7 | Close-out: every case outside `deviations.json` passes, the pending list is empty, the 69 hand-written fixtures pass, and dogfooding has added cases | V1–V6 | S–M | Exit test (d) | Grammar |
 
 ## 6. Risks and early warnings
 
@@ -245,7 +248,7 @@ Each case's tranche comes from the keys it uses, not its topic file: a case land
 | **die-render near its cap.** | M0's size over 3.9k. | Its cut list. |
 | **Code you can't read in a weekend** (09-B, 09-C). | A review takes much longer than its estimate. | Simplify before going on. That's the weekend rule doing its job. |
 | **M2's copy state reuses die-vim's grammar.** | A motion that reads editor state instead of the text and layout. | Motions are plain functions from V1 on. |
-| **Linux drifts while nobody runs it.** | A Linux-only failure found weeks after the change that caused it. | The cross-check in `cargo xtask ci` on every merge, and `cargo xtask ci --linux` on colima weekly and at each checkpoint. |
+| **Linux drifts while nobody runs it.** | A Linux-only failure found weeks after the change that caused it. | The cross-check in `cargo xtask ci` and `cargo xtask ci --linux` on colima, both at each checkpoint. |
 
 ## 7. Deferred out of M0
 
@@ -258,10 +261,9 @@ Each case's tranche comes from the keys it uses, not its topic file: a case land
   - horizontal scrolling
   - language-aware indentation
   - dark-coffee
-  - opening a file in a running DIE from a vterm
-  - an equivalent of `\\` (your fzf from home); `\f` descends from the buffer's directory instead
-  - undo history across restarts; marks, the jumplist, an undo tree
+  - undo history across restarts, an undo tree
   - S1's second-display check, whenever a display is at hand
+- **Built ahead of the rows above, in the MVP run (`m0-log.md`, 2026-11-08):** U1 opening a file from a terminal, U2 the finders, U3 `:grep` and `gf`, U4 motions, U5 edits, U6 insert state's keys, U7 marks and the jumplist, U8 what a restart keeps, V1 the real bundle, V2 a day's keys, V3 hostile input, V4 looks, V5 idle wakes, V6 the clipboard, W1 to W3 reviews of pointer, prompts and hardening.
 - **In M0, after checkpoint 4, not gating it:** `describe-key` and `describe-command`, annotations in the command palette.
 
 ## 8. Doc edits

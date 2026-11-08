@@ -43,5 +43,18 @@
   {"id": "I-on-a-spaces-only-line", "vim": "Vim leaves \"a\\n    x\\nb\\n\", Evil \"a\\n   x \\nb\\n\"; Vim's cursor is at line 1 col 4, Evil's at line 1 col 3", "keys": "Ix<Esc>", "text": ["a", "    |", "b"]},
   {"id": "I-on-a-spaces-only-line-from-its-start", "vim": "Vim leaves \"a\\n    x\\nb\\n\", Evil \"a\\n   x \\nb\\n\"; Vim's cursor is at line 1 col 4, Evil's at line 1 col 3", "keys": "Ix<Esc>", "text": ["a", "|    ", "b"]},
   {"id": "I-on-a-tab-only-line", "vim": "Vim leaves \"a\\n\\tx\\nb\\n\", Evil \"a\\nx\\t\\nb\\n\"; Vim's cursor is at line 1 col 1, Evil's at line 1 col 0", "keys": "Ix<Esc>", "text": ["a", "\t|", "b"]},
-  {"id": "I-on-an-empty-line", "keys": "Ix<Esc>", "text": ["a", "|", "b"]}
- ]}
+  {"id": "I-on-an-empty-line", "keys": "Ix<Esc>", "text": ["a", "|", "b"]},
+  {"id": "replace-left", "keys": "R<Left>x<Esc>", "text": ["a|bcd"]},
+  {"id": "replace-right", "keys": "R<Right>x<Esc>", "text": ["a|bcd"]},
+  {"id": "replace-tab", "keys": "Rab<Tab>c<Esc>", "text": ["|abcdefghijkl"]},
+  {"id": "replace-c-w", "keys": "Rab <C-w>c<Esc>", "text": ["|abcdefghijkl"]},
+  {"id": "replace-c-w-mid", "keys": "lllRx<C-w><Esc>", "text": ["|abcdefgh"]},
+  {"id": "replace-left-bs", "keys": "Rxy<Left><BS><Esc>", "text": ["|abcd"]},
+  {"id": "replace-left-over-bs", "keys": "Rxy<Left>z<BS><Esc>", "text": ["|abcd"]},
+  {"id": "replace-right-bs", "keys": "R<Right><BS><Esc>", "text": ["|abcd"]},
+  {"id": "replace-tab-bs", "keys": "Rab<Tab><BS><BS>", "text": ["|abcdefghijkl"]},
+  {"id": "replace-left-dot", "keys": "R<Left>x<Esc>j.", "text": ["a|bcd", "efgh"]},
+  {"id": "replace-tab-dot", "keys": "Ra<Tab><Esc>j0.", "text": ["|abcdefghijkl", "mnopqrstuvwx"]},
+  {"id": "replace-count-left", "keys": "2Ra<Left>b<Esc>", "text": ["|abcd"]},
+  {"id": "replace-left-undo", "keys": "R<Left>x<Esc>u", "text": ["a|bcd"]}
+]}

@@ -29,8 +29,16 @@ note = "guard 7: 5k per build, 7k in total"
 [[crate]]
 name = "die-vim"
 path = "crates/die-vim"
-limit = 5000
-note = "guard 7, since 2026-10-19"
+# 5,790 until the MVP run: the Evil keys left out of M0, marks and the jumplist. 7,000 until U6:
+# insert state's control keys, with Emacs's dabbrev behind C-p and C-n. 7,800 until W1: a click
+# ends a new line's claim on a blank line. 7,850 until U8: what a restart keeps of `.`, `n`, `;` and `gv`. 8,050 until V1: `:wa`, `:qa`, `:wqa`, `:xa` and `:x`.
+# 8,100 until U3: `gf`, reading a file name at the cursor as ffap does.
+# 8,150 until V3: walking text by chunks, `r` over a whole file.
+# 8,200 until U6's review: C-x C-n, C-x C-p, S-Left and S-Right, the last of what your Evil's map
+# binds there. 8,500 until V2: the keys a day of editing reached for, `:2,5s` and `:bn :bp :bd`. 8,800 until the merges after V2 left it one over.
+# 8,810 until X1: `:w path`, `:saveas`, `:f` and `C-g`, and `:ls`.
+limit = 8876
+note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
 name = "die"
@@ -55,13 +63,14 @@ name = "die-test-cap"
 path = "tools/test-cap"
 dev = true
 
-# die-core's modules at M0. `ext.rs` holds S4's buffers and windows until K6
-# moves them, and `prompt.rs` S4's prompt until K11a rebuilds it.
+# die-core's modules at M0.
 
 [[module]]
 crate = "die-core"
 name = "text and undo"
-limit = 1250
+# 1,265 until U7, whose named positions are about 20 lines. 1,285 until U3's grep shared smartcase.
+# 1,300 until V3: thousands of changes go in one pass, undo too, and a line of megabytes is searched near what's asked.
+limit = 1420
 files = ["text.rs", "undo.rs", "text/", "undo/"]
 
 [[module]]
@@ -73,25 +82,33 @@ files = ["layout.rs", "layout/"]
 [[module]]
 crate = "die-core"
 name = "keys, keymaps, describe"
-limit = 650
-files = ["keys.rs", "keymap.rs", "describe.rs"]
+# 650 until V3: a macro calling macros doesn't move what's waiting, and registers move uncopied.
+# 660 until U6's review: `on_command_ended`, so a C-o can end on a command that isn't die-vim's.
+limit = 675
+files = ["keys.rs", "keymap.rs", "describe.rs", "fed.rs"]
 
 [[module]]
 crate = "die-core"
 name = "ext, dispatch, rt"
-limit = 1500
+# 1,500 until V1's landing found it at 1,502 from another package, and U3 adds what `*grep*` holds.
+# 1,510 until V3: a typed C-g ends a macro.
+limit = 1525
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
 crate = "die-core"
 name = "workspace, windows, pointer"
-limit = 1100
+limit = 1365
+# 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs. 1,340 until U7, whose lists of places are about 20.
 files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
 
 [[module]]
 crate = "die-core"
 name = "files"
-limit = 650
+# 650 until U1's `die file:line`: the name parser `gf` shares, and opening at a position.
+# 760 until V2: a cursor on a line `cargo fmt` rewrote stays on that line.
+# 780 until X1: `:w path` and `:saveas` write elsewhere, and a buffer starts visiting the file.
+limit = 833
 files = ["files.rs", "files/"]
 
 [[module]]
@@ -102,6 +119,13 @@ files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "comma
 
 [[module]]
 crate = "die-core"
+name = "project: file walk, finder, grep"
+# New in the MVP run. 600 until U3: grep came to about 390, with its streaming and going to results.
+limit = 750
+files = ["project.rs", "project/"]
+
+[[module]]
+crate = "die-core"
 name = "faces and scene"
 limit = 950
 files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
@@ -109,8 +133,13 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 [[module]]
 crate = "die-core"
 name = "session"
-limit = 1000
-files = ["session.rs", "session/"]
+# 1,250 until U7, whose marks and jump lists in session.json are about 50 lines. 1,305 until U8:
+# what an extension keeps, by name, whole and by buffer, is about 80.
+limit = 1385
+# 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
+# held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
+# instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
+files = ["session.rs", "session/", "instance.rs", "sys/"]
 
 [[module]]
 crate = "die-core"
@@ -128,22 +157,37 @@ files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
 crate = "die-render"
 name = "neutral"
 limit = 2300
-files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "sprite.rs"]
+files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "input.rs", "sprite.rs", "window.rs", "latency.rs"]
+
+# `die --check`: the window's own checks, which ship in the binary. R3's are about 420
+# lines, R6 adds `typing` and `firstframe`, and V5 `idle-60`'s count of the OS's wakes.
+[[module]]
+crate = "die-render"
+name = "checks"
+limit = 720
+files = ["check.rs"]
 
 # 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
-# Raising it is when the thin-wrapper question gets asked.
+# Raising it is when the thin-wrapper question gets asked. R6 raised it to 950 for the
+# presented handler, a key's own timestamp and posting a key to this process, each a
+# thin wrapper. R4's review raised it to 1,060 for the hook on winit's view that keeps the
+# Character Viewer's text, which winit drops, and that isn't a thin wrapper of anything.
 [[module]]
 crate = "die-render"
 name = "platform::macos"
 platforms = ["macos"]
-limit = 900
+# 1,160 until U7's landing found it at 1,169 from another package, and V5's OS wake count needs 8.
+# 1,180 until V6's exception catch moved its 86 lines of assembly here from a `.s` file, which
+# neither this budget nor `cargo xtask lint` read.
+limit = 1270
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
-# from 3 lines to 64.
+# from 3 lines to 64, R3 to 105, R5 to 112, R6 to 151, and R4's review to 157.
 [[module]]
 crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
-limit = 70
+# 160 until U7's landing found it at 162 from another package.
+limit = 165
 files = ["platform/backend.rs"]

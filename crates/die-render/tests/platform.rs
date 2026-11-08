@@ -4,14 +4,27 @@
 
 use die_test_cap as _;
 
-use die_core::Rgb;
+use die_core::{Clipboard, Ctx, RegKind, Register, Rgb};
 use die_render::font::{CellMetrics, fit};
 use die_render::font_dir;
 use die_render::frame::{Plane, Quad, Upload};
+use die_render::platform::backend::catch::guarded;
+use die_render::platform::backend::clipboard::Pasteboard;
 use die_render::platform::backend::metal::Gpu;
 use die_render::platform::backend::text::Face;
+use objc2_app_kit::NSPasteboard;
+use objc2_foundation::{NSException, NSString, ns_string};
 use std::mem::{offset_of, size_of};
 use std::path::Path;
+use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
+
+/// NSPasteboard isn't documented as thread-safe, and tests run on threads. The app has only its
+/// main thread to use one from.
+fn pasteboards_one_at_a_time() -> MutexGuard<'static, ()> {
+    static ONE: Mutex<()> = Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn regular() -> Face {
     let path = font_dir().join("IoskeleyMonoTerm-Regular.ttf");
@@ -346,4 +359,133 @@ fn a_drawn_glyph_is_coverage_where_its_fit_says_and_an_emoji_is_premultiplied_co
         b.data.chunks(4).any(|p| p[2] > p[0] + 60),
         "more red than blue: BGRA, in that order"
     );
+}
+
+fn reg(kind: RegKind, text: &str) -> Register {
+    Register {
+        kind,
+        text: text.into(),
+    }
+}
+
+#[test]
+fn a_round_trip_keeps_text_and_kind() {
+    let _one = pasteboards_one_at_a_time();
+    let mut board = Pasteboard::unique();
+    assert_eq!(board.read(), Ok(None), "a new pasteboard holds nothing");
+    for kind in [RegKind::Char, RegKind::Line, RegKind::Block, RegKind::Macro] {
+        let before = board.change_count();
+        let r = reg(kind, "héllo\nwörld\n");
+        assert_eq!(board.write(&r), Ok(()));
+        assert_eq!(board.read(), Ok(Some(r)));
+        assert_ne!(board.change_count(), before, "{kind:?}");
+    }
+}
+
+/// Run by `an_outside_copy_is_detected`, in a process of its own, as another app.
+#[test]
+#[ignore = "the other app in an_outside_copy_is_detected"]
+fn other_app() {
+    // --include-ignored runs this alone too, with no pasteboard to write to.
+    let Ok(name) = std::env::var("DIE_TEST_PASTEBOARD") else {
+        return;
+    };
+    let board = NSPasteboard::pasteboardWithName(&NSString::from_str(&name));
+    board.clearContents();
+    let text_type = NSString::from_str("public.utf8-plain-text");
+    assert!(board.setString_forType(&NSString::from_str("outside"), &text_type));
+}
+
+#[test]
+fn an_outside_copy_is_detected() {
+    let _one = pasteboards_one_at_a_time();
+    let board = Pasteboard::unique();
+    let name = board.name();
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    ctx.set_clipboard(board);
+    ctx.write_clipboard(&reg(RegKind::Line, "mine\n"));
+    assert_eq!(ctx.clipboard_news(), None, "DIE's own write isn't news");
+    assert_eq!(ctx.clipboard(), Some(reg(RegKind::Line, "mine\n")));
+
+    let other = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "other_app", "--ignored"])
+        .env("DIE_TEST_PASTEBOARD", name)
+        .output()
+        .unwrap();
+    assert!(other.status.success(), "{other:?}");
+
+    let outside = reg(RegKind::Char, "outside");
+    assert_eq!(ctx.clipboard_news(), Some(outside.clone()));
+    assert_eq!(ctx.clipboard_news(), None, "once");
+    assert_eq!(ctx.clipboard(), Some(outside));
+}
+
+#[test]
+fn a_copy_that_is_not_text_reads_as_nothing_and_leaves_the_registers() {
+    let _one = pasteboards_one_at_a_time();
+    let board = Pasteboard::unique();
+    let other = NSPasteboard::pasteboardWithName(&NSString::from_str(&board.name()));
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    ctx.set_clipboard(board);
+    let mut copy = |types: &[&str]| {
+        other.clearContents();
+        for t in types {
+            assert!(other.setString_forType(ns_string!("/a/photo.png"), &NSString::from_str(t)));
+        }
+        ctx.clipboard_news()
+    };
+    const TEXT: &str = "public.utf8-plain-text";
+    assert_eq!(copy(&["public.tiff"]), None, "an image");
+    assert_eq!(
+        copy(&["public.tiff", TEXT]),
+        None,
+        "an image and its address"
+    );
+    assert_eq!(
+        copy(&["public.file-url", TEXT]),
+        None,
+        "a file and its name"
+    );
+    assert_eq!(
+        copy(&[TEXT, "public.file-url"]),
+        None,
+        "wherever the file is"
+    );
+    let text = reg(RegKind::Char, "/a/photo.png");
+    assert_eq!(
+        copy(&[TEXT, "public.tiff"]),
+        Some(text),
+        "text with a picture of it"
+    );
+}
+
+#[test]
+fn a_pasteboard_that_raises_is_an_error_in_messages_not_an_abort() {
+    let mut board = Pasteboard::raising();
+    let raised = "NSPasteboardCommunicationException: the pasteboard server is gone";
+    let err = board.write(&reg(RegKind::Char, "text")).unwrap_err();
+    assert_eq!(err, format!("can't write the clipboard: {raised}"));
+    assert!(board.read().unwrap_err().contains(raised));
+    assert!(board.change_count().unwrap_err().contains(raised));
+
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    ctx.set_clipboard(board);
+    ctx.write_clipboard(&reg(RegKind::Char, "text"));
+    assert_eq!(ctx.clipboard(), None);
+    assert_eq!(ctx.clipboard_news(), None);
+    assert_eq!(ctx.messages.len(), 3, "{:?}", ctx.messages);
+    assert!(ctx.messages.iter().all(|m| m.contains(raised)));
+}
+
+#[test]
+fn a_guard_gives_back_the_value_and_lets_a_panic_through() {
+    assert_eq!(guarded("", || 7), Ok(7));
+    let raised = guarded("doing it", || {
+        NSException::new(ns_string!("Name"), None, None)
+            .unwrap()
+            .raise()
+    });
+    assert_eq!(raised, Err::<(), _>("doing it: Name".into()));
+    let panicked = std::panic::catch_unwind(|| guarded("", || panic!("mine")));
+    assert!(panicked.is_err());
 }

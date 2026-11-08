@@ -50,7 +50,8 @@
     ("NL" . ?\n) ("BS" . ?\d) ("Tab" . ?\t) ("Space" . ?\s)
     ("lt" . ?<) ("Bslash" . ?\\) ("Bar" . ?|) ("Del" . delete)
     ("Up" . up) ("Down" . down) ("Left" . left) ("Right" . right)
-    ("Home" . home) ("End" . end))
+    ("Home" . home) ("End" . end) ("Insert" . insert)
+    ("S-Left" . S-left) ("S-Right" . S-right))
   "Vim key names the oracle understands, with their Emacs events.
 Matching is case-insensitive.  `<Esc>' must be the `escape' symbol:
 a raw ESC character in a keyboard macro becomes a Meta prefix.")
@@ -515,9 +516,13 @@ macro is hidden from it for the moment."
          (window-spec (evil-oracle--get case 'window))
          (mode (intern (evil-oracle--get case 'mode "fundamental-mode")))
          (timers-before (append timer-list timer-idle-list))
-         (buf (generate-new-buffer "evil-oracle-case"))
+         (buf (generate-new-buffer (evil-oracle--get case 'buffer "evil-oracle-case")))
          input expected)
     (unless (fboundp mode) (error "%s: unknown mode %s" id mode))
+    ;; A case can split the frame (`:vsplit'); the next starts on one window.
+    (delete-other-windows)
+    ;; Evil keeps a jump list per window, and this one window runs every case.
+    (clrhash evil--jumps-window-jumps)
     (evil-oracle--configure-window window-spec)
     (evil-oracle--setup-registers (evil-oracle--get case 'registers)
                                   (evil-oracle--get case 'clipboard))

@@ -17,7 +17,7 @@ const PLANT: &str = "\n#[allow(dead_code)]\nfn planted() {\n    unsafe {}\n}\n";
 /// Unsafe code in a file that nothing but a `path` attribute or `include!` reaches.
 const OUTSIDE: (&str, &str) = (
     "docs/planted.rs",
-    "#[allow(unsafe_code)]\npub mod outside {\n    pub fn ok() -> &'static str {\n        // SAFETY: these bytes are UTF-8.\n        unsafe { std::str::from_utf8_unchecked(b\"ok\") }\n    }\n}\n",
+    "/// Planted.\n#[allow(unsafe_code)]\npub mod outside {\n    /// Planted.\n    pub fn ok() -> &'static str {\n        // SAFETY: these bytes are UTF-8.\n        unsafe { std::str::from_utf8_unchecked(b\"ok\") }\n    }\n}\n",
 );
 
 /// A crate outside the workspace's `members`, with a bare `unsafe` block, since nothing
@@ -153,18 +153,18 @@ const SOURCE_PLANTS: &[(&str, &str, &str, &str)] = &[
 
 /// A `path` attribute a macro builds, on Linux only, so only the cross-check's build
 /// compiles it. `platform` may name `target_os`.
-const LINUX_SOURCE: &str = "\n#[cfg(target_os = \"linux\")]\nmacro_rules! planted {\n    ($k:ident, $f:literal) => { #[$k = $f] pub mod planted; };\n}\n#[cfg(target_os = \"linux\")]\nplanted!(path, \"../../../../docs/planted.rs\");\n";
+const LINUX_SOURCE: &str = "\n#[cfg(target_os = \"linux\")]\nmacro_rules! planted {\n    ($k:ident, $f:literal) => { #[doc = \"Planted.\"] #[$k = $f] pub mod planted; };\n}\n#[cfg(target_os = \"linux\")]\nplanted!(path, \"../../../../docs/planted.rs\");\n";
 
 /// `unsafe` blocks in `platform::macos` with no SAFETY comment, and what turns off
 /// the lints that require one. clippy passes each, so only the lint can catch it.
 const BLOCK_LINT_PLANTS: &[(&str, &str)] = &[
     (
         "allowing the unsafe-block lints by name",
-        "\n#[allow(clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
+        "\n/// Planted.\n#[allow(clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
     ),
     (
         "allowing the group they're in",
-        "\n#[allow(clippy::restriction)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
+        "\n/// Planted.\n#[allow(clippy::restriction)]\npub fn planted(a: &[u8]) -> &str {\n    unsafe { std::str::from_utf8_unchecked(a) }\n}\n",
     ),
 ];
 

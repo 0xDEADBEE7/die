@@ -32,6 +32,28 @@ fn run(start: &str, cursor: usize, keys: &str) -> (String, usize, Vec<String>, S
     (text(&ctx, b), at, ctx.messages.clone(), ctx.state())
 }
 
+/// `u` after `gU` goes to the change's start when it was the first change since the buffer was
+/// last unmodified, and a save moves what counts. No oracle case saves.
+#[test]
+fn undoing_a_gu_goes_to_its_start_only_after_a_clean_buffer() {
+    let mut ctx = editor();
+    let (b, w) = open(&mut ctx, "ab cd ef\n");
+    ctx.focus(w);
+    ctx.text_mut(b).unwrap().set_cursor(w, 4);
+    ctx.type_keys("gUiwu");
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(3), "a clean buffer");
+
+    ctx.text_mut(b).unwrap().set_cursor(w, 7);
+    ctx.type_keys("x");
+    ctx.text_mut(b).unwrap().set_cursor(w, 4);
+    ctx.type_keys("gUiwu");
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(4), "a modified one");
+
+    ctx.text_mut(b).unwrap().set_modified(false);
+    ctx.type_keys("gUiwu");
+    assert_eq!(ctx.text(b).unwrap().cursor(w), Some(3), "saved");
+}
+
 /// Each of these leaves everything as it was, and normal state, with the count gone: the
 /// `l` after moves once. None of them says anything.
 #[test]
@@ -39,7 +61,8 @@ fn keys_that_cancel_an_operator_do_so_quietly_and_take_the_counts() {
     for op in ["d", "c", "y", ">", "<lt>", "g~", "gU", "gu"] {
         for keys in [
             "<Esc>", "2<Esc>", "<F5>", "2<F5>", "i<Esc>", "a<Esc>", "iq", "ax", "i<F5>", "g<Esc>",
-            "gq", "f<Esc>", "F<Esc>", "t<Esc>", "T<Esc>", "f<F5>", "F<F5>", "t<F5>", "T<F5>", "\"",
+            "gq", "[<Esc>", "]x", "f<Esc>", "F<Esc>", "t<Esc>", "T<Esc>", "f<F5>", "F<F5>",
+            "t<F5>", "T<F5>", "\"",
         ] {
             let all = format!("3{op}{keys}");
             let keys = format!("{all}{}", if keys == "\"" { "<Esc>l" } else { "l" });
@@ -486,6 +509,7 @@ fn numbered_lines(n: usize) -> String {
 /// A mistyped count mustn't freeze the editor. Joining line by line took 231 seconds here
 /// in a release build, because each edit laid the whole line out again.
 #[test]
+#[ignore = "speed: runs in ci --full"]
 fn j_with_a_huge_count_on_a_long_text_is_quick() {
     let start = numbered_lines(20_000);
     let mut ctx = editor();

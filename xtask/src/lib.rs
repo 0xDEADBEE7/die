@@ -5,6 +5,7 @@
 use die_test_cap as _;
 
 pub mod api;
+pub mod app;
 pub mod budget;
 pub mod ci;
 pub mod clean;
@@ -15,5 +16,6 @@ pub mod guards;
 pub mod lint;
 pub mod linux;
 pub mod mutate;
+pub mod restart_loop;
 pub mod sources;
 pub mod util;

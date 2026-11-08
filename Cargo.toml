@@ -58,3 +58,6 @@ debug = "line-tables-only"
 # The property tests run thousands of cases; unoptimized ropes make them slow.
 [profile.test]
 opt-level = 1
+# Enough for a panic's backtrace. A cold workspace test build takes about 15% less CPU than with
+# full debug info, a rebuild about 20% less, and the cache is about 20% smaller.
+debug = "line-tables-only"

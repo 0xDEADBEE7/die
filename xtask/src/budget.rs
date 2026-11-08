@@ -318,11 +318,12 @@ mod tests {
 
     #[test]
     fn platform_macos_is_held_to_what_the_unsafe_review_was_planned_for() {
-        // docs/m0-plan.md §3. Raising it means changing this too, with a count in hand.
+        // docs/m0-plan.md §3 planned for 900; budget.toml says what raised it. Raising it means
+        // changing this too, with a count in hand: 1,266 at 1,270.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let budget = load(root).unwrap();
         let macos = budget.modules.iter().find(|m| m.name == "platform::macos");
-        assert!(macos.unwrap().limit <= 900);
+        assert!(macos.unwrap().limit <= 1270);
     }
 
     #[test]

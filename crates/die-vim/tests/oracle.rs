@@ -10,38 +10,31 @@
 //!   They're left out here. Each gets a hand-written fixture in
 //!   `oracle/hand-written/`, which runs here like an oracle case. It states a
 //!   different result for the same keys, mode and input, and only a regex-syntax
-//!   deviation may change the keys.
-//! - `oracle/pending.txt` names the cases die-vim doesn't pass yet, by the work
-//!   package they land with. A pending case that passes fails this test, and so
-//!   does a failing case that isn't pending.
-//! - `DIE_ORACLE_BLESS=1` rewrites `pending.txt` to the cases that fail now.
-//!   Check the diff: a case that leaves it is done, one that joins it is a regression.
+//!   deviation may change the keys. A case whose oracle run dies has no oracle case to replace:
+//!   its rule's kind says so, and it runs here like any other hand-written fixture.
+//! - `oracle/pending.txt` stays empty since V7: exit test (d) allows no pending case, so a
+//!   failing case is fixed, or becomes a deviation with a fixture. Anything in it fails this test.
+//! - `DIE_ORACLE_BLESS=1` rewrites `pending.txt` to the cases that fail now, to list them.
 //!
-//! The runner uses die-core's spike-era API until the public harness (K7) lands.
-//! What it can't set up or check yet fails the case with a reason, so a case
-//! never passes on something unchecked.
+//! The runner is core's public harness (K7). A tty case also sets its window's size and top
+//! line, and is held to its top line after a frame per key, as the oracle redisplays per command.
+//! A fixture W columns wide runs at W - 1 text columns, because tty Emacs keeps its last column
+//! for the continuation glyph (contract §9), and its rows are held to the fixture's layout.
 //!
-//! The clipboard waits for K6. Your Evil writes every kill to it, so nearly every case
-//! expects clipboard writes. Until K6 the runner holds those against the kill ring: the
-//! clipboard's text must be the newest kill, and its writes must be `"1`, `"2` and so on.
-//! That checks what would be sent, and not that it arrives. A case about the clipboard
-//! itself, one that names it or `"+`, or starts with text on it, stays pending for K6.
+//! The clipboard is the harness's `FakeClipboard`. Your Evil writes every kill to it, so nearly every
+//! case holds die-vim to its writes and to what it ends up holding.
 
 use die_test_cap as _;
 
-use die_core::{Ctx, RegKind, Register, State, parse_keys};
+use die_core::{Ctx, Harness, RegKind, Register, Selection, Shape, State, TextBuf};
 use die_vim::Vim;
 use evil_oracle::{
-    Case, DeviationKind, Deviations, RegisterKind, Run, State as EvilState, Tranche, fixtures_dir,
-    load_fixtures, parse_pending, tranche,
+    Case, DeviationKind, DeviationRule, Deviations, RegisterKind, Run, SelectionKind,
+    State as EvilState, Tranche, fixtures_dir, load_fixtures, parse_pending, tranche,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::Path;
-
-/// Window size for cases that don't give one (the batch run has no window).
-const COLS: usize = 80;
-const ROWS: usize = 24;
 
 fn data(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -68,8 +61,25 @@ fn oracle() {
             all.insert(format!("{}/{}", fx.topic, c.id), (c, fx.run));
         }
     }
-    let excluded: BTreeSet<&str> = deviations.cases().map(|d| d.case.as_str()).collect();
+    let unrunnable = |r: &&DeviationRule| r.kind == DeviationKind::OracleDies;
+    let excluded: BTreeSet<&str> = deviations
+        .rules
+        .iter()
+        .filter(|r| !unrunnable(r))
+        .flat_map(|r| &r.cases)
+        .map(|d| d.case.as_str())
+        .collect();
     let mut problems = Vec::new();
+    for d in deviations
+        .rules
+        .iter()
+        .filter(unrunnable)
+        .flat_map(|r| &r.cases)
+    {
+        if all.contains_key(&d.case) {
+            problems.push(format!("{}: the oracle does run this case", d.case));
+        }
+    }
 
     // A hand-written fixture replaces a deviation's oracle case, under the same name.
     let hand =
@@ -122,19 +132,15 @@ fn oracle() {
     }
 
     let mut failing = BTreeMap::new();
-    let mut passed_pending = Vec::new();
     let mut failed_new = Vec::new();
     for (name, (case, run)) in &all {
         if excluded.contains(name.as_str()) {
             continue;
         }
-        match run_case(case, *run) {
-            Ok(()) if pending.contains_key(name) => passed_pending.push(name.clone()),
+        match run_case(case) {
             Ok(()) => {}
             Err(why) => {
-                if !pending.contains_key(name) {
-                    failed_new.push(format!("{name} ({}): {why}", case.keys));
-                }
+                failed_new.push(format!("{name} ({}): {why}", case.keys));
                 failing.insert(name.clone(), tranche(case, *run));
             }
         }
@@ -155,21 +161,20 @@ fn oracle() {
     if std::env::var_os("DIE_ORACLE_BLESS").is_some() {
         std::fs::write(&pending_path, pending_file(&failing)).unwrap();
         eprintln!(
-            "oracle: wrote {} ({} left it, {} joined it)",
+            "oracle: wrote {} ({} on it)",
             pending_path.display(),
-            passed_pending.len(),
-            failed_new.len()
+            failing.len()
         );
         assert!(problems.is_empty(), "{}", problems.join("\n"));
         return;
     }
-    for name in &passed_pending {
-        problems.push(format!("{name} passes now: take it off pending.txt"));
+    for name in pending.keys() {
+        problems.push(format!("{name}: pending, and exit test (d) allows none"));
     }
     problems.extend(
         failed_new
             .iter()
-            .map(|f| format!("{f}\n  (not pending: a regression, or a new case)")),
+            .map(|f| format!("{f}\n  (a regression, or a new case)")),
     );
     assert!(problems.is_empty(), "\n{}\n", problems.join("\n"));
 }
@@ -206,30 +211,17 @@ fn pending_file(failing: &BTreeMap<String, Tranche>) -> String {
     s
 }
 
-/// Run one case; Err says every way it differs from Evil, or what can't be checked yet.
-fn run_case(case: &Case, run: Run) -> Result<(), String> {
-    let input = &case.input;
-    if input.visual.is_some() {
-        return Err("can't start a case in visual state yet (the harness, K7)".into());
-    }
-    if input.clipboard.is_some() || case.id.contains("clipboard") || case.keys.contains("\"+") {
-        return Err("no clipboard yet (K6)".into());
-    }
-    if run == Run::Tty || input.window.is_some() {
-        return Err("can't set a window's top line yet (the harness, K7)".into());
-    }
-    run_in_window(case, COLS, ROWS)
-}
-
-/// Run one case in a window of this size. Err says every way it differs from Evil.
-fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
+/// Run one case; Err says every way it differs from Evil. A case that gives no window (the
+/// batch run has none) gets the harness's own.
+fn run_case(case: &Case) -> Result<(), String> {
     let (input, want) = (&case.input, &case.expected);
-    let mut ctx = Ctx::new(vec![Box::new(Vim::default())]).map_err(|e| e.join("; "))?;
-    let buf = ctx.create_text("case", &input.text);
-    let w = ctx
-        .open_window(buf, cols, rows)
+    let mut ctx = Harness::new(vec![Box::new(Vim::default())]).map_err(|e| e.join("; "))?;
+    if let Some(size) = &input.window {
+        ctx.set_window_size(size.width - 1, size.height);
+    }
+    let (buf, w) = ctx
+        .open_text("case", &input.text)
         .map_err(|e| format!("{e:?}"))?;
-    ctx.focus(w);
     let set = ctx
         .text_mut(buf)
         .map_err(|e| format!("{e:?}"))?
@@ -240,6 +232,13 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
             input.cursor.byte
         ));
     }
+    if let Some(v) = &input.visual {
+        let sel = selection_from(&ctx, buf, input.cursor.byte, v)?;
+        ctx.text_mut(buf)
+            .map_err(|e| format!("{e:?}"))?
+            .set_selection(w, sel);
+        ctx.set_state_of(buf, State::Visual);
+    }
     for (name, r) in input.registers.iter().flatten() {
         ctx.set_register(
             reg_char(name)?,
@@ -249,24 +248,59 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
             },
         );
     }
-    let before = ctx.messages.len();
-    let mut errors_after = Vec::new();
-    for (i, ev) in parse_keys(&case.keys)
-        .map_err(|e| format!("keys {}: {e}", case.keys))?
-        .into_iter()
-        .enumerate()
-    {
-        let n = ctx.messages.len();
-        ctx.input(ev);
-        ctx.run_until_idle();
-        errors_after.extend(std::iter::repeat_n(i + 1, ctx.messages.len() - n));
+    if let Some(size) = &input.window {
+        // A tty Emacs keeps a window's last column for its continuation mark (m0-plan's Geometry risk).
+        ctx.text_mut(buf)
+            .map_err(|e| format!("{e:?}"))?
+            .settings_mut()
+            .max_width = Some(size.width.saturating_sub(1));
+        ctx.set_top_line(w, size.top_line)
+            .ok_or("the window shows no text")?;
     }
+    // As the oracle's setup does: the clipboard holds the unnamed text, and what another app
+    // copied comes after that.
+    let clipboard = ctx.fake_clipboard().clone();
+    if let Some(r) = input.registers.iter().flatten().find(|(n, _)| *n == "\"") {
+        ctx.write_clipboard(&Register {
+            kind: reg_kind(r.1.kind),
+            text: r.1.text.clone(),
+        });
+        clipboard.take_writes();
+    }
+    if let Some(text) = &input.clipboard {
+        clipboard.copy_from_outside(text);
+    }
+    let log = ctx
+        .type_keys(&case.keys)
+        .map_err(|e| format!("keys {}: {e}", case.keys))?;
+    let errors_after: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .flat_map(|(i, k)| std::iter::repeat_n(i + 1, k.errors.len()))
+        .collect();
+    let messages: Vec<&String> = log.iter().flat_map(|k| &k.errors).collect();
+    let top = ctx.top_line(w);
 
     let mut diffs = Vec::new();
+    if let (Some(size), Some(layout)) = (&input.window, &input.layout) {
+        let got = row_starts(&input.text, size.width - 1)?;
+        if got != *layout {
+            diffs.push(format!("rows start at {got:?}, want {layout:?}"));
+        }
+    }
     let text = ctx.text(buf).map_err(|e| format!("{e:?}"))?;
     let got_text = text.rope().to_string();
     if got_text != want.text {
         diffs.push(format!("text {got_text:?}, want {:?}", want.text));
+    }
+    if let Some(size) = &want.window {
+        let (got, wanted) = (ctx.window_size(w), Some((size.width - 1, size.height)));
+        if got != wanted {
+            diffs.push(format!("window size {got:?}, want {wanted:?}"));
+        }
+        if top != Some(size.top_line) {
+            diffs.push(format!("top line {top:?}, want {}", size.top_line));
+        }
     }
     let cursor = text.cursor(w);
     if cursor != Some(want.cursor.byte) {
@@ -283,8 +317,12 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
         | (EvilState::Operator, State::OperatorPending) => {}
         (want, got) => diffs.push(format!("state {got:?}, want {want:?}")),
     }
-    if want.visual.is_some() {
-        diffs.push("can't compare a visual selection yet (V4 defines the mapping)".into());
+    if let Some(v) = &want.visual {
+        let got = text.selection(w).map(|sel| selected(text, sel));
+        let wanted = Some((v.kind, v.start.byte, v.end.byte));
+        if got != wanted {
+            diffs.push(format!("selection {got:?}, want {wanted:?}"));
+        }
     }
     // Your Evil lists every register the keys changed, so the others must be as they were.
     let names = ('0'..='9').chain('a'..='z').chain(['-']);
@@ -312,28 +350,26 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
             diffs.push(format!("register {name} is {got:?}, want {want:?}"));
         }
     }
-    // Until K6, what would reach the clipboard is what's in the kill ring (see above).
-    let newest = ctx.register('"').map(|r| r.text.as_str());
-    if want.clipboard.text.as_deref() != newest {
+    let held = clipboard.held().map(|r| r.text);
+    if held != want.clipboard.text {
         diffs.push(format!(
-            "the newest kill is {newest:?}, but the clipboard should hold {:?}",
+            "the clipboard holds {held:?}, but it should hold {:?}",
             want.clipboard.text
         ));
     }
-    // Naming `"1`-`"9` overwrites the ring, so it no longer holds every kill.
-    let overwritten = ('1'..='9').any(|d| case.keys.contains(&format!("\"{d}")));
-    let writes = want.clipboard.writes.iter().rev();
-    for (write, name) in writes.zip('1'..='9').filter(|_| !overwritten) {
-        let got = ctx.register(name).map(|r| r.text.as_str());
-        if got != Some(write.as_str()) {
-            diffs.push(format!(
-                "register {name} is {got:?}, but the clipboard should have been sent {write:?}"
-            ));
-        }
+    let writes: Vec<String> = clipboard
+        .take_writes()
+        .into_iter()
+        .map(|r| r.text)
+        .collect();
+    if writes != want.clipboard.writes {
+        diffs.push(format!(
+            "the clipboard was sent {writes:?}, but it should have been sent {:?}",
+            want.clipboard.writes
+        ));
     }
     // A key die-vim doesn't bind is never the error Evil signalled, even when it
     // comes after the same key.
-    let messages = &ctx.messages[before..];
     if let Some(m) = messages.iter().find(|m| m.ends_with(" is undefined")) {
         diffs.push(format!("die-vim doesn't bind a key: {m}"));
     }
@@ -350,6 +386,86 @@ fn run_in_window(case: &Case, cols: usize, rows: usize) -> Result<(), String> {
     }
 }
 
+/// Where each screen line of `text` starts at `cols` text columns, as a fixture's layout says it,
+/// which doesn't count the empty row after a final newline.
+fn row_starts(text: &str, cols: usize) -> Result<Vec<usize>, String> {
+    let mut ctx = Harness::new(vec![Box::new(Vim::default())]).map_err(|e| e.join("; "))?;
+    ctx.set_window_size(cols, text.len() + 1);
+    let (buf, w) = ctx.open_text("rows", text).map_err(|e| format!("{e:?}"))?;
+    let t = ctx.text(buf).map_err(|e| format!("{e:?}"))?;
+    let view = t.viewport(w).ok_or("the window shows no text")?;
+    let starts = view.rows.iter().filter_map(|r| r.stops().first());
+    Ok(starts
+        .map(|s| s.pos)
+        .enumerate()
+        .filter(|&(i, pos)| i == 0 || pos < text.len())
+        .map(|(_, pos)| pos)
+        .collect())
+}
+
+/// A case's starting selection: your Evil's `start` and `end`, with the cursor on one end.
+/// `end` is just past the selection, so the anchor is the character before it.
+fn selection_from(
+    ctx: &Ctx,
+    buf: die_core::BufferId,
+    head: usize,
+    v: &evil_oracle::Selection,
+) -> Result<Selection, String> {
+    let t = ctx.text(buf).map_err(|e| format!("{e:?}"))?;
+    let r = t.rope();
+    let last = r.char_to_byte(r.byte_to_char(v.end.byte).saturating_sub(1));
+    Ok(Selection {
+        anchor: if head == v.start.byte {
+            last
+        } else {
+            v.start.byte
+        },
+        head,
+        shape: match v.kind {
+            SelectionKind::Char => Shape::Char,
+            SelectionKind::Line => Shape::Line,
+            SelectionKind::Block => Shape::Block,
+        },
+        goal: None,
+    })
+}
+
+/// A selection as your Evil's fixture says it: its shape, and the bytes from its start to
+/// just past its end. Whole lines run through the last one's newline.
+fn selected(t: &TextBuf, sel: Selection) -> (SelectionKind, usize, usize) {
+    let (lo, hi) = (sel.anchor.min(sel.head), sel.anchor.max(sel.head));
+    let r = t.rope();
+    let past = |p: usize| r.char_to_byte((r.byte_to_char(p) + 1).min(r.len_chars()));
+    let after_line = |line: usize| {
+        if line + 1 < t.line_count() {
+            t.line_start(line + 1)
+        } else {
+            t.len()
+        }
+    };
+    let line_of = t.line_of(lo);
+    match sel.shape {
+        Shape::Char => (SelectionKind::Char, lo, past(hi)),
+        Shape::Line => (
+            SelectionKind::Line,
+            t.line_start(line_of),
+            after_line(t.line_of(hi)),
+        ),
+        Shape::Block => {
+            // Evil's region: the corner further right takes in its character, unless it's
+            // on a line's end, and in one column, the lower one does.
+            let (cl, ch) = (t.display_col(lo), t.display_col(hi));
+            let at_end = |p: usize| r.get_byte(p).is_none_or(|b| b == b'\n');
+            let (beg, end) = if cl > ch || (cl == ch && at_end(hi)) {
+                (if at_end(lo) { lo } else { past(lo) }, hi)
+            } else {
+                (lo, if at_end(hi) { hi } else { past(hi) })
+            };
+            (SelectionKind::Block, beg, end)
+        }
+    }
+}
+
 fn reg_char(name: &str) -> Result<char, String> {
     let mut c = name.chars();
     match (c.next(), c.next()) {
@@ -358,10 +474,10 @@ fn reg_char(name: &str) -> Result<char, String> {
     }
 }
 
-/// A recorded macro is held as its keys in notation, so it's charwise text.
 fn reg_kind(k: RegisterKind) -> RegKind {
     match k {
-        RegisterKind::Char | RegisterKind::Macro => RegKind::Char,
+        RegisterKind::Macro => RegKind::Macro,
+        RegisterKind::Char => RegKind::Char,
         RegisterKind::Line => RegKind::Line,
         RegisterKind::Block => RegKind::Block,
     }
@@ -411,64 +527,67 @@ fn a_hand_written_fixture_must_keep_its_oracle_cases_input() {
     );
 }
 
-/// Every tty case waits for K7, which can set a window's top line. These don't
-/// scroll or wrap, so their text, cursor, state and errors can be held to your
-/// Evil now.
+/// A tty case starts on the top line it gives, and is held to the one your Evil ended on.
 #[test]
-fn insert_state_arrows_match_the_tty_run() {
-    let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
-    let fx = fixtures.iter().find(|f| f.topic == "insert-tty").unwrap();
-    assert_eq!(fx.cases.len(), 17);
-    for c in &fx.cases {
-        let size = c.input.window.as_ref().expect("a tty case's window");
-        run_in_window(c, size.width, size.height)
-            .unwrap_or_else(|why| panic!("insert-tty/{}: {why}", c.id));
-    }
+fn a_tty_case_must_end_on_evils_top_line() {
+    let (mut case, _) = fixture_case(&fixtures_dir(), "motions", "count-l-past-end");
+    case.input.text = "a\nb\nc\nd\ne\nf\n".into();
+    case.input.layout = None;
+    case.keys = "0".into();
+    case.input.cursor.byte = 6;
+    case.expected.text = case.input.text.clone();
+    case.expected.cursor = case.input.cursor;
+    case.expected.errors = None;
+    let window = |top_line| evil_oracle::Window {
+        width: 40,
+        height: 3,
+        top_line,
+    };
+    case.input.window = Some(window(2));
+    case.expected.window = Some(window(2));
+    assert_eq!(run_case(&case), Ok(()), "it starts and ends on line 2");
+
+    case.expected.window = Some(window(1));
+    let why = run_case(&case).expect_err("the top line differs");
+    assert!(why.contains("top line Some(2), want 1"), "{why}");
 }
 
-/// The same for the wrapped cases that K4's word wrap passes, which is all that nothing
-/// holds it to your Evil until K7. What's left is V6's: `gj` and `gk`, which die-vim doesn't
-/// bind yet, and the cursor after `<Esc>` at a wrapped row's start.
+/// §9: a fixture 40 wide runs at 39 text columns, where `wrapped/gj` has Evil's rows and 40 gives
+/// [0, 40, 65]. Any other rows don't pass.
 #[test]
-fn wrapped_rows_without_gj_match_the_tty_run() {
-    let fixtures = load_fixtures(&fixtures_dir()).expect("the fixtures load and validate");
-    let fx = fixtures.iter().find(|f| f.topic == "wrapped").unwrap();
-    let held: Vec<_> = fx
-        .cases
-        .iter()
-        .filter(|c| !c.keys.contains("gj") && !c.keys.contains("gk"))
-        .filter(|c| c.id != "esc-at-a-wrapped-rows-start")
-        .collect();
-    assert_eq!(held.len(), 8);
-    for c in held {
-        let size = c.input.window.as_ref().expect("a tty case's window");
-        run_in_window(c, size.width, size.height)
-            .unwrap_or_else(|why| panic!("wrapped/{}: {why}", c.id));
-    }
+fn a_tty_case_runs_a_column_narrower_and_must_have_evils_rows() {
+    let (mut case, _) = fixture_case(&fixtures_dir(), "wrapped", "gj");
+    case.keys = "0".into();
+    case.expected.cursor = case.input.cursor;
+    assert_eq!(run_case(&case), Ok(()), "the rows at 39 columns");
+
+    case.input.layout = Some(vec![0, 40, 65]);
+    let why = run_case(&case).expect_err("Evil's rows aren't these");
+    assert!(why.contains("rows start at [0, 35, 65]"), "{why}");
 }
 
-/// Until K6 the kill ring stands in for the clipboard, and it does check something.
+/// What reaches the clipboard, and what it ends up holding, are held to your Evil.
 #[test]
 fn a_kill_must_be_what_the_clipboard_should_have_been_sent() {
-    let (case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
-    assert_eq!(run_case(&case, run), Ok(()), "the committed case");
+    let (case, _) = fixture_case(&fixtures_dir(), "operators", "dw");
+    assert_eq!(run_case(&case), Ok(()), "the committed case");
 
-    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    let (mut case, _) = fixture_case(&fixtures_dir(), "operators", "dw");
     case.expected.clipboard.text = Some("something else".into());
-    let why = run_case(&case, run).expect_err("the newest kill is another text");
-    assert!(why.contains("the clipboard should hold"), "{why}");
+    let why = run_case(&case).expect_err("the clipboard holds another text");
+    assert!(why.contains("it should hold"), "{why}");
 
-    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    let (mut case, _) = fixture_case(&fixtures_dir(), "operators", "dw");
     case.expected.clipboard.writes[0] = "something else".into();
-    let why = run_case(&case, run).expect_err("the kill ring holds another text");
+    let why = run_case(&case).expect_err("another text was sent");
     assert!(why.contains("should have been sent"), "{why}");
 
-    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    let (mut case, _) = fixture_case(&fixtures_dir(), "operators", "dw");
     case.expected
         .clipboard
         .writes
         .insert(0, "an older kill".into());
-    let why = run_case(&case, run).expect_err("the kill ring is one short");
+    let why = run_case(&case).expect_err("one write is missing");
     assert!(why.contains("should have been sent"), "{why}");
 }
 
@@ -476,18 +595,18 @@ fn a_kill_must_be_what_the_clipboard_should_have_been_sent() {
 /// have changed in die-vim either.
 #[test]
 fn a_register_the_keys_didnt_change_must_stay_as_it_was() {
-    let (case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
-    assert_eq!(run_case(&case, run), Ok(()), "the committed case");
+    let (case, _) = fixture_case(&fixtures_dir(), "operators", "dw");
+    assert_eq!(run_case(&case), Ok(()), "the committed case");
 
-    let (mut case, run) = fixture_case(&fixtures_dir(), "operators", "dw");
+    let (mut case, _) = fixture_case(&fixtures_dir(), "operators", "dw");
     case.expected.registers.remove("-");
-    let why = run_case(&case, run).expect_err("dw did change -");
+    let why = run_case(&case).expect_err("dw did change -");
     assert!(why.contains("your Evil left it"), "{why}");
 }
 
-/// A case about the clipboard itself can't pass until there's one to check.
+/// A case about the clipboard itself, through the fake one in the runner.
 #[test]
-fn a_case_about_the_clipboard_waits_for_k6() {
+fn the_clipboards_own_cases_pass() {
     for id in [
         "clipboard-paste-from-other-app",
         "clipboard-written-on-yank-and-delete",
@@ -495,22 +614,18 @@ fn a_case_about_the_clipboard_waits_for_k6() {
         "plus-register-yank",
         "plus-register-paste",
     ] {
-        let (case, run) = fixture_case(&fixtures_dir(), "registers", id);
-        assert_eq!(
-            run_case(&case, run),
-            Err("no clipboard yet (K6)".into()),
-            "{id}"
-        );
+        let (case, _) = fixture_case(&fixtures_dir(), "registers", id);
+        assert_eq!(run_case(&case), Ok(()), "{id}");
     }
 }
 
 #[test]
 fn an_error_must_come_after_the_same_key_as_evils() {
-    let (case, run) = fixture_case(&fixtures_dir(), "motions", "count-l-past-end");
-    assert_eq!(run_case(&case, run), Ok(()), "the committed case");
+    let (case, _) = fixture_case(&fixtures_dir(), "motions", "count-l-past-end");
+    assert_eq!(run_case(&case), Ok(()), "the committed case");
 
-    let (mut case, run) = fixture_case(&fixtures_dir(), "motions", "count-l-past-end");
+    let (mut case, _) = fixture_case(&fixtures_dir(), "motions", "count-l-past-end");
     case.expected.errors.as_mut().expect("an error")[0].after_keys = 1;
-    let why = run_case(&case, run).expect_err("the error comes after key 2");
+    let why = run_case(&case).expect_err("the error comes after key 2");
     assert!(why.contains("errors after keys [2]"), "{why}");
 }

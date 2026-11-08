@@ -11,7 +11,7 @@ use crate::ext::*;
 use crate::faces::*;
 use crate::ids::*;
 use crate::keymap::State;
-use crate::layout::{CellKind, Viewport, control_cells};
+use crate::layout::{CellKind, Dir, Viewport, control_cells};
 use crate::text::*;
 use std::cmp::Reverse;
 use std::fmt::{self, Write};
@@ -104,7 +104,7 @@ impl Cell {
 
     /// A cell drawing `glyph` in `style`, which has `default` under it, so only a
     /// theme that leaves `default`'s colors unset gets the fallbacks.
-    fn styled(glyph: Glyph, s: Style) -> Cell {
+    pub(crate) fn styled(glyph: Glyph, s: Style) -> Cell {
         let fg = s.fg.unwrap_or(FALLBACK_FG);
         let mut c = Cell::new(glyph, fg, s.bg.unwrap_or(FALLBACK_BG));
         c.bold = s.bold.unwrap_or(false);
@@ -144,8 +144,8 @@ pub enum CursorShape {
     /// hiding the glyph there, as Evil's half cursor does.
     HalfBlock,
     /// A cursor that doesn't take input: another window's, or the focused
-    /// window's while the command line has a prompt, and from K9 every cursor
-    /// while DIE's window doesn't have the keyboard focus. A 1 logical px outline
+    /// window's while the command line has a prompt, and every cursor while
+    /// DIE's window doesn't have the keyboard focus. A 1 logical px outline
     /// of the cell, with the glyph drawn as it is, as Emacs draws the cursor of a
     /// window that isn't selected.
     Hollow,
@@ -203,7 +203,7 @@ pub struct Scene {
     pub positions: Vec<Option<(WindowId, usize)>>,
     /// Every cursor drawn. The one that takes input (the command line's while
     /// a prompt is open, otherwise the focused window's) comes first, and it's
-    /// the only one that isn't `Hollow`. A cursor that's hidden, or past the
+    /// the only one that can be other than `Hollow`. A cursor that's hidden, or past the
     /// edge of an unwrapped window (M0 has no horizontal scrolling), isn't drawn.
     pub cursors: Vec<Cursor>,
     /// `default`'s background, for the pixels around the grid.
@@ -229,7 +229,7 @@ impl Scene {
             .flatten()
     }
 
-    fn put(&mut self, row: usize, col: usize, cell: Cell) {
+    pub(crate) fn put(&mut self, row: usize, col: usize, cell: Cell) {
         if row < self.rows && col < self.cols {
             self.cells[row * self.cols + col] = cell;
             self.positions[row * self.cols + col] = None;
@@ -330,6 +330,7 @@ impl Ctx {
     /// status line and divider, and the command line in the last row. Each
     /// window is scrolled to show its cursor first (C5).
     pub fn compose(&mut self, cols: usize, rows: usize, placements: &[WindowPlacement]) -> Scene {
+        self.sync_messages();
         let base = self
             .faces
             .get("default")
@@ -350,13 +351,15 @@ impl Ctx {
             .bg
             .or(base.fg)
             .unwrap_or(FALLBACK_FG);
-        let input_in_prompt = self.prompt_label().is_some();
+        let input_in_prompt = self.prompt.is_some();
         let mut hollow = vec![];
+        let mut placed = Vec::with_capacity(placements.len());
         for p in placements {
             let Some(win) = self.windows.get(p.window) else {
                 continue;
             };
             let (wc, wr, bid) = (win.cols, win.rows, win.buffer);
+            placed.push((*p, wc, wr));
             let focused = self.focused() == Some(p.window);
             let cursor = self.draw_window(&mut scene, p, base, focused);
             let status = if focused {
@@ -369,14 +372,9 @@ impl Ctx {
             for x in 0..wc {
                 scene.put(row, p.col + x, Cell::styled(Glyph::Char(' '), style));
             }
-            if let Some(b) = self.buffers.get(bid) {
-                put_text(
-                    &mut scene,
-                    row,
-                    p.col + 1,
-                    p.col + wc,
-                    glyphs(&b.name, style),
-                );
+            if self.buffers.contains_key(bid) {
+                let text = self.status_text(bid);
+                put_text(&mut scene, row, p.col + 1, p.col + wc, glyphs(&text, style));
             }
             if p.col + wc < cols {
                 let style = self.faces.get("divider").over(base);
@@ -392,7 +390,8 @@ impl Ctx {
                 .filter(|&(r, c, _)| r < rows && c < cols);
             if let Some((row, col, past_end)) = cursor {
                 let state = self.buffers.get(bid).map_or(State::Normal, |b| b.state);
-                let shape = if focused && !input_in_prompt {
+                let takes_input = focused && !input_in_prompt;
+                let shape = if takes_input && self.app_focused {
                     shape_for(state)
                 } else {
                     CursorShape::Hollow
@@ -404,37 +403,57 @@ impl Ctx {
                     color: cursor_color,
                     past_end,
                 };
-                if shape == CursorShape::Hollow {
-                    hollow.push(cur)
-                } else {
+                if takes_input {
                     scene.cursors.push(cur)
+                } else {
+                    hollow.push(cur)
                 }
             }
         }
-        if let (Some(label), Some(text), Some(last)) =
-            (self.prompt_label(), self.prompt_text(), rows.checked_sub(1))
-        {
+        let mut covered = rows;
+        if let (Some(label), Some(last)) = (self.prompt_lead(), rows.checked_sub(1)) {
+            let room = self.prompt_list_height().min(last);
+            let row = last - room;
+            covered = row;
+            self.draw_prompt_list(&mut scene, row, room, base);
+            hollow.retain(|c: &Cursor| room == 0 || c.row < row);
+            let label = label.as_str();
+            let text = self.prompt_text().unwrap_or_default();
             let prompt = self.faces.get("prompt").over(base);
-            let parts: Vec<_> = glyphs(label, prompt).chain(glyphs(text, base)).collect();
-            // When it doesn't fit, show the end, where the cursor is.
-            let (mut width, mut skip) = (parts.iter().map(|g| g.1).sum::<usize>(), 0);
-            while width >= cols && skip < parts.len() {
-                width -= parts[skip].1;
+            let note = self.prompt_note();
+            let parts: Vec<_> = glyphs(label, prompt)
+                .chain(glyphs(text, base))
+                .chain(glyphs(note, prompt))
+                .collect();
+            let typed = self.prompt_before_cursor().unwrap_or_default();
+            let at = glyphs(label, prompt).chain(glyphs(typed, base)).count();
+            // When it doesn't fit, leave off the start, up to where the cursor shows.
+            let (mut col, mut skip) = (parts[..at].iter().map(|g| g.1).sum::<usize>(), 0);
+            while col >= cols && skip < at {
+                col -= parts[skip].1;
                 skip += 1;
             }
-            let col = put_text(&mut scene, last, 0, cols, parts.into_iter().skip(skip));
+            put_text(&mut scene, row, 0, cols, parts.into_iter().skip(skip));
             if col < cols {
                 let bar = Cursor {
-                    row: last,
+                    row,
                     col,
-                    shape: CursorShape::Bar,
+                    shape: if self.app_focused {
+                        CursorShape::Bar
+                    } else {
+                        CursorShape::Hollow
+                    },
                     color: cursor_color,
                     past_end: false,
                 };
                 scene.cursors.insert(0, bar);
             }
+        } else if let (Some(line), Some(last)) = (&self.log.echo, rows.checked_sub(1)) {
+            put_text(&mut scene, last, 0, cols, glyphs(line, base));
         }
         scene.cursors.extend(hollow);
+        self.drawn.note(&scene, placed);
+        self.drawn.covered = covered;
         scene
     }
 
@@ -480,7 +499,7 @@ impl Ctx {
 
 /// `text`'s graphemes in `style`, each with its width in cells, as layout
 /// draws them: a control character shows as `^A`, a cell per character.
-fn glyphs(text: &str, style: Style) -> impl Iterator<Item = (Glyph, usize, Style)> + '_ {
+pub(crate) fn glyphs(text: &str, style: Style) -> impl Iterator<Item = (Glyph, usize, Style)> + '_ {
     text.graphemes(true)
         .flat_map(move |g| match g.chars().next().filter(|c| c.is_control()) {
             Some(c) => control_cells(c)
@@ -494,7 +513,7 @@ fn glyphs(text: &str, style: Style) -> impl Iterator<Item = (Glyph, usize, Style
 /// Put glyphs on `row` from `col` and return the column after them. They
 /// stop before `end`: a wide glyph that doesn't fit isn't drawn, and the
 /// cells it would have taken keep what they had.
-fn put_text(
+pub(crate) fn put_text(
     scene: &mut Scene,
     row: usize,
     mut col: usize,
@@ -605,7 +624,7 @@ fn draw_text(
     let [search_face, current_face, bracket_face, selection_face] =
         ["search", "search-current", "bracket-match", "selection"].map(|f| faces.get(f));
     let (mut next, mut on, mut in_search, mut at) = (0, Vec::<usize>::new(), 0, 0);
-    let mut style_at = |q: usize, vcol: usize| {
+    let mut style_at = |q: usize, vcol: usize, width: usize| {
         // Cells only move forward through a window; start over if one ever doesn't.
         if q < at {
             (next, in_search) = (0, 0);
@@ -633,7 +652,10 @@ fn draw_text(
             && bytes.contains(&q)
             && block_cols.as_ref().is_none_or(|v| {
                 // A block stops at a line's end, as Evil's overlays do.
-                v.contains(&vcol) && q < t.len() && t.rope().byte(q) != b'\n'
+                vcol <= *v.end()
+                    && vcol + width > *v.start()
+                    && q < t.len()
+                    && t.rope().byte(q) != b'\n'
             })
         {
             s = selection_face.over(s);
@@ -668,7 +690,16 @@ fn draw_text(
             let mut style = base;
             if c.kind != CellKind::Filler {
                 let whole = block && c.kind == CellKind::Replacement;
-                style = style_at(c.pos, if whole { t.display_col(c.pos) } else { c.vcol });
+                // A block takes a tab or a wide character it covers any part of.
+                let (vcol, width) = if whole {
+                    (t.display_col(c.pos), 1)
+                } else if block {
+                    let next = t.display_col(t.snap(c.pos + 1, Some(Dir::Forward)));
+                    (c.vcol, next.saturating_sub(c.vcol).max(1))
+                } else {
+                    (c.vcol, 1)
+                };
+                style = style_at(c.pos, vcol, width);
             }
             if let Some(f) = c.face {
                 style = faces.of_decoration(f, messages).over(style);
@@ -683,7 +714,7 @@ fn draw_text(
         // Padding where a wide character didn't fit is past the end too.
         if let Some(e) = vr.line_end {
             if has_cell(e.col) {
-                let style = style_at(e.pos, e.vcol);
+                let style = style_at(e.pos, e.vcol, 1);
                 scene.put(y, text_x + e.col, Cell::styled(Glyph::Char(' '), style));
             }
             row_end = Some(e.pos);
@@ -717,7 +748,12 @@ fn selected(t: &TextBuf, sel: Selection) -> (Range<usize>, Option<RangeInclusive
         Shape::Line => (lines, None),
         Shape::Block => {
             let (a, h) = (t.display_col(sel.anchor), t.display_col(sel.head));
-            (lines, Some(a.min(h)..=a.max(h)))
+            let right = if sel.goal == Some(usize::MAX) {
+                usize::MAX
+            } else {
+                a.max(h)
+            };
+            (lines, Some(a.min(h)..=right))
         }
     }
 }

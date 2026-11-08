@@ -179,7 +179,7 @@ fn a_run_of_one_background_is_one_quad_and_the_scene_background_has_none() {
 }
 
 #[test]
-fn a_run_reaching_the_row_end_is_drawn_to_it() {
+fn a_run_reaching_the_row_end_is_drawn_a_cell_past_it() {
     let mut f = frames();
     let mut s = blank(4, 2);
     for col in 2..4 {
@@ -187,7 +187,7 @@ fn a_run_reaching_the_row_end_is_drawn_to_it() {
     }
     let bg = of_kind(&f_quads(&mut f, &s), kind::SOLID);
     assert_eq!(bg.len(), 1);
-    assert_eq!(bg[0].rect, [2.0 * 19.0, 40.0, 2.0 * 19.0, 40.0]);
+    assert_eq!(bg[0].rect, [2.0 * 19.0, 40.0, 3.0 * 19.0, 40.0]);
 }
 
 #[test]
