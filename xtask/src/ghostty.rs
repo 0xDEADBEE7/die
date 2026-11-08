@@ -29,7 +29,23 @@ use toml::{Table, Value};
 /// die-term-sys, from the workspace's root.
 pub const SYS: &str = "crates/die-term-sys";
 const LOCK: &str = "ghostty-vt.lock";
-const WRAPPER: &str = "https://github.com/uzaaft/libghostty-rs";
+/// The engine's wrapper, libghostty-rs: the one crate DIE takes from git (scope D10).
+pub const WRAPPER: &str = "https://github.com/uzaaft/libghostty-rs";
+/// The generated bindings, from die-term-sys: the one generated file, which verify holds to
+/// the lock's hash and the budget counts apart.
+pub const BINDINGS: &str = "src/ffi/bindings.rs";
+/// The crate that calls the engine. Where die-term-sys has no archive for the target, its
+/// library builds but nothing of it links: its tests can't build there (D10).
+pub const ENGINE_USER: &str = "die-term";
+
+/// die-term-sys has an engine archive for `target`, so binaries that call the engine link.
+pub fn links(root: &Path, target: &str) -> bool {
+    root.join(SYS)
+        .join("vendor")
+        .join(target)
+        .join("libghostty-vt.a")
+        .is_file()
+}
 
 pub fn run(root: &Path, args: &[&str]) -> Result {
     match args {
@@ -289,10 +305,8 @@ fn links_libsystem_only(archive: &Path, target: &str) -> Result {
 fn check_bindings(sys: &Path, lock: &Table, errors: &mut Vec<String>) -> Result {
     let file = str_at(lock, &["bindings", "file"]);
     let want = str_at(lock, &["bindings", "sha256"]);
-    if file != "src/ffi/bindings.rs" {
-        errors.push(format!(
-            "[bindings] file is {file:?}, not src/ffi/bindings.rs"
-        ));
+    if file != BINDINGS {
+        errors.push(format!("[bindings] file is {file:?}, not {BINDINGS}"));
         return Ok(());
     }
     let got = sha256_hex(&std::fs::read(sys.join(file)).map_err(|e| format!("{file}: {e}"))?);
@@ -389,6 +403,17 @@ mod tests {
             e.len() == 1 && e[0].contains("no longer needs: _malloc"),
             "{e:?}"
         );
+    }
+
+    #[test]
+    fn the_engine_links_where_an_archive_is_vendored() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        assert!(links(root, "aarch64-apple-darwin"));
+        assert!(
+            !links(root, "aarch64-unknown-linux-gnu"),
+            "until DIE's CI builds one"
+        );
+        assert!(!links(root, "x86_64-unknown-linux-gnu"));
     }
 
     #[test]

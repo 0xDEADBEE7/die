@@ -124,7 +124,10 @@ pub fn run(root: &Path, keep: bool) -> Result {
     if keep {
         tmp.keep();
     }
-    let calls = build(root, tmp.path(), &host, &["--workspace", "--all-targets"])?;
+    let mut calls = String::new();
+    for args in builds(crate::ghostty::links(root, &host)) {
+        calls += &build(root, tmp.path(), &host, &args)?;
+    }
     let linked = if linux {
         elf_needed(&tmp.path().join("target/debug"))?
     } else {
@@ -136,6 +139,21 @@ pub fn run(root: &Path, keep: bool) -> Result {
         targets.join(", ")
     );
     Ok(())
+}
+
+/// What the clean build builds: every target of the workspace. Where die-term-sys has no engine
+/// archive for the host (`engine` false: Linux until DIE's CI builds one, D10), die-term's
+/// tests can't link, so its library alone builds, in a build of its own.
+pub fn builds(engine: bool) -> Vec<Vec<&'static str>> {
+    let all = vec!["--workspace", "--all-targets"];
+    if engine {
+        return vec![all];
+    }
+    let user = crate::ghostty::ENGINE_USER;
+    vec![
+        [all, vec!["--exclude", user]].concat(),
+        vec!["--package", user, "--lib"],
+    ]
 }
 
 /// The `-dev` packages a Linux build may find, by Debian name: the libc
@@ -859,6 +877,18 @@ half-installed libxcb1-dev
                 "deps/libserde_derive-4e5f.so",
                 "deps/plant_x11-2c3d",
                 "build/x-1/build_script_build-1",
+            ]
+        );
+    }
+
+    #[test]
+    fn without_an_engine_archive_die_terms_library_alone_builds() {
+        assert_eq!(builds(true), [["--workspace", "--all-targets"]]);
+        assert_eq!(
+            builds(false),
+            [
+                vec!["--workspace", "--all-targets", "--exclude", "die-term"],
+                vec!["--package", "die-term", "--lib"],
             ]
         );
     }

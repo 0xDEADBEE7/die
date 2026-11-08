@@ -8,7 +8,10 @@ version = "0.2.1"
 description = "die-term-sys: Ghostty's signed libghostty-vt archive, its lock and its generated bindings"
 edition.workspace = true
 rust-version.workspace = true
-license = "MIT OR Apache-2.0"
+# Its own code is the wrapper's (MIT OR Apache-2.0). The archive's, in THIRD_PARTY_NOTICES'
+# order: Ghostty and Zig's compiler_rt MIT, wuffs MIT and Apache-2.0, simdutf Apache-2.0 or MIT,
+# Highway Apache-2.0 or BSD-3-Clause, uucode MIT and Unicode-3.0 (Hoehrmann's decoder is MIT).
+license = "(MIT OR Apache-2.0) AND MIT AND Apache-2.0 AND (Apache-2.0 OR BSD-3-Clause) AND Unicode-3.0"
 publish.workspace = true
 links = "ghostty-vt"
 build = "build.rs"

@@ -164,6 +164,14 @@ impl Term {
     /// report, such as a release without the kitty flags for it. The DIE layer's keys (Cmd on
     /// macOS) are the surface's to keep from here (scope D18).
     pub fn key(&mut self, ev: &KeyEvent) -> Vec<u8> {
+        // Text the OS committed (an input method, the emoji picker, a dead key's composition) is
+        // text, not a key: its UTF-8 whatever the kitty flags, as kitty sends it.
+        if let Some(text) = &ev.text {
+            return match ev.kind {
+                KeyKind::Release => Vec::new(),
+                _ => text.as_bytes().to_vec(),
+            };
+        }
         let legacy = self.term.kitty_keyboard_flags().map_or(0, |f| f.bits()) == 0;
         let m = ev.mods;
         let bare_ctrl = m.ctrl && !m.alt && !m.shift && !m.super_;
@@ -184,9 +192,8 @@ impl Term {
         if shifted.is_some_and(|(_, s)| s) {
             mods |= EngineMods::SHIFT;
         }
-        let text = match (&ev.text, ev.key) {
-            (Some(t), _) => Some(t.clone()),
-            (None, Key::Char(c)) if !c.is_control() => Some(c.to_string()),
+        let text = match ev.key {
+            Key::Char(c) if !c.is_control() => Some(c.to_string()),
             _ => None,
         };
         let action = match ev.kind {
@@ -304,6 +311,7 @@ impl Term {
     /// ask, then paste again with it.
     pub fn paste(&mut self, text: &str, allow_unsafe: bool) -> Result<Vec<u8>, PasteRefused> {
         let earlier = std::mem::take(&mut self.out.borrow_mut().pty);
+        self.out.borrow_mut().pasting = true;
         let mimes = [ClipboardMime::new("text/plain")];
         // As text, never as a kitty paste event (mode 5522): the program would read the event's
         // contents back through the clipboard, and reads are denied.
@@ -313,7 +321,9 @@ impl Term {
         let done = self
             .term
             .paste(options, &mimes, |_, w| w.write_all(text.as_bytes()));
-        let pasted = std::mem::replace(&mut self.out.borrow_mut().pty, earlier);
+        let mut out = self.out.borrow_mut();
+        out.pasting = false;
+        let pasted = std::mem::replace(&mut out.pty, earlier);
         match done {
             Ok(_) => Ok(pasted),
             Err(Error::Rejected) => Err(PasteRefused),

@@ -4,7 +4,7 @@
 use die_test_cap as _;
 
 use die_core::{Cell, CursorShape, Glyph, Rgb, Underline};
-use die_term::{Frame, Term};
+use die_term::{Frame, HOLD_TIMEOUT, Term};
 
 const FG: Rgb = Rgb(0xd0, 0xd0, 0xd0);
 const BG: Rgb = Rgb(0x10, 0x10, 0x10);
@@ -213,20 +213,55 @@ fn alternate_screen() {
     let mut t = term();
     feed(&mut t, "primary\r\nshell $ ");
     assert!(!t.alt_screen() && !t.modes().alt_screen);
+    t.frame(false);
     feed(&mut t, "\x1b[?1049h\x1b[2J\x1b[Hvim here");
     assert!(
         t.alt_screen() && t.modes().alt_screen,
         "the surface's Esc goes to the program"
     );
-    let f = screen(&mut t);
+    // The frames a surface takes, not full ones: each switch brings every row.
+    let f = t.frame(false).unwrap();
+    assert_eq!(f.changed.len(), 10, "every row of the other screen");
     assert_eq!(text(row(&f, 0)), "vim here");
     assert_eq!(text(row(&f, 1)), "");
     feed(&mut t, "\x1b[?1049l");
     assert!(!t.alt_screen());
-    let f = screen(&mut t);
+    let f = t.frame(false).unwrap();
+    assert_eq!(f.changed.len(), 10);
     assert_eq!(text(row(&f, 0)), "primary");
     assert_eq!(text(row(&f, 1)), "shell $");
     assert_eq!(f.cursor.at, Some((1, 8)), "the cursor comes back too");
+}
+
+#[test]
+fn the_programs_own_colors_redraw_every_row() {
+    // A theme script sets the default colors (OSC 10 and 11), and a visible bell reverses the
+    // screen (DECSCNM, as vim's `set vb` and `tput flash` do). Every row is drawn in them, so
+    // the next frame has every row, as the theme's own change does.
+    let mut t = term();
+    feed(&mut t, "text\r\n");
+    t.frame(false);
+    let deep = Rgb(0x20, 0x30, 0x40);
+    let red = Rgb(0xff, 0, 0);
+    let cases = [
+        ("\x1b]11;#203040\x07", FG, deep),
+        ("\x1b]10;#ff0000\x07", red, deep),
+        ("\x1b[?5h", deep, red),
+        ("\x1b[?5l", red, deep),
+        ("\x1b]110\x07\x1b]111\x07", FG, BG),
+    ];
+    for (seq, fg, bg) in cases {
+        feed(&mut t, seq);
+        let f = t
+            .frame(false)
+            .unwrap_or_else(|| panic!("{seq:?} drew no frame"));
+        assert!(f.full && f.changed.len() == 10, "{seq:?}");
+        assert_eq!((f.foreground, f.background), (fg, bg), "{seq:?}");
+        let r = row(&f, 0);
+        assert_eq!((r[0].fg, r[0].bg, r[9].bg), (fg, bg, bg), "{seq:?}");
+        assert_eq!(text(row(&f, 0)), "text");
+        assert_eq!(t.frame(false), None, "{seq:?}: and then nothing");
+    }
 }
 
 #[test]
@@ -338,4 +373,22 @@ fn synchronized_output_holds_the_frame() {
     feed(&mut t, "\x1b[?2026hmore");
     assert!(t.frame(true).is_some(), "a full frame is never held");
     assert_eq!(t.frame(false), None, "and the program's hold goes on");
+}
+
+#[test]
+fn a_hold_that_never_ends_lasts_its_timeout() {
+    let mut t = term();
+    t.frame(false);
+    feed(&mut t, "\x1b[?2026hstuck");
+    assert_eq!(t.frame(false), None);
+    std::thread::sleep(HOLD_TIMEOUT + std::time::Duration::from_millis(50));
+    let f = t
+        .frame(false)
+        .expect("the frame goes out after the timeout");
+    assert_eq!(text(row(&f, 0)), "stuck");
+    feed(&mut t, "\x1b[?2026$p");
+    assert_eq!(t.take_replies(), b"\x1b[?2026;2$y", "and the hold is over");
+    feed(&mut t, " and on");
+    let f = t.frame(false).expect("so the next output isn't held");
+    assert_eq!(text(row(&f, 0)), "stuck and on");
 }

@@ -143,6 +143,75 @@ fn rows_keep_their_numbers_as_the_oldest_go() {
 }
 
 #[test]
+fn rows_keep_their_numbers_through_a_flood_in_one_read() {
+    // `yes` or `seq` through DIE's PTY: a read of 64 KiB is 21,845 lines, more than the
+    // scrollback holds, and it comes to `feed` whole.
+    let mut t = term(80, 24);
+    for i in 0..100 {
+        feed(&mut t, &format!("row {i}\r\n"));
+    }
+    let mark = t.mark();
+    let yes = "y\r\n".repeat(21_845);
+    for _ in 0..4 {
+        feed(&mut t, &yes);
+    }
+    feed(&mut t, &"\n".repeat(64 << 10));
+    feed(&mut t, "\rlast");
+    let added = 100 + 4 * 21_845 + (64 << 10);
+    assert_eq!(t.added_since(mark), Some(added - 100), "every line counted");
+    let text = t.text();
+    let last = text.lines.last().unwrap();
+    assert_eq!(
+        (last.text.trim_end(), last.row),
+        ("last", added),
+        "and numbered"
+    );
+    let top = t.viewport().top;
+    assert_eq!(top, added - 23, "the screen's top, by the same count");
+}
+
+#[test]
+fn numbers_go_on_past_output_that_outruns_the_count() {
+    // REP makes 819 lines of 9 bytes: 100 of them push out the whole scrollback between two
+    // counts. Which rows went can't be told, so the count starts again, and the rows are
+    // numbered on from past every number given so far: an old number names no line.
+    let mut t = term(80, 24);
+    for i in 0..50 {
+        feed(&mut t, &format!("row {i}\r\n"));
+    }
+    let before = t.text();
+    let given = before.lines.last().unwrap().row;
+    feed(&mut t, &"a\x1b[65535b".repeat(100));
+    feed(&mut t, "\r\nafter");
+    assert_eq!(t.added_since(before.mark), None, "read it all again");
+    let text = t.text();
+    assert!(text.lines[0].row > given, "{} > {given}", text.lines[0].row);
+    let rows: Vec<u64> = text.lines.iter().map(|l| l.row).collect();
+    assert!(rows.windows(2).all(|w| w[1] == w[0] + 1), "in order");
+    assert_eq!(t.viewport().top, rows[rows.len() - 24]);
+    // After that, the count follows output again.
+    let mark = text.mark;
+    feed(&mut t, "\r\none\r\ntwo");
+    assert_eq!(t.added_since(mark), Some(2));
+    assert_eq!(t.text().lines.last().unwrap().row, rows[rows.len() - 1] + 2);
+}
+
+#[test]
+fn a_reverse_index_at_the_top_keeps_the_history_numbered() {
+    let mut t = term(20, 4);
+    for i in 0..10 {
+        feed(&mut t, &format!("row {i}\r\n"));
+    }
+    let before = t.text();
+    // The screen scrolls down: the anchor's row moves, the history doesn't.
+    feed(&mut t, "\x1b[H\x1bM");
+    let after = t.text();
+    let history = |t: &Text| t.lines[..t.lines.len() - 4].to_vec();
+    assert_eq!(history(&after), history(&before));
+    assert_eq!(after.lines[7].row, 7);
+}
+
+#[test]
 fn marks_lapse_when_the_rows_change_under_them() {
     let mut t = term(20, 4);
     feed(&mut t, "a\r\nb\r\nc\r\nd\r\ne\r\n");

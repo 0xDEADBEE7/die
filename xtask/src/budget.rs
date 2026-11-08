@@ -8,9 +8,10 @@
 //! crate if it has no modules. `build_limit` caps each build, as `limit` caps
 //! the crate's total (docs/records/platforms.md §5.7).
 //!
-//! A crate's `generated` files (die-term-sys's bindings, which bindgen writes at each
-//! engine bump and `cargo xtask ghostty verify` holds to a hash) are counted apart: they
-//! aren't read as code, so they're neither in its total nor in the product's.
+//! A crate's `generated` files are counted apart: they aren't read as code, so they're neither
+//! in its total nor in the product's. The one there may be is die-term-sys's bindings, which
+//! bindgen writes at each engine bump and `cargo xtask ghostty verify` holds to a hash; any
+//! other file named there fails the budget.
 
 use crate::count::count_formatted;
 use crate::util::{Result, read, rust_files};
@@ -107,6 +108,7 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
             .filter(|m| m.krate == c.name)
             .collect();
         check_platforms(c, &mods)?;
+        check_generated(c)?;
         let mut total = 0;
         let mut generated = 0;
         let mut per_mod = vec![0; mods.len()];
@@ -182,6 +184,25 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
 }
 
 /// Platform tags need a crate that lists its builds, and must name one of them.
+/// `generated` may name die-term-sys's bindings alone, which verify holds to the engine lock's
+/// hash: any other file would leave the budget unread.
+fn check_generated(c: &CrateBudget) -> Result {
+    let bindings = Path::new(crate::ghostty::SYS).join(crate::ghostty::BINDINGS);
+    match c
+        .generated
+        .iter()
+        .find(|g| Path::new(&c.path).join(g) != bindings)
+    {
+        Some(g) => Err(format!(
+            "budget.toml: {}'s generated file {g} isn't {}, the one generated file `cargo \
+             xtask ghostty verify` holds to a hash; count it as code",
+            c.name,
+            bindings.display()
+        )),
+        None => Ok(()),
+    }
+}
+
 fn check_platforms(c: &CrateBudget, mods: &[&ModuleBudget]) -> Result {
     if c.build_limit.is_some() && c.builds.is_empty() {
         return Err(format!(
@@ -414,21 +435,34 @@ mod tests {
         let tmp = crate::util::TempDir::new("budget-generated").unwrap();
         let root = tmp.path();
         let write = |rel: &str, src: &str| crate::util::write(&root.join(rel), src).unwrap();
-        write("crates/x/src/lib.rs", "pub fn a() {}\npub fn b() {}\n");
-        write("crates/x/src/ffi/gen.rs", "pub fn g() {}\n");
-        write("crates/x/build.rs", "fn main() {}\n");
-        let budget: Budget = toml::from_str(
-            "[[crate]]\nname = \"x\"\npath = \"crates/x\"\nlimit = 3\ngenerated = [\"src/ffi/gen.rs\"]\n",
-        )
-        .unwrap();
-        let counted = measure(root, &budget).unwrap();
-        assert_eq!((counted[0].lines, counted[0].generated), (3, 1));
+        write(
+            "crates/die-term-sys/src/lib.rs",
+            "pub fn a() {}\npub fn b() {}\n",
+        );
+        write("crates/die-term-sys/src/ffi/bindings.rs", "pub fn g() {}\n");
+        write("crates/die-term-sys/src/ffi/hand.rs", "pub fn h() {}\n");
+        write("crates/die-term-sys/build.rs", "fn main() {}\n");
+        let budget = |generated: &str| -> Budget {
+            toml::from_str(&format!(
+                "[[crate]]\nname = \"x\"\npath = \"crates/die-term-sys\"\nlimit = 4\n\
+                 generated = [\"{generated}\"]\n"
+            ))
+            .unwrap()
+        };
+        // Only the bindings verify holds to a hash may be left out.
+        let err = measure(root, &budget("src/ffi/hand.rs")).err().unwrap();
+        assert!(
+            err.contains("generated file src/ffi/hand.rs isn't"),
+            "{err}"
+        );
+        let counted = measure(root, &budget("src/ffi/bindings.rs")).unwrap();
+        assert_eq!((counted[0].lines, counted[0].generated), (4, 1));
         let (text, over) = report(&counted);
         assert!(over.is_empty(), "{over:?}");
         assert!(text.contains("  generated, in no total"), "{text}");
         assert!(
             text.trim_end()
-                .ends_with("product code                   3"),
+                .ends_with("product code                   4"),
             "{text}"
         );
     }

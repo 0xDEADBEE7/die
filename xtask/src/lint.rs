@@ -753,7 +753,8 @@ pub fn check_platform_code(rel: &str, src: &str, errors: &mut Vec<String>) {
 }
 
 /// A dependency is pinned when it's a path or workspace dependency, its version starts with
-/// `=`, or it's a git dependency at a full commit hash.
+/// `=`, or it's the engine's wrapper from its git repository at a full commit hash: the one git
+/// dependency (scope D10), whose rev `cargo xtask ghostty verify` holds to the engine lock's.
 fn check_pins(what: &str, deps: &Table, errors: &mut Vec<String>) {
     for (name, spec) in deps {
         let version = match spec {
@@ -764,7 +765,15 @@ fn check_pins(what: &str, deps: &Table, errors: &mut Vec<String>) {
                 {
                     continue;
                 }
-                if t.contains_key("git") {
+                if let Some(url) = t.get("git") {
+                    if url.as_str() != Some(crate::ghostty::WRAPPER) {
+                        errors.push(format!(
+                            "{what}: {name} is a git dependency from {url}. Only the engine's \
+                             wrapper, {}, may come from git (D10); take crates from crates.io",
+                            crate::ghostty::WRAPPER
+                        ));
+                        continue;
+                    }
                     let rev = t.get("rev").and_then(Value::as_str).unwrap_or("");
                     let commit = rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit());
                     let other = ["branch", "tag", "version"]
@@ -1741,20 +1750,22 @@ mod tests {
             e[0].contains("b = \"1.0\"") && e[1].contains("c = \"^2\""),
             "{e:?}"
         );
-        // A git dependency is pinned at a full commit, and only there.
+        // The wrapper is pinned at a full commit, and only there; nothing else comes from git.
         let t: Table = r#"
-            g = { git = "https://x/y", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54" }
-            h = { git = "https://x/y", rev = "d2036bae" }
-            i = { git = "https://x/y", branch = "main" }
-            j = { git = "https://x/y" }
-            k = { git = "https://x/y", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", tag = "v1" }
+            g = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54" }
+            h = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036bae" }
+            i = { git = "https://github.com/uzaaft/libghostty-rs", branch = "main" }
+            j = { git = "https://github.com/uzaaft/libghostty-rs" }
+            k = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", tag = "v1" }
+            l = { git = "https://x/y", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54" }
         "#
         .parse()
         .unwrap();
         let mut e = Vec::new();
         check_pins("t", &t, &mut e);
         let named: Vec<&str> = e.iter().map(|m| &m[3..4]).collect();
-        assert_eq!(named, ["h", "i", "j", "k"], "{e:?}");
+        assert_eq!(named, ["h", "i", "j", "k", "l"], "{e:?}");
+        assert!(e[4].contains("Only the engine's wrapper"), "{e:?}");
     }
 
     #[test]

@@ -52,6 +52,22 @@ fn gestures(t: &mut Term, mode: u16, format: u16) -> [String; 5] {
 }
 
 #[test]
+fn a_terminal_made_before_its_cells_are_known_still_reports() {
+    // A surface may make its Term before it has the font's metrics: a zero cell is one pixel.
+    let mut t = Term::new(80, 24, (0, 0)).unwrap();
+    assert_eq!(t.cell_px(), (1, 1));
+    t.feed(b"\x1b[?1000h\x1b[?1006h");
+    let p = Pointer {
+        action: PointerAction::Press,
+        button: Some(PointerButton::Left),
+        mods: Mods::default(),
+        x: 2.0,
+        y: 3.0,
+    };
+    assert_eq!(t.mouse(&p), b"\x1b[<0;3;4M");
+}
+
+#[test]
 fn tracking_modes() {
     let mut t = term();
     assert_eq!(t.modes().mouse, MouseTracking::None);

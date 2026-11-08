@@ -4,7 +4,7 @@
 use die_test_cap as _;
 
 use die_core::Rgb;
-use die_term::{Event, PasteRefused, Term, XTVERSION};
+use die_term::{Event, PasteRefused, REPLIES_MAX, Term, XTVERSION};
 
 fn term() -> Term {
     let mut t = Term::new(100, 30, (18, 36)).unwrap();
@@ -88,6 +88,50 @@ fn title_directory_bell_and_notifications() {
         ("other", "file://host.local/Users/me/proj")
     );
     assert!(t.take_events().is_empty(), "taken once");
+    // ConEmu's form gives a bare path.
+    t.feed(b"\x1b]9;9;/tmp\x07");
+    assert_eq!(t.take_events(), [Event::Pwd("/tmp".into())]);
+    assert_eq!(t.pwd(), "/tmp");
+}
+
+#[test]
+fn kitty_graphics_are_off_until_die_draws_them() {
+    // Programs ask, then send DA1: the DA1 answer alone says no, so they show text instead of
+    // images nothing would draw.
+    let mut t = term();
+    let query = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
+    assert_eq!(reply(&mut t, query), "\\x1b[?62;22c");
+    let show = "\x1b_Gi=32,s=1,v=1,a=T,f=24;AAAA\x1b\\";
+    assert_eq!(reply(&mut t, show), "", "nor a transmit and display");
+}
+
+#[test]
+fn replies_waiting_for_the_pty_are_capped() {
+    // A program that floods queries and never reads: past the cap, new answers are dropped.
+    let mut t = term();
+    let flood = |t: &mut Term| {
+        let da = b"\x1b[c".repeat(20_000);
+        for _ in 0..10 {
+            let mut b = &da[..];
+            while !b.is_empty() {
+                b = &b[t.feed(b)..];
+            }
+        }
+        let replies = t.take_replies();
+        let n = replies.len();
+        assert!(n <= REPLIES_MAX && n > REPLIES_MAX - 16, "{n}");
+        assert!(replies.ends_with(b"\x1b[?62;22c"), "whole answers only");
+    };
+    flood(&mut t);
+    assert_eq!(
+        reply(&mut t, "\x1b[5n"),
+        "\\x1b[0n",
+        "taken, they come again"
+    );
+    // A paste isn't a reply: it comes whole however long it is, and the cap holds after it.
+    let long = "x".repeat(REPLIES_MAX + 10);
+    assert_eq!(t.paste(&long, false).map(|p| p.len()), Ok(long.len()));
+    flood(&mut t);
 }
 
 #[test]

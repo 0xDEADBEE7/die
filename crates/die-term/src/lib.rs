@@ -3,7 +3,8 @@
 //! runs inside DIE now and in the terminal's helper process later (D20). The surface on a PTY
 //! is built on it.
 //!
-//! What a program sends goes to [`Term::feed`], which does a bounded amount of work per call.
+//! What a program sends goes to [`Term::feed`], which parses a bounded amount per call, in bytes
+//! and in time.
 //! The engine's answers to queries collect for the PTY ([`Term::take_replies`]), and what it
 //! asks of DIE collects as [`Event`]s ([`Term::take_events`]). [`Term::frame`] turns the screen,
 //! or a scrolled-back viewport, into rows of die-core cells. Keys, the pointer, pastes and focus
@@ -45,11 +46,24 @@ use std::time::{Duration, Instant};
 pub const SCROLLBACK_LINES: usize = 10_000;
 /// The cap on a terminal's scrollback, in bytes of the engine's pages.
 pub const SCROLLBACK_BYTES: usize = 64 << 20;
-/// The cap on a screen's images (scope §6).
+/// The cap on a screen's images (scope §6), once DIE draws kitty images. Until then the engine's
+/// limit is 0, which turns kitty graphics off: a program's query gets no answer, so it shows its
+/// text instead of images nothing would draw.
 pub const IMAGE_BYTES: u64 = 64 << 20;
 /// The most bytes one [`Term::feed`] parses: 0.22 ms of a build log's flood (0.4 ms at most)
-/// on an M5 Pro, so a terminal inside DIE never holds the main thread for long.
+/// on an M5 Pro.
 pub const FEED_MAX: usize = 64 << 10;
+/// How long one [`Term::feed`] parses before it returns. It parses [`FEED_SLICE`] at a time and
+/// stops after the slice that passes this, so output crafted to be slow (REP, DECALN, ED, RIS:
+/// up to 5 µs a byte) holds the caller for a few ms, not the 0.3 s 64 KiB of it takes.
+pub const FEED_BUDGET: Duration = Duration::from_millis(2);
+/// What [`Term::feed`] parses at once: 1 KiB, at most about 5 ms of the slowest output. The
+/// lines a slice pushes into the scrollback are counted after it, so no ordinary flood can push
+/// out the row the count follows (see [`Term::added_since`]).
+pub const FEED_SLICE: usize = 1 << 10;
+/// The most replies held for the PTY. Past it, new ones are dropped: a program that sends
+/// queries faster than it reads would lose them anyway.
+pub const REPLIES_MAX: usize = 1 << 20;
 /// What XTVERSION answers. Not "ghostty": yazi matches that as a substring and moves to
 /// Unicode-placeholder images (docs/records/die-term-engine.md §9).
 pub const XTVERSION: &str = concat!("DIE ", env!("CARGO_PKG_VERSION"));
@@ -64,7 +78,8 @@ pub const HOLD_TIMEOUT: Duration = Duration::from_secs(1);
 pub enum Event {
     /// The title changed (OSC 0 or 2).
     Title(String),
-    /// The working directory changed (OSC 7), as the program sent it: a `file://` URL.
+    /// The working directory changed, as the program sent it: a `file://` URL (OSC 7), or a
+    /// bare path (ConEmu's OSC 9;9).
     Pwd(String),
     /// BEL.
     Bell,
@@ -152,6 +167,8 @@ pub struct Viewport {
 #[derive(Default)]
 struct Outbox {
     pty: Vec<u8>,
+    /// A paste is writing: its bytes aren't replies, and [`REPLIES_MAX`] doesn't hold them.
+    pasting: bool,
     events: Vec<Event>,
     hold: Option<bool>,
 }
@@ -197,6 +214,7 @@ impl Term {
     /// A terminal of `cols` by `rows` cells, each `cell_px` physical pixels (width, height), in
     /// die-core's fallback colors until [`Term::set_colors`] gives the theme's.
     pub fn new(cols: u16, rows: u16, cell_px: (u32, u32)) -> Result<Term, String> {
+        let cell_px = (cell_px.0.max(1), cell_px.1.max(1));
         Term::build(cols.max(1), rows.max(1), cell_px).map_err(|e| format!("die-term: {e}"))
     }
 
@@ -208,12 +226,17 @@ impl Term {
             .set_continuation_max_bytes(4096)?
             // Skin-tone emoji and other clusters in one cell, as Ghostty's app has it.
             .set_default_mode(Mode::GRAPHEME_CLUSTER, true)?
-            .set_kitty_image_storage_limit(IMAGE_BYTES)?
+            .set_kitty_image_storage_limit(0)?
             .set_terminfo_name(TERM_NAME)?;
-        term.resize(cols, rows, cell_px.0.max(1), cell_px.1.max(1))?;
+        term.resize(cols, rows, cell_px.0, cell_px.1)?;
         let out = Rc::new(RefCell::new(Outbox::default()));
         let o = out.clone();
-        term.on_pty_write(move |_, d| o.borrow_mut().pty.extend_from_slice(d))?;
+        term.on_pty_write(move |_, d| {
+            let mut o = o.borrow_mut();
+            if o.pasting || o.pty.len() + d.len() <= REPLIES_MAX {
+                o.pty.extend_from_slice(d);
+            }
+        })?;
         let o = out.clone();
         term.on_bell(move |_| o.borrow_mut().events.push(Event::Bell))?;
         let o = out.clone();
@@ -292,24 +315,34 @@ impl Term {
         self.screen.redraw();
     }
 
-    /// Parse what the program sent: at most [`FEED_MAX`] bytes of `bytes`. Returns how many it
-    /// took; feed the rest on a later call. A sequence split between calls continues.
+    /// Parse what the program sent: at most [`FEED_MAX`] bytes of `bytes`, and no more once
+    /// [`FEED_BUDGET`] has gone. Returns how many it took; feed the rest on a later call, and to
+    /// keep a turn short, on a later turn. A sequence split between calls continues.
     pub fn feed(&mut self, bytes: &[u8]) -> usize {
-        let n = bytes.len().min(FEED_MAX);
-        self.term.vt_write(&bytes[..n]);
+        let start = Instant::now();
+        let max = bytes.len().min(FEED_MAX);
+        let mut n = 0;
+        while n < max {
+            let end = max.min(n + FEED_SLICE);
+            self.term.vt_write(&bytes[n..end]);
+            n = end;
+            self.history.update(&mut self.term);
+            if start.elapsed() >= FEED_BUDGET {
+                break;
+            }
+        }
         let hold = self.out.borrow_mut().hold.take();
         match hold {
             Some(true) => self.held = Some(Instant::now()),
             Some(false) => self.held = None,
             None => {}
         }
-        self.history.update(&mut self.term);
         n
     }
 
     /// What the engine wrote for the PTY since the last call: its answers to queries (DA, DSR,
-    /// XTVERSION, XTWINOPS, mode 2048's size reports). Key, mouse, paste and focus bytes are
-    /// returned by their own calls instead.
+    /// XTVERSION, XTWINOPS, mode 2048's size reports), up to [`REPLIES_MAX`]. Key, mouse, paste
+    /// and focus bytes are returned by their own calls instead.
     pub fn take_replies(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.out.borrow_mut().pty)
     }
@@ -349,7 +382,7 @@ impl Term {
         self.term.title().unwrap_or_default()
     }
 
-    /// The working directory the program reported (OSC 7), as a `file://` URL, or "".
+    /// The working directory the program reported, as [`Event::Pwd`] has it, or "".
     pub fn pwd(&self) -> &str {
         self.term.pwd().unwrap_or_default()
     }

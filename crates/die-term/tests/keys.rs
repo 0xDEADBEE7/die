@@ -93,6 +93,23 @@ fn ctrl_brackets_i_and_m_are_esc_tab_and_return_in_legacy() {
 }
 
 #[test]
+fn committed_text_is_text_whatever_the_flags() {
+    // An input method's commit or the emoji picker's insert: the program gets the text, as
+    // kitty sends it, never a key for its first character.
+    let mut t = term();
+    for flags in ["", "\x1b[>1u", "\x1b[<u\x1b[>8u", "\x1b[<u\x1b[>31u"] {
+        t.feed(flags.as_bytes());
+        for text in ["日本", "é", "\u{1F44D}\u{1F3FD}"] {
+            let got = t.key(&KeyEvent::committed(text));
+            assert_eq!(got, text.as_bytes(), "{flags:?} {text}");
+        }
+        let release = KeyEvent::committed("é").kind(KeyKind::Release);
+        assert_eq!(sent(&mut t, &release), "", "{flags:?}");
+    }
+    assert_eq!(t.modes().kitty_flags, 31);
+}
+
+#[test]
 fn application_modes() {
     let mut t = term();
     t.feed(b"\x1b[?1h");

@@ -7,8 +7,9 @@
 //! name a target or a path dependency anywhere. So this asks the compiler. Each
 //! local crate's dep-info file lists every file it read, however it got there, and
 //! each must be a `.rs` file the lint reads, in that crate's own directory. A local
-//! crate must be a listed member. Crates from the registry, and from a git repository at
-//! a pinned commit (libghostty-rs, D10), are dependencies, and aren't part of your review.
+//! crate must be a listed member. Crates from the registry, and the engine's wrapper from its
+//! git repository at a pinned commit (libghostty-rs, D10), are dependencies, and aren't part of
+//! your review.
 //!
 //! The dep-info files come from this build's own messages, so a stale one in a
 //! shared target directory doesn't count. `ci` runs this for the host, and the
@@ -114,13 +115,14 @@ pub fn check(root: &Path, messages: &str, extra: &[&str]) -> Result<usize> {
     }
 }
 
-/// A package from a git repository at a full commit: `git+URL?rev=SHA#...`, as Cargo.lock
-/// pins it. One at a branch or a tag could change under the lockfile's feet.
+/// A package from the engine wrapper's git repository at a full commit:
+/// `git+URL?rev=SHA#...`, as Cargo.lock pins it. One at a branch or a tag could change under
+/// the lockfile's feet, and the lint lets no other repository in.
 fn pinned_git(package: &str) -> bool {
-    let Some(rest) = package.strip_prefix("git+") else {
+    let wrapper = format!("git+{}?rev=", crate::ghostty::WRAPPER);
+    let Some(rev) = package.strip_prefix(&wrapper) else {
         return false;
     };
-    let rev = rest.split_once("?rev=").map_or("", |(_, r)| r);
     let rev = rev.split(['#', '&']).next().unwrap_or("");
     rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -306,6 +308,7 @@ mod tests {
             "git+https://github.com/uzaaft/libghostty-rs?branch=main#libghostty-vt@0.2.1",
             "git+https://github.com/uzaaft/libghostty-rs#libghostty-vt@0.2.1",
             "git+https://github.com/uzaaft/libghostty-rs?rev=d2036bae#libghostty-vt@0.2.1",
+            "git+https://example.com/libghostty-rs?rev=d2036baeb605d31d09a9e2ba6d0c923e04c34d54#x@1",
         ] {
             assert!(git(unpinned).is_err(), "{unpinned}");
         }

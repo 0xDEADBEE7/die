@@ -288,10 +288,12 @@ files = ["platform/backend.rs"]
 # out, before the surface on a PTY. Each starts at what it measured, with a little room.
 
 # The terminal: the engine's defaults and callbacks, feeding, resizing, events, modes, scrolling.
+# From 320 to 335 with the review's fixes: feeding in slices within a time budget, and a cap on
+# the replies waiting.
 [[module]]
 crate = "die-term"
 name = "terminal"
-limit = 320
+limit = 335
 files = ["lib.rs"]
 
 # Render state to die-core cells, and the cursor (G2).

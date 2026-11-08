@@ -22,7 +22,8 @@ pub struct Frame {
     /// Its height.
     pub rows: u16,
     /// Every row is in `changed`: the first frame, and after a resize, a scroll, a color change
-    /// or a full redraw by the program.
+    /// (the theme's, or the program's: OSC 4, 10 and 11, reverse video with DECSCNM) or a full
+    /// redraw by the program.
     pub full: bool,
     /// The rows that changed, by row from the viewport's top, top first. Each has `cols` cells.
     pub changed: Vec<(u16, Vec<Cell>)>,
@@ -57,6 +58,9 @@ pub(crate) struct Screen {
     /// The next frame has every row.
     redraw: bool,
     cursor: Option<TermCursor>,
+    /// The default colors the last frame was drawn in, (foreground, background): when they
+    /// change, so does every cell drawn in them.
+    drawn: Option<(Rgb, Rgb)>,
     buf: String,
 }
 
@@ -72,6 +76,7 @@ impl Screen {
             cells: CellIterator::new()?,
             redraw: true,
             cursor: None,
+            drawn: None,
             buf: String::new(),
         })
     }
@@ -98,12 +103,14 @@ impl Screen {
             cells,
             redraw,
             cursor: last,
+            drawn,
             buf,
         } = self;
         let snap = state.update(term).ok()?;
         let dirty = snap.dirty().ok()?;
-        let full = full || *redraw || dirty == Dirty::Full;
         let colors = snap.colors().ok()?;
+        let defaults = (rgb(colors.foreground), rgb(colors.background));
+        let full = full || *redraw || dirty == Dirty::Full || *drawn != Some(defaults);
         let cursor = cursor_of(&snap)?;
         if !full && dirty == Dirty::Clean && *last == Some(cursor) {
             return None;
@@ -136,14 +143,15 @@ impl Screen {
         let _ = snap.clean();
         *redraw = false;
         *last = Some(cursor);
+        *drawn = Some(defaults);
         Some(Frame {
             cols,
             rows: height,
             full,
             changed,
             cursor,
-            background: rgb(colors.background),
-            foreground: rgb(colors.foreground),
+            background: defaults.1,
+            foreground: defaults.0,
         })
     }
 }
