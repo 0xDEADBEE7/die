@@ -118,10 +118,11 @@ files = ["files.rs", "files/"]
 # 1,300 until `<S-Tab>` went up a directory in the file prompt.
 # 1,310 until a prompt's candidates could match only part of its line, for `:`'s list.
 # 1,331 until kill-buffer's question was shared with the Buffer List's `x`.
+# 1,339 until `:`'s list kept Evil's history keys and put first the command a name runs.
 [[module]]
 crate = "die-core"
 name = "command line, prompt, core commands"
-limit = 1339
+limit = 1370
 files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "commands/"]
 
 [[module]]

@@ -52,6 +52,12 @@ pub(crate) const EX: &[(&str, &str, &str)] = &[
     ("on", "only", "vim-window-only"),
 ];
 
+/// Whether `name` is a window command's, with a `!` after it or not.
+pub fn named(name: &str) -> bool {
+    let name = name.strip_suffix('!').unwrap_or(name);
+    EX.iter().any(|e| crate::ex::abbreviates(name, (e.0, e.1)))
+}
+
 /// An ex line, if it's a window command: an optional count, the name, and a file. `!` changes
 /// nothing here. `:q` is with the file commands, where its `!` means something.
 pub fn ex(ctx: &mut Ctx, line: &str) -> Option<Result> {
