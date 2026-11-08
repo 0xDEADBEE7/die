@@ -152,7 +152,11 @@ fn the_listing_has_emacss_columns_marks_and_widths() {
     h.set_window_size(160, 20);
     keys(&mut h, "gr");
     let row = rows(&h).into_iter().find(|r| r.contains("a-name")).unwrap();
-    assert_eq!(row, format!("    {long}       0 Fundamental"), "38 wide");
+    assert_eq!(
+        row,
+        format!("    {long}       0 Fundamental"),
+        "26 wide, the longest name's, as 160 columns allow up to 38"
+    );
     h.set_window_size(80, 20);
     keys(&mut h, "gr");
     let row = rows(&h).into_iter().find(|r| r.contains("a-name")).unwrap();
@@ -515,7 +519,7 @@ fn one_two_and_gv_lay_out_the_frame_as_emacs_does() {
     assert_eq!(shown, [Some(beta), Some(gamma)]);
     assert_eq!(h.focused(), Some(windows[1]));
 
-    // gv: this line's alone, then each marked > below it, the same height, focus on the first.
+    // gv: this line's alone, then each marked > below it, focus on the first.
     h.focus(w);
     h.run("buffer-menu", &Args::default()).unwrap();
     goto(&mut h, w, 2, 0);
@@ -528,19 +532,148 @@ fn one_two_and_gv_lay_out_the_frame_as_emacs_does() {
     let shown: Vec<_> = windows.iter().map(|w| h.window_buffer(*w)).collect();
     let notes = get(&h, "*notes*");
     assert_eq!(shown, [Some(alpha), Some(gamma), Some(notes)]);
-    let heights: Vec<_> = windows
-        .iter()
-        .map(|w| h.window_size(*w).unwrap().1)
-        .collect();
-    assert!(
-        heights.iter().max().unwrap() - heights.iter().min().unwrap() <= 1,
-        "{heights:?}"
-    );
     assert_eq!(h.focused(), Some(windows[0]));
     assert!(
         !text(&h, menu(&h)).lines().any(|l| l.starts_with('>')),
         "the marks go"
     );
+}
+
+/// Each window's text rows, top to bottom. A window's status line is its last row.
+fn heights(h: &Harness) -> Vec<usize> {
+    let windows = h.window_list();
+    windows
+        .iter()
+        .map(|w| h.window_size(*w).unwrap().1)
+        .collect()
+}
+
+#[test]
+fn gv_splits_as_emacs_does_and_changes_nothing_when_the_rows_run_out() {
+    // Batch Emacs's frame has 24 rows over the echo area. `j m m m m`, then `g g g v` on the
+    // first row: each window but the last has 24 / 5 rows, mode line included, and the last
+    // the rest, 4 4 4 4 8. With five others, 24 / 6 gives each 4.
+    let (mut h, _dir, w) = opened("gv");
+    h.set_window_size(80, 23);
+    goto(&mut h, w, 2, 0);
+    keys(&mut h, "mmmm");
+    goto(&mut h, w, 1, 0);
+    assert!(keys(&mut h, "gv").is_empty());
+    assert_eq!(
+        heights(&h),
+        [3, 3, 3, 3, 7],
+        "a row each for the status line"
+    );
+    let names: Vec<_> = h
+        .window_list()
+        .iter()
+        .map(|w| h.window_buffer(*w))
+        .collect();
+    let names: Vec<_> = names.iter().map(|b| h.buffer_name(b.unwrap())).collect();
+    assert_eq!(
+        names,
+        [
+            Some("alpha.txt"),
+            Some("beta.rs"),
+            Some("gamma.md"),
+            Some("*notes*"),
+            Some("*messages*")
+        ]
+    );
+    h.create_text("extra", "");
+    h.run("buffer-menu", &Args::default()).unwrap();
+    keys(&mut h, "mmmmmm");
+    goto(&mut h, w, 1, 0);
+    assert!(keys(&mut h, "gv").is_empty());
+    assert_eq!(heights(&h), [3; 6]);
+
+    // Six rows hold three windows of a row each, but not four or five, where Emacs makes windows
+    // of a mode line alone. Then the windows and the marks stay as they were.
+    let (mut h, _dir, w) = opened("gv-small");
+    h.set_window_size(80, 5);
+    keys(&mut h, "mmmmm");
+    goto(&mut h, w, 1, 0);
+    assert_eq!(keys(&mut h, "gv"), ["That window is too small to split"]);
+    assert_eq!(h.window_list(), [w]);
+    assert!(rows(&h).iter().all(|r| r.starts_with('>')));
+    goto(&mut h, w, 2, 0);
+    keys(&mut h, "uu");
+    goto(&mut h, w, 1, 0);
+    assert!(keys(&mut h, "gv").is_empty());
+    assert_eq!(heights(&h), [1, 1, 1]);
+}
+
+#[test]
+fn other_windows_on_the_menu_go_to_its_first_row_when_it_lists_again() {
+    // Batch Emacs, with the menu in a second window at line 3, column 4: `g r` in the first puts
+    // the second at the start, which is the first row under the header line.
+    let (mut h, _dir, w) = opened("two");
+    let below = h.split_window(w, Side::Below).unwrap();
+    goto(&mut h, below, 3, 4);
+    goto(&mut h, w, 2, 6);
+    keys(&mut h, "gr");
+    assert_eq!(at(&h, below), (1, 0));
+    assert_eq!(at(&h, w), (2, 6), "the window it ran in stays on its row");
+    goto(&mut h, below, 3, 4);
+    keys(&mut h, "d");
+    assert_eq!(at(&h, below), (3, 4), "a mark changes only its character");
+}
+
+#[test]
+fn o_on_a_cut_names_size_sorts_by_size() {
+    // The 30-character name is cut to 21, as `big`'s 5-digit size below leaves it 2 of Size's 7,
+    // so its size, 2, is at column 30.
+    let mut h = Harness::new(vec![]).unwrap();
+    let (_, w) = h.open_text("small", "x").unwrap();
+    h.open_text("big", &"y".repeat(12345)).unwrap();
+    h.open_text("a-very-long-buffer-name-thirty", "zz").unwrap();
+    h.run("buffer-menu", &Args::default()).unwrap();
+    assert_eq!(rows(&h)[0], ".   a-very-long-buffer-n…     2 Fundamental");
+    goto(&mut h, w, 1, 30);
+    keys(&mut h, "o");
+    assert!(
+        text(&h, menu(&h))
+            .lines()
+            .next()
+            .unwrap()
+            .contains("Size ▼")
+    );
+    assert!(rows(&h)[0].contains("big"), "{:?}", rows(&h));
+}
+
+#[test]
+fn a_line_break_in_a_name_or_path_shows_as_emacs_describes_it_and_each_row_stays_one_line() {
+    let dir = Dir::new("break");
+    let path = dir.0.join("two\nlines");
+    std::fs::write(&path, "x\n").unwrap();
+    let mut h = Harness::new(vec![]).unwrap();
+    let (keep, _) = h.open_text("keep-me", "precious").unwrap();
+    let two = h.open_file(&path).unwrap();
+    h.show(two, ShowIn::Current).unwrap();
+    h.run("buffer-menu", &Args::default()).unwrap();
+    let file = dir.0.join("two^Jlines");
+    assert_eq!(
+        rows(&h)[0],
+        row(".  ", "two^Jlines", 2, &file),
+        "{:?}",
+        rows(&h)
+    );
+    assert_eq!(rows(&h).len(), 2, "a row each for two^Jlines and keep-me");
+    keys(&mut h, "dx");
+    assert!(!h.is_live(two));
+    assert!(h.is_live(keep), "the row marked is the buffer killed");
+}
+
+#[test]
+fn evils_insert_and_edit_keys_do_nothing_there_as_your_evil_collection_has_them() {
+    // Batch Emacs's Buffer List binds each of these to `ignore` in normal state. Unbound here,
+    // with no die-vim, each would say it's undefined.
+    let (mut h, _dir, w) = opened("silenced");
+    let before = text(&h, menu(&h));
+    assert!(keys(&mut h, "iIaAcCDrOpPJ=<lt>><Insert>").is_empty());
+    assert_eq!(text(&h, menu(&h)), before);
+    assert_eq!(at(&h, w), (1, 0));
+    assert_eq!(h.state(), State::Normal);
 }
 
 #[test]

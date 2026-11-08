@@ -342,8 +342,29 @@ fn ls_opens_the_buffer_menu_whose_keys_sit_on_your_evils() {
         "gg is Evil's"
     );
     assert!(keys(&mut h, "j3d").is_empty());
-    let marked = lines(&h).iter().filter(|l| l.starts_with('D')).count();
-    assert_eq!(marked, lines(&h).len() - 1, "a count reaches the menu's d");
+    let marked = |h: &Harness| lines(h).iter().filter(|l| l.starts_with('D')).count();
+    assert_eq!(
+        marked(&h),
+        lines(&h).len() - 1,
+        "a count reaches the menu's d"
+    );
+    // After a count's first digit, `1` and `2` are digits too, as your Emacs's count map has
+    // them: batch Emacs's `3 1 d` marks every row, and `C-u 1 d` one.
+    assert!(keys(&mut h, "Uggj31d").is_empty());
+    assert_eq!(marked(&h), lines(&h).len() - 1);
+    assert_eq!(h.window_list().len(), 1, "1 didn't show a buffer alone");
+    assert_eq!(h.focused_buffer(), Some(menu));
+    assert!(keys(&mut h, "Uggj<C-u>1d").is_empty());
+    assert_eq!(marked(&h), 1);
+
+    // Evil's insert and edit keys do nothing, as your evil-collection makes them there, so the
+    // menu's keys still work after them.
+    let before = text(&h, menu);
+    assert!(keys(&mut h, "iaIAccCDOpPJ==<lt><lt>>>r").is_empty());
+    assert_eq!(text(&h, menu), before);
+    assert_eq!(h.state(), State::Normal);
+    assert!(keys(&mut h, "Uggjid").is_empty());
+    assert_eq!(marked(&h), 1, "d is the menu's");
     assert_eq!(
         keys(&mut h, "Ugg2"),
         ["No buffer on this line"],
@@ -522,8 +543,11 @@ fn colon_puts_the_command_a_name_runs_first() {
     assert!(keys(&mut h, ":no").is_empty());
     let listed = h.prompt_candidates();
     assert_eq!(listed[..2], ["normal", "nohlsearch"], "names it starts");
-    let undo = listed.iter().position(|n| *n == "undo").unwrap();
-    assert!(listed[..undo].iter().all(|n| n.starts_with("no")));
+    // Then the other matches, as `undo`, none of them starting with it.
+    let others = listed.iter().position(|n| !n.starts_with("no")).unwrap();
+    let rest = &listed[others..];
+    assert!(rest.iter().all(|n| !n.starts_with("no")), "{listed:?}");
+    assert!(rest.contains(&"undo"), "{listed:?}");
 }
 
 /// Beside `:`'s list the history keys are your Evil's: from the line, `<Up>` and `C-p` go back,

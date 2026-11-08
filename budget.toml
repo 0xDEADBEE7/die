@@ -133,10 +133,11 @@ limit = 750
 files = ["project.rs", "project/"]
 
 # New with `buffer-menu`: Emacs's Buffer List, with evil-collection's keys for it.
+# 494 until its review: `gv` sized as Emacs splits, digits after a count, silenced edit keys, `^J`.
 [[module]]
 crate = "die-core"
 name = "buffer menu"
-limit = 494
+limit = 536
 files = ["menu.rs"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.

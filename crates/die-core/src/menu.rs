@@ -12,7 +12,7 @@ use crate::dispatch::Args;
 use crate::error::{Error, Result};
 use crate::ext::{Content, Ctx, Registry};
 use crate::ids::{BufferId, DecorationId, WindowId};
-use crate::keymap::State;
+use crate::keymap::{Lookup, State};
 use crate::text::{Deco, Origin};
 use crate::workspace::{ShowIn, Side};
 use std::ops::Range;
@@ -23,6 +23,9 @@ const HELP: &str = "Commands: d, s, x, u; go, gO, 1, 2, m, gv; ~, %; q to quit";
 const TITLES: [&str; 7] = ["C", "R", "M", "Buffer", "Size", "Mode", "File"];
 const NAME: usize = 3;
 const SIZE: usize = 4;
+/// Evil's insert and edit keys that your evil-collection makes do nothing in a read-only list
+/// (`evil-collection-set-readonly-bindings`), leaving out those the menu binds itself.
+const SILENCED: &str = "i I a A c C D r O p P J = < > <Insert>";
 
 /// A buffer's row: what each column says.
 struct Row {
@@ -41,6 +44,14 @@ pub(crate) struct Menu {
     /// The window it opened in and what that showed, for `q`.
     came_from: Option<(WindowId, BufferId)>,
     faces: Vec<DecorationId>,
+}
+
+impl Menu {
+    /// The widest size in row `i` and the rows either side, which a long name can't run into.
+    fn near(&self, i: usize) -> usize {
+        let size = |i: usize| self.rows.get(i).map_or(0, |r| r.cols[SIZE].chars().count());
+        size(i.wrapping_sub(1)).max(size(i)).max(size(i + 1))
+    }
 }
 
 type Body = fn(&mut Ctx, &Args, WindowId) -> Result;
@@ -64,8 +75,8 @@ const KEYS: &[(&str, &str, &str, Body)] = &[
     ("o S", "buffer-menu-sort", "Sort by the column at the cursor, or the count's from 0, and the other way when it's sorted by that", |ctx, a, w| ctx.menu_sort_by(w, a.count)),
     ("go <CR>", "buffer-menu-this-window", "Show this line's buffer in this window", |ctx, _, w| ctx.menu_select(w, "go")),
     ("gO", "buffer-menu-other-window", "Show this line's buffer in another window, and go there", |ctx, _, w| ctx.menu_select(w, "gO")),
-    ("1", "buffer-menu-1-window", "Show this line's buffer in this window, alone", |ctx, _, w| ctx.menu_select(w, "1")),
-    ("2", "buffer-menu-2-window", "Show this line's buffer, and the one before it in another window", |ctx, _, w| ctx.menu_select(w, "2")),
+    ("1", "buffer-menu-1-window", "Show this line's buffer in this window, alone; after a count, a digit of it", |ctx, a, w| ctx.menu_digit(a, w, "1")),
+    ("2", "buffer-menu-2-window", "Show this line's buffer, and the one before it in another window; after a count, a digit of it", |ctx, a, w| ctx.menu_digit(a, w, "2")),
     ("gv", "buffer-menu-select", "Show this line's buffer alone, with each marked > in a window below", |ctx, _, w| ctx.menu_select(w, "gv")),
     ("q ZZ", "buffer-menu-quit", "Show what this window showed before the menu, and put the menu last in the buffer list", |ctx, _, w| ctx.menu_quit(w)),
 ];
@@ -77,6 +88,7 @@ pub(crate) fn register(reg: &mut Registry) {
          count, only those with files",
         |ctx, a| ctx.buffer_menu(a.count.is_some()),
     );
+    reg.command("ignore", "Do nothing, as Emacs's ignore", |_, _| Ok(()));
     for &(_, name, doc, body) in KEYS {
         reg.command(name, doc, move |ctx, a| {
             let menu = ctx.find_buffer(MENU);
@@ -107,6 +119,9 @@ impl Ctx {
                 {
                     self.buffers[menu].local.bind(State::Normal, k.0, k.1);
                 }
+                for k in SILENCED.split(' ') {
+                    self.buffers[menu].local.bind(State::Normal, k, "ignore");
+                }
                 self.menu = Menu::default();
                 menu
             }
@@ -136,7 +151,7 @@ impl Ctx {
         let marked: Vec<_> = rows.filter(|r| r.cols[0] == ">").map(|r| r.buf).collect();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         for b in self.buffer_list().into_iter().filter(|b| Some(*b) != menu) {
-            let name = self.buffer_name(b).unwrap_or_default().to_string();
+            let name = one_line(self.buffer_name(b).unwrap_or_default());
             let file = self.file(b).map(|f| {
                 let rest = home.as_ref().and_then(|h| f.path.strip_prefix(h).ok());
                 rest.map_or_else(|| f.path.clone(), |rest| Path::new("~").join(rest))
@@ -154,7 +169,7 @@ impl Ctx {
                 name,
                 t.map_or(0, |t| t.rope().len_chars()).to_string(),
                 self.mode_name(b),
-                file.map(|f| f.display().to_string()).unwrap_or_default(),
+                one_line(&file.map(|f| f.display().to_string()).unwrap_or_default()),
             ];
             self.menu.rows.push(Row { buf: b, cols });
         }
@@ -211,13 +226,8 @@ impl Ctx {
         let (width, rows) = (self.menu.name_width, &self.menu.rows);
         let mut text = print_row(&self.menu_titles(), width, 4).0;
         let mut names = vec![];
-        let size = |i: usize| {
-            rows.get(i)
-                .map_or(0, |r: &Row| r.cols[SIZE].chars().count())
-        };
         for (i, r) in rows.iter().enumerate() {
-            let near = size(i.wrapping_sub(1)).max(size(i)).max(size(i + 1));
-            let (row, name) = print_row(&r.cols, width, near);
+            let (row, name) = print_row(&r.cols, width, self.menu.near(i));
             text.push('\n');
             names.push(text.len() + 4..text.len() + 4 + name);
             text += &row;
@@ -234,6 +244,10 @@ impl Ctx {
         self.menu_face(head, "header-line")?;
         for name in names {
             self.menu_face(name, "buffer-menu-buffer")?;
+        }
+        // Other windows on it go to the start, as Emacs's points do, which is the first row.
+        for o in self.windows_showing(self.menu_buf()?) {
+            self.menu_goto(o, 1, 0)?;
         }
         let row = self.menu.rows.iter().position(|r| Some(r.buf) == buf);
         self.menu_goto(w, row.map_or(1, |i| i + 1), row.map_or(0, |_| col))
@@ -446,13 +460,16 @@ impl Ctx {
     }
 
     /// `o`: sort by the column at the cursor, or the count's, counting from 0, and the other way
-    /// if it's sorted by that already. The columns after the name start where they would with a
-    /// name that fits.
+    /// if it's sorted by that already. Size starts after the name as printed, cut or not, and the
+    /// columns after it where they would with a name that fits.
     fn menu_sort_by(&mut self, w: WindowId, count: Option<usize>) -> Result {
         let (line, col) = self.menu_here(w);
         let width = self.menu.name_width;
         let name = match self.menu_row(line) {
-            Some(i) => self.menu.rows[i].cols[NAME].chars().count(),
+            Some(i) => {
+                let room = width + 7 - self.menu.near(i).min(7);
+                self.menu.rows[i].cols[NAME].chars().count().min(room)
+            }
             None => 0,
         };
         let starts = [0, 1, 2, 4, 5 + width.max(name), width + 13, width + 30];
@@ -530,30 +547,58 @@ impl Ctx {
                 self.menu_put(w, other);
                 self.menu_pop(w, buf)?;
             }
-            _ => {
-                let mut shown = vec![];
-                for i in 0..self.menu.rows.len() {
-                    if self.menu.rows[i].cols[0] == ">" {
-                        self.menu_set_col(i, 0, " ")?;
-                        shown.push(self.menu.rows[i].buf);
-                    }
-                }
-                shown.retain(|b| *b != buf && self.is_live(*b));
-                self.only_window(w)?;
-                self.menu_put(w, buf);
-                let mut last = w;
-                for b in shown {
-                    last = self.split_window(last, Side::Below)?;
-                    self.set_window_buffer(last, b);
-                }
-                self.balance_frame();
-                self.focus(w);
-            }
+            _ => self.menu_show_marked(w, buf)?,
         }
         if how != "go" {
             self.buffers[menu].used = 0;
         }
         Ok(())
+    }
+
+    /// `gv`: `buf` alone, then each other buffer marked `>` in a window below, as Emacs splits
+    /// them: each window but the last has the frame's rows over how many windows there are, and
+    /// the last has what's left. With too many for a row of text each, nothing changes.
+    fn menu_show_marked(&mut self, w: WindowId, buf: BufferId) -> Result {
+        let marked: Vec<_> = (0..self.menu.rows.len())
+            .filter(|i| self.menu.rows[*i].cols[0] == ">")
+            .collect();
+        let rows = marked.iter().map(|i| self.menu.rows[*i].buf);
+        let shown: Vec<_> = rows.filter(|b| *b != buf && self.is_live(*b)).collect();
+        let height = self.frame_size().1.saturating_sub(1) / (shown.len() + 1);
+        if height < 2 && !shown.is_empty() {
+            return Err(Error::Msg("That window is too small to split".into()));
+        }
+        self.only_window(w)?;
+        self.menu_put(w, buf);
+        let mut last = w;
+        for b in shown {
+            let new = self.split_window(last, Side::Below)?;
+            let cols = self.window_size(last).map_or(0, |s| s.0);
+            self.resize(last, cols, height - 1)?;
+            self.set_window_buffer(new, b);
+            last = new;
+        }
+        self.focus(w);
+        marked
+            .into_iter()
+            .try_for_each(|i| self.menu_set_col(i, 0, " "))
+    }
+
+    /// `1` and `2`, or after a count, a digit of it: once one digit is typed, Emacs's count map
+    /// has the digits over the menu's keys. The digit runs what it would without the menu's keys.
+    fn menu_digit(&mut self, a: &Args, w: WindowId, how: &str) -> Result {
+        if a.count.is_none() {
+            return self.menu_select(w, how);
+        }
+        let cmd = {
+            let layers = self.layers(self.menu_buf()?);
+            let mut under = layers.iter().skip_while(|l| l.0 != "buffer-local").skip(1);
+            under.find_map(|(_, km)| match km.lookup(State::Normal, &a.keys) {
+                Lookup::Command(c) => Some(c),
+                _ => None,
+            })
+        };
+        cmd.map_or(Ok(()), |c| self.run(&c, a))
     }
 
     /// `q`: back to what the window showed before the menu, or else `other-buffer`'s, and the menu
@@ -590,4 +635,16 @@ fn print_row(cols: &[String; 7], width: usize, near: usize) -> (String, usize) {
     let mode = cut(mode, 16);
     let row = format!("{c}{r}{m} {name:<width$} {size:>room$} {mode:<16} {file}");
     (row.trim_end().into(), name.len())
+}
+
+/// A name or path on one line, so each row is one: a character that would break the line shows
+/// as Emacs describes it, `^J` for a newline, or else by its code.
+fn one_line(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\n' | '\u{b}' | '\u{c}' | '\r' => format!("^{}", char::from(c as u8 + 64)),
+            '\u{85}' | '\u{2028}' | '\u{2029}' => format!("\\u{:04X}", c as u32),
+            c => c.to_string(),
+        })
+        .collect()
 }
