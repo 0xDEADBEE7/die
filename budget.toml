@@ -42,7 +42,8 @@ path = "crates/die-vim"
 # 9,340 until the macro review: a prompt a `:norm` line leaves open is answered, `2@:` runs in turn, and a count before `:`.
 # 9,385 until stopping a recording said `Recorded @a`.
 # 9,390 until `:wq`, `:q` and `ZZ` finished a `die --wait` client's file in any window.
-limit = 9400
+# 9,400 until the ex commands on lines, `:d :y :pu :m :t :j :> :< :sort` (about 490), and insert state's Emacs keys with C-k's 1,665 digraphs (about 260).
+limit = 10160
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]

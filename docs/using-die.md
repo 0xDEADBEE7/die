@@ -149,7 +149,14 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **Objects:** `iw aw iW aW io ao` (word, WORD, symbol: `cio` for snake_case), `ip ap`, `i" a" i' a'`, ``i` a` ``, `i( a( ib ab`, `i[ a[`, `i{ a{ iB aB`, `i< a<`.
 - **Registers:** `"x` then a command. `a-z`, `A-Z` to append, `0`, `1-9`, `-`, `_`, `+` the clipboard, and read-only `.`, `:`, `/`, `%`. Every kill also goes to the clipboard, as in your Emacs. `:reg` (`:registers`, `:di`, `:display`) lists them all in `*registers*` below, a macro as its keys, and `:reg ab` only `a` and `b`. `:q` closes it.
 - **Macros:** `q{x}` records into `x`, `q{X}` adds to it, and `q` stops. While it records, the bottom row's right end says `recording @x`, and stopping says `Recorded @x` (or `Added to @x`). `@x` plays it, `@@` plays the last again, `@:` runs the last ex line, each with a count. A macro can be edited as text: `"xp`, change it, `0"xy$`. A typed `C-g` stops a running macro, or a `:norm`.
-- **On each line:** `:norm keys` (`:normal`, `:norm!`) types the keys on each line of a range, from the line's start, the cursor's line if none is given: `:%norm A;`, `:'<,'>norm @q`, `:5,$norm .`. A line whose keys fail is left quietly and the next goes ahead, and a macro or `:norm` that ran the `:norm` goes on after it. One `u` undoes it all. Each character is a key, so put an Esc or Enter in with `C-v` first. A prompt the keys leave open is answered as it stands, as in your Evil, so `:%norm :s/a/b/` runs the `:s` on each line. `:g/pat/cmd` runs an ex command on each line that matches, and `:g!` and `:v` on each that doesn't, the whole file if no range is given: `:g/TODO/norm @q`, `:v/^$/norm A;`. Any delimiter works, an empty pattern is the last search, and the pattern becomes the last search. It needs a command: there's no `:p` or `:d`.
+- **On each line:** `:norm keys` (`:normal`, `:norm!`) types the keys on each line of a range, from the line's start, the cursor's line if none is given: `:%norm A;`, `:'<,'>norm @q`, `:5,$norm .`. A line whose keys fail is left quietly and the next goes ahead, and a macro or `:norm` that ran the `:norm` goes on after it. One `u` undoes it all. Each character is a key, so put an Esc or Enter in with `C-v` first. A prompt the keys leave open is answered as it stands, as in your Evil, so `:%norm :s/a/b/` runs the `:s` on each line. `:g/pat/cmd` runs an ex command on each line that matches, and `:g!` and `:v` on each that doesn't, the whole file if no range is given: `:g/TODO/norm @q`, `:v/^$/norm A;`. Any delimiter works, an empty pattern is the last search, and the pattern becomes the last search. It needs a command: there's no `:p`. The commands on lines below work there too: `:g/TODO/d`, `:v/./d` to drop blank lines, `:g/^/m0` to reverse the file, `:g/fn /t$` to copy every `fn` line to the end. `:g/pat/d` alone, with nothing after the `d`, deletes them all at once into no register, and leaves the last search as it was, as in your Evil. One `u` undoes any `:g`.
+- **Lines:** each takes a range (`%`, `'<,'>`, `N,M`, `.`, `$`, `'x`, `+n`, `-n`, or a count before `:`), the cursor's line if none is given, and is one `u`. None is what `.` repeats, as in your Evil, and `@:` runs it again.
+  - `:d [x] [count]` (`:delete`) deletes the lines into register `x` or the kill ring, as `dd` does. A count takes that many lines from the range's last, so `:d 3` and `:d a 3` work, and `:d3` too. `:y [x] [count]` (`:yank`) yanks them the same way.
+  - `:pu [x]` (`:put`) puts register `x`, or the newest kill, as whole lines below the range's last line, whatever the register holds. `:pu!` puts them above. The cursor goes to the first non-blank of the last line put.
+  - `:m {address}` (`:move`) moves the lines after that line: `:m0` to the top, `:m$` to the end, `:m+1`, `:m-2`, `:m'a`. `:t {address}` and `:co[py]` copy them there: `:t.` duplicates the line, `:t$` copies it to the end. The cursor goes to the last line moved or copied.
+  - `:j[oin] [count]` joins the lines as `J` does, `:j!` as `gJ` does, and a count joins that many from the range's last.
+  - `:>` and `:<` shift the lines once, as `>>` and `<<` do. Your Evil ignores a count there, and `:>>` and `:<<` are no commands in it, so neither is here.
+  - `:sor[t]` sorts the lines, the whole file if no range is given, `:sort!` the other way, ties keeping their order. Flags: `i` ignores case, `u` keeps one of lines that are the same, `n` sorts by the first decimal number, `x` by the first hexadecimal one, `o` octal, `b` binary, a line with no number coming first. `:sort /pat/` sorts by what follows the first match, and with `r` by the match itself; a line it doesn't match sorts first. The pattern is Rust's regex and always ignores case, as Emacs's sort does. `:sort //` is a plain sort: your Evil doesn't see `/`'s last search there.
 - **Substitute:** `:s/a/b/`, with flags `g` and `&`, `~` for the last replacement, ranges `%`, `'<,'>`, `N,M`, `.`, `$`, `'x`, `+n`, `-n`. A count before `:` starts the line with that many lines from the cursor's, so `3:` is `:.,.+2`. `&` repeats it on the line, `g&` everywhere, also `:&`, `:&&`, and `:s` alone.
 
 ## Selecting
@@ -173,6 +180,15 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 | `C-r x` | A register's text |
 | `C-v x`, `C-q x` | The next key literally, or an octal code |
 | `C-u` | The prefix argument |
+| `<Home>`, `<End>` | To the start, the end, of the whole text, as your Emacs's Home and End are on macOS |
+| `C-Left`, `C-Right` | Back to a word's start, on to a word's end, by Emacs's words (`_` ends one, `$` and `%` don't) |
+| `<PageDown>`, `<PageUp>` | A window down, up, less two rows, or with `C-u` count rows. A cursor left behind goes to the edge row |
+| `C-j` | New line, with no indentation, and the spaces before the cursor kept |
+| `C-k xy` | The digraph `xy` names, from RFC 1345's 1,665, either way round: `C-k e:` is ë, `C-k a*` is α, `C-k Eu` is €. Two keys that name none put in the second |
+| `<Insert>` | From insert state to replace state, or back. The count goes, and each is its own `u` |
+| `C-g` | Forget a `C-u` count, and stay |
+| `C-h k`, `C-h c`, `C-h x`, `C-h f` | What a key does, what a command does, as `\hk` and `\hc` |
+| `C-c` then a key, `<S-Tab>` | Nothing: your Emacs binds nothing to them there, and says so |
 
 ## Windows and buffers
 
@@ -186,9 +202,9 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 ## What isn't there yet
 
 - **A terminal.** No terminal buffers exist. cargo, git and Claude Code run in a terminal of your own next to DIE, and `die file:line` from there.
-- **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`.
-- **Ex:** `:d :m :t :co :y :pu :j :> :< :p`, `:sort :r :!`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, `:marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`.
-- **Insert keys:** `<Home> <End> <PageUp> <PageDown> C-Left C-Right S-Tab C-c C-g C-h C-j C-k <Insert>`. `C-r =` isn't built anywhere.
+- **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`, `<Insert>`.
+- **Ex:** `:p`, `:r :!`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, a `/pattern/` as an address, `:marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`. `:pu =` and `C-r =` aren't built anywhere. A range given backward, as `:3,1d`, is refused, where your Evil asks whether to swap it.
+- **Insert keys:** `C-h` has only `k c x f`; its other keys say they aren't built.
 - **Syntax highlighting.** Source is one colour.
 - **Not honoured:** `.gitignore` in the finders and `:grep`.
 - **`die --wait`:** a client that has gone, as one stopped with Ctrl-C, isn't noticed, so its file still waits for you to finish it. Nothing ends an edit so that the client fails, as Emacs's `server-edit-abort` does. A file that won't open returns 0 at once, where `emacsclient` returns 1. Quitting DIE with clients waiting doesn't ask first, as Emacs does.
