@@ -6,13 +6,15 @@ use unicode_segmentation::UnicodeSegmentation;
 
 impl Ctx {
     /// Draw the prompt's candidates over the frame's last `room` rows, and clear the row above them
-    /// for the prompt's own line. The windows keep their size, so nothing under it reflows.
+    /// for the prompt's own line. The windows keep their size, so nothing under it reflows. The
+    /// rows are written between columns `x` and `end`.
     pub(crate) fn draw_prompt_list(
         &mut self,
         scene: &mut Scene,
         row: usize,
         room: usize,
         base: Style,
+        (x, end): (usize, usize),
     ) {
         if room == 0 {
             return;
@@ -31,7 +33,7 @@ impl Ctx {
             let r = row + 1 + i;
             let style = if *chosen { current } else { base };
             if *chosen {
-                for c in 0..cols {
+                for c in x..end {
                     scene.put(r, c, Cell::styled(Glyph::Char(' '), style));
                 }
             }
@@ -43,7 +45,7 @@ impl Ctx {
                 at += n;
                 glyphs(g, if on { hit } else { style }).collect::<Vec<_>>()
             });
-            put_text(scene, r, 0, cols, parts);
+            put_text(scene, r, x, end, parts);
         }
     }
 }

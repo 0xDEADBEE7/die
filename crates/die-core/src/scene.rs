@@ -411,11 +411,12 @@ impl Ctx {
             }
         }
         let mut covered = rows;
+        let (x, end) = self.prompt_band(placements, cols);
         if let (Some(label), Some(last)) = (self.prompt_lead(), rows.checked_sub(1)) {
             let room = self.prompt_list_height().min(last);
             let row = last - room;
             covered = row;
-            self.draw_prompt_list(&mut scene, row, room, base);
+            self.draw_prompt_list(&mut scene, row, room, base, (x, end));
             hollow.retain(|c: &Cursor| room == 0 || c.row < row);
             let label = label.as_str();
             let text = self.prompt_text().unwrap_or_default();
@@ -429,15 +430,15 @@ impl Ctx {
             let at = glyphs(label, prompt).chain(glyphs(typed, base)).count();
             // When it doesn't fit, leave off the start, up to where the cursor shows.
             let (mut col, mut skip) = (parts[..at].iter().map(|g| g.1).sum::<usize>(), 0);
-            while col >= cols && skip < at {
+            while col >= end - x && skip < at {
                 col -= parts[skip].1;
                 skip += 1;
             }
-            put_text(&mut scene, row, 0, cols, parts.into_iter().skip(skip));
-            if col < cols {
+            put_text(&mut scene, row, x, end, parts.into_iter().skip(skip));
+            if col < end - x {
                 let bar = Cursor {
                     row,
-                    col,
+                    col: x + col,
                     shape: if self.app_focused {
                         CursorShape::Bar
                     } else {
@@ -449,12 +450,28 @@ impl Ctx {
                 scene.cursors.insert(0, bar);
             }
         } else if let (Some(line), Some(last)) = (&self.log.echo, rows.checked_sub(1)) {
-            put_text(&mut scene, last, 0, cols, glyphs(line, base));
+            put_text(&mut scene, last, x, end, glyphs(line, base));
         }
         scene.cursors.extend(hollow);
         self.drawn.note(&scene, placed);
         self.drawn.covered = covered;
         scene
+    }
+
+    /// The columns the prompt and the echo area use, start and end: with a maximum width on
+    /// the focused window's buffer (`\z`), that window's text column, as the text above has it.
+    /// Otherwise the frame's.
+    fn prompt_band(&self, placements: &[WindowPlacement], cols: usize) -> (usize, usize) {
+        let band = || {
+            let w = self.focused()?;
+            let p = placements.iter().find(|p| p.window == w)?;
+            let t = self.text(self.windows.get(w)?.buffer).ok()?;
+            t.settings().max_width?;
+            let g = t.geometry(w)?;
+            let x = (p.col + g.text_x).min(cols.saturating_sub(2));
+            Some((x, (x + g.text_w).min(cols)))
+        };
+        band().unwrap_or((0, cols))
     }
 
     /// Draw one window's content; returns its cursor's (row, col) in the window, and whether
