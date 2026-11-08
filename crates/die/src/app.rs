@@ -202,7 +202,7 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
     let again = asked.restart_loop.then(|| restart.clone());
     let register = config.core.register.take();
     let rebuilt = restart.clone();
-    let (installed, last) = (bundle.clone(), dir.join("rebuild-root"));
+    let (installed, checkout) = (bundle.clone(), bundle.join("Contents/Resources/checkout"));
     config.core.register = Some(Box::new(move |reg| {
         reg.command("restart", "Start DIE again.", move |_, _| {
             let _ = restart.send(());
@@ -225,7 +225,7 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
             rebuild::Setup {
                 command,
                 restart,
-                last,
+                checkout,
             },
         );
         if let Some(register) = register {

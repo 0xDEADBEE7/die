@@ -1,12 +1,13 @@
 //! `rebuild`, with `sh` standing in for cargo: what it says goes in `*rebuild*` as it says it,
 //! a build that works restarts and leaves nothing behind, one that fails restarts nothing and
-//! leaves its first error on screen, and the workspace is the DIE checkout you're in or else
-//! the last one built.
+//! leaves its first error on screen, and the workspace is the checkout the bundle names,
+//! whatever file you're in.
 
 use die_test_cap as _;
 
 use die::core::{Args, BufferId, Ctx, Registry, ShowIn};
 use die::rebuild::{REBUILD, Setup, home_of, register, root_for};
+
 use die::{Config, start};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -23,14 +24,19 @@ impl Dir {
         std::fs::create_dir_all(&d).unwrap();
         Dir(d.canonicalize().unwrap())
     }
-    /// A DIE checkout, as far as `rebuild` looks.
+    /// A DIE checkout, as far as `rebuild` looks, and the one the bundle names.
     fn checkout(&self, name: &str) -> PathBuf {
         let root = self.0.join(name);
         for d in [".git", "crates/die/src", "xtask"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         std::fs::write(root.join("crates/die/Cargo.toml"), "").unwrap();
+        std::fs::write(self.named(), format!("{}\n", root.display())).unwrap();
         root
+    }
+    /// What stands for the bundle's `Contents/Resources/checkout`.
+    fn named(&self) -> PathBuf {
+        self.0.join("named-checkout")
     }
 }
 
@@ -41,7 +47,7 @@ impl Drop for Dir {
 }
 
 /// An editor whose `rebuild` runs `script` with `sh`, and how many restarts it has asked for.
-/// The last workspace built is kept in `dir`.
+/// The checkout it builds is named in `dir`.
 fn editor(dir: &Dir, script: &str) -> (Ctx, Rc<Cell<usize>>) {
     let script = script.to_owned();
     editor_with(dir, move |root| {
@@ -54,13 +60,13 @@ fn editor(dir: &Dir, script: &str) -> (Ctx, Rc<Cell<usize>>) {
 fn editor_with(dir: &Dir, command: impl Fn(&Path) -> Command + 'static) -> (Ctx, Rc<Cell<usize>>) {
     let restarts = Rc::new(Cell::new(0));
     let counted = restarts.clone();
-    let last = dir.0.join("rebuild-root");
+    let checkout = dir.named();
     let mut config = Config::default();
     config.core.register = Some(Box::new(move |reg: &mut Registry| {
         let setup = Setup {
             command: Box::new(move |root| Ok(command(root))),
             restart: Box::new(move || counted.set(counted.get() + 1)),
-            last,
+            checkout,
         };
         register(reg, setup);
     }));
@@ -237,31 +243,30 @@ fn a_reused_log_loses_the_text_defaults_a_session_gave_it() {
 }
 
 #[test]
-fn outside_a_checkout_it_builds_the_last_one_built_or_says_to_open_one() {
-    let d = Dir::new("outside");
+fn it_builds_the_checkout_the_bundle_names_whatever_file_youre_in() {
+    let d = Dir::new("elsewhere");
     let root = d.checkout("die");
-    let elsewhere = d.0.join("notes");
+    let elsewhere = d.0.join("other-project/.git");
     std::fs::create_dir_all(&elsewhere).unwrap();
     let (mut ctx, restarts) = editor(&d, "true");
-    let notes = ctx.open_file(&elsewhere.join("today.md")).unwrap();
+    let notes = ctx.open_file(&elsewhere.with_file_name("app.rs")).unwrap();
     ctx.show(notes, ShowIn::Current).unwrap();
+    ctx.type_keys(":rebuild<CR>");
+    assert_eq!(restarts.get(), 1, "{:?}", ctx.messages);
+    let built = ctx.messages.iter().find(|m| m.starts_with("Rebuilding in"));
+    assert_eq!(built, Some(&format!("Rebuilding in {}", root.display())));
+}
+
+#[test]
+fn a_bundle_that_names_no_checkout_says_how_to_make_one_that_does() {
+    let d = Dir::new("unnamed");
+    let (mut ctx, restarts) = editor(&d, "true");
     ctx.type_keys(":rebuild<CR>");
     assert_eq!(restarts.get(), 0);
     let last = ctx.messages.last().unwrap();
-    assert!(last.starts_with("Open a file in a DIE checkout"), "{last}");
-
-    edit_in(&mut ctx, &root);
-    ctx.type_keys(":rebuild<CR>");
-    assert_eq!(restarts.get(), 1);
-    ctx.show(notes, ShowIn::Current).unwrap();
-    ctx.type_keys(":rebuild<CR>");
-    assert_eq!(restarts.get(), 2, "{:?}", ctx.messages);
-    let built = ctx
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.starts_with("Rebuilding in"));
-    assert_eq!(built, Some(&format!("Rebuilding in {}", root.display())));
+    assert!(last.contains("doesn't say which checkout"), "{last}");
+    assert!(last.contains("cargo xtask app"), "{last}");
+    assert_eq!(ctx.find_buffer(REBUILD), None);
 }
 
 #[test]
@@ -282,28 +287,15 @@ fn a_command_that_wont_start_says_what_and_where() {
 }
 
 #[test]
-fn the_workspace_is_the_die_checkout_youre_in_or_else_the_last_one_built() {
+fn the_checkout_named_has_to_be_there_and_be_dies() {
     let d = Dir::new("root");
-    let (checkout, other) = (d.checkout("checkout"), d.0.join("other"));
-    std::fs::create_dir_all(other.join(".git")).unwrap();
-    let last = d.0.join("rebuild-root");
-
-    let inside = checkout.join("crates/die/src");
-    assert_eq!(root_for(Some(&inside), &last), Some(checkout.clone()));
-    assert_eq!(
-        root_for(Some(&other), &last),
-        None,
-        "not DIE's, and none built before"
-    );
-    assert_eq!(root_for(None, &last), None);
-    std::fs::write(&last, format!("{}\n", checkout.display())).unwrap();
-    assert_eq!(root_for(Some(&other), &last), Some(checkout.clone()));
-    std::fs::write(&last, format!("{}\n", other.display())).unwrap();
-    assert_eq!(
-        root_for(None, &last),
-        None,
-        "the last one isn't DIE's any more"
-    );
+    assert!(root_for(&d.named()).is_err(), "none named");
+    let checkout = d.checkout("checkout");
+    assert_eq!(root_for(&d.named()), Ok(checkout.clone()));
+    std::fs::remove_dir_all(checkout.join("xtask")).unwrap();
+    let gone = root_for(&d.named()).unwrap_err();
+    assert!(gone.contains(&checkout.display().to_string()), "{gone}");
+    assert!(gone.contains("isn't a DIE checkout"), "{gone}");
 }
 
 #[test]

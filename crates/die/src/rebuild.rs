@@ -20,15 +20,26 @@ const SHOW_EVERY: Duration = Duration::from_millis(100);
 /// it left behind holding the pipe isn't waited for.
 const DRAIN: Duration = Duration::from_millis(500);
 
-/// The workspace `rebuild` builds: the DIE checkout `dir` is in, so that editing a checkout
-/// builds that checkout, or else the one named in `last`, the last one built.
-pub fn root_for(dir: Option<&Path>, last: &Path) -> Option<PathBuf> {
-    let here = dir.map(die_core::project_root).filter(|r| is_die(r));
-    let kept = || {
-        let kept = std::fs::read_to_string(last).ok()?;
-        Some(PathBuf::from(kept.trim_end_matches('\n')))
+/// The workspace `rebuild` builds: the DIE checkout the file `named` names, which
+/// `cargo xtask app` writes in the bundle it makes, so that `rebuild` builds where this DIE came
+/// from, whatever file you're in.
+pub fn root_for(named: &Path) -> Result<PathBuf, String> {
+    let Ok(text) = std::fs::read_to_string(named) else {
+        return Err(
+            "This DIE.app doesn't say which checkout it came from. Run `cargo xtask app` \
+                    in your DIE checkout once, and `rebuild` builds that one from then on"
+                .into(),
+        );
     };
-    here.or_else(|| kept().filter(|r| is_die(r)))
+    let root = PathBuf::from(text.trim_end_matches('\n'));
+    match is_die(&root) {
+        true => Ok(root),
+        false => Err(format!(
+            "This DIE.app came from {}, which isn't a DIE checkout any more. Run `cargo xtask \
+             app` in yours once",
+            root.display()
+        )),
+    }
 }
 
 /// Whether `root` is DIE's workspace, so that `cargo xtask app` there is the one meant.
@@ -72,8 +83,8 @@ pub struct Setup {
     pub command: CommandFn,
     /// Ask for a restart.
     pub restart: Box<dyn Fn()>,
-    /// The file the last workspace built is kept in.
-    pub last: PathBuf,
+    /// The file naming the checkout to build: the running bundle's `Contents/Resources/checkout`.
+    pub checkout: PathBuf,
 }
 
 /// What lasts from one rebuild to the next.
@@ -94,19 +105,14 @@ struct Run {
 /// Register `rebuild`.
 pub fn register(reg: &mut Registry, setup: Setup) {
     let (setup, shared) = (Rc::new(setup), Rc::new(Shared::default()));
-    let doc = "Build DIE.app again with `cargo xtask app`, in the DIE checkout this buffer is in or \
-               else the last one built, and restart into it if it builds";
+    let doc = "Build DIE.app again with `cargo xtask app`, in the checkout this DIE came from, and \
+               restart into it if it builds";
     reg.command("rebuild", doc, move |ctx, _| {
         if shared.running.get() {
             return Err(Error::Msg("A rebuild is already running".into()));
         }
-        let dir = ctx.focused_buffer().and_then(|b| ctx.directory(b));
-        let Some(root) = root_for(dir, &setup.last) else {
-            let why = "Open a file in a DIE checkout first, since none has been rebuilt before";
-            return Err(Error::Msg(why.into()));
-        };
+        let root = root_for(&setup.checkout).map_err(Error::Msg)?;
         let cmd = (setup.command)(&root)?;
-        let _ = std::fs::write(&setup.last, format!("{}\n", root.display()));
         let buf = output_buffer(ctx, &root, &cmd)?;
         show(ctx, buf, &shared.opened);
         let said = Arc::new(Mutex::new(Vec::new()));

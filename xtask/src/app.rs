@@ -97,7 +97,7 @@ pub fn build(root: &Path, app: &Path, id: &str, profile: Profile) -> Result {
         "die",
     ]))?;
     let binary = target_dir(root).join(profile.dir()).join("die");
-    bundle(&binary, &fonts::dir(root), app, id)
+    bundle(&binary, &fonts::dir(root), app, id, root)
 }
 
 fn target_dir(root: &Path) -> PathBuf {
@@ -110,8 +110,9 @@ fn target_dir(root: &Path) -> PathBuf {
 /// Make the bundle beside `app`, sign it, and put it in place, so that a running DIE and a
 /// failed build don't see half of one. A running DIE keeps the files it has open. The old one is
 /// moved aside rather than deleted first: a `restart` that comes just then finds a whole bundle,
-/// or none and says so.
-pub fn bundle(binary: &Path, font_dir: &Path, app: &Path, id: &str) -> Result {
+/// or none and says so. `Contents/Resources/checkout` names `checkout`, the workspace it came
+/// from, for DIE's `rebuild`.
+pub fn bundle(binary: &Path, font_dir: &Path, app: &Path, id: &str, checkout: &Path) -> Result {
     let parent = app.parent().ok_or("the app has no parent directory")?;
     fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     let new = parent.join(format!(".DIE-{}.new.app", std::process::id()));
@@ -128,6 +129,9 @@ pub fn bundle(binary: &Path, font_dir: &Path, app: &Path, id: &str) -> Result {
     }
     fs::write(new.join("Contents/Info.plist"), info_plist(id))
         .map_err(|e| format!("Info.plist: {e}"))?;
+    let named = format!("{}\n", checkout.display());
+    fs::write(new.join("Contents/Resources/checkout"), named)
+        .map_err(|e| format!("checkout: {e}"))?;
     run_cmd(
         Command::new("codesign")
             .args(["--force", "--sign", "-"])
