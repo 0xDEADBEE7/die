@@ -60,8 +60,10 @@ The leader is `\`, in normal state.
 | `\z` | `toggle-max-width` | Turn the 80-column centered text on or off. The prompts, their lists and the messages keep to its margins, from where the line numbers start, under a status line that runs edge to edge |
 | `\hk` | `describe-key` | What a key does |
 | `\hc` | `describe-command` | What a command does |
-| Cmd-Q | `quit` | Quit, in every state |
-| Cmd-V in a terminal's insert state | `surface-paste` | Paste the clipboard into the program, as one piece it sees bracketed, or `"` if the clipboard has no text |
+| `\e`, `:term`, `:terminal` | `term` | Open a new [terminal](#terminal) in this window, as your `termin-open` does |
+| `\g` | `term-switch` | Go to `*terminal*`, or open it, as your `ghostel` does |
+| Cmd-Q | `quit` | Quit, in every state. It asks first while a program runs in a terminal |
+| Cmd-V in a terminal | `surface-paste` | Paste the clipboard into the program, as one piece it sees bracketed, or `"` if the clipboard has no text |
 
 `:name` runs any command by name, so also `:restart`, `:kill-buffer`, `:quit`. While you type the name, `:` lists commands as `M-x` does: see [Prompts](#prompts).
 
@@ -213,19 +215,6 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 | `C-h k`, `C-h c`, `C-h x`, `C-h f` | What a key does, what a command does, as `\hk` and `\hc` |
 | `C-c` then a key, `<S-Tab>` | Nothing: your Emacs binds nothing to them there, and says so |
 
-## Terminal
-
-**Normal state** in a terminal is your Evil over what it shows: the scrollback and the screen, as text you can read, search and yank but not change. Esc from insert state goes there (Cmd-Esc while a program is on the alternate screen), with the cursor on the terminal's own.
-
-- [Moving](#moving) and [Selecting](#selecting) work as in a file: counts, objects, `/ ? n N * #`, marks, `v V C-v`, and `y` into registers and the clipboard, `"x` too. So do `:` and the `C-w` keys.
-- **Scrolling:** `C-d C-f C-b C-e C-y`, `zz zt zb`, `gg` and `G` go over the scrollback as over a file's lines, never lower than the live screen. `C-u` is the prefix argument there too, as in your Evil.
-- **What shows** is the terminal's own cells and colors, scrolled to where you are, with the cursor, the selection and the search's matches drawn over them.
-- **New output:** while the cursor is on the terminal's cursor line or below it, normal state follows the output, and a cursor on the terminal's stays on it. Move up and it holds still while the program goes on printing. `G` comes back to the bottom and catches up. A selection or a waiting operator holds it too, until it ends.
-- **Lines are rows:** a line the program wrapped is a line per row, and the screen's empty rows below the prompt aren't lines, so `G` and `j` stop at the prompt.
-- **Edits** (`x d c o r J p`'s Evil meanings, and the rest) say "Buffer is read-only".
-- **The program's keys:** `<Esc>` goes to the program, so Esc Esc from insert reaches Claude Code. `i a I A` go back to insert, at the live screen. `p P` paste into the program, the clipboard or `"x`, as Cmd-V does.
-- **The mouse** is a file's: a click moves the cursor, a drag selects, the wheel scrolls the scrollback. The program hears none of it in normal state.
-
 ## Windows and buffers
 
 - **`C-w` then:** `h j k l` and arrows, `w W t b p` to move; `s S v n` to split; `c q o` to close; `= + - > < _ |` to size; `H J K L` to move the window; `r R x` to rotate and exchange; `:` for ex; digits for a count. A key with Control does the same, as `C-w C-h`.
@@ -235,9 +224,33 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **Saving elsewhere:** `:w path` from a buffer with no file, such as `:new`'s, saves it there, and the buffer then visits that file. From a buffer with a file it writes a copy, and the buffer keeps its file and its unsaved changes, as in your Evil. `:sav[eas] path` saves and moves the buffer to the new file. A path is taken from the buffer's directory, as `:e` takes it, and `~/` is your home. A file that's already there is written over only with `!` (`:w! path`, `:saveas! path`). `:wq path` and `:x path` write there, then close.
 - **Which file:** `:f` (`:file`) and `C-g` say the file's full path, its lines and how far down the cursor is, as your Evil's `:f` does. The status line shows only the directory. `C-g` is Vim's: your Evil's quits.
 
+## Terminal
+
+`\e`, `:term`, `:terminal` or `M-x term` opens a terminal in this window: your `$SHELL` as a login shell, in the buffer's directory. The first is `*terminal*`, the next `*terminal*<2>`, and so on. `\g` (`term-switch`) goes to `*terminal*`, or opens it if it isn't there, as your `ghostel` does. The status line shows the directory, then the program's title or the buffer's name, and `<I>` or `<N>` at the right. When the program exits, the buffer closes, and an exit that isn't 0 is said in the messages.
+
+- **Insert state** (`<I>`) is where it starts, with a bar cursor on the main screen, as evil-ghostel draws it, and the program's own on the alternate screen. Every key goes to the program but Cmd's: `\`, `C-c`, `C-z`, `C-d`, `C-r`, `C-k`, `C-h`, `C-g` and Tab too, with Option as Meta and the kitty keyboard flags for programs that ask. A Cmd key DIE doesn't bind goes nowhere. A key brings the live screen back if you'd scrolled up.
+- **Esc in insert** goes to normal state on the main screen, so Esc Esc interrupts Claude Code. While a program is on the alternate screen (vim, less, htop), Esc goes to the program, as evil-ghostel's `auto` routing does, and the first time DIE says so. Cmd-Esc always goes to normal state. Shift-, Ctrl- and Alt-Esc always go to the program.
+- **The toggle**, `C-c C-r` in normal state or `M-x term-toggle-send-escape`, is evil-ghostel's `evil-ghostel-toggle-send-escape`, for this terminal: from auto it makes Esc always go where auto doesn't send it now (to the program on the main screen, to normal state on the alternate screen), and pressed again it's back to auto. The messages say which.
+- **Pasting** is one piece, bracketed when the program asked (zsh, Claude Code, vim). A paste with a line break into a program that didn't ask, which could run it as a command, asks first.
+- **The pointer** in insert state: a program that tracks the mouse (htop, `vim` with `mouse=a`) gets clicks, drags and the wheel. Otherwise the wheel scrolls back through the last 10,000 lines, and less and man scroll on the alternate screen.
+- **Size:** the terminal fits its window, in cells and pixels, as splits and resizes change it. Two windows on one terminal share it at the smaller one's size, as Emacs sizes a process, and the larger shows it at its top left.
+- **Copying out:** a program's OSC 52 copy, as vim's `"+y` over SSH, goes on the clipboard and is your newest kill, so `p` pastes it anywhere. A working directory the shell reports (OSC 7) becomes the buffer's, so `\f` starts there, but zsh and bash don't report one without shell integration, which isn't there yet.
+- **Restarts:** terminals don't survive `:rebuild` or `:restart` yet. A restart hangs their programs up, as quitting does, and kills what's left 300 ms later, so nothing is left running, and the restored session has no terminal. `:restart`, `:rebuild` and Cmd-Q ask first while a program other than the shell runs in one. `:qa` and `:q` in the last window don't.
+
+**Normal state** in a terminal is your Evil over what it shows: the scrollback and the screen, as text you can read, search and yank but not change. Esc from insert state goes there (Cmd-Esc while a program is on the alternate screen), with the cursor on the terminal's own.
+
+- [Moving](#moving) and [Selecting](#selecting) work as in a file: counts, objects, `/ ? n N * #`, marks, `v V C-v`, and `y` into registers and the clipboard, `"x` too. So do `:` and the `C-w` keys.
+- **Scrolling:** `C-d C-f C-b C-e C-y`, `zz zt zb`, `gg` and `G` go over the scrollback as over a file's lines, never lower than the live screen. `C-u` is the prefix argument there too, as in your Evil.
+- **What shows** is the terminal's own cells and colors, scrolled to where you are, with the cursor, the selection and the search's matches drawn over them.
+- **New output:** while the cursor is on the terminal's cursor line or below it, normal state follows the output, and a cursor on the terminal's stays on it. Move up and it holds still while the program goes on printing. `G` comes back to the bottom and catches up. A selection or a waiting operator holds it too, until it ends.
+- **Lines are rows:** a line the program wrapped is a line per row, and the screen's empty rows below the prompt aren't lines, so `G` and `j` stop at the prompt.
+- **Edits** (`x d c o r J p`'s Evil meanings, and the rest) say "Buffer is read-only".
+- **The program's keys:** `<Esc>` goes to the program and stays in normal state, as your `vterm-send-escape` binding does, so Esc Esc from insert reaches Claude Code. `i a I A` go back to insert, at the live screen. `p P` and Cmd-V paste into the program, the clipboard or `"x`. `C-c C-r` is the toggle above.
+- **The mouse** is a file's: a click moves the cursor, a drag selects, the wheel scrolls the scrollback. The program hears none of it in normal state.
+
 ## What isn't there yet
 
-- **A terminal.** No terminal buffers exist yet. `:make` and `:!` run commands, but anything that reads keys, as Claude Code, a REPL or a pager, runs in a terminal of your own next to DIE, and `die file:line` from there. Core's half is in: once die-term is connected, a terminal starts in insert state, shown `<I>` at the right of its status line with its title, where every key but Cmd's goes to the program, the leader and `C-c` too. Esc goes to normal state (`<N>`), except while a program such as vim is on the alternate screen; Cmd-Esc always does. Cmd-V pastes and Cmd-Q quits. Normal state's keys, which work on any surface that gives its text, are in [Terminal](#terminal). Editing the shell's line from normal state, as evil-ghostel's `d`, `c`, `x` and `u` do, comes later.
+- **Terminal:** surviving `:rebuild` and `:restart` (D20's holder and helper come next); editing the shell's line from normal state, as evil-ghostel's `d`, `c`, `x` and `u` do; Cmd-C, and selecting with the pointer in insert state; images (kitty graphics); shell integration (prompt navigation and directory tracking); links (OSC 8); the bell; and terminals on Linux.
 - **Running commands:** `M-&` and a command ending in `&` (Emacs's async shell commands), `C-u M-!` (output at the cursor), completion in the command prompts, stopping a `:!` that went on in the background before DIE quits, asking before quitting stops a command, and in `*compilation*` `go` (show an error without going there), `[[` `]]` (by file) and `q`. `:w !cmd`. Backspaces in output aren't moved over, as comint does.
 - **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`, `<Insert>`.
 - **Ex:** `:p`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, a `/pattern/` as an address, `:marks :jumps :pwd :cd`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`. `:pu =` and `C-r =` aren't built anywhere. A range given backward, as `:3,1d`, is refused, where your Evil asks whether to swap it.

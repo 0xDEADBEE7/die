@@ -424,15 +424,24 @@ fn the_cursor_is_the_surfaces_and_hollow_without_the_keys() {
 }
 
 #[test]
-fn its_status_line_has_its_segment_and_says_insert_in_passthrough() {
+fn its_status_line_is_its_own_and_says_insert_in_passthrough() {
     let mut s = setup(vec![]);
-    let title = "vim \u{2014} main.rs".to_string();
-    s.h.with_surface(s.buf, |g: &mut Grid, _| g.status = Some(title))
-        .unwrap();
     let (r0, _) = origin(&mut s.h, s.win);
     let status = |h: &mut Harness| h.scene().row_text(r0 + 24);
     let line = status(&mut s.h);
-    assert!(line.contains("grid  vim \u{2014} main.rs"), "{line:?}");
+    assert!(
+        line.contains("\u{2502} grid "),
+        "with none of its own, the status text: {line:?}"
+    );
+    let title = "vim \u{2014} main.rs".to_string();
+    s.h.with_surface(s.buf, |g: &mut Grid, _| g.status = Some(title))
+        .unwrap();
+    let line = status(&mut s.h);
+    assert!(line.contains("\u{2502} vim \u{2014} main.rs  "), "{line:?}");
+    assert!(
+        !line.contains("grid"),
+        "its own status stands in for the name: {line:?}"
+    );
     assert!(line.ends_with("<I>"), "{line:?}");
     s.h.type_keys("<Esc>").unwrap();
     assert!(status(&mut s.h).ends_with("<N>"));

@@ -16,18 +16,26 @@
 //! The engine's defaults that DIE overrides are the record's (docs/records/die-term-engine.md
 //! §2): 10,000 lines of scrollback capped at 64 MB, mode 2027, Option as Alt, set colors, and
 //! DIE's own identity.
+//!
+//! The terminal buffer is a [`TermSurface`]: a `Term` on one of core's PTYs, with D18's insert
+//! and normal states. [`Terminals`] is the extension that opens them (`term`), and [`open`] runs
+//! any program in one.
 
 #[cfg(test)]
 use die_test_cap as _;
 
+mod commands;
 mod copy;
 mod input;
 mod screen;
+mod surface;
 mod text;
 
+pub use commands::{NAME, Spec, Terminals, busy, open, to_clipboard};
 pub use copy::CopyText;
 pub use input::{PasteRefused, Pointer, PointerAction, PointerButton};
 pub use screen::{Frame, TermCursor};
+pub use surface::{CopyFn, Escape, KIND, TermSurface};
 pub use text::{Line, Mark, Text};
 
 use die_core::Rgb;

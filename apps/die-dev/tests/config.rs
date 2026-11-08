@@ -91,13 +91,16 @@ fn the_leader_is_backslash() {
 }
 
 #[test]
-fn the_finders_are_on_the_leader_as_init_el_has_them() {
+fn the_finders_and_terminals_are_on_the_leader_as_init_el_has_them() {
     let ctx = die::start(config(vec![])).unwrap();
     for (keys, want) in [
         ("\\\\", "find-file-home"),
         ("\\p", "find-file-project"),
         ("\\/", "switch-buffer"),
         ("\\r", "grep"),
+        // `termin-open` and `ghostel`.
+        ("\\e", "term"),
+        ("\\g", "term-switch"),
     ] {
         let keys = die::core::parse_keys(keys).unwrap();
         let found = ctx.describe_key(&keys).map(|d| d.action);
