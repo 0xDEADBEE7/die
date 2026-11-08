@@ -1,0 +1,42 @@
+[package]
+# die-term-sys: DIE's replacement for libghostty-rs's `libghostty-vt-sys`, swapped in by the
+# workspace's `[patch]` (D17). It links the vendored engine archive for the target, when there
+# is one, and links nothing elsewhere (D10). No network, git or Zig at build time (D16).
+# The name and version are the wrapper's, so that the patch applies.
+name = "libghostty-vt-sys"
+version = "0.2.1"
+description = "die-term-sys: Ghostty's signed libghostty-vt archive, its lock and its generated bindings"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+publish.workspace = true
+links = "ghostty-vt"
+build = "build.rs"
+
+[lib]
+doctest = false
+
+# The wrapper's crate turns these on by name, so they must exist. They change nothing here.
+[features]
+default = ["vendored"]
+vendored = []
+pkg-config = []
+link-dynamic = []
+kitty-graphics = []
+
+[build-dependencies]
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+die-test-cap.workspace = true
+
+# The FFI boundary: `src/ffi` alone allows `unsafe` (`cargo xtask lint` checks). Every block in
+# the adapted code says why it's sound and does one unsafe thing. The generated bindings are the
+# one module that may allow those two lints, and `cargo xtask ghostty verify` holds them to the
+# lock's hash, so no hand-written code hides there.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"

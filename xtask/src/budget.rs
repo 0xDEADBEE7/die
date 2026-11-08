@@ -7,6 +7,10 @@
 //! other platforms: its neutral modules plus its platform's, or the whole
 //! crate if it has no modules. `build_limit` caps each build, as `limit` caps
 //! the crate's total (docs/records/platforms.md §5.7).
+//!
+//! A crate's `generated` files (die-term-sys's bindings, which bindgen writes at each
+//! engine bump and `cargo xtask ghostty verify` holds to a hash) are counted apart: they
+//! aren't read as code, so they're neither in its total nor in the product's.
 
 use crate::count::count_formatted;
 use crate::util::{Result, read, rust_files};
@@ -38,6 +42,9 @@ pub struct CrateBudget {
     pub builds: Vec<String>,
     /// The cap on each build: the neutral modules plus one platform's.
     pub build_limit: Option<usize>,
+    /// Generated files, from the crate's directory: counted apart, in no total.
+    #[serde(default)]
+    pub generated: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +70,8 @@ pub struct Counted {
     pub modules: Vec<CountedModule>,
     /// Each build: (platform, lines, limit).
     pub builds: Vec<(String, usize, Option<usize>)>,
+    /// Lines in the crate's generated files.
+    pub generated: usize,
 }
 
 pub struct CountedModule {
@@ -99,10 +108,16 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
             .collect();
         check_platforms(c, &mods)?;
         let mut total = 0;
+        let mut generated = 0;
         let mut per_mod = vec![0; mods.len()];
         for file in crate_files(&dir) {
             let n =
                 count_formatted(&read(&file)?).map_err(|e| format!("{}: {e}", file.display()))?;
+            let in_crate = file.strip_prefix(&dir).unwrap_or(&file).to_string_lossy();
+            if c.generated.iter().any(|g| *g == in_crate) {
+                generated += n;
+                continue;
+            }
             total += n;
             if mods.is_empty() {
                 continue;
@@ -160,6 +175,7 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
             note: c.note.clone(),
             builds: builds(c, total, &modules),
             modules,
+            generated,
         });
     }
     Ok(out)
@@ -265,6 +281,9 @@ pub fn report(counted: &[Counted]) -> (String, Vec<String>) {
                 ));
             }
         }
+        if c.generated > 0 {
+            s += &format!("{:<w$} {:>7}\n", "  generated, in no total", c.generated);
+        }
         if !c.dev {
             product += c.lines;
         }
@@ -300,6 +319,7 @@ mod tests {
             note: None,
             builds: vec!["macos".into(), "linux".into()],
             build_limit: Some(5000),
+            generated: Vec::new(),
         };
         let module = |name: &str, lines, platforms: &[&str]| CountedModule {
             name: name.into(),
@@ -349,6 +369,7 @@ mod tests {
             note: None,
             builds: builds(&krate, 5200, &[]),
             modules: Vec::new(),
+            generated: 0,
         };
         assert_eq!(
             counted.builds,
@@ -374,6 +395,7 @@ mod tests {
             note: None,
             builds: builds(&krate, total, &modules),
             modules,
+            generated: 0,
         };
         let (text, over) = report(&[counted]);
         assert!(text.contains("  platform::macos [macos]"), "{text}");
@@ -384,6 +406,30 @@ mod tests {
                 "die-render is 7100 lines, over its 7000",
                 "die-render's linux build (its neutral and linux modules) is 5100 lines, over its 5000",
             ]
+        );
+    }
+
+    #[test]
+    fn generated_files_are_counted_apart() {
+        let tmp = crate::util::TempDir::new("budget-generated").unwrap();
+        let root = tmp.path();
+        let write = |rel: &str, src: &str| crate::util::write(&root.join(rel), src).unwrap();
+        write("crates/x/src/lib.rs", "pub fn a() {}\npub fn b() {}\n");
+        write("crates/x/src/ffi/gen.rs", "pub fn g() {}\n");
+        write("crates/x/build.rs", "fn main() {}\n");
+        let budget: Budget = toml::from_str(
+            "[[crate]]\nname = \"x\"\npath = \"crates/x\"\nlimit = 3\ngenerated = [\"src/ffi/gen.rs\"]\n",
+        )
+        .unwrap();
+        let counted = measure(root, &budget).unwrap();
+        assert_eq!((counted[0].lines, counted[0].generated), (3, 1));
+        let (text, over) = report(&counted);
+        assert!(over.is_empty(), "{over:?}");
+        assert!(text.contains("  generated, in no total"), "{text}");
+        assert!(
+            text.trim_end()
+                .ends_with("product code                   3"),
+            "{text}"
         );
     }
 

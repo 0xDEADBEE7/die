@@ -4,6 +4,8 @@ members = [
     "crates/die-core",
     "crates/die-render",
     "crates/die-vim",
+    "crates/die-term-sys",
+    "crates/die-term",
     "crates/die",
     "apps/die-dev",
     "tools/evil-oracle",
@@ -14,6 +16,8 @@ default-members = [
     "crates/die-core",
     "crates/die-render",
     "crates/die-vim",
+    "crates/die-term-sys",
+    "crates/die-term",
     "crates/die",
     "apps/die-dev",
 ]
@@ -30,6 +34,7 @@ publish = false
 die-core = { path = "crates/die-core" }
 die-render = { path = "crates/die-render" }
 die-vim = { path = "crates/die-vim" }
+die-term = { path = "crates/die-term" }
 die = { path = "crates/die" }
 evil-oracle = { path = "tools/evil-oracle" }
 die-test-cap = { path = "tools/test-cap" }
@@ -45,12 +50,20 @@ regex-syntax = { version = "=0.8.11", default-features = false }
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
+# The terminal engine's Rust API, pinned at the rev crates/die-term-sys/ghostty-vt.lock names,
+# without its PNG decoder (D10, docs/records/s2-term-engine.md). Its sys crate is die-term-sys,
+# through the `[patch]` below.
+libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", default-features = false, features = ["kitty-graphics"] }
 
-# unsafe is forbidden everywhere except die-render's platform module and
-# die-test-cap's allocator, which is never linked into DIE. Those two crates set
-# their own lints (scope §12; `cargo xtask lint` checks).
+# unsafe is forbidden everywhere except die-render's platform module, die-term-sys's
+# FFI module and die-test-cap's allocator, which is never linked into DIE. Those three
+# crates set their own lints (scope §12; `cargo xtask lint` checks).
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# libghostty-rs's sys crate builds the engine with Zig; DIE's links the signed archive instead (D16, D17).
+[patch."https://github.com/uzaaft/libghostty-rs"]
+libghostty-vt-sys = { path = "crates/die-term-sys" }
 
 [profile.release]
 debug = "line-tables-only"
