@@ -196,6 +196,8 @@ Every option includes the phase-0 seams and guards in §6, so no macOS assumptio
 
 *2026-10-19: you declined both A and B. Where a signed Linux archive comes from is open until before M2, when Linux terminals need it.*
 
+*2026-11-08: you chose B: "if it can be solved with zig in CI only then thats fine. We dont need to setup the CI now we can do that later." A terminal on Linux is a must, and B adds no DIE code. The job is set up before M2. A stays declined.*
+
 If neither A nor B has an archive by M2's exit, Linux ships editor-only and gets terminals at the first `ghostty bump` that has one. *With both declined, the same holds for whatever source is chosen before M2.*
 
 ### 4.4 Smaller choices
@@ -271,7 +273,7 @@ Only the driver names `platform::backend`. So the first and third steps run unde
 
 | Concern | macOS (S2, S3) | Linux (M2) | FreeBSD |
 |---|---|---|---|
-| Engine archive | Signed xcframework, cut to arm64 | Path A, else path B (§4.3). Both declined 2026-10-19; open until before M2 | None |
+| Engine archive | Signed xcframework, cut to arm64 | Path B (§4.3), chosen 2026-11-08; the job is set up before M2 | None |
 | Open a PTY | libc `posix_openpt(O_CLOEXEC)` (unsafe) | rustix `openpt(CLOEXEC)` (safe) | Stub |
 | Spawn | `posix_spawn` with `SETSID` and `CLOEXEC_DEFAULT`, slave opened as a file action | glibc `posix_spawn` with `SETSID`, `addclosefrom_np(3)`, `addchdir_np`. glibc 2.34+; musl unsupported for terminals | Stub (needs a fork path) |
 | Receive fds | Set CLOEXEC after `recvmsg` (the race `posix_spawn` covers) | `MSG_CMSG_CLOEXEC` (no race) | |
