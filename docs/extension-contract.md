@@ -156,7 +156,7 @@ args
 ## 7. Keymaps and modal states
 
 - **States** (scope §5.6): normal, insert, replace, visual, operator-pending, command line, copy and passthrough.
-- **Copy state** is normal and visual running over a read-only snapshot (scope D19). A window enters it when you leave passthrough with the DIE layer's Esc, and when you're in normal state on a surface without a text keymap. die-vim registers its normal and visual grammar as the copy-state keymap for every surface kind. In a terminal, `i` and `a` return to passthrough.
+- **Copy state** is normal and visual running over a read-only snapshot (scope D19) of a surface that gives its text (`Surface::text`, §10). Core takes the snapshot when the buffer leaves passthrough, by either Esc or `set_state_of`, or when one starts in normal state and is first drawn or gets a key, and drops it when the buffer goes back to passthrough. While it's there, `Ctx::text` and `text_mut` give it, so die-vim's grammar runs on it as on any text, with no keymap of its own: core looks a key up in the text kind's keymap right after the surface kind's, so the kind's own bindings win. die-term's are `<Esc>` (to the program), `i a I A` (back to passthrough) and `p P` (`surface-paste`). An edit fails with "Buffer is read-only", and nothing can start an insert session there (`TextBuf::is_snapshot`). The pointer is a text window's: a click moves the cursor, a drag selects, the wheel scrolls. A surface that gives no text has no copy state, and its keys in normal state go to `event()` as before; reading its rendered cells instead waits for a surface that wants it.
 - **A keymap** maps key sequences to command names, per state. The notation follows Vim: `gg`, `<C-x>`, `<leader>o`, `<S-Tab>`.
   - Key names match without case. A `<` that doesn't start a key name is a literal `<`. A bracketed word that isn't a key name, or modifiers followed by something that isn't a key or by no closing `>`, is a startup error. `feed_keys` and a register `q` recorded (`RegKind::Macro`) are notation too, so a literal `<` there is written `<lt>`. Any other register holds plain text, and `@` types it as it is, one key per character, as Vim and Evil do. A recording that's pasted, edited and yanked back has become plain text, so it can be re-recorded with `q`. Literal characters that form one grapheme cluster (`👍🏽`, `🇦🇺`) are one key, as text committed by the OS is. A keymap can't bind one: that's a startup error, so bind `<char>` and read `args.typed()`.
   - Ctrl with a letter ignores the letter's case (`<C-V>` is `<C-v>`); `<C-S-v>` is Ctrl-Shift-V. Key events match the same way, so Caps Lock doesn't change what Ctrl-v matches.
@@ -178,7 +178,7 @@ args
   1. the range keymap at the cursor
   2. buffer-local
   3. modes, most recently enabled first
-  4. the surface kind
+  4. the surface kind, and in copy state the text kind's after it
   5. global
   6. the surface's `event()` (§10)
   7. otherwise, an "unbound" message
@@ -435,7 +435,7 @@ die-vim uses only this public API (scope D15). These are the pieces it needs tha
 
 Inside die-vim, motions are plain functions over the text snapshot. A Vim command keeps its checkout short: read state, release it, act, then write state back. It never holds `with_ext::<Vim>` across `ctx.run`.
 
-**Copy state** (scope §5.5) reuses all of this. Core takes a read-only text snapshot of a surface, and die-vim's normal and visual grammar runs on it (§7).
+**Copy state** (scope §5.5) reuses all of this. Core takes a read-only text snapshot of a surface, and die-vim's normal and visual grammar runs on it (§7): the snapshot is a `TextBuf` with a view per window, wrap off, and a limit on how far down a window's top can scroll, its live view's. die-vim's one change for it is that an insert session refuses to start on a snapshot.
 
 ## 10. Custom surfaces
 
@@ -452,10 +452,8 @@ Surface
   handles(key)                    optional: which keys it takes in passthrough, for describe-key
   takes_esc()                     optional: whether a plain Esc in passthrough is its own now (§7)
   initial_state()                 default normal; die-term returns passthrough
-  text(done)                      later: full text, so copy state can search and yank beyond the viewport;
-                                  may complete asynchronously (a terminal's scrollback lives with its engine),
-                                  and copy state opens when it arrives
-  scroll_to(position)             later: move the view, for copy state and search
+  text(update) -> SurfaceText     optional: its content as lines, for copy state (below)
+  scroll_to(top)                  optional: show copy state's line `top` on the top row, or the live view
   reveal(range)                   later: make a range visible
   save() -> data                  later (§14)
 ```
@@ -470,6 +468,12 @@ Surface
 - Images and pixel buffers on rectangles of cells, each with a source rectangle, a pixel offset and a z-order (a negative z draws below text), come with placements (M3).
 - `render` can't change the workspace. It gets the surface mutably, so it can update its own caches, but it doesn't get `Ctx`. A panic in it draws `<render panicked>` until the next good render (§15).
 - **Components are plain Rust types that render into part of an area,** so a new graphical extension can be assembled from reusable pieces. The contract needs nothing extra for this. Your existing browsers don't use custom surfaces at all (§9).
+
+**Copy state's text** (scope §5.5, §7).
+- `text(false)` gives the whole text, `text(true)` what changed since the last read, or None if nothing did. A `SurfaceText` holds lines, each ending in a newline, oldest first; an update replaces the last text's lines from `from` to its end after `dropped` lines left its start, as a terminal's scrollback drops its oldest. It also says where the surface's cursor is, as a line and a byte, and which line its live view shows on the top row, below which copy state never scrolls. It's synchronous: die-term's whole read of a 9,600-line scrollback takes about 10 ms.
+- The surface says its text changed with `Ctx::surface_text_changed(buf)`, from its output callback. Core reads the update at the next key or frame if a window follows: in normal state with no prompt open, its cursor on the surface's cursor line or below. A follower stays on the surface's cursor if it was on it, or as far below the cursor's line, and as far above the live view. Other windows stay on their lines, less those dropped, so the snapshot is frozen for them until they come back down, which `G` does. Visual and operator-pending state wait.
+- A resize reads the whole text again after the surface hears it, since a terminal reflows.
+- Core calls `scroll_to(top)` before each render: the snapshot line the window shows on its top row, or None outside copy state. The window keeps showing the surface's own cells there, and core draws die-vim's cursor, the selection and the search's matches over them, recoloring the cells with the `selection`, `search` and `search-current` faces. The surface's own `cursor()` isn't drawn then.
 
 **What `event()` receives** (`Event`, which is `#[non_exhaustive]`, so a match needs a `_` arm):
 - `Key`: keys no keymap took (§7), so a surface can implement its own `j`/`k` without registering them. In passthrough, every key outside the DIE layer (scope D18), with its repeats and releases, modifier keys alone, and keys DIE has no name for.

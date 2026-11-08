@@ -15,6 +15,8 @@ libghostty-vt.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true
+# Copy state's tests run die-vim's grammar over a real terminal's text.
+die-vim.workspace = true
 
 [lints]
 workspace = true

@@ -9,7 +9,8 @@
 //! or a scrolled-back viewport, into rows of die-core cells. Keys, the pointer, pastes and focus
 //! become bytes for the PTY ([`Term::key`], [`Term::mouse`], [`Term::paste`], [`Term::focus`]).
 //! [`Term::modes`] says what the surface routes by: the alternate screen (scope D18's Esc), mouse
-//! tracking and bracketed paste. [`Term::text`] is copy state's text (D19, scope §5.5).
+//! tracking and bracketed paste. [`Term::text`] is copy state's text (D19, scope §5.5), which
+//! [`CopyText`] gives core's snapshot whole, then as it follows new output.
 //!
 //! The engine's defaults that DIE overrides are the record's (docs/records/die-term-engine.md
 //! §2): 10,000 lines of scrollback capped at 64 MB, mode 2027, Option as Alt, set colors, and
@@ -18,10 +19,12 @@
 #[cfg(test)]
 use die_test_cap as _;
 
+mod copy;
 mod input;
 mod screen;
 mod text;
 
+pub use copy::CopyText;
 pub use input::{PasteRefused, Pointer, PointerAction, PointerButton};
 pub use screen::{Frame, TermCursor};
 pub use text::{Line, Mark, Text};

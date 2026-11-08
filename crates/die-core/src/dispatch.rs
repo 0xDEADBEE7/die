@@ -89,11 +89,13 @@ impl Ctx {
     pub fn state_of(&self, buf: BufferId) -> State {
         self.buffers.get(buf).map_or(State::Normal, |b| b.state)
     }
-    /// Set `buf`'s modal state. A dead buffer is ignored.
+    /// Set `buf`'s modal state. A dead buffer is ignored. A surface's buffer leaving
+    /// passthrough takes copy state's snapshot of its text, and going back drops it (scope §5.5).
     pub fn set_state_of(&mut self, buf: BufferId, s: State) {
         if let Some(b) = self.buffers.get_mut(buf) {
             b.state = s;
         }
+        self.copy_sync(buf, false);
     }
     /// The prefix argument as it stands.
     pub fn prefix(&self) -> Prefix {
@@ -201,6 +203,7 @@ impl Ctx {
         if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_) | Key::Unidentified) {
             return; // release events, lone modifier keys and unnamed keys never reach keymaps
         }
+        self.copy_sync(buf, true);
         let mut caught = vec![];
         for e in &self.subs {
             if let SubKind::Keys(f) = &e.kind
@@ -257,7 +260,7 @@ impl Ctx {
     fn dispatch_passthrough(&mut self, win: WindowId, buf: BufferId, ev: KeyEvent) {
         let plain = |ctx: &Ctx| ev.mods == Mods::default() && !ctx.surface_takes_esc(buf);
         if ev.key == Key::Esc && ev.kind == KeyKind::Press && (ev.mods.super_ || plain(self)) {
-            self.buffers[buf].state = State::Normal;
+            self.set_state_of(buf, State::Normal);
             self.swallow.push(Key::Esc);
             return;
         }
@@ -353,6 +356,10 @@ impl Ctx {
             layers.push((format!("mode {}", spec.name), &spec.keymap));
         }
         layers.extend(self.kinds.get(kind).map(|m| (format!("kind {kind}"), m)));
+        // Copy state is die-vim's grammar for text over the snapshot, under the kind's own keys.
+        if kind != "text" && b.content.text().is_some() {
+            layers.extend(self.kinds.get("text").map(|m| ("kind text".into(), m)));
+        }
         layers.push(("global".into(), &self.global));
         layers
     }

@@ -64,7 +64,9 @@ pub use prompt::{PromptSpec, flex_rank, recent_first};
 pub use pty::{Pty, PtyCommand, PtySize};
 pub use rt::*;
 pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
-pub use surface::{CellPixels, Color, Frame, FrameCell, RenderInfo, SurfaceCursor, SurfacePointer};
+pub use surface::{
+    CellPixels, Color, Frame, FrameCell, RenderInfo, SurfaceCursor, SurfacePointer, SurfaceText,
+};
 pub use text::*;
 pub use windows::{Place, PlaceList};
 pub use workspace::{Clipboard, RegKind, Register, ShowIn, Side};
