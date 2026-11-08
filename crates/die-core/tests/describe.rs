@@ -177,20 +177,23 @@ fn a_key_your_config_unbound_is_listed_as_unbound() {
     );
 }
 
-/// Doesn't declare `q`; declares every other key.
-struct Declares(TermSurface);
+/// Doesn't declare `q`; declares every other key. Takes Esc while its flag says so.
+struct Declares(TermSurface, Rc<std::cell::Cell<bool>>);
 impl Surface for Declares {
     fn kind(&self) -> &'static str {
         "term"
     }
-    fn render(&mut self, cols: usize, rows: usize, out: &mut Vec<String>) {
-        self.0.render(cols, rows, out);
+    fn render(&mut self, frame: &mut Frame, info: &RenderInfo) {
+        self.0.render(frame, info);
     }
     fn event(&mut self, ev: &Event, ctx: &mut Ctx) -> bool {
         self.0.event(ev, ctx)
     }
     fn handles(&self, key: &KeyEvent) -> bool {
         key.printable().as_deref() != Some("q")
+    }
+    fn takes_esc(&self) -> bool {
+        self.1.get()
     }
     fn initial_state(&self) -> State {
         State::Passthrough
@@ -204,17 +207,18 @@ fn in_passthrough_it_reports_the_surface_and_keeps_the_key_from_it() {
     let term = TermSurface {
         events: events.clone(),
     };
-    let b = h.create_surface("term", Declares(term));
+    let takes_esc = Rc::new(std::cell::Cell::new(false));
+    let b = h.create_surface("term", Declares(term, takes_esc.clone()));
     let w = h.show(b, ShowIn::Current).unwrap().unwrap();
     h.run_until_idle();
     events.borrow_mut().clear();
 
     h.run("describe-key", &Args::default()).unwrap();
     typed(&mut h, "a");
-    assert_eq!(
-        help(&h),
-        "a in Passthrough goes to the term surface, which handles it.\n"
-    );
+    let to_surface = "goes to the term surface, which handles it.\n\
+                      In insert state a surface gets every key but the DIE layer's, the \
+                      leader's included. Keys go through the keymaps in normal state.\n";
+    assert_eq!(help(&h), format!("a in Insert {to_surface}"));
     assert_eq!(h.focused(), Some(w));
     let ev = KeyEvent::press(Key::Char('a'));
     h.send(Input::Key(KeyEvent {
@@ -242,10 +246,36 @@ fn in_passthrough_it_reports_the_surface_and_keeps_the_key_from_it() {
         },
         ..KeyEvent::press(Key::Esc)
     };
+    let leaves = "goes to Normal state, before any keymap, and the surface doesn't get it.\n";
+    h.run("describe-key", &Args::default()).unwrap();
+    h.send(Input::Key(esc.clone()));
+    assert_eq!(help(&h), format!("<D-Esc> in Insert {leaves}"));
+    assert_eq!(h.state(), State::Passthrough);
+
+    // Insert state's keys in text, and the leader, are the program's here (scope D18).
+    for keys in [
+        "<C-c>", "<C-g>", "<C-x>", "<C-k>", "<C-h>", "<C-z>", "\\", "<Esc>",
+    ] {
+        h.run("describe-key", &Args::default()).unwrap();
+        typed(&mut h, keys);
+        let said = if keys == "<Esc>" { leaves } else { to_surface };
+        assert_eq!(help(&h), format!("{keys} in Insert {said}"));
+    }
+    takes_esc.set(true);
+    h.run("describe-key", &Args::default()).unwrap();
+    typed(&mut h, "<Esc>");
+    assert_eq!(
+        help(&h),
+        format!("<Esc> in Insert {to_surface}"),
+        "on the alternate screen"
+    );
     h.run("describe-key", &Args::default()).unwrap();
     h.send(Input::Key(esc));
-    assert_eq!(help(&h), "<D-Esc> leaves passthrough.\n");
-    assert_eq!(h.state(), State::Passthrough);
+    assert_eq!(
+        help(&h),
+        format!("<D-Esc> in Insert {leaves}"),
+        "whatever the surface says"
+    );
 }
 
 #[test]

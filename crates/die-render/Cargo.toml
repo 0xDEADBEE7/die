@@ -20,6 +20,8 @@ unicode-width.workspace = true
 # (D16).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"
+# The fds a PTY's program inherits (`platform::macos::fds`).
+rustix.workspace = true
 block2 = "=0.6.2"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
     "std",

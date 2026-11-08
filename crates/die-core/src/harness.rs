@@ -134,6 +134,7 @@ impl Harness {
             col,
             clicks: u8::from(clicks),
             mods: Mods::default(),
+            px: None,
         }))
     }
 

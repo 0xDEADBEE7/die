@@ -66,6 +66,9 @@ pub struct PointerEvent {
     pub clicks: u8,
     /// The modifiers held.
     pub mods: Mods,
+    /// Where it is in physical pixels, from the frame's top-left, for a surface that wants more
+    /// than the cell. None puts it at the cell's top-left.
+    pub px: Option<(f32, f32)>,
 }
 
 /// Input from the host, handled in the order it came, in its turn among the keys.
@@ -280,6 +283,18 @@ impl Ctx {
             }),
             ..hit
         });
+        // A surface takes the pointer over its area itself. A press there ends what waits, as
+        // over text, and focuses its window.
+        if let Some(w) = self.surface_target(&p, hit) {
+            if matches!(p.kind, PointerKind::Press(_)) {
+                self.command_ended();
+                self.pending.clear();
+                self.prefix = Default::default();
+                self.stop_selecting();
+                self.focus(w);
+            }
+            return self.pointer_to_surface(w, p);
+        }
         match (p.kind, hit) {
             (PointerKind::Release(Button::Left), _) => self.pointer.pressed = None,
             (PointerKind::Scroll { dy, .. }, Some(hit)) => {
@@ -360,6 +375,9 @@ impl Ctx {
     /// due until it's woken. Zero if a timer is overdue or something's ready to run.
     pub fn next_deadline(&mut self) -> Option<Duration> {
         if !self.queue.is_empty() || !self.fed.is_empty() || !self.typed.is_empty() {
+            return Some(Duration::ZERO);
+        }
+        if self.pty_output_waiting() {
             return Some(Duration::ZERO);
         }
         let at = self.next_timer()?;

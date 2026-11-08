@@ -4,13 +4,11 @@
 use die_test_cap as _;
 
 use die::core::{BufferId, Harness};
-use die::vim::Vim;
 use die_dev::config;
 use std::path::PathBuf;
 
 fn harness(text: &str) -> (Harness, BufferId) {
-    let exts: Vec<Box<dyn die::core::Extension>> = vec![Box::new(Vim::default())];
-    let mut h = Harness::with_config(exts, config(vec![]).core).unwrap();
+    let mut h = Harness::with_config(die::built_in(), config(vec![]).core).unwrap();
     let (b, _) = h.open_text("t", text).unwrap();
     (h, b)
 }

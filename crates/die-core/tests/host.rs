@@ -34,6 +34,7 @@ fn pointer(kind: PointerKind, row: usize, col: usize) -> Input {
         col,
         clicks: 0,
         mods: Mods::default(),
+        px: None,
     })
 }
 
@@ -552,7 +553,7 @@ impl Surface for Plain {
     fn kind(&self) -> &'static str {
         "plain"
     }
-    fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
+    fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
     fn event(&mut self, ev: &Event, _: &mut Ctx) -> bool {
         self.0.borrow_mut().push(ev.clone());
         false

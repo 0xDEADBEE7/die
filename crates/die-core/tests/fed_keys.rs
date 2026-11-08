@@ -179,7 +179,7 @@ fn an_error_in_a_surfaces_event_drops_the_rest() {
         fn kind(&self) -> &'static str {
             "boom"
         }
-        fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
+        fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
         fn event(&mut self, _: &Event, _: &mut Ctx) -> bool {
             self.calls.set(self.calls.get() + 1);
             panic!("event bug")
@@ -213,7 +213,7 @@ fn a_key_a_surface_handles_drops_nothing() {
         fn kind(&self) -> &'static str {
             "takes"
         }
-        fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
+        fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
         fn event(&mut self, ev: &Event, _: &mut Ctx) -> bool {
             self.0
                 .borrow_mut()
@@ -331,7 +331,7 @@ fn a_key_a_surface_ignores_in_passthrough_drops_nothing() {
         fn kind(&self) -> &'static str {
             "ignores"
         }
-        fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
+        fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
         fn event(&mut self, _: &Event, _: &mut Ctx) -> bool {
             self.0.set(self.0.get() + 1);
             false

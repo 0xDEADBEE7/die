@@ -47,6 +47,7 @@ pub use flex::flex_rank;
 
 use crate::error::*;
 use crate::ext::*;
+use crate::ids::BufferId;
 use crate::keymap::*;
 use crate::keys::*;
 use crate::project::{Feed, Ranked};
@@ -370,6 +371,8 @@ pub(crate) struct Prompt {
     refused: bool,
     reading: Option<Reading>,
     ext: ExtIdx,
+    /// The buffer it was opened over, and its state then, which the answer puts back.
+    buf: Option<BufferId>,
     prev: State,
     f: PromptFn,
 }
@@ -523,8 +526,7 @@ impl Ctx {
         if self.prompt.is_some() {
             self.finish_prompt(None, false);
         }
-        let prev = self.state();
-        self.set_state(State::CommandLine);
+        let (buf, prev) = (self.focused_buffer(), self.state());
         let mut spec: PromptSpec = spec.into();
         let (source, part, tiers) = (spec.source.take(), spec.part.take(), spec.tiers.take());
         let list = source.map(|s| List::new(s, spec.descends, part, tiers));
@@ -540,10 +542,18 @@ impl Ctx {
             refused: false,
             reading: None,
             ext: self.cur_ext(),
+            buf,
             prev,
             f: Box::new(f),
         });
+        // Open first, so a terminal asking from insert state stays live under it (copy_sync).
+        self.set_state(State::CommandLine);
         self.prompt_refilter();
+    }
+    /// A prompt is open over `buf` from passthrough: a terminal asking from insert state.
+    pub(crate) fn asked_in_passthrough(&self, buf: BufferId) -> bool {
+        let p = self.prompt.as_ref();
+        p.is_some_and(|p| p.buf == Some(buf) && p.prev == State::Passthrough)
     }
     /// The text typed into the open prompt, if there is one.
     pub fn prompt_text(&self) -> Option<&str> {
@@ -636,12 +646,21 @@ impl Ctx {
     pub fn prompt_history(&self, name: &str) -> &[String] {
         self.histories.get(name).map_or(&[], Vec::as_slice)
     }
-    /// How a prompt reads a register, for `<C-r>` and `<C-y>`: `rule` takes the register's name,
-    /// a control character standing for its key, and gives the text, or an error to report with
-    /// the prompt staying open. Which registers there are is the keymap's business, as in
-    /// [`Ctx::set_cursor_rest`]. With no rule, they're the ones [`Ctx::register`] holds.
+    /// How a prompt reads a register, for `<C-r>` and `<C-y>`, and `surface-paste` one it's given:
+    /// `rule` takes the register's name, a control character standing for its key at a prompt,
+    /// and gives the text, or an error to report with the prompt staying open. Which registers
+    /// there are is the keymap's business, as in [`Ctx::set_cursor_rest`]. With no rule, they're
+    /// the ones [`Ctx::register`] holds.
     pub fn set_prompt_register(&mut self, rule: fn(&mut Ctx, char) -> Result<String>) {
         self.prompt_register = Some(rule);
+    }
+    /// A register's text, by [`Ctx::set_prompt_register`]'s rule.
+    pub(crate) fn register_text(&mut self, c: char) -> Result<String> {
+        if let Some(rule) = self.prompt_register {
+            return rule(self, c);
+        }
+        let held = self.register(c).map(|r| r.text.clone());
+        held.ok_or_else(|| Error::Msg(format!("Register {} is empty", c.escape_debug())))
     }
     /// Put this at the prompt's cursor.
     fn prompt_insert(&mut self, s: &str) {
@@ -658,16 +677,9 @@ impl Ctx {
         let Some(ext) = self.prompt.as_ref().map(|p| p.ext) else {
             return;
         };
-        let rule = self.prompt_register;
         let read = name
             .ok_or_else(|| Error::Msg("Non-character input-event".into()))
-            .and_then(|c| match rule {
-                Some(rule) => self.guarded(ext, |ctx| rule(ctx, c)),
-                None => self.register(c).map(|r| r.text.clone()).ok_or_else(|| {
-                    let shown = c.escape_debug();
-                    Error::Msg(format!("Register {shown} is empty"))
-                }),
-            });
+            .and_then(|c| self.guarded(ext, |ctx| ctx.register_text(c)));
         match read {
             Ok(text) => self.prompt_insert(&text),
             Err(Error::Panicked { .. }) => self.drop_fed(),
@@ -681,7 +693,11 @@ impl Ctx {
     /// §6): if it fails, the rest of what was fed drops.
     fn finish_prompt(&mut self, answer: Option<String>, keyed: bool) {
         let Some(p) = self.prompt.take() else { return };
-        self.set_state(p.prev);
+        // Its own buffer's state, if it's still there: a terminal whose program ended under the
+        // prompt took its passthrough with it, which a text buffer can't have.
+        if let Some(b) = p.buf.filter(|&b| self.is_live(b)) {
+            self.set_state_of(b, p.prev);
+        }
         if let (Some(name), Some(text)) = (&p.spec.history, &answer) {
             let past = self.histories.entry(name.clone()).or_default();
             if !text.is_empty() && past.last() != Some(text) {

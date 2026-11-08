@@ -859,12 +859,19 @@ impl TextBuf {
     }
     fn top(&self, w: WindowId, m: Option<Mode>) -> Row {
         let v = self.views[&w];
-        let want = v.top_row;
+        let (top, want) = self.held((v.top, v.top_row));
         let last = |l: &Line| want.min(l.rows.len() - 1);
         let r = m.map_or(0, |mode| {
-            self.with_rows(v.top, mode, |r| r.len() > want, last)
+            self.with_rows(top, mode, |r| r.len() > want, last)
         });
-        (v.top, r)
+        (top, r)
+    }
+    /// A window's top, no lower than a snapshot's live view lets it go.
+    fn held(&self, top: Row) -> Row {
+        match self.top_limit {
+            Some(limit) if top.0 > limit => (limit, 0),
+            _ => top,
+        }
     }
     /// Row `b`'s distance below row `a`, if it isn't above it and is within `limit`.
     fn rows_between(&self, a: Row, b: Row, m: Option<Mode>, limit: usize) -> Option<usize> {
@@ -1025,7 +1032,7 @@ impl TextBuf {
     /// render (C5), so a command that scrolls also leaves the cursor on a visible row. None if `w`
     /// doesn't show this buffer.
     pub fn set_scroll(&mut self, w: WindowId, top: usize, row: usize) -> Option<()> {
-        let top = self.dline_start(top);
+        let (top, row) = self.held((self.dline_start(top), row));
         let v = self.views.get_mut(&w)?;
         (v.top, v.top_row) = (top, row);
         self.views.get_mut(&w)?.top_row = self.scroll(w)?.1;
@@ -1044,7 +1051,9 @@ impl TextBuf {
             } else {
                 self.prev_row(at, m)
             };
-            let Some(next) = next else { break };
+            let Some(next) = next.filter(|n| self.held(*n) == *n) else {
+                break;
+            };
             (at, moved) = (next, moved + 1);
         }
         self.set_scroll(w, at.0, at.1)?;
@@ -1058,7 +1067,7 @@ impl TextBuf {
         let m = self.mode(&g);
         let (cur, _) = self.locate(self.views.get(&w)?.sel.head, m);
         let up = |t: Row, _| self.prev_row(t, m).unwrap_or(t);
-        let top = (0..row).fold(cur, up);
+        let top = self.held((0..row).fold(cur, up));
         let v = self.views.get_mut(&w)?;
         (v.top, v.top_row) = top;
         Some(())
@@ -1078,6 +1087,7 @@ impl TextBuf {
             }
             Some(_) => top,
         };
+        let new_top = self.held(new_top);
         if let Some(v) = self.views.get_mut(&w) {
             (v.top, v.top_row) = new_top;
         }

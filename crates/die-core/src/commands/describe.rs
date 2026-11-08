@@ -29,7 +29,8 @@ pub enum KeyAction {
     },
     /// It starts a longer binding in this keymap.
     Prefix(String),
-    /// It's the DIE layer's Esc, which leaves passthrough before any keymap.
+    /// It's the DIE layer's Esc, or a plain Esc the surface doesn't take now, which leaves
+    /// passthrough for normal state before any keymap and never reaches the surface.
     LeavesPassthrough,
     /// No keymap takes it, so it goes to the surface's `event()`.
     Surface {
@@ -112,8 +113,9 @@ impl Ctx {
             .filter(|_| !passthrough || last.mods.super_)
             .map(|(i, (_, km))| (i, km.lookup(state, keys)))
             .find(|(_, l)| *l != Lookup::None);
+        let plain = last.mods == Mods::default() && !self.surface_takes_esc(buf);
         let (action, by) = match &hit {
-            _ if passthrough && last.key == Key::Esc && last.mods.super_ => {
+            _ if passthrough && last.key == Key::Esc && (last.mods.super_ || plain) => {
                 (KeyAction::LeavesPassthrough, None)
             }
             Some((i, Lookup::Command(name))) => {
@@ -204,9 +206,6 @@ impl Ctx {
             return;
         };
         let state = self.state();
-        if state == State::Passthrough {
-            self.swallow.push(ev.key); // its release mustn't reach the program without its press
-        }
         keys.push(ev);
         let more = state != State::Passthrough
             && self
@@ -289,9 +288,21 @@ pub(super) fn register(reg: &mut Registry) {
     );
 }
 
+/// A state as you know it: passthrough is insert state on a surface (scope D18).
+struct Shown(State);
+
+impl fmt::Display for Shown {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            State::Passthrough => f.write_str("Insert"),
+            s => write!(f, "{s:?}"),
+        }
+    }
+}
+
 impl fmt::Display for KeyDescription {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let (keys, state) = (&self.keys, self.state);
+        let (keys, state) = (&self.keys, Shown(self.state));
         match &self.action {
             KeyAction::Command {
                 name,
@@ -299,13 +310,16 @@ impl fmt::Display for KeyDescription {
                 owner,
                 keymap,
             } => {
-                writeln!(f, "{keys} in {state:?} runs {name}, found in {keymap}.")?;
+                writeln!(f, "{keys} in {state} runs {name}, found in {keymap}.")?;
                 writeln!(f, "{name} is from {owner}.\n\n{doc}")?;
             }
             KeyAction::Prefix(keymap) => {
-                writeln!(f, "{keys} in {state:?} starts longer bindings in {keymap}.")?;
+                writeln!(f, "{keys} in {state} starts longer bindings in {keymap}.")?;
             }
-            KeyAction::LeavesPassthrough => writeln!(f, "{keys} leaves passthrough.")?,
+            KeyAction::LeavesPassthrough => writeln!(
+                f,
+                "{keys} in {state} goes to Normal state, before any keymap, and the surface doesn't get it."
+            )?,
             KeyAction::Surface { kind, declared } => {
                 let says = if *declared {
                     "handles it"
@@ -314,10 +328,17 @@ impl fmt::Display for KeyDescription {
                 };
                 writeln!(
                     f,
-                    "{keys} in {state:?} goes to the {kind} surface, which {says}."
+                    "{keys} in {state} goes to the {kind} surface, which {says}."
                 )?;
+                if self.state == State::Passthrough {
+                    writeln!(
+                        f,
+                        "In insert state a surface gets every key but the DIE layer's, \
+                         the leader's included. Keys go through the keymaps in normal state."
+                    )?;
+                }
             }
-            KeyAction::Undefined => writeln!(f, "{keys} in {state:?} is undefined.")?,
+            KeyAction::Undefined => writeln!(f, "{keys} in {state} is undefined.")?,
         }
         if !self.shadowed.is_empty() {
             writeln!(f, "\nShadowed:")?;
@@ -340,7 +361,12 @@ impl fmt::Display for CommandDescription {
             writeln!(f, "No key is bound to it.")?;
         }
         for (map, state, keys) in &self.keys {
-            writeln!(f, "{keys} in {state:?}, in {map}")?;
+            let on = if *state == State::Passthrough {
+                " on a surface"
+            } else {
+                ""
+            };
+            writeln!(f, "{keys} in {}{on}, in {map}", Shown(*state))?;
         }
         Ok(())
     }

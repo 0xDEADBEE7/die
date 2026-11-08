@@ -466,6 +466,11 @@ impl Ctx {
         if !self.timers_ran {
             self.collect_timers();
         }
+        // As timers: a PTY's output gets a batch, then a key or the frame (contract §12).
+        if !self.ptys.ran {
+            self.ptys.ran = self.ptys_take();
+            self.ptys.since = self.ptys.since.or(self.ptys.ran.then(Instant::now));
+        }
         self.cleanup(|ctx| {
             ctx.idle.retain(|t| t.sub.alive.get());
             ctx.subs.retain(|e| e.inner.alive.get());
@@ -560,6 +565,12 @@ impl Ctx {
             return true;
         }
         self.timers_ran = false;
+        // While no key waits, a flood's next batch, until the turn's share for output is spent.
+        let no_key = self.fed.is_empty() && self.typed.is_empty();
+        if no_key && self.ptys.more() && self.ptys_take() {
+            return true;
+        }
+        (self.ptys.ran, self.ptys.since) = (false, None);
         self.quit_fed();
         if self.fed_ran_out() {
             return true;
@@ -618,6 +629,7 @@ impl Ctx {
     /// order and cancel what they detached (C4). What your config detached goes last, since an
     /// extension's `shutdown` can still run config's commands.
     pub fn shutdown(&mut self) {
+        self.stop_ptys();
         self.stop_processes();
         self.save_session_at_quit();
         for i in (0..self.exts.len()).rev() {

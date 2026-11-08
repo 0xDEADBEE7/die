@@ -38,6 +38,7 @@ mod substitute;
 mod text;
 mod visual;
 mod window;
+pub use registers::push as kill_new;
 pub use window::quit_app;
 
 use die_core::key_notation;

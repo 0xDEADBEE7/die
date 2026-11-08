@@ -554,8 +554,10 @@ impl Surface for Lines {
     fn kind(&self) -> &'static str {
         "lines"
     }
-    fn render(&mut self, _: usize, _: usize, out: &mut Vec<String>) {
-        out.extend(self.0.iter().map(|l| l.to_string()));
+    fn render(&mut self, frame: &mut Frame, _: &RenderInfo) {
+        for (r, line) in self.0.iter().enumerate() {
+            frame.text(r, 0, line, &FrameCell::blank());
+        }
     }
 }
 

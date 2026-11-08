@@ -226,7 +226,7 @@ impl Ctx {
         });
         let b = &mut self.buffers[buf];
         b.used = used;
-        if let Content::Text(t) = &mut b.content {
+        if let Some(t) = b.content.text_mut() {
             t.add_view(w, cols, rows);
         }
         let first = self.tree.is_empty();
@@ -255,7 +255,7 @@ impl Ctx {
         if focused {
             self.focus_event(old, false);
         }
-        if let Some(Content::Text(t)) = self.buffers.get_mut(old).map(|b| &mut b.content) {
+        if let Some(t) = self.buffers.get_mut(old).and_then(|b| b.content.text_mut()) {
             t.park_view(w);
         }
         let from = self.window_used_last(buf);
@@ -265,7 +265,7 @@ impl Ctx {
         let (cols, rows) = (win.cols, win.rows);
         let b = &mut self.buffers[buf];
         b.used = used;
-        if let Content::Text(t) = &mut b.content {
+        if let Some(t) = b.content.text_mut() {
             t.unpark_view(w, from, cols, rows);
         }
         self.open_messages_at_end(w, buf);
@@ -392,16 +392,11 @@ impl Ctx {
         let Some(b) = self.buffers.get_mut(buf) else {
             return;
         };
-        match &mut b.content {
-            Content::Text(t) => t.resize_view(w, cols, rows),
-            Content::Custom { owner, .. } => {
-                let owner = *owner;
-                self.defer_as(owner, move |ctx| {
-                    let ev = Event::Resize { cols, rows };
-                    ctx.checkout_surface(buf, |s, ctx| s.event(&ev, ctx))?;
-                    Ok(())
-                });
-            }
+        if let Some(t) = b.content.text_mut() {
+            t.resize_view(w, cols, rows);
+        }
+        if let Content::Custom { .. } = b.content {
+            self.surface_resized(w, buf);
         }
         let modes: Vec<(TypeId, ExtIdx)> = self.buffers[buf]
             .modes
@@ -480,7 +475,7 @@ impl Ctx {
             self.windows.remove(new);
             return Err(Error::Msg("That window is too small to split".into()));
         }
-        if let Some(Content::Text(t)) = self.buffers.get_mut(buf).map(|b| &mut b.content) {
+        if let Some(t) = self.buffers.get_mut(buf).and_then(|b| b.content.text_mut()) {
             t.copy_view(w, new);
         }
         self.retile();
@@ -574,7 +569,7 @@ impl Ctx {
             return;
         };
         for b in self.buffers.values_mut() {
-            if let Content::Text(t) = &mut b.content {
+            if let Some(t) = b.content.text_mut() {
                 t.drop_view(w);
             }
         }
@@ -631,7 +626,7 @@ impl Ctx {
     /// The frame cell a window's cursor is on, or its first cell if it hasn't one on screen.
     fn cursor_cell(&mut self, w: WindowId, r: Rect) -> (usize, usize) {
         let buf = self.windows[w].buffer;
-        let Some(Content::Text(t)) = self.buffers.get_mut(buf).map(|b| &mut b.content) else {
+        let Some(t) = self.buffers.get_mut(buf).and_then(|b| b.content.text_mut()) else {
             return (r.y, r.x);
         };
         t.scroll_to_cursor(w);
