@@ -8,6 +8,9 @@ use die_test_cap as _;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    if let Some(code) = die::other_mode() {
+        return ExitCode::from(code.clamp(0, 255) as u8);
+    }
     die::render::latency::start_clock();
     let args = match die_dev::parse_args(std::env::args_os().skip(1)) {
         Ok(args) => args,

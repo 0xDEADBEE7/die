@@ -11,11 +11,14 @@
 //!   target directory's cache stays valid between runs, rather than mounted:
 //!   colima shares only your home directory with its VM. The fonts go in the
 //!   same way, at `DIE_FONT_DIR`.
-//! - Two named volumes keep cargo's registry and the Linux target directory.
-//!   The first run fetches the lockfile's crates from crates.io into the
-//!   registry; every other container runs with no network. Only crates.io:
+//! - Three named volumes keep cargo's registry, its git checkouts and the Linux
+//!   target directory. The first run fetches the lockfile's crates from
+//!   crates.io into the registry, and libghostty-rs at the commit the engine's
+//!   lock pins (D10); every other container runs with no network. Only those:
 //!   a lockfile with another source, or one that doesn't resolve offline on
 //!   this machine, stops the run before any fetch.
+//! - die-term's tests don't run, and clean-build builds its library alone:
+//!   Linux has no engine archive yet, so they don't link (D10).
 //! - The image has -dev packages that D16 says the build doesn't need, so the
 //!   checks' container purges every one but libc's, and pkg-config, before
 //!   the build. clean-build fails if any is left.
@@ -36,9 +39,12 @@ pub const IMAGE: &str =
     "rust@sha256:58fe97504a0e4cbba5d85599619a589923d3e779472a6fb0840d58d1c4ba99d7";
 const CONTEXT: &str = "colima";
 const REGISTRY_VOLUME: &str = "die-linux-cargo-registry";
+const GIT_VOLUME: &str = "die-linux-cargo-git";
 const TARGET_VOLUME: &str = "die-linux-target";
 /// The registry under the image's `CARGO_HOME`.
 const IN_REGISTRY: &str = "/usr/local/cargo/registry";
+/// Its git checkouts.
+const IN_GIT: &str = "/usr/local/cargo/git";
 const IN_TREE: &str = "/die/tree";
 const IN_TARGET: &str = "/die/target";
 const IN_FONTS: &str = "/die/fonts";
@@ -65,7 +71,7 @@ pub fn run(root: &Path, source: Source) -> Result {
     }
     crates_io_only(tree)?;
     fonts::run_fonts(root)?;
-    for v in [REGISTRY_VOLUME, TARGET_VOLUME] {
+    for v in [REGISTRY_VOLUME, GIT_VOLUME, TARGET_VOLUME] {
         output(docker().args(["volume", "create", v]))?;
     }
     // A run stopped before its container started leaves it created, not removed.
@@ -108,8 +114,9 @@ pub fn run(root: &Path, source: Source) -> Result {
             )
         })?;
         println!(
-            "ci --linux: fetching the lockfile's crates from crates.io into the {REGISTRY_VOLUME} \
-             volume (later runs use it with no network)"
+            "ci --linux: fetching the lockfile's crates from crates.io, and libghostty-rs at its \
+             pinned rev, into the {REGISTRY_VOLUME} and {GIT_VOLUME} volumes (later runs use them \
+             with no network)"
         );
         match in_container(tree, None, true, &env, "cargo fetch --locked --quiet")? {
             0 => code = in_container(tree, Some(&fonts), false, &env, &checks)?,
@@ -154,12 +161,16 @@ fn checks_script() -> String {
     )
 }
 
-/// Fail unless every source in `tree`'s Cargo.lock is crates.io and its
-/// `.cargo/config.toml` replaces no source: the run fetches crates.io
-/// crates only. A git source can't be fetched here either way: the
-/// registry volume doesn't hold cargo's git checkouts.
+/// Fail unless every source in `tree`'s Cargo.lock is crates.io, or the engine
+/// wrapper's repository at the commit its lock pins, and its `.cargo/config.toml`
+/// replaces no source: the run fetches those only.
 fn crates_io_only(tree: &Path) -> Result {
-    let others = other_sources(&read(&tree.join("Cargo.lock"))?);
+    let mut others = other_sources(&read(&tree.join("Cargo.lock"))?);
+    if !others.is_empty()
+        && let Ok(wrapper) = wrapper_source(tree)
+    {
+        others.retain(|o| !o.ends_with(&format!("({wrapper})")));
+    }
     if !others.is_empty() {
         return Err(format!(
             "ci --linux: Cargo.lock has sources other than crates.io:\n  {}\nThe run may fetch \
@@ -210,6 +221,24 @@ fn other_sources(lock: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// libghostty-rs's source as Cargo.lock writes it, at the rev die-term-sys's engine lock
+/// pins (scope D10).
+fn wrapper_source(tree: &Path) -> Result<String> {
+    let path = tree.join(crate::ghostty::SYS).join("ghostty-vt.lock");
+    let lock: toml::Table = read(&path)?
+        .parse()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let wrapper = lock.get("wrapper").and_then(|w| w.as_table());
+    let field = |k: &str| wrapper.and_then(|w| w.get(k)).and_then(|v| v.as_str());
+    match (field("repository"), field("rev")) {
+        (Some(repo), Some(rev)) => Ok(format!("git+{repo}?rev={rev}#{rev}")),
+        _ => Err(format!(
+            "{}: no [wrapper] repository and rev",
+            path.display()
+        )),
+    }
 }
 
 fn docker() -> Command {
@@ -292,6 +321,8 @@ fn in_container(
         .arg("--volume")
         .arg(format!("{REGISTRY_VOLUME}:{IN_REGISTRY}"))
         .arg("--volume")
+        .arg(format!("{GIT_VOLUME}:{IN_GIT}"))
+        .arg("--volume")
         .arg(format!("{TARGET_VOLUME}:{IN_TARGET}"));
     for (k, v) in env {
         create.arg("--env").arg(format!("{k}={v}"));
@@ -370,8 +401,6 @@ pub fn host_checks(root: &Path) -> Result {
         version.lines().next().unwrap_or("rustc ?")
     );
 
-    // This is a checkpoint, so it runs what `ci` leaves out.
-    const ALL_TESTS: [&str; 2] = ["--", "--include-ignored"];
     let cargo_test = |args: &[&str]| {
         let mut c = Command::new(cargo());
         c.current_dir(root)
@@ -381,6 +410,7 @@ pub fn host_checks(root: &Path) -> Result {
         c
     };
     let exit_f = ["die-core", "die-vim", "evil-oracle", "die-test-cap"];
+    let others = other_tests(crate::ghostty::links(root, &host), &exit_f);
     let steps: Vec<Step> = vec![
         (
             "tests (f)",
@@ -408,15 +438,7 @@ pub fn host_checks(root: &Path) -> Result {
         ),
         (
             "other tests",
-            Box::new(|| {
-                let excluded = exit_f.iter().flat_map(|p| ["--exclude", p]);
-                let args: Vec<&str> = ["--workspace"]
-                    .into_iter()
-                    .chain(excluded)
-                    .chain(ALL_TESTS)
-                    .collect();
-                crate::util::run(&mut cargo_test(&args))
-            }),
+            Box::new(|| crate::util::run(&mut cargo_test(&others))),
         ),
         ("clean-build", Box::new(|| clean::run(root, false))),
         ("log plant", Box::new(|| guards::linux_host(root))),
@@ -426,6 +448,25 @@ pub fn host_checks(root: &Path) -> Result {
         "\nlinux-host: die-core, die-vim, the oracle and the memory limit pass on {host} (exit test (f), with ci's cross-check)"
     );
     Ok(())
+}
+
+/// A checkpoint's tests: it runs what `ci` leaves out.
+const ALL_TESTS: [&str; 2] = ["--", "--include-ignored"];
+
+/// "other tests": the workspace's tests but `exit_f`'s, and but die-term's where there's no
+/// engine archive for the host, since they can't link there (D10).
+fn other_tests<'a>(engine: bool, exit_f: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec!["--workspace"];
+    let user: &[&str] = if engine {
+        &[]
+    } else {
+        &[crate::ghostty::ENGINE_USER]
+    };
+    for p in exit_f.iter().chain(user) {
+        args.extend(["--exclude", p]);
+    }
+    args.extend(ALL_TESTS);
+    args
 }
 
 /// Run the oracle's test and print its summary line.
@@ -510,6 +551,41 @@ checksum = \"0\"
         let err = crates_io_only(tree).unwrap_err();
         assert!(err.contains("ropey 1.6.1 (git+"), "{err}");
         assert!(err.contains("a download to ask about"), "{err}");
+        // The engine wrapper's repository, at the rev its lock pins and no other.
+        let rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54";
+        let lock = format!(
+            "[wrapper]\nrepository = \"https://github.com/uzaaft/libghostty-rs\"\nrev = \"{rev}\"\n"
+        );
+        write(
+            &tree.join(crate::ghostty::SYS).join("ghostty-vt.lock"),
+            &lock,
+        )
+        .unwrap();
+        let pinned = format!(
+            "{LOCK}\n[[package]]\nname = \"libghostty-vt\"\nversion = \"0.2.1\"\n\
+             source = \"git+https://github.com/uzaaft/libghostty-rs?rev={rev}#{rev}\"\n"
+        );
+        write(&tree.join("Cargo.lock"), &pinned).unwrap();
+        crates_io_only(tree).unwrap();
+        let other = pinned.replace(&format!("#{rev}"), "#0000");
+        write(&tree.join("Cargo.lock"), &other).unwrap();
+        assert!(crates_io_only(tree).is_err());
+    }
+
+    #[test]
+    fn die_terms_tests_run_where_the_engine_links() {
+        let exit_f = ["die-core", "die-vim"];
+        let base = [
+            "--workspace",
+            "--exclude",
+            "die-core",
+            "--exclude",
+            "die-vim",
+        ];
+        let tail = ALL_TESTS;
+        assert_eq!(other_tests(true, &exit_f), [&base[..], &tail].concat());
+        let without = [&base[..], &["--exclude", "die-term"], &tail].concat();
+        assert_eq!(other_tests(false, &exit_f), without);
     }
 
     #[test]

@@ -1,5 +1,6 @@
-//! DIE's facade (scope §12, Crates): `die::run(config)`, with die-vim always registered,
-//! the real clock, the files named at startup, and one window showing the first of them.
+//! DIE's facade (scope §12, Crates): `die::run(config)`, with die-vim and die-term always
+//! registered (die-term where its engine is), the real clock, the files named at startup, and one
+//! window showing the first of them.
 #![warn(missing_docs)]
 
 #[cfg(test)]
@@ -7,9 +8,12 @@ use die_test_cap as _;
 
 pub mod app;
 pub mod rebuild;
+pub mod terminals;
 
 pub use die_core as core;
 pub use die_render as render;
+#[cfg(target_os = "macos")]
+pub use die_term as term;
 pub use die_vim as vim;
 
 use die_core::{Clipboard, Clock, Ctx, Extension, ShowIn, State, StatusTextFn};
@@ -25,7 +29,7 @@ pub struct Config {
     /// Bindings, commands, faces, leader, theme, settings and the startup hook. Its clock
     /// is ignored: a running DIE has a real one.
     pub core: die_core::Config,
-    /// Extensions, after die-vim.
+    /// Extensions, after die-vim and die-term.
     pub extensions: Vec<Box<dyn Extension>>,
     /// What status lines show. None shows the buffer's name.
     pub status_text: Option<StatusTextFn>,
@@ -85,8 +89,14 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
     core.clock = Clock::real();
     let register = core.register.take();
     core.register = Some(Box::new(move |reg| {
-        // Cmd-Q, in every state, since the DIE layer belongs to DIE (scope D18).
-        reg.command("quit", "Quit DIE.", |ctx, _| die_vim::quit_app(ctx, false));
+        // Cmd-Q, in every state, since the DIE layer belongs to DIE (scope D18). It asks first
+        // while a program runs in a terminal.
+        reg.command("quit", "Quit DIE.", |ctx, _| {
+            terminals::unless_busy(ctx, terminals::Ending::Quit, |ctx| {
+                die_vim::quit_app(ctx, false)
+            })
+        });
+        terminals::register(reg);
         for state in [
             State::Normal,
             State::Insert,
@@ -99,6 +109,9 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         ] {
             reg.global_keymap().bind(state, "<D-q>", "quit");
         }
+        // Cmd-V in a terminal's insert state pastes, bracketed, rather than going to the program.
+        reg.global_keymap()
+            .bind(State::Passthrough, "<D-v>", "surface-paste");
         // Emacs's M-x and M-!, which Evil leaves in its states. Not in a prompt, where Emacs
         // refuses them too, nor in operator-pending, where they end the operator.
         for state in [
@@ -115,7 +128,7 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
             register(reg);
         }
     }));
-    let mut exts: Vec<Box<dyn Extension>> = vec![Box::new(Vim::default())];
+    let mut exts = built_in();
     exts.extend(extensions);
     let mut ctx = Ctx::with_config(exts, core)?;
     if let Some(f) = status_text {
@@ -142,6 +155,28 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         shown.map_err(|e| vec![e.to_string()])?;
     }
     Ok(ctx)
+}
+
+/// The extensions every DIE has, in order: die-vim, then die-term where its engine is.
+pub fn built_in() -> Vec<Box<dyn Extension>> {
+    let mut exts: Vec<Box<dyn Extension>> = vec![Box::new(Vim::default())];
+    exts.extend(terminals::extension());
+    exts
+}
+
+/// If this run is one of the modes DIE's binary has besides the editor, run it and give its exit
+/// code: today a PTY's trampoline (`die_core::pty::trampoline`). Your config's `main` calls this
+/// first, before it reads its arguments, or no terminal can start.
+pub fn other_mode() -> Option<i32> {
+    // What a framework opened without close-on-exec, as Metal's shader cache, mustn't reach the
+    // program (contract §12).
+    let trampoline = std::env::args_os().nth(1);
+    if trampoline.is_some_and(|a| a == die_core::pty::EXEC_ARG)
+        && let Err(e) = driver::close_on_exec_inherited()
+    {
+        eprintln!("die: /dev/fd: {e}");
+    }
+    die_core::pty::trampoline()
 }
 
 /// Run DIE until its window closes. The window opens without taking focus. The exit code:

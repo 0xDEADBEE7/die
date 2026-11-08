@@ -276,9 +276,12 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
     let rebuilt = restart.clone();
     let (installed, checkout) = (bundle.clone(), bundle.join("Contents/Resources/checkout"));
     config.core.register = Some(Box::new(move |reg| {
-        reg.command("restart", "Start DIE again.", move |_, _| {
-            let _ = restart.send(());
-            Ok(())
+        reg.command("restart", "Start DIE again.", move |ctx, _| {
+            let restart = restart.clone();
+            crate::terminals::unless_busy(ctx, crate::terminals::Ending::Restart, move |_| {
+                let _ = restart.send(());
+                Ok(())
+            })
         });
         let home = rebuild::home_of(&installed);
         let command = move |root: &Path| match &home {

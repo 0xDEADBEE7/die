@@ -7,6 +7,11 @@
 //! other platforms: its neutral modules plus its platform's, or the whole
 //! crate if it has no modules. `build_limit` caps each build, as `limit` caps
 //! the crate's total (docs/records/platforms.md §5.7).
+//!
+//! A crate's `generated` files are counted apart: they aren't read as code, so they're neither
+//! in its total nor in the product's. The one there may be is die-term-sys's bindings, which
+//! bindgen writes at each engine bump and `cargo xtask ghostty verify` holds to a hash; any
+//! other file named there fails the budget.
 
 use crate::count::count_formatted;
 use crate::util::{Result, read, rust_files};
@@ -38,6 +43,9 @@ pub struct CrateBudget {
     pub builds: Vec<String>,
     /// The cap on each build: the neutral modules plus one platform's.
     pub build_limit: Option<usize>,
+    /// Generated files, from the crate's directory: counted apart, in no total.
+    #[serde(default)]
+    pub generated: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +71,8 @@ pub struct Counted {
     pub modules: Vec<CountedModule>,
     /// Each build: (platform, lines, limit).
     pub builds: Vec<(String, usize, Option<usize>)>,
+    /// Lines in the crate's generated files.
+    pub generated: usize,
 }
 
 pub struct CountedModule {
@@ -98,11 +108,18 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
             .filter(|m| m.krate == c.name)
             .collect();
         check_platforms(c, &mods)?;
+        check_generated(c)?;
         let mut total = 0;
+        let mut generated = 0;
         let mut per_mod = vec![0; mods.len()];
         for file in crate_files(&dir) {
             let n =
                 count_formatted(&read(&file)?).map_err(|e| format!("{}: {e}", file.display()))?;
+            let in_crate = file.strip_prefix(&dir).unwrap_or(&file).to_string_lossy();
+            if c.generated.iter().any(|g| *g == in_crate) {
+                generated += n;
+                continue;
+            }
             total += n;
             if mods.is_empty() {
                 continue;
@@ -160,12 +177,32 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
             note: c.note.clone(),
             builds: builds(c, total, &modules),
             modules,
+            generated,
         });
     }
     Ok(out)
 }
 
 /// Platform tags need a crate that lists its builds, and must name one of them.
+/// `generated` may name die-term-sys's bindings alone, which verify holds to the engine lock's
+/// hash: any other file would leave the budget unread.
+fn check_generated(c: &CrateBudget) -> Result {
+    let bindings = Path::new(crate::ghostty::SYS).join(crate::ghostty::BINDINGS);
+    match c
+        .generated
+        .iter()
+        .find(|g| Path::new(&c.path).join(g) != bindings)
+    {
+        Some(g) => Err(format!(
+            "budget.toml: {}'s generated file {g} isn't {}, the one generated file `cargo \
+             xtask ghostty verify` holds to a hash; count it as code",
+            c.name,
+            bindings.display()
+        )),
+        None => Ok(()),
+    }
+}
+
 fn check_platforms(c: &CrateBudget, mods: &[&ModuleBudget]) -> Result {
     if c.build_limit.is_some() && c.builds.is_empty() {
         return Err(format!(
@@ -265,6 +302,9 @@ pub fn report(counted: &[Counted]) -> (String, Vec<String>) {
                 ));
             }
         }
+        if c.generated > 0 {
+            s += &format!("{:<w$} {:>7}\n", "  generated, in no total", c.generated);
+        }
         if !c.dev {
             product += c.lines;
         }
@@ -300,6 +340,7 @@ mod tests {
             note: None,
             builds: vec!["macos".into(), "linux".into()],
             build_limit: Some(5000),
+            generated: Vec::new(),
         };
         let module = |name: &str, lines, platforms: &[&str]| CountedModule {
             name: name.into(),
@@ -319,11 +360,11 @@ mod tests {
     #[test]
     fn platform_macos_is_held_to_what_the_unsafe_review_was_planned_for() {
         // docs/m0-plan.md §3 planned for 900; budget.toml says what raised it. Raising it means
-        // changing this too, with a count in hand: 1,312 at 1,315.
+        // changing this too, with a count in hand: 1,333 at 1,335.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let budget = load(root).unwrap();
         let macos = budget.modules.iter().find(|m| m.name == "platform::macos");
-        assert!(macos.unwrap().limit <= 1315);
+        assert!(macos.unwrap().limit <= 1335);
     }
 
     #[test]
@@ -349,6 +390,7 @@ mod tests {
             note: None,
             builds: builds(&krate, 5200, &[]),
             modules: Vec::new(),
+            generated: 0,
         };
         assert_eq!(
             counted.builds,
@@ -374,6 +416,7 @@ mod tests {
             note: None,
             builds: builds(&krate, total, &modules),
             modules,
+            generated: 0,
         };
         let (text, over) = report(&[counted]);
         assert!(text.contains("  platform::macos [macos]"), "{text}");
@@ -384,6 +427,43 @@ mod tests {
                 "die-render is 7100 lines, over its 7000",
                 "die-render's linux build (its neutral and linux modules) is 5100 lines, over its 5000",
             ]
+        );
+    }
+
+    #[test]
+    fn generated_files_are_counted_apart() {
+        let tmp = crate::util::TempDir::new("budget-generated").unwrap();
+        let root = tmp.path();
+        let write = |rel: &str, src: &str| crate::util::write(&root.join(rel), src).unwrap();
+        write(
+            "crates/die-term-sys/src/lib.rs",
+            "pub fn a() {}\npub fn b() {}\n",
+        );
+        write("crates/die-term-sys/src/ffi/bindings.rs", "pub fn g() {}\n");
+        write("crates/die-term-sys/src/ffi/hand.rs", "pub fn h() {}\n");
+        write("crates/die-term-sys/build.rs", "fn main() {}\n");
+        let budget = |generated: &str| -> Budget {
+            toml::from_str(&format!(
+                "[[crate]]\nname = \"x\"\npath = \"crates/die-term-sys\"\nlimit = 4\n\
+                 generated = [\"{generated}\"]\n"
+            ))
+            .unwrap()
+        };
+        // Only the bindings verify holds to a hash may be left out.
+        let err = measure(root, &budget("src/ffi/hand.rs")).err().unwrap();
+        assert!(
+            err.contains("generated file src/ffi/hand.rs isn't"),
+            "{err}"
+        );
+        let counted = measure(root, &budget("src/ffi/bindings.rs")).unwrap();
+        assert_eq!((counted[0].lines, counted[0].generated), (4, 1));
+        let (text, over) = report(&counted);
+        assert!(over.is_empty(), "{over:?}");
+        assert!(text.contains("  generated, in no total"), "{text}");
+        assert!(
+            text.trim_end()
+                .ends_with("product code                   4"),
+            "{text}"
         );
     }
 

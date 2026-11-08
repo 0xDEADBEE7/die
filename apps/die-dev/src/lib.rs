@@ -119,6 +119,9 @@ fn bindings(reg: &mut Registry) {
     keys.bind(State::Normal, "<leader>]", "switch-buffer");
     keys.bind(State::Normal, "<leader>}", "buffer-menu");
     keys.bind(State::Normal, "<leader>?", "buffer-menu");
+    // `termin-open` and `ghostel`: a new terminal, and the first one.
+    keys.bind(State::Normal, "<leader>e", "term");
+    keys.bind(State::Normal, "<leader>g", "term-switch");
 }
 
 /// `global-visual-line-mode` and `visual-fill-column`, centered at 80.

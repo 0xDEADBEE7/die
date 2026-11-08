@@ -178,11 +178,12 @@ impl Surface for Surf {
     fn kind(&self) -> &'static str {
         "surf"
     }
-    fn render(&mut self, _: usize, _: usize, out: &mut Vec<String>) {
+    fn render(&mut self, frame: &mut Frame, _: &RenderInfo) {
         if self.fail_render.get() {
             panic!("render bug");
         }
-        out.push("drawn".into());
+        frame.clear();
+        frame.text(0, 0, "drawn", &FrameCell::blank());
     }
     fn event(&mut self, ev: &Event, _: &mut Ctx) -> bool {
         self.seen.set(self.seen.get() + 1);
@@ -855,7 +856,7 @@ fn panics_taking_turns_dont_flood_the_log() {
         fn kind(&self) -> &'static str {
             "bad"
         }
-        fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {
+        fn render(&mut self, _: &mut Frame, _: &RenderInfo) {
             panic!("{}", self.0);
         }
     }

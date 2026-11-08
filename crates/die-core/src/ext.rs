@@ -15,6 +15,7 @@ use crate::keys::*;
 use crate::pointer::Drawn;
 use crate::prompt::Prompt;
 use crate::rt::*;
+use crate::surface::*;
 use crate::text::*;
 use crate::windows::Window;
 use crate::workspace::tree::Tree;
@@ -117,28 +118,51 @@ pub trait Mode: Any {
     }
 }
 
-/// Input a surface receives through [`Surface::event`].
+/// Input a surface receives through [`Surface::event`]. More kinds can come, so a match on it
+/// needs a `_` arm.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Event {
-    /// A key no keymap took, or any key in passthrough.
+    /// A key no keymap took, or in passthrough every key outside the DIE layer, with its repeats
+    /// and releases.
     Key(KeyEvent),
-    /// A window showing the surface changed size, in cells.
+    /// A window showing the surface has this size, which is its whole area: when the surface
+    /// goes into a window ([`Ctx::open_window`]'s caller gave the size), when the window changes
+    /// size, and when its cells change in pixels.
     Resize {
-        /// Its new width.
+        /// The window.
+        window: WindowId,
+        /// Its width in cells.
         cols: usize,
-        /// Its new height.
+        /// Its height in cells.
         rows: usize,
+        /// A cell's size in physical pixels, and the display's scale.
+        cell: CellPixels,
     },
     /// A window showing the surface gained or lost the focus.
     Focus(bool),
+    /// The pointer, over a window showing the surface, or dragging from one.
+    Pointer(SurfacePointer),
+    /// Text to paste as one piece, which a terminal brackets: the DIE layer's V in passthrough,
+    /// or `surface-paste`.
+    Paste(String),
 }
 
 /// A custom surface: what a buffer shows when it isn't text (contract §10).
 pub trait Surface: Any {
     /// Its kind (`"term"`), which names its keymap.
     fn kind(&self) -> &'static str;
-    /// Write its rows. No `Ctx`, so it runs synchronously (C3).
-    fn render(&mut self, cols: usize, rows: usize, out: &mut Vec<String>);
+    /// Draw the window's whole area into `frame`. No `Ctx`, so it runs synchronously (C3).
+    fn render(&mut self, frame: &mut Frame, info: &RenderInfo);
+    /// Where the cursor is in the area, as the last render left it. None draws none.
+    fn cursor(&self, _info: &RenderInfo) -> Option<SurfaceCursor> {
+        None
+    }
+    /// What the status line of a window showing it says, in place of the buffer's status text:
+    /// a terminal's directory and title. None keeps the status text.
+    fn status(&self) -> Option<String> {
+        None
+    }
     /// Input keymaps didn't take; every key (and release) in passthrough. Checked out (C2).
     fn event(&mut self, _ev: &Event, _ctx: &mut Ctx) -> bool {
         false
@@ -147,10 +171,27 @@ pub trait Surface: Any {
     fn handles(&self, _key: &KeyEvent) -> bool {
         false
     }
+    /// Whether a plain Esc in passthrough goes to `event()` now, rather than leaving for normal
+    /// state: a terminal says yes on the alternate screen, or when its toggle sends Esc to the
+    /// program (scope D18). The DIE layer's Esc leaves whatever this says.
+    fn takes_esc(&self) -> bool {
+        false
+    }
     /// The state a buffer showing it starts in.
     fn initial_state(&self) -> State {
         State::Normal
     }
+    /// Its content as text, for copy state (scope §5.5, D19): normal state's motions, search
+    /// and yank run over it. Core reads it all when the buffer leaves passthrough, and with
+    /// `update` what changed since, after [`Ctx::surface_text_changed`], while copy state
+    /// follows the bottom; None there means nothing did. None from the start: no copy state, and
+    /// keys in normal state go to [`Surface::event`].
+    fn text(&mut self, _update: bool) -> Option<SurfaceText> {
+        None
+    }
+    /// Show the text's line `top` on the area's top row, or the live view with None, as copy
+    /// state scrolls. Core calls it before each render.
+    fn scroll_to(&mut self, _top: Option<usize>) {}
 }
 
 /// What's true of a mode whichever buffer it's on, declared once in the registry.
@@ -284,7 +325,25 @@ pub(crate) enum Content {
         /// The extension that made it, for its panics.
         owner: ExtIdx,
         obj: Option<Box<dyn Surface>>,
+        /// Its copy state's snapshot, outside passthrough.
+        copy: Option<Box<Copy>>,
     },
+}
+
+impl Content {
+    /// The text its windows' views and die-vim work on: a text buffer's, or a surface's snapshot.
+    pub(crate) fn text(&self) -> Option<&TextBuf> {
+        match self {
+            Content::Text(t) => Some(t),
+            Content::Custom { copy, .. } => copy.as_ref().map(|c| &c.text),
+        }
+    }
+    pub(crate) fn text_mut(&mut self) -> Option<&mut TextBuf> {
+        match self {
+            Content::Text(t) => Some(t),
+            Content::Custom { copy, .. } => copy.as_mut().map(|c| &mut c.text),
+        }
+    }
 }
 
 pub(crate) struct ModeSlot {
@@ -337,6 +396,8 @@ pub struct Ctx {
     /// The keys `describe-key` has read so far, while it's reading them.
     pub(crate) describing: Option<Vec<KeyEvent>>,
     pub(crate) swallow: Vec<Key>,
+    /// The keys whose press went to a surface in passthrough, as a release or repeat must have.
+    pub(crate) passed: Vec<(BufferId, KeyEvent)>,
     pub(crate) leader: Chord,
     pub(crate) prefix: Prefix,
     pub(crate) prompt: Option<Prompt>,
@@ -389,6 +450,10 @@ pub struct Ctx {
     pub(crate) search_highlight: Option<Pattern>,
     /// `*grep*`'s search, streamed commands, and what `next-error` goes through.
     pub(crate) procs: crate::process::Procs,
+    /// What surfaces drew last, their cells in pixels, and the pointer's press on one.
+    pub(crate) surfaces: Surfaces,
+    /// The PTYs open, and whether their output had a turn since the last key.
+    pub(crate) ptys: crate::pty::Ptys,
     /// What `*Buffer List*` lists.
     pub(crate) menu: crate::menu::Menu,
     /// The `die --wait` clients waiting on buffers.
@@ -473,6 +538,7 @@ impl Ctx {
         crate::layout::register_commands(&mut reg);
         crate::commands::register_commands(&mut reg);
         crate::project::register_commands(&mut reg);
+        crate::surface::register_commands(&mut reg);
         let mut errors = vec![];
         let mut slots: Vec<ExtSlot> = vec![];
         for mut e in exts {
@@ -532,6 +598,7 @@ impl Ctx {
             describing: None,
             prompt_register: None,
             swallow: vec![],
+            passed: vec![],
             leader: default_leader(),
             prefix: Prefix::default(),
             prompt: None,
@@ -569,6 +636,8 @@ impl Ctx {
             faces,
             search_highlight: None,
             procs: Default::default(),
+            surfaces: Default::default(),
+            ptys: Default::default(),
             menu: Default::default(),
             clients: Default::default(),
             quit_wanted: false,

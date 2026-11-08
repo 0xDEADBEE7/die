@@ -37,8 +37,8 @@ fn set_slot(ctx: &mut Ctx, i: usize, r: Register) {
 }
 
 /// A new kill, Emacs's `kill-new`: the ring moves down one, the oldest goes, and the clipboard
-/// gets it.
-fn push(ctx: &mut Ctx, r: Register) {
+/// gets it. As `kill_new`, a terminal's OSC 52 write comes here.
+pub fn push(ctx: &mut Ctx, r: Register) {
     ctx.write_clipboard(&r);
     ring_push(ctx, r);
 }

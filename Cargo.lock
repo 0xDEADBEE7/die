@@ -270,6 +270,7 @@ version = "0.0.0"
 dependencies = [
  "die-core",
  "die-render",
+ "die-term",
  "die-test-cap",
  "die-vim",
 ]
@@ -283,6 +284,7 @@ dependencies = [
  "regex-automata",
  "regex-syntax",
  "ropey",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "slotmap",
@@ -313,8 +315,19 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
+ "rustix 1.1.5",
  "unicode-width",
  "winit",
+]
+
+[[package]]
+name = "die-term"
+version = "0.0.0"
+dependencies = [
+ "die-core",
+ "die-test-cap",
+ "die-vim",
+ "libghostty-vt",
 ]
 
 [[package]]
@@ -526,6 +539,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "int-enum"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e366a1634cccc76b4cfd3e7580de9b605e4d93f1edac48d786c1f867c0def495"
+dependencies = [
+ "proc-macro2",
+ "proc-macro2-diagnostics",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -615,6 +640,24 @@ name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+
+[[package]]
+name = "libghostty-vt"
+version = "0.2.1"
+source = "git+https://github.com/uzaaft/libghostty-rs?rev=d2036baeb605d31d09a9e2ba6d0c923e04c34d54#d2036baeb605d31d09a9e2ba6d0c923e04c34d54"
+dependencies = [
+ "bitflags 2.13.2",
+ "int-enum",
+ "libghostty-vt-sys",
+]
+
+[[package]]
+name = "libghostty-vt-sys"
+version = "0.2.1"
+dependencies = [
+ "die-test-cap",
+ "sha2",
+]
 
 [[package]]
 name = "libloading"
@@ -1137,6 +1180,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "proc-macro2-diagnostics"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+ "version_check",
 ]
 
 [[package]]

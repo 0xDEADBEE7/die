@@ -70,6 +70,15 @@ pub enum KeySource {
     Fed,
 }
 
+/// The same physical key, as the OS names it, or the same key from notation, which has no
+/// name: a release's character is what the modifiers held then make it, `a` after Shift-A.
+fn same_key(a: &KeyEvent, b: &KeyEvent) -> bool {
+    match (&a.code, &b.code) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.key == b.key,
+    }
+}
+
 impl Ctx {
     // -------------------------------------------------------------- modal state, prefix
 
@@ -89,11 +98,13 @@ impl Ctx {
     pub fn state_of(&self, buf: BufferId) -> State {
         self.buffers.get(buf).map_or(State::Normal, |b| b.state)
     }
-    /// Set `buf`'s modal state. A dead buffer is ignored.
+    /// Set `buf`'s modal state. A dead buffer is ignored. A surface's buffer leaving
+    /// passthrough takes copy state's snapshot of its text, and going back drops it (scope §5.5).
     pub fn set_state_of(&mut self, buf: BufferId, s: State) {
         if let Some(b) = self.buffers.get_mut(buf) {
             b.state = s;
         }
+        self.copy_sync(buf, false);
     }
     /// The prefix argument as it stands.
     pub fn prefix(&self) -> Prefix {
@@ -175,6 +186,10 @@ impl Ctx {
             self.sync_messages();
             self.log.echo = None;
         }
+        // A key's latest press says where its release goes (`passed`).
+        if ev.kind == KeyKind::Press {
+            self.passed.retain(|(_, k)| !same_key(k, &ev));
+        }
         // A key DIE took in passthrough swallows its own repeat and release.
         if let Some(i) = self.swallow.iter().position(|k| *k == ev.key) {
             match ev.kind {
@@ -198,9 +213,23 @@ impl Ctx {
         if state == State::Passthrough && self.describing.is_none() {
             return self.dispatch_passthrough(win, buf, ev);
         }
+        self.dispatch_keymaps(win, buf, state, ev, src);
+    }
+
+    /// Everything but passthrough: the keymaps, a prompt, describe-key, and a surface's `event()`
+    /// for what none of them takes.
+    fn dispatch_keymaps(
+        &mut self,
+        win: WindowId,
+        buf: BufferId,
+        state: State,
+        ev: KeyEvent,
+        src: KeySource,
+    ) {
         if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_) | Key::Unidentified) {
             return; // release events, lone modifier keys and unnamed keys never reach keymaps
         }
+        self.copy_sync(buf, true);
         let mut caught = vec![];
         for e in &self.subs {
             if let SubKind::Keys(f) = &e.kind
@@ -251,9 +280,13 @@ impl Ctx {
         }
     }
 
+    /// Passthrough is insert state on a surface (scope D18): the DIE layer's Esc leaves it for
+    /// normal state, and so does a plain Esc the surface doesn't take now. Each swallows its
+    /// repeats and release.
     fn dispatch_passthrough(&mut self, win: WindowId, buf: BufferId, ev: KeyEvent) {
-        if ev.key == Key::Esc && ev.mods.super_ && ev.kind == KeyKind::Press {
-            self.buffers[buf].state = State::Normal;
+        let plain = |ctx: &Ctx| ev.mods == Mods::default() && !ctx.surface_takes_esc(buf);
+        if ev.key == Key::Esc && ev.kind == KeyKind::Press && (ev.mods.super_ || plain(self)) {
+            self.set_state_of(buf, State::Normal);
             self.swallow.push(Key::Esc);
             return;
         }
@@ -267,6 +300,21 @@ impl Ctx {
             self.swallow.push(ev.key);
             return self.run_key(&name, vec![ev], win, buf);
         }
+        // A repeat or release goes only where its press went: never one of a key DIE took, as
+        // the `i` that came here, nor a Shift pressed in normal state (§7).
+        let held = |(b, k): &(BufferId, KeyEvent)| *b == buf && same_key(k, &ev);
+        match (ev.kind, self.passed.iter().position(held)) {
+            (KeyKind::Press, _) => {
+                // A few are held at once, and committed text has no release: the oldest go.
+                if self.passed.len() >= 32 {
+                    self.passed.remove(0);
+                }
+                self.passed.push((buf, ev.clone()));
+            }
+            (KeyKind::Release, Some(i)) => drop(self.passed.swap_remove(i)),
+            (KeyKind::Repeat, Some(_)) => {}
+            (_, None) => return,
+        }
         if let Err(Error::Panicked { .. }) = self.surface_event(buf, &Event::Key(ev)) {
             self.drop_fed();
         }
@@ -274,7 +322,7 @@ impl Ctx {
 
     /// Give a surface input, guarded, for the extension that made it. A text buffer has no
     /// surface, so it handles nothing.
-    fn surface_event(&mut self, buf: BufferId, ev: &Event) -> Result<bool> {
+    pub(crate) fn surface_event(&mut self, buf: BufferId, ev: &Event) -> Result<bool> {
         let owner = match self.buffers.get(buf).map(|b| &b.content) {
             Some(Content::Custom { owner, .. }) => *owner,
             _ => return Ok(false),
@@ -349,6 +397,10 @@ impl Ctx {
             layers.push((format!("mode {}", spec.name), &spec.keymap));
         }
         layers.extend(self.kinds.get(kind).map(|m| (format!("kind {kind}"), m)));
+        // Copy state is die-vim's grammar for text over the snapshot, under the kind's own keys.
+        if kind != "text" && b.content.text().is_some() {
+            layers.extend(self.kinds.get("text").map(|m| ("kind text".into(), m)));
+        }
         layers.push(("global".into(), &self.global));
         layers
     }

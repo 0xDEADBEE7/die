@@ -16,7 +16,11 @@
 [[crate]]
 name = "die-core"
 path = "crates/die-core"
-limit = 14000
+# 14,000 until the terminal's core half: surfaces' styled cells, cursor and events, and PTYs (about 1,030).
+# 14,790 until copy state: a surface's text as a snapshot die-vim runs over, followed and drawn over its cells (about 370).
+# 15,160 until the core half's review: a PTY program's locale, output's time a frame, the key that enters insert.
+# 15,235 until the terminal's review: a frozen window's text read, a prompt over insert, releases by physical key, `G`'s cursor and `3p`.
+limit = 15280
 
 [[crate]]
 name = "die-render"
@@ -47,8 +51,27 @@ path = "crates/die-vim"
 # 10,330 until `:cq` gave up on a `die --wait` client's file, so that git stops.
 # 10,340 until the review fixes of the ex commands on lines and insert state's Emacs keys: `C-g`, `C-u n <Home>`, Emacs's words for `C-Left`.
 # 10,383 until the review fixes of `:!`: a filter whose output isn't UTF-8 leaves the text alone.
-limit = 10387
+# 10,387 until copy state: no insert session starts on a surface's snapshot.
+# 10,390 until the terminal: OSC 52 as a kill.
+limit = 10391
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
+
+# Guard 7: about 4k of glue, plus about 1k for the helper process (D20). The engine side came
+# first, on 2026-11-09; its modules are below.
+[[crate]]
+name = "die-term"
+path = "crates/die-term"
+limit = 5000
+note = "guard 7: about 4k of glue plus about 1k for the helper"
+
+# D17: the wrapper's sys crate, adapted, and its build script. Its bindings are bindgen's,
+# written at each engine bump and held to the lock's hash by `cargo xtask ghostty verify`.
+[[crate]]
+name = "die-term-sys"
+path = "crates/die-term-sys"
+limit = 100
+generated = ["src/ffi/bindings.rs"]
+note = "D17: about 90 adapted lines, plus generated bindings"
 
 [[crate]]
 name = "die"
@@ -81,13 +104,15 @@ name = "text and undo"
 # 1,265 until U7, whose named positions are about 20 lines. 1,285 until U3's grep shared smartcase.
 # 1,300 until V3: thousands of changes go in one pass, undo too, and a line of megabytes is searched near what's asked.
 # 1,420 until the macro review: `:s` copies only its lines, and `:g` searches each line bounded at its end.
-limit = 1425
+# 1,425 until copy state: a snapshot's flag and scroll limit, and its splice, which no log or undo sees.
+limit = 1450
 files = ["text.rs", "undo.rs", "text/", "undo/"]
 
 [[module]]
 crate = "die-core"
 name = "layout"
-limit = 950
+# 950 until copy state: no window's top below a snapshot's live view.
+limit = 960
 files = ["layout.rs", "layout/"]
 
 [[module]]
@@ -107,7 +132,11 @@ name = "ext, dispatch, rt"
 # 1,510 until V3: a typed C-g ends a macro.
 # 1,525 until the macro work: a quit noted for `take_quit`, and key errors `hush_key_errors` hushes.
 # 1,535 until the macro review: the loop says when keys fed apart have run out, before the next key.
-limit = 1545
+# 1,545 until the terminal: `Surface`'s cursor, status and Esc, its events, and a PTY's turn.
+# 1,575 until copy state: `Surface::text` and `scroll_to`, the snapshot in `Content`, the text kind's keys after a surface's.
+# 1,600 until the core half's review: the key that enters passthrough keeps its release, and output's time a frame.
+# 1,615 until the terminal's review: a repeat or release reaches a surface only after its press, by the physical key.
+limit = 1635
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
@@ -130,10 +159,13 @@ files = ["files.rs", "files/"]
 # 1,310 until a prompt's candidates could match only part of its line, for `:`'s list.
 # 1,331 until kill-buffer's question was shared with the Buffer List's `x`.
 # 1,339 until `:`'s list kept Evil's history keys and put first the command a name runs.
+# 1,370 until `describe-key` said a terminal's passthrough is insert, and which Esc leaves it.
+# 1,390 until `surface-paste` read a register by the keymap's rule, as `<C-r>` does.
+# 1,395 until a prompt put back its own buffer's state, and said it was opened over passthrough.
 [[module]]
 crate = "die-core"
 name = "command line, prompt, core commands"
-limit = 1370
+limit = 1405
 files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "commands/"]
 
 [[module]]
@@ -169,6 +201,18 @@ name = "clients"
 limit = 145
 files = ["clients.rs"]
 
+# New with the terminal: what a surface draws (styled cells over the whole area, its cursor and
+# status segment) and hears (pointer, paste, resize in pixels), and the PTYs die-term runs
+# programs on, with the trampoline that gives one its controlling terminal without `unsafe`.
+[[module]]
+crate = "die-core"
+name = "surfaces and PTYs"
+# 975 until copy state: the snapshot, its updates as a window follows, and the cursor, selection and matches over the cells.
+# 1,285 until the core half's review: a frame blank and new after a panic, a press elsewhere's drag, and LANG.
+# 1,300 until the terminal's review: a frozen window read, the wheel's place kept, `surface_cursor`, `3p`.
+limit = 1320
+files = ["surface.rs", "pty.rs", "surface/", "pty/"]
+
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
 # 965 until a list had the status lines above it, as Emacs's minibuffer has the mode line.
 [[module]]
@@ -183,8 +227,10 @@ name = "session"
 # 1,250 until U7, whose marks and jump lists in session.json are about 50 lines. 1,305 until U8:
 # what an extension keeps, by name, whole and by buffer, is about 80. 1,385 until `die --wait`
 # kept its connection after the answer, to hear `done` on. 1,425 until a waiting client heard
-# `failed` and `moved`, and asked the next instance to wait on its files `again`.
-limit = 1480
+# `failed` and `moved`, and asked the next instance to wait on its files `again`. 1,480 until
+# `sys` said where DIE's own binary is, for a PTY's trampoline. 1,490 until it said the locale a
+# PTY's program gets when DIE.app has none, from your region (`AppleLocale`).
+limit = 1520
 # 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
 # held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
@@ -202,10 +248,11 @@ files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
 # the portable backend (`backend::wgpu`, `text::fontations`), join with their code,
 # and replace the stub.
 
+# 2,300 until a pointer event said its pixel, and core heard the cells' pixels, for terminals.
 [[module]]
 crate = "die-render"
 name = "neutral"
-limit = 2300
+limit = 2305
 files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "input.rs", "sprite.rs", "window.rs", "latency.rs"]
 
 # `die --check`: the window's own checks, which ship in the binary. R3's are about 420
@@ -233,7 +280,8 @@ platforms = ["macos"]
 # has no event for them, so `application:openURLs:` goes on its app delegate's class, about 30.
 # 1,300 until their names came composed (NFC), as typed: safe calls on NSURL and NSString.
 # 1,305 until a test's DIE ran unseen: three safe setters, with `attach`'s one `unsafe` shared.
-limit = 1315
+# 1,315 until a PTY's trampoline marked the fds Metal opened close-on-exec: one `unsafe` borrow.
+limit = 1335
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
@@ -246,3 +294,69 @@ platforms = ["linux"]
 # 170 until `unseen`.
 limit = 175
 files = ["platform/backend.rs"]
+
+# die-term's engine side (scope §6): a `Term` with bytes in and cells out, keys in and bytes
+# out, before the surface on a PTY. Each starts at what it measured, with a little room.
+
+# The terminal: the engine's defaults and callbacks, feeding, resizing, events, modes, scrolling.
+# From 320 to 335 with the review's fixes: feeding in slices within a time budget, and a cap on
+# the replies waiting.
+[[module]]
+crate = "die-term"
+name = "terminal"
+limit = 335
+files = ["lib.rs"]
+
+# Render state to die-core cells, and the cursor (G2).
+[[module]]
+crate = "die-term"
+name = "cells"
+limit = 225
+files = ["screen.rs"]
+
+# Keys, the pointer, the wheel, pastes and focus (G4, G5, G13).
+[[module]]
+crate = "die-term"
+name = "input"
+limit = 395
+files = ["input.rs"]
+
+# Copy state's text, rows and marks (G6).
+[[module]]
+crate = "die-term"
+name = "copy text"
+limit = 255
+files = ["text.rs"]
+
+# Copy state's side: the text as die-core's snapshot, whole then as it follows output, and its
+# lines as the viewport's rows.
+[[module]]
+crate = "die-term"
+name = "copy state"
+limit = 80
+files = ["copy.rs"]
+
+# The terminal buffer: a Term on a core PTY as a surface, with D18's Esc routing, the pointer,
+# pastes, the size rule for windows sharing one, and OSC 52 and 7.
+[[module]]
+crate = "die-term"
+name = "surface"
+limit = 400
+files = ["surface.rs"]
+
+# Opening terminals (`term`, `term-switch`, `open`), the exit, `busy`, and normal state's commands
+# and keys: Esc to the program, `i a I A`, `p P` and the Esc toggle. From 320 to 330 with the
+# review's fixes: `G` to the terminal's cursor, and `:term cmd`.
+[[module]]
+crate = "die-term"
+name = "commands"
+limit = 330
+files = ["commands.rs"]
+
+# Shell integration (scope §6): a login zsh's `.zshenv` of DIE's, which reports the directory
+# at each prompt (OSC 7). New with the terminal review's fixes; bash 3.2's comes later.
+[[module]]
+crate = "die-term"
+name = "shell integration"
+limit = 50
+files = ["shell.rs"]

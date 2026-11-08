@@ -1,6 +1,6 @@
 [package]
 name = "die"
-description = "DIE's facade: die::run(config), with die-vim always registered"
+description = "DIE's facade: die::run(config), with die-vim and die-term always registered"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,23 @@ die-core.workspace = true
 die-render.workspace = true
 die-vim.workspace = true
 
+# The terminal needs its engine's archive, which only macOS has until DIE's CI builds Linux's
+# (D10, D12). Elsewhere DIE is editor-only, and `term` says why.
+[target.'cfg(target_os = "macos")'.dependencies]
+die-term.workspace = true
+
 [dev-dependencies]
 die-test-cap.workspace = true
+
+# A PTY's program starts through these tests' own binaries, whose `main` must be the trampoline
+# first, so they have no test harness.
+[[test]]
+name = "pty_fds"
+harness = false
+
+[[test]]
+name = "terminals"
+harness = false
 
 [lints]
 workspace = true

@@ -38,11 +38,11 @@ impl Surface for TermSurface {
     fn kind(&self) -> &'static str {
         "term"
     }
-    fn render(&mut self, _c: usize, _r: usize, out: &mut Vec<String>) {
+    fn render(&mut self, frame: &mut Frame, _: &RenderInfo) {
         if self.lines == 99 {
             panic!("render bug")
         }
-        out.push("$ ".into());
+        frame.text(0, 0, "$ ", &FrameCell::blank());
     }
 }
 impl Extension for Term {

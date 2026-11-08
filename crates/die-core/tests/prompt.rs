@@ -694,6 +694,7 @@ fn the_list_covers_the_windows_and_marks_the_chosen_row_and_the_match() {
             col: 0,
             clicks: 0,
             mods: Mods::default(),
+            px: None,
         }));
         ctx.run_ready();
         ctx.scene();

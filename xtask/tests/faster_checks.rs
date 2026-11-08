@@ -40,6 +40,9 @@ fn each_trigger_needs_the_slow_steps() {
         "tools/test-cap/src/lib.rs",
         // Cargo finds one without a manifest change, and clean-build is what checks them.
         "crates/die-core/build.rs",
+        // The engine archive and its lock, which clean-build verifies.
+        "crates/die-term-sys/vendor/aarch64-apple-darwin/libghostty-vt.a",
+        "crates/die-term-sys/ghostty-vt.lock",
     ] {
         assert!(ci::touches_build_setup(path), "{path} should need them");
     }
@@ -61,6 +64,8 @@ fn near_misses_dont_need_the_slow_steps() {
         "crates/die-core/Cargo.toml.bak",
         "rust-toolchain.toml.old",
         "crates/die-core/src/build.rs.txt",
+        "crates/die-term-sys/src/ffi.rs",
+        "crates/die-term-sys/THIRD_PARTY_NOTICES",
     ] {
         assert!(!ci::touches_build_setup(path), "{path} shouldn't need them");
     }

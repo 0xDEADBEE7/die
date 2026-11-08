@@ -339,6 +339,10 @@ pub struct TextBuf {
     pub(crate) cache: RefCell<LayoutCache>,
     /// The text in one piece for regex search, until the next edit.
     flat: RefCell<Option<String>>,
+    /// It's a surface's copy-state snapshot (scope §5.5).
+    pub(crate) snapshot: bool,
+    /// The lowest a window's top may scroll to, a line's start: a snapshot's live view.
+    pub(crate) top_limit: Option<usize>,
 }
 
 /// Where a position goes when `[start, old_end)` is replaced by text ending at `new_end`.
@@ -422,6 +426,8 @@ impl TextBuf {
             actor: None,
             cache: RefCell::default(),
             flat: RefCell::default(),
+            snapshot: false,
+            top_limit: None,
         }
     }
 
@@ -485,6 +491,11 @@ impl TextBuf {
         let skip = (rev + 1 - oldest) as usize;
         Some(self.log.iter().skip(skip))
     }
+    /// Whether this is a surface's text in copy state (scope §5.5): a read-only snapshot that
+    /// follows the surface, where nothing can start an insert session.
+    pub fn is_snapshot(&self) -> bool {
+        self.snapshot
+    }
     /// The buffer's settings.
     pub fn settings(&self) -> &Settings {
         &self.settings
@@ -543,6 +554,9 @@ impl TextBuf {
         if origin == Origin::User {
             let ro = self.ro_ranges();
             for (r, _) in &ops {
+                if self.snapshot {
+                    return Err(Error::Msg("Buffer is read-only".into()));
+                }
                 if self.settings.read_only || ro.iter().any(|x| blocks(x, r)) {
                     return Err(Error::ReadOnly { at: r.start });
                 }
@@ -594,6 +608,25 @@ impl TextBuf {
         for (r, s) in ops.iter().rev() {
             self.map_all(r.start, r.end, r.start + s.len());
         }
+    }
+
+    /// Replace `r` with `s` as no one's edit: no log entry (a reader that's behind starts
+    /// again), no undo, read-only or not. Markers and views move as for any edit. A snapshot
+    /// follows its surface this way.
+    pub(crate) fn splice(&mut self, r: Range<usize>, s: &str) {
+        let (cs, ce) = (
+            self.rope.byte_to_char(r.start),
+            self.rope.byte_to_char(r.end),
+        );
+        self.rope.remove(cs..ce);
+        self.rope.insert(cs, s);
+        *self.flat.get_mut() = None;
+        self.log.clear();
+        self.rev += 1;
+        let new_end = r.start + s.len();
+        self.map_all(r.start, r.end, new_end);
+        self.cache.get_mut().edited(r.start, r.end, new_end);
+        self.normalize_views();
     }
 
     fn actor_selection(&self) -> Option<Selection> {

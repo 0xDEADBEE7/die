@@ -4,7 +4,8 @@ use die_test_cap as _;
 use std::path::Path;
 use xtask::util::{Result, root, task_dir};
 use xtask::{
-    api, app, budget, ci, clean, cross, fonts, guards, lint, linux, mutate, restart_loop, sources,
+    api, app, budget, ci, clean, cross, fonts, ghostty, guards, lint, linux, mutate, restart_loop,
+    sources,
 };
 
 const USAGE: &str = "usage: cargo xtask <task>
@@ -27,6 +28,9 @@ const USAGE: &str = "usage: cargo xtask <task>
                        open -g: every restore's session digest must match and hold what it
                        started with, and each restart must take under 1 s
   fonts                fetch Ioskeley Mono Term into fonts/, checked by SHA-256
+  ghostty verify       die-term-sys's engine archives against their lock: hashes, only
+                       `_ghostty_*` globals, only libSystem's symbols needed, the
+                       bindings' hash, and the pins (`ghostty bump` isn't built yet)
   clean-build [--keep] no C builders in each target's build graph but the allowlist's,
                        and a build from an empty environment with no C compiler or
                        pkg-config, which no build script calls unless allowlisted (D16)
@@ -74,6 +78,7 @@ fn dispatch(args: &[String]) -> Result {
             Err(_) => Err(USAGE.into()),
         },
         ["fonts"] => fonts::run_fonts(&root),
+        ["ghostty", rest @ ..] => ghostty::run(&root, rest),
         ["clean-build"] => clean::run(&root, false),
         ["clean-build", "--keep"] => clean::run(&root, true),
         ["cross-check"] => cross::run(&root, &task_dir(&root, "cross")),

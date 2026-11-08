@@ -2,7 +2,7 @@
 
 # die-term decision record: prebuilt libghostty-vt (the ghostel model)
 
-Date: 2026-10-19. Status: **accepted 2026-10-19** as scope D10. §9's question 2 became D20 and spike S2. S2 then built the exact configuration that §5 calls "the one gap", and it passed ([s2-term-engine.md](s2-term-engine.md)).
+Date: 2026-10-19. Status: **accepted 2026-10-19** as scope D10. §9's question 2 became D20 and spike S2. S2 then built the exact configuration that §5 calls "the one gap", and it passed ([s2-term-engine.md](s2-term-engine.md)). die-term's engine side was built on 2026-11-09; §10 says where it differs from this record, and where the checklist stands.
 Engine pin: Ghostty `main` 765ea37ad64f. That is also today's signed `tip`, re-checked with `git ls-remote` on 2026-10-19. Rust wrapper: libghostty-rs `d2036bae`, which is still the head of master today.
 
 ## 1. Recommendation
@@ -477,3 +477,49 @@ The archive contains precompiled C and C++ (wuffs, simdutf, Highway). Nothing is
 - Checked live on 2026-10-19:
   - `git ls-remote`: Ghostty tip and main are both 765ea37ad64f; libghostty-rs master is d2036bae.
   - GitHub API: libghostty-rs PR #92 is still open.
+
+## 10. The engine side, as built (2026-11-09)
+
+`crates/die-term-sys` and `crates/die-term`'s engine side are in the workspace: a `Term` that owns one engine terminal and needs no `Ctx`, with bytes in and die-core cells out, keys in and bytes out. It runs on the thread that calls it (`Term` isn't `Send`, as the engine's objects aren't), so it can run inside DIE now and in D20's helper later. The surface on a PTY is the next package's. Calls 733–745 in [m0-log.md](../m0-log.md) have the detail, and 776–786 the review's fixes.
+
+### Where it differs from this record
+
+- **die-term-sys's layout.** The archive is under `vendor/aarch64-apple-darwin/`, one directory per target. The adapted code is `src/ffi.rs` and the bindings `src/ffi/bindings.rs`, so `unsafe` is in one module: the lint lets `lib.rs` allow it on `mod ffi` only. The bindings are kept byte for byte as bindgen wrote them (rustfmt skips them), and they alone may allow the two unsafe-block lints, since bindgen's 49 `Default` impls have no SAFETY comments; the lock holds them to a hash. The build script is 25 lines, not about 15: it picks the archive by `TARGET` and links nothing when there's none.
+- **The lock** has a section per target, as §5 planned, and two new fields: the list of the 39 symbols the archive needs (§5's "libSystem allowlist") and the bindings' SHA-256. `cargo xtask ghostty verify` checks them, in `ci` and `clean-build`. `ghostty bump` isn't built.
+- **The legacy key shim is narrower** than §3's row. A bare Ctrl-[, Ctrl-i and Ctrl-m send Esc, Tab and Return, as GUI Emacs, Vim and die-core's keymaps fold them. Modified Return, Tab and Esc keep Ghostty's encoding (Shift-Return is `CSI 27;2;13~`), which your ghostel sends today and Claude Code reads as a new line; kitty would send a plain CR. Ctrl-@ typed as Ctrl-Shift-2 is CSI u, as Ghostty's app sends it; from notation, `<C-@>` is NUL.
+- **The keypad never sends application sequences.** Mode 1035 (ignore the keypad's mode with Num Lock) is on by default, as in Ghostty on macOS, so DECKPAM changes nothing.
+- **Scrollback** keeps a little under 10,000 lines: the engine drops whole pages, so 8,977 rows stayed at 40 columns and 9,613 at 80.
+- **SGR-pixel mouse reports** count pixels from 0, and X10 mode (9) reports no wheel, as xterm's doesn't.
+- **What the engine asks of DIE is events**, not callbacks: titles, the directory, the bell, OSC 52 writes and OSC 9 and 777 notifications. A callback would need `Ctx`. OSC 52 reads are denied inside the engine's callback, as §2's deadlock rule has it.
+- **Synchronized output** holds the frame for up to 1 s, but the frame held is the last one drawn, not one captured inside the render-hold callback (G13). The capture needs a render-state update from inside the callback.
+- **Feeding is bounded in time as well as bytes.** `feed` parses 1 KiB at a time and returns at 64 KiB or once 2 ms have gone. Ordinary output still goes 64 KiB a call (a build log in 0.22 ms, a read of `yes` in 1.9 ms), and the slices cost about 1 %. Output crafted to be slow (REP, DECALN, ED, RIS: up to 5 µs a byte) took 0.3 s a call and now returns within about 8 ms. Replies waiting for the PTY are capped at 1 MiB.
+- **A program's own default colors** (OSC 10 and 11) and reverse video (DECSCNM, a visible bell) redraw every row, as the theme's do; the engine marks only a palette change as a full redraw.
+- **Committed text** (an input method's, the emoji picker's, a dead key's) goes to the program as UTF-8 whatever the kitty flags, as kitty sends it. Through the encoder, flag 8 would send a key for its first character.
+- **Copy state's text** comes from a second render state with overscan over the whole scrollback, one line per row with its soft-wrap flag and each character's column. 9,637 rows of 80 columns took 12.8 ms in release, against S2's 2.1 ms for the formatter, which loses the columns and the wraps. The frame's render state is rebuilt after it, since the text's update takes the terminal's dirty flags. Rows are absolute, through a tracked reference on the screen's top row, so a snapshot can follow new output by reading only what was added. The count is taken after each 1 KiB slice, so a 64 KiB read of `yes` (21,845 lines, twice what the scrollback keeps) keeps every number. Output crafted to push out the whole scrollback in one slice loses the count; then rows are numbered on from past every number given, so an old number names no line.
+- **Not yet:** DIE's PNG hook and kitty placements, which need core placements. Until then kitty graphics are off (the engine's image limit is 0): a program's query gets no answer, so it shows text rather than images nothing draws. Also hyperlinks, OSC 133, the engine's selection and search, the pointer shape, and colour-scheme reports.
+
+### The parity checklist now
+
+The engine side's tests (`crates/die-term/tests`) exercise these through the `Term` API:
+
+| Capability | Status |
+|---|---|
+| 16, 256 and 24-bit colour; palette and default colours from the theme; OSC 4/10/11 replies | Passes |
+| Bold, italic, faint, inverse, invisible, strike; 5 underline styles with colour | Passes. Overline waits on a field in core's `Cell`; blink draws steadily |
+| Wide characters, graphemes, skin-tone emoji (mode 2027) | Passes |
+| Cursor shape, blink, visibility and colour; alternate screen; reflow on resize; scroll regions | Passes |
+| Redraw only what changed | Passes (dirty rows, a frame for a cursor that moved alone, and every row when the default colours change) |
+| Synchronized output (2026) | Passes, with the difference above |
+| Scrollback of 10k lines capped at 64 MB | Set; the engine keeps a little under. Compression while idle waits on the surface's idle timer |
+| Title, bell, OSC 7 (and OSC 9;9's bare path), OSC 9/777, OSC 52 write; OSC 52 read denied | Passes, as events |
+| DA, DSR, XTVERSION as DIE, XTWINOPS 14/16/18 and mode 2048 in physical pixels, DECRQM, XTGETTCAP | Passes. DECRQSS not exercised |
+| Kitty keyboard flags 1–31, press, repeat and release; legacy keys; DECCKM; Option as Meta | Passes. modifyOtherKeys not exercised |
+| The legacy C0 shim | Passes, narrower than §3 (above) |
+| Mouse tracking 9/1000/1002/1003, formats 1005/1006/1015/1016 | Passes |
+| Wheel to the app, arrows with 1007 on the alternate screen, else the scrollback | Passes (`Term::wheel`). Trackpad accumulation is the surface's |
+| Bracketed paste with the unsafe-paste check; focus reports | Passes |
+| The modes Esc routes by (D18): the alternate screen | Passes (`Term::modes`, `Term::alt_screen`) |
+| Copy state's text with rows, columns, wraps and the cursor; viewport at any row; following new output | Passes (the engine side); copy state itself is the next package's |
+| Known gaps: OSC 99, OSC 66, the title stack | Still gaps; a test pins each, so the bump that closes one says so |
+| Kitty graphics, hyperlinks, OSC 133, selection and search, pointer shape, colour-scheme reports, PTY lifecycle | Wait. Kitty graphics are off until then |
+

@@ -34,9 +34,11 @@ mod pointer;
 pub mod process;
 mod project;
 mod prompt;
+pub mod pty;
 mod rt;
 mod scene;
 pub mod session;
+mod surface;
 pub mod sys;
 mod text;
 mod undo;
@@ -59,8 +61,12 @@ pub use layout::{Dir, DisplayLine, Geometry, Stop, ViewRow, Viewport};
 pub use pointer::{CellHit, WindowPart};
 pub use project::{PathSource, project_root, walk};
 pub use prompt::{PromptSpec, flex_rank, recent_first};
+pub use pty::{Pty, PtyCommand, PtySize};
 pub use rt::*;
 pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
+pub use surface::{
+    CellPixels, Color, Frame, FrameCell, RenderInfo, SurfaceCursor, SurfacePointer, SurfaceText,
+};
 pub use text::*;
 pub use windows::{Place, PlaceList};
 pub use workspace::{Clipboard, RegKind, Register, ShowIn, Side};

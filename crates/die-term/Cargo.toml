@@ -1,0 +1,28 @@
+[package]
+name = "die-term"
+description = "DIE's terminal buffers: Ghostty's libghostty-vt engine shown as die-core cells (scope §6, D10)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The engine side needs die-core's public types only (scope §6), and no `unsafe`: the wrapper
+# and die-term-sys hold the FFI.
+[dependencies]
+die-core.workspace = true
+libghostty-vt.workspace = true
+
+[dev-dependencies]
+die-test-cap.workspace = true
+# Copy state's tests run die-vim's grammar over a real terminal's text.
+die-vim.workspace = true
+
+# A PTY's program starts through the test binary's own trampoline (`die_core::pty::trampoline`),
+# which `main` has to call first, so this test has no harness.
+[[test]]
+name = "terminal"
+harness = false
+
+[lints]
+workspace = true

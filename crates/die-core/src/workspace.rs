@@ -131,6 +131,7 @@ impl Ctx {
             kind,
             owner: self.cur_ext(),
             obj: Some(Box::new(s)),
+            copy: None,
         };
         self.add_buffer(name, content, state)
     }
@@ -213,12 +214,11 @@ impl Ctx {
         }
     }
 
-    /// A buffer's text, for reading (C2).
+    /// A buffer's text, for reading (C2). A surface's in copy state is its read-only snapshot
+    /// (scope §5.5); any other surface has none.
     pub fn text(&self, buf: BufferId) -> Result<&TextBuf> {
-        match &self.buffers.get(buf).ok_or(Checkout::Gone)?.content {
-            Content::Text(t) => Ok(t),
-            _ => Err(Error::NotText),
-        }
+        let b = self.buffers.get(buf).ok_or(Checkout::Gone)?;
+        b.content.text().ok_or(Error::NotText)
     }
     /// Core-owned text is borrowed by id, never checked out (C2).
     pub fn text_mut(&mut self, buf: BufferId) -> Result<&mut TextBuf> {
@@ -227,14 +227,11 @@ impl Ctx {
             .or(self.focused)
             .filter(|w| self.windows.get(*w).is_some_and(|w| w.buffer == buf));
         let cmd = self.cmd_seq;
-        match &mut self.buffers.get_mut(buf).ok_or(Checkout::Gone)?.content {
-            Content::Text(t) => {
-                t.cmd = cmd;
-                t.actor = actor;
-                Ok(t)
-            }
-            _ => Err(Error::NotText),
-        }
+        let b = self.buffers.get_mut(buf).ok_or(Checkout::Gone)?;
+        let t = b.content.text_mut().ok_or(Error::NotText)?;
+        t.cmd = cmd;
+        t.actor = actor;
+        Ok(t)
     }
 
     /// Show a buffer, and return the window that does, or None for `Background`.

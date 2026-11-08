@@ -12,6 +12,7 @@ pub mod clean;
 pub mod count;
 pub mod cross;
 pub mod fonts;
+pub mod ghostty;
 pub mod guards;
 pub mod lint;
 pub mod linux;
