@@ -17,6 +17,8 @@ impl Ctx {
     pub fn feed_keys(&mut self, keys: &str) -> Result {
         let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
         if self.nesting() == 0 {
+            // Behind what any feed kept apart is waiting on.
+            self.fences.iter_mut().for_each(|f| *f += evs.len());
             self.fed.extend(evs);
             self.fed_at = self.fed.len();
             return Ok(());
@@ -31,6 +33,28 @@ impl Ctx {
             self.fed.push_front(ev);
         }
         Ok(())
+    }
+    /// Feed keys as [`Ctx::feed_keys`] does, kept apart from the fed keys behind them, as Emacs
+    /// runs a keyboard macro inside `ignore-errors` (contract §6): a failure among them, or among
+    /// keys they feed, drops only those. Once they've all run, `on_fed_run_out` calls run before
+    /// the next key, so what they left waiting can be ended. die-vim's `:norm` feeds each line so.
+    pub fn feed_keys_apart(&mut self, keys: &str) -> Result {
+        let behind = match self.nesting() {
+            0 => 0,
+            _ => self.fed.len() - self.fed_at.min(self.fed.len()),
+        };
+        self.feed_keys(keys)?;
+        self.fences.push(behind);
+        Ok(())
+    }
+    /// Run `f` from the top of the loop, before the next key is looked up, whenever keys fed by
+    /// [`Ctx::feed_keys_apart`] have all run, and no failure dropped them (contract §6).
+    pub fn on_fed_run_out(&mut self, f: impl FnMut(&mut Ctx) -> Result + 'static) -> Sub {
+        self.new_sub(SubKind::RunOut(Rc::new(RefCell::new(f))))
+    }
+    /// Whether the keys so far only start a longer key, as `f` waits for its character.
+    pub fn keys_pending(&self) -> bool {
+        !self.pending.is_empty()
     }
     /// Run `f` from the top of the loop, before the next key is looked up, whenever a key's
     /// failure ends what was fed (contract §6). It runs for any key that fails, even with
@@ -60,13 +84,27 @@ impl Ctx {
         self.new_sub(SubKind::Ended(Rc::new(RefCell::new(f))))
     }
 
-    /// A key failed: what's left of the fed keys goes.
+    /// A key failed: what's left of the fed keys goes, as far as the innermost feed kept apart.
     pub(crate) fn drop_fed(&mut self) {
-        self.fed.clear();
+        let keep = self.fences.pop().unwrap_or(0).min(self.fed.len());
+        self.fed.drain(..self.fed.len() - keep);
         self.queue_hooks(|kind| match kind {
             SubKind::Dropped(f) => Some(f.clone()),
             _ => None,
         });
+    }
+
+    /// Before the next key: if the innermost feed kept apart has all run, say so.
+    pub(crate) fn fed_ran_out(&mut self) -> bool {
+        if self.fences.last().is_none_or(|&b| self.fed.len() > b) {
+            return false;
+        }
+        self.fences.pop();
+        self.queue_hooks(|kind| match kind {
+            SubKind::RunOut(f) => Some(f.clone()),
+            _ => None,
+        });
+        true
     }
 
     /// A command is over.
