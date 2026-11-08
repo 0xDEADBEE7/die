@@ -15,6 +15,10 @@ use crate::scene::{Cell, CursorShape, Glyph, Scene, WindowPlacement, glyphs};
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+mod copy;
+pub(crate) use copy::Copy;
+pub use copy::SurfaceText;
+
 /// A color a surface gives a cell.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Color {
@@ -373,6 +377,8 @@ impl Ctx {
                 cell,
             };
             ctx.checkout_surface(buf, |s, ctx| s.event(&ev, ctx))?;
+            // The surface's text reflowed, so copy state starts over on it.
+            ctx.copy_retake(buf);
             Ok(())
         });
     }
@@ -401,6 +407,8 @@ impl Ctx {
     ) -> Option<(usize, usize, bool, Option<CursorShape>)> {
         let win = self.windows.get(p.window)?;
         let (cols, rows, buf) = (win.cols, win.rows, win.buffer);
+        self.copy_sync(buf, true);
+        let top = self.copy_top(buf, p.window);
         let info = RenderInfo {
             window: p.window,
             focused: focused && self.prompt.is_none() && self.app_focused,
@@ -415,6 +423,7 @@ impl Ctx {
             return None;
         };
         let drawn = catch_unwind(AssertUnwindSafe(|| {
+            s.scroll_to(top);
             s.render(&mut frame, &info);
             s.cursor(&info)
         }));
@@ -434,6 +443,9 @@ impl Ctx {
         frame.new = false;
         frame.seen = true;
         self.surfaces.frames.insert(buf, frame);
+        if top.is_some() {
+            return self.draw_copy(scene, p, buf, focused);
+        }
         let cursor = cursor.filter(|c| c.visible)?;
         Some((cursor.row, cursor.col, false, Some(cursor.shape)))
     }
@@ -468,13 +480,17 @@ impl Ctx {
         hit: Option<CellHit>,
     ) -> Option<WindowId> {
         let held = matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_));
+        // Copy state's pointer is a text window's: a click moves the cursor, a drag selects,
+        // the wheel scrolls the snapshot.
+        let copying = |w: WindowId| self.window_buffer(w).is_some_and(|b| self.text(b).is_ok());
         let w = match self.surfaces.pressed {
             Some(w) if held => w,
             _ if self.prompt.is_some() => return None,
             _ => hit.filter(|h| h.part == WindowPart::Text)?.window,
         };
         let buf = self.window_buffer(w)?;
-        matches!(self.buffers.get(buf)?.content, Content::Custom { .. }).then_some(w)
+        let custom = matches!(self.buffers.get(buf)?.content, Content::Custom { .. });
+        (custom && !copying(w)).then_some(w)
     }
 
     /// Give a pointer event to the surface in `w`, in its area's cells and pixels.

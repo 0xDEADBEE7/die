@@ -546,6 +546,48 @@ These stand with the entry below's list, which no one has worked through.
 759. Tests: 11 real-PTY tests in `crates/die-core/tests/pty.rs`, without a harness so its `main` is the trampoline: `/bin/sh` echoes a line and `$((40+2))`; `stty size` says 24 80, then 33 101 after a resize; `exit 7`, `kill -9 $$` and a missing program (127, named on the terminal); the directory, `arg0`, the environment and the login PATH; `sh -i` is a session leader (`Ss`) whose job gets the foreground and whose `stty -echo` `echoes()` sees; 1 MiB written to a program that doesn't read takes no time; `yes` into a 4 ms-a-batch consumer doesn't hold up a key past 2 turns or a turn past 250 ms, which hangs with the per-turn gate taken out; all 3,600,003 bytes of a flood into that slow consumer before its exit, and none after; no fd of one terminal in another's program; a close kills a program ignoring the hangup after 300 ms; and nothing (a deaf `sh`, `sh -i` and its background `sleep`) is left after `shutdown`. 9 harness tests in `crates/die-core/tests/surface.rs` (every attribute's resolution over the whole area, the frame kept until a resize, the cursor's shapes and hollow cases, the status line, `Resize` in pixels, the pointer in the area's cells and pixels, paste, the DIE layer and Esc in passthrough, normal state's keymap), 3 in `crates/die/tests/terminal.rs`, and the key check in die-render's `keys.rs`. Existing tests now say Esc leaves passthrough.
 760. Open: die-term isn't connected, so no `term` command exists; the integrator maps `Term::frame`'s cells (`FrameCell::from`), its cursor, title and `modes` to `render`, `cursor`, `status` and `takes_esc`, and core's events to its keys, `Pointer` and `paste`. D20's holder takes the PTY next round, with kqueue for the exit after a restart and the trampoline's fd sweep. Placements (kitty images) wait for core's. The Linux PTY path is cross-checked, not run. Copy state's own package builds normal state's motions.
 
+**Copy state: normal state over a terminal's text**
+
+761. Normal state on a surface that gives its text is copy state (D19). Core takes a read-only `TextBuf` snapshot as the buffer leaves passthrough, by either Esc or `set_state_of`, and drops it on the way back. While it's there, `Ctx::text` and `text_mut` give it, so every die-vim motion, count, object, `/ ? n N * #`, mark, `v V C-v` and yank runs on it unchanged. There's no copy-state keymap: core looks a key up in the text kind's keymap right after the surface kind's, so die-term's `<Esc>`, `i a I A` and `p P` win. The contract had die-vim register its grammar again as a copy keymap; this is the same keys with no second table to keep in step.
+762. `Surface::text(update) -> Option<SurfaceText>` and `Surface::scroll_to(Option<usize>)`, both defaulted. A `SurfaceText` is lines ending in newlines, the surface's cursor as a line and a byte, and the line its live view starts with. An update replaces the last text from line `from` after `dropped` lines left its start. It's synchronous, not the contract's `text(done)`: the engine's whole read of 9,637 rows takes about 10 ms. `Ctx::surface_text_changed(buf)` marks the snapshot stale. A surface with no text has no copy state. Scope §5.5's fallback to its rendered cells isn't built: it would take `j` and `k` from surfaces that handle their own keys in normal state.
+763. What shows: the window keeps the surface's own cells and colors. Before each render, core tells the surface (`scroll_to`) which snapshot line is at the window's top, and die-term shows its viewport there. Over those cells core draws die-vim's cursor, in the state's shape, and recolors the cells under the selection and the search's matches with the `selection`, `search` and `search-current` faces. A face that sets no foreground leaves the text's color. The surface's own cursor isn't drawn in copy state. The frame needed no change.
+764. Following works the way evil-ghostel's point follows the cursor's row. A window follows when the buffer is in normal state, no prompt is open, and its cursor is on the surface's cursor line or below it. A follower on the surface's cursor stays on it. One below keeps its distance and display column. Each keeps its distance above the live view. Other windows stay on their lines, less any dropped, so the snapshot is frozen for them. The scope says `G` resumes; any way back to the bottom does, `j` too. Visual and operator-pending state wait until they end. An update is read at the next key or frame, so a flood costs one read a frame.
+765. An update is a splice. It replaces the lines from the old screen top and drops the oldest. Markers and views move as for an edit, but nothing goes in the change log or undo (`TextBuf::splice`), so marks in the history stay on their text. die-term's `CopyText` reads `text_from` the old screen top, or the whole text after a resize, a screen switch, or a flood past what the marks count. A test checks that twelve updates through a scrollback-wide flood come to what one whole read gives.
+766. A window's top never scrolls below the live view's top line (`TextBuf`'s top limit), since the engine can't show rows below its screen. So `zt` on the last line, and `C-e` and `C-f` at the bottom, stop there, and so does `G`'s recentring.
+767. The snapshot ends at the terminal cursor's line, or at the last row drawn on if that's lower, so `G` and `j` stop at the prompt, as evil-ghostel's `j` and `G` stay on it. A soft-wrapped line is a line per row, so `yy` on a wrapped command yanks one row.
+768. Edits on a snapshot fail with "Buffer is read-only", Emacs's words. die-vim's `insert::begin` refuses on a snapshot, so `o O R gi c s S C` and visual `I A` never put a terminal in insert or replace state. `u` says there's nothing to undo, and `.` that there's no previous change.
+769. A resize reads the whole text again after the surface hears it, since a terminal reflows. Followers go back to the cursor, and other windows keep their line numbers, so a split doesn't lose your place. After a width change, the lines there are the reflowed ones.
+770. The pointer in copy state works as on text: a click moves the cursor, a drag selects into visual state, the wheel scrolls the snapshot, and the program hears none of it. Each drawn cell maps to its snapshot position for that.
+771. `C-u` stays the prefix argument in a terminal's normal state, as in your Evil and in text. The package listed it among the scroll keys. You can veto this: it would be one binding in the term kind.
+772. Budget: die-core from 14,790 to 15,160. Copy state is about 370, and die-core is now about 1,160 over guard 7's "about 14k". Surfaces and PTYs goes from 975 to 1,285 (the new `surface/copy.rs`), text and undo from 1,425 to 1,450, layout from 950 to 960, ext, dispatch and rt from 1,575 to 1,600, and die-vim from 10,387 to 10,390. die-term has a new module, copy state, at 63 of 80.
+773. Tests: 12 in `crates/die-vim/tests/copy.rs` over a shell-like test surface:
+     - 20,000 lines through Esc, `gg`, `/19999<CR>`, `yy`, `G` and `vey`
+     - following at the bottom, not after `k`, with `G` catching up, and updates only, not whole reads
+     - visual state holding it
+     - the oldest lines dropping under a frozen cursor
+     - the surface's red under the selection, and the cursor's place
+     - 24 edit keys refused
+     - the kind's Esc winning, `i` back to the live view, and describe-key naming `kind text`
+     - the scroll keys stopping at the live view, and the wheel
+     - `p` pasting into the program, and a split keeping its place
+     - a click and a drag
+     - die-vim's marks and jumps from an old snapshot doing no harm in a new one
+     6 in `crates/die-term/tests/copy.rs` over a real `Term` with no PTY:
+     - `seq 1 20000`'s output, then search, yank and the bottom, with each cursor row showing its line's cells
+     - twelve updates that equal a whole read, frozen after `5k`
+     - the engine's red kept, and the selection over it
+     - the alternate screen's rows alone
+     - `i` back to the live screen
+     - the timing in 774
+774. Timing, in the test profile, which is optimized: a whole read of the engine's 9,637 rows of 80 columns takes 10.4 ms at best of five. Entering copy state over them through core takes 10.2 ms with the rope and the window's view, and Esc on 20,000 rows of `seq` output takes about 23 ms with its frame. Over the test surface, 10,000 lines of 69 columns take 0.3 ms, so the engine's read is the whole cost.
+775. Open:
+     - Wiring into die-term's surface once it lands: `text` and `scroll_to` from `CopyText`, `surface_text_changed` after output, and a full frame after the viewport moves.
+     - Joining soft-wrapped rows for `yy`.
+     - Editing the shell's line from normal state, which is D18's later item.
+     - A frozen window over rows that a flood has pruned shows whatever the engine has there.
+     - A snapshot's screen rows can change under a frozen window, so a yank there gives what was read, not what's drawn now.
+     - Wide characters whose width core and the engine disagree on, some emoji sequences among them, would put the cursor a cell off.
+
 ## 2026-11-07: 28 packages on `m0/integration`, and none of them on `main`
 
 **Waiting on you:**

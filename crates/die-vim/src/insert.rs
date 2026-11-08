@@ -202,6 +202,10 @@ impl Session {
 pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
+    // Copy state's text can't take typing: a terminal binds its own keys back to insert.
+    if t.is_snapshot() {
+        return Err(Error::Msg("Buffer is read-only".into()));
+    }
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
     let line = t.line_of(p);
     match entry {

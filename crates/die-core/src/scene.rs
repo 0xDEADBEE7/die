@@ -236,7 +236,7 @@ impl Scene {
         }
     }
 
-    fn map(&mut self, row: usize, col: usize, to: (WindowId, usize)) {
+    pub(crate) fn map(&mut self, row: usize, col: usize, to: (WindowId, usize)) {
         if row < self.rows && col < self.cols {
             self.positions[row * self.cols + col] = Some(to);
         }
@@ -770,7 +770,10 @@ fn draw_text(
 /// A selection's bytes, and for a block its display columns on those lines. A
 /// charwise selection covers both of its ends, as Vim's does. A linewise one takes
 /// in the buffer's end on the last line, which has a cell too.
-fn selected(t: &TextBuf, sel: Selection) -> (Range<usize>, Option<RangeInclusive<usize>>) {
+pub(crate) fn selected(
+    t: &TextBuf,
+    sel: Selection,
+) -> (Range<usize>, Option<RangeInclusive<usize>>) {
     let (lo, hi) = (sel.anchor.min(sel.head), sel.anchor.max(sel.head));
     let past = t.line_of(hi) + 1;
     let end = t.line_start(past) + usize::from(past == t.line_count());

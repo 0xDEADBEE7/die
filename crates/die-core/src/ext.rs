@@ -180,6 +180,17 @@ pub trait Surface: Any {
     fn initial_state(&self) -> State {
         State::Normal
     }
+    /// Its content as text, for copy state (scope §5.5, D19): normal state's motions, search
+    /// and yank run over it. Core reads it all when the buffer leaves passthrough, and with
+    /// `update` what changed since, after [`Ctx::surface_text_changed`], while copy state
+    /// follows the bottom; None there means nothing did. None from the start: no copy state, and
+    /// keys in normal state go to [`Surface::event`].
+    fn text(&mut self, _update: bool) -> Option<SurfaceText> {
+        None
+    }
+    /// Show the text's line `top` on the area's top row, or the live view with None, as copy
+    /// state scrolls. Core calls it before each render.
+    fn scroll_to(&mut self, _top: Option<usize>) {}
 }
 
 /// What's true of a mode whichever buffer it's on, declared once in the registry.
@@ -313,7 +324,25 @@ pub(crate) enum Content {
         /// The extension that made it, for its panics.
         owner: ExtIdx,
         obj: Option<Box<dyn Surface>>,
+        /// Its copy state's snapshot, outside passthrough.
+        copy: Option<Box<Copy>>,
     },
+}
+
+impl Content {
+    /// The text its windows' views and die-vim work on: a text buffer's, or a surface's snapshot.
+    pub(crate) fn text(&self) -> Option<&TextBuf> {
+        match self {
+            Content::Text(t) => Some(t),
+            Content::Custom { copy, .. } => copy.as_ref().map(|c| &c.text),
+        }
+    }
+    pub(crate) fn text_mut(&mut self) -> Option<&mut TextBuf> {
+        match self {
+            Content::Text(t) => Some(t),
+            Content::Custom { copy, .. } => copy.as_mut().map(|c| &mut c.text),
+        }
+    }
 }
 
 pub(crate) struct ModeSlot {

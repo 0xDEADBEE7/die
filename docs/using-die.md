@@ -213,6 +213,19 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 | `C-h k`, `C-h c`, `C-h x`, `C-h f` | What a key does, what a command does, as `\hk` and `\hc` |
 | `C-c` then a key, `<S-Tab>` | Nothing: your Emacs binds nothing to them there, and says so |
 
+## Terminal
+
+**Normal state** in a terminal is your Evil over what it shows: the scrollback and the screen, as text you can read, search and yank but not change. Esc from insert state goes there (Cmd-Esc while a program is on the alternate screen), with the cursor on the terminal's own.
+
+- [Moving](#moving) and [Selecting](#selecting) work as in a file: counts, objects, `/ ? n N * #`, marks, `v V C-v`, and `y` into registers and the clipboard, `"x` too. So do `:` and the `C-w` keys.
+- **Scrolling:** `C-d C-f C-b C-e C-y`, `zz zt zb`, `gg` and `G` go over the scrollback as over a file's lines, never lower than the live screen. `C-u` is the prefix argument there too, as in your Evil.
+- **What shows** is the terminal's own cells and colors, scrolled to where you are, with the cursor, the selection and the search's matches drawn over them.
+- **New output:** while the cursor is on the terminal's cursor line or below it, normal state follows the output, and a cursor on the terminal's stays on it. Move up and it holds still while the program goes on printing. `G` comes back to the bottom and catches up. A selection or a waiting operator holds it too, until it ends.
+- **Lines are rows:** a line the program wrapped is a line per row, and the screen's empty rows below the prompt aren't lines, so `G` and `j` stop at the prompt.
+- **Edits** (`x d c o r J p`'s Evil meanings, and the rest) say "Buffer is read-only".
+- **The program's keys:** `<Esc>` goes to the program, so Esc Esc from insert reaches Claude Code. `i a I A` go back to insert, at the live screen. `p P` paste into the program, the clipboard or `"x`, as Cmd-V does.
+- **The mouse** is a file's: a click moves the cursor, a drag selects, the wheel scrolls the scrollback. The program hears none of it in normal state.
+
 ## Windows and buffers
 
 - **`C-w` then:** `h j k l` and arrows, `w W t b p` to move; `s S v n` to split; `c q o` to close; `= + - > < _ |` to size; `H J K L` to move the window; `r R x` to rotate and exchange; `:` for ex; digits for a count. A key with Control does the same, as `C-w C-h`.
@@ -224,7 +237,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 ## What isn't there yet
 
-- **A terminal.** No terminal buffers exist yet. `:make` and `:!` run commands, but anything that reads keys, as Claude Code, a REPL or a pager, runs in a terminal of your own next to DIE, and `die file:line` from there. Core's half is in: once die-term is connected, a terminal starts in insert state, shown `<I>` at the right of its status line with its title, where every key but Cmd's goes to the program, the leader and `C-c` too. Esc goes to normal state (`<N>`), except while a program such as vim is on the alternate screen; Cmd-Esc always does. Cmd-V pastes and Cmd-Q quits.
+- **A terminal.** No terminal buffers exist yet. `:make` and `:!` run commands, but anything that reads keys, as Claude Code, a REPL or a pager, runs in a terminal of your own next to DIE, and `die file:line` from there. Core's half is in: once die-term is connected, a terminal starts in insert state, shown `<I>` at the right of its status line with its title, where every key but Cmd's goes to the program, the leader and `C-c` too. Esc goes to normal state (`<N>`), except while a program such as vim is on the alternate screen; Cmd-Esc always does. Cmd-V pastes and Cmd-Q quits. Normal state's keys, which work on any surface that gives its text, are in [Terminal](#terminal). Editing the shell's line from normal state, as evil-ghostel's `d`, `c`, `x` and `u` do, comes later.
 - **Running commands:** `M-&` and a command ending in `&` (Emacs's async shell commands), `C-u M-!` (output at the cursor), completion in the command prompts, stopping a `:!` that went on in the background before DIE quits, asking before quitting stops a command, and in `*compilation*` `go` (show an error without going there), `[[` `]]` (by file) and `q`. `:w !cmd`. Backspaces in output aren't moved over, as comint does.
 - **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`, `<Insert>`.
 - **Ex:** `:p`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, a `/pattern/` as an address, `:marks :jumps :pwd :cd`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`. `:pu =` and `C-r =` aren't built anywhere. A range given backward, as `:3,1d`, is refused, where your Evil asks whether to swap it.

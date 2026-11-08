@@ -140,8 +140,8 @@ Surface
   event(event, ctx)    input that keymaps didn't take; in passthrough, every key outside the DIE layer
   takes_esc()          optional: a plain Esc in passthrough is the surface's now (D18)
   initial_state()      normal by default; passthrough for terminals
-  text()               optional: full text content, for copy state and search beyond the viewport
-  scroll_to / reveal   optional: let copy state and search move the view
+  text(update)         optional: its content as lines, whole or what changed, for copy state (§5.5)
+  scroll_to(top)       optional: show copy state's line `top` at the top; reveal(range) comes later
   save()               optional: survive restarts (§5.9)
 ```
 
@@ -151,9 +151,9 @@ The six surface kinds from the first conversation (text, terminal, list, canvas,
 
 What makes Emacs powerful is that everything is text, so search, motions and yank work the same in dired, magit and compilation buffers. A model with many kinds of surface usually loses that. DIE gets it back through the cell grid: whatever a surface renders into cells is a grid of characters.
 
-A **copy state** (like tmux's copy-mode) puts a cursor on the content of any window. Entering it, core takes a read-only text snapshot of the surface: its `text()` if it has one (for a terminal, the screen plus scrollback, which arrives asynchronously from the terminal's engine), otherwise its rendered cells. die-vim's normal and visual grammar then runs on that snapshot, so you get the same motions, `/` search, visual selection and yank as in a text buffer (D19). Core has no motion code of its own. Pixel content is invisible to copy state unless the surface includes it in `text()`.
+A **copy state** (like tmux's copy-mode) puts a cursor on the content of any window. Entering it, core takes a read-only text snapshot of the surface: its `text()` (for a terminal, the screen plus scrollback, read from its engine in about 10 ms when it's full). A surface with no `text()` has no copy state yet; reading its rendered cells instead waits for a surface that wants it. die-vim's normal and visual grammar then runs on that snapshot, so you get the same motions, `/` search, visual selection and yank as in a text buffer (D19). Core has no motion code of its own. The window goes on showing the surface's own cells and colors, scrolled to where the snapshot's cursor is, with the cursor and the selection drawn over them. Pixel content is invisible to copy state unless the surface includes it in `text()`.
 
-In a terminal, normal state is copy state: Esc from insert (or the DIE layer's Esc) enters it (D18). While you're at the bottom, core refreshes the snapshot as output arrives, so it follows new output; once you move away, it stays frozen until you return to the bottom. Esc there goes to the program, and `i`, `a`, `I` or `A` returns to insert.
+In a terminal, normal state is copy state: Esc from insert (or the DIE layer's Esc) enters it (D18), with the cursor on the terminal's. While you're at the bottom, on the terminal cursor's line or below it, core refreshes the snapshot as output arrives, so it follows new output; once you move up, it stays frozen until you return to the bottom, as `G` does. Esc there goes to the program, and `i`, `a`, `I` or `A` returns to insert.
 
 ### 5.6 Modal input and keymaps
 
