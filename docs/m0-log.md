@@ -310,6 +310,7 @@ These stand with the entry below's list, which no one has worked through.
 568. `:saveas` with no name on a buffer with no file is an error, where Evil prompts for one.
 569. `:ls` shows `*messages*` in the window, as Evil's buffer menu takes it. The format is DIE's: marks, the name padded to 20, then the path.
 570. The restart loop's 1 s limit stays, though one restart took 1,021.6 ms under the full suite's load.
+571. `M-x` opens the command palette in normal, insert, replace, visual and copy, bound by `die` beside Cmd-Q, as Emacs's global map has it under Evil. Not in a prompt, where Emacs refuses it, nor in operator-pending, where it ends the operator. Your first `M-x` in the app said `<A-x> is undefined`.
 
 ## 2026-11-07: 28 packages on `m0/integration`, and none of them on `main`
 
