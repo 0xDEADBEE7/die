@@ -51,7 +51,8 @@ path = "crates/die-vim"
 # 10,340 until the review fixes of the ex commands on lines and insert state's Emacs keys: `C-g`, `C-u n <Home>`, Emacs's words for `C-Left`.
 # 10,383 until the review fixes of `:!`: a filter whose output isn't UTF-8 leaves the text alone.
 # 10,387 until copy state: no insert session starts on a surface's snapshot.
-limit = 10390
+# 10,390 until the terminal: OSC 52 as a kill.
+limit = 10391
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 # Guard 7: about 4k of glue, plus about 1k for the helper process (D20). The engine side came
@@ -330,3 +331,19 @@ crate = "die-term"
 name = "copy state"
 limit = 80
 files = ["copy.rs"]
+
+# The terminal buffer: a Term on a core PTY as a surface, with D18's Esc routing, the pointer,
+# pastes, the size rule for windows sharing one, and OSC 52 and 7.
+[[module]]
+crate = "die-term"
+name = "surface"
+limit = 400
+files = ["surface.rs"]
+
+# Opening terminals (`term`, `term-switch`, `open`), the exit, `busy`, and normal state's commands
+# and keys: Esc to the program, `i a I A`, `p P` and the Esc toggle.
+[[module]]
+crate = "die-term"
+name = "commands"
+limit = 320
+files = ["commands.rs"]

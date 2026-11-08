@@ -454,17 +454,18 @@ impl Ctx {
         Some((cursor.row, cursor.col, false, Some(cursor.shape)))
     }
 
-    /// What a window's status line says of `buf`: its status text, and for a surface the surface's
-    /// segment after it. The second part, for a surface only, is its state as Evil's tag, which
-    /// goes at the right: a terminal's cursor is the program's, so it can't always say.
+    /// What a window's status line says of `buf`: its status text, or for a surface that gives
+    /// one, the surface's own, since your status text is from a file and a surface knows where it
+    /// is (a terminal's directory). The second part, for a surface only, is its state as Evil's
+    /// tag, which goes at the right: a terminal's cursor is the program's, so it can't always say.
     pub(crate) fn status_line(&mut self, buf: BufferId) -> (String, &'static str) {
-        let mut text = self.status_text(buf);
         let Some(Content::Custom { obj, .. }) = self.buffers.get(buf).map(|b| &b.content) else {
-            return (text, "");
+            return (self.status_text(buf), "");
         };
-        if let Some(segment) = obj.as_ref().and_then(|s| s.status()) {
-            text = format!("{text}  {segment}");
-        }
+        let text = match obj.as_ref().and_then(|s| s.status()) {
+            Some(own) => own,
+            None => self.status_text(buf),
+        };
         let tag = match self.state_of(buf) {
             State::Insert | State::Passthrough => "<I>",
             State::Visual => "<V>",

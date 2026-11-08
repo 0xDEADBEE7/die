@@ -447,7 +447,7 @@ Surface
   render(frame, info)             write the window's whole area into a DIE-owned cell frame
                                   info: the window, whether it takes input, modal state, cells in pixels
   cursor(info)                    optional: where the cursor is in the area, and how it looks
-  status()                        optional: a segment for the window's status line, as a terminal's title
+  status()                        optional: what the window's status line says, as a terminal's directory and title
   event(event, ctx) -> handled    input that keymaps didn't take (below)
   handles(key)                    optional: which keys it takes in passthrough, for describe-key
   takes_esc()                     optional: whether a plain Esc in passthrough is its own now (§7)
@@ -464,7 +464,7 @@ Surface
 - Core resolves what the scene's cell doesn't hold. Reverse video swaps the colors, the defaults too. Faint keeps 65 % of the foreground and takes 35 % of the background, as ghostel does, before the swap. Invisible text draws a space with no underline or strikethrough, and blinking text draws steadily.
 - Cells are built with `FrameCell::new(glyph, fg, bg)` and then their fields set, since a struct literal doesn't compile outside die-core. So overline and the link id can arrive with die-term without breaking a producer.
 - `cursor(info)` gives a `SurfaceCursor`: row and column in the area, a `CursorShape` (block, bar, underline or hollow, as DECSCUSR sets them), visible (DECTCEM) and blinking, which draws steadily for now. Core draws it hollow in a window that doesn't take input: not focused, a prompt open, or DIE's window without the keyboard. It draws no cursor that isn't visible, and none for `None`. `CursorShape::for_state(state)` is a text window's shape in a state, passthrough's as insert's bar, for a terminal that follows the modal state on the main screen as evil-ghostel does.
-- A surface window's status line shows the buffer's status text, then the surface's `status()`, and at the right the buffer's state as Evil's tag: `<I>` in passthrough and insert, `<N>` in normal. A terminal's cursor is the program's, so it can't always say. Text windows show no tag.
+- A surface window's status line shows the surface's `status()`, or the buffer's status text if it gives none, and at the right the buffer's state as Evil's tag: `<I>` in passthrough and insert, `<N>` in normal. Your status text is made from the file a buffer visits, and a surface knows where it is: a terminal's directory, which its shell can change. A terminal's cursor is the program's, so it can't always say. Text windows show no tag.
 - Images and pixel buffers on rectangles of cells, each with a source rectangle, a pixel offset and a z-order (a negative z draws below text), come with placements (M3).
 - `render` can't change the workspace. It gets the surface mutably, so it can update its own caches, but it doesn't get `Ctx`. A panic in it draws `<render panicked>` until the next good render (§15), which finds the frame blank and new, so a surface that writes only its changed rows writes them all.
 - **Components are plain Rust types that render into part of an area,** so a new graphical extension can be assembled from reusable pieces. The contract needs nothing extra for this. Your existing browsers don't use custom surfaces at all (§9).

@@ -1,7 +1,7 @@
 //! A terminal-like surface in the DIE you run, with die-vim and the facade's DIE layer (scope
 //! D18): in insert state every key die-vim's insert state binds in text reaches it, the leader
 //! too, while Cmd-V pastes and Cmd-Q quits. Esc goes to normal state, where die-vim's keys for
-//! text do nothing to it.
+//! text do nothing to it, and die-term's `p` pastes into it.
 
 use die_test_cap as _;
 
@@ -131,7 +131,7 @@ fn in_normal_state_die_vims_text_keys_leave_the_terminal_alone() {
     ctx.type_keys("<Esc>");
     assert_eq!(ctx.state(), State::Normal);
     for keys in [
-        "jjkk", "dd", "x", "u", "<C-r>", "p", "yy", "v", "ciwfoo", "gg", "G", "/x<CR>",
+        "jjkk", "dd", "x", "u", "<C-r>", "yy", "v", "cwfoo", "gg", "G", "/x<CR>",
     ] {
         ctx.type_keys(keys);
     }
@@ -143,7 +143,20 @@ fn in_normal_state_die_vims_text_keys_leave_the_terminal_alone() {
         ctx.messages
     );
     let pasted = seen.borrow().iter().any(|e| matches!(e, Event::Paste(_)));
-    assert!(!pasted, "die-vim's p is text's, not the terminal's");
+    assert!(!pasted, "die-vim's y and d leave nothing to paste");
+    ctx.set_register(
+        '"',
+        Register {
+            kind: RegKind::Char,
+            text: "ls".into(),
+        },
+    );
+    ctx.type_keys("p");
+    let pasted = seen
+        .borrow()
+        .iter()
+        .any(|e| *e == Event::Paste("ls".into()));
+    assert!(pasted, "die-term's p pastes into the program (scope D18)");
 }
 
 #[test]

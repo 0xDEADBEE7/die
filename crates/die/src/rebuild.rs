@@ -89,25 +89,32 @@ pub fn register(reg: &mut Registry, setup: Setup) {
         if shared.running.get() {
             return Err(Error::Msg("A rebuild is already running".into()));
         }
-        let root = root_for(&setup.checkout).map_err(Error::Msg)?;
-        let cmd = (setup.command)(&root)?;
-        // File names in cargo's errors are from `root`, so that `gf` and `<CR>` open them.
-        let header = format!("{} in {}\n\n", shown(&cmd), root.display());
-        let buf = ctx.output_buffer(REBUILD, &header, &root)?;
-        let end = last_line_start(ctx.text(buf)?);
-        for w in showing(ctx, buf) {
-            ctx.text_mut(buf)?.set_cursor(w, end);
-        }
-        show(ctx, buf, &shared.opened);
-        shared.running.set(true);
         let (setup, shared) = (setup.clone(), shared.clone());
-        ctx.stream(buf, cmd, move |ctx, f| {
-            ended(ctx, buf, &shared, f.status, &*setup.restart)
-        });
-        ctx.messages
-            .push(format!("Rebuilding in {}", root.display()));
-        Ok(())
+        let ending = crate::terminals::Ending::Rebuild;
+        crate::terminals::unless_busy(ctx, ending, move |ctx| start(ctx, &setup, &shared))
     });
+}
+
+/// Run the build, with its output in `*rebuild*`.
+fn start(ctx: &mut Ctx, setup: &Rc<Setup>, shared: &Rc<Shared>) -> die_core::Result {
+    let root = root_for(&setup.checkout).map_err(Error::Msg)?;
+    let cmd = (setup.command)(&root)?;
+    // File names in cargo's errors are from `root`, so that `gf` and `<CR>` open them.
+    let header = format!("{} in {}\n\n", shown(&cmd), root.display());
+    let buf = ctx.output_buffer(REBUILD, &header, &root)?;
+    let end = last_line_start(ctx.text(buf)?);
+    for w in showing(ctx, buf) {
+        ctx.text_mut(buf)?.set_cursor(w, end);
+    }
+    show(ctx, buf, &shared.opened);
+    shared.running.set(true);
+    let (setup, shared) = (setup.clone(), shared.clone());
+    ctx.stream(buf, cmd, move |ctx, f| {
+        ended(ctx, buf, &shared, f.status, &*setup.restart)
+    });
+    ctx.messages
+        .push(format!("Rebuilding in {}", root.display()));
+    Ok(())
 }
 
 fn showing(ctx: &Ctx, buf: BufferId) -> Vec<WindowId> {

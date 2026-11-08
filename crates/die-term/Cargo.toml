@@ -18,5 +18,11 @@ die-test-cap.workspace = true
 # Copy state's tests run die-vim's grammar over a real terminal's text.
 die-vim.workspace = true
 
+# A PTY's program starts through the test binary's own trampoline (`die_core::pty::trampoline`),
+# which `main` has to call first, so this test has no harness.
+[[test]]
+name = "terminal"
+harness = false
+
 [lints]
 workspace = true

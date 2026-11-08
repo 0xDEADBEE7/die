@@ -158,7 +158,8 @@ pub trait Surface: Any {
     fn cursor(&self, _info: &RenderInfo) -> Option<SurfaceCursor> {
         None
     }
-    /// A segment for the status line of a window showing it, such as a terminal's title.
+    /// What the status line of a window showing it says, in place of the buffer's status text:
+    /// a terminal's directory and title. None keeps the status text.
     fn status(&self) -> Option<String> {
         None
     }

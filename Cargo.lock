@@ -270,6 +270,7 @@ version = "0.0.0"
 dependencies = [
  "die-core",
  "die-render",
+ "die-term",
  "die-test-cap",
  "die-vim",
 ]

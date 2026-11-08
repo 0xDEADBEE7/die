@@ -136,7 +136,7 @@ A surface is whatever a buffer displays. Core provides one built-in surface and 
 Surface
   kind()               "term": identity for keymaps, restore and describe
   render(frame, info)  styled cells over the window's whole area, then placements (images, pixel buffers)
-  cursor() / status()  optional: the cursor in the area, a status-line segment
+  cursor() / status()  optional: the cursor in the area, what the status line says
   event(event, ctx)    input that keymaps didn't take; in passthrough, every key outside the DIE layer
   takes_esc()          optional: a plain Esc in passthrough is the surface's now (D18)
   initial_state()      normal by default; passthrough for terminals
