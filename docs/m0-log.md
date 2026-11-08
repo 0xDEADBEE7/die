@@ -508,6 +508,10 @@ These stand with the entry below's list, which no one has worked through.
 730. S1's checks (`typing`, `redraw`, `firstframe`, `idle`, `resize`, `scale`, `occlusion`, `show`) can't be unseen, because they measure what reaches the display. I tried it. At alpha 0, no present reached the screen (`shown=0` of 500 keys). At alpha 0.01, 27 of 500 did, and macOS called the window covered, so `occlusion` had nothing to cover. So die-dev's window tests run them only with `DIE_ON_SCREEN=1`, and otherwise pass having done nothing, as they do where there's no backend. `ci --full` says when it left them out. They need a display no one is using: CI's macOS runner, once CI is set up, or a run you start when you step away.
 731. Budget: `platform::macos` from 1,305 to 1,315, at 1,312: three safe setters, with `Surface::attach`'s one `unsafe` lookup shared by `view_of`, so the `unsafe` count is unchanged. Also checks from 730 to 735, and the platform stub from 170 to 175.
 
+**A terminal in DIE**
+
+732. You asked on 2026-11-09 for a terminal you can use in DIE as soon as possible, ahead of M1, and for it to respect Vim's modes: "Escape should change from insert to normal mode, but in normal mode perhaps escape can pass through to the terminal". D18 is amended to your evil-ghostel and vterm model. A terminal starts in insert, where every key but the DIE layer goes to the program. Esc goes to normal, except on the alternate screen, where it goes to the program, with a per-buffer toggle. Normal state is copy state over the screen and scrollback, with die-vim's grammar (D19). Esc there goes to the program, and `i a I A` return to insert. Survival across `:rebuild` (D20's holder and helper) comes in the next round, so a first terminal hangs up its shell on a restart.
+
 ## 2026-11-07: 28 packages on `m0/integration`, and none of them on `main`
 
 **Waiting on you:**
