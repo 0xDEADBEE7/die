@@ -1,9 +1,10 @@
 //! The `:` command line. K11a gives it its input; V2 and V5 fill in what it does.
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
-use crate::{substitute, visual, window};
+use crate::{each, registers, substitute, visual, window};
 use die_core::{
-    Args, BufferId, Ctx, Error, FileTarget, PromptSpec, Result, ShowIn, project_root, recent_first,
+    Args, BufferId, Ctx, Error, FileTarget, Origin, PromptSpec, Result, ShowIn, Side, project_root,
+    recent_first,
 };
 use std::ffi::OsStr;
 use std::ops::Range;
@@ -32,6 +33,8 @@ const EX: &[(&str, &str, ExFn)] = &[
     ("ls", "ls", |c, _, _| list_buffers(c, false)),
     ("buffers", "buffers", |c, _, _| list_buffers(c, false)),
     ("files", "files", |c, _, _| list_buffers(c, true)),
+    ("reg", "registers", |c, _, rest| show_registers(c, rest)),
+    ("di", "display", |c, _, rest| show_registers(c, rest)),
     ("bn", "bnext", |c, _, _| window::buffer_step(c, true)),
     ("bp", "bprevious", |c, _, _| window::buffer_step(c, false)),
     ("bN", "bNext", |c, _, _| window::buffer_step(c, false)),
@@ -64,6 +67,7 @@ fn ex_names() -> impl Iterator<Item = (&'static str, &'static str)> {
     own.map(|e| (e.0, e.1))
         .chain(windows)
         .chain([substitute::NAME])
+        .chain(each::NAMES)
 }
 
 /// Where an ex line's command name is: after any `:`, blanks and range, up to what isn't a name's
@@ -119,16 +123,23 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
-/// Run an ex line: `:s` with its range, `:N`, one of die-vim's own, or a command's name with the
-/// rest of the line as its [`Args::text`]. Any command in the registry can be called this way
-/// (contract §6), and from a selection: the others take no range, so it's ignored.
+/// Run an ex line: `:s`, `:norm` or `:g` with its range, `:N`, one of die-vim's own, or a
+/// command's name with the rest of the line as its [`Args::text`]. Any command in the registry can
+/// be called this way (contract §6), and from a selection: the others take no range, so it's
+/// ignored.
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
-    let text = text.trim().trim_start_matches(':').trim_start();
+    let line = text.trim_start().trim_start_matches(':').trim_start();
+    let text = line.trim_end();
     if let Some((range, rest)) = substitute::parse(text) {
         // Your Evil gives `:s` `:jump`, and runs it with the hook a key's command gets. `:N` has
         // no command, so it isn't a jump.
         crate::marks::before(ctx, &Args::default(), true);
         return substitute::run(ctx, range, rest);
+    }
+    // `:norm`'s keys keep the spaces at their end, as your Evil's do.
+    let (lines, rest) = substitute::range(line);
+    if let Some(done) = each::ex(ctx, &lines, rest) {
+        return done;
     }
     let text = without_range(text)?;
     if let Some(done) = window::ex(ctx, text) {
@@ -268,6 +279,45 @@ fn list_buffers(ctx: &mut Ctx, files_only: bool) -> Result {
     let log = ctx.messages_buffer();
     if here != Some(log) {
         ctx.show(log, ShowIn::Current)?;
+    }
+    Ok(())
+}
+
+/// `:reg` and `:di`, as your Evil's `evil-show-registers`: `*registers*` below, with a row for
+/// each register and what it holds, or for those `names` names. A newline in text shows as `^J`,
+/// and a recording as its keys, in the notation `@` reads. Your Evil's table has the same columns,
+/// with its header on a line of its own.
+fn show_registers(ctx: &mut Ctx, names: &str) -> Result {
+    let mut text = format!("{:<10} Value\n", "Register");
+    for (c, held) in registers::listing(ctx) {
+        if names.is_empty() || names.contains(c) {
+            text += &format!("{c:<10} {}\n", held.replace('\n', "^J"));
+        }
+    }
+    let name = "*registers*";
+    let b = match ctx.find_buffer(name) {
+        Some(b) => b,
+        None => ctx.create_text(name, ""),
+    };
+    let t = ctx.text_mut(b)?;
+    t.settings_mut().read_only = true;
+    let all = 0..t.len();
+    t.tx(Origin::Extension)
+        .silent()
+        .replace(all, text)
+        .commit()?;
+    t.set_modified(false);
+    let shown = ctx
+        .window_list()
+        .into_iter()
+        .any(|w| ctx.window_buffer(w) == Some(b));
+    let how = if shown {
+        ShowIn::Existing
+    } else {
+        ShowIn::Split(Side::Below)
+    };
+    if let Some(w) = ctx.show(b, how)? {
+        ctx.text_mut(b)?.set_cursor(w, 0);
     }
     Ok(())
 }

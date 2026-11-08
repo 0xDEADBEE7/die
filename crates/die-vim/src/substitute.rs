@@ -97,9 +97,9 @@ impl Address {
     }
 }
 
-/// A line that's `:s`: its range, and what follows the `s`, which starts with the delimiter.
-pub fn parse(text: &str) -> Option<(Lines, &str)> {
-    let (range, rest) = if let Some(rest) = text.strip_prefix('%') {
+/// The range at the start of an ex line, and what follows it. None given is the cursor's line.
+pub fn range(text: &str) -> (Lines, &str) {
+    if let Some(rest) = text.strip_prefix('%') {
         (Lines::All, rest)
     } else if let Some(rest) = text.strip_prefix(VISUAL) {
         (Lines::Selection, rest)
@@ -110,7 +110,12 @@ pub fn parse(text: &str) -> Option<(Lines, &str)> {
         }
     } else {
         (Lines::Cursor, text)
-    };
+    }
+}
+
+/// A line that's `:s`: its range, and what follows the `s`, which starts with the delimiter.
+pub fn parse(text: &str) -> Option<(Lines, &str)> {
+    let (range, rest) = range(text);
     match rest {
         "&" => return Some((range, AGAIN)),
         "&&" => return Some((range, AGAIN_WITH_FLAGS)),
@@ -237,7 +242,8 @@ fn repeat_on(ctx: &mut Ctx, a: &Args, lines: Lines, rest: &str) -> Result {
     Ok(())
 }
 
-fn line_range(ctx: &mut Ctx, b: BufferId, w: WindowId, lines: Lines) -> Result<Range<usize>> {
+/// The bytes of the whole lines `lines` names: none for a range given backward.
+pub fn line_range(ctx: &mut Ctx, b: BufferId, w: WindowId, lines: Lines) -> Result<Range<usize>> {
     let (lo, hi) = match lines {
         Lines::All => return Ok(0..ctx.text(b)?.len()),
         Lines::Bytes(range) => return Ok(range),
