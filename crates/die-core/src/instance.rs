@@ -11,10 +11,12 @@
 //! with the lock held is an instance starting or handing over, and the sender tries again. Nobody
 //! listening with the lock free is no instance, whatever file a crash left behind.
 //!
-//! A `die --wait` keeps its connection after the answer, and the instance says `done` on it once
-//! you're done with the files. If the instance goes first, quitting, restarting or crashing, the
-//! connection closes with nothing said.
+//! A `die --wait` keeps its connection after the answer, and the instance says on it how the wait
+//! ended: `done` once you're done with the files, or `failed`. A restart says `moved`, with what
+//! the client still waits on, and the client asks the next instance to wait on that `again`. If
+//! the instance goes first, quitting or crashing, the connection closes with nothing said.
 
+use crate::clients::{Outcome, Waited};
 use crate::files::FileTarget;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
@@ -34,6 +36,13 @@ const FIRST_FRAME: &str = "first-frame\n";
 pub const OPEN_SOCKET: &str = "open.sock";
 const OPENED: &[u8] = b"opened\n";
 const DONE: &[u8] = b"done\n";
+const FAILED: &[u8] = b"failed\n";
+/// Then [`AGAIN`]'s request, which the client sends the next instance.
+const MOVED: &[u8] = b"moved\n";
+/// The mode of a request to wait again on files a restart moved.
+const AGAIN: &[u8] = b"again";
+const MADE: &[u8] = b"made";
+const KEPT: &[u8] = b"kept";
 const FRONT: &str = "front";
 const BACKGROUND: &str = "background";
 /// After the mode, in its field, for a request that waits. An instance that doesn't know it
@@ -255,6 +264,8 @@ impl OpenRequest {
 pub struct Asked {
     /// What it asks.
     pub request: OpenRequest,
+    /// What a client a restart moved here waits on: then `request` waits, and has no targets.
+    pub again: Option<Vec<Waited>>,
     stream: UnixStream,
 }
 
@@ -272,10 +283,40 @@ impl Asked {
 pub struct Client(UnixStream);
 
 impl Client {
-    /// Tell it you're done with its files. One that has gone isn't told.
-    pub fn done(mut self) {
-        let _ = self.0.write_all(DONE);
+    /// Tell it how its wait ended. One that has gone isn't told.
+    pub fn tell(mut self, outcome: &Outcome) {
+        let said = match outcome {
+            Outcome::Done => DONE.to_vec(),
+            Outcome::Failed => FAILED.to_vec(),
+            Outcome::Moved(waited) => [MOVED, &again_bytes(waited)].concat(),
+        };
+        let _ = self.0.write_all(&said);
     }
+}
+
+/// [`AGAIN`], then each file's path after `made` or `kept`, each ended by a NUL.
+fn again_bytes(waited: &[Waited]) -> Vec<u8> {
+    let mut bytes = [AGAIN, b"\0"].concat();
+    for w in waited {
+        let made = if w.made { MADE } else { KEPT };
+        bytes.extend([made, w.path.as_os_str().as_bytes(), b"\0"].concat());
+    }
+    bytes
+}
+
+fn again_from(bytes: &[u8]) -> Option<Vec<Waited>> {
+    let mut fields = bytes.strip_suffix(b"\0")?.split(|c| *c == 0);
+    (fields.next()? == AGAIN).then_some(())?;
+    let waited = |field: &[u8]| {
+        let (made, path) = match (field.strip_prefix(MADE), field.strip_prefix(KEPT)) {
+            (Some(path), _) => (true, path),
+            (_, Some(path)) => (false, path),
+            _ => return None,
+        };
+        let path = PathBuf::from(OsStr::from_bytes(path));
+        path.is_absolute().then_some(Waited { path, made })
+    };
+    fields.map(waited).collect()
 }
 
 /// The instance's side of `die file`. It stops listening when it drops.
@@ -326,7 +367,20 @@ fn read_request(mut stream: UnixStream) -> io::Result<Option<Asked>> {
     Read::by_ref(&mut stream)
         .take(MOST_REQUEST)
         .read_to_end(&mut bytes)?;
-    Ok(OpenRequest::from_bytes(&bytes).map(|request| Asked { request, stream }))
+    let again = again_from(&bytes);
+    let request = match again {
+        Some(_) => Some(OpenRequest {
+            front: false,
+            wait: true,
+            targets: vec![],
+        }),
+        None => OpenRequest::from_bytes(&bytes),
+    };
+    Ok(request.map(|request| Asked {
+        request,
+        again,
+        stream,
+    }))
 }
 
 impl Drop for OpenListener {
@@ -357,13 +411,19 @@ pub enum Sent {
 pub struct Waiting(UnixStream);
 
 impl Waiting {
-    /// Wait until you're done with the files, then true. False if the instance went first, as
-    /// when it quits, restarts or crashes.
-    pub fn wait(mut self) -> bool {
+    /// Wait until the instance says how the wait ended. None if it went first, as when it quits
+    /// or crashes.
+    pub fn wait(mut self) -> Option<Outcome> {
         let mut said = vec![];
-        let read = self.0.set_read_timeout(None);
-        let read = read.and_then(|()| self.0.read_to_end(&mut said));
-        read.is_ok() && said == DONE
+        // macOS refuses this with EINVAL once the instance has closed, which it may have done
+        // already, and then there's nothing to wait for.
+        let _ = self.0.set_read_timeout(None);
+        self.0.read_to_end(&mut said).ok()?;
+        match said.as_slice() {
+            DONE => Some(Outcome::Done),
+            FAILED => Some(Outcome::Failed),
+            said => again_from(said.strip_prefix(MOVED)?).map(Outcome::Moved),
+        }
     }
 }
 
@@ -371,13 +431,22 @@ impl Waiting {
 /// doesn't while it starts or hands over to a restart, try again for `patience`. Then an error
 /// says nobody answered.
 pub fn send_open(dir: &Path, request: &OpenRequest, patience: Duration) -> io::Result<Sent> {
+    send(dir, &request.to_bytes(), request.wait, patience)
+}
+
+/// Ask the instance in `dir` to wait on these again, for a client that a restart moved
+/// ([`Outcome::Moved`]), as [`send_open`] asks.
+pub fn send_again(dir: &Path, waited: &[Waited], patience: Duration) -> io::Result<Sent> {
+    send(dir, &again_bytes(waited), true, patience)
+}
+
+fn send(dir: &Path, bytes: &[u8], wait: bool, patience: Duration) -> io::Result<Sent> {
     let deadline = Instant::now() + patience;
-    let bytes = request.to_bytes();
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         let socket = dir.join(OPEN_SOCKET);
-        if let Ok(stream) = deliver(&socket, &bytes, left.max(SEND_POLL)) {
-            return Ok(Sent::Delivered(request.wait.then_some(Waiting(stream))));
+        if let Ok(stream) = deliver(&socket, bytes, left.max(SEND_POLL)) {
+            return Ok(Sent::Delivered(wait.then_some(Waiting(stream))));
         }
         if !lock_is_held(dir)? {
             return Ok(Sent::NoInstance);

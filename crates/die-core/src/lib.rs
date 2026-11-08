@@ -44,6 +44,7 @@ mod windows;
 mod workspace;
 
 pub use app::{Button, Input, PointerEvent, PointerKind, TURN_LIMIT};
+pub use clients::{Outcome, Waited};
 pub use commands::{CommandDescription, KeyAction, KeyDescription};
 pub use dispatch::*;
 pub use error::*;

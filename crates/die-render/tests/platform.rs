@@ -13,9 +13,10 @@ use die_render::platform::backend::clipboard::Pasteboard;
 use die_render::platform::backend::metal::Gpu;
 use die_render::platform::backend::text::Face;
 use objc2_app_kit::NSPasteboard;
-use objc2_foundation::{NSException, NSString, ns_string};
+use objc2_foundation::{NSException, NSString, NSURL, ns_string};
 use std::mem::{offset_of, size_of};
-use std::path::Path;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
@@ -488,4 +489,20 @@ fn a_guard_gives_back_the_value_and_lets_a_panic_through() {
     assert_eq!(raised, Err::<(), _>("doing it: Name".into()));
     let panicked = std::panic::catch_unwind(|| guarded("", || panic!("mine")));
     assert!(panicked.is_err());
+}
+
+/// A file from Finder or `open -a` has its name composed (NFC), as a name typed in a terminal is,
+/// so `:b café` finds it. A file URL made from a path decomposes it (NFD), and so does its file
+/// system representation, which opened them until now.
+#[test]
+fn a_file_url_gives_its_name_composed_as_typed() {
+    let typed = "/tmp/caf\u{e9} \u{65e5}\u{672c}, 100% #1?.txt";
+    let url = NSURL::fileURLWithPath(&NSString::from_str(typed));
+    let decomposed = url.to_file_path().unwrap();
+    let nfd = "/tmp/cafe\u{301} \u{65e5}\u{672c}, 100% #1?.txt";
+    assert_eq!(decomposed.as_os_str().as_bytes(), nfd.as_bytes());
+    let path = die_render::platform::backend::appkit::file_path(&url);
+    assert_eq!(path, Some(PathBuf::from(typed)));
+    let web = NSURL::URLWithString(ns_string!("https://example.com/a.txt")).unwrap();
+    assert_eq!(die_render::platform::backend::appkit::file_path(&web), None);
 }
