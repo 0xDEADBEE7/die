@@ -532,7 +532,7 @@ impl Ctx {
     pub fn step(&mut self) -> bool {
         self.fed_at = 0;
         self.collect_due();
-        if self.prompt_take_feed() || self.grep_take() {
+        if self.prompt_take_feed() || self.grep_take() || self.streams_take() {
             return true;
         }
         if let Some(q) = self.queue.pop_front() {

@@ -11,8 +11,8 @@ open ~/Applications/DIE.app
 
 - `cargo xtask app` links `~/.local/bin/die` if that directory is on your PATH. Otherwise it prints the one line to add to your shell config. It replaces a link there but never a file. `--home DIR` installs under DIR instead, to try it without touching yours.
 - There is one instance. Launching it again from the Dock or Finder does nothing.
-- **After changing DIE or your config:** `:rebuild` in DIE. It runs `cargo xtask app` in the checkout this DIE.app was installed from, whatever file you're in, with cargo's output in `*rebuild*` below. To build another checkout, run `cargo xtask app` there once, and `:rebuild` builds that one from then on. If it builds, DIE restarts into it. If not, nothing is installed, the cursor in `*rebuild*` is on the first error, and `gf` on its `-->` line opens the file there. It replaces the bundle that's running, so it refuses for one outside an `Applications` folder. A change to your config takes about 2 s. By hand it's `cargo xtask app` in a terminal, then `:restart`.
-- **What a restart keeps:** your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search. `*grep*` and `*Buffer List*` don't come back. A new build that fails to start leaves the old instance running.
+- **After changing DIE or your config:** `:rebuild` in DIE. It runs `cargo xtask app` in the checkout this DIE.app was installed from, whatever file you're in, with cargo's output in `*rebuild*` below. To build another checkout, run `cargo xtask app` there once, and `:rebuild` builds that one from then on. If it builds, DIE restarts into it. If not, nothing is installed, the cursor in `*rebuild*` is on the first error, and `<CR>` or `gf` on its `-->` line opens the file there, as `:cn` does from anywhere. It replaces the bundle that's running, so it refuses for one outside an `Applications` folder. A change to your config takes about 2 s. By hand it's `cargo xtask app` in a terminal, then `:restart`.
+- **What a restart keeps:** your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search. `*grep*`, `*compilation*` and `*Buffer List*` don't come back, though `:make`'s command does. A new build that fails to start leaves the old instance running.
 - **Quit:** `:q` on the last window, `:qa`, or Cmd-Q. Each refuses if a file is unsaved. `:qa!` doesn't.
 
 From a terminal, `die` opens files in the running DIE and returns at once. If none is running, it starts one.
@@ -55,6 +55,7 @@ The leader is `\`, in normal state.
 | `\}`, `\?` | `buffer-menu` | The Buffer List, to show, save and kill buffers |
 | `\r` | `grep` | Search the project |
 | `\x`, `M-x` | `command-palette` | Run any command by name, recent first. `M-x` works in insert and visual too |
+| `M-!` | `shell-command` | Run a shell command, as `:!` does. It works in insert and visual too |
 | `\z` | `toggle-max-width` | Turn the 80-column centered text on or off. The prompts, their lists and the messages keep to its margins, from where the line numbers start, under a status line that runs edge to edge |
 | `\hk` | `describe-key` | What a key does |
 | `\hc` | `describe-command` | What a command does |
@@ -80,6 +81,24 @@ The leader is `\`, in normal state.
 - `q` and `ZZ` show what the window showed before and put the menu last. `ZQ` closes the window, as elsewhere.
 - `1` and `2` aren't counts there, but after a count's first digit they're digits of it, so `31d` marks 31 rows. `gg` goes to the titles.
 - Evil's insert and edit keys do nothing there, as your evil-collection makes them in a read-only list: `i I a A c C D r O p P J = < >`.
+
+## Running commands
+
+Commands run without a terminal, with your `$SHELL`, in the buffer's directory, as Emacs runs them. They get the PATH your login shell sets, asked once each time DIE starts, with `~/.local/bin` and `~/.cargo/bin` first if it hasn't got them, so DIE.app from the Dock finds cargo and git as your terminal does.
+
+**`:make cargo test`**, or `M-x compile`. The command's output and errors stream into `*compilation*` below as they come, with the focus staying where it was, under Emacs's header: the `-*- mode: compilation; default-directory: ... -*-` line, `Compilation started at ...` and the command. Its last line is Emacs's, `Compilation finished at ..., duration 4.56 s` or `Compilation exited abnormally with code 101 ...`, and the command row says it too.
+- `M-x compile` asks with the last command on the line (`make -k ` the first time), and `<Up>` for older ones. `:make` alone, `M-x recompile`, and `gr` in `*compilation*` run the last one again, where it ran.
+- Files with unsaved changes are offered for saving first, one at a time: `y` saves it, `n` doesn't, `!` saves the rest, `q` saves no more, and `Esc` runs nothing.
+- One runs at a time. Another asks whether to stop the one running. `C-c C-k` in `*compilation*`, or `M-x kill-compilation`, stops it as Ctrl-C would.
+- `<CR>` on an error's line opens the file there, in another window, and `gf` on its path opens it in this one. `:cn` and `:cp` go through the errors from any window, as they go through `*grep*`'s rows: whichever you made or went to last. In `*compilation*`, `gj` `gk`, `C-j` `C-k` and `<Tab>` `<S-Tab>` move to the next and previous error's line.
+- An error is rustc's and cargo's `--> path:line:col` (and `::: `), a test's `panicked at path:line:col:`, or `path:line:col: message` and `path:line: message`. `:cn` passes over notes: a `-->` under a `note:` or `help:` line. A path is read from the directory the command ran in, or else from its project, since cargo names files from the workspace root wherever it runs.
+- Output past 8 MiB is cut, with a note saying so, and the command runs on.
+
+**`:!cmd`**, or `M-!`. Runs a shell command, and shows one line of what it prints on the command row, or more in `*Shell Command Output*` below. With nothing printed, it says whether it succeeded. In the command, `%` is the buffer's file and `#` the other buffer's, `\%` and `\#` themselves. `:!!` runs the last one again.
+- **`:{range}!cmd`** sends the lines to the command and puts what it prints, errors too, in their place, as one change: `:%!sort`, `:'<,'>!jq .`, `:.!tr a-z A-Z`. Output with no newline at its end runs into the next line, as in your Evil.
+- **The `!` operator** opens `:` with its lines and a `!`: `!!` for this line, `!ip`, `!G`, or `!` over a selection.
+- **`:r !cmd`** puts what the command prints below the cursor's line, or the range's last, and `:0r !cmd` above the first. `:r file` does the same with a file's text.
+- A key after a command waits up to half a second for it, so a macro with `:%!sort` works on the sorted lines. A slower one goes on in the background and its output comes when it's done. If you changed the text meanwhile, a filter leaves it alone and says so. A command that prints more than 8 MiB is stopped.
 
 ## Prompts
 
@@ -201,9 +220,10 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 ## What isn't there yet
 
-- **A terminal.** No terminal buffers exist. cargo, git and Claude Code run in a terminal of your own next to DIE, and `die file:line` from there.
+- **A terminal.** No terminal buffers exist. `:make` and `:!` run commands, but anything that reads keys, as Claude Code, a REPL or a pager, runs in a terminal of your own next to DIE, and `die file:line` from there.
+- **Running commands:** `M-&` and a command ending in `&` (Emacs's async shell commands), `C-u M-!` (output at the cursor), completion in the command prompts, stopping a `:!` that went on in the background, and in `*compilation*` `go` (show an error without going there), `[[` `]]` (by file) and `q`. `:w !cmd`.
 - **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`, `<Insert>`.
-- **Ex:** `:p`, `:r :!`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, a `/pattern/` as an address, `:marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`. `:pu =` and `C-r =` aren't built anywhere. A range given backward, as `:3,1d`, is refused, where your Evil asks whether to swap it.
+- **Ex:** `:p`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, a `/pattern/` as an address, `:marks :jumps :pwd :cd`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`. `:pu =` and `C-r =` aren't built anywhere. A range given backward, as `:3,1d`, is refused, where your Evil asks whether to swap it.
 - **Insert keys:** `C-h` has only `k c x f`; its other keys say they aren't built.
 - **Syntax highlighting.** Source is one colour.
 - **Not honoured:** `.gitignore` in the finders and `:grep`.
@@ -211,7 +231,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **Opening from Finder** into a minimized DIE leaves its window in the Dock, by reading AppKit: nothing restores it.
 - **Editing CRLF and non-UTF-8 files.** They open read-only.
 - **The Buffer List's** `.` after its keys (your Evil repeats them, as it repeats any key that isn't Evil's), `gV` (View mode), `t` (tags tables, so `t` is Evil's), `M-s a C-s`, `M-s a C-M-s` and `M-s a C-o` (searching the marked buffers), `M-DEL`, a middle click, and the column keys `gl gh { }`.
-- **Keeping across a restart:** `*grep*`, `*Buffer List*`, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.
+- **Keeping across a restart:** `*grep*`, `*compilation*`, `*Buffer List*`, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.
 - **Interrupting** a slow command on a huge file. `C-g` stops only macros and `:norm`, so a `:g` whose command isn't `:norm` runs to its end: `:g/./s/a/b/` on 40,000 lines takes about 2 s.
 - **Mouse:** double-click and drag autoscroll.
 - **Linux:** this page is macOS. The Linux build is checked, not run as an app.

@@ -32,6 +32,7 @@ mod repeat;
 mod scripts;
 mod scroll;
 mod search;
+mod shell;
 mod sort;
 mod substitute;
 mod text;
@@ -99,6 +100,8 @@ pub struct Vim {
     substitute: (String, bool),
     /// The `:norm` and `:g` running, the one started last last.
     each: Vec<each::Run>,
+    /// The last `:!` command, which `:!!` runs again.
+    shell: Option<String>,
 }
 
 #[rustfmt::skip]
@@ -125,6 +128,7 @@ const OPERATORS: &[(&str, &str, &str, Operator, &str)] = &[
     ("g~", "~", "vim-invert-case", Operator::InvertCase, "Invert the case of what a motion covers."),
     ("gU", "U", "vim-upcase", Operator::Upcase, "Upper-case what a motion covers."),
     ("gu", "u", "vim-downcase", Operator::Downcase, "Lower-case what a motion covers."),
+    ("!", "!", "vim-shell-command", Operator::Shell, "Filter lines through a shell command: open `:` with them and a `!`."),
 ];
 
 /// Commands that are an operator over a motion of their own.

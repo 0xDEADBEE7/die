@@ -43,7 +43,8 @@ path = "crates/die-vim"
 # 9,385 until stopping a recording said `Recorded @a`.
 # 9,390 until `:wq`, `:q` and `ZZ` finished a `die --wait` client's file in any window.
 # 9,400 until the ex commands on lines, `:d :y :pu :m :t :j :> :< :sort` (about 490), and insert state's Emacs keys with C-k's 1,665 digraphs (about 260).
-limit = 10160
+# 10,160 until `:!`, `:{range}!`, `:r`, the `!` operator and `:make`.
+limit = 10330
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -138,6 +139,14 @@ name = "project: file walk, finder, grep"
 # New in the MVP run. 600 until U3: grep came to about 390, with its streaming and going to results.
 limit = 750
 files = ["project.rs", "project/"]
+
+# New with `compile` and `:!`: commands run without a terminal, `*compilation*` and its errors,
+# and `next-error` over them and `*grep*`'s rows, which came here from grep.
+[[module]]
+crate = "die-core"
+name = "processes: compile, shell commands, next-error"
+limit = 1020
+files = ["process.rs", "process/"]
 
 # New with `buffer-menu`: Emacs's Buffer List, with evil-collection's keys for it.
 # 494 until its review: `gv` sized as Emacs splits, digits after a count, silenced edit keys, `^J`.
