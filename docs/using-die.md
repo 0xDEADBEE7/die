@@ -42,7 +42,7 @@ The leader is `\`, in normal state.
 | `\}`, `\?` | `buffer-menu` | The Buffer List, to show, save and kill buffers |
 | `\r` | `grep` | Search the project |
 | `\x`, `M-x` | `command-palette` | Run any command by name, recent first. `M-x` works in insert and visual too |
-| `\z` | `toggle-max-width` | Turn the 80-column centered text on or off. The prompts, their lists and the messages line up with it |
+| `\z` | `toggle-max-width` | Turn the 80-column centered text on or off. The prompts, their lists and the messages keep to its margins, from where the line numbers start, under a status line that runs edge to edge |
 | `\hk` | `describe-key` | What a key does |
 | `\hc` | `describe-command` | What a command does |
 | Cmd-Q | `quit` | Quit, in every state |
