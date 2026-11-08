@@ -32,6 +32,11 @@ pub mod appkit {
         Ok(())
     }
 
+    /// Nothing is seen yet anyway.
+    pub fn unseen(_: &Window) -> Result<(), String> {
+        Ok(())
+    }
+
     /// There's no Finder to open files from.
     pub fn on_open_files(_: Box<dyn Fn(Vec<std::path::PathBuf>)>) -> Result<(), String> {
         Ok(())

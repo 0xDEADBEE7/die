@@ -176,6 +176,11 @@ pub fn run(root: &Path, source: Source, full: bool) -> Result {
     let plan = plan(full, &changed(root, &source), cases_set.as_deref());
     println!("ci: {}", plan.steps_note);
     println!("ci: {}", plan.cases_note());
+    if plan.include_ignored && std::env::var_os("DIE_ON_SCREEN").is_none_or(|v| v.is_empty()) {
+        println!(
+            "ci: S1's checks are left out, since their windows show over your work: DIE_ON_SCREEN=1 runs them"
+        );
+    }
     fonts::run_fonts(root)?;
     let target = work.join("target");
     let cargo_cmd = |args: &[&str]| -> Command {

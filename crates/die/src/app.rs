@@ -550,7 +550,11 @@ fn restart(
 fn open_bundle(bundle: &Path, frontmost: bool) -> Command {
     let mut open = Command::new("open");
     open.args(open_options(frontmost));
-    for name in ["DIE_STATE_DIR", PANIC_ON_RESTART] {
+    for name in [
+        "DIE_STATE_DIR",
+        PANIC_ON_RESTART,
+        die_render::window::UNSEEN,
+    ] {
         if let Some(value) = std::env::var_os(name) {
             let mut env = std::ffi::OsString::from(name);
             env.push("=");

@@ -353,6 +353,31 @@ pub fn on_open_files(f: OpenFiles) -> Result<(), String> {
     Ok(())
 }
 
+/// winit's window's view and NSWindow.
+fn view_of(window: &Window) -> Result<(Retained<NSView>, Retained<NSWindow>), String> {
+    MainThreadMarker::new().ok_or("the window isn't on the main thread")?;
+    let handle = window.window_handle().map_err(|e| e.to_string())?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return Err("the window isn't an AppKit window".into());
+    };
+    // SAFETY: AppKit's handle holds the window's live NSView, retaining it keeps it past
+    // the handle, and this is the main thread, checked above, where the view lives.
+    let view = unsafe { Retained::retain(handle.ns_view.as_ptr().cast::<NSView>()) };
+    let view = view.ok_or("the window has no view")?;
+    let ns_window = view.window().ok_or("the view has no window")?;
+    Ok((view, ns_window))
+}
+
+/// No one sees the window or clicks it, and it casts no shadow, for a test's DIE (`UNSEEN`). The
+/// window server still has it, and calls it covered, so it draws its first frame and then waits.
+pub fn unseen(window: &Window) -> Result<(), String> {
+    let (_, ns_window) = view_of(window)?;
+    ns_window.setAlphaValue(0.0);
+    ns_window.setIgnoresMouseEvents(true);
+    ns_window.setHasShadow(false);
+    Ok(())
+}
+
 /// A local event monitor: it runs inside `sendEvent:`, before the event is dispatched. It sees
 /// Caps Lock, and hands the chords AppKit traps straight to the first responder. A panic or
 /// exception in it can't unwind into AppKit, so it's caught and counted, and the event goes on as
@@ -470,16 +495,7 @@ impl Surface {
     /// Put a new layer on `window`'s view, with the pipeline's device and target format, as
     /// the only thing on it. With `readable`, its drawables can be read back, at some cost.
     pub fn attach(window: &Window, pipeline: &Pipeline, readable: bool) -> Result<Surface, String> {
-        MainThreadMarker::new().ok_or("the window isn't on the main thread")?;
-        let handle = window.window_handle().map_err(|e| e.to_string())?;
-        let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-            return Err("the window isn't an AppKit window".into());
-        };
-        // SAFETY: AppKit's handle holds the window's live NSView, retaining it keeps it past
-        // the handle, and this is the main thread, checked above, where the view lives.
-        let view = unsafe { Retained::retain(handle.ns_view.as_ptr().cast::<NSView>()) };
-        let view = view.ok_or("the window has no view")?;
-        let ns_window = view.window().ok_or("the view has no window")?;
+        let (view, ns_window) = view_of(window)?;
         hook_view(&view)?;
         let layer = guarded("can't put a layer on the window", || {
             let layer = CAMetalLayer::new();

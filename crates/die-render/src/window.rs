@@ -30,6 +30,15 @@ const SIZE: (f64, f64) = (1200.0, 800.0);
 const CHECK_SIZE: (f64, f64) = (420.0, 280.0);
 /// How many frame times `Stats` keeps.
 const FRAME_TIMES: usize = 4096;
+/// Set to anything, DIE's windows can't be seen or clicked and it has no Dock icon, so a test's DIE
+/// stays off your screen. The window server still has the windows, so everything works as it
+/// would except what reaches the display: S1's checks, which measure that, can't run unseen.
+pub const UNSEEN: &str = "DIE_UNSEEN";
+
+/// Whether this DIE is a test's, kept off your screen (`UNSEEN`).
+pub fn unseen() -> bool {
+    std::env::var_os(UNSEEN).is_some_and(|v| !v.is_empty())
+}
 
 /// How long the loop may sleep.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -324,7 +333,7 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
     ctx.messages.extend(unopened);
     latency.stage("core");
     let mut builder = EventLoop::<Wake>::with_user_event();
-    if let Err(e) = driver::prepare_loop(&mut builder, options.script.is_none()) {
+    if let Err(e) = driver::prepare_loop(&mut builder, options.script.is_none() && !unseen()) {
         ctx.messages.push(e);
     }
     let event_loop = builder.build().map_err(|e| e.to_string())?;
@@ -411,8 +420,13 @@ impl Shell {
         };
         let attributes = driver::window_attributes(attributes)
             .with_title(&self.title)
-            .with_visible(!self.hidden);
+            .with_visible(!self.hidden && !unseen());
         let window = el.create_window(attributes).map_err(|e| e.to_string())?;
+        if unseen() {
+            // Made unseen before it's shown, so it never shows.
+            driver::unseen(&window)?;
+            window.set_visible(!self.hidden);
+        }
         self.latency.stage("window");
         let scale = window.scale_factor();
         let font = driver::Config {
