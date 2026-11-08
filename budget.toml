@@ -146,10 +146,11 @@ limit = 536
 files = ["menu.rs"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
+# 965 until a list had the status lines above it, as Emacs's minibuffer has the mode line.
 [[module]]
 crate = "die-core"
 name = "faces and scene"
-limit = 965
+limit = 975
 files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 
 [[module]]

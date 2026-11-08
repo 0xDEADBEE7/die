@@ -362,20 +362,7 @@ impl Ctx {
             placed.push((*p, wc, wr));
             let focused = self.focused() == Some(p.window);
             let cursor = self.draw_window(&mut scene, p, base, focused);
-            let status = if focused {
-                "status-line"
-            } else {
-                "status-line-inactive"
-            };
-            let style = self.faces.get(status).over(base);
-            let row = p.row + wr;
-            for x in 0..wc {
-                scene.put(row, p.col + x, Cell::styled(Glyph::Char(' '), style));
-            }
-            if self.buffers.contains_key(bid) {
-                let text = self.status_text(bid);
-                put_text(&mut scene, row, p.col + 1, p.col + wc, glyphs(&text, style));
-            }
+            self.draw_status(&mut scene, p, p.row + wr, base);
             if p.col + wc < cols {
                 let style = self.faces.get("divider").over(base);
                 for y in 0..=wr {
@@ -417,7 +404,18 @@ impl Ctx {
             let row = last - room;
             covered = row;
             self.draw_prompt_list(&mut scene, row, room, base, (x, end));
-            hollow.retain(|c: &Cursor| room == 0 || c.row < row);
+            // As Emacs's minibuffer shrinks the windows above it, their status lines sit on
+            // the list from edge to edge, with the list's content inside the margins below.
+            if let Some(sep) = row.checked_sub(1).filter(|_| room > 0) {
+                for &(p, ..) in placed
+                    .iter()
+                    .filter(|(p, _, wr)| (p.row..p.row + wr).contains(&sep))
+                {
+                    self.draw_status(&mut scene, &p, sep, base);
+                }
+                covered = sep;
+            }
+            hollow.retain(|c: &Cursor| c.row < covered);
             let label = label.as_str();
             let text = self.prompt_text().unwrap_or_default();
             let prompt = self.faces.get("prompt").over(base);
@@ -466,8 +464,8 @@ impl Ctx {
     }
 
     /// The columns the prompt and the echo area use, start and end: with a maximum width on
-    /// the focused window's buffer (`\z`), that window's text column, as the text above has it.
-    /// Otherwise the frame's.
+    /// the focused window's buffer (`\z`), that window's margins, where its line numbers start
+    /// and where its text ends, as your Emacs's minibuffer has them. Otherwise the frame's.
     fn prompt_band(&self, placements: &[WindowPlacement], cols: usize) -> (usize, usize) {
         let band = || {
             let w = self.focused()?;
@@ -475,10 +473,31 @@ impl Ctx {
             let t = self.text(self.windows.get(w)?.buffer).ok()?;
             t.settings().max_width?;
             let g = t.geometry(w)?;
-            let x = (p.col + g.text_x).min(cols.saturating_sub(2));
-            Some((x, (x + g.text_w).min(cols)))
+            let x = (p.col + g.pad).min(cols.saturating_sub(2));
+            Some((x, (x + g.gutter + g.text_w).min(cols)))
         };
         band().unwrap_or((0, cols))
+    }
+
+    /// A window's status line, on `row`: its own row below its text, or the row above the
+    /// prompt's list.
+    fn draw_status(&mut self, scene: &mut Scene, p: &WindowPlacement, row: usize, base: Style) {
+        let Some((cols, buffer)) = self.windows.get(p.window).map(|w| (w.cols, w.buffer)) else {
+            return;
+        };
+        let status = if self.focused() == Some(p.window) {
+            "status-line"
+        } else {
+            "status-line-inactive"
+        };
+        let style = self.faces.get(status).over(base);
+        for x in 0..cols {
+            scene.put(row, p.col + x, Cell::styled(Glyph::Char(' '), style));
+        }
+        if self.buffers.contains_key(buffer) {
+            let text = self.status_text(buffer);
+            put_text(scene, row, p.col + 1, p.col + cols, glyphs(&text, style));
+        }
     }
 
     /// Draw one window's content; returns its cursor's (row, col) in the window, and whether
