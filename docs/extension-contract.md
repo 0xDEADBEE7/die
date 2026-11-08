@@ -184,12 +184,12 @@ args
   7. otherwise, an "unbound" message
 - **Passthrough has its own dispatch rule.**
   - The DIE layer's Esc is checked first; it leaves passthrough for copy state and is never sent to the program.
-  - With the buffer's vterm-style toggle on (scope D18), core also treats ESC as leaving passthrough, before `event()` sees it.
+  - Plain Esc leaves passthrough for copy state too, unless the surface asks for it: a terminal on the alternate screen, or one whose per-buffer toggle sends Esc to the program (scope D18). Then it goes to `event()`.
   - The rest of the DIE layer is looked up in DIE's keymaps (scope D18).
   - Every other key goes straight to the surface's `event()`.
   - A surface declares which keys it handles there, so `describe-key` can report them.
 - **Press, repeat and release.** Keymaps match press and repeat. Release events, modifier keys pressed alone and keys DIE has no name for reach only surfaces in passthrough. Binding a modifier key alone, or making one the leader, is a startup error. Any key DIE takes in passthrough, the DIE layer's Esc or a DIE-layer binding, swallows its own repeat and release, so a program never sees a release without its press.
-- **Initial state.** A surface kind or mode can declare the state a buffer starts in, as `evil-set-initial-state` does. Text buffers start in normal, `die-term` in passthrough, and orchid's conversation mode might choose insert.
+- **Initial state.** A surface kind or mode can declare the state a buffer starts in, as `evil-set-initial-state` does. Text buffers start in normal, `die-term` in passthrough (shown as insert, scope D18), and orchid's conversation mode might choose insert.
 - **Conflicts.** Within a keymap, later registration wins, and `describe-key` lists what was shadowed. Your config is applied last, and your bindings go into the keymap they name (global by default). To free a key an extension bound, your config unbinds it. That removes the binding and every longer one that starts with it, and `describe-key` lists them as shadowed. This is how config binds a key alone where an extension uses it as a prefix, or the reverse.
 
 ## 8. Modes
