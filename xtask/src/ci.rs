@@ -1,5 +1,8 @@
-//! `cargo xtask ci`: every check, in a fresh clone (docs/m0-plan.md §3, "How
-//! work lands"). Nothing merges until it passes.
+//! `cargo xtask ci`: the checks, in a fresh clone (docs/m0-plan.md §3, "How work lands").
+//! `guards` and `clean-build` run only when a change could affect them, the property tests run
+//! at a lower count, and the tests marked `#[ignore]` don't run: the limits in ms, the windows
+//! and the slowest. `--full` runs everything, ignored tests too, at the old counts, at each
+//! checkpoint.
 
 use crate::util::{self, Result, TempDir, cargo, copy_worktree, git};
 use crate::{budget, clean, cross, fonts, guards, lint, sources};
@@ -14,22 +17,176 @@ pub enum Source {
     Worktree,
 }
 
-pub fn run(root: &Path, source: Source) -> Result {
-    let work = root.join("target/xtask/ci");
+/// The steps that check the build setup and the checks themselves, which a change elsewhere
+/// can't affect in the ways they look for.
+pub const SLOW_STEPS: [&str; 2] = ["guards", "clean-build"];
+
+/// The property tests' case count in `ci`. The old counts are `cases()` in die-core's
+/// `tests/prop.rs`, which `--full` runs.
+pub const PROP_CASES: &str = "100";
+
+const PROP_VAR: &str = "DIE_PROP_CASES";
+
+/// Whether a change to `path`, relative to the repository's root, can change what `guards`
+/// and `clean-build` find: a manifest or lockfile anywhere, cargo's or the toolchain's
+/// settings, a build script, the checks themselves, or the memory limit every test links.
+pub fn touches_build_setup(path: &str) -> bool {
+    let p = Path::new(path);
+    let named = |names: &[&str]| p.file_name().is_some_and(|n| names.iter().any(|s| n == *s));
+    named(&["Cargo.toml", "Cargo.lock", "build.rs"])
+        || path == "rust-toolchain.toml"
+        || path.starts_with("xtask/")
+        || path.starts_with("tools/test-cap/")
+        || p.components().any(|c| c.as_os_str() == ".cargo")
+}
+
+/// What the test step does with `DIE_PROP_CASES`.
+#[derive(Debug, PartialEq)]
+pub enum PropCases {
+    /// Sets it to `PROP_CASES`.
+    Lowered,
+    /// Leaves the value it's already set to.
+    AlreadySet(String),
+    /// Clears it, for the counts in the tests.
+    OldCounts,
+}
+
+impl PropCases {
+    pub fn apply(&self, cmd: &mut Command) {
+        match self {
+            PropCases::Lowered => {
+                cmd.env(PROP_VAR, PROP_CASES);
+            }
+            PropCases::AlreadySet(_) => {}
+            PropCases::OldCounts => {
+                cmd.env_remove(PROP_VAR);
+            }
+        }
+    }
+}
+
+/// Which steps a run skips, and at what property counts it tests.
+#[derive(Debug)]
+pub struct Plan {
+    pub skip: Vec<&'static str>,
+    /// Why those steps do or don't run. Empty when there was no choice to make.
+    pub steps_note: String,
+    pub cases: PropCases,
+    /// The test step also runs the tests marked `#[ignore]`.
+    pub include_ignored: bool,
+}
+
+impl Plan {
+    /// Every step, for a caller with no choice to make.
+    fn everything() -> Plan {
+        Plan {
+            skip: Vec::new(),
+            steps_note: String::new(),
+            cases: PropCases::OldCounts,
+            include_ignored: true,
+        }
+    }
+
+    /// The test step's arguments for cargo.
+    pub fn test_args(&self) -> Vec<&'static str> {
+        let mut args = vec!["test", "--workspace", "--locked", "--offline", "--quiet"];
+        if self.include_ignored {
+            args.extend(["--", "--include-ignored"]);
+        }
+        args
+    }
+
+    pub fn cases_note(&self) -> String {
+        match &self.cases {
+            PropCases::Lowered => {
+                format!(
+                    "test runs at {PROP_VAR}={PROP_CASES} without the ignored tests (`ci --full` \
+                     runs them, at the old counts)"
+                )
+            }
+            PropCases::AlreadySet(n) => format!("test runs at {PROP_VAR}={n}, as already set"),
+            PropCases::OldCounts => {
+                "test runs at the old property counts, ignored tests included".into()
+            }
+        }
+    }
+
+    /// What the summary says about the plan.
+    fn notes(&self) -> Vec<String> {
+        if self.steps_note.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.steps_note.clone(), self.cases_note()]
+        }
+    }
+}
+
+/// Decide what a run does. `changed` is what git says changed since the merge base with main.
+/// If git can't say, nothing is skipped. `cases_set` is `DIE_PROP_CASES`, if it's set.
+pub fn plan(full: bool, changed: &Result<Vec<String>>, cases_set: Option<&str>) -> Plan {
+    let cases = match cases_set {
+        _ if full => PropCases::OldCounts,
+        Some(n) => PropCases::AlreadySet(n.to_string()),
+        None => PropCases::Lowered,
+    };
+    let slow = SLOW_STEPS.join(" and ");
+    let (skip, steps_note) = match changed {
+        _ if full => (Vec::new(), format!("{slow} run, for --full")),
+        Err(e) => (
+            Vec::new(),
+            format!("{slow} run, because git can't say what changed: {e}"),
+        ),
+        Ok(files) => match files.iter().find(|f| touches_build_setup(f)) {
+            Some(file) => (
+                Vec::new(),
+                format!("{slow} run: {file} changed since the merge base with main"),
+            ),
+            None => (
+                SLOW_STEPS.to_vec(),
+                format!(
+                    "{slow} skipped: nothing since the merge base with main touches Cargo.toml, \
+                     Cargo.lock, .cargo/, rust-toolchain.toml, a build script, xtask/ or \
+                     tools/test-cap/ (`ci --full` runs them)"
+                ),
+            ),
+        },
+    };
+    Plan {
+        skip,
+        steps_note,
+        cases,
+        include_ignored: full,
+    }
+}
+
+/// The files a run's source changed since its merge base with main.
+fn changed(root: &Path, source: &Source) -> Result<Vec<String>> {
+    match source {
+        Source::Rev(rev) => util::changed_at_rev(root, rev),
+        Source::Worktree => util::changed_in_worktree(root),
+    }
+}
+
+pub fn run(root: &Path, source: Source, full: bool) -> Result {
+    let work = util::task_dir(root, "ci");
     let tmp = TempDir::at(work.join("tree"))?;
     let tree = tmp.path().to_path_buf();
     println!("ci: {}", checkout(root, &source, &tree)?);
+    let cases_set = std::env::var(PROP_VAR).ok();
+    let plan = plan(full, &changed(root, &source), cases_set.as_deref());
+    println!("ci: {}", plan.steps_note);
+    println!("ci: {}", plan.cases_note());
     fonts::run_fonts(root)?;
     let target = work.join("target");
-    let cargo_step = |args: &[&str]| -> Result {
-        util::run(
-            Command::new(cargo())
-                .current_dir(&tree)
-                .args(args)
-                .env("CARGO_TARGET_DIR", &target)
-                .env("DIE_FONT_DIR", fonts::dir(root)),
-        )
+    let cargo_cmd = |args: &[&str]| -> Command {
+        let mut cmd = Command::new(cargo());
+        cmd.current_dir(&tree)
+            .args(args)
+            .env("CARGO_TARGET_DIR", &target)
+            .env("DIE_FONT_DIR", fonts::dir(root));
+        cmd
     };
+    let cargo_step = |args: &[&str]| -> Result { util::run(&mut cargo_cmd(args)) };
 
     let steps: Vec<Step> = vec![
         ("fmt", Box::new(|| cargo_step(&["fmt", "--all", "--check"]))),
@@ -58,7 +215,11 @@ pub fn run(root: &Path, source: Source) -> Result {
         ),
         (
             "test",
-            Box::new(|| cargo_step(&["test", "--workspace", "--locked", "--offline", "--quiet"])),
+            Box::new(|| {
+                let mut cmd = cargo_cmd(&plan.test_args());
+                plan.cases.apply(&mut cmd);
+                util::run(&mut cmd)
+            }),
         ),
         (
             "guards",
@@ -66,40 +227,103 @@ pub fn run(root: &Path, source: Source) -> Result {
         ),
         ("clean-build", Box::new(|| clean::run(&tree, false))),
     ];
-    run_steps("ci", &steps)
+    run_plan("ci", &steps, &plan)
 }
 
+/// What a step runs.
+pub type StepFn<'a> = Box<dyn Fn() -> Result + 'a>;
+
 /// A named check, for `run_steps`.
-pub type Step<'a> = (&'a str, Box<dyn Fn() -> Result + 'a>);
+pub type Step<'a> = (&'a str, StepFn<'a>);
 
 /// Run every step, even after one fails, then print each one's result and
 /// time under `label`. Fails if any step failed.
 pub fn run_steps(label: &str, steps: &[Step]) -> Result {
+    run_plan(label, steps, &Plan::everything())
+}
+
+/// `run_steps`, leaving out what `plan` skips.
+pub fn run_plan(label: &str, steps: &[Step], plan: &Plan) -> Result {
     let mut results = Vec::new();
     for (name, step) in steps {
+        if plan.skip.contains(name) {
+            println!("\n==> {label}: {name} skipped");
+            results.push(StepResult::new(name, Outcome::Skipped, 0.0));
+            continue;
+        }
         println!("\n==> {label}: {name}");
         let t = Instant::now();
         let r = step();
         if let Err(e) = &r {
             eprintln!("{e}");
         }
-        results.push((*name, r.is_ok(), t.elapsed().as_secs_f64()));
+        let outcome = if r.is_ok() {
+            Outcome::Ok
+        } else {
+            Outcome::Failed
+        };
+        results.push(StepResult::new(name, outcome, t.elapsed().as_secs_f64()));
     }
-    println!("\n{label} summary");
-    let w = results.iter().map(|r| r.0.len()).max().unwrap_or(0).max(12);
-    for (name, ok, secs) in &results {
-        println!(
-            "  {:<w$} {:<4} {secs:6.1} s",
-            name,
-            if *ok { "ok" } else { "FAIL" }
-        );
-    }
-    let failed: Vec<&str> = results.iter().filter(|r| !r.1).map(|r| r.0).collect();
+    print!("{}", summary(label, &results, &plan.notes()));
+    let failed: Vec<&str> = results
+        .iter()
+        .filter(|r| r.outcome == Outcome::Failed)
+        .map(|r| r.name.as_str())
+        .collect();
     if failed.is_empty() {
         Ok(())
     } else {
         Err(format!("{label}: failed: {}", failed.join(", ")))
     }
+}
+
+/// How a step ended.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Outcome {
+    Ok,
+    Failed,
+    Skipped,
+}
+
+/// One line of the summary.
+pub struct StepResult {
+    pub name: String,
+    pub outcome: Outcome,
+    pub secs: f64,
+}
+
+impl StepResult {
+    pub fn new(name: &str, outcome: Outcome, secs: f64) -> StepResult {
+        StepResult {
+            name: name.to_string(),
+            outcome,
+            secs,
+        }
+    }
+}
+
+/// Each step's result and time, then `notes`.
+pub fn summary(label: &str, results: &[StepResult], notes: &[String]) -> String {
+    let w = results
+        .iter()
+        .map(|r| r.name.len())
+        .max()
+        .unwrap_or(0)
+        .max(12);
+    let mut text = format!("\n{label} summary\n");
+    for r in results {
+        let line = match r.outcome {
+            Outcome::Ok => format!("  {:<w$} {:<4} {:6.1} s", r.name, "ok", r.secs),
+            Outcome::Failed => format!("  {:<w$} {:<4} {:6.1} s", r.name, "FAIL", r.secs),
+            Outcome::Skipped => format!("  {:<w$} skipped", r.name),
+        };
+        text.push_str(&line);
+        text.push('\n');
+    }
+    for note in notes {
+        text.push_str(&format!("  {note}\n"));
+    }
+    text
 }
 
 /// Fill `tree`, an empty directory, from `source`. Returns what it holds.

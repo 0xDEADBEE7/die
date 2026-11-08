@@ -14,8 +14,11 @@
 //!   operator pending, the range from the cursor to the motion's target goes to the
 //!   operator instead of moving the cursor, and the two counts multiply.
 //! - An **action** is anything else: entering insert state, undo, `p`. Insert
-//!   sessions are one undo step each and record their keys, so a count (and `.`, V4)
-//!   can replay them (`insert.rs`).
+//!   sessions are one undo step each and record their edits, so a count can replay them
+//!   (`insert.rs`), and their keys, so `.` can (`repeat.rs`).
+//!
+//! In visual state ([`crate::visual`]) a motion moves the selection's head. Operators and
+//! text objects act on the selection at once.
 //!
 //! In normal state the cursor rests on a character, never on a line's newline
 //! unless the line is empty, and motions never take it past the last line
@@ -23,26 +26,36 @@
 //! line after a final newline, as in Evil and Vim (`text::rest_pos`). Motions along
 //! that line (`0`, `^`, `$`, `C-a`) keep it there, and `}` from it fails.
 
+use crate::Vim;
 use crate::operators;
 use crate::text::{normal_pos, on_last_empty_line};
+use crate::visual;
 use die_core::{
-    Args, BufferId, Ctx, Error, Key, Prefix, Result, Selection, State, TextBuf, WindowId,
+    Args, BufferId, Ctx, Error, Key, Prefix, Result, Selection, Shape, State, TextBuf, WindowId,
 };
 
 /// The column vertical motions aim for, kept across a run of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Goal {
-    /// A display column.
+    /// A display column on the logical line, from `j` and the like.
     Col(usize),
+    /// A column on the screen row, from `gj` and `gk`. Going by logical lines recomputes it, as
+    /// `evil-line-move` resets its goal between the two; only `j` and `k` do, and the rest read
+    /// it as a logical column, as `evil-ensure-column` reads Emacs's.
+    Row(usize),
     /// The end of each line, after `$`.
     Eol,
 }
+
+/// Marks a [`Goal::Row`] in a [`Selection`]'s goal column.
+const ROW_GOAL: usize = !(usize::MAX >> 1);
 
 impl Goal {
     /// As stored in a [`Selection`]'s goal column.
     pub fn encode(g: Option<Goal>) -> Option<usize> {
         g.map(|g| match g {
             Goal::Col(c) => c,
+            Goal::Row(c) => c | ROW_GOAL,
             Goal::Eol => usize::MAX,
         })
     }
@@ -51,6 +64,8 @@ impl Goal {
         c.map(|c| {
             if c == usize::MAX {
                 Goal::Eol
+            } else if c & ROW_GOAL != 0 {
+                Goal::Row(c & !ROW_GOAL)
             } else {
                 Goal::Col(c)
             }
@@ -83,6 +98,8 @@ pub enum Operator {
     ShiftLeft,
     /// `>`
     ShiftRight,
+    /// `=`
+    Indent,
     /// `g~`
     InvertCase,
     /// `gU`
@@ -95,6 +112,8 @@ pub enum Operator {
 pub struct Start<'a> {
     /// The text, with its layout queries.
     pub text: &'a TextBuf,
+    /// The window it runs in, for the motions that read its rows.
+    pub window: WindowId,
     /// The cursor.
     pub pos: usize,
     /// The count typed before the motion, if any.
@@ -106,6 +125,8 @@ pub struct Start<'a> {
     /// The operator waiting for this motion. Some motions land elsewhere for one: they
     /// may stop on a newline or at the end of the text, and `cw` stops at the word's end.
     pub op: Option<Operator>,
+    /// In visual state, where `l`, `j` and `k` can land on a newline.
+    pub visual: bool,
 }
 
 impl Start<'_> {
@@ -130,6 +151,9 @@ pub struct Target {
     /// `w` and `W`: if a `d` ends up taking whole lines, the cursor goes to the first
     /// non-blank, not to the column it started in.
     pub no_column: bool,
+    /// A search can land on the empty line after a final newline, as Evil's does; no other
+    /// motion takes the cursor there.
+    pub to_last_line: bool,
 }
 
 impl Target {
@@ -141,6 +165,7 @@ impl Target {
             short: None,
             kind: None,
             no_column: false,
+            to_last_line: false,
         }
     }
     /// `pos`, signalling `err` but keeping the goal column. For a motion that fell short
@@ -203,11 +228,27 @@ pub fn char_key(a: &Args) -> Option<char> {
     })
 }
 
+/// How the count waiting in core's prefix came about, as Emacs's prefix argument has it. It's
+/// only read while a count waits, and only digits and `C-u` make one, so going stale does no harm.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum CountWas {
+    /// Digits: `C-u` keeps the number, and another digit adds to it.
+    #[default]
+    Digits,
+    /// `C-u`s: another multiplies by 4, and a digit starts a new number.
+    Universal,
+    /// Digits, then a `C-u` that kept them: a digit still adds, `C-u` starts again at 4, and `0`
+    /// is the motion.
+    Kept,
+}
+
 /// A count digit: `1`-`9`, and `0` after another digit. The count stays core's
 /// prefix for the next command, keeping any register already typed.
 pub fn count_digit(ctx: &mut Ctx, a: &Args, d: usize) -> Result {
+    let was = ctx.with_ext(|v: &mut Vim, _| std::mem::take(&mut v.count_was))?;
+    let so_far = a.count.filter(|_| was != CountWas::Universal).unwrap_or(0);
     ctx.set_prefix(Prefix {
-        count: Some(a.count.unwrap_or(0).saturating_mul(10).saturating_add(d)),
+        count: Some(so_far.saturating_mul(10).saturating_add(d)),
         register: a.register,
     });
     Ok(())
@@ -227,15 +268,18 @@ pub fn run_motion(
     if ctx.state_of(b) == State::OperatorPending {
         return operators::on_motion(ctx, a, kind, arg, motion);
     }
+    let visual = visual::is_on(ctx, b);
     let t = ctx.text_mut(b)?;
     let sel = t.selection(w).ok_or(Error::Msg("no cursor".into()))?;
     let start = Start {
         text: t,
+        window: w,
         pos: sel.head,
         count: a.count,
         goal: Goal::decode(sel.goal),
         arg,
         op: None,
+        visual,
     };
     let to = match motion(&start) {
         Ok(to) => to,
@@ -245,8 +289,13 @@ pub fn run_motion(
         }
     };
     // From the empty line after a final newline, a motion along that line stays on it.
-    let stays = on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head);
-    let pos = if stays { to.pos } else { normal_pos(t, to.pos) };
+    let stays = (on_last_empty_line(t, sel.head) && t.line_of(to.pos) == t.line_of(sel.head))
+        || (to.to_last_line && on_last_empty_line(t, to.pos));
+    let pos = if stays || (visual && !on_last_empty_line(t, to.pos)) {
+        to.pos
+    } else {
+        normal_pos(t, to.pos)
+    };
     // Evil's h and l signal and count as never having happened (Evil sets this-command
     // back to last-command), and its j and k are still next-line and previous-line when
     // they signal. So the goal column survives a short target, unlike any other failure.
@@ -254,7 +303,16 @@ pub fn run_motion(
         Some(_) => sel.goal,
         None => Goal::encode(to.goal),
     };
-    t.set_selection(w, Selection::cursor(pos).with_goal(goal));
+    let anchor = if visual { sel.anchor } else { pos };
+    t.set_selection(
+        w,
+        Selection {
+            anchor,
+            head: pos,
+            shape: if visual { sel.shape } else { Shape::Char },
+            goal,
+        },
+    );
     match to.short {
         Some(e) => Err(Error::Msg(e.into())),
         None => Ok(()),
@@ -271,6 +329,8 @@ mod tests {
             None,
             Some(Goal::Col(0)),
             Some(Goal::Col(7)),
+            Some(Goal::Row(0)),
+            Some(Goal::Row(7)),
             Some(Goal::Eol),
         ] {
             assert_eq!(Goal::decode(Goal::encode(g)), g);

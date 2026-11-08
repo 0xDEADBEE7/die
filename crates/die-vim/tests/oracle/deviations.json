@@ -2,6 +2,16 @@
   "schema": 1,
   "rules": [
     {
+      "rule": "sections start at a bracket, whatever is open",
+      "kind": "evil-bug",
+      "evil": "]] asks Emacs where this defun ends, by scanning brackets from its start, then steps back from the end of the next one. With a bracket in the first column inside an open one, or one that never closes, it lands inside a line or even moves backward.",
+      "die_vim": "]] and [[ go by the lines that start with an opening bracket, outside a string, and nothing else. While brackets balance, and none in the first column is nested in another, that's your Evil's result.",
+      "cases": [
+        { "case": "motions-more/next-section-nested", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-from-unbalanced", "fixture": "hand-written/motions-more.json" }
+      ]
+    },
+    {
       "rule": "the last line is the last line",
       "s5_row": 1,
       "kind": "emacs-artifact",
@@ -9,10 +19,22 @@
       "die_vim": "What your Evil does when the text has no final newline, with the newline kept: motions never put the cursor on the empty line after it. Motions stop on the last line. j, gj, + and C-d on the last line fail, and so do w and e on its last character and } at its end; a macro ends at the first failure. j doesn't fail when its goal column is past the line's end, as after $: your Evil's j tries that column first, and that moves the cursor. dj, cj and yj on the last line act on that line, as Evil's do (Vim's fail). After dd, dk or dG removes the last lines, the cursor goes to the new last line, in the column the delete started in (S5 row 2). G recentres on the last line, and H, M and L clamp to it. An insert session or an undo can still leave the cursor on that empty line, as in Evil and Vim. Motions along it (0, ^, $, C-a) stay on it, and } from it fails. That empty line still takes a screen row, as in Emacs, so window positions are Evil's. Each fixture takes its cursor and errors from your Evil on the same text without its final newline, and its text and registers from the run with the newline: the run without it adds a - register and has text bugs of its own. A macro that stops a repetition sooner than Evil's takes its registers from the run without the newline, because it deletes less. J on the last line has nothing to join, and the final newline stays; your Evil's J takes it. A count past the last line can't reach the empty line after it, so 2D on the last line takes the line's text, not the whole line.",
       "cases": [
         { "case": "motions/w-last-word-of-buffer", "fixture": "hand-written/motions.json" },
+        { "case": "motions-more/99gg", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/9g_-past-the-end", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/9next-section", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/d-next-section-none", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-at-end", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-last-char", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-indented", "fixture": "hand-written/motions-more.json" },
+        { "case": "motions-more/next-section-none", "fixture": "hand-written/motions-more.json" },
         { "case": "motions/G-trailing-newline", "fixture": "hand-written/motions.json" },
         { "case": "motions/5j-past-end", "fixture": "hand-written/motions.json" },
         { "case": "motions/close-brace-last-paragraph", "fixture": "hand-written/motions.json" },
         { "case": "motions/close-brace-last-paragraph-long-line", "fixture": "hand-written/motions.json" },
+        { "case": "day-keys/plus-last-line", "fixture": "hand-written/day-keys.json" },
+        { "case": "day-keys/plus-past-the-end", "fixture": "hand-written/day-keys.json" },
+        { "case": "day-keys/underscore-past-the-end", "fixture": "hand-written/day-keys.json" },
+        { "case": "day-keys/minus-delete", "fixture": "hand-written/day-keys.json" },
         { "case": "operators/dd-last-line", "note": "Vim's line; the column is the one dd started in, as for every linewise d in Evil (S5 row 2)", "fixture": "hand-written/operators.json" },
         { "case": "operators/dk", "note": "Vim's line; the column is the one dk started in, as for every linewise d in Evil (S5 row 2) and in Vim with nostartofline", "fixture": "hand-written/operators.json" },
         { "case": "operators/dG", "note": "Vim's line; the column is the one dG started in, as for every linewise d in Evil (S5 row 2) and in Vim with nostartofline", "fixture": "hand-written/operators.json" },
@@ -21,6 +43,7 @@
         { "case": "operators/dj-last-line", "note": "dj acts on the last line, as Evil's does; Vim's fails and deletes nothing", "fixture": "hand-written/operators.json" },
         { "case": "operators/d5j-goes-as-far-as-it-can", "note": "the column is the one d5j started in, as for every linewise d in Evil (S5 row 2)", "fixture": "hand-written/operators.json" },
         { "case": "operators/J-last-line", "note": "Vim's J fails on the last line; Evil's without the final newline does nothing, and with it takes the newline", "fixture": "hand-written/operators.json" },
+        { "case": "operators/gJ-last-line", "note": "the same for gJ", "fixture": "hand-written/operators.json" },
         { "case": "operators/2D-last-line", "note": "Vim's fails, as its count can't be met; Evil's lands on the empty line and takes the whole line", "fixture": "hand-written/operators.json" },
         { "case": "textobjects/dap-before", "note": "the column is the one dap started in", "fixture": "hand-written/textobjects.json" },
         { "case": "textobjects/dap-last-paragraph", "note": "the column is the one dap started in", "fixture": "hand-written/textobjects.json" },
@@ -31,7 +54,13 @@
         { "case": "wrapped/gj-at-last-visual-line", "fixture": "hand-written/wrapped.json" },
         { "case": "macros/error-stops-macro", "note": "the macro ends one repetition earlier, where j fails on the last line", "fixture": "hand-written/macros.json" },
         { "case": "macros/recursive", "note": "the recursion ends where j fails on the last line", "fixture": "hand-written/macros.json" },
-        { "case": "macros/macro-records-count", "note": "the macro's final j fails on the last line, so the cursor stays on line 2, with an error Evil's run doesn't have", "fixture": "hand-written/macros.json" }
+        { "case": "macros/macro-records-count", "note": "the macro's final j fails on the last line, so the cursor stays on line 2, with an error Evil's run doesn't have", "fixture": "hand-written/macros.json" },
+        { "case": "macros/q-empties-register-j", "note": "j stops on the last line, so a macro ends there", "fixture": "hand-written/macros.json" },
+        { "case": "repeat/v-D-dot", "note": "after the last lines go, the cursor is on the new last line, in the column the delete started in", "fixture": "hand-written/repeat.json" },
+        { "case": "insert-keys/C-o-w-last-word", "note": "w stops on the last character, and a C-o goes back from there", "fixture": "hand-written/insert-keys.json" },
+        { "case": "insert-keys/C-o-G-last-line", "note": "G stops on the last line, in the column it was in", "fixture": "hand-written/insert-keys.json" },
+        { "case": "insert-keys/C-o-dd-last-line", "note": "dd leaves the cursor on the new last line, and past its end, as your Evil does without the final newline", "fixture": "hand-written/insert-keys.json" },
+        { "case": "visual-corners/v-G-d", "note": "G in visual state stops on the last line, so it takes as far as the goal column there, and the newline stays", "fixture": "hand-written/visual-corners.json" }
       ]
     },
     {
@@ -101,7 +130,7 @@
       "s5_row": null,
       "kind": "regex-syntax",
       "evil": ":s/\\(foo\\) \\(bar\\)/\\2 \\1/ uses Emacs regex groups.",
-      "die_vim": "DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result. Replacements expand $N, ${N} and $name as regex-automata's interpolation does (the regex crate's rule): the longest name wins, so a group followed by a letter, digit or _ needs braces, ${1}x. $0 is the whole match and $$ a literal $; & and \\N are literal.",
+      "die_vim": "DIE's regex syntax is Rust's (D4): the same change is :s/(foo) (bar)/$2 $1/, with the same result. Replacements expand $N, ${N} and $name as regex-automata's interpolation does (the regex crate's rule): the longest name wins, so a group followed by a letter, digit or _ needs braces, ${1}x. $0 is the whole match and $$ a literal $; & and \\N are literal. \\n, \\t and \\\\ are a newline, a tab and a backslash, as in Evil.",
       "cases": [
         { "case": "ex/s-groups", "fixture": "hand-written/ex.json" },
         { "case": "ex/s-group-before-letter", "fixture": "hand-written/ex.json" }
@@ -165,6 +194,117 @@
       "evil": "A \"x before an h, l or f that fails stays named for the next command, because those motions reset this-command when they signal.",
       "die_vim": "As in Vim: the failed command uses it up.",
       "cases": [{ "case": "registers/register-kept-after-failed-X", "fixture": "hand-written/registers.json" }]
+    },
+    {
+      "rule": "R's backspace takes back a newline",
+      "s5_row": 26,
+      "kind": "evil-bug",
+      "evil": "In replace state, <BS> over a newline typed there deletes it and inserts the character after it a second time: Rx<CR><BS><BS> on abc gives abbc.",
+      "die_vim": "As in Vim: <BS> puts back what the key took, and a newline took nothing, so abc stays abc.",
+      "cases": [{ "case": "visual-corners/replace-backspace-past-a-typed-newline", "fixture": "hand-written/visual-corners.json" }]
+    },
+    {
+      "rule": "u after a macro undoes more",
+      "s5_row": 27,
+      "kind": "emacs-artifact",
+      "evil": "Emacs's undo counts an undo as an edit unless the last command was also an undo, so a macro's u then a typed u gets the first one back: xx, @a holding u, then u on abcd gives cd.",
+      "die_vim": "Each u goes back one step, whatever typed or fed it: abcd.",
+      "cases": [{ "case": "macros/u-alone-in-macro", "fixture": "hand-written/macros.json" }]
+    },
+    {
+      "rule": "a block insert in a macro goes in on every line",
+      "s5_row": 28,
+      "kind": "evil-bug",
+      "evil": "What's typed in a block's I reaches the other lines by a command hook, and macros run without hooks: replaying qa<C-v>jIX<Esc>q gives XXab and Xcd.",
+      "die_vim": "As in Vim: it goes in on every line, however it was typed.",
+      "cases": [{ "case": "macros/block-insert-in-macro", "fixture": "hand-written/macros.json" }]
+    },
+    {
+      "rule": "gv after undoing what took its text",
+      "s5_row": 29,
+      "kind": "emacs-artifact",
+      "evil": "Emacs's undo moves markers back with the text: vjdu then gv ends on the old head.",
+      "die_vim": "die-core's undo doesn't move markers back, so gv's ends stay where the delete put them: at its start.",
+      "cases": [{ "case": "visual-corners/gv-after-d", "fixture": "hand-written/visual-corners.json" }]
+    },
+    {
+      "rule": "brackets around one character",
+      "s5_row": 30,
+      "kind": "evil-bug",
+      "evil": "A second i( on a selection of one character, itself inside brackets: on ((a)) it fails with (1, 2) selected, and on ((a) b) from the inner opening bracket it selects (1, 6).",
+      "die_vim": "A selection of one character counts as none, as Evil's word objects do, so the second i( finds what the first did.",
+      "cases": [{ "case": "visual-corners/v-paren-on-open", "fixture": "hand-written/visual-corners.json" }, { "case": "visual-corners/v-paren-twice", "fixture": "hand-written/visual-corners.json" }]
+    },
+    {
+      "rule": "C-r on / pastes a register",
+      "kind": "evil-gap",
+      "evil": "Your Evil's / is isearch, so C-r there searches backward and a register's name is typed as text. Evil's own evil-search module takes C-r as on :, with evil-paste-from-register.",
+      "die_vim": "/ and ? are the same command line as : (scope §10), so C-r pastes a register there too, and C-r C-w the word under the cursor.",
+      "cases": [{ "case": "ex/cr-search-unnamed", "fixture": "hand-written/ex.json" }, { "case": "ex/cr-search-word", "fixture": "hand-written/ex.json" }]
+    },
+    {
+      "rule": "a failed search is an error",
+      "s5_row": 31,
+      "kind": "evil-gap",
+      "evil": "isearch only says it failed: /zzz<CR> on text without zzz signals nothing, and the next key runs.",
+      "die_vim": "As Vim's: it's an error, so what follows it in a macro is dropped (contract §7). Typed keys still run, so the result is your Evil's, with the error added.",
+      "cases": [{ "case": "search/not-found", "fixture": "hand-written/search.json" }]
+    },
+    {
+      "rule": "a failed search in a macro",
+      "kind": "oracle-dies",
+      "evil": "The oracle's batch Emacs dies when isearch fails inside a keyboard macro, so there's no fixture of what your Evil does.",
+      "die_vim": "The macro stops at the search: the keys after it don't run.",
+      "cases": [{ "case": "macros/failed-search-stops", "fixture": "hand-written/macros.json" }]
+    },
+    {
+      "rule": "the change list",
+      "kind": "evil-gap",
+      "evil": "`g;`, `g,` and the mark `.` call goto-chg, which your Emacs doesn't have, so each signals that goto-last-change is void and nothing moves.",
+      "die_vim": "Vim's: a list per buffer of where changes were, where a change on the same line and fewer than 79 columns from the last replaces it. `.` is the newest. A count that goes too far stops at the list's end, and going on from that end is an error.",
+      "cases": [
+        { "case": "marks/dot-mark", "fixture": "hand-written/marks.json" },
+        { "case": "marks/dot-mark-insert", "fixture": "hand-written/marks.json" },
+        { "case": "marks/dot-mark-moves", "fixture": "hand-written/marks.json" },
+        { "case": "marks/dot-mark-undo", "fixture": "hand-written/marks.json" },
+        { "case": "marks/quote-dot", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-comma", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-comma-newest", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-count", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-oldest", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-same-line-is-one", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-then-comma", "fixture": "hand-written/marks.json" },
+        { "case": "marks/g-semi-three-lines", "fixture": "hand-written/marks.json" },
+        { "case": "marks/dot-mark-substitute", "note": "`.` is the last line :s changed, as in Vim", "fixture": "hand-written/marks.json" }
+      ]
+    },
+    {
+      "rule": "no sentence motions, so no marks ( and )",
+      "kind": "not-in-scope",
+      "evil": "`( and `) run evil-backward-sentence-begin and evil-forward-sentence-begin, and ( and ) are those motions.",
+      "die_vim": "Scope section 10 has no sentence motions, so ( and ) aren't bound, and `( and `) say the marker isn't set. m( and m) are errors in both.",
+      "cases": [
+        { "case": "marks/backtick-sentence-forward", "fixture": "hand-written/marks.json" },
+        { "case": "marks/backtick-sentence-backward", "fixture": "hand-written/marks.json" }
+      ]
+    },
+    {
+      "rule": "a count of zero",
+      "kind": "emacs-artifact",
+      "evil": "C-u 0 is Emacs's prefix argument of 0, so j moves nothing. Only C-u can type it, since a bare 0 is a motion.",
+      "die_vim": "A count of 0 counts as no count, as for every other motion here, so j moves one line.",
+      "cases": [{ "case": "universal-argument/c-u-zero-is-a-zero-count", "fixture": "hand-written/universal-argument.json" }]
+    },
+    {
+      "rule": "an operator C-u cuts short",
+      "kind": "evil-bug",
+      "evil": "d then C-u deletes an empty range: every kill register and the clipboard end up holding empty text, and what they held is gone. C-u's count then goes to the next command.",
+      "die_vim": "The same, except that the operator kills nothing, so the registers and the clipboard stay as they were.",
+      "cases": [
+        { "case": "universal-argument/operator-then-c-u-drops-the-operator", "fixture": "hand-written/universal-argument.json" },
+        { "case": "universal-argument/operator-count-then-c-u-drops-both", "fixture": "hand-written/universal-argument.json" }
+      ]
     }
   ]
 }

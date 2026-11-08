@@ -15,7 +15,6 @@
 //! Instances go in three layers, so that nothing covers what should be above it:
 //! every background, then every glyph and line, then the cursors. A glyph may reach
 //! past its cell, and a neighbour's background doesn't cut it off.
-#![warn(missing_docs)]
 
 use crate::atlas::{Atlas, Full, GlyphKey, Slot};
 use crate::font::CellMetrics;
@@ -133,14 +132,17 @@ fn cut_to(q: Quad, rect: [f32; 4]) -> Quad {
 }
 
 /// A row's backgrounds, one for each run of a color, skipping the scene's own
-/// background, which the frame is cleared to.
+/// background, which the frame is cleared to. A window that isn't a whole number of cells
+/// wide has less than a cell left at its right, so the last run reaches a cell further and the
+/// target cuts it off: a status line goes to the window's edge.
 fn row_backgrounds(row: &[Cell], y: f32, cell: &CellMetrics, background: Rgb, out: &mut Vec<Quad>) {
     let (cw, ch) = (cell.w as f32, cell.h as f32);
     let mut start = 0;
     for col in 1..=row.len() {
         if col == row.len() || row[col].bg != row[start].bg {
             if row[start].bg != background {
-                let width = (col - start) as f32 * cw;
+                let edge = if col == row.len() { cw } else { 0.0 };
+                let width = (col - start) as f32 * cw + edge;
                 out.push(solid([start as f32 * cw, y, width, ch], row[start].bg));
             }
             start = col;

@@ -96,8 +96,10 @@ name = "M10 edits added to an open step don't count toward the byte cap"
 file = "src/undo.rs"
 old = '''
                 g.bytes += bytes;
+                g.after = self.state;
                 self.trim(limit);'''
 new = '''
+                g.after = self.state;
                 self.trim(limit);'''
 
 [[mutant]]
@@ -430,3 +432,84 @@ old = '''
                 Visual if on_cursor => Some(self.line_of(at.pos) + 1),'''
 new = '''
                 Visual if on_cursor => Some(own),'''
+
+[[mutant]]
+name = "M49 rounding's last cells go to no window"
+file = "src/workspace/tree.rs"
+old = '''
+    let left = len - out.iter().sum::<usize>();'''
+new = '''
+    let left = (len - out.iter().sum::<usize>()) * 0;'''
+
+[[mutant]]
+name = "M50 a window's text covers the divider beside it"
+file = "src/workspace/tree.rs"
+old = '''
+        let divider = usize::from(self.x + self.w < frame_cols);'''
+new = '''
+        let divider = usize::from(self.x + self.w < frame_cols) * 0;'''
+
+[[mutant]]
+name = "M51 a window in a frame with room can shrink to nothing"
+file = "src/workspace/tree.rs"
+old = '''
+        while out[i] < mins[i] {'''
+new = '''
+        while out[i] < mins[i] && len == usize::MAX {'''
+
+[[mutant]]
+name = "M52 undo leaves the flag as if the step were still there"
+file = "src/undo.rs"
+old = '''
+            p.other.before
+        };'''
+new = '''
+            p.other.after
+        };'''
+
+[[mutant]]
+name = "M53 a silent edit leaves the buffer unmodified"
+file = "src/undo.rs"
+old = '''
+        self.silent_since_saved = true;'''
+new = '''
+'''
+
+[[mutant]]
+name = "M54 :w overwrites a file that changed on disk"
+file = "src/files.rs"
+old = '''
+            if disk != known {'''
+new = '''
+            if false && disk != known {'''
+
+[[mutant]]
+name = "M55 a hard-linked file is replaced, which cuts the link"
+file = "src/files.rs"
+old = '''
+    if old.nlink() == 1'''
+new = '''
+    if old.nlink() >= 1'''
+
+[[mutant]]
+name = "M56 a replaced file loses its mode"
+file = "src/files.rs"
+old = '''
+        .and_then(|()| f.set_permissions(old.permissions()))'''
+new = ''
+
+[[mutant]]
+name = "M57 a reload goes over unsaved changes"
+file = "src/files.rs"
+old = '''
+        } else if self.unsaved(buf).ok()? {'''
+new = '''
+        } else if false && self.unsaved(buf).ok()? {'''
+
+[[mutant]]
+name = "M58 a save replaces a symlink instead of following it"
+file = "src/files.rs"
+old = '''
+    let real = resolve(path)?;'''
+new = '''
+    let real = resolve(path).map(|_| path.to_path_buf())?;'''

@@ -25,9 +25,12 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
     "std",
     "NSArray",
     "NSDictionary",
+    "NSException",
     "NSGeometry",
+    "NSObjCRuntime",
     "NSObject",
     "NSProcessInfo",
+    "NSRange",
     "NSString",
     "NSUserDefaults",
     "NSValue",
@@ -40,6 +43,7 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
     "NSApplication",
     "NSEvent",
     "NSGraphics",
+    "NSGraphicsContext",
     "NSPasteboard",
     "NSResponder",
     "NSRunningApplication",
@@ -50,6 +54,7 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
 objc2-metal = { version = "=0.3.2", default-features = false, features = [
     "std",
     "block2",
+    "objc2-core-foundation",
     "MTLAllocation",
     "MTLArgument",
     "MTLBuffer",
@@ -114,6 +119,21 @@ winit = { version = "=0.30.13", default-features = false, features = ["x11", "wa
 
 [dev-dependencies]
 die-test-cap.workspace = true
+
+# Only `tests/keys.rs` posts events, to its own process.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "libc",
+    "CGEvent",
+    "CGEventTypes",
+    "CGRemoteOperation",
+] }
+
+# It has to run on the main thread, where an event loop must, so it has no test harness.
+[[test]]
+name = "keys"
+harness = false
 
 # die-render may not inherit the workspace's `unsafe_code = "forbid"`: its
 # per-platform modules (`platform::macos`) need `allow`. Everything else in the

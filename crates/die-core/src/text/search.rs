@@ -11,6 +11,11 @@ use regex_automata::{Anchored, Input};
 use std::cell::Ref;
 use std::ops::Range;
 
+/// The longest pattern, in bytes.
+const LONGEST_PATTERN: usize = 1 << 16;
+/// From how long a line `matches` and `match_at` look only near what they're asked about.
+const LONG_LINE: usize = 1 << 20;
+
 /// A compiled search pattern in Rust's regex syntax, where `^` and `$` match at every
 /// line's start and end, before `\r\n` too. Case folding is the caller's choice: die-vim
 /// decides smartcase.
@@ -25,6 +30,14 @@ pub struct Pattern {
 impl Pattern {
     /// Compile `src`, ignoring case when `ignore_case`. Errors: `BadPattern`.
     pub fn new(src: &str, ignore_case: bool) -> Result<Pattern> {
+        // Compiling one takes many times its length before the size limit below can say anything,
+        // and `*` on a word of a hundred megabytes would run out of memory.
+        if src.len() > LONGEST_PATTERN {
+            return Err(Error::BadPattern(format!(
+                "{} bytes is too long",
+                src.len()
+            )));
+        }
         let syntax = syntax::Config::new()
             .multi_line(true)
             .crlf(true)
@@ -37,10 +50,25 @@ impl Pattern {
         })
     }
 
-    /// A literal pattern for `*` and `#`: `text` matches only where the characters on either
-    /// side aren't word characters by `is_word` (Evil's in fundamental-mode: alphanumerics, not
-    /// `_`, so `foo` matches inside `foo_bar` but not `foobar`). Rust's `\b` can't say this,
-    /// since its word characters include `_`. Errors: `BadPattern`.
+    /// Smartcase: a pattern with no capital in it ignores case. What follows a backslash isn't
+    /// text, so `\\S` has no capital.
+    pub fn ignores_case(src: &str) -> bool {
+        let mut chars = src.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                chars.next();
+            } else if c.is_uppercase() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// A literal pattern for `*` and `#`: `text` matches only where its first and last characters
+    /// are word characters by `is_word` and those on either side aren't, as with Emacs's `\\<`
+    /// and `\\>` (Evil's in fundamental-mode: alphanumerics, not `_`, so `foo` matches inside
+    /// `foo_bar` but not `foobar`, and `++` matches nowhere). Rust's `\b` can't say this, since
+    /// its word characters include `_`. Errors: `BadPattern`.
     pub fn word(text: &str, ignore_case: bool, is_word: fn(char) -> bool) -> Result<Pattern> {
         Ok(Pattern {
             is_word: Some(is_word),
@@ -59,10 +87,14 @@ impl Pattern {
         &self.src
     }
 
-    /// Whether a match counts: for a `word` pattern, its neighbours aren't word characters.
+    /// Whether a match counts: for a `word` pattern, as with Emacs's `\\<` and `\\>`, a word
+    /// starts and ends there, so its ends are word characters and its neighbours aren't.
     fn stands_alone(&self, text: &str, m: &Range<usize>) -> bool {
         self.is_word.is_none_or(|is_word| {
+            let inside = &text[m.clone()];
             !text[..m.start].chars().next_back().is_some_and(is_word)
+                && inside.chars().next().is_some_and(is_word)
+                && inside.chars().next_back().is_some_and(is_word)
                 && !text[m.end..].chars().next().is_some_and(is_word)
         })
     }
@@ -82,7 +114,11 @@ impl Pattern {
 
     /// Every match that counts, starting in `..end`, left to right and without overlaps. It
     /// finds them as they're asked for, so stopping early doesn't scan a long line to its end.
-    fn all<'a>(&'a self, text: &'a str, end: usize) -> Box<dyn Iterator<Item = Range<usize>> + 'a> {
+    pub(crate) fn all<'a>(
+        &'a self,
+        text: &'a str,
+        end: usize,
+    ) -> Box<dyn Iterator<Item = Range<usize>> + 'a> {
         if self.is_word.is_none() {
             let input = Input::new(text).range(..end);
             return Box::new(self.re.find_iter(input).map(|m| m.range()));
@@ -208,6 +244,17 @@ impl TextBuf {
         })
     }
 
+    /// Whether a search going `dir` would stay at `pos` on an empty match, which `search`
+    /// steps past. Going forward that's the longest match from `pos`. Going backward a match
+    /// has to end by `pos`, as in Emacs, so `x*` is empty there even with an `x` after it.
+    pub fn empty_match_at(&self, pat: &Pattern, pos: usize, dir: Dir) -> bool {
+        let text = self.flat();
+        let pos = pos.min(text.len());
+        let end = if dir == Dir::Forward { text.len() } else { pos };
+        let at = Input::new(&*text).range(pos..end).anchored(Anchored::Yes);
+        pat.re.search(&at).is_some_and(|m| m.is_empty())
+    }
+
     /// Every match that overlaps `range`, in order and without overlaps, for highlighting.
     /// Matching sees only the lines `range` touches, as Emacs's lazy highlighting stops at
     /// the window's end: a match that starts before `range` on its first line is found, but
@@ -222,6 +269,46 @@ impl TextBuf {
             }
             if m.end > range.start || (m.is_empty() && m.start >= range.start) {
                 out.push(m);
+            }
+        }
+        out
+    }
+
+    /// What `:s` changes in the whole lines `lines`: each match and its replacement, in order and
+    /// without overlaps. With `global` that's every match, otherwise the first of each line. `$1`,
+    /// `${1}`, `$name`, `$0` and `$$` in `template` expand as in Rust's regex crate. An empty match
+    /// at `lines.end` belongs to the next line, so it doesn't count unless `lines` is empty or
+    /// the text ends there with no newline. A match holding a newline leaves the rest of its
+    /// last line in play.
+    pub fn substitutions(
+        &self,
+        pat: &Pattern,
+        lines: Range<usize>,
+        template: &str,
+        global: bool,
+    ) -> Vec<(Range<usize>, String)> {
+        let text = self.flat();
+        let text = &*text;
+        let mut out = vec![];
+        let mut next_line = lines.start;
+        let input = Input::new(text).range(lines.clone());
+        for caps in pat.re.captures_iter(input) {
+            let Some(m) = caps.get_match().map(|m| m.range()) else {
+                continue;
+            };
+            if m.start == lines.end && !lines.is_empty() && text[..m.start].ends_with('\n') {
+                break;
+            }
+            if m.start < next_line || !pat.stands_alone(text, &m) {
+                continue;
+            }
+            out.push((m.clone(), caps.interpolate_string(text, template)));
+            if !global {
+                next_line = if text[m.clone()].contains('\n') {
+                    m.end
+                } else {
+                    self.line_start(self.line_of(m.end) + 1)
+                };
             }
         }
         out
@@ -242,12 +329,21 @@ impl TextBuf {
             .map(|m| start + m.start..start + m.end)
     }
 
-    /// The lines `range` touches, for `matches` and `match_at`: where they start, their
+    /// The text around `range`, for `matches` and `match_at`: where they start, their
     /// text and where they end. The text has one character more, so look-around at the
     /// end (`$`, `\b`) sees what follows it.
     fn lines(&self, range: &Range<usize>) -> (usize, String, usize) {
-        let start = self.line_start(self.line_of(range.start));
-        let end = self.line_start(self.line_of(range.end) + 1);
+        let mut start = self.line_start(self.line_of(range.start));
+        let mut end = self.line_start(self.line_of(range.end) + 1);
+        // A line of megabytes costs a copy and a search of all of it at every frame. Only what's
+        // near the range is asked of it, so `^` may match where that begins.
+        if end - start > LONG_LINE && range.end - range.start < LONG_LINE {
+            let char_at = |b: usize| self.rope.char_to_byte(self.rope.byte_to_char(b));
+            start = start.max(char_at(range.start.saturating_sub(LONG_LINE / 8)));
+            end = end.min(char_at(
+                range.end.saturating_add(LONG_LINE / 8).min(self.len()),
+            ));
+        }
         let more = self
             .rope
             .byte_slice(end..)

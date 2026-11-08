@@ -50,6 +50,7 @@ fn a_crate_without_c_builds() {
 }
 
 #[test]
+#[ignore = "slow: runs in ci --full"]
 fn a_build_script_calling_a_c_compiler_fails() {
     for tool in ["cc", "clang", "zig"] {
         let p = project(Some(tool));
@@ -78,6 +79,7 @@ fn a_build_script_calling_pkg_config_fails() {
 }
 
 #[test]
+#[ignore = "slow: runs in ci --full"]
 fn a_build_script_using_cc_cxx_or_ar_fails() {
     for (var, tool) in [("$CC", "cc"), ("$CXX", "c++"), ("$AR", "ar")] {
         let p = project(Some(var));
@@ -91,6 +93,7 @@ fn a_build_script_using_cc_cxx_or_ar_fails() {
 }
 
 #[test]
+#[ignore = "slow: runs in ci --full"]
 fn a_build_script_that_carries_on_without_a_stand_in_fails() {
     // As x11-dl does with pkg-config, and as a crate that compiles a C shim only
     // when `cc` works would: on a machine with a real one, it compiles C.

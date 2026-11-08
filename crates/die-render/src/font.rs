@@ -2,7 +2,6 @@
 //! face's metrics, which source draws each character, and where a glyph goes in its
 //! cells, squeezed if it doesn't fit. The driver asks the backend's faces for the
 //! inputs. Nothing here touches a font.
-#![warn(missing_docs)]
 
 use crate::frame::{GlyphBitmap, Plane};
 use crate::sprite::{self, Line};

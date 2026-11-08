@@ -1,11 +1,14 @@
 //! The runtime (contract §12, C3, C4): subscription handles, the queue of calls that receive
 //! `Ctx`, the timer heap and clocks, jobs with their channel and `Waker`, and the loop.
 #![warn(missing_docs)]
+use crate::app::Input;
 use crate::dispatch::*;
 use crate::error::*;
 use crate::ext::*;
+use crate::files::POLL_EVERY;
 use crate::ids::*;
 use crate::keys::*;
+use crate::session::LOOK_EVERY;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -115,7 +118,7 @@ pub(crate) type JobMsg = (
 pub(crate) type Callback = Box<dyn FnOnce(&mut Ctx) -> Result>;
 type JobDone = Box<dyn FnOnce(&mut Ctx, Box<dyn Any + Send>) -> Result>;
 
-type TimerFn = Rc<RefCell<dyn FnMut(&mut Ctx) -> Result>>;
+pub(crate) type TimerFn = Rc<RefCell<dyn FnMut(&mut Ctx) -> Result>>;
 
 /// A timer waiting in the heap.
 pub(crate) struct Timer {
@@ -134,6 +137,28 @@ pub(crate) struct Idle {
     d: Duration,
     sub: Rc<SubInner>,
     f: TimerFn,
+}
+
+/// How long after the last thing that happened the tick rests.
+const REST_AFTER: Duration = Duration::from_secs(30);
+/// The tick's period at rest, Emacs's own auto-revert interval. Anything the tick wasn't told of
+/// is seen within this.
+const RESTING: Duration = Duration::from_secs(5);
+
+/// The one timer behind the file poll and the session's looks, so an editor nobody is using
+/// stays asleep: a tick every [`RESTING`] once nothing has happened for [`REST_AFTER`], and
+/// anything that happens wakes it. One timer, so their wakes coincide.
+#[derive(Default)]
+pub(crate) struct Tick {
+    timer: Option<Sub>,
+    /// When `timer` fires.
+    due: Duration,
+    /// When the file poll next runs.
+    files_due: Duration,
+    /// When something last happened.
+    active: Duration,
+    /// The call that just ran was a tick that found nothing new.
+    found_nothing: bool,
 }
 
 /// The shortest period a repeating timer can have, so one with none can't hold the loop.
@@ -157,6 +182,8 @@ pub(crate) enum SubKind {
     Killed(KilledFn),
     Job { id: u64, f: JobDone },
     Keys(KeysFn),
+    Dropped(TimerFn),
+    Ended(TimerFn),
 }
 
 pub(crate) struct SubEntry {
@@ -195,7 +222,7 @@ impl Ctx {
             ext: self.cur_ext(),
         })
     }
-    fn new_sub(&mut self, kind: SubKind) -> Sub {
+    pub(crate) fn new_sub(&mut self, kind: SubKind) -> Sub {
         let inner = self.new_handle();
         self.subs.push(SubEntry {
             inner: inner.clone(),
@@ -270,6 +297,61 @@ impl Ctx {
     /// The time on this workspace's clock.
     pub fn now(&self) -> Duration {
         self.clock.now()
+    }
+    /// Start the tick, if it hasn't been, as there's now a file or a session to look after.
+    pub(crate) fn start_ticking(&mut self) {
+        if self.pace.timer.is_none() {
+            self.pace.files_due = self.now().saturating_add(POLL_EVERY);
+            self.touch();
+            self.arm_tick(self.fast_tick());
+        }
+    }
+    /// With nothing left to look after, the tick stops.
+    pub(crate) fn stop_ticking_if_done(&mut self) {
+        if !self.files.any() && self.session.is_none() {
+            self.pace.timer = None;
+        }
+    }
+    fn fast_tick(&self) -> Duration {
+        if self.session.is_some() {
+            LOOK_EVERY
+        } else {
+            POLL_EVERY
+        }
+    }
+    fn arm_tick(&mut self, d: Duration) {
+        self.pace.due = self.now().saturating_add(d);
+        self.pace.timer = Some(self.after(d, |ctx| {
+            ctx.run_tick();
+            Ok(())
+        }));
+    }
+    fn run_tick(&mut self) {
+        // Armed before the work, so that a panic in it doesn't end the poll.
+        self.arm_tick(self.fast_tick());
+        let now = self.now();
+        if now >= self.pace.files_due {
+            self.pace.files_due = now.saturating_add(POLL_EVERY);
+            self.check_files();
+        }
+        self.look_at_session();
+        if std::mem::take(&mut self.files.noticed) {
+            return;
+        }
+        self.pace.found_nothing = true;
+        let quiet = now.saturating_sub(self.pace.active);
+        if quiet >= REST_AFTER && !self.session_behind() {
+            self.arm_tick(RESTING);
+        }
+    }
+    /// Something happened, so a tick at rest comes back now, and looks at the files too.
+    pub(crate) fn touch(&mut self) {
+        let now = self.now();
+        self.pace.active = now;
+        if self.pace.timer.is_some() && self.pace.due > now.saturating_add(self.fast_tick()) {
+            self.pace.files_due = now;
+            self.arm_tick(self.fast_tick());
+        }
     }
     /// A key's turn ended: every idle timer's wait starts again.
     pub(crate) fn restart_idle(&mut self) {
@@ -422,6 +504,23 @@ impl Ctx {
         self.queue.extend(due.into_iter().map(|d| d.1));
     }
 
+    /// A typed `C-g` ends what was fed, as Emacs's quit ends a macro, and goes no further. A host
+    /// reads its events between [`Ctx::run_ready`]s, so a macro that won't end can be stopped.
+    pub(crate) fn quit_fed(&mut self) {
+        if self.fed.is_empty() {
+            return;
+        }
+        let is_quit = |i: &Input| match i {
+            Input::Key(k) => key_notation(std::slice::from_ref(k)) == "<C-g>",
+            _ => false,
+        };
+        if let Some(i) = self.typed.iter().position(is_quit) {
+            self.typed.remove(i);
+            self.drop_fed();
+            self.messages.push("Quit".into());
+        }
+    }
+
     /// One turn of the loop: queued calls first (C3), then one key (fed keys before typed ones).
     /// False once what was ready has run. It never waits, so a host can call it until it returns
     /// false, draw, read its events, and ask [`Ctx::next_timer`] how long to sleep. Timers get no
@@ -430,6 +529,9 @@ impl Ctx {
     pub fn step(&mut self) -> bool {
         self.fed_at = 0;
         self.collect_due();
+        if self.prompt_take_feed() || self.grep_take() {
+            return true;
+        }
         if let Some(q) = self.queue.pop_front() {
             if q.alive.as_ref().is_none_or(|a| a.alive.get()) {
                 self.cmd_seq += 1;
@@ -438,10 +540,13 @@ impl Ctx {
                 if keyed {
                     self.restart_idle();
                     if r.is_err() {
-                        self.fed.clear();
+                        self.drop_fed();
                     }
                 }
                 self.report(r);
+                if !std::mem::take(&mut self.pace.found_nothing) {
+                    self.touch();
+                }
                 // Code that runs between units (the host, a harness) gets a number of its own.
                 self.cmd_seq += 1;
             } else {
@@ -450,11 +555,27 @@ impl Ctx {
             return true;
         }
         self.timers_ran = false;
-        let fed = self.fed.pop_front().map(|ev| (ev, KeySource::Fed));
-        let key = fed.or_else(|| self.typed.pop_front().map(|ev| (ev, KeySource::Typed)));
-        let Some((ev, src)) = key else { return false };
-        self.dispatch(ev, src);
-        self.restart_idle();
+        self.quit_fed();
+        let fed = self
+            .fed
+            .pop_front()
+            .map(|ev| (Input::Key(ev), KeySource::Fed));
+        let next = fed.or_else(|| self.typed.pop_front().map(|i| (i, KeySource::Typed)));
+        let Some((input, src)) = next else {
+            return false;
+        };
+        self.input_ran = true;
+        let dropped = matches!(input, Input::Key(_) | Input::Pointer(_));
+        if dropped && self.handing_over && matches!(src, KeySource::Typed) {
+            return true;
+        }
+        if let Input::Key(ev) = input {
+            self.dispatch(ev, src);
+            self.restart_idle();
+        } else {
+            self.run_input(input);
+        }
+        self.touch();
         self.cmd_seq += 1;
         true
     }
@@ -468,7 +589,7 @@ impl Ctx {
 
     /// Take turns until nothing is ready. With `wait`, go on until no job is out, and return false
     /// if one outlasts its wait.
-    fn drain(&mut self, wait: bool) -> bool {
+    pub(crate) fn drain(&mut self, wait: bool) -> bool {
         for _ in 0..1_000_000 {
             if self.step() || self.next_timer().is_some_and(|at| at <= self.now()) {
                 continue;
@@ -481,14 +602,15 @@ impl Ctx {
                 Err(_) => return false,
             }
         }
-        self.messages
-            .push("The loop never went idle in 1,000,000 turns, so this run stopped".into());
+        self.log_error("The loop never went idle in 1,000,000 turns, so this run stopped".into());
         wait
     }
 
-    /// Shut extensions down in reverse order and cancel what they detached (C4). What your config
-    /// detached goes last, since an extension's `shutdown` can still run config's commands.
+    /// Write the session, then shut extensions down in reverse order and cancel what they
+    /// detached (C4). What your config detached goes last, since an extension's `shutdown` can
+    /// still run config's commands.
     pub fn shutdown(&mut self) {
+        self.save_session_at_quit();
         for i in (0..self.exts.len()).rev() {
             let r = self.guarded(i, |ctx| {
                 ctx.with_ext_idx(i, |e, ctx| e.shutdown(ctx))?;

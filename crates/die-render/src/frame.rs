@@ -1,7 +1,6 @@
 //! The frame data that crosses the boundary between neutral code and the backend.
 //! These are plain values: neutral code makes them and reads them, the driver
 //! hands them over, and the backend never decides anything from them.
-#![warn(missing_docs)]
 
 use die_core::Rgb;
 
@@ -91,6 +90,23 @@ pub struct Image {
     pub h: u32,
     /// The pixels.
     pub bgra: Vec<u8>,
+}
+
+/// A frame on the window's drawable.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Presented {
+    /// The drawable's width in pixels.
+    pub w: u32,
+    /// The drawable's height in pixels.
+    pub h: u32,
+    /// Its pixels, if the surface was asked to read this frame back.
+    pub image: Option<Image>,
+    /// Which of the surface's presents it is, as `Surface::take_presented` names it.
+    pub id: u64,
+    /// The main thread's time on it in ms, up to the commit.
+    pub cpu_ms: f64,
+    /// The GPU's time on it in ms.
+    pub gpu_ms: f64,
 }
 
 impl Image {

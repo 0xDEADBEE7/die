@@ -208,7 +208,10 @@ fn u_with_a_count_reports_the_conflict_it_reaches() {
     });
     ctx.run_until_idle();
     ctx.type_keys("c<Esc>3u");
-    assert_eq!(ctx.messages, ["UndoConflict"]);
+    assert_eq!(
+        ctx.messages,
+        ["undo history was cut short by an overlapping edit"]
+    );
     assert_eq!(ctx.text(b).unwrap().rope().to_string(), "older aB");
 }
 
@@ -224,11 +227,7 @@ fn u_with_a_count_reports_a_read_only_step() {
     ctx.type_keys("3u");
     assert_eq!(ctx.text(b).unwrap().rope().to_string(), "axyz\n");
     assert_eq!(ctx.messages.len(), 1, "{:?}", ctx.messages);
-    assert!(
-        ctx.messages[0].starts_with("ReadOnly"),
-        "{:?}",
-        ctx.messages
-    );
+    assert!(ctx.messages[0].contains("read-only"), "{:?}", ctx.messages);
 }
 
 /// Running out of history partway through a count isn't an error, in either direction.
@@ -239,7 +238,7 @@ fn a_count_past_the_end_of_history_is_quiet() {
     let (_, messages) = run("abc\n", 0, "u");
     assert_eq!(
         messages,
-        ["NothingToUndo"],
+        ["nothing to undo"],
         "with nothing at all to do, it says so"
     );
 }
@@ -249,4 +248,94 @@ fn a_count_past_the_end_of_history_is_quiet() {
 fn a_control_character_is_two_columns_wide() {
     assert_eq!(cursor_after("a\rbc\nxyzwv\n", 3, "j"), 9, "after \\r");
     assert_eq!(cursor_after("a\x01bc\nxyzwv\n", 3, "j"), 9, "after \\x01");
+}
+
+/// The text and cursor `keys` leave, and the errors they log.
+fn edited(text: &str, keys: &str) -> (String, usize, Vec<String>) {
+    let mut ctx = editor();
+    let b = ctx.create_text("t", text);
+    let w = ctx.open_window(b, 80, 24).expect("a window");
+    ctx.focus(w);
+    ctx.type_keys(keys);
+    let t = ctx.text(b).unwrap();
+    let cursor = t.cursor(w).unwrap();
+    (t.rope().to_string(), cursor, ctx.messages.clone())
+}
+
+/// A command run from `:` isn't a change `.` can type again, so the last typed one stays.
+#[test]
+fn a_change_made_from_the_command_line_leaves_dot_alone() {
+    for (keys, want) in [
+        ("x:vim-join<CR>.", "bcdef\n"),
+        ("x:vim-insert<CR>Q<Esc>.", "bc\ndef\n"),
+        ("x:vim-delete<CR>l.", "\ndef\n"),
+    ] {
+        let (text, _, messages) = edited("abc\ndef\n", keys);
+        assert_eq!(text, want, "{keys}");
+        assert!(messages.is_empty(), "{keys}: {messages:?}");
+    }
+}
+
+/// `@:` is the last ex line again, with a count, and `@@` after it does the same. As in your
+/// Evil, `.` doesn't take it up.
+#[test]
+fn at_colon_runs_the_last_ex_line_again() {
+    let (_, cursor, messages) = edited("abcdefghij\n", ":vim-forward-char<CR>@:2@:@@");
+    assert!(messages.is_empty(), "{messages:?}");
+    assert_eq!(cursor, 5);
+    let (text, _, _) = edited("abcdef\n", "x:vim-forward-char<CR>@:.");
+    assert_eq!(text, "bcef\n", "`.` is still the `x`");
+    let (_, _, messages) = edited("abc\n", "@:");
+    assert_eq!(messages, ["No previous command line"]);
+}
+
+/// Blanks after the colons don't lose the command.
+#[test]
+fn a_blank_after_a_leading_colon_is_still_the_command() {
+    let (_, cursor, messages) = edited("abc\n", ":: vim-forward-char<CR>");
+    assert!(messages.is_empty(), "{messages:?}");
+    assert_eq!(cursor, 1);
+}
+
+/// `:` and `/` take the keys of `evil-command-line-map`, where `<Up>` matches what's typed.
+#[test]
+fn the_command_line_and_search_take_evils_line_keys() {
+    for (first, again, want) in [
+        (
+            ":vim-forward-char<CR>:vim-backward-char<CR>",
+            ":vim-f",
+            "vim-forward-char",
+        ),
+        ("/foo<CR>/bar<CR>", "/f", "foo"),
+    ] {
+        let mut ctx = editor();
+        let b = ctx.create_text("t", "foo bar\n");
+        let w = ctx.open_window(b, 80, 24).expect("a window");
+        ctx.focus(w);
+        ctx.type_keys(first);
+        ctx.type_keys(again);
+        ctx.type_keys("<Up>");
+        assert_eq!(ctx.prompt_text(), Some(want), "{again}");
+        ctx.type_keys("<Left><C-u>");
+        assert_eq!(ctx.prompt_text(), Some(""), "{again}");
+    }
+}
+
+/// `ga` says what `what-cursor-position` says (batch Emacs on a utf-8 file). The oracle compares
+/// no messages, so its cases only hold it to changing nothing.
+#[test]
+fn ga_says_what_emacs_says() {
+    let text = "a \u{e9}\t\n\u{1}\u{1F600}z\n";
+    for (at, said) in [
+        (0, "Char: a (97, #o141, #x61) point=1 of 9 (0%) column=0"),
+        (1, "Char: SPC (32, #o40, #x20) point=2 of 9 (11%) column=1"),
+        (
+            2,
+            "Char: \u{e9} (233, #o351, #xe9, file ...) point=3 of 9 (22%) column=2",
+        ),
+        (4, "Char: TAB (9, #o11, #x9) point=4 of 9 (33%) column=3"),
+        (6, "Char: C-a (1, #o1, #x1) point=6 of 9 (56%) column=0"),
+    ] {
+        assert_eq!(run(text, at, "ga").1, [said]);
+    }
 }

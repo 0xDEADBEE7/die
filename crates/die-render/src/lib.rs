@@ -9,7 +9,8 @@
 //! A frame goes `Scene`, `rows::Frames`, then `frame::Quad`s and `frame::Upload`s.
 //! All of that is data in and data out, with glyph bitmaps and metrics as values, so
 //! its tests run on any platform. `driver::Renderer` is the only code that calls the
-//! backend: it asks the faces for bitmaps and hands the frame to the GPU.
+//! backend: it asks the faces for bitmaps and hands the frame to the GPU. `window`
+//! is the loop around it, and `check` holds that loop to S1's rules.
 //!
 //! That code is neutral: it doesn't branch on the platform (`cargo xtask lint`).
 //! It calls the platform through `platform::backend` (see `platform`). Until
@@ -18,25 +19,49 @@
 //! it `#[cfg_attr(not(target_os = "macos"), allow(dead_code))]`: a `cfg_attr` that
 //! only sets a lint level is the one platform cfg neutral code may carry.
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 
 #[cfg(test)]
 use die_test_cap as _;
 
 pub mod atlas;
+pub mod check;
 pub mod driver;
 pub mod font;
 pub mod frame;
+pub mod input;
+pub mod latency;
 pub mod platform;
 pub mod rows;
 pub mod sprite;
+pub mod window;
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
-/// Where DIE's fonts are: `$DIE_FONT_DIR`, else `fonts/` at the workspace root,
-/// which `cargo xtask fonts` fills.
+/// Where DIE's fonts are: `$DIE_FONT_DIR`, else the app bundle's, else `fonts/` at the
+/// workspace root, which `cargo xtask fonts` fills.
 pub fn font_dir() -> PathBuf {
-    match std::env::var_os("DIE_FONT_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts")),
+    let exe = std::env::current_exe().ok();
+    // Through ~/.local/bin/die, the executable's path is the link's.
+    let exe = exe.map(|e| e.canonicalize().unwrap_or(e));
+    font_dir_from(std::env::var_os("DIE_FONT_DIR"), exe.as_deref())
+}
+
+/// [`font_dir`], given `$DIE_FONT_DIR` and this executable's path.
+pub fn font_dir_from(var: Option<OsString>, exe: Option<&Path>) -> PathBuf {
+    match (var, exe.and_then(bundle_of)) {
+        (Some(d), _) => PathBuf::from(d),
+        (None, Some(bundle)) => bundle.join("Contents/Resources/fonts"),
+        (None, None) => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts")),
     }
+}
+
+/// The app bundle holding this executable, if it's at `<name>.app/Contents/MacOS/<exe>`.
+pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let named = macos.ends_with("MacOS") && contents.ends_with("Contents");
+    (named && bundle.extension()? == "app").then(|| bundle.to_path_buf())
 }

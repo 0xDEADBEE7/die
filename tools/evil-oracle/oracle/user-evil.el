@@ -15,7 +15,8 @@
 (setq auto-save-default nil)            ; init.el:364
 (setq auto-save-list-file-prefix nil)
 (setq create-lockfiles nil)
-(setq history-length 0)
+;; `history-length' 0 would leave `@:' no last ex line. Nothing saves the history.
+(setq history-length t)
 
 ;;; Load Evil the way init.el:86-99 does.
 
@@ -53,6 +54,11 @@
 
 ;; In batch mode `transient-mark-mode' starts off; the GUI has it on.
 (transient-mark-mode 1)
+
+;;; The first `gd' of a session signals until xref's etags methods are loaded, as your
+;;; running Emacs has them by then. The oracle loads them so that no case is first.
+
+(require 'etags)
 
 (provide 'user-evil)
 ;;; user-evil.el ends here

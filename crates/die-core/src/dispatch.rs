@@ -1,6 +1,7 @@
 //! Commands and key dispatch (contract §5-§7): `Args`, the prefix argument, modal state, `run`,
 //! `feed_keys` and the lookup order.
 #![warn(missing_docs)]
+use crate::app::Input;
 use crate::error::*;
 use crate::ext::*;
 use crate::ids::*;
@@ -154,30 +155,14 @@ impl Ctx {
 
     // -------------------------------------------------------------- the key queues
 
-    /// Queue keys as if typed (contract §6). die-vim's `@a` uses this. `keys` is notation,
-    /// as `key_notation` writes it, so plain text with a `<` in it needs `<lt>`. They run ahead
-    /// of typed keys, and a key's command failing, or a key nothing handles, drops the rest.
-    /// Fed from inside a call, they also run ahead of what's left, in the order they're fed, so
-    /// a macro inside a macro runs before the rest of it. The host's go behind what's left.
-    pub fn feed_keys(&mut self, keys: &str) -> Result {
-        let evs = typed(keys, Some(self.leader)).map_err(Error::Msg)?;
-        let end = self.fed.len();
-        let from = if self.nesting() > 0 { self.fed_at } else { end };
-        let at = from.min(end);
-        let rest = self.fed.split_off(at);
-        self.fed.extend(evs);
-        self.fed_at = self.fed.len();
-        self.fed.extend(rest);
-        Ok(())
-    }
     /// Harness: one key event from the OS.
     pub fn input(&mut self, ev: KeyEvent) {
-        self.typed.push_back(ev);
+        self.typed.push_back(Input::Key(ev));
     }
     /// Harness: type keys in notation, then run until idle.
     pub fn type_keys(&mut self, keys: &str) {
         for ev in typed(keys, Some(self.leader)).expect("bad key notation") {
-            self.typed.push_back(ev);
+            self.typed.push_back(Input::Key(ev));
         }
         self.run_until_idle();
     }
@@ -186,6 +171,10 @@ impl Ctx {
 
     pub(crate) fn dispatch(&mut self, ev: KeyEvent, src: KeySource) {
         self.cmd_seq += 1;
+        if ev.kind != KeyKind::Release && !matches!(ev.key, Key::Modifier(_)) {
+            self.sync_messages();
+            self.log.echo = None;
+        }
         // A key DIE took in passthrough swallows its own repeat and release.
         if let Some(i) = self.swallow.iter().position(|k| *k == ev.key) {
             match ev.kind {
@@ -206,7 +195,7 @@ impl Ctx {
         let Some(state) = self.buffers.get(buf).map(|b| b.state) else {
             return;
         };
-        if state == State::Passthrough {
+        if state == State::Passthrough && self.describing.is_none() {
             return self.dispatch_passthrough(win, buf, ev);
         }
         if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_) | Key::Unidentified) {
@@ -224,7 +213,19 @@ impl Ctx {
         for (ext, c) in caught {
             self.panicked(ext, c);
         }
+        if self.describing.is_some() {
+            return self.describe_key_read(ev);
+        }
         if self.prompt.is_some() {
+            // The DIE layer stays in reach: `<D-q>` isn't a key to type into a prompt.
+            let bound = |(_, km): (String, &Keymap)| km.command_for_exactly(state, &ev);
+            let layer = ev
+                .mods
+                .super_
+                .then(|| self.layers(buf).into_iter().find_map(bound));
+            if let Some(Some(name)) = layer {
+                return self.run_key(&name, vec![ev], win, buf);
+            }
             return self.prompt_key(ev);
         }
         self.pending.push(ev);
@@ -241,11 +242,10 @@ impl Ctx {
                 let last = keys.last().cloned().unwrap();
                 let handled = self.surface_event(buf, &Event::Key(last));
                 if !matches!(handled, Ok(true)) {
-                    self.fed.clear();
+                    self.drop_fed();
                 }
                 if !matches!(handled, Ok(true) | Err(Error::Panicked { .. })) {
-                    self.messages
-                        .push(format!("{} is undefined", key_notation(&keys)));
+                    self.log_error(format!("{} is undefined", key_notation(&keys)));
                 }
             }
         }
@@ -268,7 +268,7 @@ impl Ctx {
             return self.run_key(&name, vec![ev], win, buf);
         }
         if let Err(Error::Panicked { .. }) = self.surface_event(buf, &Event::Key(ev)) {
-            self.fed.clear();
+            self.drop_fed();
         }
     }
 
@@ -284,7 +284,13 @@ impl Ctx {
         })
     }
 
-    fn run_key(&mut self, name: &str, keys: Vec<KeyEvent>, win: WindowId, buf: BufferId) {
+    pub(crate) fn run_key(
+        &mut self,
+        name: &str,
+        keys: Vec<KeyEvent>,
+        win: WindowId,
+        buf: BufferId,
+    ) {
         let p = std::mem::take(&mut self.prefix);
         let args = Args {
             count: p.count,
@@ -295,8 +301,9 @@ impl Ctx {
             ..Default::default()
         };
         let r = self.run(name, &args);
+        self.command_ended();
         if r.is_err() {
-            self.fed.clear(); // a macro stops where it fails (contract §6)
+            self.drop_fed(); // a macro stops where it fails (contract §6)
         }
         self.report(r);
     }
@@ -306,16 +313,27 @@ impl Ctx {
     }
 
     /// Lookup order: range keymap at the cursor, buffer-local, modes (newest first), kind, global.
-    fn layers_lookup(&self, buf: BufferId, state: State, keys: &[KeyEvent]) -> Lookup {
+    pub(crate) fn layers_lookup(&self, buf: BufferId, state: State, keys: &[KeyEvent]) -> Lookup {
+        for (_, km) in self.layers(buf) {
+            match km.lookup(state, keys) {
+                Lookup::None => continue,
+                r => return r,
+            }
+        }
+        Lookup::None
+    }
+
+    /// The keymaps a key in `buf` goes through, in lookup order, with their names.
+    pub(crate) fn layers(&self, buf: BufferId) -> Vec<(String, &Keymap)> {
         let b = &self.buffers[buf];
-        let mut layers: Vec<&Keymap> = vec![];
-        let (kind, ranges): (&str, Vec<&Keymap>) = match &b.content {
+        let mut layers: Vec<(String, &Keymap)> = vec![];
+        let (kind, ranges): (&str, Vec<(String, &Keymap)>) = match &b.content {
             Content::Text(t) => {
                 let cur = self.focused.and_then(|w| t.cursor(w));
                 let names = cur.map(|c| {
                     t.decorations_at(c)
                         .filter_map(|(_, d)| match &d.deco {
-                            Deco::Keymap(n) => self.named.get(n),
+                            Deco::Keymap(n) => Some((format!("keymap {n}"), self.named.get(n)?)),
                             _ => None,
                         })
                         .collect()
@@ -325,16 +343,13 @@ impl Ctx {
             Content::Custom { kind, .. } => (kind, vec![]),
         };
         layers.extend(ranges);
-        layers.push(&b.local);
-        layers.extend(b.modes.iter().rev().map(|m| &self.modes[m.spec].keymap));
-        layers.extend(self.kinds.get(kind));
-        layers.push(&self.global);
-        for km in layers {
-            match km.lookup(state, keys) {
-                Lookup::None => continue,
-                r => return r,
-            }
+        layers.push(("buffer-local".into(), &b.local));
+        for m in b.modes.iter().rev() {
+            let spec = &self.modes[m.spec];
+            layers.push((format!("mode {}", spec.name), &spec.keymap));
         }
-        Lookup::None
+        layers.extend(self.kinds.get(kind).map(|m| (format!("kind {kind}"), m)));
+        layers.push(("global".into(), &self.global));
+        layers
     }
 }

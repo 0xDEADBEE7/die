@@ -7,6 +7,7 @@
 
 use crate::grammar::{Fail, Start};
 use crate::operators::Span;
+use crate::search::is_symbol;
 use crate::text::{
     Chars, Class, Lists, blank_line, class, indent_end, line_end, next_stop, same_word,
     string_after, string_around,
@@ -20,10 +21,12 @@ pub type Object = fn(&Start) -> Result<Span, Fail>;
 /// function and its doc string.
 #[rustfmt::skip]
 pub const OBJECTS: &[(&str, &str, Object, &str)] = &[
-    ("iw", "vim-inner-word", |s| inner_word(s, false), "A word, or the spaces under the cursor."),
-    ("aw", "vim-a-word", |s| a_word(s, false), "A word and the spaces after it, or else before it."),
-    ("iW", "vim-inner-WORD", |s| inner_word(s, true), "A WORD, or the spaces under the cursor."),
-    ("aW", "vim-a-WORD", |s| a_word(s, true), "A WORD and the spaces after it, or else before it."),
+    ("iw", "vim-inner-word", |s| inner_word(s, WordKind::Word), "A word, or the spaces under the cursor."),
+    ("aw", "vim-a-word", |s| a_word(s, WordKind::Word), "A word and the spaces after it, or else before it."),
+    ("iW", "vim-inner-WORD", |s| inner_word(s, WordKind::Big), "A WORD, or the spaces under the cursor."),
+    ("aW", "vim-a-WORD", |s| a_word(s, WordKind::Big), "A WORD and the spaces after it, or else before it."),
+    ("io", "vim-inner-symbol", |s| inner_word(s, WordKind::Symbol), "A symbol, or the spaces under the cursor."),
+    ("ao", "vim-a-symbol", |s| a_word(s, WordKind::Symbol), "A symbol and the spaces after it, or else before it."),
     ("ip", "vim-inner-paragraph", inner_paragraph, "A paragraph, or the blank lines under the cursor."),
     ("ap", "vim-a-paragraph", a_paragraph, "A paragraph and the blank lines after it, or else before it."),
     ("i\"", "vim-inner-double-quote", |s| quoted(s, '"', false), "Inside a double-quoted string."),
@@ -147,15 +150,41 @@ fn around(x: &impl Things, pos: usize, n: usize, floor: usize) -> (usize, usize)
 
 /// Words within a line. An empty line has no line to stay in, so it searches the whole
 /// text, where each empty line is a word of its own, its newline and all.
+/// What `iw`, `iW` and `io` take. A symbol is what Emacs calls one, as `gd` reads it.
+#[derive(Clone, Copy)]
+enum WordKind {
+    Word,
+    Big,
+    Symbol,
+}
+
+impl WordKind {
+    fn class(self, c: char) -> Class {
+        match self {
+            WordKind::Symbol if is_symbol(c) => Class::Word,
+            WordKind::Big => class(c, true),
+            _ => class(c, false),
+        }
+    }
+
+    fn same(self, a: char, b: char) -> bool {
+        match self {
+            WordKind::Symbol if is_symbol(a) || is_symbol(b) => is_symbol(a) && is_symbol(b),
+            WordKind::Big => same_word(a, b, true),
+            _ => same_word(a, b, false),
+        }
+    }
+}
+
 struct Words<'a> {
     t: &'a TextBuf,
-    big: bool,
+    kind: WordKind,
     lo: usize,
     hi: usize,
 }
 
 impl Words<'_> {
-    fn new<'a>(s: &Start<'a>, big: bool) -> Words<'a> {
+    fn new<'a>(s: &Start<'a>, kind: WordKind) -> Words<'a> {
         let t = s.text;
         let line = t.line_of(s.pos);
         let (start, end) = (t.line_start(line), line_end(t, line));
@@ -166,7 +195,7 @@ impl Words<'_> {
         };
         Words {
             t: s.text,
-            big,
+            kind,
             lo,
             hi,
         }
@@ -174,7 +203,7 @@ impl Words<'_> {
     /// The thing starting at or spanning this character, if it's not blank.
     fn span(&self, c: &Chars) -> Option<(usize, usize)> {
         let a = c.ch()?;
-        match class(a, self.big) {
+        match self.kind.class(a) {
             Class::Blank => None,
             Class::Newline => {
                 if !c.at_line_start() {
@@ -188,7 +217,7 @@ impl Words<'_> {
                 let mut b = Chars::at(self.t, c.pos());
                 let mut x = a;
                 while b.pos() > self.lo {
-                    let Some(y) = b.prev_ch().filter(|&y| same_word(y, x, self.big)) else {
+                    let Some(y) = b.prev_ch().filter(|&y| self.kind.same(y, x)) else {
                         break;
                     };
                     x = y;
@@ -198,7 +227,7 @@ impl Words<'_> {
                 let mut x = a;
                 e.fwd();
                 while e.pos() < self.hi {
-                    let Some(y) = e.ch().filter(|&y| same_word(x, y, self.big)) else {
+                    let Some(y) = e.ch().filter(|&y| self.kind.same(x, y)) else {
                         break;
                     };
                     x = y;
@@ -250,15 +279,15 @@ impl Things for Words<'_> {
     }
 }
 
-fn inner_word(s: &Start, big: bool) -> Result<Span, Fail> {
-    let (beg, end) = inner(&Words::new(s, big), s.pos, s.n());
+fn inner_word(s: &Start, kind: WordKind) -> Result<Span, Fail> {
+    let (beg, end) = inner(&Words::new(s, kind), s.pos, s.n());
     Ok(Span::chars(beg, end))
 }
 
-fn a_word(s: &Start, big: bool) -> Result<Span, Fail> {
+fn a_word(s: &Start, kind: WordKind) -> Result<Span, Fail> {
     let line = s.text.line_of(s.pos);
     // Never the line's indentation, so `daw` on an indented line's only word leaves it.
-    let (beg, end) = around(&Words::new(s, big), s.pos, s.n(), indent_end(s.text, line));
+    let (beg, end) = around(&Words::new(s, kind), s.pos, s.n(), indent_end(s.text, line));
     Ok(Span::chars(beg, end))
 }
 
@@ -733,24 +762,26 @@ mod tests {
     fn start(t: &TextBuf, pos: usize) -> Start<'_> {
         Start {
             text: t,
+            window: die_core::WindowId::default(),
             pos,
             count: None,
             goal: None,
             arg: None,
             op: None,
+            visual: false,
         }
     }
 
     #[test]
     fn a_word_is_cut_at_snake_case_and_a_paths_colons() {
         let t = TextBuf::new("foo_bar::baz\n");
-        let word = |pos| inner_word(&start(&t, pos), false).map(|s| (s.beg, s.end));
+        let word = |pos| inner_word(&start(&t, pos), WordKind::Word).map(|s| (s.beg, s.end));
         assert_eq!(word(1), Ok((0, 3)));
         assert_eq!(word(3), Ok((3, 4)));
         assert_eq!(word(5), Ok((4, 7)));
         assert_eq!(word(8), Ok((7, 9)));
         assert_eq!(word(10), Ok((9, 12)));
-        let big = inner_word(&start(&t, 5), true).map(|s| (s.beg, s.end));
+        let big = inner_word(&start(&t, 5), WordKind::Big).map(|s| (s.beg, s.end));
         assert_eq!(big, Ok((0, 12)));
     }
 

@@ -1,9 +1,28 @@
-//! Your DIE config while DIE is being built. It grows a window with F3 and F4a.
+//! `die [--check a,b] [--handover socket] [--restart-after-frame] [--restart-loop] [--frontmost]
+//! [--background] [--] [file...]`: your DIE config, with the files you name. In DIE.app it's the
+//! one instance, or from a terminal the client that sends files to it (`die::app`).
 
 #[cfg(test)]
 use die_test_cap as _;
 
-fn main() {
-    eprintln!("die: no window yet (M0 phase 0); see docs/m0-plan.md");
-    std::process::exit(2);
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    die::render::latency::start_clock();
+    let args = match die_dev::parse_args(std::env::args_os().skip(1)) {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("die: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let code = match (args.check, die::app::bundle()) {
+        (None, Some(bundle)) if die::app::is_client(&args.launch) => {
+            die::app::client(&bundle, args.files, args.launch.background)
+        }
+        (Some(names), _) => die::check(die_dev::config(args.files), names),
+        (None, Some(bundle)) => die::app::run(die_dev::config(args.files), bundle, args.launch),
+        (None, None) => die::run(die_dev::config(args.files)),
+    };
+    ExitCode::from(code.clamp(0, 255) as u8)
 }
