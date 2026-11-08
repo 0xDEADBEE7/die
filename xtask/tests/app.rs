@@ -6,8 +6,9 @@
 
 use die_test_cap as _;
 
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -32,14 +33,25 @@ struct App {
     stderr: PathBuf,
 }
 
+/// Where LaunchServices's tool is. A test bundle comes out of its list when the test is over,
+/// so that Finder's Open With doesn't offer it.
+const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/\
+LaunchServices.framework/Versions/A/Support/lsregister";
+
 impl App {
     fn build(name: &str) -> App {
+        App::build_as(name, "dev.die.DIE.test")
+    }
+
+    /// A bundle under an id of its own, for a test that opens files through LaunchServices, which
+    /// sends them to any running app with the id: another package's tests may have one.
+    fn build_as(name: &str, id: &str) -> App {
         let dir = std::env::temp_dir().join(format!("die-app-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let app = dir.join("DIE.app");
         let profile = xtask::app::Profile::Dev;
-        xtask::app::build(&root(), &app, "dev.die.DIE.test", profile).unwrap();
+        xtask::app::build(&root(), &app, id, profile).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         App {
             state: dir.join("state"),
@@ -125,6 +137,9 @@ impl Drop for App {
         for pid in self.pids() {
             let _ = Command::new("kill").arg(pid.to_string()).status();
         }
+        let mut unregister = Command::new(LSREGISTER);
+        unregister.arg("-u").arg(&self.app).stderr(Stdio::null());
+        let _ = unregister.stdout(Stdio::null()).status();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -138,6 +153,14 @@ fn the_bundle_has_its_id_its_fonts_and_a_signature() {
         plist.contains("<string>dev.die.DIE.test</string>"),
         "{plist}"
     );
+    // It opens any file, and is the opener of none until you choose it.
+    let types = "<array><string>public.data</string></array>";
+    assert!(plist.contains(types) && plist.contains("<string>Alternate</string>"));
+    let lint = Command::new("plutil")
+        .arg("-lint")
+        .arg(app.app.join("Contents/Info.plist"))
+        .output();
+    assert!(lint.unwrap().status.success());
     for (name, _) in xtask::fonts::FILES {
         let font = app.app.join("Contents/Resources/fonts").join(name);
         assert!(font.exists(), "{name}");
@@ -444,4 +467,137 @@ fn a_restart_hands_over_in_time() {
     let took: f64 = log.trim().parse().unwrap();
     println!("restart: {took} ms");
     assert!(took < RESTART_MS, "the restart took {took} ms");
+}
+
+/// `die --background --wait` from a terminal, as `git commit` runs `$EDITOR`, through the link as
+/// [`die_from_a_terminal`] has it. It runs until it's done.
+fn die_waiting(app: &App, args: &[&str]) -> std::process::Child {
+    let link = app.dir.join("die");
+    if !link.exists() {
+        std::os::unix::fs::symlink(app.app.join("Contents/MacOS/die"), &link).unwrap();
+    }
+    Command::new(link)
+        .args(["--background", "--wait"])
+        .args(args)
+        .current_dir(&app.dir)
+        .env_remove("PWD")
+        .env("DIE_STATE_DIR", &app.state)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// Wait for a `die --wait` to return: whether it succeeded, and what it said.
+fn returned(app: &App, mut child: std::process::Child) -> (bool, String) {
+    let mut status = None;
+    app.wait_for("die --wait to return", || {
+        status = child.try_wait().unwrap();
+        status.is_some()
+    });
+    let mut said = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut said)
+        .unwrap();
+    (status.unwrap().success(), said)
+}
+
+/// With nothing running, `die --wait` starts an instance, which opens the file at its line, and
+/// waits on it. The instance going, killed here, returns it with 0, as `emacsclient` does.
+#[test]
+#[ignore = "window: runs in ci --full"]
+fn die_wait_starts_an_instance_and_returns_when_it_goes() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let app = App::build("wait");
+    std::fs::write(app.dir.join("COMMIT_EDITMSG"), "one\ntwo\n").unwrap();
+    let mut waiting = die_waiting(&app, &["COMMIT_EDITMSG:2"]);
+    app.wait_for("the file at its line", || {
+        cursor_in(&app, "COMMIT_EDITMSG") == Some(4)
+    });
+    sleep(Duration::from_millis(300));
+    assert!(waiting.try_wait().unwrap().is_none(), "it waits");
+    let pid = app.holder().unwrap();
+    Command::new("kill").arg(pid.to_string()).status().unwrap();
+    let (ok, said) = returned(&app, waiting);
+    assert!(ok, "{said}");
+    assert!(said.contains("quit or restarted"), "{said}");
+}
+
+/// Two clients wait at once, and a restart returns both, with the files open in the new instance.
+#[test]
+#[ignore = "window: runs in ci --full"]
+fn a_restart_returns_every_waiting_client() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let app = App::build("wait-restart");
+    app.open(&[], &["--restart-loop"]);
+    let digests = || std::fs::read_to_string(app.state.join("restart-loop.digests"));
+    let restored = |n: usize| digests().is_ok_and(|d| d.lines().count() == n);
+    app.wait_for("the first restore", || restored(1));
+    std::fs::write(app.dir.join("a.txt"), "a\n").unwrap();
+    std::fs::write(app.dir.join("b.txt"), "b\n").unwrap();
+    let (mut a, mut b) = (die_waiting(&app, &["a.txt"]), die_waiting(&app, &["b.txt"]));
+    app.wait_for("both open", || {
+        cursor_in(&app, "a.txt").is_some() && cursor_in(&app, "b.txt").is_some()
+    });
+    assert!(a.try_wait().unwrap().is_none() && b.try_wait().unwrap().is_none());
+    std::fs::write(app.state.join("restart-loop.go"), "").unwrap();
+    for client in [a, b] {
+        let (ok, said) = returned(&app, client);
+        assert!(ok && said.contains("quit or restarted"), "{said}");
+    }
+    app.wait_for("the second restore", || restored(2));
+}
+
+/// `open -a DIE file`, which sends the Apple event a Finder double-click and a drop on the Dock
+/// icon send. With nothing running it starts an instance that opens the file. After that the file
+/// goes to the instance there, and nothing takes the focus.
+#[test]
+#[ignore = "window: runs in ci --full"]
+fn open_a_starts_an_instance_with_the_file_and_then_sends_files_to_it() {
+    let _one = ONE_AT_A_TIME.lock().unwrap();
+    let app = App::build_as("open-a", "dev.die.DIE.test.open");
+    let open_files = |files: &[&str]| {
+        let out = Command::new("open")
+            .arg("-g")
+            .arg("--env")
+            .arg(format!("DIE_STATE_DIR={}", app.state.display()))
+            .arg("--stderr")
+            .arg(&app.stderr)
+            .arg("-a")
+            .arg(&app.app)
+            .args(files.iter().map(|f| app.dir.join(f)))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(app.dir.join(name), "text\n").unwrap();
+    }
+    open_files(&["a.txt"]);
+    app.wait_for("the first file", || cursor_in(&app, "a.txt").is_some());
+    let first = app.holder().unwrap();
+    open_files(&["b.txt", "c.txt"]);
+    app.wait_for("the others", || {
+        cursor_in(&app, "b.txt").is_some() && cursor_in(&app, "c.txt").is_some()
+    });
+    assert_eq!(app.pids(), [first]);
+    assert_ne!(front_app_pid(), Some(first), "it took the focus");
+}
+
+/// The pid of the app in front, as LaunchServices has it. This reads, and moves nothing.
+fn front_app_pid() -> Option<u32> {
+    let run = |args: &[&str]| {
+        let out = Command::new("lsappinfo").args(args).output().ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    let front = run(&["front"])?;
+    let pid = run(&["info", "-only", "pid", &front])?;
+    pid.split_once('=')?.1.trim().parse().ok()
 }

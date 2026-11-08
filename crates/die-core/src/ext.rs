@@ -391,6 +391,8 @@ pub struct Ctx {
     pub(crate) grep: Option<crate::project::Grep>,
     /// What `*Buffer List*` lists.
     pub(crate) menu: crate::menu::Menu,
+    /// The `die --wait` clients waiting on buffers.
+    pub(crate) clients: crate::clients::Clients,
     /// `Ctx::quit` was called.
     pub(crate) quit_wanted: bool,
     /// A restart wrote the session, so a key or a click now would be lost with this instance.
@@ -568,6 +570,7 @@ impl Ctx {
             search_highlight: None,
             grep: None,
             menu: Default::default(),
+            clients: Default::default(),
             quit_wanted: false,
             handing_over: false,
         };

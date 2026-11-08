@@ -1,26 +1,27 @@
-//! AppKit: the event loop's and the window's macOS options, the window's layer, and the
-//! key monitor.
+//! AppKit: the event loop's and the window's macOS options, the window's layer, the key monitor,
+//! and the files you open with DIE from Finder.
 
 use super::catch::guarded;
 use super::metal::{Pipeline, TARGET_FORMAT};
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Imp, ProtocolObject, Sel};
-use objc2::{MainThreadMarker, msg_send, sel};
+use objc2::runtime::{AnyClass, AnyObject, Imp, ProtocolObject, Sel};
+use objc2::{MainThreadMarker, ffi, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSRunningApplication,
     NSView, NSWindow, NSWindowOcclusionState,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{
-    NSArgumentDomain, NSDictionary, NSNotFound, NSNumber, NSPoint, NSRange, NSString,
-    NSUserDefaults,
+    NSArgumentDomain, NSArray, NSDictionary, NSNotFound, NSNumber, NSPoint, NSRange, NSString,
+    NSURL, NSUserDefaults,
 };
 use objc2_metal::{MTLDrawable, MTLDrawablePresentedHandler};
 use objc2_quartz_core::{CACurrentMediaTime, CAMetalDrawable, CAMetalLayer};
 use std::cell::{Cell, RefCell};
 use std::mem::transmute;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 use std::ptr::{NonNull, null_mut};
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
@@ -295,6 +296,51 @@ fn hook_view(view: &NSView) -> Result<(), String> {
     // SAFETY: as above.
     let old_inserts = unsafe { transmute::<Imp, InsertImp>(old_inserts) };
     ORIGINAL.set(Some((old_keys, old_inserts)));
+    Ok(())
+}
+
+type OpenUrlsImp = unsafe extern "C-unwind" fn(&AnyObject, Sel, &AnyObject, &NSArray<NSURL>);
+/// What takes the files.
+type OpenFiles = Box<dyn Fn(Vec<PathBuf>)>;
+
+thread_local! {
+    /// What `on_open_files` hands the files to. The main thread's, where AppKit calls the delegate.
+    static OPEN: RefCell<Option<OpenFiles>> = const { RefCell::new(None) };
+}
+
+/// The app delegate's `application:openURLs:`, which AppKit calls with the files Finder, the Dock
+/// or `open` asks this app to open.
+unsafe extern "C-unwind" fn open_urls(_: &AnyObject, _: Sel, _: &AnyObject, urls: &NSArray<NSURL>) {
+    let paths: Vec<PathBuf> = urls.iter().filter_map(|url| url.to_file_path()).collect();
+    // A panic can't unwind into AppKit.
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        OPEN.with_borrow(|open| open.as_ref().map(|f| f(paths)))
+    }));
+}
+
+/// Hand `f` the files you open with DIE from Finder, the Dock or `open -a`, on the main thread, as
+/// they come. winit 0.30 has no event for them and its app delegate no `application:openURLs:`, so
+/// this adds one to the delegate's class. Call it once the loop is built and before it runs: a
+/// launch to open files gets them as it starts.
+pub fn on_open_files(f: OpenFiles) -> Result<(), String> {
+    let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
+    let app = NSApplication::sharedApplication(mtm);
+    let delegate = app.delegate().ok_or("the app has no delegate")?;
+    let class: &AnyClass = AsRef::<AnyObject>::as_ref(&*delegate).class();
+    let sel = sel!(application:openURLs:);
+    OPEN.set(Some(f));
+    if class.instance_method(sel).is_some() {
+        return Ok(());
+    }
+    // SAFETY: `open_urls` takes what the method does: the delegate, the selector, the app and the
+    // array of URLs, and returns nothing.
+    let imp = unsafe { transmute::<OpenUrlsImp, Imp>(open_urls) };
+    let class = (class as *const AnyClass).cast_mut();
+    // SAFETY: the class is live, the method is new to it, and "v@:@@" is `open_urls`'s type.
+    let added = unsafe { ffi::class_addMethod(class, sel, imp, c"v@:@@".as_ptr()) };
+    if !added.as_bool() {
+        return Err("can't take the files Finder opens with DIE".into());
+    }
     Ok(())
 }
 

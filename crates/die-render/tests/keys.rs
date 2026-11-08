@@ -505,6 +505,7 @@ mod matrix {
             script: Some(Box::new(script)),
             hidden: true,
             first_frame: None,
+            on_open: None,
         };
         let code = window::run(ctx, options).expect("a window");
         if code == 0 {

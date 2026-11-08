@@ -308,7 +308,13 @@ pub struct Options {
     pub hidden: bool,
     /// What to do when the first frame is up.
     pub first_frame: Option<FirstFrame>,
+    /// What to do with the files you open with DIE from Finder, the Dock or `open -a`. It's
+    /// called on the main thread, outside the loop's turns, so it mustn't block.
+    pub on_open: Option<OnOpen>,
 }
+
+/// Takes the files opened with this app from outside it (`Options::on_open`).
+pub type OnOpen = Box<dyn Fn(Vec<std::path::PathBuf>)>;
 
 /// Open the window and run until it closes or a check ends. The exit code, or why there's
 /// no window.
@@ -322,6 +328,9 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         ctx.messages.push(e);
     }
     let event_loop = builder.build().map_err(|e| e.to_string())?;
+    if let Some(Err(e)) = options.on_open.map(driver::on_open_files) {
+        ctx.messages.push(e);
+    }
     let proxy = event_loop.create_proxy();
     let wake = proxy.clone();
     ctx.set_waker(move || {
