@@ -220,6 +220,13 @@
       "cases": [{ "case": "macros/block-insert-in-macro", "fixture": "hand-written/macros.json" }]
     },
     {
+      "rule": "the . in :g's :norm repeats on every line",
+      "kind": "evil-bug",
+      "evil": ":g runs each line's :norm with the command hooks around it, which leave . with nothing to repeat after the first line: x, then :g/a/norm . on xab, b and ca deletes only the first a's line's character. :%norm . isn't affected.",
+      "die_vim": "As in Vim, and as :%norm . does in your Evil: . repeats the x on every line with an a.",
+      "cases": [{ "case": "macros/g-norm-dot", "fixture": "hand-written/macros.json" }]
+    },
+    {
       "rule": "gv after undoing what took its text",
       "s5_row": 29,
       "kind": "emacs-artifact",

@@ -742,6 +742,172 @@ fn a_directory_on_the_line_is_chosen_until_a_row_is() {
     assert_eq!(ctx.scene().row_text(27), "1/2    Find: src/");
 }
 
+/// Candidates for the word after a leading `%`, while nothing follows it, as `:` has its names.
+fn part_spec() -> PromptSpec {
+    PromptSpec::new(":")
+        .history("h")
+        .evil_keys()
+        .candidates(["write", "wq", "normal"])
+        .matches_part(|line| {
+            let start = line.len() - line.trim_start_matches('%').len();
+            (!line.contains(' ')).then_some(start..line.len())
+        })
+}
+
+#[test]
+fn candidates_can_match_part_of_the_line_and_a_row_goes_in_its_place() {
+    for (keys, want) in [
+        ("%w<CR>", "%w"),
+        ("%w<Down><CR>", "%wq"),
+        ("%w<C-n><C-n><CR>", "%write"),
+        ("%w<Down><Up><CR>", "%w"),
+        ("%w<Tab><CR>", "%wq"),
+        ("%w<Down><Down><Tab><CR>", "%write"),
+        ("%nm<Tab> x<CR>", "%normal x"),
+        ("%nm x<Tab><Down><CR>", "%nm x"),
+        ("%<M->><CR>", "%normal"),
+        ("<Down><CR>", "write"),
+        ("zz<Down><CR>", "zz"),
+    ] {
+        let mut ctx = ctx();
+        let answers = ask(&mut ctx, part_spec());
+        ctx.type_keys(keys);
+        assert_eq!(*answers.borrow(), [Some(want.to_string())], "{keys}");
+    }
+}
+
+/// With no part on the line, there's no list: its rows go, the line stays put, and the keys that
+/// moved in it go through the history again.
+#[test]
+fn a_line_with_no_part_to_match_has_no_list() {
+    let mut ctx = ctx();
+    ctx.set_frame_size(30, 10);
+    ask(&mut ctx, part_spec());
+    ctx.type_keys("e one<CR>");
+    ask(&mut ctx, part_spec());
+    assert_eq!(ctx.prompt_candidates(), ["write", "wq", "normal"]);
+    assert_eq!(ctx.prompt_chosen(), None, "nothing until you move");
+    let s = ctx.scene();
+    assert_eq!(s.row_text(6), "*/3    :");
+    assert_eq!(s.row_text(9), "normal");
+    ctx.type_keys("<C-n>");
+    assert_eq!(
+        ctx.prompt_chosen(),
+        Some("write"),
+        "the keys move in the list"
+    );
+    ctx.type_keys("<C-p>");
+    assert_eq!(ctx.prompt_chosen(), None, "and back to the line");
+    ctx.type_keys("<M-p>");
+    assert_eq!(ctx.prompt_text(), Some("e one"), "<M-p> has the history");
+
+    ctx.type_keys("<Esc>");
+    ask(&mut ctx, part_spec());
+    ctx.type_keys("e ");
+    assert!(ctx.prompt_candidates().is_empty());
+    let s = ctx.scene();
+    assert_eq!(s.row_text(9), "       :e", "where it was, with no rows");
+    assert_eq!(s.row_text(8), " t", "the status line, uncovered");
+    ctx.type_keys("<Up>");
+    assert_eq!(
+        ctx.prompt_text(),
+        Some("e one"),
+        "Evil's <Up>, from the history"
+    );
+    ctx.type_keys("<Down><C-p>");
+    assert_eq!(ctx.prompt_text(), Some("e one"), "and <C-p>");
+    ctx.type_keys("<Tab><End><BS><BS><BS><BS>");
+    assert_eq!(ctx.prompt_text(), Some("e"), "<Tab> did nothing");
+    assert_eq!(ctx.prompt_candidates(), ["write"], "and the list is back");
+    let s = ctx.scene();
+    assert_eq!(s.row_text(6), "*/1    :e", "as tall as it was");
+    assert_eq!(s.row_text(7), "write");
+
+    let answers = ask(
+        &mut ctx,
+        PromptSpec::new("?")
+            .candidates(["ok"])
+            .matches_part(|line| match line {
+                "" => Some(0..0),
+                _ => panic!("no part for you"),
+            }),
+    );
+    ctx.type_keys("o");
+    assert!(ctx.prompt_candidates().is_empty(), "a panic has no list");
+    assert!(ctx.messages.iter().any(|m| m.contains("no part for you")));
+    ctx.type_keys("<CR>");
+    assert_eq!(*answers.borrow(), [Some("o".to_string())]);
+}
+
+/// Beside a part's list, the keys that go back from the line go through the history, and once
+/// you're in it the keys going forward do too, though a line from it has a list. A key that
+/// changes the line ends that, and `<Down>` goes into the list again.
+#[test]
+fn the_history_keeps_its_keys_from_the_line_beside_a_part_list() {
+    let mut ctx = ctx();
+    for line in ["e one", "w", "e two"] {
+        ask(&mut ctx, part_spec());
+        ctx.type_keys(&format!("{line}<CR>"));
+    }
+    let answers = ask(&mut ctx, part_spec());
+    ctx.type_keys("e three<C-p><C-p>");
+    assert_eq!(ctx.prompt_text(), Some("w"));
+    assert!(!ctx.prompt_candidates().is_empty(), "a name, with its list");
+    ctx.type_keys("<C-p>");
+    assert_eq!(ctx.prompt_text(), Some("e one"), "C-p goes on past it");
+    ctx.type_keys("<C-n><C-n><Down><C-n><PageDown>");
+    assert_eq!(
+        ctx.prompt_text(),
+        Some("e three"),
+        "and back to what was typed"
+    );
+    ctx.type_keys("<CR>");
+    assert_eq!(*answers.borrow(), [Some("e three".to_string())]);
+
+    let answers = ask(&mut ctx, part_spec());
+    ctx.type_keys("w<PageUp>");
+    assert_eq!(ctx.prompt_text(), Some("e three"), "<PageUp> from the line");
+    ctx.type_keys("<C-u>w<Down>");
+    assert_eq!(ctx.prompt_chosen(), Some("wq"), "a change ends the walk");
+    ctx.type_keys("<Up>");
+    assert_eq!(ctx.prompt_chosen(), None);
+    ctx.type_keys("<Up>");
+    assert_eq!(
+        ctx.prompt_text(),
+        Some("w"),
+        "<Up> takes the line that starts so"
+    );
+    ctx.type_keys("<Down><Down><CR>");
+    assert_eq!(
+        *answers.borrow(),
+        [Some("w".to_string())],
+        "typed, not a row"
+    );
+}
+
+/// Tiers come before flex's order, and a panic in them leaves flex's.
+#[test]
+fn tiers_rank_the_matches_before_flex_does() {
+    let mut ctx = ctx();
+    let starts = |q: &str, item: &str| usize::from(!item.starts_with(q));
+    let spec = PromptSpec::new(":")
+        .candidates(["wq", "write", "awry"])
+        .tiers(starts);
+    ask(&mut ctx, spec);
+    ctx.type_keys("w");
+    assert_eq!(ctx.prompt_candidates(), ["wq", "write", "awry"]);
+    ctx.type_keys("r");
+    assert_eq!(ctx.prompt_candidates(), ["write", "awry"]);
+
+    let spec = PromptSpec::new(":")
+        .candidates(["write", "awry"])
+        .tiers(|_, _| panic!("no tiers for you"));
+    ask(&mut ctx, spec);
+    ctx.type_keys("wr");
+    assert_eq!(ctx.prompt_candidates(), ["awry", "write"], "flex's own");
+    assert!(ctx.messages.iter().any(|m| m.contains("no tiers for you")));
+}
+
 #[test]
 fn history_stays_on_meta_keys_beside_a_list() {
     let mut ctx = ctx();

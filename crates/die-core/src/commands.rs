@@ -6,6 +6,7 @@ use crate::dispatch::*;
 use crate::error::Error;
 use crate::ext::*;
 use crate::files::normalize;
+use crate::ids::BufferId;
 use crate::prompt::{PromptSpec, recent_first};
 use std::path::{Path, PathBuf};
 
@@ -107,23 +108,33 @@ pub(crate) fn register_commands(reg: &mut Registry) {
                 let buf = ctx
                     .find_buffer(&name)
                     .ok_or_else(|| Error::Msg(format!("No buffer named {name}")))?;
-                let unsaved = ctx.file(buf).is_some() && ctx.text(buf).is_ok_and(|t| t.modified());
-                if !unsaved {
-                    ctx.kill(buf);
-                    return Ok(());
-                }
-                let label = format!("Buffer {name} modified; kill anyway? (yes or no) ");
-                ctx.prompt(PromptSpec::new(&label), move |ctx, answer| {
-                    if answer.as_deref() == Some("yes") {
-                        ctx.kill(buf);
-                    }
-                    Ok(())
-                });
-                Ok(())
+                kill_asking(ctx, buf, |_, _| Ok(()))
             });
             Ok(())
         },
     );
+    crate::menu::register(reg);
+}
+
+/// Kill a buffer, asking first if that loses changes to a file, as Emacs's `kill-buffer` does,
+/// then go on with whether it went, or None if the question was cancelled.
+pub(crate) fn kill_asking(
+    ctx: &mut Ctx,
+    buf: BufferId,
+    then: impl FnOnce(&mut Ctx, Option<bool>) -> crate::error::Result + 'static,
+) -> crate::error::Result {
+    let unsaved = ctx.file(buf).is_some() && ctx.text(buf).is_ok_and(|t| t.modified());
+    if !unsaved {
+        let killed = ctx.kill(buf);
+        return then(ctx, Some(killed));
+    }
+    let name = ctx.buffer_name(buf).unwrap_or_default();
+    let label = format!("Buffer {name} modified; kill anyway? (yes or no) ");
+    ctx.prompt(PromptSpec::new(&label), move |ctx, answer| {
+        let killed = answer.map(|a| a == "yes" && ctx.kill(buf));
+        then(ctx, killed)
+    });
+    Ok(())
 }
 
 /// Ask for a file, from this line. There's no directory editor to open, so answering with a

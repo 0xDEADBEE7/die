@@ -327,6 +327,12 @@ pub struct Ctx {
     pub(crate) fed: VecDeque<KeyEvent>,
     /// Where the next key fed from inside a call goes. Each turn starts it at the front.
     pub(crate) fed_at: usize,
+    /// For each feed kept apart, the innermost last, how many fed keys are behind it.
+    pub(crate) fences: Vec<usize>,
+    /// A typed `C-g` ended what was fed, since [`Ctx::take_quit`] last looked.
+    pub(crate) quit: bool,
+    /// [`Ctx::hush_key_errors`].
+    pub(crate) hushed: bool,
     pub(crate) pending: Vec<KeyEvent>,
     /// The keys `describe-key` has read so far, while it's reading them.
     pub(crate) describing: Option<Vec<KeyEvent>>,
@@ -383,6 +389,8 @@ pub struct Ctx {
     pub(crate) search_highlight: Option<Pattern>,
     /// What `*grep*` holds, and the search that's filling it.
     pub(crate) grep: Option<crate::project::Grep>,
+    /// What `*Buffer List*` lists.
+    pub(crate) menu: crate::menu::Menu,
     /// `Ctx::quit` was called.
     pub(crate) quit_wanted: bool,
     /// A restart wrote the session, so a key or a click now would be lost with this instance.
@@ -515,6 +523,9 @@ impl Ctx {
             typed: VecDeque::new(),
             fed: VecDeque::new(),
             fed_at: 0,
+            fences: vec![],
+            quit: false,
+            hushed: false,
             pending: vec![],
             describing: None,
             prompt_register: None,
@@ -556,6 +567,7 @@ impl Ctx {
             faces,
             search_highlight: None,
             grep: None,
+            menu: Default::default(),
             quit_wanted: false,
             handing_over: false,
         };
@@ -721,6 +733,12 @@ impl Ctx {
         match r {
             Ok(()) | Err(Error::Panicked { .. }) => {}
             Err(e) => self.log_error(e.to_string()),
+        }
+    }
+    /// Report a failure in the key stream, unless it's hushed.
+    pub(crate) fn report_key(&mut self, r: Result) {
+        if !self.hushed {
+            self.report(r);
         }
     }
     /// Log a key's or a call's failure, as opposed to news such as "Wrote foo".

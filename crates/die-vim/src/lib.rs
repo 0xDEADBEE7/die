@@ -14,6 +14,7 @@
 use die_test_cap as _;
 
 mod complete;
+mod each;
 mod ex;
 mod grammar;
 mod insert;
@@ -92,6 +93,8 @@ pub struct Vim {
     count_was: grammar::CountWas,
     /// The last `:s`'s replacement and whether it had `g`, which `&` and `~` use.
     substitute: (String, bool),
+    /// The `:norm` and `:g` running, the one started last last.
+    each: Vec<each::Run>,
 }
 
 #[rustfmt::skip]

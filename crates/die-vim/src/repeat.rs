@@ -14,6 +14,10 @@
 //! and `u` undoes all of it. Fed keys run ahead of typed ones, so a macro has ended when the
 //! next typed key arrives. An observer that has no `Ctx` notes that key, and [`before`], at
 //! the start of every command, does what's due.
+//!
+//! **`:norm`** feeds each line's keys kept apart from what's fed behind them ([`feed_line`]), and
+//! `each.rs` waits for them. Your Evil runs them with its command hooks, so after it `.` is the
+//! last change they made, a macro they ran counting as `@x`, as if typed.
 
 use crate::Vim;
 use crate::grammar::buffer_window;
@@ -108,9 +112,20 @@ pub struct Recorder {
     replaying: bool,
     /// The state `q` was pressed in, while it waits for a register's name.
     resume: Option<State>,
+    /// While `:norm` runs a line's keys, and a change is what `.` repeats as when typed: where
+    /// the last macro or `.` those keys ran ends, as a count of keys still to run.
+    norm: Option<Option<usize>>,
+    /// While `:norm` and `:g` run, whether a macro or `.` was running when they began.
+    lines_in: Option<bool>,
 }
 
 impl Recorder {
+    /// Whether a key that ran now came from a macro or a `.` that `:norm`'s keys ran, and not
+    /// from those keys themselves.
+    fn in_macro(&self) -> bool {
+        matches!(self.norm, Some(Some(end)) if self.fed >= end)
+    }
+
     /// What `.` repeats, what `@@` does and the `;` `.` left alone, as they'll be once keys are
     /// typed again, for the session.
     pub fn kept(&self) -> (Option<&Change>, Option<char>, Option<Option<Find>>) {
@@ -145,16 +160,33 @@ pub fn observe(ctx: &mut Ctx, rec: Rc<RefCell<Recorder>>) {
     })
     .detach();
     ctx.on_fed_dropped(end_failed_replay).detach();
+    ctx.on_fed_run_out(crate::each::ran_out).detach();
 }
 
-/// A macro or `.` failed. As your Evil's `evil-execute-macro` does, the buffer goes back to
-/// normal state, before the next key is looked up. The session's keys aren't a change `.` can
-/// repeat, since they never reached their Escape.
+/// What was fed has gone: a macro or `.` failed, or a typed `C-g` stopped it. As your Evil's
+/// `evil-execute-macro` does, the buffer goes back to normal state, before the next key is
+/// looked up. Then a `:norm` goes on to its next line, unless it was a quit.
 fn end_failed_replay(ctx: &mut Ctx) -> Result {
+    let quit = ctx.take_quit();
+    // A `:norm` line's failure drops only its own keys, and what's behind them goes on.
+    let behind = if quit {
+        None
+    } else {
+        crate::each::behind(ctx)?
+    };
     let rec = recorder(ctx)?;
-    if !std::mem::take(&mut rec.borrow_mut().replaying) {
-        return Ok(());
-    }
+    let replaying = {
+        let mut r = rec.borrow_mut();
+        r.fed = behind.unwrap_or(0);
+        behind.is_none() && std::mem::take(&mut r.replaying)
+    };
+    let left = if replaying { to_normal(ctx) } else { Ok(()) };
+    crate::each::dropped(ctx, quit).and(left)
+}
+
+/// Leave a session or a selection a replay left behind. The session's keys aren't a change `.`
+/// can repeat, since they never reached their Escape.
+pub fn to_normal(ctx: &mut Ctx) -> Result {
     let Some(b) = ctx.focused_buffer() else {
         return Ok(());
     };
@@ -183,16 +215,13 @@ pub fn before(ctx: &mut Ctx) -> Result {
     r.typed = false;
     r.runs = 0;
     r.fed = 0;
+    // What's typed is never hushed.
+    ctx.hush_key_errors(false);
     if let Some(c) = r.then_last.take() {
         r.last = Some(c);
     }
-    if let Some(b) = r.undo_group.take()
-        && let Ok(t) = ctx.text_mut(b)
-    {
-        // What's typed next is a step of its own, even in an insert session the macro began.
-        t.end_undo_group();
-        t.undo_boundary();
-    }
+    // What's typed next is a step of its own, even in an insert session the macro began.
+    close_group(ctx, &mut r);
     if let Some(f) = r.then_find.take() {
         ctx.with_ext(|v: &mut Vim, _| v.find = f)?;
     }
@@ -210,8 +239,93 @@ fn feed(ctx: &mut Ctx, rec: &RefCell<Recorder>, keys: &str) -> Result {
     let n = parse_keys(keys).map_or(0, |k| k.len());
     ctx.feed_keys(keys)?;
     let mut r = rec.borrow_mut();
+    if r.norm.is_some() && !r.in_macro() {
+        r.norm = Some(Some(r.fed));
+    }
     r.fed += n;
     r.replaying = true;
+    Ok(())
+}
+
+/// `:norm` and `:g` start: what typed keys ended is over, and one `u` undoes all that follows, as
+/// your Evil's `evil-with-single-undo` begins a step of its own, unless a macro or `.` has one
+/// open: so `2@:` takes two. Whether a change their keys make is what `.` repeats, as when typed:
+/// not inside a macro, whose own `@x` is that. And how many macros had run, for each line to start
+/// from, so a line's macros can call themselves as long as a typed one can.
+pub fn begin_lines(ctx: &mut Ctx, b: BufferId) -> Result<(bool, usize)> {
+    before(ctx)?;
+    let rec = recorder(ctx)?;
+    let mut r = rec.borrow_mut();
+    r.lines_in = Some(r.replaying);
+    if !r.replaying {
+        close_group(ctx, &mut r);
+    }
+    open_group(ctx, &mut r, b)?;
+    Ok((r.then_last.is_none(), r.runs))
+}
+
+/// One `u` undoes what follows, until keys are typed again.
+fn open_group(ctx: &mut Ctx, r: &mut Recorder, b: BufferId) -> Result {
+    if r.undo_group.is_none() {
+        r.undo_group = Some(b);
+        ctx.text_mut(b)?.begin_undo_group();
+    }
+    Ok(())
+}
+
+/// What follows is a step of its own for `u`.
+fn close_group(ctx: &mut Ctx, r: &mut Recorder) {
+    if let Some(b) = r.undo_group.take()
+        && let Ok(t) = ctx.text_mut(b)
+    {
+        t.end_undo_group();
+        t.undo_boundary();
+    }
+}
+
+/// Feed a line's keys for `:norm`, kept apart from the fed keys behind them, and return how many
+/// of those there are.
+pub fn feed_line(ctx: &mut Ctx, b: BufferId, keys: &str, top: bool, runs: usize) -> Result<usize> {
+    before(ctx)?;
+    let rec = recorder(ctx)?;
+    let left = rec.borrow().fed;
+    feed_apart(ctx, keys)?;
+    let mut r = rec.borrow_mut();
+    open_group(ctx, &mut r, b)?;
+    r.replaying = true;
+    r.runs = runs;
+    if top {
+        r.norm = Some(None);
+    }
+    // Your Evil's `ignore-errors`: a line that fails says nothing.
+    ctx.hush_key_errors(true);
+    Ok(left)
+}
+
+/// A `q` still waiting for a register's name when `:norm`'s keys ran out reads none.
+pub fn unwait(ctx: &mut Ctx, b: BufferId) -> Result {
+    let back = recorder(ctx)?.borrow_mut().resume.take();
+    ctx.set_state_of(b, back.unwrap_or(State::Normal));
+    Ok(())
+}
+
+/// Keys that end what a `:norm` line left waiting, kept apart as the line's own were.
+pub fn feed_apart(ctx: &mut Ctx, keys: &str) -> Result {
+    let n = parse_keys(keys).map_or(0, |k| k.len());
+    ctx.feed_keys_apart(keys)?;
+    recorder(ctx)?.borrow_mut().fed += n;
+    Ok(())
+}
+
+/// `:norm` and `:g` are over, and a replay is running again only if one was when they began.
+pub fn end_lines(ctx: &mut Ctx) -> Result {
+    ctx.hush_key_errors(false);
+    let rec = recorder(ctx)?;
+    let mut r = rec.borrow_mut();
+    r.norm = None;
+    if let Some(was) = r.lines_in.take() {
+        r.replaying = was;
+    }
     Ok(())
 }
 
@@ -240,7 +354,13 @@ pub fn replay_ending(ctx: &mut Ctx) -> Result<bool> {
 /// typed one stays.
 pub fn commit(ctx: &mut Ctx, c: Change) -> Result {
     if let Some(c) = c.typed() {
-        recorder(ctx)?.borrow_mut().last = Some(c);
+        let rec = recorder(ctx)?;
+        let mut r = rec.borrow_mut();
+        // From `:norm`'s own keys, it comes after any macro they ran.
+        if r.norm.is_some() && !r.in_macro() {
+            r.then_last = None;
+        }
+        r.last = Some(c);
     }
     Ok(())
 }
@@ -282,6 +402,15 @@ pub fn q(ctx: &mut Ctx, a: &Args) -> Result {
     match stopped {
         Some((name, mut keys)) => {
             keys.pop();
+            ctx.set_note(None);
+            // Where your Emacs says "Keyboard macro defined", with the register named.
+            let (to, add) = (name.to_ascii_lowercase(), name.is_ascii_uppercase());
+            ctx.messages.push(match (keys.is_empty(), add) {
+                (false, false) => format!("Recorded @{to}"),
+                (false, true) => format!("Added to @{to}"),
+                (true, false) => format!("Recorded nothing, so @{to} is empty"),
+                (true, true) => format!("Added nothing to @{to}"),
+            });
             registers::record(ctx, name, key_notation(&keys))
         }
         None => {
@@ -305,6 +434,8 @@ pub fn start_recording(ctx: &mut Ctx, a: &Args) -> Result {
             if c.is_ascii_lowercase() {
                 ctx.clear_register(c);
             }
+            // As Vim shows it, the whole time, with the name as typed.
+            ctx.set_note(Some(format!("recording @{c}")));
             r.recording = Some((c, vec![]));
         }
         None => return Err(Error::Msg("Invalid register".into())),
@@ -321,7 +452,7 @@ fn last_ex_line(ctx: &mut Ctx, a: &Args) -> Result {
     if n > MAX_FEED {
         return Err(Error::Msg("Count too large".into()));
     }
-    (0..n).try_for_each(|_| crate::ex::run(ctx, &line))
+    crate::each::repeat_ex(ctx, &line, n)
 }
 
 /// `@x` and `@@`: type a register count times. An empty register is an error, except while
@@ -357,15 +488,18 @@ pub fn at(ctx: &mut Ctx, a: &Args) -> Result {
             return Err(Error::Msg("Too many macros without a typed key".into()));
         }
         r.runs += 1;
-        // A macro inside a macro belongs to the outer one. `.` doesn't keep the count.
-        r.then_last.get_or_insert_with(|| Change {
+        // A macro inside a macro belongs to the outer one, and one of `:norm`'s keys is a change
+        // as if typed. `.` doesn't keep the count.
+        let c = Change {
             count: None,
             ..Change::of(a)
-        });
-        if r.undo_group.is_none() {
-            r.undo_group = Some(b);
-            ctx.text_mut(b)?.begin_undo_group();
+        };
+        if r.norm.is_some() && !r.in_macro() {
+            r.then_last = Some(c);
+        } else {
+            r.then_last.get_or_insert(c);
         }
+        open_group(ctx, &mut r, b)?;
     }
     feed(ctx, &rec, &keys.repeat(n))
 }
@@ -376,8 +510,13 @@ pub fn keys_of(r: &Register) -> String {
     if r.kind == RegKind::Macro {
         return r.text.clone();
     }
+    text_keys(&r.text)
+}
+
+/// Text as the keys that type it, one per character.
+pub fn text_keys(text: &str) -> String {
     let mut s = String::new();
-    for c in r.text.chars() {
+    for c in text.chars() {
         match c {
             '<' => s.push_str("<lt>"),
             '\n' => s.push_str("<NL>"),

@@ -244,7 +244,7 @@ impl Ctx {
                 if !matches!(handled, Ok(true)) {
                     self.drop_fed();
                 }
-                if !matches!(handled, Ok(true) | Err(Error::Panicked { .. })) {
+                if !matches!(handled, Ok(true) | Err(Error::Panicked { .. })) && !self.hushed {
                     self.log_error(format!("{} is undefined", key_notation(&keys)));
                 }
             }
@@ -305,7 +305,7 @@ impl Ctx {
         if r.is_err() {
             self.drop_fed(); // a macro stops where it fails (contract §6)
         }
-        self.report(r);
+        self.report_key(r);
     }
 
     fn lookup(&self, buf: BufferId, state: State) -> Lookup {

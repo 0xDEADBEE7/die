@@ -20,9 +20,18 @@ pub(crate) struct Log {
     logged: usize,
     /// The command row's line, until the next key.
     pub(crate) echo: Option<String>,
+    /// What stays at the command row's right end, until it's set again.
+    pub(crate) note: Option<String>,
 }
 
 impl Ctx {
+    /// Keep `note` at the right end of the command row, beside the messages, until the next call:
+    /// die-vim's `recording @a`, which Vim shows the whole time a macro records. None clears it.
+    /// It isn't logged, and an open prompt covers it, as Vim's command line does.
+    pub fn set_note(&mut self, note: Option<String>) {
+        self.log.note = note;
+    }
+
     /// Bring `*messages*` and the command row up to date with the log.
     pub(crate) fn sync_messages(&mut self) {
         let logged = self.log.logged;

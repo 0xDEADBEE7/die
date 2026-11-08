@@ -31,6 +31,13 @@
 //!   again, as vertico's `directory` preselect has it. `<S-Tab>` goes up a directory.
 //! - History is on `<M-p>` and `<M-n>`, which also work with no candidates.
 //!
+//! With [`PromptSpec::matches_part`], the candidates match only part of the line, as `:` matches
+//! a command's name after its range. No row is chosen until you move to one, so `<CR>` answers
+//! with the line as typed, and choosing a row or `<Tab>` puts it in that part and keeps the rest.
+//! While the line has no such part, there's no list, and the keys are those of a prompt with none.
+//! From the line, `<Up>` `<C-p>` `<PageUp>` go back in the history as they do with no list, and
+//! once you're in it, the keys going forward do too, until another key changes the line.
+//!
 //! The cursor moves by what the scene draws as one glyph, a grapheme cluster. A word is a run of
 //! alphanumerics and `_`, or a run of other non-blanks, as in Vim, so `<C-w>` on `a/b` takes `b`.
 #![warn(missing_docs)]
@@ -53,6 +60,8 @@ use unicode_segmentation::UnicodeSegmentation;
 type PromptFn = Box<dyn FnOnce(&mut Ctx, Option<String>) -> Result>;
 type ChangeFn = Rc<RefCell<dyn FnMut(&mut Ctx, &str) -> Result>>;
 type LiveFn = Rc<RefCell<dyn FnMut(&str) -> (usize, Vec<String>)>>;
+type PartFn = Rc<dyn Fn(&str) -> Option<Range<usize>>>;
+type TierFn = Rc<dyn Fn(&str, &str) -> usize>;
 
 /// How many answers a history keeps.
 pub(crate) const HISTORY: usize = 100;
@@ -70,6 +79,8 @@ pub struct PromptSpec {
     source: Option<Source>,
     descends: bool,
     require_match: bool,
+    part: Option<PartFn>,
+    tiers: Option<TierFn>,
 }
 
 enum Source {
@@ -92,6 +103,8 @@ impl PromptSpec {
             source: None,
             descends: false,
             require_match: false,
+            part: None,
+            tiers: None,
         }
     }
     /// Start with this text, the cursor at its end.
@@ -160,6 +173,23 @@ impl PromptSpec {
         self.descends = true;
         self
     }
+    /// Match the candidates against only the part of the line `part` names, as a byte range: for
+    /// `:%no`, `Some(1..3)`. None means the line has no such part, as once an argument follows a
+    /// command's name, and then there's no list. No row is chosen until you move to one, so `<CR>`
+    /// answers with the line as typed. A chosen row, and `<Tab>`, go in place of the part. The
+    /// history keeps the keys that go back from the line, and all of them while you're in it.
+    pub fn matches_part(mut self, part: impl Fn(&str) -> Option<Range<usize>> + 'static) -> Self {
+        self.part = Some(Rc::new(part));
+        self
+    }
+    /// Rank the matches in tiers, the lowest first and each in flex's order: `f` gives a
+    /// candidate's tier for the text it's matched against, as `:` puts first the command a short
+    /// name runs and then the names it starts. It runs on each change, guarded, and a panic leaves
+    /// flex's order.
+    pub fn tiers(mut self, f: impl Fn(&str, &str) -> usize + 'static) -> Self {
+        self.tiers = Some(Rc::new(f));
+        self
+    }
 }
 
 impl From<&str> for PromptSpec {
@@ -186,6 +216,8 @@ pub fn recent_first(history: &[String], mut items: Vec<String>) -> Vec<String> {
 /// A prompt's candidates, and which of them match the text now.
 struct List {
     live: Option<LiveFn>,
+    part: Option<PartFn>,
+    tiers: Option<TierFn>,
     feed: Option<Feed>,
     /// With a feed: the text its last answer was for, how many matches didn't come with it, and
     /// whether more paths may come.
@@ -193,8 +225,11 @@ struct List {
     more: usize,
     walking: bool,
     items: Vec<String>,
-    /// How many bytes of the text aren't matched against `items`.
+    /// How many bytes of the text aren't matched against `items`, and with a part, where it ends.
     base: usize,
+    end: Option<usize>,
+    /// The line has no part to match, so there's no list.
+    hidden: bool,
     /// Indices into `items`, best first.
     matches: Vec<usize>,
     /// An index into `matches`. None means the line itself, or that nothing matches.
@@ -208,7 +243,7 @@ struct List {
 }
 
 impl List {
-    fn new(source: Source, line_row: bool) -> List {
+    fn new(source: Source, line_row: bool, part: Option<PartFn>, tiers: Option<TierFn>) -> List {
         let (live, feed, items) = match source {
             Source::Fixed(items) => (None, None, items),
             Source::Live(f) => (Some(f), None, vec![]),
@@ -216,6 +251,11 @@ impl List {
         };
         List {
             live,
+            line_row: line_row || part.is_some(),
+            part,
+            tiers,
+            end: None,
+            hidden: false,
             walking: feed.is_some(),
             feed,
             answered: 0,
@@ -224,18 +264,23 @@ impl List {
             base: 0,
             matches: vec![],
             chosen: None,
-            line_row,
             top: 0,
             height: 0,
         }
     }
     fn query<'a>(&self, text: &'a str) -> &'a str {
-        text.get(self.base..).unwrap_or(text)
+        let end = self.end.unwrap_or(text.len());
+        text.get(self.base..end).unwrap_or(text)
     }
-    fn filter(&mut self, text: &str) {
+    /// Match the text, with each item's tier if there are tiers.
+    fn filter(&mut self, text: &str, tiers: Option<&[usize]>) {
         let query = self.query(text);
-        self.matches = flex::rank(query, self.items.iter().map(String::as_str));
-        let on_line = self.line_row && query.is_empty();
+        let items = self.items.iter().filter(|_| !self.hidden);
+        self.matches = flex::rank(query, items.map(String::as_str));
+        if let Some(t) = tiers {
+            self.matches.sort_by_key(|&i| t.get(i).copied());
+        }
+        let on_line = self.line_row && (self.part.is_some() || query.is_empty());
         self.chosen = (!self.matches.is_empty() && !on_line).then_some(0);
         self.top = 0;
         self.height = self.height.max(self.matches.len().min(ROWS));
@@ -318,6 +363,8 @@ pub(crate) struct Prompt {
     recalled: Option<usize>,
     /// What was typed before going back in the history.
     draft: String,
+    /// The line is what a history key left there, until another key changes it.
+    in_history: bool,
     list: Option<List>,
     /// `<CR>` was refused, until the next key.
     refused: bool,
@@ -386,10 +433,12 @@ impl Prompt {
     fn replace(&mut self, r: Range<usize>, s: &str) {
         self.cursor = r.start + s.len();
         self.text.replace_range(r, s);
+        self.in_history = false;
     }
     fn set_line(&mut self, s: String) {
         self.cursor = s.len();
         self.text = s;
+        self.in_history = false;
     }
     /// The line choosing the chosen candidate would make, and whether it ends in `/`.
     fn chosen_line(&self) -> Option<(String, bool)> {
@@ -402,11 +451,10 @@ impl Prompt {
         self.line_with(l.item_at(l.chosen.unwrap_or(0))?)
     }
     fn line_with(&self, item: &str) -> Option<(String, bool)> {
-        let fixed = self
-            .text
-            .get(..self.list.as_ref()?.base)
-            .unwrap_or_default();
-        Some((format!("{fixed}{item}"), item.ends_with('/')))
+        let l = self.list.as_ref()?;
+        let fixed = self.text.get(..l.base).unwrap_or_default();
+        let rest = l.end.and_then(|e| self.text.get(e..)).unwrap_or_default();
+        Some((format!("{fixed}{item}{rest}"), item.ends_with('/')))
     }
     /// Whether [`PromptSpec::require_match`] refuses the line as it is.
     fn refuses(&self) -> bool {
@@ -447,6 +495,7 @@ impl Prompt {
                 self.recalled = None;
                 let draft = std::mem::take(&mut self.draft);
                 self.set_line(draft);
+                self.in_history = true;
             }
             return;
         };
@@ -455,6 +504,7 @@ impl Prompt {
         }
         self.recalled = Some(found);
         self.text = back(found).to_string();
+        self.in_history = true;
         if !matching {
             self.cursor = self.text.len();
         }
@@ -476,7 +526,8 @@ impl Ctx {
         let prev = self.state();
         self.set_state(State::CommandLine);
         let mut spec: PromptSpec = spec.into();
-        let list = spec.source.take().map(|s| List::new(s, spec.descends));
+        let (source, part, tiers) = (spec.source.take(), spec.part.take(), spec.tiers.take());
+        let list = source.map(|s| List::new(s, spec.descends, part, tiers));
         let text = spec.initial.clone();
         self.prompt = Some(Prompt {
             cursor: text.len(),
@@ -484,6 +535,7 @@ impl Ctx {
             spec,
             recalled: None,
             draft: String::new(),
+            in_history: false,
             list,
             refused: false,
             reading: None,
@@ -514,10 +566,10 @@ impl Ctx {
             p.step(by);
         }
     }
-    /// The rows the open prompt's list has taken.
+    /// The rows the open prompt's list has taken, none while it has no part to match.
     pub(crate) fn prompt_list_height(&self) -> usize {
         let list = self.prompt.as_ref().and_then(|p| p.list.as_ref());
-        list.map_or(0, |l| l.height)
+        list.filter(|l| !l.hidden).map_or(0, |l| l.height)
     }
     /// What the prompt's line starts with: how far through the candidates you are, as vertico
     /// shows it, and the label.
@@ -525,6 +577,8 @@ impl Ctx {
         let p = self.prompt.as_ref()?;
         let label = &p.spec.label;
         Some(match &p.list {
+            // The line stays where it was with the list.
+            Some(l) if l.hidden => format!("{:7}{label}", ""),
             Some(l) => {
                 let total = l.matches.len() + l.more;
                 let total = format!("{total}{}", if l.walking { "+" } else { "" });
@@ -619,7 +673,7 @@ impl Ctx {
             Err(Error::Panicked { .. }) => self.drop_fed(),
             Err(e) => {
                 self.drop_fed();
-                self.log_error(e.to_string());
+                self.report_key(Err(e));
             }
         }
     }
@@ -671,7 +725,12 @@ impl Ctx {
         let (at, end) = (p.cursor, p.text.len());
         let evil = p.spec.evil_keys;
         let before = p.text.clone();
-        let listed = p.list.is_some();
+        // A part prompt's line keeps the history on the keys that go back, as Evil's `:` line has
+        // it, and on those going forward too while you're going through it.
+        let shown = p.list.as_ref().filter(|l| !l.hidden);
+        let part = shown.is_some_and(|l| l.part.is_some());
+        let listed = shown.is_some() && !(part && p.in_history);
+        let listed_up = listed && !(part && shown.is_some_and(|l| l.chosen.is_none()));
         p.refused = false;
         match c.key {
             Key::Enter if (alt || p.chosen_line().is_none()) && p.refuses() => p.refused = true,
@@ -707,9 +766,9 @@ impl Ctx {
             Key::Backspace if alt => p.replace(p.word_before()..at, ""),
             Key::Backspace => p.replace(p.before()..at, ""),
             Key::Delete => p.replace(at..p.after(), ""),
-            Key::Up if listed => p.step(-1),
+            Key::Up if listed_up => p.step(-1),
             Key::Down if listed => p.step(1),
-            Key::PageUp if listed => p.step(-p.page()),
+            Key::PageUp if listed_up => p.step(-p.page()),
             Key::PageDown if listed => p.step(p.page()),
             Key::Up => self.prompt_recall(true, evil),
             Key::Down => self.prompt_recall(false, evil),
@@ -727,7 +786,7 @@ impl Ctx {
                 'u' if evil => p.replace(0..end, ""),
                 'u' => p.replace(0..at, ""),
                 'k' => p.replace(at..end, ""),
-                'p' if listed => p.step(-1),
+                'p' if listed_up => p.step(-1),
                 'n' if listed => p.step(1),
                 'r' => p.reading = Some(Reading::Register),
                 'y' => return self.prompt_paste(Some('"')),
@@ -805,8 +864,9 @@ impl Ctx {
             return feed.ask(&p.text);
         }
         let text = p.text.clone();
-        let (ext, live) = (p.ext, l.live.clone());
+        let (ext, live, part) = (p.ext, l.live.clone(), l.part.clone());
         let asked = live.map(|f| self.guarded(ext, |_| Ok((f.borrow_mut())(&text))));
+        let span = part.map(|f| self.guarded(ext, |_| Ok(f(&text))).ok().flatten());
         let Some(l) = self.prompt.as_mut().and_then(|p| p.list.as_mut()) else {
             return;
         };
@@ -815,7 +875,21 @@ impl Ctx {
             Some(Err(_)) => (l.base, l.items) = (0, vec![]),
             None => {}
         }
-        l.filter(&text);
+        if let Some(span) = span {
+            let r = span.clone().unwrap_or(0..0);
+            (l.hidden, l.base, l.end) = (span.is_none(), r.start, Some(r.end));
+        }
+        let tiers = l.tiers.clone().filter(|_| !l.hidden);
+        let (query, items) = (l.query(&text).to_string(), std::mem::take(&mut l.items));
+        let tiers = tiers.and_then(|f| {
+            let rank = |_: &mut Ctx| Ok(items.iter().map(|i| f(&query, i)).collect::<Vec<_>>());
+            self.guarded(ext, rank).ok()
+        });
+        let Some(l) = self.prompt.as_mut().and_then(|p| p.list.as_mut()) else {
+            return;
+        };
+        l.items = items;
+        l.filter(&text, tiers.as_deref());
     }
 
     /// Match the candidates again and queue the `on_change` call, if the key changed the text.

@@ -449,8 +449,15 @@ impl Ctx {
                 };
                 scene.cursors.insert(0, bar);
             }
-        } else if let (Some(line), Some(last)) = (&self.log.echo, rows.checked_sub(1)) {
-            put_text(&mut scene, last, x, end, glyphs(line, base));
+        } else if let Some(last) = rows.checked_sub(1) {
+            // A message stops a column short of the note, which keeps its place.
+            let note = self.log.note.as_deref().unwrap_or_default();
+            let wide: usize = glyphs(note, base).map(|g| g.1).sum();
+            let room = end.saturating_sub(wide + usize::from(wide > 0)).max(x);
+            let echo = self.log.echo.as_deref().unwrap_or_default();
+            put_text(&mut scene, last, x, room, glyphs(echo, base));
+            let at = end.saturating_sub(wide).max(x);
+            put_text(&mut scene, last, at, end, glyphs(note, base));
         }
         scene.cursors.extend(hollow);
         self.drawn.note(&scene, placed);
