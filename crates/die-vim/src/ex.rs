@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 type ExFn = fn(&mut Ctx, bool, &str) -> Result;
 
 /// Ex commands, as `w[rite]` gives the shortest name and the whole one, and what they run. `:`'s
-/// list shows the whole names. `:s`, `:N`, `:$` and the window commands are read before these.
+/// list shows the whole names. `:s`, `:N`, `:$` and the window commands are read before these, and
+/// a command read before them adds its names in [`ex_names`], so the list has it too.
 #[rustfmt::skip]
 const EX: &[(&str, &str, ExFn)] = &[
     ("w", "write", |c, bang, rest| file_command(c, "w", bang, rest)),
@@ -55,7 +56,8 @@ fn ex_command(name: &str) -> Option<&'static (&'static str, &'static str, ExFn)>
     EX.iter().find(|e| abbreviates(bare, (e.0, e.1)))
 }
 
-/// Every ex command's shortest and whole names: the table's, the window commands' and `:s`'s.
+/// Every ex command's shortest and whole names, for `:`'s list: the table's, the window commands'
+/// and `:s`'s. A command `run` reads before the table goes here too.
 fn ex_names() -> impl Iterator<Item = (&'static str, &'static str)> {
     let (own, windows) = (EX.iter(), window::EX.iter());
     let windows = windows.map(|e| (e.0, e.1));
