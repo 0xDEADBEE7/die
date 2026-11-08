@@ -327,6 +327,8 @@ pub struct Ctx {
     pub(crate) fed: VecDeque<KeyEvent>,
     /// Where the next key fed from inside a call goes. Each turn starts it at the front.
     pub(crate) fed_at: usize,
+    /// For each feed kept apart, the innermost last, how many fed keys are behind it.
+    pub(crate) fences: Vec<usize>,
     /// A typed `C-g` ended what was fed, since [`Ctx::take_quit`] last looked.
     pub(crate) quit: bool,
     /// [`Ctx::hush_key_errors`].
@@ -521,6 +523,7 @@ impl Ctx {
             typed: VecDeque::new(),
             fed: VecDeque::new(),
             fed_at: 0,
+            fences: vec![],
             quit: false,
             hushed: false,
             pending: vec![],

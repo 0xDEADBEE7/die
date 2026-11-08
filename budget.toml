@@ -72,7 +72,8 @@ crate = "die-core"
 name = "text and undo"
 # 1,265 until U7, whose named positions are about 20 lines. 1,285 until U3's grep shared smartcase.
 # 1,300 until V3: thousands of changes go in one pass, undo too, and a line of megabytes is searched near what's asked.
-limit = 1420
+# 1,420 until the macro review: `:s` copies only its lines, and `:g` searches each line bounded at its end.
+limit = 1425
 files = ["text.rs", "undo.rs", "text/", "undo/"]
 
 [[module]]
@@ -87,7 +88,8 @@ name = "keys, keymaps, describe"
 # 650 until V3: a macro calling macros doesn't move what's waiting, and registers move uncopied.
 # 660 until U6's review: `on_command_ended`, so a C-o can end on a command that isn't die-vim's.
 # 675 until the macro work: `take_quit` and `hush_key_errors`, so `:norm` skips a failed line quietly.
-limit = 680
+# 680 until the macro review: keys fed apart, so a `:norm` line's failure leaves what fed it, and says when it's run out.
+limit = 710
 files = ["keys.rs", "keymap.rs", "describe.rs", "fed.rs"]
 
 [[module]]
@@ -96,7 +98,8 @@ name = "ext, dispatch, rt"
 # 1,500 until V1's landing found it at 1,502 from another package, and U3 adds what `*grep*` holds.
 # 1,510 until V3: a typed C-g ends a macro.
 # 1,525 until the macro work: a quit noted for `take_quit`, and key errors `hush_key_errors` hushes.
-limit = 1535
+# 1,535 until the macro review: the loop says when keys fed apart have run out, before the next key.
+limit = 1545
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]

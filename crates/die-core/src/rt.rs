@@ -184,6 +184,7 @@ pub(crate) enum SubKind {
     Keys(KeysFn),
     Dropped(TimerFn),
     Ended(TimerFn),
+    RunOut(TimerFn),
 }
 
 pub(crate) struct SubEntry {
@@ -517,6 +518,7 @@ impl Ctx {
         if let Some(i) = self.typed.iter().position(is_quit) {
             self.typed.remove(i);
             self.quit = true;
+            self.fences.clear();
             self.drop_fed();
             self.messages.push("Quit".into());
         }
@@ -559,6 +561,9 @@ impl Ctx {
         }
         self.timers_ran = false;
         self.quit_fed();
+        if self.fed_ran_out() {
+            return true;
+        }
         let fed = self
             .fed
             .pop_front()

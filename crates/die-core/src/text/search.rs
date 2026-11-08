@@ -255,6 +255,13 @@ impl TextBuf {
         pat.re.search(&at).is_some_and(|m| m.is_empty())
     }
 
+    /// The first match that lies in `range`, as Emacs's `re-search-forward` finds it from
+    /// `range.start` bounded at `range.end`, though look-around sees past both. die-vim's `:g`
+    /// looks in each line so.
+    pub fn first_match_in(&self, pat: &Pattern, range: Range<usize>) -> Option<Range<usize>> {
+        pat.first_from(&self.flat(), range.start, range.end)
+    }
+
     /// Every match that overlaps `range`, in order and without overlaps, for highlighting.
     /// Matching sees only the lines `range` touches, as Emacs's lazy highlighting stops at
     /// the window's end: a match that starts before `range` on its first line is found, but
@@ -287,27 +294,33 @@ impl TextBuf {
         template: &str,
         global: bool,
     ) -> Vec<(Range<usize>, String)> {
-        let text = self.flat();
+        // Only these lines and the character after them, which look-ahead sees, so `:s` on a line
+        // of a big file, as each of `:g`'s is, doesn't copy all of it after every change.
+        let at = lines.start;
+        let more = self.rope.byte_slice(lines.end..).chars().next();
+        let end = lines.end + more.map_or(0, char::len_utf8);
+        let text = String::from(self.rope.byte_slice(at..end));
         let text = &*text;
         let mut out = vec![];
         let mut next_line = lines.start;
-        let input = Input::new(text).range(lines.clone());
+        let input = Input::new(text).range(..lines.end - at);
         for caps in pat.re.captures_iter(input) {
             let Some(m) = caps.get_match().map(|m| m.range()) else {
                 continue;
             };
-            if m.start == lines.end && !lines.is_empty() && text[..m.start].ends_with('\n') {
+            let whole = at + m.start..at + m.end;
+            if whole.start == lines.end && !lines.is_empty() && text[..m.start].ends_with('\n') {
                 break;
             }
-            if m.start < next_line || !pat.stands_alone(text, &m) {
+            if whole.start < next_line || !pat.stands_alone(text, &m) {
                 continue;
             }
-            out.push((m.clone(), caps.interpolate_string(text, template)));
+            out.push((whole.clone(), caps.interpolate_string(text, template)));
             if !global {
                 next_line = if text[m.clone()].contains('\n') {
-                    m.end
+                    whole.end
                 } else {
-                    self.line_start(self.line_of(m.end) + 1)
+                    self.line_start(self.line_of(whole.end) + 1)
                 };
             }
         }
