@@ -118,6 +118,8 @@ fn cmd_v_pastes_and_cmd_q_quits() {
             .starts_with("<D-v> in Insert runs surface-paste"),
         "{d}"
     );
+    let c = ctx.describe_command("surface-paste").unwrap().to_string();
+    assert!(c.contains("<D-v> in Insert on a surface, in global"), "{c}");
     ctx.input(KeyEvent::press(Key::Char('q')).mods(cmd));
     ctx.run_until_idle();
     assert!(ctx.quit_wanted());
@@ -142,4 +144,33 @@ fn in_normal_state_die_vims_text_keys_leave_the_terminal_alone() {
     );
     let pasted = seen.borrow().iter().any(|e| matches!(e, Event::Paste(_)));
     assert!(!pasted, "die-vim's p is text's, not the terminal's");
+}
+
+#[test]
+fn surface_paste_reads_a_register_as_die_vim_does() {
+    let (mut ctx, buf, seen) = editor();
+    let board = FakeClipboard::default();
+    ctx.set_clipboard(board.clone());
+    board.copy_from_outside("from outside");
+    let held = Register {
+        kind: RegKind::Char,
+        text: "in a".into(),
+    };
+    ctx.set_register('a', held);
+    // `+` is the clipboard itself, `A` is `a`, and `_` holds nothing, as `"+p` and the rest are.
+    for (r, pasted) in [
+        ('+', Some("from outside")),
+        ('A', Some("in a")),
+        ('_', None),
+    ] {
+        let args = Args {
+            register: Some(r),
+            buffer: Some(buf),
+            ..Args::default()
+        };
+        ctx.run("surface-paste", &args).unwrap();
+        let got: Vec<Event> = seen.borrow_mut().drain(..).collect();
+        let want: Vec<Event> = pasted.map(|t| Event::Paste(t.into())).into_iter().collect();
+        assert_eq!(got, want, "\"{r}");
+    }
 }

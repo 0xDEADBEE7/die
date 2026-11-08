@@ -151,6 +151,14 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
 /// code: today a PTY's trampoline (`die_core::pty::trampoline`). Your config's `main` calls this
 /// first, before it reads its arguments, or no terminal can start.
 pub fn other_mode() -> Option<i32> {
+    // What a framework opened without close-on-exec, as Metal's shader cache, mustn't reach the
+    // program (contract §12).
+    let trampoline = std::env::args_os().nth(1);
+    if trampoline.is_some_and(|a| a == die_core::pty::EXEC_ARG)
+        && let Err(e) = driver::close_on_exec_inherited()
+    {
+        eprintln!("die: /dev/fd: {e}");
+    }
     die_core::pty::trampoline()
 }
 

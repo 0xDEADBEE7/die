@@ -225,7 +225,7 @@ fn cells_resolve_over_the_whole_area_as_the_contract_says() {
     assert_eq!(
         (at(3).fg, at(3).bg),
         (Rgb(165, 165, 165), Rgb(0, 0, 0)),
-        "65 % toward the bg"
+        "65 % of the fg, 35 % of the bg"
     );
     assert_eq!(
         (at(4).fg, at(4).bg),
@@ -306,6 +306,46 @@ fn the_frame_keeps_what_it_had_until_its_size_changes() {
     let infos = std::mem::take(&mut s.seen.borrow_mut().infos);
     let info = infos.last().unwrap();
     assert_eq!((info.window, info.state), (w, State::Passthrough));
+}
+
+#[test]
+fn after_a_render_panics_the_next_good_one_writes_every_row() {
+    // As a terminal renders: every row when the frame is new, and otherwise only those that
+    // changed, which here is none.
+    struct Rows(Rc<StdCell<bool>>, Rc<RefCell<Vec<bool>>>);
+    impl Surface for Rows {
+        fn kind(&self) -> &'static str {
+            "rows"
+        }
+        fn render(&mut self, frame: &mut Frame, _: &RenderInfo) {
+            self.1.borrow_mut().push(frame.is_new());
+            if self.0.get() {
+                panic!("render bug");
+            }
+            let new = frame.is_new();
+            for r in (0..frame.rows()).filter(|_| new) {
+                frame.text(r, 0, &format!("row {r}"), &FrameCell::blank());
+            }
+        }
+    }
+    let (bug, news) = (Rc::new(StdCell::new(false)), Rc::default());
+    let mut h = Harness::new(vec![]).unwrap();
+    h.open_text("t", "").unwrap();
+    let buf = h.create_surface("rows", Rows(bug.clone(), Rc::clone(&news)));
+    let w = h.show(buf, ShowIn::Current).unwrap().unwrap();
+    let (r0, c0) = origin(&mut h, w);
+    let rows = |h: &mut Harness| {
+        let scene = h.scene();
+        let row = |r| scene.row_text(r0 + r).chars().skip(c0).collect::<String>();
+        (row(0), row(1))
+    };
+    rows(&mut h);
+    bug.set(true);
+    assert!(rows(&mut h).0.contains("render panicked"));
+    bug.set(false);
+    assert_eq!(rows(&mut h), ("row 0".into(), "row 1".into()));
+    assert_eq!(rows(&mut h), ("row 0".into(), "row 1".into()), "and kept");
+    assert_eq!(*news.borrow(), [true, false, true, false]);
 }
 
 #[test]
@@ -502,6 +542,11 @@ fn the_pointer_reaches_it_in_its_own_cells_and_pixels() {
         "the text window took that"
     );
     assert_eq!(s.h.focused(), Some(text));
+    // A drag from a press on the text, and its release, are the text's over the area too.
+    s.h.send(at(press, r0, 1, None));
+    s.h.send(at(drag, r0 + 1, c0 + 2, None));
+    s.h.send(at(release, r0 + 1, c0 + 3, None));
+    assert!(events(&s).is_empty(), "it never had the press");
     s.h.prompt(":", |_, _| Ok(()));
     s.h.send(at(press, r0 + 2, c0 + 3, None));
     assert!(events(&s).is_empty(), "the prompt has the keys");
@@ -622,7 +667,7 @@ fn in_normal_state_its_kinds_keymap_is_looked_up_as_usual() {
     assert_eq!(
         *s.log.borrow(),
         ["send-esc", "leader-f"],
-        "the leader is DIE's again"
+        "the global keymap's keys, under the leader too"
     );
     s.h.type_keys("j").unwrap();
     assert_eq!(
@@ -633,8 +678,12 @@ fn in_normal_state_its_kinds_keymap_is_looked_up_as_usual() {
     s.h.fake_clipboard().copy_from_outside("echo");
     s.h.type_keys("p").unwrap();
     assert_eq!(events(&s), [Event::Paste("echo".into())]);
-    s.h.type_keys("i").unwrap();
+    let i = KeyEvent::press(Key::Char('i'));
+    s.h.send(Input::Key(i.clone()));
+    s.h.send(Input::Key(i.clone().kind(KeyKind::Repeat)));
+    s.h.send(Input::Key(i.kind(KeyKind::Release)));
     assert_eq!(s.h.state(), State::Passthrough);
+    assert!(events(&s).is_empty(), "the program never had the i's press");
     let d =
         s.h.describe_key(&[KeyEvent::press(Key::Char('j'))])
             .unwrap();

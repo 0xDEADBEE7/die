@@ -15,5 +15,11 @@ die-vim.workspace = true
 [dev-dependencies]
 die-test-cap.workspace = true
 
+# A PTY's program starts through this test's own binary, whose `main` must be the trampoline
+# first, so it has no test harness.
+[[test]]
+name = "pty_fds"
+harness = false
+
 [lints]
 workspace = true

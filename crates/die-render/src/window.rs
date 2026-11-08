@@ -127,7 +127,7 @@ impl Host {
 
     /// How long the loop may sleep, given whether the last pump left `more`.
     pub fn sleep(&mut self, more: bool) -> Sleep {
-        // A PTY's output past one turn's batch waits for the next pump, not for a wake.
+        // A PTY's output past what a pump took waits for the next pump, not for a wake.
         if more || self.ctx.pty_output_waiting() {
             return Sleep::No;
         }

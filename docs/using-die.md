@@ -61,7 +61,7 @@ The leader is `\`, in normal state.
 | `\hk` | `describe-key` | What a key does |
 | `\hc` | `describe-command` | What a command does |
 | Cmd-Q | `quit` | Quit, in every state |
-| Cmd-V in a terminal's insert state | `surface-paste` | Paste the clipboard into the program, as one piece it sees bracketed. `:surface-paste` pastes a register given with `"a`, or the clipboard |
+| Cmd-V in a terminal's insert state | `surface-paste` | Paste the clipboard into the program, as one piece it sees bracketed, or `"` if the clipboard has no text |
 
 `:name` runs any command by name, so also `:restart`, `:kill-buffer`, `:quit`. While you type the name, `:` lists commands as `M-x` does: see [Prompts](#prompts).
 

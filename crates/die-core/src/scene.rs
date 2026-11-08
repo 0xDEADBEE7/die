@@ -55,7 +55,7 @@ impl Glyph {
 /// One cell of the grid, with its faces resolved to colors and attributes.
 ///
 /// A cell producer resolves what a cell doesn't hold: reverse video swaps `fg`
-/// and `bg`, faint blends `fg` toward `bg` (65 %, as ghostel does), invisible
+/// and `bg`, faint keeps 65 % of `fg` and takes 35 % of `bg` (as ghostel does), invisible
 /// text draws a space, and blinking text draws steadily. Cells are built with
 /// `Cell::new` and then their fields set, so a field added later (overline and
 /// the link id, with die-term in M2) breaks no producer. Outside die-core, a

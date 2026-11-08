@@ -5,16 +5,19 @@
 //! [`EXEC_ARG`] and the PTY as its stdin, stdout and stderr, it becomes a session leader, makes
 //! the PTY its controlling terminal, and becomes the program, keeping its pid. A binary that opens
 //! PTYs calls [`trampoline`] first thing in `main`, DIE's and a test's alike. Every fd DIE opens is
-//! close-on-exec, the PTY's included, so a program holds no other terminal open.
+//! close-on-exec, the PTY's included, so a program holds no other terminal open. What frameworks
+//! open without it, as Metal's shader cache, `die::other_mode` marks before this runs.
 //!
 //! **The environment** is DIE's, with the PATH your login shell sets ([`crate::process::path`]),
-//! `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=DIE` and its version, less what
-//! a terminal DIE started from would have left that's wrong here, then the command's own.
+//! `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=DIE` and its version, and LANG
+//! from your region in UTF-8 if DIE's names no locale, as DIE.app's from the Dock doesn't
+//! ([`crate::sys::lang`]), less what a terminal DIE started from would have left that's wrong
+//! here, then the command's own.
 //!
 //! **Its output** is read on a thread of its own and handed on from the top of the loop, at most
-//! [`BATCH`] a turn per PTY, after which a key or the frame goes (as timers do): a flood can't
-//! hold up a key. The reader keeps at most [`KEEP`] waiting, and past that the program waits in
-//! the kernel. Input is written from that thread too, so a program that doesn't read never
+//! [`BATCH`] a turn per PTY, after which a waiting key goes (as timers do): a flood can't hold up
+//! a key. With none waiting, batches go on for up to [`OUTPUT_TURN`], and then the frame does.
+//! The reader keeps at most [`KEEP`] waiting, and past that the program waits in the kernel. Input is written from that thread too, so a program that doesn't read never
 //! blocks DIE. The exit comes after the last output.
 //!
 //! **Closing** a [`Pty`], or dropping it, hangs the terminal up, as closing a terminal window
@@ -44,8 +47,10 @@ use std::time::{Duration, Instant};
 
 /// The first argument that makes DIE's binary a PTY's trampoline.
 pub const EXEC_ARG: &str = "--pty-exec";
-/// How much of a PTY's output one turn hands on.
+/// How much of a PTY's output one batch hands on.
 pub const BATCH: usize = 256 << 10;
+/// How long batches of output may go on before the frame, while no key waits.
+pub const OUTPUT_TURN: Duration = Duration::from_millis(4);
 /// How much output the reader keeps waiting before it stops reading.
 pub const KEEP: usize = 1 << 20;
 /// One read's most.
@@ -61,6 +66,9 @@ const TERMINAL: [(&str, &str); 4] = [
     ("TERM_PROGRAM", "DIE"),
     ("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION")),
 ];
+/// The variables that name a locale. With none of them set, a program runs in C's, so `é` is
+/// two unknown bytes to it.
+const LOCALE: [&str; 3] = ["LC_ALL", "LC_CTYPE", "LANG"];
 /// What the terminal DIE started from may have left in its environment that's wrong in DIE's:
 /// its size, and its own terminfo, sessions and shell integration.
 const NOT_OURS: &[&str] = &[
@@ -244,6 +252,10 @@ impl Spec {
             }
         }
         cmd.envs(TERMINAL).env("PATH", crate::process::path());
+        let named = |k| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+        if !LOCALE.into_iter().any(named) {
+            cmd.env("LANG", crate::sys::lang());
+        }
         for (k, v) in &self.env {
             match v {
                 Some(v) => cmd.env(k, v),
@@ -528,6 +540,15 @@ pub(crate) struct Ptys {
     live: Vec<Entry>,
     /// Their output had a batch since the last key or frame.
     pub(crate) ran: bool,
+    /// When the first of those was.
+    pub(crate) since: Option<Instant>,
+}
+
+impl Ptys {
+    /// Whether output can have another batch before the frame: [`OUTPUT_TURN`] isn't spent.
+    pub(crate) fn more(&self) -> bool {
+        self.since.is_some_and(|t| t.elapsed() < OUTPUT_TURN)
+    }
 }
 
 struct Entry {

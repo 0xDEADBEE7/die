@@ -16,6 +16,12 @@ pub fn system_clipboard() -> Option<Box<dyn die_core::Clipboard>> {
     None
 }
 
+/// Nothing here opens an fd without close-on-exec yet, so a PTY's program inherits none.
+/// `platform::linux` brings its own sweep with its backend.
+pub fn close_on_exec_inherited() -> std::io::Result<()> {
+    Ok(())
+}
+
 /// The window's side.
 pub mod appkit {
     use super::{Never, metal::Pipeline};
