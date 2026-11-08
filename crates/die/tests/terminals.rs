@@ -1,6 +1,6 @@
 //! die-term in the DIE you run, on real PTYs (scope D18): Cmd-Q asks first while a program runs
 //! in a terminal, a program's OSC 52 copy is a kill `p` pastes, and a terminal's normal state has
-//! `:` and the window keys.
+//! `:`, the window keys, your leader and die-vim's registers.
 //!
 //! A PTY's program starts through this binary's own trampoline, as it does through DIE's, so
 //! this has no test harness: `main` is the trampoline first, then runs the tests itself. Only
@@ -19,7 +19,11 @@ mod on_macos {
 
     /// DIE as you run it, with a login `/bin/sh` of its own in a terminal, at its prompt.
     fn shell() -> (Ctx, BufferId) {
-        let mut ctx = start(Config::default()).unwrap();
+        shell_with(Config::default())
+    }
+
+    fn shell_with(config: Config) -> (Ctx, BufferId) {
+        let mut ctx = start(config).unwrap();
         let home = std::env::temp_dir().join(format!("die-terminals-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
         let mut spec = Spec::new(NAME, "/bin/sh");
@@ -98,6 +102,34 @@ mod on_macos {
         assert_eq!(ctx.window_list().len(), 1, "{:?}", ctx.messages);
         assert!(ctx.is_live(buf));
     }
+
+    /// Copy state over a real shell, with the leader your config binds globally and die-vim's
+    /// registers, which `p` then pastes into the program.
+    pub fn normal_state_has_the_leader_and_the_registers() {
+        let mut config = Config::default();
+        config.core.register = Some(Box::new(|reg: &mut Registry| {
+            reg.command("say-leader", "Say the leader ran.", |ctx, _| {
+                ctx.messages.push("the leader ran".into());
+                Ok(())
+            });
+            reg.global_keymap()
+                .bind(State::Normal, "<leader>t", "say-leader");
+        }));
+        let (mut ctx, buf) = shell_with(config);
+        ctx.type_keys("echo one; echo two<CR>");
+        wait(&mut ctx, "two", |ctx| screen(ctx).contains("\ntwo\n"));
+        ctx.type_keys("<Esc>");
+        ctx.type_keys("?^one<CR>\"ayiw");
+        assert_eq!(ctx.register('a').unwrap().text, "one");
+        ctx.type_keys("<leader>t");
+        assert_eq!(ctx.messages.last().unwrap(), "the leader ran");
+        ctx.type_keys("\"ap");
+        wait(&mut ctx, "one pasted at the prompt", |ctx| {
+            screen(ctx).lines().any(|l| l.ends_with("$ one"))
+        });
+        assert_eq!(ctx.state(), State::Normal, "{:?}", ctx.messages);
+        assert!(ctx.text(buf).is_ok(), "still copy state");
+    }
 }
 
 fn main() {
@@ -119,6 +151,10 @@ fn main() {
             (
                 "normal_state_has_the_ex_line_and_the_window_keys",
                 on_macos::normal_state_has_the_ex_line_and_the_window_keys,
+            ),
+            (
+                "normal_state_has_the_leader_and_the_registers",
+                on_macos::normal_state_has_the_leader_and_the_registers,
             ),
         ];
         let wanted: Vec<String> = std::env::args()
