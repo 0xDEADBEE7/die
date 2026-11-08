@@ -17,8 +17,8 @@
 //!   lock pins (D10); every other container runs with no network. Only those:
 //!   a lockfile with another source, or one that doesn't resolve offline on
 //!   this machine, stops the run before any fetch.
-//! - die-term's tests don't run: Linux has no engine archive yet, so they
-//!   don't link (D10).
+//! - die-term's tests don't run, and clean-build builds its library alone:
+//!   Linux has no engine archive yet, so they don't link (D10).
 //! - The image has -dev packages that D16 says the build doesn't need, so the
 //!   checks' container purges every one but libc's, and pkg-config, before
 //!   the build. clean-build fails if any is left.
@@ -401,8 +401,6 @@ pub fn host_checks(root: &Path) -> Result {
         version.lines().next().unwrap_or("rustc ?")
     );
 
-    // This is a checkpoint, so it runs what `ci` leaves out.
-    const ALL_TESTS: [&str; 2] = ["--", "--include-ignored"];
     let cargo_test = |args: &[&str]| {
         let mut c = Command::new(cargo());
         c.current_dir(root)
@@ -412,6 +410,7 @@ pub fn host_checks(root: &Path) -> Result {
         c
     };
     let exit_f = ["die-core", "die-vim", "evil-oracle", "die-test-cap"];
+    let others = other_tests(crate::ghostty::links(root, &host), &exit_f);
     let steps: Vec<Step> = vec![
         (
             "tests (f)",
@@ -439,19 +438,7 @@ pub fn host_checks(root: &Path) -> Result {
         ),
         (
             "other tests",
-            Box::new(|| {
-                // No engine archive for Linux yet, so die-term's tests can't link (D10).
-                let excluded = exit_f
-                    .iter()
-                    .chain(&["die-term"])
-                    .flat_map(|p| ["--exclude", p]);
-                let args: Vec<&str> = ["--workspace"]
-                    .into_iter()
-                    .chain(excluded)
-                    .chain(ALL_TESTS)
-                    .collect();
-                crate::util::run(&mut cargo_test(&args))
-            }),
+            Box::new(|| crate::util::run(&mut cargo_test(&others))),
         ),
         ("clean-build", Box::new(|| clean::run(root, false))),
         ("log plant", Box::new(|| guards::linux_host(root))),
@@ -461,6 +448,25 @@ pub fn host_checks(root: &Path) -> Result {
         "\nlinux-host: die-core, die-vim, the oracle and the memory limit pass on {host} (exit test (f), with ci's cross-check)"
     );
     Ok(())
+}
+
+/// A checkpoint's tests: it runs what `ci` leaves out.
+const ALL_TESTS: [&str; 2] = ["--", "--include-ignored"];
+
+/// "other tests": the workspace's tests but `exit_f`'s, and but die-term's where there's no
+/// engine archive for the host, since they can't link there (D10).
+fn other_tests<'a>(engine: bool, exit_f: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec!["--workspace"];
+    let user: &[&str] = if engine {
+        &[]
+    } else {
+        &[crate::ghostty::ENGINE_USER]
+    };
+    for p in exit_f.iter().chain(user) {
+        args.extend(["--exclude", p]);
+    }
+    args.extend(ALL_TESTS);
+    args
 }
 
 /// Run the oracle's test and print its summary line.
@@ -564,6 +570,22 @@ checksum = \"0\"
         let other = pinned.replace(&format!("#{rev}"), "#0000");
         write(&tree.join("Cargo.lock"), &other).unwrap();
         assert!(crates_io_only(tree).is_err());
+    }
+
+    #[test]
+    fn die_terms_tests_run_where_the_engine_links() {
+        let exit_f = ["die-core", "die-vim"];
+        let base = [
+            "--workspace",
+            "--exclude",
+            "die-core",
+            "--exclude",
+            "die-vim",
+        ];
+        let tail = ALL_TESTS;
+        assert_eq!(other_tests(true, &exit_f), [&base[..], &tail].concat());
+        let without = [&base[..], &["--exclude", "die-term"], &tail].concat();
+        assert_eq!(other_tests(false, &exit_f), without);
     }
 
     #[test]

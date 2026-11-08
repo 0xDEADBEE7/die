@@ -4,7 +4,10 @@
 //! in the text maps to a cell and back, with a wide character taking two columns. Rows are
 //! absolute: they count every line that ever scrolled into history, so a row keeps its number
 //! while newer output pushes it up and the oldest lines are dropped. A [`Mark`] says how many
-//! lines were added since, so a snapshot can follow new output by reading only those.
+//! lines were added since, so a snapshot can follow new output by reading only those. The count
+//! is taken after each 1 KiB slice that [`crate::Term::feed`] parses, so only output crafted to
+//! push out the whole scrollback in one slice loses it. Then the rows are numbered on from past
+//! every number given so far, so a number from before names no line, rather than the wrong one.
 //!
 //! The rows are read through a render state of their own, with overscan over the whole
 //! scrollback. Its update consumes the terminal's dirty flags, so the frame's render state is
@@ -85,6 +88,9 @@ pub(crate) struct History {
     anchor: Option<TrackedGridRef>,
     /// The anchor's screen row when it was set: the history's length then.
     anchor_y: u64,
+    /// The active screen's height then: every row numbered since is below `pruned + anchor_y +
+    /// rows`.
+    rows: u64,
     pushed: u64,
     pruned: u64,
     /// Counts the times the counts started again: a resize, a switch of screens, an anchor lost.
@@ -101,6 +107,7 @@ impl History {
         Ok(History {
             anchor: Some(term.track_grid_ref(Point::Active(PointCoordinate { x: 0, y: 0 }))?),
             anchor_y: history_rows(term),
+            rows: u64::from(term.rows()?),
             pushed: 0,
             pruned: 0,
             epoch: 0,
@@ -129,19 +136,26 @@ impl History {
         if alt {
             return;
         }
+        let Some(anchor) = &self.anchor else {
+            return self.restart(term);
+        };
         let now = history_rows(term);
-        let at = self
-            .anchor
-            .as_ref()
-            .and_then(|a| a.point(PointSpace::Screen).ok().flatten())
-            .map(|p| u64::from(p.y));
+        let at = anchor.point(PointSpace::Screen).ok().flatten();
+        let at = at.map(|p| u64::from(p.y));
         match at {
             Some(y) if y <= self.anchor_y && y <= now => {
                 self.pushed += now - y;
                 self.pruned += self.anchor_y - y;
                 self.reanchor(term);
             }
-            _ => self.restart(term),
+            // Moved down on the screen (a reverse index at its top): the history is as it was.
+            Some(_) => self.restart(term),
+            None => {
+                // The anchor's row went, with everything above it: how many lines went is
+                // unknown, so the rows are numbered on from past every number given so far.
+                self.pruned += self.anchor_y + self.rows;
+                self.restart(term);
+            }
         }
     }
 
@@ -161,6 +175,7 @@ impl History {
             self.anchor = term.track_grid_ref(top).ok();
         }
         self.anchor_y = history_rows(term);
+        self.rows = u64::from(term.rows().unwrap_or(1));
     }
 }
 
@@ -171,8 +186,9 @@ impl Term {
     }
 
     /// How many lines went into the scrollback since `mark`, or None when that can't be told:
-    /// after a resize, a switch to or from the alternate screen, or a flood that dropped the row
-    /// the count follows. Then read the whole text again.
+    /// after a resize, a switch to or from the alternate screen, or output that pushed out the
+    /// whole scrollback at once, after which the rows are numbered afresh. Then read the whole
+    /// text again.
     pub fn added_since(&self, mark: Mark) -> Option<u64> {
         (mark.epoch == self.history.epoch).then(|| self.history.pushed - mark.pushed)
     }

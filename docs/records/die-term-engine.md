@@ -480,7 +480,7 @@ The archive contains precompiled C and C++ (wuffs, simdutf, Highway). Nothing is
 
 ## 10. The engine side, as built (2026-11-09)
 
-`crates/die-term-sys` and `crates/die-term`'s engine side are in the workspace: a `Term` that owns one engine terminal and needs no `Ctx`, with bytes in and die-core cells out, keys in and bytes out. It runs on the thread that calls it (`Term` isn't `Send`, as the engine's objects aren't), so it can run inside DIE now and in D20's helper later. The surface on a PTY is the next package's. Calls 733–745 in [m0-log.md](../m0-log.md) have the detail.
+`crates/die-term-sys` and `crates/die-term`'s engine side are in the workspace: a `Term` that owns one engine terminal and needs no `Ctx`, with bytes in and die-core cells out, keys in and bytes out. It runs on the thread that calls it (`Term` isn't `Send`, as the engine's objects aren't), so it can run inside DIE now and in D20's helper later. The surface on a PTY is the next package's. Calls 733–745 in [m0-log.md](../m0-log.md) have the detail, and 776–786 the review's fixes.
 
 ### Where it differs from this record
 
@@ -492,8 +492,11 @@ The archive contains precompiled C and C++ (wuffs, simdutf, Highway). Nothing is
 - **SGR-pixel mouse reports** count pixels from 0, and X10 mode (9) reports no wheel, as xterm's doesn't.
 - **What the engine asks of DIE is events**, not callbacks: titles, the directory, the bell, OSC 52 writes and OSC 9 and 777 notifications. A callback would need `Ctx`. OSC 52 reads are denied inside the engine's callback, as §2's deadlock rule has it.
 - **Synchronized output** holds the frame for up to 1 s, but the frame held is the last one drawn, not one captured inside the render-hold callback (G13). The capture needs a render-state update from inside the callback.
-- **Copy state's text** comes from a second render state with overscan over the whole scrollback, one line per row with its soft-wrap flag and each character's column. 9,637 rows of 80 columns took 12.8 ms in release, against S2's 2.1 ms for the formatter, which loses the columns and the wraps. The frame's render state is rebuilt after it, since the text's update takes the terminal's dirty flags. Rows are absolute, through a tracked reference on the screen's top row, so a snapshot can follow new output by reading only what was added.
-- **Not yet:** DIE's PNG hook and kitty placements, which need core placements, so a kitty PNG is refused for now; hyperlinks, OSC 133, the engine's selection and search, the pointer shape, and colour-scheme reports.
+- **Feeding is bounded in time as well as bytes.** `feed` parses 1 KiB at a time and returns at 64 KiB or once 2 ms have gone. Ordinary output still goes 64 KiB a call (a build log in 0.22 ms, a read of `yes` in 1.9 ms), and the slices cost about 1 %. Output crafted to be slow (REP, DECALN, ED, RIS: up to 5 µs a byte) took 0.3 s a call and now returns within about 8 ms. Replies waiting for the PTY are capped at 1 MiB.
+- **A program's own default colors** (OSC 10 and 11) and reverse video (DECSCNM, a visible bell) redraw every row, as the theme's do; the engine marks only a palette change as a full redraw.
+- **Committed text** (an input method's, the emoji picker's, a dead key's) goes to the program as UTF-8 whatever the kitty flags, as kitty sends it. Through the encoder, flag 8 would send a key for its first character.
+- **Copy state's text** comes from a second render state with overscan over the whole scrollback, one line per row with its soft-wrap flag and each character's column. 9,637 rows of 80 columns took 12.8 ms in release, against S2's 2.1 ms for the formatter, which loses the columns and the wraps. The frame's render state is rebuilt after it, since the text's update takes the terminal's dirty flags. Rows are absolute, through a tracked reference on the screen's top row, so a snapshot can follow new output by reading only what was added. The count is taken after each 1 KiB slice, so a 64 KiB read of `yes` (21,845 lines, twice what the scrollback keeps) keeps every number. Output crafted to push out the whole scrollback in one slice loses the count; then rows are numbered on from past every number given, so an old number names no line.
+- **Not yet:** DIE's PNG hook and kitty placements, which need core placements. Until then kitty graphics are off (the engine's image limit is 0): a program's query gets no answer, so it shows text rather than images nothing draws. Also hyperlinks, OSC 133, the engine's selection and search, the pointer shape, and colour-scheme reports.
 
 ### The parity checklist now
 
@@ -505,10 +508,10 @@ The engine side's tests (`crates/die-term/tests`) exercise these through the `Te
 | Bold, italic, faint, inverse, invisible, strike; 5 underline styles with colour | Passes. Overline waits on a field in core's `Cell`; blink draws steadily |
 | Wide characters, graphemes, skin-tone emoji (mode 2027) | Passes |
 | Cursor shape, blink, visibility and colour; alternate screen; reflow on resize; scroll regions | Passes |
-| Redraw only what changed | Passes (dirty rows, and a frame for a cursor that moved alone) |
+| Redraw only what changed | Passes (dirty rows, a frame for a cursor that moved alone, and every row when the default colours change) |
 | Synchronized output (2026) | Passes, with the difference above |
 | Scrollback of 10k lines capped at 64 MB | Set; the engine keeps a little under. Compression while idle waits on the surface's idle timer |
-| Title, bell, OSC 7, OSC 9/777, OSC 52 write; OSC 52 read denied | Passes, as events |
+| Title, bell, OSC 7 (and OSC 9;9's bare path), OSC 9/777, OSC 52 write; OSC 52 read denied | Passes, as events |
 | DA, DSR, XTVERSION as DIE, XTWINOPS 14/16/18 and mode 2048 in physical pixels, DECRQM, XTGETTCAP | Passes. DECRQSS not exercised |
 | Kitty keyboard flags 1–31, press, repeat and release; legacy keys; DECCKM; Option as Meta | Passes. modifyOtherKeys not exercised |
 | The legacy C0 shim | Passes, narrower than §3 (above) |
@@ -518,5 +521,5 @@ The engine side's tests (`crates/die-term/tests`) exercise these through the `Te
 | The modes Esc routes by (D18): the alternate screen | Passes (`Term::modes`, `Term::alt_screen`) |
 | Copy state's text with rows, columns, wraps and the cursor; viewport at any row; following new output | Passes (the engine side); copy state itself is the next package's |
 | Known gaps: OSC 99, OSC 66, the title stack | Still gaps; a test pins each, so the bump that closes one says so |
-| Kitty graphics, hyperlinks, OSC 133, selection and search, pointer shape, colour-scheme reports, PTY lifecycle | Wait |
+| Kitty graphics, hyperlinks, OSC 133, selection and search, pointer shape, colour-scheme reports, PTY lifecycle | Wait. Kitty graphics are off until then |
 
