@@ -111,7 +111,7 @@ pub fn after_command(ctx: &mut Ctx, a: &Args, r: &Result) {
 }
 
 /// After every command, die-vim's or not: if it's the one a `C-o` was waiting for, go back to
-/// that `C-o`'s buffer, wherever the command went.
+/// that `C-o`'s buffer, wherever the command went. Then a `:norm` may go on.
 pub fn command_ended(ctx: &mut Ctx) -> Result {
     let waiting: Vec<BufferId> = ctx.with_ext(|v: &mut Vim, _| {
         v.commands += 1;
@@ -121,7 +121,7 @@ pub fn command_ended(ctx: &mut Ctx) -> Result {
         // A failure here has no command to answer for it. A buffer it killed has nothing to do.
         let _ = back_from_once(ctx, b);
     }
-    Ok(())
+    crate::each::command_ended(ctx)
 }
 
 fn back_from_once(ctx: &mut Ctx, b: BufferId) -> Result {
