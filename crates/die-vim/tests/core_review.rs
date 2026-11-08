@@ -297,15 +297,12 @@ fn a_blank_after_a_leading_colon_is_still_the_command() {
     assert_eq!(cursor, 1);
 }
 
-/// `:` and `/` take the keys of `evil-command-line-map`, where `<Up>` matches what's typed.
+/// `:` and `/` take the keys of `evil-command-line-map`, where `<Up>` matches what's typed. On
+/// `:`, that's once a command has its argument: before, `<Up>` moves in its list.
 #[test]
 fn the_command_line_and_search_take_evils_line_keys() {
     for (first, again, want) in [
-        (
-            ":vim-forward-char<CR>:vim-backward-char<CR>",
-            ":vim-f",
-            "vim-forward-char",
-        ),
+        (":s/foo/x/<CR>:s/bar/y/<CR>", ":s/f", "s/foo/x/"),
         ("/foo<CR>/bar<CR>", "/f", "foo"),
     ] {
         let mut ctx = editor();

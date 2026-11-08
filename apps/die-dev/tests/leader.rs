@@ -48,6 +48,26 @@ fn leader_x_runs_the_command_chosen_from_the_palette() {
     assert_eq!(h.prompt_text(), None);
 }
 
+/// `:` lists commands as `\x` does, for the name after a range, and a row runs only once you've
+/// moved to it.
+#[test]
+fn colon_lists_commands_as_the_palette_does() {
+    let (mut h, b) = harness("abc\n");
+    typed(&mut h, "x:");
+    assert!(h.prompt_candidates().contains(&"write"));
+    assert!(h.prompt_candidates().contains(&"command-palette"));
+    typed(&mut h, "vim-und");
+    assert_eq!(h.prompt_candidates()[0], "vim-undo");
+    assert_eq!(h.prompt_chosen(), None, "nothing until you move");
+    typed(&mut h, "<C-n><CR>");
+    assert_eq!(text(&h, b), "abc\n");
+    typed(&mut h, "V:");
+    assert_eq!(h.prompt_text(), Some("'<,'>"));
+    assert_eq!(h.prompt_candidates()[0], "vim-undo", "the last run first");
+    typed(&mut h, "subs<Tab>/b/X/<CR>");
+    assert_eq!(text(&h, b), "aXc\n");
+}
+
 #[test]
 fn leader_f_goes_down_from_this_files_directory_and_opens_the_file() {
     let d = tree("find");

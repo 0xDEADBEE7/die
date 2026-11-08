@@ -43,7 +43,7 @@ pub const MAP: &[(&str, &str, &str, Body)] = &[
 ];
 
 /// Ex names, as `sp[lit]` gives its shortest form and its whole name, and what they run.
-const EX: &[(&str, &str, &str)] = &[
+pub(crate) const EX: &[(&str, &str, &str)] = &[
     ("sp", "split", "vim-window-split"),
     ("vs", "vsplit", "vim-window-vsplit"),
     ("new", "new", "vim-window-new"),
@@ -59,7 +59,7 @@ pub fn ex(ctx: &mut Ctx, line: &str) -> Option<Result> {
     let (n, rest) = line.split_at(digits);
     let (name, file) = rest.split_once(' ').unwrap_or((rest, ""));
     let name = name.strip_suffix('!').unwrap_or(name);
-    let is = |e: &&(&str, &str, &str)| name.len() >= e.0.len() && e.1.starts_with(name);
+    let is = |e: &&(&str, &str, &str)| crate::ex::abbreviates(name, (e.0, e.1));
     let &(.., command) = EX.iter().find(is)?;
     let args = Args {
         count: n.parse().ok(),

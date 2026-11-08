@@ -388,10 +388,69 @@ fn a_selections_range_is_refused_by_w_and_ignored_by_commands_that_take_none() {
     let (mut h, path, _, _) = on_file(&dir, "one\ntwo\n");
     assert!(keys(&mut h, "ix<Esc>").is_empty());
     assert_eq!(keys(&mut h, "V:w<CR>").len(), 1);
+    assert_eq!(keys(&mut h, "V:wri<Tab><CR>").len(), 1, "by any name");
     assert_eq!(read(&path), "one\ntwo\n");
     assert!(keys(&mut h, "V:<CR>").is_empty());
     assert!(keys(&mut h, ":%vsplit<CR>").is_empty());
     assert_eq!(h.window_list().len(), 2);
+}
+
+/// `:` lists the ex commands by their whole names and every other command, those run last first,
+/// for the name after any range. `<CR>` runs the line as typed until you move to a row.
+#[test]
+fn colon_lists_commands_for_the_name_after_the_range() {
+    let dir = Dir::new("list");
+    let (mut h, path, b, _) = on_file(&dir, "one\ntwo\n");
+    assert!(keys(&mut h, ":vs<CR>:%s/one/1/<CR>:").is_empty());
+    let listed = h.prompt_candidates();
+    assert_eq!(listed[..2], ["substitute", "vsplit"], "the last run first");
+    for name in ["write", "quit", "nohlsearch", "split", "vim-undo"] {
+        assert_eq!(listed.iter().filter(|n| **n == name).count(), 1, "{name}");
+    }
+    assert!(!listed.contains(&"w"), "no short names");
+    assert_eq!(h.prompt_chosen(), None, "and none chosen");
+
+    assert!(keys(&mut h, "2,5nohl").is_empty());
+    assert_eq!(h.prompt_candidates()[0], "nohlsearch");
+    assert!(keys(&mut h, "<Tab>").is_empty());
+    assert_eq!(h.prompt_text(), Some("2,5nohlsearch"), "the range stays");
+    assert!(keys(&mut h, " ").is_empty());
+    assert!(h.prompt_candidates().is_empty(), "an argument has no list");
+    assert!(keys(&mut h, "<Esc>:s/").is_empty());
+    assert!(h.prompt_candidates().is_empty(), "nor a pattern");
+    assert!(keys(&mut h, "<Esc>:'a,").is_empty());
+    assert!(
+        !h.prompt_candidates().is_empty(),
+        "a range on its way has one"
+    );
+
+    assert!(keys(&mut h, "<Esc>ix<Esc>:wri<CR>").is_empty());
+    assert_eq!(read(&path), "x1\ntwo\n", "Vim's short names");
+    assert!(keys(&mut h, "iy<Esc>:wri<Down><CR>").is_empty());
+    assert_eq!(read(&path), "yx1\ntwo\n", "a row you move to");
+    assert!(keys(&mut h, ":substitute/x/X/<CR>").is_empty());
+    assert!(keys(&mut h, "j:subs<Tab>/two/2/<CR>").is_empty());
+    assert_eq!(text(&h, b), "yX1\n2\n");
+}
+
+/// With no list, `<Up>` and `C-p` recall the history as they did.
+#[test]
+fn colon_recalls_the_history_with_no_list() {
+    let mut h = editor();
+    let (b, _) = h.open_text("t", "a b\n").unwrap();
+    assert!(keys(&mut h, ":s/a/x/<CR>:s/b/y/<CR>uu").is_empty());
+    assert!(keys(&mut h, ":s/<Up><Up><CR>").is_empty());
+    assert_eq!(text(&h, b), "x b\n", "<Up> takes what starts the same");
+    assert!(keys(&mut h, "u:<Up><CR>").is_empty());
+    assert_eq!(
+        text(&h, b),
+        "a b\n",
+        "but moves in the list when there's one"
+    );
+    assert!(keys(&mut h, ":<M-p><CR>").is_empty());
+    assert_eq!(text(&h, b), "x b\n", "where <M-p> has the history");
+    assert!(keys(&mut h, "u:s/<C-p><C-p><CR>").is_empty());
+    assert_eq!(text(&h, b), "a y\n", "and C-p has it with none");
 }
 
 /// A project on disk, with an editor on `src/a.txt`, whose lines name other files.

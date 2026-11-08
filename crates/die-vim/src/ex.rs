@@ -2,18 +2,110 @@
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
 use crate::{substitute, visual, window};
-use die_core::{Args, BufferId, Ctx, Error, FileTarget, PromptSpec, Result, ShowIn, project_root};
+use die_core::{
+    Args, BufferId, Ctx, Error, FileTarget, PromptSpec, Result, ShowIn, project_root, recent_first,
+};
 use std::ffi::OsStr;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+
+/// What an ex command does, given whether a `!` follows its name, and the rest of the line.
+type ExFn = fn(&mut Ctx, bool, &str) -> Result;
+
+/// Ex commands, as `w[rite]` gives the shortest name and the whole one, and what they run. `:`'s
+/// list shows the whole names. `:s`, `:N`, `:$` and the window commands are read before these.
+#[rustfmt::skip]
+const EX: &[(&str, &str, ExFn)] = &[
+    ("w", "write", |c, bang, rest| file_command(c, "w", bang, rest)),
+    ("q", "quit", |c, bang, rest| file_command(c, "q", bang, rest)),
+    ("wq", "wq", |c, bang, rest| file_command(c, "wq", bang, rest)),
+    ("x", "xit", |c, bang, rest| file_command(c, "wq", bang, rest)),
+    ("up", "update", |c, bang, rest| file_command(c, "w", bang, rest)),
+    ("wa", "wall", |c, bang, _| write_all(c, bang)),
+    ("qa", "qall", |c, bang, _| window::quit_app(c, bang)),
+    ("quita", "quitall", |c, bang, _| window::quit_app(c, bang)),
+    ("wqa", "wqall", |c, bang, _| write_all(c, bang).and_then(|_| window::quit_app(c, false))),
+    ("xa", "xall", |c, bang, _| write_all(c, bang).and_then(|_| window::quit_app(c, false))),
+    ("sav", "saveas", |c, bang, rest| write(c, buffer_window(c, &Args::default())?.0, rest, bang, true)),
+    ("f", "file", |c, _, _| show_file_info(c, &Args::default())),
+    ("ls", "ls", |c, _, _| list_buffers(c, false)),
+    ("buffers", "buffers", |c, _, _| list_buffers(c, false)),
+    ("files", "files", |c, _, _| list_buffers(c, true)),
+    ("bn", "bnext", |c, _, _| window::buffer_step(c, true)),
+    ("bp", "bprevious", |c, _, _| window::buffer_step(c, false)),
+    ("bN", "bNext", |c, _, _| window::buffer_step(c, false)),
+    ("bd", "bdelete", |c, bang, _| window::delete_buffer(c, bang)),
+    ("bw", "bwipeout", |c, bang, _| window::delete_buffer(c, bang)),
+    ("u", "undo", |c, _, _| c.run("vim-undo", &Args::default())),
+    ("e", "edit", |c, bang, rest| if bang { file_command(c, "e", true, rest) } else { edit(c, rest) }),
+    ("b", "buffer", |c, _, rest| buffer(c, rest)),
+    ("cn", "cnext", |c, _, _| c.run("next-error", &Args::default())),
+    ("cp", "cprevious", |c, _, _| c.run("previous-error", &Args::default())),
+    ("noh", "nohlsearch", |c, _, _| { c.set_search_highlight(None); Ok(()) }),
+];
+
+/// Whether `name` is the command with this shortest and whole name, as `wri` is `w[rite]`.
+pub(crate) fn abbreviates(name: &str, (short, whole): (&str, &str)) -> bool {
+    name.len() >= short.len() && whole.starts_with(name)
+}
+
+/// The table's command that `name` names, with a `!` after it or not.
+fn ex_command(name: &str) -> Option<&'static (&'static str, &'static str, ExFn)> {
+    let bare = name.strip_suffix('!').unwrap_or(name);
+    EX.iter().find(|e| abbreviates(bare, (e.0, e.1)))
+}
+
+/// Every ex command's shortest and whole names: the table's, the window commands' and `:s`'s.
+fn ex_names() -> impl Iterator<Item = (&'static str, &'static str)> {
+    let (own, windows) = (EX.iter(), window::EX.iter());
+    let windows = windows.map(|e| (e.0, e.1));
+    own.map(|e| (e.0, e.1))
+        .chain(windows)
+        .chain([substitute::NAME])
+}
+
+/// Where an ex line's command name is: after any `:`, blanks and range, up to what isn't a name's
+/// letter, digit, `-` or `_`. A range is read loosely, as it's typed: `'` and the key after it
+/// are a mark.
+fn command_at(line: &str) -> Range<usize> {
+    let mut at = 0;
+    while let Some(c) = line[at..].chars().next() {
+        at += match c {
+            '\'' => 1 + line[at + 1..].chars().next().map_or(0, char::len_utf8),
+            ':' | ' ' | '\t' | '0'..='9' | '.' | '$' | '%' | ',' | ';' | '+' | '-' => 1,
+            _ => break,
+        };
+    }
+    let name = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+    at..line.len() - line[at..].trim_start_matches(name).len()
+}
+
+/// `:`'s list: the ex commands by their whole names and every other command, those `:` ran last
+/// first, as [`recent_first`] orders them.
+fn names(ctx: &Ctx) -> Vec<String> {
+    let all = ex_names().map(|n| n.1).chain(ctx.command_names());
+    let mut all: Vec<String> = all.map(String::from).collect();
+    all.sort_unstable();
+    all.dedup();
+    let run = ctx.prompt_history("ex").iter().filter_map(|line| {
+        let name = &line[command_at(line)];
+        let ex = ex_names().find(|&n| abbreviates(name, n));
+        (!name.is_empty()).then(|| ex.map_or(name, |n| n.1).to_string())
+    });
+    recent_first(&run.collect::<Vec<_>>(), all)
+}
 
 /// `:`: read a line and run it, with your Evil's line keys. `<BS>` on an empty line leaves it,
 /// as your Evil's `evil-ex-delete-backward-char` does. From a selection, the selection ends and
-/// the line starts with its range.
+/// the line starts with its range. While the line is a command's name, after any range, a list
+/// of commands matches it, as the command palette's does.
 pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
     let mut spec = PromptSpec::new(":")
         .history("ex")
         .backspace_cancels()
-        .evil_keys();
+        .evil_keys()
+        .candidates(names(ctx))
+        .matches_part(|line| Some(command_at(line)).filter(|r| r.end == line.len()));
     if ctx.focused_buffer().is_some_and(|b| visual::is_on(ctx, b)) {
         visual::escape(ctx, a)?;
         spec = spec.initial(substitute::VISUAL);
@@ -47,59 +139,20 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     }
     // Only digits: `parse` would take `+5` for line 5.
     let digits = name.bytes().all(|c| c.is_ascii_digit());
-    if let Some(n) = name.parse::<usize>().ok().filter(|_| digits) {
+    let line = name.parse::<usize>().ok().filter(|_| digits);
+    if let Some(n) = line.or((name == "$").then_some(usize::MAX)) {
         return run_motion(ctx, &Args::default(), Kind::Linewise, None, |s| {
             goto_line(s, n)
         });
     }
-    match name {
-        "w" | "w!" | "q" | "q!" | "quit" | "quit!" | "wq" | "wq!" | "e!" => {
-            file_command(ctx, name, rest)
-        }
-        "x" | "xit" => file_command(ctx, "wq", rest),
-        "x!" | "xit!" => file_command(ctx, "wq!", rest),
-        "wa" | "wall" | "wa!" | "wall!" => write_all(ctx, name.ends_with('!')),
-        "qa" | "qall" | "quitall" => window::quit_app(ctx, false),
-        "qa!" | "qall!" | "quitall!" => window::quit_app(ctx, true),
-        "wqa" | "wqall" | "xa" | "xall" | "wqa!" | "wqall!" | "xa!" | "xall!" => {
-            write_all(ctx, name.ends_with('!'))?;
-            window::quit_app(ctx, false)
-        }
-        "up" | "update" | "up!" | "update!" => file_command(ctx, "w", rest),
-        "sav" | "save" | "savea" | "saveas" | "sav!" | "save!" | "savea!" | "saveas!" => {
-            let (b, _) = buffer_window(ctx, &Args::default())?;
-            write(ctx, b, rest, name.ends_with('!'), true)
-        }
-        "f" | "fi" | "fil" | "file" | "f!" | "fi!" | "fil!" | "file!" => {
-            show_file_info(ctx, &Args::default())
-        }
-        "ls" | "buffers" | "files" => list_buffers(ctx, name == "files"),
-        "bn" | "bnext" => window::buffer_step(ctx, true),
-        "bp" | "bprevious" | "bN" | "bNext" => window::buffer_step(ctx, false),
-        "bd" | "bdelete" | "bw" | "bwipeout" => window::delete_buffer(ctx, false),
-        "bd!" | "bdelete!" | "bw!" | "bwipeout!" => window::delete_buffer(ctx, true),
-        "u" | "undo" => ctx.run("vim-undo", &Args::default()),
-        "$" => run_motion(ctx, &Args::default(), Kind::Linewise, None, |s| {
-            goto_line(s, usize::MAX)
-        }),
-        "e" | "edit" => edit(ctx, rest),
-        "b" | "buffer" => buffer(ctx, rest),
-        "cn" | "cne" | "cnex" | "cnext" => ctx.run("next-error", &Args::default()),
-        "cp" | "cpr" | "cpre" | "cprev" | "cprevi" | "cprevio" | "cpreviou" | "cprevious" => {
-            ctx.run("previous-error", &Args::default())
-        }
-        "noh" | "nohl" | "nohlsearch" => {
-            ctx.set_search_highlight(None);
-            Ok(())
-        }
-        _ => {
-            let args = Args {
-                text: (!rest.is_empty()).then(|| rest.to_string()),
-                ..Default::default()
-            };
-            ctx.run(name, &args)
-        }
+    if let Some(&(.., f)) = ex_command(name) {
+        return f(ctx, name.ends_with('!'), rest);
     }
+    let args = Args {
+        text: (!rest.is_empty()).then(|| rest.to_string()),
+        ..Default::default()
+    };
+    ctx.run(name, &args)
 }
 
 /// The line without the range that only `:s` reads. `:'<,'>w` writes only those lines in your
@@ -109,8 +162,9 @@ fn without_range(text: &str) -> Result<&str> {
         return Ok(text.strip_prefix('%').map_or(text, str::trim_start));
     };
     let rest = rest.trim_start();
-    match rest.split_whitespace().next() {
-        Some(name @ ("w" | "w!" | "wq" | "wq!")) => Err(Error::Msg(format!(
+    let name = rest.split_whitespace().next().unwrap_or_default();
+    match ex_command(name).map(|e| e.1) {
+        Some("write" | "wq") => Err(Error::Msg(format!(
             ":{}{name} isn't built",
             substitute::VISUAL
         ))),
@@ -121,17 +175,16 @@ fn without_range(text: &str) -> Result<&str> {
 /// `:w`, `:q`, `:wq` and `:e!`. In `:w!` and `:wq!`, `!` writes over a file that changed, or
 /// over the one named. In `:q!` it drops unsaved changes. `:wq!` still refuses to leave another
 /// file's, as your Evil's does.
-fn file_command(ctx: &mut Ctx, name: &str, rest: &str) -> Result {
+fn file_command(ctx: &mut Ctx, name: &str, force: bool, rest: &str) -> Result {
     let writes = name.starts_with('w');
     if !rest.is_empty() && !writes {
         return Err(Error::Msg(format!(":{name} with an argument isn't built")));
     }
     let (buf, w) = buffer_window(ctx, &Args::default())?;
-    let force = name.ends_with('!');
     if writes {
         write(ctx, buf, rest, force, false)?;
     }
-    match name.trim_end_matches('!') {
+    match name {
         "w" => Ok(()),
         "e" => ctx.revert_file(buf),
         name => window::close_or_quit(ctx, w, force && name != "wq"),

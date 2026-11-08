@@ -742,6 +742,101 @@ fn a_directory_on_the_line_is_chosen_until_a_row_is() {
     assert_eq!(ctx.scene().row_text(27), "1/2    Find: src/");
 }
 
+/// Candidates for the word after a leading `%`, while nothing follows it, as `:` has its names.
+fn part_spec() -> PromptSpec {
+    PromptSpec::new(":")
+        .history("h")
+        .evil_keys()
+        .candidates(["write", "wq", "normal"])
+        .matches_part(|line| {
+            let start = line.len() - line.trim_start_matches('%').len();
+            (!line.contains(' ')).then_some(start..line.len())
+        })
+}
+
+#[test]
+fn candidates_can_match_part_of_the_line_and_a_row_goes_in_its_place() {
+    for (keys, want) in [
+        ("%w<CR>", "%w"),
+        ("%w<Down><CR>", "%wq"),
+        ("%w<C-n><C-n><CR>", "%write"),
+        ("%w<Down><Up><CR>", "%w"),
+        ("%w<Tab><CR>", "%wq"),
+        ("%w<Down><Down><Tab><CR>", "%write"),
+        ("%nm<Tab> x<CR>", "%normal x"),
+        ("%nm x<Tab><Down><CR>", "%nm x"),
+        ("%<M->><CR>", "%normal"),
+        ("<Down><CR>", "write"),
+        ("zz<Down><CR>", "zz"),
+    ] {
+        let mut ctx = ctx();
+        let answers = ask(&mut ctx, part_spec());
+        ctx.type_keys(keys);
+        assert_eq!(*answers.borrow(), [Some(want.to_string())], "{keys}");
+    }
+}
+
+/// With no part on the line, there's no list: its rows go, the line stays put, and the keys that
+/// moved in it go through the history again.
+#[test]
+fn a_line_with_no_part_to_match_has_no_list() {
+    let mut ctx = ctx();
+    ctx.set_frame_size(30, 10);
+    ask(&mut ctx, part_spec());
+    ctx.type_keys("e one<CR>");
+    ask(&mut ctx, part_spec());
+    assert_eq!(ctx.prompt_candidates(), ["write", "wq", "normal"]);
+    assert_eq!(ctx.prompt_chosen(), None, "nothing until you move");
+    let s = ctx.scene();
+    assert_eq!(s.row_text(6), "*/3    :");
+    assert_eq!(s.row_text(9), "normal");
+    ctx.type_keys("<C-n>");
+    assert_eq!(
+        ctx.prompt_chosen(),
+        Some("write"),
+        "the keys move in the list"
+    );
+    ctx.type_keys("<C-p><Up><M-p>");
+    assert_eq!(ctx.prompt_text(), Some("e one"), "<M-p> has the history");
+
+    ctx.type_keys("<Esc>");
+    ask(&mut ctx, part_spec());
+    ctx.type_keys("e ");
+    assert!(ctx.prompt_candidates().is_empty());
+    let s = ctx.scene();
+    assert_eq!(s.row_text(9), "       :e", "where it was, with no rows");
+    assert_eq!(s.row_text(8), " t", "the status line, uncovered");
+    ctx.type_keys("<Up>");
+    assert_eq!(
+        ctx.prompt_text(),
+        Some("e one"),
+        "Evil's <Up>, from the history"
+    );
+    ctx.type_keys("<Down><C-p>");
+    assert_eq!(ctx.prompt_text(), Some("e one"), "and <C-p>");
+    ctx.type_keys("<Tab><End><BS><BS><BS><BS>");
+    assert_eq!(ctx.prompt_text(), Some("e"), "<Tab> did nothing");
+    assert_eq!(ctx.prompt_candidates(), ["write"], "and the list is back");
+    let s = ctx.scene();
+    assert_eq!(s.row_text(6), "*/1    :e", "as tall as it was");
+    assert_eq!(s.row_text(7), "write");
+
+    let answers = ask(
+        &mut ctx,
+        PromptSpec::new("?")
+            .candidates(["ok"])
+            .matches_part(|line| match line {
+                "" => Some(0..0),
+                _ => panic!("no part for you"),
+            }),
+    );
+    ctx.type_keys("o");
+    assert!(ctx.prompt_candidates().is_empty(), "a panic has no list");
+    assert!(ctx.messages.iter().any(|m| m.contains("no part for you")));
+    ctx.type_keys("<CR>");
+    assert_eq!(*answers.borrow(), [Some("o".to_string())]);
+}
+
 #[test]
 fn history_stays_on_meta_keys_beside_a_list() {
     let mut ctx = ctx();
