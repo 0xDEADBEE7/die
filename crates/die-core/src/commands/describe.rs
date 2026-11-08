@@ -206,9 +206,6 @@ impl Ctx {
             return;
         };
         let state = self.state();
-        if state == State::Passthrough {
-            self.swallow.push(ev.key); // its release mustn't reach the program without its press
-        }
         keys.push(ev);
         let more = state != State::Passthrough
             && self

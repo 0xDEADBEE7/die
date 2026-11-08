@@ -3,7 +3,8 @@
 //! showing the surface's own cells at the snapshot's scroll position, with the cursor, the
 //! selection and the search's matches drawn over them. A window whose cursor is on the
 //! surface's cursor line or below it, in normal state, follows new output, as Evil's point
-//! follows a terminal's cursor; one that went up stays where it is until it comes back down.
+//! follows a terminal's cursor; one that went up stays where it is until it comes back down,
+//! with the text read all the same, so what it draws is what it yanks.
 
 use crate::ext::*;
 use crate::ids::*;
@@ -30,6 +31,9 @@ pub struct SurfaceText {
     pub cursor: Option<(usize, usize)>,
     /// The line its live view shows on the top row. Copy state scrolls no lower.
     pub live_top: usize,
+    /// The line its own view shows on the top row, when that's above the live view's, as after
+    /// the wheel in insert state: copy state starts there, with the cursor on its last row.
+    pub shown_top: Option<usize>,
 }
 
 impl SurfaceText {
@@ -93,12 +97,21 @@ impl Copy {
 }
 
 impl Ctx {
-    /// A surface's text changed, with new output say. Copy state reads it again while a window
-    /// shows the bottom (scope §5.5): its cursor on the surface's cursor line or below, in normal
-    /// state. A buffer in passthrough has no copy state, and this does nothing there.
+    /// A surface's text changed, with new output say. Copy state reads it again at the next key
+    /// or frame in normal state (scope §5.5), and a window on the surface's cursor line or
+    /// below follows it. A buffer in passthrough has no copy state, and this does nothing there.
     pub fn surface_text_changed(&mut self, buf: BufferId) {
         if let Some(c) = self.copy_mut(buf) {
             c.stale = true;
+        }
+    }
+
+    /// Where copy state has the surface's own cursor, as of its last read: where it started,
+    /// and what a window on it follows. None outside copy state.
+    pub fn surface_cursor(&self, buf: BufferId) -> Option<usize> {
+        match &self.buffers.get(buf)?.content {
+            Content::Custom { copy, .. } => copy.as_ref().map(|c| c.cursor),
+            Content::Text(_) => None,
         }
     }
 
@@ -110,12 +123,15 @@ impl Ctx {
     }
 
     /// Bring a surface buffer's copy state up to its modal state: a snapshot outside
-    /// passthrough and none in it. With `follow`, read what changed if a window follows it.
+    /// passthrough and none in it, nor under a prompt opened from passthrough, so a terminal
+    /// that asks from insert state goes on showing its output. With `follow`, read what
+    /// changed, in normal state.
     pub(crate) fn copy_sync(&mut self, buf: BufferId, follow: bool) {
+        let asked = self.asked_in_passthrough(buf);
         let Some(b) = self.buffers.get_mut(buf) else {
             return;
         };
-        let passthrough = b.state == State::Passthrough;
+        let passthrough = b.state == State::Passthrough || asked;
         let Content::Custom { obj, copy, .. } = &mut b.content else {
             return;
         };
@@ -169,7 +185,7 @@ impl Ctx {
         {
             *copy = Some(Box::new(c));
         }
-        self.copy_home(buf);
+        self.copy_home(buf, st.shown_top);
     }
 
     /// Read the whole text again, as after a resize reflows it.
@@ -179,10 +195,18 @@ impl Ctx {
         }
     }
 
-    /// Every window on the surface's cursor, showing the live view.
-    fn copy_home(&mut self, buf: BufferId) {
+    /// Every window on the surface's cursor, showing the live view, or where the surface's
+    /// view was scrolled back to, with the cursor on its last row in the cursor's column, as
+    /// Vim keeps the cursor on a window it scrolls.
+    fn copy_home(&mut self, buf: BufferId, shown: Option<usize>) {
         let Some(c) = self.copy_mut(buf) else { return };
-        let (at, top) = (c.cursor, c.text.top_limit.unwrap_or(0));
+        let t = &c.text;
+        let (mut at, mut top) = (c.cursor, t.top_limit.unwrap_or(0));
+        if let Some(line) = shown.filter(|&l| l < t.line_of(top)) {
+            let rows = t.views.values().map(|v| v.rows).min().unwrap_or(1);
+            let last = (line + rows.max(1) - 1).min(last_line(t));
+            (at, top) = (t.pos_at_vcol(last, t.display_col(at)), t.line_start(line));
+        }
         let wins: Vec<WindowId> = c.text.views.keys().copied().collect();
         let at = self.rested(buf, at);
         let Some(c) = self.copy_mut(buf) else { return };
@@ -202,9 +226,10 @@ impl Ctx {
         });
     }
 
-    /// Read what changed, if a window follows, or with `whole` all of it. Each follower keeps
-    /// its place below the surface's cursor line, on the cursor if it was there, and its
-    /// distance above the live view. The others keep their lines, less those that left the start.
+    /// Read what changed, in normal state with no prompt, or with `whole` all of it. Each
+    /// follower keeps its place below the surface's cursor line, on the cursor if it was there,
+    /// and its distance above the live view. The others keep their lines, less those that left
+    /// the start, so the rows a surface shows there are still the lines they have.
     fn copy_follow(&mut self, buf: BufferId, whole: bool) {
         let follows = self.state_of(buf) == State::Normal && self.prompt.is_none();
         let Some(c) = self.copy_mut(buf) else { return };
@@ -227,8 +252,8 @@ impl Ctx {
                 }
             })
             .collect();
-        if !whole && places.iter().all(|p| p.below.is_none()) {
-            return; // it stays stale until one comes back down
+        if !whole && !follows {
+            return; // visual, an operator or a prompt holds it until it ends
         }
         c.stale = false;
         let Some(mut st) = self.copy_read(buf, !whole) else {

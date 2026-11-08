@@ -28,6 +28,7 @@ mod commands;
 mod copy;
 mod input;
 mod screen;
+mod shell;
 mod surface;
 mod text;
 

@@ -141,6 +141,35 @@ fn number_after(ctx: &mut Ctx, tag: &str) -> u32 {
     digits.parse().unwrap()
 }
 
+/// The wheel over the window, `dy` rows (up into the scrollback when negative).
+fn wheel(dy: f32) -> Input {
+    Input::Pointer(PointerEvent {
+        kind: PointerKind::Scroll { dx: 0.0, dy },
+        row: 5,
+        col: 5,
+        clicks: 0,
+        mods: Mods::default(),
+        px: None,
+    })
+}
+
+/// The rows the focused window draws that aren't the snapshot's lines it says are there.
+fn misdrawn(ctx: &mut Ctx, buf: BufferId) -> Vec<String> {
+    let s = ctx.scene();
+    let w = ctx.focused().unwrap();
+    let t = ctx.text(buf).expect("a snapshot");
+    let top = t.line_of(t.scroll(w).map_or(0, |s| s.0));
+    let rows = ctx.window_size(w).unwrap().1;
+    let lines = t.line_count() - 1; // the empty one after the last newline isn't drawn
+    let rows = (0..rows).filter(|r| top + r < lines);
+    rows.filter_map(|r| {
+        let (drawn, line) = (s.row_text(r), t.rope().line(top + r).to_string());
+        let (drawn, line) = (drawn.trim_end(), line.trim_end());
+        (drawn != line).then(|| format!("row {r}: drawn {drawn:?}, line {line:?}"))
+    })
+    .collect()
+}
+
 fn typing_reaches_the_shell_and_its_output_the_cells() {
     let (mut ctx, buf) = shell();
     assert_eq!(
@@ -220,12 +249,23 @@ fn esc_reaches_vim_and_less_on_the_alternate_screen() {
     ctx.type_keys("<Esc>");
     assert_eq!(ctx.state(), State::Passthrough, "Esc went to less");
     settle(&mut ctx, Duration::from_millis(200));
+    // less reads Esc q as one command, so only the second q quits: it had the Esc.
     ctx.type_keys("q");
-    let quit = ctx.run_until(Duration::from_secs(2), |ctx| !alt(ctx, buf));
-    if !quit {
-        ctx.type_keys("q"); // less read Esc q as one command
-    }
+    settle(&mut ctx, Duration::from_millis(500));
+    assert!(alt(&mut ctx, buf), "less read Esc q as one command");
+    ctx.type_keys("q");
     wait_until(&mut ctx, "out of less", |ctx| !alt(ctx, buf));
+    // And as bytes: a program on the alternate screen reads the Esc itself.
+    ctx.type_keys(
+        "printf '\\033[?1049h'; stty -icanon -echo; \
+         v=$(dd bs=1 count=2 2>/dev/null | od -An -tx1); stty sane; printf '\\033[?1049l'; \
+         echo read: $v<CR>",
+    );
+    wait_until(&mut ctx, "on the alternate screen", |ctx| alt(ctx, buf));
+    wait_busy(&mut ctx);
+    ctx.type_keys("<Esc>x");
+    assert_eq!(ctx.state(), State::Passthrough);
+    wait_for(&mut ctx, "read: 1b 78");
     // The DIE layer's Esc leaves even on the alternate screen.
     ctx.type_keys("vim -u NONE<CR>");
     wait_until(&mut ctx, "in vim again", |ctx| alt(ctx, buf));
@@ -478,16 +518,6 @@ fn the_wheel_scrolls_back_and_a_key_returns_to_the_bottom() {
     ctx.type_keys("seq 1 200<CR>");
     wait_for(&mut ctx, "\n200\n");
     ctx.scene();
-    let wheel = |dy: f32| {
-        Input::Pointer(PointerEvent {
-            kind: PointerKind::Scroll { dx: 0.0, dy },
-            row: 5,
-            col: 5,
-            clicks: 0,
-            mods: Mods::default(),
-            px: None,
-        })
-    };
     ctx.handle(wheel(-40.5));
     ctx.run_until_idle();
     let v = with(&mut ctx, buf, |s| s.term().viewport());
@@ -603,17 +633,150 @@ fn new_output_is_followed_at_the_bottom_and_not_after_k() {
     ctx.type_keys("sleep 0.3; echo second<CR>");
     ctx.type_keys("<Esc>k");
     let before = snapshot(&mut ctx, buf);
+    let row = ctx.scene().cursors[0].row;
     wait_for(&mut ctx, "\nsecond\n");
     settle(&mut ctx, Duration::from_millis(200));
     let after = snapshot(&mut ctx, buf);
-    assert_eq!(after, before, "frozen after k");
-    assert!(!after.0.contains("second\n"));
+    assert_eq!(after.1, before.1, "frozen after k, on its line");
+    assert_eq!(ctx.scene().cursors[0].row, row, "and its row");
+    assert!(
+        after.0.contains("\nsecond\n"),
+        "the text is read all the same"
+    );
     cursor_row_shows(&mut ctx, buf, &before.1);
+    assert_eq!(misdrawn(&mut ctx, buf), Vec::<String>::new());
     ctx.type_keys("G");
     let (text, at) = snapshot(&mut ctx, buf);
     assert!(text.contains("\nsecond\n"), "G caught up:\n{text}");
     assert!(at.ends_with('$'), "{at:?}");
     cursor_row_shows(&mut ctx, buf, &at);
+}
+
+fn a_frozen_window_draws_what_it_yanks_through_a_clear_and_a_flood() {
+    let (mut ctx, buf) = shell();
+    ctx.type_keys("seq 1 300<CR>");
+    wait_for(&mut ctx, "\n300\n");
+    // macOS's `clear` empties the scrollback too, as `cargo watch -c` does.
+    ctx.type_keys("sleep 0.5; clear; echo fresh-$((5*5))<CR>");
+    ctx.type_keys("<Esc>50k");
+    assert_eq!(misdrawn(&mut ctx, buf), Vec::<String>::new());
+    wait_until(&mut ctx, "cleared", |ctx| {
+        let t = with(ctx, buf, |s| s.term().text());
+        t.lines.iter().any(|l| l.text == "fresh-25")
+    });
+    settle(&mut ctx, Duration::from_millis(200));
+    assert_eq!(misdrawn(&mut ctx, buf), Vec::<String>::new(), "after clear");
+    ctx.type_keys("yy");
+    let s = ctx.scene();
+    let shown = s.row_text(s.cursors[0].row);
+    let yanked = ctx.register('"').unwrap().text.clone();
+    assert_eq!(
+        yanked.trim_end(),
+        shown.trim_end(),
+        "yy takes the row it's drawn on"
+    );
+    // Frozen at the top while a flood pushes the oldest lines out of the scrollback.
+    ctx.type_keys("i");
+    ctx.type_keys("seq 1 12000<CR>");
+    wait_for(&mut ctx, "\n12000\n");
+    ctx.type_keys("sleep 0.3; seq 100000 112000; echo end-$((2+1))<CR>");
+    ctx.type_keys("<Esc>gg");
+    wait_until(&mut ctx, "flooded", |ctx| {
+        let t = with(ctx, buf, |s| s.term().text());
+        t.lines.iter().any(|l| l.text == "end-3")
+    });
+    settle(&mut ctx, Duration::from_millis(200));
+    assert_eq!(
+        misdrawn(&mut ctx, buf),
+        Vec::<String>::new(),
+        "after the flood"
+    );
+    ctx.type_keys("yy");
+    let top = ctx.scene().row_text(0);
+    let yanked = ctx.register('"').unwrap().text.clone();
+    assert_eq!(yanked.trim_end(), top.trim_end());
+}
+
+fn esc_after_the_wheel_keeps_the_place_it_scrolled_to() {
+    let (mut ctx, buf) = shell();
+    ctx.type_keys("seq 1 500<CR>");
+    wait_for(&mut ctx, "\n500\n");
+    ctx.scene();
+    ctx.handle(wheel(-200.0));
+    ctx.run_until_idle();
+    let rows: Vec<String> = screen(&mut ctx)
+        .lines()
+        .take(24)
+        .map(String::from)
+        .collect();
+    assert!(!rows.iter().any(|r| r == "500"), "scrolled back");
+    ctx.type_keys("<Esc>");
+    let now: Vec<String> = screen(&mut ctx)
+        .lines()
+        .take(24)
+        .map(String::from)
+        .collect();
+    assert_eq!(now, rows, "the same rows in normal state");
+    assert_eq!(
+        ctx.scene().cursors[0].row,
+        23,
+        "the cursor on the last of them"
+    );
+    cursor_row_shows(&mut ctx, buf, &rows[23]);
+    assert_eq!(misdrawn(&mut ctx, buf), Vec::<String>::new());
+    ctx.type_keys("yy");
+    assert_eq!(ctx.register('"').unwrap().text, format!("{}\n", rows[23]));
+}
+
+fn g_goes_to_the_terminals_cursor_and_p_takes_a_count() {
+    let (mut ctx, buf) = shell();
+    ctx.type_keys("seq 1 30<CR>");
+    wait_until(&mut ctx, "a prompt after 30", |ctx| {
+        let s = screen(ctx);
+        let after = s.split("\n30\n").nth(1).unwrap_or_default();
+        after.lines().next().is_some_and(|l| l.ends_with('$'))
+    });
+    ctx.type_keys("<Esc>");
+    let w = ctx.focused().unwrap();
+    ctx.type_keys("gg0G");
+    let cursor = |ctx: &mut Ctx| ctx.text(buf).unwrap().cursor(w);
+    let at = cursor(&mut ctx).unwrap();
+    assert_eq!(
+        Some(at),
+        ctx.surface_cursor(buf),
+        "on the terminal's cursor"
+    );
+    let col = ctx.text(buf).unwrap().display_col(at);
+    assert!(col > 0, "the prompt's end, not the line's start");
+    // On it, the cursor goes with it.
+    ctx.type_keys("i");
+    ctx.type_keys("sleep 0.3; echo later<CR>");
+    ctx.type_keys("<Esc>gg0G");
+    wait_until(&mut ctx, "followed", |ctx| {
+        let (text, at) = snapshot(ctx, buf);
+        text.contains("\nlater\n") && at.ends_with('$')
+    });
+    assert_eq!(cursor(&mut ctx), ctx.surface_cursor(buf));
+    let at = cursor(&mut ctx).unwrap();
+    let col = ctx.text(buf).unwrap().display_col(at);
+    assert!(col > 0, "the prompt's end, not the line's start");
+    ctx.type_keys("3G");
+    let t = ctx.text(buf).unwrap();
+    assert_eq!(t.line_of(t.cursor(w).unwrap()), 2, "a count is a line");
+    // `"a3p` pastes three times, in one piece. (`3"ap` is once, as in your Evil, whose `"`
+    // takes the count.)
+    ctx.type_keys("i");
+    ctx.type_keys("clear; stty -icanon -echo; cat -v<CR>");
+    wait_busy(&mut ctx);
+    let ab = Register {
+        kind: RegKind::Char,
+        text: "AB".into(),
+    };
+    ctx.set_register('a', ab);
+    ctx.type_keys("<Esc>\"a3p");
+    wait_for(&mut ctx, "ABABAB");
+    assert!(!screen(&mut ctx).contains("ABABABAB"));
+    ctx.type_keys("i<C-c>stty sane<CR>");
 }
 
 fn normal_state_keeps_the_programs_colors() {
@@ -719,6 +882,50 @@ fn term_opens_your_shell_and_term_switch_finds_the_first() {
         ctx.run("term-send-escape", &Args::default()).is_err(),
         "not a terminal"
     );
+    // `:term cmd` runs it through the shell, as Vim's `:terminal cmd` does.
+    ctx.type_keys(":term printf 'ran-%s as %s' $((40+2)) $0; sleep 5<CR>");
+    let ran = ctx.focused_buffer().unwrap();
+    assert_ne!(ran, b);
+    assert_eq!(ctx.state(), State::Passthrough);
+    wait_for(&mut ctx, "ran-42 as /bin/sh");
+    assert!(busy(&mut ctx).contains(&ctx.buffer_name(ran).unwrap().to_string()));
+    ctx.kill(ran);
+}
+
+fn zsh_reports_its_directory_and_reads_your_startup_files_as_ever() {
+    let home = home();
+    for file in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
+        let line = format!("print -r -- {file} >> \"$HOME/order\"\n");
+        std::fs::write(home.join(file), line).unwrap();
+    }
+    let mut spec = Spec::shell(std::path::Path::new("/bin/zsh"));
+    spec.env = vec![
+        ("HOME".into(), home.clone().into()),
+        ("ZDOTDIR".into(), home.clone().into()),
+    ];
+    let mut ctx = editor();
+    let buf = open(&mut ctx, spec, ShowIn::Current).unwrap();
+    let prompt = |ctx: &mut Ctx| screen(ctx).lines().any(|l| l.ends_with(" %"));
+    wait_until(&mut ctx, "a zsh prompt", prompt);
+    let order = std::fs::read_to_string(home.join("order")).unwrap();
+    assert_eq!(order, ".zshenv\n.zprofile\n.zshrc\n.zlogin\n");
+    ctx.type_keys("echo zd=$ZDOTDIR<CR>");
+    wait_for(&mut ctx, &format!("zd={}", home.display()));
+    ctx.type_keys("cd /usr/bin<CR>");
+    wait_until(&mut ctx, "moved", |ctx| {
+        ctx.directory(buf) == Some(std::path::Path::new("/usr/bin"))
+    });
+    let status = screen(&mut ctx).lines().nth(24).unwrap().to_string();
+    assert!(status.starts_with(" /usr/bin/  *terminal*"), "{status:?}");
+    // With no ZDOTDIR of yours, none is left for its programs.
+    if std::env::var_os("ZDOTDIR").is_none() {
+        let mut spec = Spec::shell(std::path::Path::new("/bin/zsh"));
+        spec.env = vec![("HOME".into(), home.clone().into())];
+        open(&mut ctx, spec, ShowIn::Current).unwrap();
+        wait_until(&mut ctx, "another prompt", prompt);
+        ctx.type_keys("echo zd=${ZDOTDIR-none}<CR>");
+        wait_for(&mut ctx, "zd=none");
+    }
 }
 
 fn a_quit_leaves_nothing_running_and_the_session_no_terminal() {
@@ -803,6 +1010,18 @@ fn main() {
             new_output_is_followed_at_the_bottom_and_not_after_k,
         ),
         (
+            "a_frozen_window_draws_what_it_yanks_through_a_clear_and_a_flood",
+            a_frozen_window_draws_what_it_yanks_through_a_clear_and_a_flood,
+        ),
+        (
+            "esc_after_the_wheel_keeps_the_place_it_scrolled_to",
+            esc_after_the_wheel_keeps_the_place_it_scrolled_to,
+        ),
+        (
+            "g_goes_to_the_terminals_cursor_and_p_takes_a_count",
+            g_goes_to_the_terminals_cursor_and_p_takes_a_count,
+        ),
+        (
             "normal_state_keeps_the_programs_colors",
             normal_state_keeps_the_programs_colors,
         ),
@@ -817,6 +1036,10 @@ fn main() {
         (
             "term_opens_your_shell_and_term_switch_finds_the_first",
             term_opens_your_shell_and_term_switch_finds_the_first,
+        ),
+        (
+            "zsh_reports_its_directory_and_reads_your_startup_files_as_ever",
+            zsh_reports_its_directory_and_reads_your_startup_files_as_ever,
         ),
         (
             "a_quit_leaves_nothing_running_and_the_session_no_terminal",

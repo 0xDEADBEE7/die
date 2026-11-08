@@ -285,12 +285,15 @@ fn new_output_is_followed_at_the_bottom_and_not_after_k() {
     t.keys("k");
     assert_eq!(t.cursor(), (31, "thirty-two".into()));
     t.print("thirty-three");
-    assert!(!t.text().contains("thirty-three"), "frozen after k");
-    assert_eq!(t.cursor(), (31, "thirty-two".into()));
+    assert_eq!(t.cursor(), (31, "thirty-two".into()), "it stays after k");
     assert_eq!(
         t.out.borrow().tops.last(),
         Some(&Some(33 - 24)),
         "pinned where it was"
+    );
+    assert!(
+        t.text().contains("thirty-three"),
+        "but the text is read, so what's yanked is what's drawn"
     );
     t.keys("G");
     assert!(
@@ -327,9 +330,30 @@ fn output_that_drops_the_oldest_lines_keeps_a_frozen_cursor_on_its_line() {
     assert_eq!(t.cursor().1, "42");
     t.print("fifty-two");
     assert_eq!(t.cursor().1, "42", "frozen, on the same line");
+    let s = t.ctx.scene();
+    assert_eq!(s.row_text(s.cursors[0].row), "42", "and drawn where it is");
+    t.keys("yy");
+    assert_eq!(t.yanked(), "42\n");
     t.keys("G");
     assert_eq!(t.cursor(), (50, "$".into()));
     assert!(t.text().starts_with("3\n"));
+}
+
+#[test]
+fn a_prompt_from_insert_state_leaves_the_live_view_showing() {
+    let mut t = Term::new(numbers(30));
+    t.ctx.prompt("Paste it? (y or n) ", |_, _| Ok(()));
+    assert_eq!(t.ctx.state(), State::CommandLine);
+    t.print("thirty-one");
+    assert!(t.ctx.text(t.buf).is_err(), "no snapshot under it");
+    assert_eq!(t.out.borrow().reads, (0, 0), "nor a read of the scrollback");
+    assert_eq!(t.out.borrow().tops.last(), None, "the live view");
+    assert!(t.ctx.scene().row_text(22).starts_with("thirty-one"));
+    t.keys("n<CR>");
+    assert_eq!(t.ctx.state(), State::Passthrough);
+    // From normal state, `:` is over the snapshot, as before.
+    t.keys("<Esc>:");
+    assert!(t.ctx.text(t.buf).is_ok());
 }
 
 #[test]

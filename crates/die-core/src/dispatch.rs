@@ -70,6 +70,15 @@ pub enum KeySource {
     Fed,
 }
 
+/// The same physical key, as the OS names it, or the same key from notation, which has no
+/// name: a release's character is what the modifiers held then make it, `a` after Shift-A.
+fn same_key(a: &KeyEvent, b: &KeyEvent) -> bool {
+    match (&a.code, &b.code) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.key == b.key,
+    }
+}
+
 impl Ctx {
     // -------------------------------------------------------------- modal state, prefix
 
@@ -177,6 +186,10 @@ impl Ctx {
             self.sync_messages();
             self.log.echo = None;
         }
+        // A key's latest press says where its release goes (`passed`).
+        if ev.kind == KeyKind::Press {
+            self.passed.retain(|(_, k)| !same_key(k, &ev));
+        }
         // A key DIE took in passthrough swallows its own repeat and release.
         if let Some(i) = self.swallow.iter().position(|k| *k == ev.key) {
             match ev.kind {
@@ -200,13 +213,7 @@ impl Ctx {
         if state == State::Passthrough && self.describing.is_none() {
             return self.dispatch_passthrough(win, buf, ev);
         }
-        let (key, pressed) = (ev.key, ev.kind != KeyKind::Release);
         self.dispatch_keymaps(win, buf, state, ev, src);
-        // A key that put a surface in passthrough, as `i` does, or a command opening a terminal,
-        // keeps its repeats and release from it: the program never had its press (§7).
-        if pressed && self.state() == State::Passthrough && !self.swallow.contains(&key) {
-            self.swallow.push(key);
-        }
     }
 
     /// Everything but passthrough: the keymaps, a prompt, describe-key, and a surface's `event()`
@@ -292,6 +299,21 @@ impl Ctx {
         {
             self.swallow.push(ev.key);
             return self.run_key(&name, vec![ev], win, buf);
+        }
+        // A repeat or release goes only where its press went: never one of a key DIE took, as
+        // the `i` that came here, nor a Shift pressed in normal state (§7).
+        let held = |(b, k): &(BufferId, KeyEvent)| *b == buf && same_key(k, &ev);
+        match (ev.kind, self.passed.iter().position(held)) {
+            (KeyKind::Press, _) => {
+                // A few are held at once, and committed text has no release: the oldest go.
+                if self.passed.len() >= 32 {
+                    self.passed.remove(0);
+                }
+                self.passed.push((buf, ev.clone()));
+            }
+            (KeyKind::Release, Some(i)) => drop(self.passed.swap_remove(i)),
+            (KeyKind::Repeat, Some(_)) => {}
+            (_, None) => return,
         }
         if let Err(Error::Panicked { .. }) = self.surface_event(buf, &Event::Key(ev)) {
             self.drop_fed();

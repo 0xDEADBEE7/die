@@ -87,6 +87,7 @@ impl Extension for Toy {
         reg.kind_keymap("grid")
             .bind(State::Normal, "<Esc>", "send-esc")
             .bind(State::Normal, "i", "to-insert")
+            .bind(State::Normal, "I", "to-insert")
             .bind(State::Normal, "p", "surface-paste");
     }
 }
@@ -586,6 +587,25 @@ fn a_paste_comes_as_one_event() {
         [Event::Paste("ls\n".into())],
         "a register, as `p` would"
     );
+    let thrice = Args {
+        count: Some(3),
+        ..args.clone()
+    };
+    s.h.run("surface-paste", &thrice).unwrap();
+    assert_eq!(
+        events(&s),
+        [Event::Paste("ls\nls\nls\n".into())],
+        "`3p`, in one piece"
+    );
+    let e = (s.h.run(
+        "surface-paste",
+        &Args {
+            count: Some(usize::MAX),
+            ..args
+        },
+    ))
+    .unwrap_err();
+    assert!(e.to_string().contains("64 MiB"), "{e}");
     let t = s.h.find_buffer("t").unwrap();
     let on_text = Args {
         buffer: Some(t),
@@ -659,6 +679,80 @@ fn in_passthrough_every_key_but_the_die_layers_reaches_it_with_repeats_and_relea
     s.h.send(Input::Key(esc.clone().kind(KeyKind::Release)));
     assert_eq!(s.h.state(), State::Normal, "a plain Esc leaves");
     assert!(keys(&s).is_empty(), "with its repeat and release");
+}
+
+#[test]
+fn a_release_or_repeat_reaches_it_only_after_its_press_did() {
+    let mut s = setup(vec![]);
+    events(&s);
+    // As the OS gives them, with the physical key: a release's character is what the modifiers
+    // held then make it, so Shift let go before I comes up as i.
+    let code = |k: KeyEvent, c: &str| KeyEvent {
+        code: Some(c.into()),
+        ..k
+    };
+    let none = Mods::default();
+    let shift = Mods {
+        shift: true,
+        ..none
+    };
+    let a = code(press(Key::Char('a'), none), "KeyA");
+    let sh = code(press(Key::Modifier(ModifierKey::Shift), shift), "ShiftLeft");
+    let big_i = code(press(Key::Char('I'), shift), "KeyI");
+    let esc = code(press(Key::Esc, none), "Escape");
+    for k in [
+        a.clone(),
+        a.clone().kind(KeyKind::Release),
+        esc.clone(),
+        esc.clone().kind(KeyKind::Release),
+        sh.clone(),
+        big_i.clone(),
+        big_i.clone().kind(KeyKind::Repeat),
+        sh.clone().mods(none).kind(KeyKind::Release),
+        code(press(Key::Char('i'), none), "KeyI").kind(KeyKind::Release),
+        a.clone(),
+        a.clone().kind(KeyKind::Repeat),
+        a.clone().kind(KeyKind::Release),
+    ] {
+        s.h.send(Input::Key(k));
+    }
+    assert_eq!(s.h.state(), State::Passthrough, "I went back to insert");
+    assert_eq!(
+        keys(&s),
+        [
+            a.clone(),
+            a.clone().kind(KeyKind::Release),
+            a.clone(),
+            a.clone().kind(KeyKind::Repeat),
+            a.kind(KeyKind::Release)
+        ],
+        "not I's repeat or release, nor Shift's, whose presses normal state took"
+    );
+}
+
+#[test]
+fn a_prompt_puts_back_its_own_buffers_state_and_no_other() {
+    let mut s = setup(vec![]);
+    let t = s.h.find_buffer("t").unwrap();
+    // Focus moves while it's open: the answer is the surface's, not the text's.
+    s.h.prompt("Paste it? (y or n) ", |_, _| Ok(()));
+    assert_eq!(s.h.state_of(s.buf), State::CommandLine);
+    let left = s.h.window_list()[0];
+    s.h.focus(left);
+    s.h.type_keys("y<CR>").unwrap();
+    assert_eq!(s.h.state_of(s.buf), State::Passthrough);
+    assert_eq!(s.h.state_of(t), State::Normal);
+    // The program ends under the prompt, and its window falls back to the text.
+    s.h.focus(s.win);
+    s.h.prompt("Paste it? (y or n) ", |_, _| Ok(()));
+    s.h.kill(s.buf);
+    s.h.type_keys("y<CR>").unwrap();
+    assert_eq!(s.h.prompt_text(), None);
+    assert_eq!(
+        s.h.state_of(t),
+        State::Normal,
+        "a text buffer isn't left in passthrough, where keys go nowhere"
+    );
 }
 
 #[test]

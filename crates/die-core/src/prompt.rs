@@ -47,6 +47,7 @@ pub use flex::flex_rank;
 
 use crate::error::*;
 use crate::ext::*;
+use crate::ids::BufferId;
 use crate::keymap::*;
 use crate::keys::*;
 use crate::project::{Feed, Ranked};
@@ -370,6 +371,8 @@ pub(crate) struct Prompt {
     refused: bool,
     reading: Option<Reading>,
     ext: ExtIdx,
+    /// The buffer it was opened over, and its state then, which the answer puts back.
+    buf: Option<BufferId>,
     prev: State,
     f: PromptFn,
 }
@@ -523,8 +526,7 @@ impl Ctx {
         if self.prompt.is_some() {
             self.finish_prompt(None, false);
         }
-        let prev = self.state();
-        self.set_state(State::CommandLine);
+        let (buf, prev) = (self.focused_buffer(), self.state());
         let mut spec: PromptSpec = spec.into();
         let (source, part, tiers) = (spec.source.take(), spec.part.take(), spec.tiers.take());
         let list = source.map(|s| List::new(s, spec.descends, part, tiers));
@@ -540,10 +542,18 @@ impl Ctx {
             refused: false,
             reading: None,
             ext: self.cur_ext(),
+            buf,
             prev,
             f: Box::new(f),
         });
+        // Open first, so a terminal asking from insert state stays live under it (copy_sync).
+        self.set_state(State::CommandLine);
         self.prompt_refilter();
+    }
+    /// A prompt is open over `buf` from passthrough: a terminal asking from insert state.
+    pub(crate) fn asked_in_passthrough(&self, buf: BufferId) -> bool {
+        let p = self.prompt.as_ref();
+        p.is_some_and(|p| p.buf == Some(buf) && p.prev == State::Passthrough)
     }
     /// The text typed into the open prompt, if there is one.
     pub fn prompt_text(&self) -> Option<&str> {
@@ -683,7 +693,11 @@ impl Ctx {
     /// §6): if it fails, the rest of what was fed drops.
     fn finish_prompt(&mut self, answer: Option<String>, keyed: bool) {
         let Some(p) = self.prompt.take() else { return };
-        self.set_state(p.prev);
+        // Its own buffer's state, if it's still there: a terminal whose program ended under the
+        // prompt took its passthrough with it, which a text buffer can't have.
+        if let Some(b) = p.buf.filter(|&b| self.is_live(b)) {
+            self.set_state_of(b, p.prev);
+        }
         if let (Some(name), Some(text)) = (&p.spec.history, &answer) {
             let past = self.histories.entry(name.clone()).or_default();
             if !text.is_empty() && past.last() != Some(text) {

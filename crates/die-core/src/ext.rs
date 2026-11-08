@@ -396,6 +396,8 @@ pub struct Ctx {
     /// The keys `describe-key` has read so far, while it's reading them.
     pub(crate) describing: Option<Vec<KeyEvent>>,
     pub(crate) swallow: Vec<Key>,
+    /// The keys whose press went to a surface in passthrough, as a release or repeat must have.
+    pub(crate) passed: Vec<(BufferId, KeyEvent)>,
     pub(crate) leader: Chord,
     pub(crate) prefix: Prefix,
     pub(crate) prompt: Option<Prompt>,
@@ -596,6 +598,7 @@ impl Ctx {
             describing: None,
             prompt_register: None,
             swallow: vec![],
+            passed: vec![],
             leader: default_leader(),
             prefix: Prefix::default(),
             prompt: None,
