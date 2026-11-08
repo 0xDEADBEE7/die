@@ -170,3 +170,20 @@ fn cmd_v_pastes_a_word_or_a_path_into_every_prompt() {
     assert_eq!(text(&h, found), "found\n", "over the line it started with");
     std::fs::remove_dir_all(&d).unwrap();
 }
+
+#[test]
+fn leader_brace_and_question_mark_open_the_buffer_menu_and_q_leaves_it() {
+    let (mut h, b) = harness("abc\n");
+    for keys in ["\\}", "\\?"] {
+        typed(&mut h, keys);
+        let menu = h.focused_buffer().unwrap();
+        assert_eq!(h.buffer_name(menu), Some("*Buffer List*"), "{keys}");
+        assert!(
+            text(&h, menu).lines().nth(1).unwrap().starts_with(".  "),
+            "t is the `.`"
+        );
+        assert_eq!(h.face_style("buffer-menu-buffer").unwrap().bold, Some(true));
+        typed(&mut h, "q");
+        assert_eq!(h.focused_buffer(), Some(b));
+    }
+}
