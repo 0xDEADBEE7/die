@@ -28,7 +28,7 @@
 //! - With [`PromptSpec::descends`], a candidate ending in `/` goes on the line instead of
 //!   answering. While nothing's typed after the directory no row is chosen, shown as `*/N`, so
 //!   `<CR>` answers with the line. `<Down>` chooses the first row, and `<Up>` from it the line
-//!   again, as vertico's `directory` preselect has it.
+//!   again, as vertico's `directory` preselect has it. `<S-Tab>` goes up a directory.
 //! - History is on `<M-p>` and `<M-n>`, which also work with no candidates.
 //!
 //! The cursor moves by what the scene draws as one glyph, a grapheme cluster. A word is a run of
@@ -46,6 +46,7 @@ use crate::project::{Feed, Ranked};
 use crate::rt::*;
 use std::cell::RefCell;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -355,6 +356,27 @@ impl Prompt {
         let next = self.text[self.cursor..].graphemes(true).next();
         self.cursor + next.map_or(0, str::len)
     }
+    /// `<S-Tab>` on a file prompt: up a directory, as `vertico-directory-up` does. A name being
+    /// typed goes, or on a directory, that directory, back to the `/` before it. `~/` goes to
+    /// home's parent, and at the root nothing happens.
+    fn up_dir(&mut self) {
+        let at = self.cursor;
+        let line = &self.text[..at];
+        let dir = line.strip_suffix('/').unwrap_or(line);
+        if dir.is_empty() || dir.ends_with('/') {
+            return;
+        }
+        let start = dir.rfind('/').map_or(0, |i| i + 1);
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let parent = home
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|p| p.display().to_string());
+        match parent.filter(|_| &dir[start..] == "~" && line.ends_with('/')) {
+            Some(p) => self.replace(start..at, &format!("{}/", p.trim_end_matches('/'))),
+            None => self.replace(start..at, ""),
+        }
+    }
     fn word_before(&self) -> usize {
         self.cursor - word_len(self.text[..self.cursor].graphemes(true).rev())
     }
@@ -628,7 +650,8 @@ impl Ctx {
     pub(crate) fn prompt_key(&mut self, ev: KeyEvent) {
         let c = ev.chord();
         // Better a key that does nothing than one that opens the match for an older line.
-        if matches!(c.key, Key::Enter | Key::Tab) && !self.prompt_settle() {
+        let up = c.key == Key::Tab && c.mods.shift;
+        if matches!(c.key, Key::Enter | Key::Tab) && !up && !self.prompt_settle() {
             return;
         }
         let (ctrl, alt, shift) = (c.mods.ctrl, c.mods.alt, c.mods.shift);
@@ -658,6 +681,7 @@ impl Ctx {
                 Some((line, _)) => return self.finish_prompt(Some(line), true),
                 None => return self.finish_prompt(Some(before), true),
             },
+            Key::Tab if shift && p.spec.descends => p.up_dir(),
             Key::Tab => {
                 if let Some((line, _)) = p.tab_line() {
                     p.set_line(line);

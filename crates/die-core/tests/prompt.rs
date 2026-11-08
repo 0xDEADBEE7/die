@@ -929,6 +929,40 @@ fn in_new_dir(name: &str) -> (Ctx, PathBuf) {
     (ctx, dir)
 }
 
+/// `<S-Tab>` goes up a directory: first the name being typed, then each directory on the line,
+/// and the list follows. From `~/` it goes to home's parent, and at the root it stays.
+#[test]
+fn find_file_goes_up_a_directory_on_shift_tab() {
+    let (mut ctx, dir) = in_new_dir("up");
+    fs::create_dir_all(dir.join("here/deep")).unwrap();
+    ctx.run("find-file", &Args::default()).unwrap();
+    let start = ctx.prompt_text().unwrap().to_string();
+    assert!(start.ends_with("/here/"), "{start}");
+    ctx.type_keys("dee<S-Tab>");
+    assert_eq!(ctx.prompt_text().unwrap(), start, "the name typed goes");
+    ctx.type_keys("<S-Tab>");
+    assert_eq!(
+        ctx.prompt_text().unwrap(),
+        start.strip_suffix("here/").unwrap()
+    );
+    assert!(
+        ctx.prompt_candidates().contains(&"here/"),
+        "{:?}",
+        ctx.prompt_candidates()
+    );
+    ctx.type_keys(&"<S-Tab>".repeat(20));
+    assert_eq!(ctx.prompt_text().unwrap(), "/", "the root stays");
+
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+    ctx.type_keys("<C-u>~/<S-Tab>");
+    let parent = home.parent().unwrap().display().to_string();
+    assert_eq!(
+        ctx.prompt_text().unwrap(),
+        format!("{}/", parent.trim_end_matches('/'))
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Typing over the starting line is how to go elsewhere: `//` starts again from the root.
 #[test]
 fn find_file_starts_again_at_a_double_slash() {

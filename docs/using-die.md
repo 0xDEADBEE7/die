@@ -73,6 +73,8 @@ These work on `:`, `/`, `?` and the finders.
 
 On `:`, `/` and `?` only: `C-v` inserts the next key literally, `<Up>` `<Down>` recall history matching what's typed, `C-b` goes to the start, and `C-u` deletes the whole line. `C-p` `C-n` also go through history.
 
+In `\f`, `<S-Tab>` goes up a directory: a name you've half typed goes first, then the directory on the line, and from `~/` it goes to `/Users/`.
+
 On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDown>` `C-v` and `<PageUp>` `M-v` go a screenful, `M-<` and `M->` go to the ends, `<Tab>` puts the row on the line, `M-<CR>` answers with what's typed, and `M-p` `M-n` go through history.
 
 ## Moving
