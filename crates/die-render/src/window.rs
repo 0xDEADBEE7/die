@@ -189,6 +189,8 @@ pub struct Shell {
     undrawn: bool,
     /// Take the keyboard when the app next is the active one.
     key_when_active: bool,
+    /// What core was last told about the keyboard focus, once a `Focused` event has said.
+    focus_told: Option<bool>,
     /// The drawable has a new size, or it's about to be presented in a resize.
     resized: bool,
     /// The last pump left more ready.
@@ -341,6 +343,7 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         stale: true,
         undrawn: false,
         key_when_active: false,
+        focus_told: None,
         resized: false,
         more: false,
         last: None,
@@ -557,6 +560,34 @@ impl Shell {
     }
 
     /// Run what's ready and draw what that changed.
+    /// Tell core the window gained or lost the keyboard focus.
+    pub(crate) fn told_focus(&mut self, on: bool) {
+        self.focus_told = Some(on);
+        self.host.ctx.handle(Input::Focus(on));
+    }
+
+    /// Whether the window has the keyboard, asked of AppKit, when that isn't what the events
+    /// last said: then core is told, so the cursor isn't drawn hollow in a window you're typing
+    /// in, nor solid in one you aren't. It says so in `*messages*`, since it shouldn't happen.
+    fn sync_focus(&mut self) {
+        let (Some(live), Some(told)) = (&self.live, self.focus_told) else {
+            return;
+        };
+        let key = live.window.has_focus();
+        if key == told {
+            return;
+        }
+        let (what, now) = if key {
+            ("had", "solid")
+        } else {
+            ("lost", "hollow")
+        };
+        self.host.ctx.messages.push(format!(
+            "DIE's window {what} the keyboard without macOS saying so, so the cursor is {now} now"
+        ));
+        self.told_focus(key);
+    }
+
     pub(crate) fn settle(&mut self) {
         let start = Instant::now();
         self.drain_monitor();
@@ -687,7 +718,7 @@ impl ApplicationHandler<Wake> for Shell {
             WindowEvent::Occluded(false) => self.dirty = true,
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => self.set_scale(scale_factor),
             WindowEvent::CloseRequested => el.exit(),
-            WindowEvent::Focused(on) => self.host.ctx.handle(Input::Focus(on)),
+            WindowEvent::Focused(on) => self.told_focus(on),
             WindowEvent::KeyboardInput {
                 event,
                 is_synthetic,
@@ -741,6 +772,7 @@ impl ApplicationHandler<Wake> for Shell {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         self.stats.wakeups += 1;
+        self.sync_focus();
         self.settle();
         if self.host.ctx.quit_wanted() {
             el.exit();

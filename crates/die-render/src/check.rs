@@ -11,7 +11,7 @@
 use crate::driver;
 use crate::latency;
 use crate::window::{Remote, Script, Shell, floating_window};
-use die_core::{BufferId, ShowIn, Underline};
+use die_core::{BufferId, CursorShape, ShowIn, Underline};
 use die_core::{Cell, Ctx, Glyph, Key, KeyEvent, Origin, Result as CoreResult, Rgb, Scene};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
@@ -578,6 +578,18 @@ fn show(r: &Remote) -> Outcome {
     sleep(LATER + THEN);
     let f2 = frames(r)?;
     let (timer_frames, job_frames) = (f1 - f0, f2 - f1);
+    // As if macOS never said the window lost the keyboard: it hasn't got it, so the cursor
+    // goes hollow anyway.
+    r.call(|s, _| s.told_focus(true))?;
+    sleep(THEN);
+    let (corrected, said) = r.call(|s, _| {
+        let hollow = s
+            .last
+            .as_ref()
+            .and_then(|scene| scene.cursors.first().map(|c| c.shape));
+        let said = s.host.ctx.messages.last().cloned().unwrap_or_default();
+        (hollow == Some(CursorShape::Hollow), said)
+    })?;
     r.call(move |s, _| s.host.ctx.show(back, ShowIn::Current).is_ok())?;
     let Shown {
         differ,
@@ -613,8 +625,11 @@ fn show(r: &Remote) -> Outcome {
     ensure(!active && !key, || {
         format!("took focus: active={active} key={key}")
     })?;
+    ensure(corrected && said.contains("lost the keyboard"), || {
+        format!("told it had the keyboard, it believed it: {said:?}")
+    })?;
     Ok(Verdict::Ok(format!(
-        "pixels_differ={differ} colors={colors} text=yes unreadable_refused=yes input_frames={input_frames} input_shown={} timer_frames={timer_frames} job_frames={job_frames} decorated={decorated} option_as_alt={option_as_alt} active={active} key={key}",
+        "pixels_differ={differ} colors={colors} text=yes unreadable_refused=yes input_frames={input_frames} input_shown={} timer_frames={timer_frames} job_frames={job_frames} decorated={decorated} option_as_alt={option_as_alt} active={active} key={key} focus_corrected=yes",
         yes_no(input_shown),
     )))
 }
