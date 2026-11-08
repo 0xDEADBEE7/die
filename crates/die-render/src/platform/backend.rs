@@ -32,6 +32,11 @@ pub mod appkit {
         Ok(())
     }
 
+    /// There's no Finder to open files from.
+    pub fn on_open_files(_: Box<dyn Fn(Vec<std::path::PathBuf>)>) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Nothing to add.
     pub fn window_attributes(attributes: WindowAttributes) -> WindowAttributes {
         attributes

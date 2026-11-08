@@ -219,6 +219,12 @@ fn arguments_are_files_and_checks() {
     let background = parse(&["--background", "+3", "a"]).unwrap();
     assert!(background.launch.background);
     assert_eq!(background.files, [PathBuf::from("+3"), PathBuf::from("a")]);
+    for wait in ["--wait", "-w"] {
+        let waiting = parse(&[wait, "COMMIT_EDITMSG"]).unwrap();
+        assert!(waiting.launch.wait && !waiting.launch.background, "{wait}");
+        assert_eq!(waiting.files, [PathBuf::from("COMMIT_EDITMSG")]);
+    }
+    assert_eq!(parse(&["--", "-w"]), Ok(args(None, &["-w"])));
     assert_eq!(
         parse(&["--check", "idle,scale"]),
         Ok(args(Some(&["idle", "scale"]), &[]))

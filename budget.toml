@@ -41,7 +41,8 @@ path = "crates/die-vim"
 # 8,912 until the macro work: `:norm`, `:g`, `:v`, `:reg`, `recording @a`, and what `.` repeats after.
 # 9,340 until the macro review: a prompt a `:norm` line leaves open is answered, `2@:` runs in turn, and a count before `:`.
 # 9,385 until stopping a recording said `Recorded @a`.
-limit = 9390
+# 9,390 until `:wq`, `:q` and `ZZ` finished a `die --wait` client's file in any window.
+limit = 9400
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]
@@ -145,6 +146,14 @@ name = "buffer menu"
 limit = 536
 files = ["menu.rs"]
 
+# New with `die --wait`: the buffers a client waits on, and what's done with them, as Emacs's
+# server.el has it.
+[[module]]
+crate = "die-core"
+name = "clients"
+limit = 90
+files = ["clients.rs"]
+
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
 # 965 until a list had the status lines above it, as Emacs's minibuffer has the mode line.
 [[module]]
@@ -157,8 +166,9 @@ files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 crate = "die-core"
 name = "session"
 # 1,250 until U7, whose marks and jump lists in session.json are about 50 lines. 1,305 until U8:
-# what an extension keeps, by name, whole and by buffer, is about 80.
-limit = 1385
+# what an extension keeps, by name, whole and by buffer, is about 80. 1,385 until `die --wait`
+# kept its connection after the answer, to hear `done` on.
+limit = 1425
 # 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
 # held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
@@ -202,8 +212,9 @@ name = "platform::macos"
 platforms = ["macos"]
 # 1,160 until U7's landing found it at 1,169 from another package, and V5's OS wake count needs 8.
 # 1,180 until V6's exception catch moved its 86 lines of assembly here from a `.s` file, which
-# neither this budget nor `cargo xtask lint` read.
-limit = 1270
+# neither this budget nor `cargo xtask lint` read. 1,270 until files opened from Finder: winit 0.30
+# has no event for them, so `application:openURLs:` goes on its app delegate's class, about 30.
+limit = 1300
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
@@ -212,6 +223,6 @@ files = ["platform/macos/"]
 crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
-# 160 until U7's landing found it at 162 from another package.
-limit = 165
+# 160 until U7's landing found it at 162 from another package. 165 until `on_open_files`.
+limit = 170
 files = ["platform/backend.rs"]

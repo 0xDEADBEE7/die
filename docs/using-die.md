@@ -25,9 +25,22 @@ die foo.rs:12:3:         # as compilers print it
 die +12 'odd:name'       # the name is taken literally
 die a.rs b.rs            # each opens in turn, and the last ends up on screen
 die                      # brings DIE forward, or starts it
+die --wait msg.txt       # returns once you're done with it (-w for short)
 ```
 
-`die file:line` leaves a jump, so `C-o` comes back. `EDITOR=die` doesn't work for `git commit`, because there is no `--wait`. `open -a DIE file` and a Finder double-click don't open the file yet.
+`die file:line` leaves a jump, so `C-o` comes back. `open -a DIE file`, a Finder double-click on a file DIE is the opener of, and dropping files on DIE's Dock icon open them in the running DIE too, or start it with them. Finder offers DIE in Open With for any file, and opens nothing with it until you choose it: Get Info, then Open with, then Change All for every file of that kind.
+
+**DIE as git's editor.** `die --wait` opens files as `die` does, then waits until you're done with them, as `emacsclient` does. git runs `$EDITOR` through a shell, so the flag works there. In your shell's startup file:
+
+```sh
+export EDITOR="die --wait"
+```
+
+Or for git alone, `git config --global core.editor "die --wait"`.
+
+- **Done** is `:wq`, `:x` or `ZZ`, which save first, or `:q`, `ZQ` or `C-w q`, which refuse while it has unsaved changes, as `:q` does. `:q!` drops them. Killing the buffer is done too: `:bd`, `:kill-buffer`, or the Buffer List's `x`. In a split these finish the file and leave the window open. `C-w c` only closes the window.
+- **Then** the buffer goes, and its window shows what it showed before, as your Emacs's `server-edit` has it. A file that was open before `die --wait` stays open and on screen, and goes last in the buffer list. `die --wait a b` shows `b`. Done with it, `a` comes up, and it returns once both are done. Several can wait at once, each for its own files.
+- **It returns 0** once you're done, so a commit message left as git wrote it aborts the commit, as git decides. If DIE quits or restarts while it waits, it says so and returns 0 too, as `emacsclient` does, and git goes on with what was saved. With no DIE running it starts one and waits.
 
 ## DIE's own keys
 
@@ -166,7 +179,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **`C-w` then:** `h j k l` and arrows, `w W t b p` to move; `s S v n` to split; `c q o` to close; `= + - > < _ |` to size; `H J K L` to move the window; `r R x` to rotate and exchange; `:` for ex; digits for a count. A key with Control does the same, as `C-w C-h`.
 - **Ex:** `:sp[lit]`, `:vs[plit]`, `:new`, `:vne[w]`, each with a file; `:clo[se]`, `:on[ly]`. Every ex command takes Vim's short forms, as `:wri`, `:bdel`, `:nohls`, `:sub/a/b/`.
 - **Buffers:** `:e file`, `:e!`, `:b name`, `:bn`, `:bp`, `C-^`, `:bd`, `:bw` (`!` to drop unsaved text), `:kill-buffer`. `:bn` and `:bp` go through file buffers. `:ls` (or `:buffers`) opens [the Buffer List](#dies-own-keys), and `:files` the same with only buffers with files.
-- **Files:** `:w`, `:w!` over a file changed on disk, `:up`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:wqa`, `:xa`, `:qa`, `ZZ`, `ZQ`. Files changed on disk reload by themselves if you have no unsaved text there, and `:w` refuses if you have.
+- **Files:** `:w`, `:w!` over a file changed on disk, `:up`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:wqa`, `:xa`, `:qa`, `ZZ`, `ZQ`. Files changed on disk reload by themselves if you have no unsaved text there, and `:w` refuses if you have. On a file `die --wait` waits on, `:q` and the rest finish it rather than close the window or quit: see [DIE as git's editor](#install-and-run).
 - **Saving elsewhere:** `:w path` from a buffer with no file, such as `:new`'s, saves it there, and the buffer then visits that file. From a buffer with a file it writes a copy, and the buffer keeps its file and its unsaved changes, as in your Evil. `:sav[eas] path` saves and moves the buffer to the new file. A path is taken from the buffer's directory, as `:e` takes it, and `~/` is your home. A file that's already there is written over only with `!` (`:w! path`, `:saveas! path`). `:wq path` and `:x path` write there, then close.
 - **Which file:** `:f` (`:file`) and `C-g` say the file's full path, its lines and how far down the cursor is, as your Evil's `:f` does. The status line shows only the directory. `C-g` is Vim's: your Evil's quits.
 
@@ -178,7 +191,8 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **Insert keys:** `<Home> <End> <PageUp> <PageDown> C-Left C-Right S-Tab C-c C-g C-h C-j C-k <Insert>`. `C-r =` isn't built anywhere.
 - **Syntax highlighting.** Source is one colour.
 - **Not honoured:** `.gitignore` in the finders and `:grep`.
-- **Opening:** `open -a DIE file`, a Finder double-click, `EDITOR=die` (no `--wait`).
+- **`die --wait`:** a client that has gone, as one stopped with Ctrl-C, isn't noticed, so its file still waits for you to finish it. Nothing ends an edit so that the client fails, as Emacs's `server-edit-abort` does. A file that won't open returns 0 at once, where `emacsclient` returns 1. Quitting DIE with clients waiting doesn't ask first, as Emacs does.
+- **Opening from Finder** into a minimized DIE leaves its window in the Dock, by reading AppKit: nothing restores it.
 - **Editing CRLF and non-UTF-8 files.** They open read-only.
 - **The Buffer List's** `.` after its keys (your Evil repeats them, as it repeats any key that isn't Evil's), `gV` (View mode), `t` (tags tables, so `t` is Evil's), `M-s a C-s`, `M-s a C-M-s` and `M-s a C-o` (searching the marked buffers), `M-DEL`, a middle click, and the column keys `gl gh { }`.
 - **Keeping across a restart:** `*grep*`, `*Buffer List*`, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.

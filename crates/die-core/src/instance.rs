@@ -10,6 +10,10 @@
 //! writes the session, so that a file can't land in what's being handed over. Nobody listening
 //! with the lock held is an instance starting or handing over, and the sender tries again. Nobody
 //! listening with the lock free is no instance, whatever file a crash left behind.
+//!
+//! A `die --wait` keeps its connection after the answer, and the instance says `done` on it once
+//! you're done with the files. If the instance goes first, quitting, restarting or crashing, the
+//! connection closes with nothing said.
 
 use crate::files::FileTarget;
 use std::ffi::{OsStr, OsString};
@@ -29,8 +33,12 @@ const FIRST_FRAME: &str = "first-frame\n";
 /// The socket a `die file` reaches the running instance on, in the state directory.
 pub const OPEN_SOCKET: &str = "open.sock";
 const OPENED: &[u8] = b"opened\n";
-const FRONT: &[u8] = b"front";
-const BACKGROUND: &[u8] = b"background";
+const DONE: &[u8] = b"done\n";
+const FRONT: &str = "front";
+const BACKGROUND: &str = "background";
+/// After the mode, in its field, for a request that waits. An instance that doesn't know it
+/// refuses the request, rather than open a file of that name.
+const WAIT: &str = " wait";
 /// More than any command line, so a stray writer can't fill the instance's memory.
 const MOST_REQUEST: u64 = 16 << 20;
 /// How long the listener waits for a client to finish saying what it wants.
@@ -199,17 +207,23 @@ impl Successor {
 pub struct OpenRequest {
     /// Come to the front: everything but `--background`.
     pub front: bool,
+    /// Wait until you're done with the files: `die --wait`.
+    pub wait: bool,
     /// The files, whose paths are absolute.
     pub targets: Vec<FileTarget>,
 }
 
 impl OpenRequest {
-    /// `front` or `background`, then the targets' arguments, each ended by a NUL.
+    /// `front` or `background`, with [`WAIT`] for one that waits, then the targets' arguments,
+    /// each ended by a NUL.
     fn to_bytes(&self) -> Vec<u8> {
-        let mode = if self.front { FRONT } else { BACKGROUND };
+        let mut mode = OsString::from(if self.front { FRONT } else { BACKGROUND });
+        if self.wait {
+            mode.push(WAIT);
+        }
         let args = self.targets.iter().flat_map(FileTarget::to_args);
         let mut bytes = vec![];
-        for arg in std::iter::once(OsStr::from_bytes(mode).to_owned()).chain(args) {
+        for arg in std::iter::once(mode).chain(args) {
             bytes.extend_from_slice(arg.as_bytes());
             bytes.push(0);
         }
@@ -218,14 +232,49 @@ impl OpenRequest {
 
     fn from_bytes(bytes: &[u8]) -> Option<OpenRequest> {
         let mut fields = bytes.strip_suffix(b"\0")?.split(|c| *c == 0);
-        let front = match fields.next()? {
+        let mode = OsStr::from_bytes(fields.next()?).to_str()?;
+        let (mode, wait) = mode.strip_suffix(WAIT).map_or((mode, false), |m| (m, true));
+        let front = match mode {
             FRONT => true,
             BACKGROUND => false,
             _ => return None,
         };
         let args = fields.map(|f| OsString::from_vec(f.to_vec()));
         let targets = FileTarget::parse_args(args, Path::new("/")).ok()?;
-        Some(OpenRequest { front, targets })
+        Some(OpenRequest {
+            front,
+            wait,
+            targets,
+        })
+    }
+}
+
+/// A request as the instance got it, with the connection to answer on. Dropped unanswered, it
+/// tells the sender it wasn't carried out.
+#[derive(Debug)]
+pub struct Asked {
+    /// What it asks.
+    pub request: OpenRequest,
+    stream: UnixStream,
+}
+
+impl Asked {
+    /// Say it was carried out. A request that waits keeps the connection, to say when you're done.
+    pub fn answer(mut self) -> Option<Client> {
+        let said = self.stream.write_all(OPENED).is_ok();
+        (said && self.request.wait).then_some(Client(self.stream))
+    }
+}
+
+/// A `die --wait` waiting on this instance. Dropped untold, as when the instance goes, it hears
+/// nothing more.
+#[derive(Debug)]
+pub struct Client(UnixStream);
+
+impl Client {
+    /// Tell it you're done with its files. One that has gone isn't told.
+    pub fn done(mut self) {
+        let _ = self.0.write_all(DONE);
     }
 }
 
@@ -238,11 +287,11 @@ pub struct OpenListener {
 }
 
 impl OpenListener {
-    /// Listen in `dir`, on a thread of its own, and pass each request to `handle`, which says
-    /// whether it was carried out. Hold the lock before calling this: it replaces any socket there.
+    /// Listen in `dir`, on a thread of its own, and pass each request to `handle`, which answers
+    /// it once it's carried out. Hold the lock before calling this: it replaces any socket there.
     pub fn start(
         dir: &Path,
-        mut handle: impl FnMut(OpenRequest) -> bool + Send + 'static,
+        mut handle: impl FnMut(Asked) + Send + 'static,
     ) -> io::Result<OpenListener> {
         make_dir(dir)?;
         let path = dir.join(OPEN_SOCKET);
@@ -255,9 +304,9 @@ impl OpenListener {
                 if stopping.load(Ordering::SeqCst) {
                     return;
                 }
-                if let Ok(stream) = stream {
-                    // A client that's gone can try again, and opening a file twice is harmless.
-                    let _ = answer(stream, &mut handle);
+                // A client that's gone can try again, and opening a file twice is harmless.
+                if let Ok(Some(asked)) = stream.and_then(read_request) {
+                    handle(asked);
                 }
             }
         });
@@ -269,16 +318,15 @@ impl OpenListener {
     }
 }
 
-fn answer(mut stream: UnixStream, handle: &mut impl FnMut(OpenRequest) -> bool) -> io::Result<()> {
+fn read_request(mut stream: UnixStream) -> io::Result<Option<Asked>> {
     stream.set_read_timeout(Some(REQUEST_LIMIT))?;
+    // A client that reads nothing can't hold the main thread, which answers.
+    stream.set_write_timeout(Some(REQUEST_LIMIT))?;
     let mut bytes = vec![];
     Read::by_ref(&mut stream)
         .take(MOST_REQUEST)
         .read_to_end(&mut bytes)?;
-    if OpenRequest::from_bytes(&bytes).is_some_and(handle) {
-        stream.write_all(OPENED)?;
-    }
-    Ok(())
+    Ok(OpenRequest::from_bytes(&bytes).map(|request| Asked { request, stream }))
 }
 
 impl Drop for OpenListener {
@@ -296,12 +344,27 @@ impl Drop for OpenListener {
 }
 
 /// What came of [`send_open`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Debug)]
 pub enum Sent {
-    /// The running instance carried it out.
-    Delivered,
+    /// The running instance carried it out. A request that waits has the connection to wait on.
+    Delivered(Option<Waiting>),
     /// Nothing holds the lock, so there's no instance to ask.
     NoInstance,
+}
+
+/// A `die --wait` whose files are open, waiting on the instance.
+#[derive(Debug)]
+pub struct Waiting(UnixStream);
+
+impl Waiting {
+    /// Wait until you're done with the files, then true. False if the instance went first, as
+    /// when it quits, restarts or crashes.
+    pub fn wait(mut self) -> bool {
+        let mut said = vec![];
+        let read = self.0.set_read_timeout(None);
+        let read = read.and_then(|()| self.0.read_to_end(&mut said));
+        read.is_ok() && said == DONE
+    }
 }
 
 /// Ask the instance in `dir` to open these. While one holds the lock and doesn't answer, as it
@@ -312,8 +375,9 @@ pub fn send_open(dir: &Path, request: &OpenRequest, patience: Duration) -> io::R
     let bytes = request.to_bytes();
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        if deliver(&dir.join(OPEN_SOCKET), &bytes, left.max(SEND_POLL)).is_ok() {
-            return Ok(Sent::Delivered);
+        let socket = dir.join(OPEN_SOCKET);
+        if let Ok(stream) = deliver(&socket, &bytes, left.max(SEND_POLL)) {
+            return Ok(Sent::Delivered(request.wait.then_some(Waiting(stream))));
         }
         if !lock_is_held(dir)? {
             return Ok(Sent::NoInstance);
@@ -328,17 +392,18 @@ pub fn send_open(dir: &Path, request: &OpenRequest, patience: Duration) -> io::R
     }
 }
 
-fn deliver(socket: &Path, bytes: &[u8], limit: Duration) -> io::Result<()> {
+/// Send the request and read the answer. The connection, which a request that waits goes on with.
+fn deliver(socket: &Path, bytes: &[u8], limit: Duration) -> io::Result<UnixStream> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(limit))?;
     // A long command line doesn't fit the socket's buffer, and a stuck instance reads nothing.
     stream.set_write_timeout(Some(limit))?;
     stream.write_all(bytes)?;
     stream.shutdown(std::net::Shutdown::Write)?;
-    let mut answer = vec![];
-    stream.read_to_end(&mut answer)?;
+    let mut answer = [0; OPENED.len()];
+    stream.read_exact(&mut answer)?;
     if answer == OPENED {
-        Ok(())
+        Ok(stream)
     } else {
         Err(ErrorKind::ConnectionAborted.into())
     }

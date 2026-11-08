@@ -14,6 +14,7 @@ use die_test_cap as _;
 compile_error!("DIE requires panic = \"unwind\" (C9). Set it in the config crate's profile.");
 
 mod app;
+mod clients;
 mod commands;
 mod dispatch;
 mod error;

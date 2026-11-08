@@ -145,6 +145,9 @@ pub fn bundle(binary: &Path, font_dir: &Path, app: &Path, id: &str, checkout: &P
     Ok(())
 }
 
+/// The bundle's Info.plist. DIE says it edits any file, so that Finder offers it in Open With and
+/// the Dock takes a file dropped on it, but at the `Alternate` rank, so it's the opener of nothing
+/// until you choose it. Folders aren't files: DIE refuses them.
 fn info_plist(id: &str) -> String {
     let version = env!("CARGO_PKG_VERSION");
     format!(
@@ -152,6 +155,15 @@ fn info_plist(id: &str) -> String {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>File</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>public.data</string></array>
+    </dict>
+  </array>
   <key>CFBundleExecutable</key><string>die</string>
   <key>CFBundleIdentifier</key><string>{id}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>

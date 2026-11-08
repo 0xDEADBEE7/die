@@ -258,23 +258,39 @@ pub fn delete_buffer(ctx: &mut Ctx, force: bool) -> Result {
 }
 
 /// `:q`: Evil's `evil-quit` runs `evil-window-delete`, as `C-w c` does, and only the last window
-/// quits. That refuses while a file has unsaved changes, unless `force`.
+/// quits. That refuses while a file has unsaved changes, unless `force`. A buffer a `die --wait`
+/// client waits on is done instead, as `server-edit` takes it, with the same refusal. Your Evil
+/// does that only in the last window, and closes a split, which would leave `git commit` waiting.
 pub fn close_or_quit(ctx: &mut Ctx, w: WindowId, force: bool) -> Result {
+    if let Some(b) = ctx.window_buffer(w).filter(|b| ctx.is_client_buffer(*b)) {
+        if !force && unsaved(ctx, b) {
+            return Err(refusal(ctx, b));
+        }
+        return ctx.client_done(b);
+    }
     if ctx.window_list().len() > 1 {
         return ctx.close_window_balancing(w);
     }
     quit_app(ctx, force)
 }
 
+fn unsaved(ctx: &Ctx, b: BufferId) -> bool {
+    ctx.file(b).is_some() && ctx.text(b).is_ok_and(|t| t.modified())
+}
+
+fn refusal(ctx: &Ctx, b: BufferId) -> Error {
+    let name = ctx.buffer_name(b).unwrap_or_default();
+    Error::Msg(format!(
+        "{name} has unsaved changes; :w saves them, :q! drops them"
+    ))
+}
+
 /// Quit, which refuses while a file has unsaved changes. `force` drops them instead.
 pub fn quit_app(ctx: &mut Ctx, force: bool) -> Result {
     let all = ctx.buffer_list().into_iter();
-    let unsaved = |b: &BufferId| ctx.file(*b).is_some() && ctx.text(*b).is_ok_and(|t| t.modified());
-    let unsaved: Vec<BufferId> = all.filter(unsaved).collect();
+    let unsaved: Vec<BufferId> = all.filter(|b| unsaved(ctx, *b)).collect();
     if let Some(b) = unsaved.first().filter(|_| !force) {
-        let name = ctx.buffer_name(*b).unwrap_or_default();
-        let why = format!("{name} has unsaved changes; :w saves them, :q! drops them");
-        return Err(Error::Msg(why));
+        return Err(refusal(ctx, *b));
     }
     for b in unsaved {
         drop_changes(ctx, b)?;

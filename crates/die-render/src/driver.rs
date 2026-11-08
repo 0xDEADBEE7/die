@@ -23,8 +23,8 @@ use std::time::Instant;
 use winit::window::Window;
 
 pub use crate::platform::backend::appkit::{
-    KeyMonitor, Surface, double_click_interval, option_as_alt, post_key, prepare_loop,
-    press_and_hold, process_wakeups, window_attributes,
+    KeyMonitor, Surface, double_click_interval, on_open_files, option_as_alt, post_key,
+    prepare_loop, press_and_hold, process_wakeups, window_attributes,
 };
 pub use crate::platform::backend::{ready, system_clipboard};
 
