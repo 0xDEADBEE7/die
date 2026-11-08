@@ -1,0 +1,101 @@
+# die-term-sys's engine lock: where each vendored archive came from, and what it must be.
+# `cargo xtask ghostty verify` checks the archives, their symbols and the bindings against it
+# (in `ci` and `clean-build`); `cargo xtask ghostty bump` writes it, with a section per
+# target (docs/records/die-term-engine.md §5). Spike S2 wrote this one by hand on 2026-10-19.
+
+[engine]
+project = "ghostty-org/ghostty"
+commit = "765ea37ad64f7e3a48f6ac27a70ad7fb6f31b9bb"
+channel = "tip (signed)"
+asset = "ghostty-vt.xcframework.zip"
+asset_url = "https://github.com/ghostty-org/ghostty/releases/download/tip/ghostty-vt.xcframework.zip"
+per_commit_url = "https://tip.files.ghostty.org/765ea37ad64f7e3a48f6ac27a70ad7fb6f31b9bb/ghostty-vt.xcframework.zip"
+signature = "ghostty-vt.xcframework.zip.minisig"
+minisign_public_key = "RWQlAjJC23149WL2sEpT/l0QKy7hMIFhYdQOFy0Z7z7PbneUgvlsnYcV"
+trusted_comment = "timestamp:1792373718\tfile:ghostty-vt.xcframework.zip\thashed"
+signed_zip_sha256 = "e526d23f99bcd24e6834ec893b809453b9388681906e5786fdd22f250aee1448"
+signed_zip_bytes = 14446276
+headers_tree_sha256 = "0e0dd8871e632a2d580c8ec204b7281d6fe99afdfb25d90281e9db8d7c26c295"  # sorted `shasum -a 256` of Headers/ghostty/**, piped to shasum
+headers_match_git = true  # Headers/ghostty == `git show 765ea37:include/ghostty`
+zig_version = "not recorded (the signed asset does not name it)"
+
+[wrapper]
+crate = "libghostty-vt"
+repository = "https://github.com/uzaaft/libghostty-rs"
+rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54"
+features = ["kitty-graphics"]  # default-features = false; no "png"
+
+[bindings]
+file = "src/ffi/bindings.rs"
+sha256 = "a8342979ca0421d702a59386746e70d7d6ae7b425c99ff20d67f88dd4db70183"
+generator = "bindgen 0.72.1 (as a library), the wrapper's tools/gen_bindings.rs settings"
+libclang = "/Library/Developer/CommandLineTools/usr/lib"
+
+[target.aarch64-apple-darwin]
+# The signed zip's macos-arm64_x86_64 archive: ditto -x -k; lipo -thin arm64; strip -S;
+# ld -r -arch arm64 -platform_version macos 13.0 13.0 -all_load -exported_symbols_list '_ghostty_*';
+# libtool -static. ZERO_AR_DATE=1 throughout.
+fat_archive_sha256 = "b340da736bc2882f90063adba3ba9d05e656a01fcc262fe9f79af457f0881456"
+thin_arm64_sha256 = "733e2165f2d59bbcf217494dfbd73b27af4715e5ab425d0e0c65ca125fef9b75"
+thin_stripped_sha256 = "ee52aa312dd91e178423c8b696674926344db8c3d6b40404424ea5226f2240cd"
+archive = "vendor/aarch64-apple-darwin/libghostty-vt.a"
+archive_sha256 = "c819c8d606eb5136b1441bc46df4f623838a377e256d924ece5683e9ba94fa37"
+archive_bytes = 2696424
+global_symbols = 205  # all `_ghostty_*`
+# Every symbol the archive needs, each from libSystem: verify links the archive against
+# libSystem alone to show it.
+undefined = [
+    "___error",
+    "___ulock_wait",
+    "___ulock_wake",
+    "__availability_version_check",
+    "_arc4random_buf",
+    "_bzero",
+    "_calloc",
+    "_close$NOCANCEL",
+    "_exp",
+    "_expf",
+    "_fcntl",
+    "_free",
+    "_fstat",
+    "_fstatat",
+    "_getenv",
+    "_log",
+    "_logf",
+    "_lseek",
+    "_madvise",
+    "_malloc",
+    "_malloc_size",
+    "_memcmp",
+    "_memcpy",
+    "_memmove",
+    "_mmap",
+    "_munmap",
+    "_openat",
+    "_posix_memalign",
+    "_preadv",
+    "_readv",
+    "_realloc",
+    "_realpath$DARWIN_EXTSN",
+    "_shm_open",
+    "_shm_unlink",
+    "_strlen",
+    "_sys_icache_invalidate",
+    "_sysctlbyname",
+    "_unlinkat",
+    "_write",
+]
+
+[target.aarch64-apple-darwin.members]  # of the thinned, stripped archive; a licence review if the set changes
+"abort.o" = "6dbae4b92581c3f03b399b16295d5c6ca87dda86f30023736ccee97be2a26c65"
+"base64.o" = "6e9caf4dda75416329d993a65ef46d649ce8a303d626d388dd55ac0307c54ef3"
+"codepoint_width.o" = "a1ef9d4b14da8f71b97ce1d13997cd96451b5f832b8f20fda7fa0b348970b0f7"
+"compiler_rt.o" = "42455e3a08978cba11255ce1cc1dd5579c7b591ade30940d459ef3bc7b2eeb1f"
+"index_of.o" = "ce4fb0eb0c4daf202ea1ae08815f2210cf797fe4c7c108bd018f67dee5d9ccde"
+"libghostty-vt-static_zcu.o" = "7f5df465e2fc6b875fa5834389b6b88b14c4ad7503d775c003574fc05e1ded85"
+"libhighway_zcu.o" = "ae171c7163fd967537cbec4ebbbbb8b18719af641a6a805756c3d62264722d1e"
+"per_target.o" = "4ef2c5b4a538538070544666704abac51cc77c20c49c7e560634b81af56793fe"
+"simdutf.o" = "a998b3d6a4c46df727772660e678aa31de23487d7c1e31b0093dfe512077788f"
+"targets.o" = "23c3df4047aa4c7e01fea0dd159a9faf141744561e1620b4caed68ae738f3b19"
+"vt.o" = "7d7b6a7b1cdb82dd53e7bfcfe7a7f42886b2fa4ce9decd0724f5ad3f8d8825af"
+"wuffs-v0.4.o" = "a9be51b0105b20940601d491130fdd51415e9e049ee97681997ea6ce7bd94f2b"

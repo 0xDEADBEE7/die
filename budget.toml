@@ -50,6 +50,23 @@ path = "crates/die-vim"
 limit = 10387
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
+# Guard 7: about 4k of glue, plus about 1k for the helper process (D20). The engine side came
+# first, on 2026-11-09; its modules are below.
+[[crate]]
+name = "die-term"
+path = "crates/die-term"
+limit = 5000
+note = "guard 7: about 4k of glue plus about 1k for the helper"
+
+# D17: the wrapper's sys crate, adapted, and its build script. Its bindings are bindgen's,
+# written at each engine bump and held to the lock's hash by `cargo xtask ghostty verify`.
+[[crate]]
+name = "die-term-sys"
+path = "crates/die-term-sys"
+limit = 100
+generated = ["src/ffi/bindings.rs"]
+note = "D17: about 90 adapted lines, plus generated bindings"
+
 [[crate]]
 name = "die"
 path = "crates/die"
@@ -246,3 +263,34 @@ platforms = ["linux"]
 # 170 until `unseen`.
 limit = 175
 files = ["platform/backend.rs"]
+
+# die-term's engine side (scope §6): a `Term` with bytes in and cells out, keys in and bytes
+# out, before the surface on a PTY. Each starts at what it measured, with a little room.
+
+# The terminal: the engine's defaults and callbacks, feeding, resizing, events, modes, scrolling.
+[[module]]
+crate = "die-term"
+name = "terminal"
+limit = 320
+files = ["lib.rs"]
+
+# Render state to die-core cells, and the cursor (G2).
+[[module]]
+crate = "die-term"
+name = "cells"
+limit = 225
+files = ["screen.rs"]
+
+# Keys, the pointer, the wheel, pastes and focus (G4, G5, G13).
+[[module]]
+crate = "die-term"
+name = "input"
+limit = 395
+files = ["input.rs"]
+
+# Copy state's text, rows and marks (G6).
+[[module]]
+crate = "die-term"
+name = "copy text"
+limit = 255
+files = ["text.rs"]

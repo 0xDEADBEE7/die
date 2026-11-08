@@ -2,18 +2,20 @@
 //! (scope §12 and D15-D17, docs/records/platforms.md §5.2).
 //!
 //! - `unsafe`: every crate inherits the workspace's `unsafe_code = "forbid"`
-//!   except two, which deny it and allow it in one module each: die-render, on
-//!   `platform::macos`, and die-test-cap, on `cap`. die-test-cap is the one exception
-//!   outside DIE's own code: a global allocator can't be written without `unsafe`, and
-//!   the crate is never linked into DIE. Nothing else lowers that level, and nothing
-//!   allows `warnings` wholesale.
+//!   except three, which deny it and allow it in one module each: die-render, on
+//!   `platform::macos`, die-term-sys, on its FFI module `ffi`, and die-test-cap, on
+//!   `cap`. die-test-cap is the one exception outside DIE's product: a global
+//!   allocator can't be written without `unsafe`, and the crate is never linked into
+//!   DIE. Nothing else lowers that level, and nothing allows `warnings` wholesale.
 //! - The `unsafe` keyword itself appears only in those modules, since rustc's lint
 //!   misses some of it. `include!` and the `path` attribute appear nowhere, since each
 //!   can compile a file this lint doesn't read. A macro can build that attribute in
 //!   ways no token rule sees, and a manifest can point anywhere, so `cargo xtask
 //!   sources` checks what actually got compiled.
 //! - Those modules' `unsafe` blocks each say why they're sound and do one unsafe
-//!   thing, and no code changes the level of the lints that hold them to it. No
+//!   thing, and no code changes the level of the lints that hold them to it, but for
+//!   one generated module, die-term-sys's bindings, which `cargo xtask ghostty
+//!   verify` holds to the engine lock's hash. No
 //!   pointer is made from a reference to one element of a buffer by `NonNull::from`,
 //!   `from_mut` or `from_ref`. Nothing outside `platform` names `platform::macos`:
 //!   neutral code names `platform::backend`.
@@ -28,7 +30,7 @@
 //!   that only sets lint levels is fine.
 //! - die-core's and die-vim's graphs hold no window, GPU or OS GUI crate, on
 //!   any target.
-//! - Every dependency is pinned to an exact version.
+//! - Every dependency is pinned to an exact version, or a git one to a commit.
 //! - die-vim depends on die-core only (D15), in every dependency table.
 //! - The lockfile and both license files are there.
 
@@ -38,19 +40,29 @@ use std::process::Command;
 use toml::{Table, Value};
 
 /// The only places `allow(unsafe_code)` may appear: (file, the item it must sit on).
-/// `platform::linux` joins with the Linux backend; M2 adds die-term's engine
-/// boundary and die-core's `sys` module. die-test-cap's allocator isn't linked into DIE.
+/// `platform::linux` joins with the Linux backend; M2 adds die-core's `sys` module.
+/// die-term-sys's `ffi` is the engine's C API (D17); die-term itself has none.
+/// die-test-cap's allocator isn't linked into DIE.
 const UNSAFE_ALLOWED: &[(&str, &str)] = &[
     ("crates/die-render/src/platform/mod.rs", "pub mod macos"),
+    ("crates/die-term-sys/src/lib.rs", "mod ffi"),
     ("tools/test-cap/src/lib.rs", "mod cap"),
 ];
 
-/// Where the `unsafe` keyword may appear (scope §12). M2 adds die-core's `sys/` and
-/// die-term's engine boundary; `platform/linux/` joins with its code.
+/// Where the `unsafe` keyword may appear (scope §12). M2 adds die-core's `sys/`;
+/// `platform/linux/` joins with its code.
 const UNSAFE_DIRS: &[&str] = &[
     "crates/die-render/src/platform/macos/",
+    "crates/die-term-sys/src/ffi.rs",
+    "crates/die-term-sys/src/ffi/",
     "tools/test-cap/src/cap.rs",
 ];
+
+/// Generated code, whose `unsafe` blocks have no SAFETY comments: (file, the item an
+/// `allow` of `UNSAFE_BLOCK_LINTS` may sit on). bindgen writes die-term-sys's bindings at
+/// each `ghostty bump`, and `cargo xtask ghostty verify` holds them to the lock's hash, so
+/// nothing hand-written hides there.
+const GENERATED: &[(&str, &str)] = &[("crates/die-term-sys/src/ffi.rs", "mod bindings")];
 
 /// The clippy lints a crate that allows `unsafe` must deny, so that each block says
 /// why it's sound and its SAFETY comment covers all of it.
@@ -72,6 +84,7 @@ const PLATFORM_DIR: &str = "crates/die-render/src/platform/";
 const NEUTRAL: &[(&str, &[&str])] = &[
     ("crates/die-core", &["crates/die-core/src/sys/"]),
     ("crates/die-vim", &[]),
+    ("crates/die-term", &[]),
     ("tools/evil-oracle", &[]),
     ("tools/test-cap", &[]),
     (
@@ -139,7 +152,7 @@ const PLATFORM_CRATES: &[(&str, &str)] = &[
 ];
 
 /// Crates that set their own lints instead of inheriting the workspace's.
-const OWN_LINTS: &[&str] = &["crates/die-render", "tools/test-cap"];
+const OWN_LINTS: &[&str] = &["crates/die-render", "crates/die-term-sys", "tools/test-cap"];
 
 /// The crate that gives each test binary its memory limit.
 const TEST_CAP: &str = "die-test-cap";
@@ -739,7 +752,8 @@ pub fn check_platform_code(rel: &str, src: &str, errors: &mut Vec<String>) {
     }
 }
 
-/// A dependency is pinned when it's a path or workspace dependency, or its version starts with `=`.
+/// A dependency is pinned when it's a path or workspace dependency, its version starts with
+/// `=`, or it's a git dependency at a full commit hash.
 fn check_pins(what: &str, deps: &Table, errors: &mut Vec<String>) {
     for (name, spec) in deps {
         let version = match spec {
@@ -748,6 +762,20 @@ fn check_pins(what: &str, deps: &Table, errors: &mut Vec<String>) {
                 if t.get("workspace").and_then(Value::as_bool) == Some(true)
                     || (t.contains_key("path") && !t.contains_key("version"))
                 {
+                    continue;
+                }
+                if t.contains_key("git") {
+                    let rev = t.get("rev").and_then(Value::as_str).unwrap_or("");
+                    let commit = rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit());
+                    let other = ["branch", "tag", "version"]
+                        .iter()
+                        .any(|k| t.contains_key(*k));
+                    if !commit || other {
+                        errors.push(format!(
+                            "{what}: {name} is a git dependency; pin it with `rev` at a full \
+                             commit hash, and nothing else"
+                        ));
+                    }
                     continue;
                 }
                 t.get("version").and_then(Value::as_str)
@@ -854,6 +882,7 @@ pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
     let toks = lex(src);
     let p = |i: usize, c: char| toks.get(i).map(|x| &x.0) == Some(&Tok::Punct(c));
     let unsafe_ok = UNSAFE_DIRS.iter().any(|d| rel.starts_with(d));
+    let generated = generated_allows(rel, &toks);
     for (i, (t, line, _)) in toks.iter().enumerate() {
         let what = match t {
             Tok::Ident(w) if (w == "unsafe" || w == "global_asm") && !unsafe_ok => {
@@ -870,7 +899,8 @@ pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
                 "`path` attribute (it compiles a file this lint may not read)".into()
             }
             Tok::Ident(w)
-                if UNSAFE_BLOCK_LINTS.contains(&w.as_str()) || w == UNSAFE_BLOCK_GROUP =>
+                if w == UNSAFE_BLOCK_GROUP
+                    || (UNSAFE_BLOCK_LINTS.contains(&w.as_str()) && !generated.contains(&i)) =>
             {
                 format!(
                     "`{w}`: the manifest of each crate with `unsafe` denies the unsafe-block \
@@ -881,6 +911,33 @@ pub fn check_unsafe_tokens(rel: &str, src: &str, errors: &mut Vec<String>) {
         };
         errors.push(format!("{rel}:{}: {what} (scope §12)", line + 1));
     }
+}
+
+/// The tokens inside `allow(...)` attributes that sit on `GENERATED`'s item in `rel`: an
+/// outer attribute directly on it, as `#[allow(...)] mod bindings;`.
+fn generated_allows(rel: &str, toks: &[(crate::count::Tok, usize, usize)]) -> Vec<usize> {
+    use crate::count::{Tok, skip_group};
+    let Some((_, item)) = GENERATED.iter().find(|(f, _)| *f == rel) else {
+        return Vec::new();
+    };
+    let words: Vec<&str> = item.split(' ').collect();
+    let p = |i: usize, c: char| toks.get(i).map(|x| &x.0) == Some(&Tok::Punct(c));
+    let w = |i: usize, s: &str| toks.get(i).map(|x| &x.0) == Some(&Tok::Ident(s.into()));
+    let mut out = Vec::new();
+    for i in 0..toks.len() {
+        if !(p(i, '#') && p(i + 1, '[') && w(i + 2, "allow") && p(i + 3, '(')) {
+            continue;
+        }
+        let (Some(close), Some(end)) = (skip_group(toks, i + 3), skip_group(toks, i + 1)) else {
+            continue;
+        };
+        let on_item =
+            words.iter().enumerate().all(|(k, word)| w(end + k, word)) && p(end + words.len(), ';');
+        if on_item {
+            out.extend(i + 4..close);
+        }
+    }
+    out
 }
 
 /// Neutral code names `platform::backend` (see `die_render::platform`), since
@@ -1097,6 +1154,7 @@ mod tests {
             e,
             [format!(
                 "{core}:1: `unsafe` outside crates/die-render/src/platform/macos/, \
+                 crates/die-term-sys/src/ffi.rs, crates/die-term-sys/src/ffi/, \
                  tools/test-cap/src/cap.rs (scope §12)"
             )]
         );
@@ -1683,5 +1741,72 @@ mod tests {
             e[0].contains("b = \"1.0\"") && e[1].contains("c = \"^2\""),
             "{e:?}"
         );
+        // A git dependency is pinned at a full commit, and only there.
+        let t: Table = r#"
+            g = { git = "https://x/y", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54" }
+            h = { git = "https://x/y", rev = "d2036bae" }
+            i = { git = "https://x/y", branch = "main" }
+            j = { git = "https://x/y" }
+            k = { git = "https://x/y", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", tag = "v1" }
+        "#
+        .parse()
+        .unwrap();
+        let mut e = Vec::new();
+        check_pins("t", &t, &mut e);
+        let named: Vec<&str> = e.iter().map(|m| &m[3..4]).collect();
+        assert_eq!(named, ["h", "i", "j", "k"], "{e:?}");
+    }
+
+    #[test]
+    fn generated_bindings_alone_may_allow_the_unsafe_block_lints() {
+        let check = |rel: &str, src: &str| {
+            let mut e = Vec::new();
+            check_unsafe_tokens(rel, src, &mut e);
+            e.len()
+        };
+        let ffi = "crates/die-term-sys/src/ffi.rs";
+        let allow = "#[allow(\n    non_snake_case,\n    clippy::undocumented_unsafe_blocks,\n    \
+                     clippy::multiple_unsafe_ops_per_block\n)]\n";
+        assert_eq!(check(ffi, &format!("{allow}mod bindings;\n")), 0);
+        assert_eq!(
+            check(ffi, "unsafe { f() }\n"),
+            0,
+            "ffi.rs is the FFI boundary"
+        );
+        // On another item, in another file, or with the group that holds them.
+        assert_eq!(check(ffi, &format!("{allow}mod other;\n")), 2);
+        assert_eq!(check(ffi, &format!("{allow}mod bindings {{}}\n")), 2);
+        assert_eq!(
+            check(
+                "crates/die-term-sys/src/lib.rs",
+                &format!("{allow}mod bindings;\n")
+            ),
+            2
+        );
+        assert_eq!(
+            check(ffi, "#[allow(clippy::restriction)]\nmod bindings;\n"),
+            1
+        );
+        assert_eq!(
+            check(
+                ffi,
+                "#[cfg_attr(all(), allow(clippy::undocumented_unsafe_blocks))]\nmod bindings;\n"
+            ),
+            1
+        );
+        // The rest of die-term-sys has no `unsafe`, and allows it on `ffi` alone.
+        assert_eq!(
+            check("crates/die-term-sys/src/lib.rs", "unsafe { f() }\n"),
+            1
+        );
+        assert_eq!(check("crates/die-term-sys/build.rs", "unsafe { f() }\n"), 1);
+        let allows = |src: &str| {
+            let mut e = Vec::new();
+            check_unsafe_allows("crates/die-term-sys/src/lib.rs", src, &mut e);
+            e.len()
+        };
+        assert_eq!(allows("#[allow(unsafe_code)]\nmod ffi;\n"), 0);
+        assert_eq!(allows("#[allow(unsafe_code)]\nmod hook;\n"), 1);
+        assert_eq!(allows("#![allow(unsafe_code)]\n"), 1);
     }
 }

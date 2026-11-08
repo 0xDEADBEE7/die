@@ -5,7 +5,7 @@
 //! checkpoint.
 
 use crate::util::{self, Result, TempDir, cargo, copy_worktree, git};
-use crate::{budget, clean, cross, fonts, guards, lint, sources};
+use crate::{budget, clean, cross, fonts, ghostty, guards, lint, sources};
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -29,7 +29,8 @@ const PROP_VAR: &str = "DIE_PROP_CASES";
 
 /// Whether a change to `path`, relative to the repository's root, can change what `guards`
 /// and `clean-build` find: a manifest or lockfile anywhere, cargo's or the toolchain's
-/// settings, a build script, the checks themselves, or the memory limit every test links.
+/// settings, a build script, the checks themselves, the memory limit every test links, or
+/// the engine archives and their lock.
 pub fn touches_build_setup(path: &str) -> bool {
     let p = Path::new(path);
     let named = |names: &[&str]| p.file_name().is_some_and(|n| names.iter().any(|s| n == *s));
@@ -37,6 +38,8 @@ pub fn touches_build_setup(path: &str) -> bool {
         || path == "rust-toolchain.toml"
         || path.starts_with("xtask/")
         || path.starts_with("tools/test-cap/")
+        || path.starts_with(&format!("{}/vendor/", ghostty::SYS))
+        || path == format!("{}/ghostty-vt.lock", ghostty::SYS)
         || p.components().any(|c| c.as_os_str() == ".cargo")
 }
 
@@ -214,6 +217,7 @@ pub fn run(root: &Path, source: Source, full: bool) -> Result {
             }),
         ),
         ("sources", Box::new(|| sources::run(&tree, &target))),
+        ("ghostty", Box::new(|| ghostty::verify(&tree))),
         (
             "cross-check",
             Box::new(|| cross::run(&tree, &work.join("cross"))),

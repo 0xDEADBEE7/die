@@ -7,6 +7,10 @@
 //! compiles nothing, with the reason. `cargo tree --target` checks every target
 //! from this host.
 //!
+//! The engine archive die-term-sys links is the one prebuilt binary in the build: D16
+//! allows it as signed upstream and pinned by checksum, so `cargo xtask ghostty verify`
+//! checks it against its lock first.
+//!
 //! Then the build runs from an empty environment with `--locked --offline` and a
 //! fresh target directory, so every build script runs. The linker is named by
 //! its full path. The C compilers, `ar` and `pkg-config` on PATH, and `CC`,
@@ -104,6 +108,8 @@ pub const GRAPHS: &[(&str, &[Allowed])] = &[
 
 pub fn run(root: &Path, keep: bool) -> Result {
     let host = host()?;
+    // The one prebuilt binary in the build, which D16 allows only as the lock pins it.
+    crate::ghostty::verify(root)?;
     for (target, allowed) in GRAPHS {
         graph(root, target, allowed)?;
     }
