@@ -142,6 +142,12 @@ fn the_bundle_has_its_id_its_fonts_and_a_signature() {
         let font = app.app.join("Contents/Resources/fonts").join(name);
         assert!(font.exists(), "{name}");
     }
+    let checkout = std::fs::read_to_string(app.app.join("Contents/Resources/checkout"));
+    assert_eq!(
+        checkout.unwrap(),
+        format!("{}\n", root().display()),
+        "for `rebuild`"
+    );
     let verify = Command::new("codesign")
         .arg("--verify")
         .arg(&app.app)
@@ -354,7 +360,7 @@ fn a_new_build_put_in_under_a_running_instance_restarts_with_everything() {
     std::fs::copy(&exe, &built).unwrap();
     std::fs::write(&built, code).unwrap();
     let fonts = xtask::fonts::dir(&root());
-    xtask::app::bundle(&built, &fonts, &app.app, "dev.die.DIE.test").unwrap();
+    xtask::app::bundle(&built, &fonts, &app.app, "dev.die.DIE.test", &root()).unwrap();
     assert_eq!(app.pids(), [old], "the bundle went in under it");
 
     let go = || std::fs::write(app.state.join("restart-loop.go"), "").unwrap();
