@@ -125,10 +125,11 @@ name = "project: file walk, finder, grep"
 limit = 750
 files = ["project.rs", "project/"]
 
+# 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
 [[module]]
 crate = "die-core"
 name = "faces and scene"
-limit = 950
+limit = 965
 files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 
 [[module]]
