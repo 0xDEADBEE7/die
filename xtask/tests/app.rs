@@ -153,7 +153,8 @@ fn the_bundle_has_its_id_its_fonts_and_a_signature() {
         plist.contains("<string>dev.die.DIE.test</string>"),
         "{plist}"
     );
-    // It opens any file, and is the opener of none until you choose it.
+    // It says it opens any file, at the rank that makes it the opener of none. What Finder makes
+    // of that isn't tried: LaunchServices disables a bundle in a temporary directory.
     let types = "<array><string>public.data</string></array>";
     assert!(plist.contains(types) && plist.contains("<string>Alternate</string>"));
     let lint = Command::new("plutil")
@@ -506,10 +507,10 @@ fn returned(app: &App, mut child: std::process::Child) -> (bool, String) {
 }
 
 /// With nothing running, `die --wait` starts an instance, which opens the file at its line, and
-/// waits on it. The instance going, killed here, returns it with 0, as `emacsclient` does.
+/// waits on it. The instance going, killed here, fails it, so git stops.
 #[test]
 #[ignore = "window: runs in ci --full"]
-fn die_wait_starts_an_instance_and_returns_when_it_goes() {
+fn die_wait_starts_an_instance_and_fails_when_it_goes() {
     let _one = ONE_AT_A_TIME.lock().unwrap();
     let app = App::build("wait");
     std::fs::write(app.dir.join("COMMIT_EDITMSG"), "one\ntwo\n").unwrap();
@@ -522,14 +523,15 @@ fn die_wait_starts_an_instance_and_returns_when_it_goes() {
     let pid = app.holder().unwrap();
     Command::new("kill").arg(pid.to_string()).status().unwrap();
     let (ok, said) = returned(&app, waiting);
-    assert!(ok, "{said}");
-    assert!(said.contains("quit or restarted"), "{said}");
+    assert!(!ok, "{said}");
+    assert!(said.contains("DIE quit before you were done"), "{said}");
 }
 
-/// Two clients wait at once, and a restart returns both, with the files open in the new instance.
+/// Two clients wait at once, and a restart hands both to the new instance, which has their files
+/// open from the session: they go on waiting on it, until it goes too.
 #[test]
 #[ignore = "window: runs in ci --full"]
-fn a_restart_returns_every_waiting_client() {
+fn a_restart_hands_every_waiting_client_to_the_new_instance() {
     let _one = ONE_AT_A_TIME.lock().unwrap();
     let app = App::build("wait-restart");
     app.open(&[], &["--restart-loop"]);
@@ -543,17 +545,32 @@ fn a_restart_returns_every_waiting_client() {
         cursor_in(&app, "a.txt").is_some() && cursor_in(&app, "b.txt").is_some()
     });
     assert!(a.try_wait().unwrap().is_none() && b.try_wait().unwrap().is_none());
+    let first = app.holder().unwrap();
     std::fs::write(app.state.join("restart-loop.go"), "").unwrap();
+    app.wait_for("the second restore", || restored(2));
+    app.wait_for("the new instance to listen", || {
+        app.holder().is_some_and(|h| h != first) && app.state.join("open.sock").exists()
+    });
+    sleep(Duration::from_millis(500));
+    assert!(a.try_wait().unwrap().is_none() && b.try_wait().unwrap().is_none());
+    Command::new("kill")
+        .arg(app.holder().unwrap().to_string())
+        .status()
+        .unwrap();
     for client in [a, b] {
         let (ok, said) = returned(&app, client);
-        assert!(ok && said.contains("quit or restarted"), "{said}");
+        assert!(
+            !ok && said.contains("DIE quit before you were done"),
+            "{said}"
+        );
     }
-    app.wait_for("the second restore", || restored(2));
 }
 
 /// `open -a DIE file`, which sends the Apple event a Finder double-click and a drop on the Dock
 /// icon send. With nothing running it starts an instance that opens the file. After that the file
-/// goes to the instance there, and nothing takes the focus.
+/// goes to the instance there, and DIE doesn't bring itself to the front: `open -g` doesn't
+/// activate it, so whether it takes the keyboard when Finder does isn't tried here. A name with
+/// an accent comes composed, as typed, though AppKit's file URLs decompose it.
 #[test]
 #[ignore = "window: runs in ci --full"]
 fn open_a_starts_an_instance_with_the_file_and_then_sends_files_to_it() {
@@ -577,18 +594,19 @@ fn open_a_starts_an_instance_with_the_file_and_then_sends_files_to_it() {
             String::from_utf8_lossy(&out.stderr)
         );
     };
-    for name in ["a.txt", "b.txt", "c.txt"] {
+    let accented = "caf\u{e9} \u{65e5}\u{672c}.txt";
+    for name in ["a.txt", "b.txt", accented] {
         std::fs::write(app.dir.join(name), "text\n").unwrap();
     }
     open_files(&["a.txt"]);
     app.wait_for("the first file", || cursor_in(&app, "a.txt").is_some());
     let first = app.holder().unwrap();
-    open_files(&["b.txt", "c.txt"]);
+    open_files(&["b.txt", accented]);
     app.wait_for("the others", || {
-        cursor_in(&app, "b.txt").is_some() && cursor_in(&app, "c.txt").is_some()
+        cursor_in(&app, "b.txt").is_some() && cursor_in(&app, accented).is_some()
     });
     assert_eq!(app.pids(), [first]);
-    assert_ne!(front_app_pid(), Some(first), "it took the focus");
+    assert_ne!(front_app_pid(), Some(first), "it came to the front");
 }
 
 /// The pid of the app in front, as LaunchServices has it. This reads, and moves nothing.

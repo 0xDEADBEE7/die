@@ -259,19 +259,31 @@ pub fn delete_buffer(ctx: &mut Ctx, force: bool) -> Result {
 
 /// `:q`: Evil's `evil-quit` runs `evil-window-delete`, as `C-w c` does, and only the last window
 /// quits. That refuses while a file has unsaved changes, unless `force`. A buffer a `die --wait`
-/// client waits on is done instead, as `server-edit` takes it, with the same refusal. Your Evil
-/// does that only in the last window, and closes a split, which would leave `git commit` waiting.
+/// client waits on is done instead, as `server-edit` takes it, with the same refusal, or with
+/// `force` as `server-buffer-done` does. Your Evil does that only in the last window, and closes
+/// a split, which would leave `git commit` waiting.
 pub fn close_or_quit(ctx: &mut Ctx, w: WindowId, force: bool) -> Result {
     if let Some(b) = ctx.window_buffer(w).filter(|b| ctx.is_client_buffer(*b)) {
         if !force && unsaved(ctx, b) {
             return Err(refusal(ctx, b));
         }
-        return ctx.client_done(b);
+        return ctx.client_done(b, force);
     }
     if ctx.window_list().len() > 1 {
         return ctx.close_window_balancing(w);
     }
     quit_app(ctx, force)
+}
+
+/// `:cq` on a file a `die --wait` client waits on gives it up, so the client fails, as Emacs's
+/// `server-edit-abort` has it, and `git commit` or `git rebase -i` stops. Your Evil's `:cq`
+/// refuses there and quits Emacs elsewhere; here it refuses elsewhere.
+pub fn fail_client(ctx: &mut Ctx) -> Result {
+    let (b, _) = buffer_window(ctx, &Args::default())?;
+    if !ctx.is_client_buffer(b) {
+        return Err(Error::Msg("This buffer has no clients".into()));
+    }
+    ctx.client_failed(b)
 }
 
 fn unsaved(ctx: &Ctx, b: BufferId) -> bool {

@@ -311,11 +311,20 @@ thread_local! {
 /// The app delegate's `application:openURLs:`, which AppKit calls with the files Finder, the Dock
 /// or `open` asks this app to open.
 unsafe extern "C-unwind" fn open_urls(_: &AnyObject, _: Sel, _: &AnyObject, urls: &NSArray<NSURL>) {
-    let paths: Vec<PathBuf> = urls.iter().filter_map(|url| url.to_file_path()).collect();
+    let paths: Vec<PathBuf> = urls.iter().filter_map(|url| file_path(&url)).collect();
     // A panic can't unwind into AppKit.
     let _ = catch_unwind(AssertUnwindSafe(|| {
         OPEN.with_borrow(|open| open.as_ref().map(|f| f(paths)))
     }));
+}
+
+/// A file URL's path, composed (NFC) as a name typed in a terminal is. AppKit's file URLs and
+/// their file system representation decompose accents (NFD), so a file opened from Finder would
+/// have a name that differs from the same one typed, and `:b café` wouldn't find it.
+pub fn file_path(url: &NSURL) -> Option<PathBuf> {
+    let path = url.isFileURL().then(|| url.path()).flatten()?;
+    let composed = path.precomposedStringWithCanonicalMapping();
+    Some(composed.to_string().into())
 }
 
 /// Hand `f` the files you open with DIE from Finder, the Dock or `open -a`, on the main thread, as

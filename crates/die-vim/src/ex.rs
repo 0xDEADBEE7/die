@@ -28,6 +28,7 @@ const EX: &[(&str, &str, ExFn)] = &[
     ("w", "write", P(|c, bang, rest| file_command(c, "w", bang, rest))),
     ("q", "quit", P(|c, bang, rest| file_command(c, "q", bang, rest))),
     ("wq", "wq", P(|c, bang, rest| file_command(c, "wq", bang, rest))),
+    ("cq", "cquit", P(|c, _, _| window::fail_client(c))),
     ("x", "xit", P(|c, bang, rest| file_command(c, "wq", bang, rest))),
     // Your Evil's `evil-update` takes no bang: `:up!` is `:up`.
     ("up", "update", P(|c, _, rest| file_command(c, "w", false, rest))),

@@ -1,13 +1,14 @@
 //! `die --wait`'s files. `:wq`, `:x`, `ZZ` and `:q` on one say you're done with it, as your Evil's
-//! `evil-quit` runs `server-edit`, and so does killing it. The window goes back to what it showed,
-//! and the client is told once it has no file left. Each test works in its own directory, and a
-//! client is a flag the test watches.
+//! `evil-quit` runs `server-edit`, and so does killing it. A file made for the client goes, its
+//! window shows what DIE shows after a kill, and the client is told once it has no file left.
+//! `:cq` makes it fail, and a restart hands it to the next instance. Each test works in its own
+//! directory, and a client is what it was told, which the test watches.
 
 use die_test_cap as _;
 
-use die_core::{BufferId, FileTarget, Harness};
+use die_core::{BufferId, FileTarget, Harness, Outcome, ShowIn, Waited};
 use die_vim::Vim;
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -41,9 +42,30 @@ fn editor() -> (Harness, BufferId) {
     (h, before)
 }
 
-/// A client waiting on these files, as `die --wait` opens them. Whether it's been told.
-fn client(h: &mut Harness, paths: &[&Path]) -> Rc<Cell<bool>> {
-    let told = Rc::new(Cell::new(false));
+/// What a client was told, once it's told.
+#[derive(Default)]
+struct Told(Rc<RefCell<Option<Outcome>>>);
+
+impl Told {
+    /// Whether it's been told.
+    fn get(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+
+    fn outcome(&self) -> Option<Outcome> {
+        self.0.borrow().clone()
+    }
+
+    /// What tells it, once.
+    fn tell(&self) -> impl FnOnce(Outcome) + 'static {
+        let set = self.0.clone();
+        move |outcome| assert!(set.replace(Some(outcome)).is_none(), "told twice")
+    }
+}
+
+/// A client waiting on these files, as `die --wait` opens them.
+fn client(h: &mut Harness, paths: &[&Path]) -> Told {
+    let told = Told::default();
     let targets: Vec<FileTarget> = paths
         .iter()
         .map(|p| FileTarget {
@@ -52,11 +74,15 @@ fn client(h: &mut Harness, paths: &[&Path]) -> Rc<Cell<bool>> {
             col: None,
         })
         .collect();
-    let set = told.clone();
-    h.open_for_client(&targets, move || {
-        assert!(!set.replace(true), "told twice");
-    });
+    h.open_for_client(&targets, told.tell());
     told
+}
+
+fn buffer_of(h: &Harness, path: &Path) -> BufferId {
+    let list = h.buffer_list().into_iter();
+    list.into_iter()
+        .find(|b| h.file(*b).is_some_and(|f| f.path == path))
+        .unwrap()
 }
 
 fn keys(h: &mut Harness, keys: &str) -> Vec<String> {
@@ -81,7 +107,7 @@ fn wq_x_zz_and_q_finish_the_file_and_the_window_goes_back() {
         assert_ne!(file, before);
         assert!(h.is_client_buffer(file) && !told.get(), "{done}");
         assert!(keys(&mut h, done).is_empty(), "{done}");
-        assert!(told.get(), "{done}: the client is told");
+        assert_eq!(told.outcome(), Some(Outcome::Done), "{done}");
         assert!(!h.quit_wanted(), "{done}: DIE stays");
         assert!(!h.is_live(file), "{done}: made for the client, it goes");
         assert_eq!(
@@ -224,12 +250,13 @@ fn clients_waiting_at_once_are_each_told_for_their_own_files() {
     assert!(one.get() && two.get());
 }
 
+/// It fails, as `emacsclient` does, so git stops.
 #[test]
-fn a_client_whose_files_wont_open_is_told_at_once() {
+fn a_client_whose_files_wont_open_is_told_at_once_that_it_failed() {
     let dir = Dir::new("unopened");
     let (mut h, before) = editor();
     let told = client(&mut h, &[&dir.0]);
-    assert!(told.get());
+    assert_eq!(told.outcome(), Some(Outcome::Failed));
     assert_eq!(on_screen(&h), before);
     let name = dir.0.display().to_string();
     assert!(
@@ -255,4 +282,121 @@ fn a_buffer_open_on_the_file_is_read_again_first() {
         h.text(open).unwrap().rope().to_string(),
         "second, and longer\n"
     );
+}
+
+/// Your Evil's `:q!` on a client's file runs only `server-buffer-done`, not `server-edit`: no
+/// other file comes up, and nothing says none are left. A file open before stays on screen.
+#[test]
+fn q_bang_finishes_the_file_and_brings_nothing_else_up() {
+    let dir = Dir::new("q-bang");
+    let (a, b) = (dir.file("a", "a\n"), dir.file("b", "b\n"));
+    let (mut h, _) = editor();
+    let mine = h.open_file(&b).unwrap();
+    let told = client(&mut h, &[&a, &b]);
+    assert_eq!(on_screen(&h), mine);
+    assert!(keys(&mut h, "x:q!<CR>").is_empty());
+    assert!(!told.get() && !h.is_client_buffer(mine));
+    assert_eq!(on_screen(&h), mine, "a doesn't come up, as `:q` brings it");
+    assert!(h.is_client_buffer(buffer_of(&h, &a)));
+
+    let (mut h, _) = editor();
+    let mine = h.open_file(&b).unwrap();
+    let told = client(&mut h, &[&b]);
+    assert!(keys(&mut h, ":q!<CR>").is_empty());
+    assert_eq!(told.outcome(), Some(Outcome::Done));
+    assert_eq!(on_screen(&h), mine);
+    let said = |m: &String| m == "No server buffers remain to edit";
+    assert!(!h.messages.iter().any(said), "{:?}", h.messages);
+}
+
+/// `:cq` gives up, as Emacs's `server-edit-abort` does: the client fails, so git stops, and the
+/// file goes as `:q!` has it, unsaved text and all. Its client's other files made for it go too,
+/// as `server-delete-client` has it, except one with unsaved changes. Elsewhere it refuses.
+#[test]
+fn cq_fails_the_client_and_its_files_go() {
+    let dir = Dir::new("cq");
+    let (a, b) = (dir.file("a", "a\n"), dir.file("b", "b\n"));
+    let (mut h, before) = editor();
+    assert_eq!(keys(&mut h, ":cq<CR>"), ["This buffer has no clients"]);
+    assert!(!h.quit_wanted());
+    let told = client(&mut h, &[&a, &b]);
+    let (shown_b, made_a) = (on_screen(&h), buffer_of(&h, &a));
+    assert!(keys(&mut h, "ccgiving up<Esc>:cq<CR>").is_empty());
+    assert_eq!(told.outcome(), Some(Outcome::Failed));
+    assert!(!h.is_live(shown_b) && !h.is_live(made_a));
+    assert_eq!(on_screen(&h), before);
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "b\n");
+
+    let (mut h, _) = editor();
+    let told = client(&mut h, &[&a, &b]);
+    let (shown_b, made_a) = (on_screen(&h), buffer_of(&h, &a));
+    h.show(made_a, ShowIn::Current).unwrap();
+    assert!(keys(&mut h, "xx").is_empty());
+    h.show(shown_b, ShowIn::Current).unwrap();
+    assert!(keys(&mut h, ":cquit<CR>").is_empty());
+    assert_eq!(told.outcome(), Some(Outcome::Failed));
+    assert!(
+        h.is_live(made_a) && !h.is_client_buffer(made_a),
+        "a has unsaved changes"
+    );
+    assert!(!h.is_live(shown_b));
+}
+
+/// A restart tells each client what it still waits on, and whether each file was made for it,
+/// and forgets them. The next instance, with the files open from the session, waits on them
+/// again: nothing moves on screen, and done, a file made for the client goes as it would have.
+#[test]
+fn a_restart_hands_each_client_over_and_the_next_instance_waits_again() {
+    let dir = Dir::new("restart");
+    let (a, b, notes) = (
+        dir.file("a", "a\n"),
+        dir.file("b", "b\n"),
+        dir.file("notes", "n\n"),
+    );
+    let (mut h, _) = editor();
+    let mine = h.open_file(&notes).unwrap();
+    let (one, two) = (client(&mut h, &[&a, &b]), client(&mut h, &[&notes]));
+    assert!(
+        keys(&mut h, ":b b<CR>:wq<CR>").is_empty(),
+        "{:?}",
+        h.messages
+    );
+    h.hand_over_clients();
+    let moved = |path: &Path, made| Waited {
+        path: path.to_path_buf(),
+        made,
+    };
+    assert_eq!(one.outcome(), Some(Outcome::Moved(vec![moved(&a, true)])));
+    assert_eq!(
+        two.outcome(),
+        Some(Outcome::Moved(vec![moved(&notes, false)]))
+    );
+    assert!(!h.is_client_buffer(mine) && !h.is_client_buffer(buffer_of(&h, &a)));
+
+    let (mut next, before) = editor();
+    let (open_a, mine) = (next.open_file(&a).unwrap(), next.open_file(&notes).unwrap());
+    next.show(before, ShowIn::Current).unwrap();
+    let (one, two) = (Told::default(), Told::default());
+    next.wait_again(vec![moved(&a, true)], one.tell());
+    next.wait_again(vec![moved(&notes, false)], two.tell());
+    assert_eq!(on_screen(&next), before, "nothing moves");
+    assert!(next.is_client_buffer(open_a) && next.is_client_buffer(mine));
+    next.show(open_a, ShowIn::Current).unwrap();
+    assert!(keys(&mut next, ":wq<CR>").is_empty());
+    assert_eq!(one.outcome(), Some(Outcome::Done));
+    assert!(!next.is_live(open_a), "made for the client, it goes");
+    assert_eq!(on_screen(&next), mine, "the other client's file comes up");
+    assert!(keys(&mut next, "ZZ").is_empty());
+    assert_eq!(two.outcome(), Some(Outcome::Done));
+    assert!(next.is_live(mine));
+
+    // A file the session didn't bring back is opened again, as made for the client.
+    let gone = dir.file("gone", "g\n");
+    let three = Told::default();
+    next.wait_again(vec![moved(&gone, false)], three.tell());
+    let opened = buffer_of(&next, &gone);
+    next.show(opened, ShowIn::Current).unwrap();
+    assert!(keys(&mut next, ":q<CR>").is_empty());
+    assert_eq!(three.outcome(), Some(Outcome::Done));
+    assert!(!next.is_live(opened));
 }

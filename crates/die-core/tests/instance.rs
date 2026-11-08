@@ -1,13 +1,13 @@
 //! `die file`'s socket: a request reaches the instance that holds the lock, waits out one that
-//! isn't listening yet, and finds out when there's nobody. `die --wait` hears when you're done, or
-//! that the instance went.
+//! isn't listening yet, and finds out when there's nobody. `die --wait` hears how its wait ended,
+//! or that the instance went, and a restart moves it to the next.
 
 use die_test_cap as _;
 
-use die_core::FileTarget;
 use die_core::instance::{
-    Asked, Client, Instance, OPEN_SOCKET, OpenListener, OpenRequest, Sent, send_open,
+    Asked, Client, Instance, OPEN_SOCKET, OpenListener, OpenRequest, Sent, send_again, send_open,
 };
+use die_core::{FileTarget, Outcome, Waited};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -190,7 +190,7 @@ fn waiting() -> OpenRequest {
 
 /// Send a request that waits, from a thread of its own, and wait on it there: what came of the
 /// wait comes back once it's over.
-fn send_and_wait(dir: &Dir) -> Receiver<bool> {
+fn send_and_wait(dir: &Dir) -> Receiver<Option<Outcome>> {
     let (path, (done, over)) = (dir.0.clone(), channel());
     thread::spawn(move || {
         let Sent::Delivered(Some(waiting)) = send_open(&path, &waiting(), PATIENCE).unwrap() else {
@@ -215,12 +215,14 @@ fn a_waiting_client_returns_once_told_it_is_done() {
     assert!(still.is_err(), "it waits");
     client
         .expect("a request that waits keeps its client")
-        .done();
-    assert_eq!(over.recv_timeout(Duration::from_secs(5)), Ok(true));
+        .tell(&Outcome::Done);
+    assert_eq!(
+        over.recv_timeout(Duration::from_secs(5)),
+        Ok(Some(Outcome::Done))
+    );
 }
 
-/// The instance quits, restarts or crashes with the client waiting: it returns, and says the
-/// instance went.
+/// The instance quits or crashes with the client waiting: it returns, and hears nothing.
 #[test]
 fn a_waiting_client_returns_when_the_instance_goes_untold() {
     let dir = Dir::new("gone-untold");
@@ -230,7 +232,7 @@ fn a_waiting_client_returns_when_the_instance_goes_untold() {
     let (_, client) = got.recv().unwrap();
     assert!(over.recv_timeout(Duration::from_millis(100)).is_err());
     drop((client, listener));
-    assert_eq!(over.recv_timeout(Duration::from_secs(5)), Ok(false));
+    assert_eq!(over.recv_timeout(Duration::from_secs(5)), Ok(None));
 }
 
 /// Several wait at once, and each is told for itself.
@@ -243,9 +245,50 @@ fn clients_wait_side_by_side_and_each_hears_only_its_own_done() {
     let (_, one) = got.recv().unwrap();
     let second = send_and_wait(&dir);
     let (_, two) = got.recv().unwrap();
-    two.unwrap().done();
-    assert_eq!(second.recv_timeout(Duration::from_secs(5)), Ok(true));
+    two.unwrap().tell(&Outcome::Failed);
+    let told = second.recv_timeout(Duration::from_secs(5));
+    assert_eq!(told, Ok(Some(Outcome::Failed)));
     assert!(first.recv_timeout(Duration::from_millis(100)).is_err());
-    one.unwrap().done();
-    assert_eq!(first.recv_timeout(Duration::from_secs(5)), Ok(true));
+    one.unwrap().tell(&Outcome::Done);
+    let told = first.recv_timeout(Duration::from_secs(5));
+    assert_eq!(told, Ok(Some(Outcome::Done)));
+}
+
+/// A restart tells the client what it waits on, and the client asks the next instance to wait on
+/// that again: the request arrives as it was told, waiting, with paths that are odd as can be.
+#[test]
+fn a_restart_moves_a_waiting_client_to_the_next_instance() {
+    let dir = Dir::new("moved");
+    let _held = Instance::try_lock(&dir.0).unwrap().unwrap();
+    let (old, got) = listen(&dir);
+    let over = send_and_wait(&dir);
+    let (_, client) = got.recv().unwrap();
+    let waited = vec![
+        Waited {
+            path: PathBuf::from("/a b/COMMIT_EDITMSG"),
+            made: true,
+        },
+        Waited {
+            path: PathBuf::from("/made/kept:12\nagain"),
+            made: false,
+        },
+    ];
+    drop(old);
+    client.unwrap().tell(&Outcome::Moved(waited.clone()));
+    let told = over.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(told, Some(Outcome::Moved(waited.clone())));
+
+    let (tx, again) = channel();
+    let _new = OpenListener::start(&dir.0, move |asked: Asked| {
+        let _ = tx.send((asked.request.clone(), asked.again.clone(), asked.answer()));
+    })
+    .unwrap();
+    let Sent::Delivered(Some(waiting)) = send_again(&dir.0, &waited, PATIENCE).unwrap() else {
+        panic!("asking again waits");
+    };
+    let (request, asked_again, client) = again.recv().unwrap();
+    assert_eq!(asked_again, Some(waited));
+    assert!(request.wait && !request.front && request.targets.is_empty());
+    client.unwrap().tell(&Outcome::Done);
+    assert_eq!(waiting.wait(), Some(Outcome::Done));
 }
