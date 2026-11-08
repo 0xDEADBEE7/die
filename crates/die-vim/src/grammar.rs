@@ -106,6 +106,8 @@ pub enum Operator {
     Upcase,
     /// `gu`
     Downcase,
+    /// `!`
+    Shell,
 }
 
 /// Where a motion starts, and what it may read.

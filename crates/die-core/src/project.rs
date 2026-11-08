@@ -10,7 +10,7 @@
 //!   they act on the list, and it should be the list for what's on the line.
 #![warn(missing_docs)]
 mod grep;
-pub(crate) use grep::{GREP, Grep};
+pub(crate) use grep::{Grep, parse_row};
 
 use crate::commands::{line_for, open_in_window};
 use crate::ext::{Ctx, Registry};
@@ -399,7 +399,7 @@ impl Ctx {
 
 /// The directory a project command starts from: this buffer's, or where DIE started. An app
 /// started from the Dock is in `/`, which is no project, so there it's the home directory.
-fn here_dir(ctx: &Ctx) -> PathBuf {
+pub(crate) fn here_dir(ctx: &Ctx) -> PathBuf {
     let here = ctx.focused_buffer().and_then(|b| ctx.directory(b));
     let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
     let dir = here.map_or(cwd, Path::to_path_buf);
@@ -411,6 +411,7 @@ fn here_dir(ctx: &Ctx) -> PathBuf {
 
 pub(crate) fn register_commands(reg: &mut Registry) {
     grep::register_commands(reg);
+    crate::process::register_commands(reg);
     reg.command(
         "find-file-home",
         "Open a file found anywhere under the home directory, hidden ones included",

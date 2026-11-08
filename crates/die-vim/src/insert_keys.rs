@@ -1,12 +1,15 @@
 //! The control keys of insert and replace state that aren't plain edits, as your Evil's
-//! `evil-insert-state-map` has them: `C-o`, `C-r`, `C-a`, `C-@`, `C-v`, `C-q`, `C-y`, `C-e`, and
-//! the special case of `C-d`. `C-p`, `C-n`, `C-x C-n` and `C-x C-p` are in `complete.rs`.
+//! `evil-insert-state-map` has them: `C-o`, `C-r`, `C-a`, `C-@`, `C-v`, `C-q`, `C-y`, `C-e`, `C-k`,
+//! `<Insert>` and the special case of `C-d`. `C-p`, `C-n`, `C-x C-n` and `C-x C-p` are in
+//! `complete.rs`. Those your Evil leaves to your Emacs's global keys are here too: `C-g`, `C-h`'s
+//! help, and the `C-c` prefix and `<S-Tab>`, which nothing is bound to.
 //!
 //! **`C-o`** ends the insert step: the session's count is dropped, its other lines get what
 //! was typed, and `.` keeps its keys so far. [`command_ended`] goes back when the next
 //! command is over, whoever's it is, one that didn't leave an operator, a count or its own fed
 //! keys waiting. [`after_command`] tells it what only die-vim's own commands can say.
 
+use crate::digraphs::TABLE;
 use crate::grammar::{Goal, buffer_window};
 use crate::insert::{self, Edit, Session};
 use crate::registers;
@@ -366,4 +369,119 @@ fn add_keys(ctx: &mut Ctx, b: BufferId, keys: &str) -> Result {
         }
     })?;
     Ok(())
+}
+
+/// The digraph of two keys, either way round, as your Evil's `evil-digraph` finds it.
+fn digraph(a: char, b: char) -> Option<char> {
+    let table: Vec<char> = TABLE.chars().collect();
+    let find = |x, y| {
+        table
+            .chunks(3)
+            .find(|d| d[0] == x && d[1] == y)
+            .map(|d| d[2])
+    };
+    find(a, b).or_else(|| find(b, a).filter(|_| a != b))
+}
+
+/// `C-k` and two keys: their digraph, or the second key if they make none, count times, as your
+/// Evil's `evil-insert-digraph`. In replace state it goes over as many characters. `<Tab>`, `<CR>`,
+/// `<BS>` and a control key are their characters, as Emacs reads them. A key that isn't a
+/// character, as an arrow or `<Esc>`, fails, as there.
+pub fn insert_digraph(ctx: &mut Ctx, a: &Args) -> Result {
+    let (b, _) = buffer_window(ctx, a)?;
+    let typed = |i: usize| {
+        let ev = a.keys.get(i)?;
+        let code = literal_code(ev).filter(|_| ev.chord().key != Key::Esc);
+        code.and_then(char::from_u32)
+    };
+    let (Some(first), Some(second)) = (typed(1), typed(2)) else {
+        return Err(Error::Msg("Wrong type argument: characterp".into()));
+    };
+    let c = digraph(first, second).unwrap_or(second).to_string();
+    let e = match ctx.state_of(b) {
+        State::Replace => Edit::Over(c),
+        _ => Edit::Text(c),
+    };
+    insert_edit(ctx, a, e)
+}
+
+/// `<PageDown>` and `<PageUp>`, which `.` repeats with the session.
+pub fn page(ctx: &mut Ctx, a: &Args, down: bool) -> Result {
+    let (b, _) = buffer_window(ctx, a)?;
+    crate::scroll::emacs_page(ctx, a, down)?;
+    add_keys(ctx, b, &key_notation(&a.keys))
+}
+
+/// `<Insert>`: from insert state to replace state, or back, the session going on.
+pub fn toggle_replace(ctx: &mut Ctx, a: &Args) -> Result {
+    let (b, _) = buffer_window(ctx, a)?;
+    let to = match ctx.state_of(b) {
+        State::Insert => State::Replace,
+        _ => State::Insert,
+    };
+    let mut s = session(ctx, b)?;
+    if let Some(c) = &mut s.repeat {
+        c.keys.push_str(&key_notation(&a.keys));
+    }
+    let r = insert::switch(ctx, a, &mut s, to);
+    put_session(ctx, b, s)?;
+    r
+}
+
+/// `C-g`, your Emacs's `keyboard-quit`: a `C-u` count goes, and it says so. Your Evil's advice on
+/// it ends the session's recording (`Session::quit`).
+pub fn quit(ctx: &mut Ctx, a: &Args) -> Result {
+    let (b, _) = buffer_window(ctx, a)?;
+    ctx.with_ext(|v: &mut Vim, _| v.inserts.get_mut(&b).map(Session::quit))?;
+    ctx.set_prefix(Prefix::default());
+    ctx.messages.push("Quit".into());
+    Ok(())
+}
+
+/// `<S-Tab>`, and `C-c` with the key after it: your Emacs binds nothing to them here, so they do
+/// nothing and say so, as Emacs's `undefined` does. `C-g` after `C-c` quits.
+pub fn undefined(ctx: &mut Ctx, a: &Args) -> Result {
+    let keys = key_notation(&a.keys);
+    let name = match keys.strip_prefix("<C-c>") {
+        Some("<C-g>") => return quit(ctx, a),
+        Some(rest) => format!("C-c {rest}"),
+        None => "<backtab>".into(),
+    };
+    ctx.messages.push(format!("{name} is undefined"));
+    Ok(())
+}
+
+/// `C-h` and a key, your Emacs's help, as far as DIE has it: `k` and `c` say what a key does, and
+/// `x` and `f` what a command does.
+pub fn help(ctx: &mut Ctx, a: &Args) -> Result {
+    let key = key_notation(a.keys.get(1..).unwrap_or_default());
+    let command = match key.as_str() {
+        "k" | "c" => "describe-key",
+        "x" | "f" => "describe-command",
+        "<C-g>" => return quit(ctx, a),
+        _ => return Err(Error::Msg(format!("C-h {key} isn't built"))),
+    };
+    let here = Args {
+        buffer: a.buffer,
+        window: a.window,
+        ..Args::default()
+    };
+    ctx.run(command, &here)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_table_has_your_evils_1665_digraphs_either_way_round() {
+        assert_eq!(TABLE.chars().count(), 3 * 1665);
+        assert_eq!(digraph('e', ':'), Some('ë'));
+        assert_eq!(digraph(':', 'e'), Some('ë'));
+        assert_eq!(digraph('S', 'P'), Some(' '));
+        assert_eq!(digraph('N', 'U'), Some('\0'));
+        assert_eq!(digraph('"', 'p'), Some('\u{e018}'));
+        assert_eq!(digraph('!', '!'), Some('|'));
+        assert_eq!(digraph('q', 'q'), None);
+    }
 }

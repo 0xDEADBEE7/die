@@ -169,13 +169,15 @@ impl Ctx {
     /// Kill a buffer. It is dead at once; a checked-out surface or mode drops at check-in.
     /// Dropping its modes drops the `Sub` handles they hold, which cancels them (C4). Every window
     /// showing it goes on showing another buffer: the one used last that no window shows, or
-    /// else the one used last, or else a new `*scratch*`.
+    /// else the one used last, or else a new `*scratch*`. A `die --wait` client waits on it no
+    /// more, and is told if it was the last it waited on.
     pub fn kill(&mut self, buf: BufferId) -> bool {
         let Some(b) = self.buffers.remove(buf) else {
             return false;
         };
         self.cleanup(|_| drop(b));
         self.files.forget(buf);
+        self.forget_client_buffer(buf);
         self.stop_ticking_if_done();
         let showing: Vec<WindowId> = self.windows_showing(buf);
         for w in showing {

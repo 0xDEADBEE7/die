@@ -3,13 +3,13 @@
 //! lines the way your Evil does in text buffers (like the line above). From visual state
 //! on lines or a block, what's typed goes in on each of them when it ends ([`Rows`]).
 
-use crate::grammar::{buffer_window, forget_goal};
+use crate::grammar::{CountWas, buffer_window, forget_goal};
 use crate::motions::{row_start, word_back, word_begin};
-use crate::operators::SHIFT_WIDTH;
+use crate::operators::{SHIFT_WIDTH, after_line};
 use crate::repeat::{Change, keys_of};
 use crate::text::{
-    Chars, blank_line, indent_end, indent_stops, indentation, line_end, next_stop, pos_at_col,
-    prev_stop, rest_pos,
+    Chars, Class, blank_line, class, emacs_word_boundary, indent_end, indent_stops, indentation,
+    line_end, next_stop, pos_at_col, prev_stop, rest_pos,
 };
 use die_core::{
     Args, BufferId, Ctx, Error, Origin, RegKind, Register, Result, Selection, State, TextBuf,
@@ -72,6 +72,14 @@ pub enum Edit {
     WordLeft,
     /// `<S-Right>`
     WordRight,
+    /// `<Home>` and `<End>`, your Emacs's `beginning-of-buffer` and `end-of-buffer` on macOS.
+    Home,
+    End,
+    /// `<C-Left>` and `<C-Right>`, your Emacs's `left-word` and `right-word`.
+    BackwardWord,
+    ForwardWord,
+    /// `<C-j>`: a newline, and no indentation.
+    BareNewline,
     /// `<C-t>` (right) and `<C-d>`: the line moves a shift, and the cursor with it.
     Shift {
         right: bool,
@@ -128,6 +136,9 @@ pub struct Session {
     insertion: Option<(usize, usize)>,
     /// Which of the edits put in the last insertion, read afresh by whatever replays them.
     pasted: Vec<usize>,
+    /// After a `C-g`, how many of the edits a count and the other lines put in again: those
+    /// before it, as your Evil's insertion stops recording there.
+    replays: Option<usize>,
 }
 
 /// What a key in replace state wrote over: the bytes it now holds, and what they were.
@@ -151,7 +162,20 @@ impl Session {
             left: None,
             insertion: None,
             pasted: vec![],
+            replays: None,
         }
+    }
+
+    /// `C-g`, which your Evil's `evil-repeat-abort` follows: `.` keeps the change before this
+    /// session, and a count or the other lines put in only what came before.
+    pub fn quit(&mut self) {
+        self.repeat = None;
+        self.replays.get_or_insert(self.edits.len());
+    }
+
+    /// The edits a count and the other lines put in again.
+    fn replayed(&self) -> &[Edit] {
+        &self.edits[..self.replays.unwrap_or(usize::MAX).min(self.edits.len())]
     }
 
     /// The edit just made put in the last insertion.
@@ -230,13 +254,21 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
 /// Emacs's commands take one for. As in your Evil, a count on the session or `.` doesn't repeat it.
 pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    let bare = ctx.with_ext(|v: &mut crate::Vim, _| v.count_was == CountWas::Universal)?;
+    let ends = matches!(e, Edit::Home | Edit::End);
+    let tenths = a.count.filter(|_| ends && !bare);
     let t = ctx.text_mut(b)?;
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
     s.drop_indent &= s.left == Some(p);
     let once = matches!(
         e,
-        Edit::DeleteWord | Edit::Tab | Edit::Restore | Edit::RestoreWord | Edit::ZeroIndent
-    );
+        Edit::DeleteWord
+            | Edit::Tab
+            | Edit::Restore
+            | Edit::RestoreWord
+            | Edit::ZeroIndent
+            | Edit::BareNewline
+    ) || tenths.is_some();
     let n = if once { 1 } else { a.count.unwrap_or(1) };
     if n > MAX_REPLAY {
         return Err(Error::Msg("Count too large".into()));
@@ -245,6 +277,10 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
         return Ok(());
     }
     match &e {
+        _ if tenths.is_some() => {
+            forget_goal(t, w);
+            t.set_cursor(w, in_tenths(t, tenths.unwrap_or(0), e == Edit::End));
+        }
         // A count past the text's end stops there. Only going nowhere fails.
         Edit::WordLeft | Edit::WordRight => {
             s.restore.retain(|r| r.at != p);
@@ -274,7 +310,7 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
             // again, or just past it, forgets what the key before took there.
             s.restore.retain(|r| r.at != p);
             moved_after(s, p, t.len() as isize - len as isize);
-            if matches!(e, Edit::Over(_) | Edit::Newline) {
+            if matches!(e, Edit::Over(_) | Edit::Newline | Edit::BareNewline) {
                 let end = t.cursor(w).unwrap_or(p);
                 s.restore.push(Taken { at: p, end, old });
             }
@@ -384,6 +420,34 @@ pub fn pause(ctx: &mut Ctx, a: &Args, s: &mut Session) -> Result {
     r
 }
 
+/// `<Insert>`: the session goes on in `to`, replace state from insert state and back, as your
+/// Evil's `evil-enter-replace-state` and `evil-append` take it. Its count goes, and the new state is
+/// an undo step of its own. Leaving replace state steps back off a line's end.
+pub fn switch(ctx: &mut Ctx, a: &Args, s: &mut Session, to: State) -> Result {
+    let (b, w) = buffer_window(ctx, a)?;
+    let t = ctx.text_mut(b)?;
+    s.count = 1;
+    let r = close(t, w, s);
+    (s.rows, s.drop_indent, s.insertion) = (None, false, None);
+    s.restore.clear();
+    (s.edits, s.replays) = (vec![], None);
+    let p = t.cursor(w).unwrap_or(0);
+    let line = t.line_of(p);
+    if to == State::Insert && p == line_end(t, line) && p > t.line_start(line) {
+        let back = prev_stop(t, p).unwrap_or(p);
+        t.set_cursor(w, back);
+    }
+    s.entry = match to {
+        State::Replace => Entry::Replace,
+        _ => Entry::Insert,
+    };
+    s.left = t.cursor(w);
+    t.undo_boundary();
+    t.begin_undo_group();
+    ctx.set_state_of(b, to);
+    r
+}
+
 /// Back from `C-o`: `state` again, with a new undo step, at `pos`.
 pub fn resume(ctx: &mut Ctx, b: BufferId, w: WindowId, state: State, pos: usize) -> Result {
     let t = ctx.text_mut(b)?;
@@ -490,7 +554,7 @@ fn replay(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
     let opens = matches!(s.entry, Entry::OpenBelow | Entry::OpenAbove);
     let too_large = || Error::Msg("Count too large".into());
     let text: Option<String> = s
-        .edits
+        .replayed()
         .iter()
         .map(|e| match e {
             Edit::Text(x) => Some(x.as_str()),
@@ -511,7 +575,7 @@ fn replay(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
         t.set_cursor(w, p + n);
         return Ok(());
     }
-    (s.edits.len() + usize::from(opens))
+    (s.replayed().len() + usize::from(opens))
         .checked_mul(more)
         .filter(|&n| n <= MAX_REPLAY)
         .ok_or_else(too_large)?;
@@ -520,7 +584,7 @@ fn replay(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
             let line = t.line_of(t.cursor(w).unwrap_or(0));
             open_below(t, w, line)?;
         }
-        s.edits.iter().try_for_each(|e| apply(t, w, e))
+        s.replayed().iter().try_for_each(|e| apply(t, w, e))
     })
 }
 
@@ -577,7 +641,7 @@ fn restore(t: &mut TextBuf, w: WindowId, s: &mut Session) -> Result {
 
 /// [`apply`], noting the change for register `.`.
 fn tracked(t: &mut TextBuf, w: WindowId, s: &mut Session, e: &Edit) -> Result {
-    if matches!(e, Edit::Left | Edit::Right | Edit::Up | Edit::Down) {
+    if moves(e) {
         return apply(t, w, e);
     }
     let (p, len) = (t.cursor(w).unwrap_or(0), t.len());
@@ -599,6 +663,55 @@ fn tracked(t: &mut TextBuf, w: WindowId, s: &mut Session, e: &Edit) -> Result {
         s.note(beg, ((q - beg) as isize - by).max(0) as usize, q);
     }
     r
+}
+
+/// Where `C-u n <Home>` goes, or with `end` `C-u n <End>`, as your Emacs's `beginning-of-buffer` and
+/// `end-of-buffer` take a number: n tenths of the characters from the text's start (and one more)
+/// or from its end, and then the next line's start. A bare `C-u` is no number to them.
+fn in_tenths(t: &TextBuf, n: usize, end: bool) -> usize {
+    let size = t.rope().len_chars();
+    let part = size.saturating_mul(n) / 10;
+    let at = match end {
+        false => part.saturating_add(1).min(size),
+        true => size.saturating_sub(part),
+    };
+    after_line(t, t.line_of(t.rope().char_to_byte(at)))
+}
+
+/// An edit that only moves the cursor.
+fn moves(e: &Edit) -> bool {
+    use Edit::*;
+    matches!(
+        e,
+        Left | Right | Up | Down | Home | End | BackwardWord | ForwardWord
+    )
+}
+
+/// Where your Emacs's `forward-word` or `backward-word` goes from `p`: over what isn't a word, then
+/// to the far end of the word, as far as the text goes and never failing. Words end where your
+/// Emacs's own lists say, not your Evil's.
+fn emacs_word(t: &TextBuf, p: usize, forward: bool) -> usize {
+    let word = |c: char| class(c, false) == Class::Word;
+    let joined = |a: char, b: char| word(a) && word(b) && !emacs_word_boundary(a, b);
+    let mut c = Chars::at(t, p);
+    if forward {
+        while c.ch().is_some_and(|ch| !word(ch)) && c.fwd() {}
+        while let Some(ch) = c.ch() {
+            c.fwd();
+            if !c.ch().is_some_and(|n| joined(ch, n)) {
+                break;
+            }
+        }
+    } else {
+        while c.prev_ch().is_some_and(|ch| !word(ch)) && c.back() {}
+        while let Some(ch) = c.prev_ch() {
+            c.back();
+            if !c.prev_ch().is_some_and(|b| joined(b, ch)) {
+                break;
+            }
+        }
+    }
+    c.pos()
 }
 
 /// [`Edit::Literal`] in replace state. `<BS>` puts back what each of its characters took.
@@ -720,7 +833,7 @@ fn rows(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
     if rows.n < 2 {
         return Ok(());
     }
-    (s.edits.len() * s.count)
+    (s.replayed().len() * s.count)
         .checked_mul(rows.n)
         .filter(|&n| n <= MAX_REPEAT)
         .ok_or_else(|| Error::Msg("Count too large".into()))?;
@@ -751,7 +864,7 @@ fn rows(t: &mut TextBuf, w: WindowId, s: &Session) -> Result {
         };
         t.set_cursor(w, pos);
         for _ in 0..s.count {
-            done = done.and(s.edits.iter().try_for_each(|e| apply(t, w, e)));
+            done = done.and(s.replayed().iter().try_for_each(|e| apply(t, w, e)));
         }
     }
     t.set_cursor(w, here);
@@ -808,6 +921,14 @@ fn apply(t: &mut TextBuf, w: WindowId, e: &Edit) -> Result {
         // Past the last word it's the text's end, the empty line after a final newline.
         Edit::WordRight if p == t.len() => return fail("End of buffer"),
         Edit::WordRight => word_begin(t, p, false).unwrap_or(t.len()),
+        Edit::Home => 0,
+        Edit::End => t.len(),
+        Edit::BackwardWord => emacs_word(t, p, false),
+        Edit::ForwardWord => emacs_word(t, p, true),
+        Edit::BareNewline => {
+            t.tx(Origin::User).insert(p, "\n").commit()?;
+            p + 1
+        }
         Edit::Shift { right } => return shift_line(t, w, p, *right),
         Edit::ZeroIndent => {
             let line = t.line_of(p);

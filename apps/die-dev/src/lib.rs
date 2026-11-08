@@ -36,8 +36,8 @@ pub struct Args {
 }
 
 /// `die [--check a,b] [--handover socket] [--restart-after-frame] [--restart-loop] [--frontmost]
-/// [--background] [--] [file...]`, where in DIE.app a file is `path[:line[:col]]` or
-/// `+line[:col] path`.
+/// [--background] [--wait] [--] [file...]`, where in DIE.app a file is `path[:line[:col]]` or
+/// `+line[:col] path`. `-w` is `--wait`.
 pub fn parse_args(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Args, String> {
     let mut parsed = Args {
         check: None,
@@ -72,6 +72,8 @@ pub fn parse_args(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result
             parsed.launch.restart_loop = true;
         } else if !only_files && name == "--background" {
             parsed.launch.background = true;
+        } else if !only_files && (name == "--wait" || name == "-w") {
+            parsed.launch.wait = true;
         } else if !only_files && name.starts_with('-') && name != "-" {
             return Err(format!("no option {name}"));
         } else {

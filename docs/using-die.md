@@ -11,8 +11,8 @@ open ~/Applications/DIE.app
 
 - `cargo xtask app` links `~/.local/bin/die` if that directory is on your PATH. Otherwise it prints the one line to add to your shell config. It replaces a link there but never a file. `--home DIR` installs under DIR instead, to try it without touching yours.
 - There is one instance. Launching it again from the Dock or Finder does nothing.
-- **After changing DIE or your config:** `:rebuild` in DIE. It runs `cargo xtask app` in the checkout this DIE.app was installed from, whatever file you're in, with cargo's output in `*rebuild*` below. To build another checkout, run `cargo xtask app` there once, and `:rebuild` builds that one from then on. If it builds, DIE restarts into it. If not, nothing is installed, the cursor in `*rebuild*` is on the first error, and `gf` on its `-->` line opens the file there. It replaces the bundle that's running, so it refuses for one outside an `Applications` folder. A change to your config takes about 2 s. By hand it's `cargo xtask app` in a terminal, then `:restart`.
-- **What a restart keeps:** your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search. `*grep*` and `*Buffer List*` don't come back. A new build that fails to start leaves the old instance running.
+- **After changing DIE or your config:** `:rebuild` in DIE. It runs `cargo xtask app` in the checkout this DIE.app was installed from, whatever file you're in, with cargo's output in `*rebuild*` below. To build another checkout, run `cargo xtask app` there once, and `:rebuild` builds that one from then on. If it builds, DIE restarts into it. If not, nothing is installed, the cursor in `*rebuild*` is on the first error, and `<CR>` or `gf` on its `-->` line opens the file there, as `:cn` does from anywhere. It replaces the bundle that's running, so it refuses for one outside an `Applications` folder. A change to your config takes about 2 s. By hand it's `cargo xtask app` in a terminal, then `:restart`.
+- **What a restart keeps:** your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search, and a `die --wait` still waits. `*grep*`, `*compilation*`, `*Shell Command Output*`, `*rebuild*` and `*Buffer List*` don't come back, though `:make`'s command does, and where it ran. Commands still running are stopped, at a restart as at quit. A new build that fails to start leaves the old instance running.
 - **Quit:** `:q` on the last window, `:qa`, or Cmd-Q. Each refuses if a file is unsaved. `:qa!` doesn't.
 
 From a terminal, `die` opens files in the running DIE and returns at once. If none is running, it starts one.
@@ -25,9 +25,23 @@ die foo.rs:12:3:         # as compilers print it
 die +12 'odd:name'       # the name is taken literally
 die a.rs b.rs            # each opens in turn, and the last ends up on screen
 die                      # brings DIE forward, or starts it
+die --wait msg.txt       # returns once you're done with it (-w for short)
 ```
 
-`die file:line` leaves a jump, so `C-o` comes back. `EDITOR=die` doesn't work for `git commit`, because there is no `--wait`. `open -a DIE file` and a Finder double-click don't open the file yet.
+`die file:line` leaves a jump, so `C-o` comes back. `open -a DIE file`, a Finder double-click on a file DIE is the opener of, and dropping files on DIE's Dock icon open them in the running DIE too, or start it with them. A name with an accent comes as you'd type it, so `:b café` finds it. DIE's Info.plist says it can edit any file, at the rank that makes it the opener of none, so Finder should list it in Open With, and Get Info, then Open with, then Change All should make it the opener of every file of that kind. Only `open -a` has been tried: neither Finder's list nor a double-click has.
+
+**DIE as git's editor.** `die --wait` opens files as `die` does, then waits until you're done with them, as `emacsclient` does. git runs `$EDITOR` through a shell, so the flag works there. In your shell's startup file:
+
+```sh
+export EDITOR="die --wait"
+```
+
+Or for git alone, `git config --global core.editor "die --wait"`.
+
+- **Done** is `:wq`, `:x` or `ZZ`, which save first, or `:q`, `ZQ` or `C-w q`, which refuse while it has unsaved changes, as `:q` does. `:q!` drops them. Killing the buffer is done too: `:bd`, `:kill-buffer`, or the Buffer List's `x`. In a split these finish the file and leave the window open. `C-w c` only closes the window.
+- **`:cq` gives up** on the file: `die --wait` returns 1, so git stops the commit or the rebase, and the file goes as with `:q!`, with what you typed. On a file nothing waits on, `:cq` says "This buffer has no clients" and does nothing.
+- **Then** a buffer made for `die --wait` goes, unsaved text and all, and its window shows what any window shows after a kill: the buffer you used last that no window shows. Your Emacs's `server-edit` goes back to what that window showed, which is the same unless another window shows it. A file that was open before `die --wait` stays open and on screen, and goes last in the buffer list. `die --wait a b` shows `b`. Done with it, `a` comes up, and it returns once both are done. `:q!` and `:cq` bring nothing up and say nothing, as your Evil's `:q!` runs only `server-buffer-done`. Several can wait at once, each for its own files.
+- **It returns 0** once you're done, so a commit message left as git wrote it aborts the commit, as git decides. It returns 1 after `:cq`, if none of its files would open, or if DIE quits or crashes before you're done, so that git stops rather than go on with a message or a rebase's list saved half done. That's where it differs from `emacsclient`, which returns 0 when Emacs goes. A restart (`:rebuild`, `:restart`) hands it to the new DIE, which waits on its files as they were. With no DIE running it starts one and waits, and while DIE is starting or restarting it waits up to 15 s for it.
 
 ## DIE's own keys
 
@@ -42,6 +56,7 @@ The leader is `\`, in normal state.
 | `\}`, `\?` | `buffer-menu` | The Buffer List, to show, save and kill buffers |
 | `\r` | `grep` | Search the project |
 | `\x`, `M-x` | `command-palette` | Run any command by name, recent first. `M-x` works in insert and visual too |
+| `M-!` | `shell-command` | Run a shell command, as `:!` does. It works in insert and visual too |
 | `\z` | `toggle-max-width` | Turn the 80-column centered text on or off. The prompts, their lists and the messages keep to its margins, from where the line numbers start, under a status line that runs edge to edge |
 | `\hk` | `describe-key` | What a key does |
 | `\hc` | `describe-command` | What a command does |
@@ -67,6 +82,26 @@ The leader is `\`, in normal state.
 - `q` and `ZZ` show what the window showed before and put the menu last. `ZQ` closes the window, as elsewhere.
 - `1` and `2` aren't counts there, but after a count's first digit they're digits of it, so `31d` marks 31 rows. `gg` goes to the titles.
 - Evil's insert and edit keys do nothing there, as your evil-collection makes them in a read-only list: `i I a A c C D r O p P J = < >`.
+
+## Running commands
+
+Commands run without a terminal, with your `$SHELL`, in the buffer's directory, as Emacs runs them. They get the PATH your login shell sets, asked once each time DIE starts, with `~/.local/bin` and `~/.cargo/bin` first if it hasn't got them, so DIE.app from the Dock finds cargo and git as your terminal does.
+
+**`:make cargo test`**, or `M-x compile`. The command's output and errors stream into `*compilation*` below as they come, a line before its newline too, with the focus staying where it was, under Emacs's header: the `-*- mode: compilation; default-directory: ... -*-` line, `Compilation started at ...` and the command. Its last line is Emacs's, `Compilation finished at ..., duration 4.56 s` or `Compilation exited abnormally with code 101 ...`, and the command row says it too.
+- `M-x compile` asks with the last command on the line (`make -k ` the first time), and `<Up>` for older ones. `:make` alone, `M-x recompile`, and `gr` in `*compilation*` run the last one again, where it ran, after a restart too.
+- Files with unsaved changes are offered for saving first, one at a time: `y` saves it, `n` doesn't, `!` saves the rest, `q` saves no more, and `Esc` runs nothing.
+- One runs at a time. Another asks whether to stop the one running. `C-c C-k` in `*compilation*`, or `M-x kill-compilation`, stops it as Ctrl-C would. Quitting DIE, or a restart, stops it without asking: a hangup, then a kill if it's still there.
+- `<CR>` on an error's line opens the file there, in another window, and `gf` on its path opens it in this one. `:cn` and `:cp` go through the errors from any window, as they go through `*grep*`'s rows: whichever you made or went to last. In `*compilation*`, `gj` `gk`, `C-j` `C-k` and `<Tab>` `<S-Tab>` move to the next and previous error's line.
+- An error is rustc's and cargo's `--> path:line:col`, a test's `panicked at path:line:col:`, or `path:line:col: message` and `path:line: message`. `:cn` passes over notes: a `-->` under a `note:` or `help:` line, any `-->` after an error's first, and `:::` lines, which point at what explains the error, as std's source or a struct's definition. `<CR>` on one opens it.
+- rustc's paths, and a test's, are read from the cargo workspace's root first, since cargo names files from there wherever it runs, then from the directory the command ran in, then from its project (`.git`). `path:line:` lines are read from the directory it ran in first. A path that's in none of them says "Can't find PATH from DIR".
+- A carriage return with more of its line after it wipes the line, as in Emacs, so a progress line shows its last state.
+- Output past 8 MiB is cut, with a note saying so, and the command runs on.
+
+**`:!cmd`**, or `M-!`. Runs a shell command, and shows one line of what it prints on the command row, or more in `*Shell Command Output*` below. With nothing printed, it says whether it succeeded. In the command, `%` is the buffer's file and `#` the other buffer's, `\%` and `\#` themselves. `:!!` runs the last one again.
+- **`:{range}!cmd`** sends the lines to the command and puts what it prints, errors too, in their place, as one change: `:%!sort`, `:'<,'>!jq .`, `:.!tr a-z A-Z`. Output with no newline at its end runs into the next line, as in your Evil.
+- **The `!` operator** opens `:` with its lines and a `!`: `!!` for this line, `!ip`, `!G`, or `!` over a selection.
+- **`:r !cmd`** puts what the command prints below the cursor's line, or the range's last, and `:0r !cmd` above the first. `:r file` does the same with a file's text.
+- A key after a command waits up to half a second for it, so a macro with `:%!sort` works on the sorted lines. A slower one goes on in the background and its output comes when it's done, or it's stopped when DIE quits. If you changed the text meanwhile, a filter leaves it alone and says so. A command that prints more than 8 MiB is stopped. A filter or `:r !` whose output isn't UTF-8 leaves the text alone too, and says so.
 
 ## Prompts
 
@@ -136,7 +171,14 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **Objects:** `iw aw iW aW io ao` (word, WORD, symbol: `cio` for snake_case), `ip ap`, `i" a" i' a'`, ``i` a` ``, `i( a( ib ab`, `i[ a[`, `i{ a{ iB aB`, `i< a<`.
 - **Registers:** `"x` then a command. `a-z`, `A-Z` to append, `0`, `1-9`, `-`, `_`, `+` the clipboard, and read-only `.`, `:`, `/`, `%`. Every kill also goes to the clipboard, as in your Emacs. `:reg` (`:registers`, `:di`, `:display`) lists them all in `*registers*` below, a macro as its keys, and `:reg ab` only `a` and `b`. `:q` closes it.
 - **Macros:** `q{x}` records into `x`, `q{X}` adds to it, and `q` stops. While it records, the bottom row's right end says `recording @x`, and stopping says `Recorded @x` (or `Added to @x`). `@x` plays it, `@@` plays the last again, `@:` runs the last ex line, each with a count. A macro can be edited as text: `"xp`, change it, `0"xy$`. A typed `C-g` stops a running macro, or a `:norm`.
-- **On each line:** `:norm keys` (`:normal`, `:norm!`) types the keys on each line of a range, from the line's start, the cursor's line if none is given: `:%norm A;`, `:'<,'>norm @q`, `:5,$norm .`. A line whose keys fail is left quietly and the next goes ahead, and a macro or `:norm` that ran the `:norm` goes on after it. One `u` undoes it all. Each character is a key, so put an Esc or Enter in with `C-v` first. A prompt the keys leave open is answered as it stands, as in your Evil, so `:%norm :s/a/b/` runs the `:s` on each line. `:g/pat/cmd` runs an ex command on each line that matches, and `:g!` and `:v` on each that doesn't, the whole file if no range is given: `:g/TODO/norm @q`, `:v/^$/norm A;`. Any delimiter works, an empty pattern is the last search, and the pattern becomes the last search. It needs a command: there's no `:p` or `:d`.
+- **On each line:** `:norm keys` (`:normal`, `:norm!`) types the keys on each line of a range, from the line's start, the cursor's line if none is given: `:%norm A;`, `:'<,'>norm @q`, `:5,$norm .`. A line whose keys fail is left quietly and the next goes ahead, and a macro or `:norm` that ran the `:norm` goes on after it. One `u` undoes it all. Each character is a key, so put an Esc or Enter in with `C-v` first. A prompt the keys leave open is answered as it stands, as in your Evil, so `:%norm :s/a/b/` runs the `:s` on each line. `:g/pat/cmd` runs an ex command on each line that matches, and `:g!` and `:v` on each that doesn't, the whole file if no range is given: `:g/TODO/norm @q`, `:v/^$/norm A;`. Any delimiter works, an empty pattern is the last search, and the pattern becomes the last search. It needs a command: there's no `:p`. The commands on lines below work there too: `:g/TODO/d`, `:v/./d` to drop blank lines, `:g/^/m0` to reverse the file, `:g/fn /t$` to copy every `fn` line to the end. `:g/pat/d` alone, with nothing after the `d`, deletes them all at once into no register, and leaves the last search as it was, as in your Evil. One `u` undoes any `:g`.
+- **Lines:** each takes a range (`%`, `'<,'>`, `N,M`, `.`, `$`, `'x`, `+n`, `-n`, or a count before `:`), the cursor's line if none is given, and is one `u`. A range's line 0 is line 1, as in Vim, except that `:0r` reads above it. None is what `.` repeats, as in your Evil, and `@:` runs it again.
+  - `:d [x] [count]` (`:delete`) deletes the lines into register `x` or the kill ring, as `dd` does. A count takes that many lines from the range's last, so `:d 3` and `:d a 3` work, and `:d3` too. `:y [x] [count]` (`:yank`) yanks them the same way. After a range, `:y` leaves the cursor where it was, or at the selection's start if you typed `:` in visual state.
+  - `:pu [x]` (`:put`) puts register `x`, or the newest kill, as whole lines below the range's last line, whatever the register holds. `:pu!` puts them above. The cursor goes to the first non-blank of the last line put.
+  - `:m {address}` (`:move`) moves the lines after that line: `:m0` to the top, `:m$` to the end, `:m+1`, `:m-2`, `:m'a`. `:t {address}` and `:co[py]` copy them there: `:t.` duplicates the line, `:t$` copies it to the end. The cursor goes to the last line moved or copied. Moved to where they are, nothing moves, and a range given leaves the cursor at its start.
+  - `:j[oin] [count]` joins the lines as `J` does, `:j!` as `gJ` does, and a count joins that many from the range's last.
+  - `:>` and `:<` shift the lines once, as `>>` and `<<` do. Your Evil ignores a count there, and `:>>` and `:<<` are no commands in it, so neither is here.
+  - `:sor[t]` sorts the lines, the whole file if no range is given, `:sort!` the other way, ties keeping their order. Flags: `i` ignores case, `u` keeps one of lines that are the same, `n` sorts by the first decimal number, `x` by the first hexadecimal one, `o` octal, `b` binary, a line with no number coming first (before any number down to your Emacs's `most-negative-fixnum`, as there). `:sort /pat/` sorts by what follows the first match, and with `r` by the match itself; a line it doesn't match sorts first. The pattern is Rust's regex and always ignores case, as Emacs's sort does. `:sort //` is a plain sort: your Evil doesn't see `/`'s last search there.
 - **Substitute:** `:s/a/b/`, with flags `g` and `&`, `~` for the last replacement, ranges `%`, `'<,'>`, `N,M`, `.`, `$`, `'x`, `+n`, `-n`. A count before `:` starts the line with that many lines from the cursor's, so `3:` is `:.,.+2`. `&` repeats it on the line, `g&` everywhere, also `:&`, `:&&`, and `:s` alone.
 
 ## Selecting
@@ -160,28 +202,39 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 | `C-r x` | A register's text |
 | `C-v x`, `C-q x` | The next key literally, or an octal code |
 | `C-u` | The prefix argument |
+| `<Home>`, `<End>` | To the start, the end, of the whole text, as your Emacs's Home and End are on macOS. After `C-u n`, n tenths of the way in, from the start or the end, then to the next line's start, as there |
+| `C-Left`, `C-Right` | Back to a word's start, on to a word's end, by your Emacs's own words, not your Evil's: `_` ends one and `$` and `%` don't, a change of script ends one unless it's kanji then kana, and hiragana then katakana ends one too |
+| `<PageDown>`, `<PageUp>` | A window down, up, less two rows, or with `C-u` count rows. A cursor left behind goes to the edge row |
+| `C-j` | New line, with no indentation, and the spaces before the cursor kept |
+| `C-k xy` | The digraph `xy` names, from RFC 1345's 1,665, either way round: `C-k e:` is ë, `C-k a*` is α, `C-k Eu` is €. Two keys that name none put in the second. `<Tab>`, `<CR>`, `<BS>` and a control key are their characters |
+| `<Insert>` | From insert state to replace state, or back. The count goes, and each is its own `u` |
+| `C-g` | Forget a `C-u` count, and stay. As in your Evil, what's typed after it isn't part of what `.`, the session's count or a selection's other lines put in again |
+| `C-h k`, `C-h c`, `C-h x`, `C-h f` | What a key does, what a command does, as `\hk` and `\hc` |
+| `C-c` then a key, `<S-Tab>` | Nothing: your Emacs binds nothing to them there, and says so |
 
 ## Windows and buffers
 
 - **`C-w` then:** `h j k l` and arrows, `w W t b p` to move; `s S v n` to split; `c q o` to close; `= + - > < _ |` to size; `H J K L` to move the window; `r R x` to rotate and exchange; `:` for ex; digits for a count. A key with Control does the same, as `C-w C-h`.
 - **Ex:** `:sp[lit]`, `:vs[plit]`, `:new`, `:vne[w]`, each with a file; `:clo[se]`, `:on[ly]`. Every ex command takes Vim's short forms, as `:wri`, `:bdel`, `:nohls`, `:sub/a/b/`.
 - **Buffers:** `:e file`, `:e!`, `:b name`, `:bn`, `:bp`, `C-^`, `:bd`, `:bw` (`!` to drop unsaved text), `:kill-buffer`. `:bn` and `:bp` go through file buffers. `:ls` (or `:buffers`) opens [the Buffer List](#dies-own-keys), and `:files` the same with only buffers with files.
-- **Files:** `:w`, `:w!` over a file changed on disk, `:up`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:wqa`, `:xa`, `:qa`, `ZZ`, `ZQ`. Files changed on disk reload by themselves if you have no unsaved text there, and `:w` refuses if you have.
+- **Files:** `:w`, `:w!` over a file changed on disk, `:up`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:wqa`, `:xa`, `:qa`, `ZZ`, `ZQ`, and `:cq` on a file `die --wait` waits on. Files changed on disk reload by themselves if you have no unsaved text there, and `:w` refuses if you have. On a file `die --wait` waits on, `:q` and the rest finish it rather than close the window or quit: see [DIE as git's editor](#install-and-run).
 - **Saving elsewhere:** `:w path` from a buffer with no file, such as `:new`'s, saves it there, and the buffer then visits that file. From a buffer with a file it writes a copy, and the buffer keeps its file and its unsaved changes, as in your Evil. `:sav[eas] path` saves and moves the buffer to the new file. A path is taken from the buffer's directory, as `:e` takes it, and `~/` is your home. A file that's already there is written over only with `!` (`:w! path`, `:saveas! path`). `:wq path` and `:x path` write there, then close.
 - **Which file:** `:f` (`:file`) and `C-g` say the file's full path, its lines and how far down the cursor is, as your Evil's `:f` does. The status line shows only the directory. `C-g` is Vim's: your Evil's quits.
 
 ## What isn't there yet
 
-- **A terminal.** No terminal buffers exist. cargo, git and Claude Code run in a terminal of your own next to DIE, and `die file:line` from there.
-- **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`.
-- **Ex:** `:d :m :t :co :y :pu :j :> :< :p`, `:sort :r :!`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, `:marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`.
-- **Insert keys:** `<Home> <End> <PageUp> <PageDown> C-Left C-Right S-Tab C-c C-g C-h C-j C-k <Insert>`. `C-r =` isn't built anywhere.
+- **A terminal.** No terminal buffers exist. `:make` and `:!` run commands, but anything that reads keys, as Claude Code, a REPL or a pager, runs in a terminal of your own next to DIE, and `die file:line` from there.
+- **Running commands:** `M-&` and a command ending in `&` (Emacs's async shell commands), `C-u M-!` (output at the cursor), completion in the command prompts, stopping a `:!` that went on in the background before DIE quits, asking before quitting stops a command, and in `*compilation*` `go` (show an error without going there), `[[` `]]` (by file) and `q`. `:w !cmd`. Backspaces in output aren't moved over, as comint does.
+- **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`, `<Insert>`.
+- **Ex:** `:p`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, a `/pattern/` as an address, `:marks :jumps :pwd :cd`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`. `:pu =` and `C-r =` aren't built anywhere. A range given backward, as `:3,1d`, is refused, where your Evil asks whether to swap it.
+- **Insert keys:** `C-h` has only `k c x f`; its other keys say they aren't built.
 - **Syntax highlighting.** Source is one colour.
 - **Not honoured:** `.gitignore` in the finders and `:grep`.
-- **Opening:** `open -a DIE file`, a Finder double-click, `EDITOR=die` (no `--wait`).
+- **`die --wait`:** a client that has gone, as one stopped with Ctrl-C, isn't noticed, so its file still waits for you to finish it. Quitting DIE with clients waiting doesn't ask first, as Emacs does.
+- **Opening from Finder** into a minimized DIE leaves its window in the Dock, by reading AppKit: nothing restores it. A file from Finder, the Dock or `open -a` that reaches a DIE about to go is lost, and you open it again: the old DIE in the second of a restart's handover, or one launched while another holds the lock, as `open -n` does, a second copy of DIE.app, or a double-click just after Cmd-Q.
 - **Editing CRLF and non-UTF-8 files.** They open read-only.
 - **The Buffer List's** `.` after its keys (your Evil repeats them, as it repeats any key that isn't Evil's), `gV` (View mode), `t` (tags tables, so `t` is Evil's), `M-s a C-s`, `M-s a C-M-s` and `M-s a C-o` (searching the marked buffers), `M-DEL`, a middle click, and the column keys `gl gh { }`.
-- **Keeping across a restart:** `*grep*`, `*Buffer List*`, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.
+- **Keeping across a restart:** `*grep*`, `*compilation*`, `*Shell Command Output*`, `*rebuild*`, `*Buffer List*`, commands still running, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.
 - **Interrupting** a slow command on a huge file. `C-g` stops only macros and `:norm`, so a `:g` whose command isn't `:norm` runs to its end: `:g/./s/a/b/` on 40,000 lines takes about 2 s.
 - **Mouse:** double-click and drag autoscroll.
 - **Linux:** this page is macOS. The Linux build is checked, not run as an app.

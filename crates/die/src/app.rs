@@ -14,13 +14,22 @@
 //! terminal and is a client: it sends its files to the instance that holds the lock, or starts
 //! one through `open` with those files, and exits, so that no window lives as a terminal's child.
 //! A launch that finds the lock held sends on any files it was given, and otherwise goes.
+//!
+//! **`die --wait`** is a client that waits, as `emacsclient` does without `-n`: its files open as
+//! `die`'s do, and it returns once you're done with them (`Ctx::open_for_client`), or fails if you
+//! give up on them or DIE quits first. A restart hands it to the new instance, which waits on its
+//! files again. With no instance it starts one with no files, and sends them once that listens.
+//!
+//! **Files from Finder**, the Dock or `open -a` reach an instance as AppKit events, which it sends
+//! to the lock's holder as `die --background file` would, itself or not.
 
 use crate::{Config, launch, rebuild, started_dir};
 use die_core::instance::{
-    Handover, Instance, OPEN_SOCKET, OpenListener, OpenRequest, Sent, Successor, send_open,
+    Asked, Handover, Instance, OPEN_SOCKET, OpenListener, OpenRequest, Sent, Successor, send_again,
+    send_open,
 };
 use die_core::sys::state_dir;
-use die_core::{Ctx, FileTarget};
+use die_core::{Ctx, FileTarget, Outcome};
 use die_render::window::Remote;
 use std::fs::{self, OpenOptions};
 use std::hash::{DefaultHasher, Hasher};
@@ -41,6 +50,11 @@ const LOCK_LOOK: Duration = Duration::from_millis(20);
 const SEND_PATIENCE: Duration = Duration::from_secs(2);
 /// How long `die file` waits to try `open` again, which LaunchServices may refuse for a moment.
 const OPEN_AGAIN: Duration = Duration::from_millis(100);
+/// How long `die --wait`, or a file from Finder, waits for an instance that's starting to listen.
+const START_PATIENCE: Duration = Duration::from_secs(10);
+/// How long `die --wait` keeps trying while an instance holds the lock and isn't listening: longer
+/// than a restart can take, as git takes a client that gives up for an editor that failed.
+const WAIT_PATIENCE: Duration = Duration::from_secs(RESTART_LIMIT.as_secs() + 5);
 /// Set, a restart's new instance panics before its first frame: how a test gets a bad build.
 pub const PANIC_ON_RESTART: &str = "DIE_PANIC_ON_RESTART";
 /// Each restart's time in ms goes in this file in the state directory, a line each.
@@ -67,6 +81,8 @@ pub struct Launch {
     pub restart_loop: bool,
     /// `--background`: open the files without coming to the front.
     pub background: bool,
+    /// `--wait`: return once you're done with the files.
+    pub wait: bool,
 }
 
 /// The app bundle this process runs from, if it does, seen through a link such as
@@ -82,14 +98,25 @@ pub fn is_client(asked: &Launch) -> bool {
 }
 
 /// `die file...` from a terminal: `files` go to the running instance, or a new one is started
-/// with them. The exit code is 0, 1 if nobody answered, or 2 if the names make no sense.
-pub fn client(bundle: &Path, files: Vec<PathBuf>, background: bool) -> i32 {
+/// with them. With `--wait` it returns once you're done with them. The exit code is 0, 1 if
+/// nobody answered, or 2 if the names make no sense. With `--wait` it's also 1 if you gave up on
+/// them (`:cq`), none would open, or DIE quit or crashed first, so that git stops.
+pub fn client(bundle: &Path, files: Vec<PathBuf>, asked: &Launch) -> i32 {
     let Some(dir) = state_dir() else {
         eprintln!("die: no place for DIE's state: HOME isn't set");
         return 2;
     };
+    client_in(&dir, bundle, files, asked)
+}
+
+/// [`client`], to the instance whose state is in `dir`.
+pub fn client_in(dir: &Path, bundle: &Path, files: Vec<PathBuf>, asked: &Launch) -> i32 {
     let names = files.into_iter().map(PathBuf::into_os_string);
     let targets = match FileTarget::parse_args(names, &started_dir()) {
+        Ok(targets) if asked.wait && targets.is_empty() => {
+            eprintln!("die: --wait needs a file to wait on");
+            return 2;
+        }
         Ok(targets) => targets,
         Err(e) => {
             eprintln!("die: {e}");
@@ -97,15 +124,59 @@ pub fn client(bundle: &Path, files: Vec<PathBuf>, background: bool) -> i32 {
         }
     };
     let request = OpenRequest {
-        front: !background,
+        front: !asked.background,
+        wait: asked.wait,
         targets,
     };
-    let deadline = Instant::now() + SEND_PATIENCE;
+    // One that waits starts an instance with no files, and sends them once it listens.
+    let start = OpenRequest {
+        targets: if asked.wait {
+            vec![]
+        } else {
+            request.targets.clone()
+        },
+        ..request.clone()
+    };
+    let patience = if asked.wait {
+        WAIT_PATIENCE
+    } else {
+        SEND_PATIENCE
+    };
+    let (mut deadline, mut started) = (Instant::now() + patience, false);
+    // What a restart moved this client to the next instance with.
+    let mut again: Option<Vec<_>> = None;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        match send_open(&dir, &request, left) {
-            Ok(Sent::Delivered) => return 0,
-            Ok(Sent::NoInstance) => match start_instance(bundle, &request) {
+        let sent = match &again {
+            Some(waited) => send_again(dir, waited, left),
+            None => send_open(dir, &request, left),
+        };
+        match sent {
+            Ok(Sent::Delivered(None)) => return 0,
+            Ok(Sent::Delivered(Some(waiting))) => match waiting.wait() {
+                Some(Outcome::Done) => return 0,
+                Some(Outcome::Moved(waited)) => {
+                    (again, deadline) = (Some(waited), Instant::now() + WAIT_PATIENCE);
+                }
+                Some(Outcome::Failed) => {
+                    eprintln!("die: DIE gave up on these: :cq, or they wouldn't open");
+                    return 1;
+                }
+                None => {
+                    eprintln!("die: DIE quit before you were done with these");
+                    return 1;
+                }
+            },
+            // The lock goes from one instance to the next in a restart.
+            Ok(Sent::NoInstance) if (started || again.is_some()) && left.is_zero() => {
+                eprintln!("die: the new DIE didn't answer");
+                return 1;
+            }
+            Ok(Sent::NoInstance) if started || again.is_some() => thread::sleep(OPEN_AGAIN),
+            Ok(Sent::NoInstance) => match start_instance(bundle, &start) {
+                Ok(()) if asked.wait => {
+                    (deadline, started) = (Instant::now() + START_PATIENCE, true);
+                }
                 Ok(()) => return 0,
                 Err(e) if left.is_zero() => {
                     eprintln!("die: {e}");
@@ -172,10 +243,11 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
             Ok(None) => {
                 let request = OpenRequest {
                     front: !asked.background,
+                    wait: false,
                     targets,
                 };
                 return match send_open(&dir, &request, SEND_PATIENCE) {
-                    Ok(Sent::Delivered) => 0,
+                    Ok(Sent::Delivered(_)) => 0,
                     Ok(Sent::NoInstance) => {
                         eprintln!("die: the running DIE went before it could open these");
                         1
@@ -233,6 +305,7 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
         }
     }));
     let frontmost = asked.frontmost;
+    let on_open = Box::new(send_opened(dir.clone()));
     let first_frame = Box::new(move |remote: &Remote| {
         let remote = remote.clone();
         thread::spawn(move || {
@@ -258,7 +331,30 @@ pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
             drop(held);
         });
     });
-    launch(config, None, Some(first_frame))
+    launch(config, None, Some(first_frame), Some(on_open))
+}
+
+/// What to do with files from Finder, the Dock or `open -a`: send them to the lock's holder, which
+/// is this instance once it listens. A launch to open them gets them before it does, so that waits.
+fn send_opened(dir: PathBuf) -> impl Fn(Vec<PathBuf>) {
+    move |paths| {
+        let dir = dir.clone();
+        thread::spawn(move || {
+            let target = |path| FileTarget {
+                path,
+                line: None,
+                col: None,
+            };
+            let request = OpenRequest {
+                front: false,
+                wait: false,
+                targets: paths.into_iter().map(target).collect(),
+            };
+            if let Err(e) = send_open(&dir, &request, START_PATIENCE) {
+                eprintln!("die: opening from Finder: {e}");
+            }
+        });
+    }
 }
 
 /// Open each as `:e` would. One that won't open is logged, as at startup, and the rest go on.
@@ -270,17 +366,40 @@ fn open_targets(ctx: &mut Ctx, targets: &[FileTarget]) {
     }
 }
 
+/// Carry out what `die file` asked, and answer. For `die --wait` the files are a client's, which
+/// is told how its wait ends. One a restart moved here waits on its files again.
+pub fn carry_out(ctx: &mut Ctx, mut asked: Asked) {
+    let (targets, again) = (
+        std::mem::take(&mut asked.request.targets),
+        asked.again.take(),
+    );
+    if !asked.request.wait {
+        open_targets(ctx, &targets);
+        asked.answer();
+    } else if let Some(client) = asked.answer() {
+        let tell = move |outcome: Outcome| client.tell(&outcome);
+        match again {
+            Some(waited) => ctx.wait_again(waited, tell),
+            None => ctx.open_for_client(&targets, tell),
+        }
+    }
+}
+
 /// Listen for `die file`. Without the socket this instance still works, so that's only a message.
+/// A request from the background, as Finder's are, takes the keyboard if this app becomes active,
+/// as Finder makes it.
 fn listen(dir: &Path, remote: &Remote) -> Option<OpenListener> {
     let caller = remote.clone();
-    let opened = OpenListener::start(dir, move |request| {
-        let done = caller.call(move |shell, _| {
-            open_targets(shell.ctx(), &request.targets);
-            if request.front {
+    let opened = OpenListener::start(dir, move |asked| {
+        let _ = caller.call(move |shell, _| {
+            let front = asked.request.front;
+            carry_out(shell.ctx(), asked);
+            if front {
                 shell.come_to_front();
+            } else {
+                shell.take_focus_when_active();
             }
         });
-        done.is_ok()
     });
     match opened {
         Ok(listener) => Some(listener),
@@ -370,6 +489,8 @@ fn serve(wanted: &Receiver<()>, bundle: &Path, dir: &Path, remote: &Remote, rest
                 if let Err(e) = log_restart(dir, took) {
                     eprintln!("die: {RESTART_LOG}: {e}");
                 }
+                // Each `die --wait` asks the new instance to wait on its files again.
+                let _ = remote.call(|shell, _| shell.ctx().hand_over_clients());
                 remote.exit(0);
                 let _handover = handover;
                 loop {
@@ -429,7 +550,11 @@ fn restart(
 fn open_bundle(bundle: &Path, frontmost: bool) -> Command {
     let mut open = Command::new("open");
     open.args(open_options(frontmost));
-    for name in ["DIE_STATE_DIR", PANIC_ON_RESTART] {
+    for name in [
+        "DIE_STATE_DIR",
+        PANIC_ON_RESTART,
+        die_render::window::UNSEEN,
+    ] {
         if let Some(value) = std::env::var_os(name) {
             let mut env = std::ffi::OsString::from(name);
             env.push("=");

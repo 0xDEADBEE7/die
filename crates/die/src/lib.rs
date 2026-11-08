@@ -99,8 +99,8 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         ] {
             reg.global_keymap().bind(state, "<D-q>", "quit");
         }
-        // Emacs's M-x, which Evil leaves in its states. Not in a prompt, where Emacs refuses it
-        // too, nor in operator-pending, where it ends the operator.
+        // Emacs's M-x and M-!, which Evil leaves in its states. Not in a prompt, where Emacs
+        // refuses them too, nor in operator-pending, where they end the operator.
         for state in [
             State::Normal,
             State::Insert,
@@ -109,6 +109,7 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
             State::Copy,
         ] {
             reg.global_keymap().bind(state, "<A-x>", "command-palette");
+            reg.global_keymap().bind(state, "<A-!>", "shell-command");
         }
         if let Some(register) = register {
             register(reg);
@@ -146,13 +147,13 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
 /// Run DIE until its window closes. The window opens without taking focus. The exit code:
 /// 2 if it couldn't start, and it says why.
 pub fn run(config: Config) -> i32 {
-    launch(config, None, None)
+    launch(config, None, None, None)
 }
 
 /// Run `die --check`'s checks on a window of DIE's own (`die_render::check`). The exit code:
 /// 0 if they passed, 1 if one failed, and 2 if there's no window to check.
 pub fn check(config: Config, names: Vec<String>) -> i32 {
-    launch(config, Some(check::script(names)), None)
+    launch(config, Some(check::script(names)), None, None)
 }
 
 /// Only a real run gets the system clipboard. A check's keys stay off the one you copy with.
@@ -170,6 +171,7 @@ fn launch(
     mut config: Config,
     script: Option<window::Script>,
     first_frame: Option<window::FirstFrame>,
+    on_open: Option<window::OnOpen>,
 ) -> i32 {
     connect_clipboard(&mut config, script.is_some(), driver::system_clipboard);
     let font = config.font.clone();
@@ -188,6 +190,7 @@ fn launch(
         script,
         hidden: false,
         first_frame,
+        on_open,
     };
     window::run(ctx, options).unwrap_or_else(|e| {
         eprintln!("die: {e}");

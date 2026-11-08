@@ -111,13 +111,18 @@ fn global(ctx: &mut Ctx, lines: &Lines, arg: &str, invert: bool) -> Result {
     let command = command
         .filter(|_| named)
         .ok_or_else(|| Error::Msg("No command given".into()))?;
-    search::remember_pattern(ctx, pat.clone())?;
     let (b, w) = buffer_window(ctx, &Args::default())?;
     let lines = match lines {
         Lines::Cursor => Lines::All,
         lines => lines.clone(),
     };
     let range = substitute::line_range(ctx, b, w, lines)?;
+    // `:g/pat/d` alone, as your Evil runs it.
+    let (on, after) = substitute::range(command.trim());
+    if matches!(on, Lines::Cursor) && !after.is_empty() && ex::abbreviates(after, ("d", "delete")) {
+        return crate::lines::flush(ctx, range, &pat, invert);
+    }
+    search::remember_pattern(ctx, pat.clone())?;
     let t = ctx.text_mut(b)?;
     // Each line's first match ending by the line's end, as your Evil's `re-search-forward` finds
     // it, bounded there.
@@ -139,7 +144,7 @@ fn global(ctx: &mut Ctx, lines: &Lines, arg: &str, invert: bool) -> Result {
 
 /// What `:g` reads after its name: the pattern, up to the delimiter again, and what follows that,
 /// if it's there. A backslash keeps the delimiter in the pattern.
-fn parts(arg: &str) -> (String, Option<&str>) {
+pub(crate) fn parts(arg: &str) -> (String, Option<&str>) {
     let mut chars = arg.char_indices();
     let Some((_, delimiter)) = chars.next() else {
         return (String::new(), None);

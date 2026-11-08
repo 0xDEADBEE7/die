@@ -241,7 +241,7 @@ fn counts(op: Option<usize>, motion: Option<usize>) -> Option<usize> {
 pub fn takes_lines(op: Operator) -> bool {
     matches!(
         op,
-        Operator::ShiftLeft | Operator::ShiftRight | Operator::Indent
+        Operator::ShiftLeft | Operator::ShiftRight | Operator::Indent | Operator::Shell
     )
 }
 
@@ -303,7 +303,7 @@ pub fn lines(t: &TextBuf, beg: usize, end: usize) -> Span {
 }
 
 /// Where the line after `line` starts, or the end of the text.
-fn after_line(t: &TextBuf, line: usize) -> usize {
+pub fn after_line(t: &TextBuf, line: usize) -> usize {
     if line + 1 < t.line_count() {
         t.line_start(line + 1)
     } else {
@@ -373,6 +373,7 @@ pub fn apply(
         Operator::InvertCase | Operator::Upcase | Operator::Downcase => {
             recase(ctx.text_mut(b)?, w, op, span, how.past_end)
         }
+        Operator::Shell => return crate::shell::prompt(ctx, b, w, span),
     };
     // Your Evil's `g~` counts its start up to its end as it goes, and sets `[` from that.
     let start = if op == Operator::InvertCase && !how.past_end {
@@ -519,7 +520,7 @@ pub const SHIFT_WIDTH: usize = 4;
 /// column, or at the line's end after `$`. It stays on its line with `>`, and with `<`
 /// goes to the first line shifted, as in Evil, where only `>` says not to move. From visual
 /// state a count is how many shifts, and it lands from where `visual` says.
-fn shift(
+pub(crate) fn shift(
     t: &mut TextBuf,
     w: WindowId,
     span: Span,

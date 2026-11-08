@@ -6,7 +6,8 @@
 //! together. So far (V1 to V4): motions, counts, insert and replace sessions with their
 //! undo, operators, registers, text objects, visual state (`visual.rs`), `.` and macros
 //! (`repeat.rs`), scrolling (`scroll.rs`), search (`search.rs`), windows (`window.rs`), and
-//! `:e`, `:b` and `:N` (`ex.rs`), and marks and the jump list (`marks.rs`). `registers.rs` is the one
+//! `:e`, `:b` and `:N` (`ex.rs`), the ex commands on lines (`lines.rs`, `sort.rs`), and marks and
+//! the jump list (`marks.rs`). `registers.rs` is the one
 //! place that touches registers, for K6.
 #![warn(missing_docs)]
 
@@ -14,12 +15,14 @@
 use die_test_cap as _;
 
 mod complete;
+mod digraphs;
 mod each;
 mod ex;
 mod grammar;
 mod insert;
 mod insert_keys;
 mod kept;
+mod lines;
 mod marks;
 mod motions;
 mod objects;
@@ -29,6 +32,8 @@ mod repeat;
 mod scripts;
 mod scroll;
 mod search;
+mod shell;
+mod sort;
 mod substitute;
 mod text;
 mod visual;
@@ -95,6 +100,11 @@ pub struct Vim {
     substitute: (String, bool),
     /// The `:norm` and `:g` running, the one started last last.
     each: Vec<each::Run>,
+    /// The last `:!` command, which `:!!` runs again.
+    shell: Option<String>,
+    /// A command on lines is running from a `:` typed in visual state, whose start your Evil's
+    /// `:y` goes back to.
+    ex_visual: bool,
 }
 
 #[rustfmt::skip]
@@ -121,6 +131,7 @@ const OPERATORS: &[(&str, &str, &str, Operator, &str)] = &[
     ("g~", "~", "vim-invert-case", Operator::InvertCase, "Invert the case of what a motion covers."),
     ("gU", "U", "vim-upcase", Operator::Upcase, "Upper-case what a motion covers."),
     ("gu", "u", "vim-downcase", Operator::Downcase, "Lower-case what a motion covers."),
+    ("!", "!", "vim-shell-command", Operator::Shell, "Filter lines through a shell command: open `:` with them and a `!`."),
 ];
 
 /// Commands that are an operator over a motion of their own.
@@ -155,6 +166,11 @@ const EDITS: &[(&str, &str, Edit, &str)] = &[
     ("<C-t>", "vim-shift-right-line", Edit::Shift { right: true }, "Shift the line right."),
     ("<S-Left>", "vim-insert-word-left", Edit::WordLeft, "Back to a word's start."),
     ("<S-Right>", "vim-insert-word-right", Edit::WordRight, "On to the next word's start."),
+    ("<Home>", "vim-insert-beginning-of-buffer", Edit::Home, "To the text's start, as your Emacs's Home on macOS."),
+    ("<End>", "vim-insert-end-of-buffer", Edit::End, "To the text's end, as your Emacs's End on macOS."),
+    ("<C-Left>", "vim-insert-backward-word", Edit::BackwardWord, "Back to an Emacs word's start."),
+    ("<C-Right>", "vim-insert-forward-word", Edit::ForwardWord, "On to an Emacs word's end."),
+    ("<C-j>", "vim-insert-newline-bare", Edit::BareNewline, "A new line, not indented."),
 ];
 
 pub(crate) type Body = fn(&mut Ctx, &Args) -> Result;
@@ -242,6 +258,13 @@ const COMMANDS: &[(&str, &str, Body)] = &[
     ("vim-copy-from-below", "C-e: copy from the line below.", |ctx, a| insert_keys::copy(ctx, a, false)),
     ("vim-quoted-insert", "C-v x: put in the next key as it is, or a code in octal.", insert_keys::quoted),
     ("vim-normal-state", "Escape: back to normal state.", end_session),
+    ("vim-insert-page-down", "PageDown in insert state: a window down, less two rows, or count rows.", |ctx, a| insert_keys::page(ctx, a, true)),
+    ("vim-insert-page-up", "PageUp in insert state: a window up, less two rows, or count rows.", |ctx, a| insert_keys::page(ctx, a, false)),
+    ("vim-insert-digraph", "C-k: put in the character two keys name, as RFC 1345's digraphs do.", insert_keys::insert_digraph),
+    ("vim-toggle-replace", "Insert: from insert state to replace state, or back.", insert_keys::toggle_replace),
+    ("vim-keyboard-quit", "C-g in insert state: forget a count.", insert_keys::quit),
+    ("vim-undefined", "S-Tab, and C-c then a key: nothing, as your Emacs binds nothing to them.", insert_keys::undefined),
+    ("vim-help", "C-h then k, c, x or f: describe a key or a command.", insert_keys::help),
 ];
 
 impl Extension for Vim {
@@ -456,7 +479,23 @@ impl Extension for Vim {
                 .bind(state, "<C-r><any>", "vim-paste-from-register")
                 .bind(state, "<C-v><any>", "vim-quoted-insert")
                 .bind(state, "<C-q><any>", "vim-quoted-insert")
-                .bind(state, "<C-u>", "vim-universal-argument");
+                .bind(state, "<C-u>", "vim-universal-argument")
+                .bind(state, "<PageDown>", "vim-insert-page-down")
+                .bind(state, "<PageUp>", "vim-insert-page-up")
+                .bind(state, "<C-k><char><any>", "vim-insert-digraph")
+                .bind(state, "<C-k><any>", "vim-insert-digraph")
+                .bind(state, "<Insert>", "vim-toggle-replace")
+                .bind(state, "<C-g>", "vim-keyboard-quit")
+                .bind(state, "<S-Tab>", "vim-undefined")
+                .bind(state, "<C-c><any>", "vim-undefined")
+                .bind(state, "<C-h><any>", "vim-help");
+            // Keys that are characters to Emacs, so a digraph's first key: all but `C-g`'s quit.
+            for c in ('a'..='z').filter(|&c| c != 'g') {
+                k.bind(state, &format!("<C-k><C-{c}><any>"), "vim-insert-digraph");
+            }
+            for first in ["<Tab>", "<CR>", "<BS>"] {
+                k.bind(state, &format!("<C-k>{first}<any>"), "vim-insert-digraph");
+            }
         }
 
         for m in MOTIONS {

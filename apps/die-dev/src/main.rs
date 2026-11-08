@@ -1,5 +1,5 @@
 //! `die [--check a,b] [--handover socket] [--restart-after-frame] [--restart-loop] [--frontmost]
-//! [--background] [--] [file...]`: your DIE config, with the files you name. In DIE.app it's the
+//! [--background] [--wait] [--] [file...]`: your DIE config, with the files you name. In DIE.app it's the
 //! one instance, or from a terminal the client that sends files to it (`die::app`).
 
 #[cfg(test)]
@@ -18,7 +18,7 @@ fn main() -> ExitCode {
     };
     let code = match (args.check, die::app::bundle()) {
         (None, Some(bundle)) if die::app::is_client(&args.launch) => {
-            die::app::client(&bundle, args.files, args.launch.background)
+            die::app::client(&bundle, args.files, &args.launch)
         }
         (Some(names), _) => die::check(die_dev::config(args.files), names),
         (None, Some(bundle)) => die::app::run(die_dev::config(args.files), bundle, args.launch),
