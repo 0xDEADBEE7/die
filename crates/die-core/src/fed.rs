@@ -39,6 +39,20 @@ impl Ctx {
         self.new_sub(SubKind::Dropped(Rc::new(RefCell::new(f))))
     }
 
+    /// Whether a typed `C-g` ended what was fed, and not a key's failure, since this last looked,
+    /// so an `on_fed_dropped` call can tell a quit from an error, as Emacs's `quit` isn't an
+    /// `error`. die-vim's `:norm` goes on to the next line after an error, and stops at a quit.
+    pub fn take_quit(&mut self) -> bool {
+        std::mem::take(&mut self.quit)
+    }
+
+    /// While on, a key that fails, or that nothing handles, or a prompt's answer that fails, ends
+    /// what was fed as ever, but says nothing, as Emacs's `ignore-errors` round a keyboard macro.
+    /// die-vim's `:norm` turns it on while a line's keys run. Typed keys are hushed too.
+    pub fn hush_key_errors(&mut self, on: bool) {
+        self.hushed = on;
+    }
+
     /// Run `f` from the top of the loop, before the next key is looked up, whenever a command
     /// has run from a key, whoever's it is, a prompt has given its answer, or a pointer press has
     /// moved the cursor (contract §6). A key that only starts a longer one runs nothing.

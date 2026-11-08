@@ -646,7 +646,7 @@ impl Ctx {
             Err(Error::Panicked { .. }) => self.drop_fed(),
             Err(e) => {
                 self.drop_fed();
-                self.log_error(e.to_string());
+                self.report_key(Err(e));
             }
         }
     }

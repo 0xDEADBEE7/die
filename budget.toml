@@ -85,7 +85,8 @@ crate = "die-core"
 name = "keys, keymaps, describe"
 # 650 until V3: a macro calling macros doesn't move what's waiting, and registers move uncopied.
 # 660 until U6's review: `on_command_ended`, so a C-o can end on a command that isn't die-vim's.
-limit = 675
+# 675 until the macro work: `take_quit` and `hush_key_errors`, so `:norm` skips a failed line quietly.
+limit = 680
 files = ["keys.rs", "keymap.rs", "describe.rs", "fed.rs"]
 
 [[module]]
@@ -93,7 +94,8 @@ crate = "die-core"
 name = "ext, dispatch, rt"
 # 1,500 until V1's landing found it at 1,502 from another package, and U3 adds what `*grep*` holds.
 # 1,510 until V3: a typed C-g ends a macro.
-limit = 1525
+# 1,525 until the macro work: a quit noted for `take_quit`, and key errors `hush_key_errors` hushes.
+limit = 1535
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
