@@ -31,6 +31,7 @@ mod layout;
 mod menu;
 mod messages;
 mod pointer;
+pub mod process;
 mod project;
 mod prompt;
 mod rt;

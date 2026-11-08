@@ -99,8 +99,8 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
         ] {
             reg.global_keymap().bind(state, "<D-q>", "quit");
         }
-        // Emacs's M-x, which Evil leaves in its states. Not in a prompt, where Emacs refuses it
-        // too, nor in operator-pending, where it ends the operator.
+        // Emacs's M-x and M-!, which Evil leaves in its states. Not in a prompt, where Emacs
+        // refuses them too, nor in operator-pending, where they end the operator.
         for state in [
             State::Normal,
             State::Insert,
@@ -109,6 +109,7 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
             State::Copy,
         ] {
             reg.global_keymap().bind(state, "<A-x>", "command-palette");
+            reg.global_keymap().bind(state, "<A-!>", "shell-command");
         }
         if let Some(register) = register {
             register(reg);

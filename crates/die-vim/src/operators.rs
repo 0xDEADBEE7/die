@@ -241,7 +241,7 @@ fn counts(op: Option<usize>, motion: Option<usize>) -> Option<usize> {
 pub fn takes_lines(op: Operator) -> bool {
     matches!(
         op,
-        Operator::ShiftLeft | Operator::ShiftRight | Operator::Indent
+        Operator::ShiftLeft | Operator::ShiftRight | Operator::Indent | Operator::Shell
     )
 }
 
@@ -373,6 +373,7 @@ pub fn apply(
         Operator::InvertCase | Operator::Upcase | Operator::Downcase => {
             recase(ctx.text_mut(b)?, w, op, span, how.past_end)
         }
+        Operator::Shell => return crate::shell::prompt(ctx, b, w, span),
     };
     // Your Evil's `g~` counts its start up to its end as it goes, and sets `[` from that.
     let start = if op == Operator::InvertCase && !how.past_end {

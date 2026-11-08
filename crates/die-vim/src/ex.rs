@@ -2,7 +2,7 @@
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
 use crate::substitute::{self, Lines};
-use crate::{each, lines, registers, sort, visual, window};
+use crate::{each, lines, registers, shell, sort, visual, window};
 use die_core::{
     Args, BufferId, Ctx, Error, FileTarget, Origin, PromptSpec, Result, ShowIn, Side, project_root,
     recent_first,
@@ -53,6 +53,11 @@ const EX: &[(&str, &str, ExFn)] = &[
     ("b", "buffer", P(|c, _, rest| buffer(c, rest))),
     ("cn", "cnext", P(|c, _, _| c.run("next-error", &Args::default()))),
     ("cp", "cprevious", P(|c, _, _| c.run("previous-error", &Args::default()))),
+    // Your Evil's `evil-make`: `recompile`, or `compile` with what follows.
+    ("mak", "make", P(|c, _, rest| match rest {
+        "" => c.run("recompile", &Args::default()),
+        _ => c.run("compile", &Args { text: Some(rest.into()), ..Args::default() }),
+    })),
     ("noh", "nohlsearch", P(|c, _, _| { c.set_search_highlight(None); Ok(()) })),
     ("d", "delete", L(|c, l, _, rest| lines::delete(c, l, rest))),
     ("y", "yank", L(|c, l, _, rest| lines::yank(c, l, rest))),
@@ -91,7 +96,7 @@ fn ex_names() -> impl Iterator<Item = (&'static str, &'static str)> {
     let windows = windows.map(|e| (e.0, e.1));
     own.map(|e| (e.0, e.1))
         .chain(windows)
-        .chain([substitute::NAME])
+        .chain([substitute::NAME, shell::NAME])
         .chain(each::NAMES)
 }
 
@@ -137,6 +142,12 @@ fn tier(name: &str, item: &str) -> usize {
 /// cursor's, `.,.+2` for 3, as your Evil's `evil-ex` does. While the line is a command's name,
 /// after any range, a list of commands matches it, as the command palette's does.
 pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
+    open_with(ctx, a, "")
+}
+
+/// `:` as [`open`] opens it, with `after` after the range a count gives, as the `!` operator
+/// opens it with `!`.
+pub fn open_with(ctx: &mut Ctx, a: &Args, after: &str) -> Result {
     let mut spec = PromptSpec::new(":")
         .history("ex")
         .backspace_cancels()
@@ -149,8 +160,8 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
         spec = spec.initial(substitute::VISUAL);
     } else if let Some(n) = a.count {
         let range = match n {
-            0 | 1 => ".".to_string(),
-            n => format!(".,.+{}", n - 1),
+            0 | 1 => format!(".{after}"),
+            n => format!(".,.+{}{after}", n - 1),
         };
         spec = spec.initial(&range);
     }
@@ -177,6 +188,10 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     // `:norm`'s keys keep the spaces at their end, as your Evil's do.
     let (lines, rest) = substitute::range(line);
     if let Some(done) = each::ex(ctx, &lines, rest) {
+        return done;
+    }
+    let range = &line[..line.len() - rest.len()];
+    if let Some(done) = shell::ex(ctx, &lines, range, rest.trim_start()) {
         return done;
     }
     if let Some(done) = on_lines(ctx, &lines, rest.trim()) {

@@ -1072,7 +1072,7 @@ fn command_palette_runs_what_is_chosen_with_its_count() {
     log.borrow_mut().clear();
 
     ctx.run("command-palette", &args).unwrap();
-    ctx.type_keys("shl");
+    ctx.type_keys("sayh");
     assert_eq!(ctx.prompt_chosen(), Some("say-hello"));
     ctx.type_keys("<CR>");
     assert_eq!(*log.borrow(), [Some(3)]);

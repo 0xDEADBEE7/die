@@ -387,8 +387,8 @@ pub struct Ctx {
     pub(crate) errors: Option<Vec<String>>,
     pub(crate) faces: Faces,
     pub(crate) search_highlight: Option<Pattern>,
-    /// What `*grep*` holds, and the search that's filling it.
-    pub(crate) grep: Option<crate::project::Grep>,
+    /// `*grep*`'s search, streamed commands, and what `next-error` goes through.
+    pub(crate) procs: crate::process::Procs,
     /// What `*Buffer List*` lists.
     pub(crate) menu: crate::menu::Menu,
     /// The `die --wait` clients waiting on buffers.
@@ -568,7 +568,7 @@ impl Ctx {
             errors: None,
             faces,
             search_highlight: None,
-            grep: None,
+            procs: Default::default(),
             menu: Default::default(),
             clients: Default::default(),
             quit_wanted: false,
