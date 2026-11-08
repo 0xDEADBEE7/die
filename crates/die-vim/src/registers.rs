@@ -186,6 +186,22 @@ pub fn read(ctx: &mut Ctx, name: Option<char>) -> Result<Register> {
         .ok_or_else(|| Error::Msg(format!("Register {c} is empty")))
 }
 
+/// Every register `:reg` lists, as your Evil's `evil-register-list` has them, in the order of their
+/// names: these always, empty or not, and any other that holds something. A recording is its keys.
+pub fn listing(ctx: &mut Ctx) -> Vec<(char, String)> {
+    let always = "\"*+%#/:.-123456789=";
+    let mut names: Vec<char> = ('!'..='~')
+        .filter(|c| !always.contains(*c) && ctx.register(*c).is_some())
+        .chain(always.chars())
+        .collect();
+    names.sort_unstable();
+    let held = |ctx: &mut Ctx, c| match ctx.register(c) {
+        Some(r) if r.kind == RegKind::Macro => r.text.clone(),
+        _ => for_prompt(ctx, c).unwrap_or_default(),
+    };
+    names.into_iter().map(|c| (c, held(ctx, c))).collect()
+}
+
 /// What `<C-r>` pastes on a command line, as your Evil's `evil-get-register` reads it: a register,
 /// or what's under the cursor for `<C-w>` (the word), `<C-a>` (the WORD), `<C-o>` (the symbol),
 /// `<C-f>` (the file name) and `<C-l>` (the line). `#` is the last buffer's file, and the rest go

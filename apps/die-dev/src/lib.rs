@@ -115,6 +115,8 @@ fn bindings(reg: &mut Registry) {
     keys.bind(State::Normal, "<leader>hk", "describe-key");
     keys.bind(State::Normal, "<leader>hc", "describe-command");
     keys.bind(State::Normal, "<leader>]", "switch-buffer");
+    keys.bind(State::Normal, "<leader>}", "buffer-menu");
+    keys.bind(State::Normal, "<leader>?", "buffer-menu");
 }
 
 /// `global-visual-line-mode` and `visual-fill-column`, centered at 80.

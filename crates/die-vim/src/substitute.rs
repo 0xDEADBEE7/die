@@ -10,6 +10,9 @@ use std::ops::Range;
 /// What `:` puts on the line from a selection.
 pub const VISUAL: &str = "'<,'>";
 
+/// `:s[ubstitute]`'s shortest and whole name.
+pub const NAME: (&str, &str) = ("s", "substitute");
+
 /// `&` and `:&`, as your Evil writes them: the last pattern, the last replacement, no flags.
 const AGAIN: &str = "//~/";
 /// `g&` and `:&&`: with the last flags.
@@ -94,9 +97,9 @@ impl Address {
     }
 }
 
-/// A line that's `:s`: its range, and what follows the `s`, which starts with the delimiter.
-pub fn parse(text: &str) -> Option<(Lines, &str)> {
-    let (range, rest) = if let Some(rest) = text.strip_prefix('%') {
+/// The range at the start of an ex line, and what follows it. None given is the cursor's line.
+pub fn range(text: &str) -> (Lines, &str) {
+    if let Some(rest) = text.strip_prefix('%') {
         (Lines::All, rest)
     } else if let Some(rest) = text.strip_prefix(VISUAL) {
         (Lines::Selection, rest)
@@ -107,13 +110,24 @@ pub fn parse(text: &str) -> Option<(Lines, &str)> {
         }
     } else {
         (Lines::Cursor, text)
-    };
+    }
+}
+
+/// A line that's `:s`: its range, and what follows the `s`, which starts with the delimiter. The
+/// name alone is `:&`.
+pub fn parse(text: &str) -> Option<(Lines, &str)> {
+    let (range, rest) = range(text);
     match rest {
         "&" => return Some((range, AGAIN)),
         "&&" => return Some((range, AGAIN_WITH_FLAGS)),
         _ => {}
     }
-    let rest = rest.strip_prefix('s')?;
+    let typed = rest.bytes().zip(NAME.1.bytes()).take_while(|(a, b)| a == b);
+    let rest = rest.get(typed.count()..).filter(|r| r.len() < rest.len())?;
+    // The last substitution again, as your Evil reads an empty argument.
+    if rest.is_empty() {
+        return Some((range, AGAIN));
+    }
     // `-` and `_` carry on a command's name, such as `s-foo`.
     let delimiter = rest
         .chars()
@@ -233,7 +247,8 @@ fn repeat_on(ctx: &mut Ctx, a: &Args, lines: Lines, rest: &str) -> Result {
     Ok(())
 }
 
-fn line_range(ctx: &mut Ctx, b: BufferId, w: WindowId, lines: Lines) -> Result<Range<usize>> {
+/// The bytes of the whole lines `lines` names: none for a range given backward.
+pub fn line_range(ctx: &mut Ctx, b: BufferId, w: WindowId, lines: Lines) -> Result<Range<usize>> {
     let (lo, hi) = match lines {
         Lines::All => return Ok(0..ctx.text(b)?.len()),
         Lines::Bytes(range) => return Ok(range),

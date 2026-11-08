@@ -48,6 +48,36 @@ fn leader_x_runs_the_command_chosen_from_the_palette() {
     assert_eq!(h.prompt_text(), None);
 }
 
+/// `:` lists commands as `\x` does, for the name after a range, and a row runs only once you've
+/// moved to it. The top row is the command the name runs.
+#[test]
+fn colon_lists_commands_as_the_palette_does() {
+    let (mut h, b) = harness("abc\n");
+    typed(&mut h, "x:");
+    assert!(h.prompt_candidates().contains(&"write"));
+    assert!(h.prompt_candidates().contains(&"command-palette"));
+    typed(&mut h, "vim-und");
+    assert_eq!(h.prompt_candidates()[0], "vim-undo");
+    assert_eq!(h.prompt_chosen(), None, "nothing until you move");
+    typed(&mut h, "<C-n><CR>");
+    assert_eq!(text(&h, b), "abc\n");
+    typed(&mut h, "V:");
+    assert_eq!(h.prompt_text(), Some("'<,'>"));
+    assert_eq!(h.prompt_candidates()[0], "vim-undo", "the last run first");
+    typed(&mut h, "subs<Tab>/b/X/<CR>");
+    assert_eq!(text(&h, b), "aXc\n");
+    for (name, top) in [
+        ("q", "quit"),
+        ("w", "write"),
+        ("s", "substitute"),
+        ("di", "display"),
+    ] {
+        typed(&mut h, &format!(":{name}"));
+        assert_eq!(h.prompt_candidates()[0], top, "what {name} runs, first");
+        typed(&mut h, "<Esc><Esc>");
+    }
+}
+
 #[test]
 fn leader_f_goes_down_from_this_files_directory_and_opens_the_file() {
     let d = tree("find");
@@ -149,4 +179,21 @@ fn cmd_v_pastes_a_word_or_a_path_into_every_prompt() {
     let found = h.focused_buffer().unwrap();
     assert_eq!(text(&h, found), "found\n", "over the line it started with");
     std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn leader_brace_and_question_mark_open_the_buffer_menu_and_q_leaves_it() {
+    let (mut h, b) = harness("abc\n");
+    for keys in ["\\}", "\\?"] {
+        typed(&mut h, keys);
+        let menu = h.focused_buffer().unwrap();
+        assert_eq!(h.buffer_name(menu), Some("*Buffer List*"), "{keys}");
+        assert!(
+            text(&h, menu).lines().nth(1).unwrap().starts_with(".  "),
+            "t is the `.`"
+        );
+        assert_eq!(h.face_style("buffer-menu-buffer").unwrap().bold, Some(true));
+        typed(&mut h, "q");
+        assert_eq!(h.focused_buffer(), Some(b));
+    }
 }

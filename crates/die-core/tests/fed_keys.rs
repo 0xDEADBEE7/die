@@ -30,6 +30,11 @@
 //! - `an_error_in_a_macro_inside_a_macro_ends_both`: as in Evil.
 //! - `keys_the_host_feeds_go_behind_what_is_left`: outside any call, it adds to the end.
 //! - `keys_fed_after_a_nested_turn_emptied_the_queue_still_run`: where they go is kept in range.
+//!
+//! Keys fed apart, as die-vim's `:norm` feeds each line's:
+//! - `a_failure_in_keys_fed_apart_drops_only_them`: what's behind them runs.
+//! - `keys_fed_apart_say_when_they_have_run_out`: before the next key, typed or fed.
+//! - `keys_pending_says_a_key_waits_for_more`.
 
 use die_test_cap as _;
 
@@ -65,7 +70,9 @@ impl Extension for Ext {
             .bind(State::Normal, "t", "feed-twice")
             .bind(State::Normal, "n", "feed-a-failure")
             .bind(State::Normal, "i", "feed-g-then-c")
-            .bind(State::Normal, "N", "nested-turn-drops");
+            .bind(State::Normal, "N", "nested-turn-drops")
+            .bind(State::Normal, "x", "feed-apart-a-failure")
+            .bind(State::Normal, "X", "feed-apart-b");
         for name in ["note-a", "note-b", "note-c"] {
             let log = self.log.clone();
             reg.command(name, "", move |_, _| {
@@ -86,6 +93,10 @@ impl Extension for Ext {
         });
         reg.command("feed-a-failure", "", |ctx, _| ctx.feed_keys("e"));
         reg.command("feed-g-then-c", "", |ctx, _| ctx.feed_keys("gc"));
+        reg.command("feed-apart-a-failure", "", |ctx, _| {
+            ctx.feed_keys_apart("geb")
+        });
+        reg.command("feed-apart-b", "", |ctx, _| ctx.feed_keys_apart("b"));
         reg.command("nested-turn-drops", "", |ctx, _| {
             ctx.feed_keys("f")?;
             ctx.step(); // f feeds b, fails, and so empties the queue
@@ -463,4 +474,59 @@ fn the_drop_hook_runs_before_the_next_key_is_looked_up() {
     drop(hook);
     ctx.type_keys("e");
     assert!(log.borrow().is_empty());
+}
+
+#[test]
+fn a_failure_in_keys_fed_apart_drops_only_them() {
+    let (mut ctx, log) = setup();
+    let seen = log.clone();
+    let _hook = ctx.on_fed_run_out(move |_| {
+        seen.borrow_mut().push("ran out".into());
+        Ok(())
+    });
+    // x feeds g, e and b apart, g feeds b among them, and e fails.
+    run_fed(&mut ctx, "xc");
+    assert_eq!(
+        *log.borrow(),
+        ["note-b", "note-c"],
+        "only what was behind them"
+    );
+    log.borrow_mut().clear();
+    // After keys fed apart that ran out, the next ones fed apart are apart again.
+    run_fed(&mut ctx, "Xxa");
+    assert_eq!(*log.borrow(), ["note-b", "ran out", "note-b", "note-a"]);
+}
+
+#[test]
+fn keys_fed_apart_say_when_they_have_run_out() {
+    let (mut ctx, log) = setup();
+    let seen = log.clone();
+    let _hook = ctx.on_fed_run_out(move |_| {
+        seen.borrow_mut().push("ran out".into());
+        Ok(())
+    });
+    run_fed(&mut ctx, "Xa");
+    assert_eq!(*log.borrow(), ["note-b", "ran out", "note-a"]);
+    log.borrow_mut().clear();
+    // Before a typed key too, though it was waiting all along.
+    ctx.input(KeyEvent::press(Key::Char('c')));
+    run_fed(&mut ctx, "X");
+    assert_eq!(*log.borrow(), ["note-b", "ran out", "note-c"]);
+    log.borrow_mut().clear();
+    // Keys the host feeds meanwhile go behind them.
+    ctx.feed_keys("X").unwrap();
+    assert!(ctx.step(), "X's turn");
+    ctx.feed_keys("a").unwrap();
+    ctx.run_until_idle();
+    assert_eq!(*log.borrow(), ["note-b", "ran out", "note-a"]);
+}
+
+#[test]
+fn keys_pending_says_a_key_waits_for_more() {
+    let (mut ctx, log) = setup();
+    ctx.type_keys("z");
+    assert!(ctx.keys_pending());
+    ctx.type_keys("z");
+    assert!(!ctx.keys_pending());
+    assert_eq!(*log.borrow(), ["note-c"]);
 }

@@ -12,7 +12,7 @@ open ~/Applications/DIE.app
 - `cargo xtask app` links `~/.local/bin/die` if that directory is on your PATH. Otherwise it prints the one line to add to your shell config. It replaces a link there but never a file. `--home DIR` installs under DIR instead, to try it without touching yours.
 - There is one instance. Launching it again from the Dock or Finder does nothing.
 - **After changing DIE or your config:** `:rebuild` in DIE. It runs `cargo xtask app` in the checkout this DIE.app was installed from, whatever file you're in, with cargo's output in `*rebuild*` below. To build another checkout, run `cargo xtask app` there once, and `:rebuild` builds that one from then on. If it builds, DIE restarts into it. If not, nothing is installed, the cursor in `*rebuild*` is on the first error, and `gf` on its `-->` line opens the file there. It replaces the bundle that's running, so it refuses for one outside an `Applications` folder. A change to your config takes about 2 s. By hand it's `cargo xtask app` in a terminal, then `:restart`.
-- **What a restart keeps:** your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search. `*grep*` doesn't come back. A new build that fails to start leaves the old instance running.
+- **What a restart keeps:** your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search. `*grep*` and `*Buffer List*` don't come back. A new build that fails to start leaves the old instance running.
 - **Quit:** `:q` on the last window, `:qa`, or Cmd-Q. Each refuses if a file is unsaved. `:qa!` doesn't.
 
 From a terminal, `die` opens files in the running DIE and returns at once. If none is running, it starts one.
@@ -39,6 +39,7 @@ The leader is `\`, in normal state.
 | `\p` | `find-file-project` | Fuzzy find under the nearest parent with `.git` |
 | `\f` | `find-file` | Find a file, going down from the buffer's directory |
 | `\/`, `\]` | `switch-buffer` | Switch buffer |
+| `\}`, `\?` | `buffer-menu` | The Buffer List, to show, save and kill buffers |
 | `\r` | `grep` | Search the project |
 | `\x`, `M-x` | `command-palette` | Run any command by name, recent first. `M-x` works in insert and visual too |
 | `\z` | `toggle-max-width` | Turn the 80-column centered text on or off. The prompts, their lists and the messages line up with it |
@@ -46,7 +47,7 @@ The leader is `\`, in normal state.
 | `\hc` | `describe-command` | What a command does |
 | Cmd-Q | `quit` | Quit, in every state |
 
-`:name` runs any command by name, so also `:restart`, `:kill-buffer`, `:quit`.
+`:name` runs any command by name, so also `:restart`, `:kill-buffer`, `:quit`. While you type the name, `:` lists commands as `M-x` does: see [Prompts](#prompts).
 
 **The finders** list files while you type. They skip `.git`, `target`, `Library`, `.cargo/registry`, `.claude/worktrees` and a fixed set of others, and they don't read `.gitignore`. Only the best 1,000 matches can be reached.
 
@@ -54,6 +55,18 @@ The leader is `\`, in normal state.
 - `<CR>` on a row opens it in another window.
 - `:cn`, `:cp` go to the next and previous result, from any window.
 - `gf` and `gF` open `path:line:col`, `path:line`, `path(line)` or `path(line,col)` under the cursor, trying the buffer's directory and then the project root. `]f [f ]F [F` do the same. `gf` in Visual takes the selection as the name.
+
+**The Buffer List**, `\}`, `\?`, `:ls` or `:buffers`, shows `*Buffer List*` in this window, as your Emacs's `buffer-menu` does. `:files`, or a count first, lists only buffers with files. A row per buffer, the one used last first, leaving out the menu and names starting with a space. Its columns are Emacs's: `C` is `.` for the buffer you came from, `>` for one marked to show, `D` to kill; `R` is `%` for read-only; `M` is `*` for unsaved changes, `S` to save; then the name, the size in characters, the mode (Fundamental, as DIE has no major modes yet) and the file. A line break in a name or a path shows as `^J`. The titles are its first line. Evil's keys work there, except these, which are evil-collection's:
+
+- `d` and `C-k` mark the line's buffer to kill and move down, `C-d` moving up, a count marking that many. `s` marks it to save and `m` to show, each moving down.
+- `u` takes the line's marks off and moves down, or up with a count. `<Del>` moves up and takes that line's off. `U` takes every mark off.
+- `x` saves what's marked `S` and kills what's marked `D`, asking as `:kill-buffer` does when that loses changes to a file. `no` keeps that one and goes on, `Esc` stops there.
+- `~` marks the buffer as having no unsaved changes, or with a count as having some. `%` turns its read-only on or off.
+- `go` and `<CR>` show the buffer in this window, `gO` in another (a split if this one is alone), `1` alone, `2` with the buffer before it above, and `gv` alone with each one marked `>` in a window below, sized as Emacs sizes them. When they'd leave a window no row of text, `gv` does nothing.
+- `o` and `S` sort by the column under the cursor, or by a count's column from 0 (`3o` by name), and the other way when pressed again. `T` lists only buffers with files, or all of them again. `gr` lists the buffers again. `X` puts the buffer last in the buffer list, and its row at the end.
+- `q` and `ZZ` show what the window showed before and put the menu last. `ZQ` closes the window, as elsewhere.
+- `1` and `2` aren't counts there, but after a count's first digit they're digits of it, so `31d` marks 31 rows. `gg` goes to the titles.
+- Evil's insert and edit keys do nothing there, as your evil-collection makes them in a read-only list: `i I a A c C D r O p P J = < >`.
 
 ## Prompts
 
@@ -71,7 +84,19 @@ These work on `:`, `/`, `?` and the finders.
 | `<BS>` `C-h`, `<Del>` `C-d`, `C-w` `M-BS`, `M-d` | Delete a character, a word |
 | `C-u`, `C-k` | Delete to the line's start, to its end |
 
-On `:`, `/` and `?` only: `C-v` inserts the next key literally, `<Up>` `<Down>` recall history matching what's typed, `C-b` goes to the start, and `C-u` deletes the whole line. `C-p` `C-n` also go through history.
+On `:`, `/` and `?` only: `C-v` inserts the next key literally, `<Up>` `<Down>` recall history matching what's typed, `C-b` goes to the start, and `C-u` deletes the whole line. `C-p` `C-n` also go through history. On `:` they do beside its list too, as below.
+
+**`:`'s list.** While the line is a command's name, after any range (`%`, `'<,'>`, `2,5`), `:` shows a list like `M-x`'s, flex matched against the name: the ex commands under their whole names (`write`, `quit`, `substitute`, `vsplit`, `nohlsearch`) and every other command. With nothing typed, the ones you ran from `:` come first. Once you type, the top row is the command the name runs, as Vim reads a short name (`quit` for `q`, `substitute` for `s`, `display` for `di`), then the names it starts, then the others that match.
+
+| Keys | What they do on `:` |
+|---|---|
+| `<CR>` | Run the line as typed, so `:w` writes. Once you've moved to a row, run that row, with the range kept, which a command that takes none ignores |
+| `<Down>` `C-n`, `<PageDown>`, `M-<` `M->` | Move in the list. No row is chosen until you do |
+| `<Up>` `C-p`, `<PageUp>` | From the line, history as in Vim, so `:<Up>` brings back the last line and `:s<Up>` the last `:s`. In the list, move up, and from the first row back to the line |
+| `<Tab>` | Put the chosen row, or else the top one, in place of the name, with nothing after it |
+| `M-p` `M-n` | History, list or not |
+
+Once you're in the history, all of these that walk it stay there until you change the line, so `C-p` `C-n` go back and forth as in Vim, though a line there is a name with a list. Once anything follows the name (a space, a `!`, or `/` after `s`), the list goes, and its rows: the line moves to the bottom row, as Vim's is, and the keys are as above.
 
 In `\f`, `<S-Tab>` goes up a directory: a name you've half typed goes first, then the directory on the line, and from `~/` it goes to `/Users/`.
 
@@ -109,9 +134,10 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **Operators:** `d c y < > = g~ gu gU`, doubled for lines, with any motion or object.
 - **Short forms:** `x X s S D C Y ~ r J gJ`, `p P`, `u C-r` (also `:u`), `.`.
 - **Objects:** `iw aw iW aW io ao` (word, WORD, symbol: `cio` for snake_case), `ip ap`, `i" a" i' a'`, ``i` a` ``, `i( a( ib ab`, `i[ a[`, `i{ a{ iB aB`, `i< a<`.
-- **Registers:** `"x` then a command. `a-z`, `A-Z` to append, `0`, `1-9`, `-`, `_`, `+` the clipboard, and read-only `.`, `:`, `/`, `%`. Every kill also goes to the clipboard, as in your Emacs.
-- **Macros:** `q{x}`, `q`, `@x`, `@@`, `@:`. A typed `C-g` stops a running macro.
-- **Substitute:** `:s/a/b/`, with flags `g` and `&`, `~` for the last replacement, ranges `%`, `'<,'>`, `N,M`, `.`, `$`, `'x`, `+n`, `-n`. `&` repeats it on the line, `g&` everywhere, also `:&`, `:&&`.
+- **Registers:** `"x` then a command. `a-z`, `A-Z` to append, `0`, `1-9`, `-`, `_`, `+` the clipboard, and read-only `.`, `:`, `/`, `%`. Every kill also goes to the clipboard, as in your Emacs. `:reg` (`:registers`, `:di`, `:display`) lists them all in `*registers*` below, a macro as its keys, and `:reg ab` only `a` and `b`. `:q` closes it.
+- **Macros:** `q{x}` records into `x`, `q{X}` adds to it, and `q` stops. While it records, the bottom row's right end says `recording @x`, and stopping says `Recorded @x` (or `Added to @x`). `@x` plays it, `@@` plays the last again, `@:` runs the last ex line, each with a count. A macro can be edited as text: `"xp`, change it, `0"xy$`. A typed `C-g` stops a running macro, or a `:norm`.
+- **On each line:** `:norm keys` (`:normal`, `:norm!`) types the keys on each line of a range, from the line's start, the cursor's line if none is given: `:%norm A;`, `:'<,'>norm @q`, `:5,$norm .`. A line whose keys fail is left quietly and the next goes ahead, and a macro or `:norm` that ran the `:norm` goes on after it. One `u` undoes it all. Each character is a key, so put an Esc or Enter in with `C-v` first. A prompt the keys leave open is answered as it stands, as in your Evil, so `:%norm :s/a/b/` runs the `:s` on each line. `:g/pat/cmd` runs an ex command on each line that matches, and `:g!` and `:v` on each that doesn't, the whole file if no range is given: `:g/TODO/norm @q`, `:v/^$/norm A;`. Any delimiter works, an empty pattern is the last search, and the pattern becomes the last search. It needs a command: there's no `:p` or `:d`.
+- **Substitute:** `:s/a/b/`, with flags `g` and `&`, `~` for the last replacement, ranges `%`, `'<,'>`, `N,M`, `.`, `$`, `'x`, `+n`, `-n`. A count before `:` starts the line with that many lines from the cursor's, so `3:` is `:.,.+2`. `&` repeats it on the line, `g&` everywhere, also `:&`, `:&&`, and `:s` alone.
 
 ## Selecting
 
@@ -138,8 +164,8 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 ## Windows and buffers
 
 - **`C-w` then:** `h j k l` and arrows, `w W t b p` to move; `s S v n` to split; `c q o` to close; `= + - > < _ |` to size; `H J K L` to move the window; `r R x` to rotate and exchange; `:` for ex; digits for a count. A key with Control does the same, as `C-w C-h`.
-- **Ex:** `:sp[lit]`, `:vs[plit]`, `:new`, `:vne[w]`, each with a file; `:clo[se]`, `:on[ly]`.
-- **Buffers:** `:e file`, `:e!`, `:b name`, `:bn`, `:bp`, `C-^`, `:bd`, `:bw` (`!` to drop unsaved text), `:kill-buffer`. `:bn` and `:bp` go through file buffers. `:ls` (or `:buffers`) lists every buffer in `*messages*` and shows it there, the one used last first, `.` for this one, `%` read-only, `*` unsaved. `:files` lists only those with a file.
+- **Ex:** `:sp[lit]`, `:vs[plit]`, `:new`, `:vne[w]`, each with a file; `:clo[se]`, `:on[ly]`. Every ex command takes Vim's short forms, as `:wri`, `:bdel`, `:nohls`, `:sub/a/b/`.
+- **Buffers:** `:e file`, `:e!`, `:b name`, `:bn`, `:bp`, `C-^`, `:bd`, `:bw` (`!` to drop unsaved text), `:kill-buffer`. `:bn` and `:bp` go through file buffers. `:ls` (or `:buffers`) opens [the Buffer List](#dies-own-keys), and `:files` the same with only buffers with files.
 - **Files:** `:w`, `:w!` over a file changed on disk, `:up`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:wqa`, `:xa`, `:qa`, `ZZ`, `ZQ`. Files changed on disk reload by themselves if you have no unsaved text there, and `:w` refuses if you have.
 - **Saving elsewhere:** `:w path` from a buffer with no file, such as `:new`'s, saves it there, and the buffer then visits that file. From a buffer with a file it writes a copy, and the buffer keeps its file and its unsaved changes, as in your Evil. `:sav[eas] path` saves and moves the buffer to the new file. A path is taken from the buffer's directory, as `:e` takes it, and `~/` is your home. A file that's already there is written over only with `!` (`:w! path`, `:saveas! path`). `:wq path` and `:x path` write there, then close.
 - **Which file:** `:f` (`:file`) and `C-g` say the file's full path, its lines and how far down the cursor is, as your Evil's `:f` does. The status line shows only the directory. `C-g` is Vim's: your Evil's quits.
@@ -148,13 +174,14 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 - **A terminal.** No terminal buffers exist. cargo, git and Claude Code run in a terminal of your own next to DIE, and `die file:line` from there.
 - **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`.
-- **Ex:** `:d :m :t :co :y :pu :j :> :<`, `:normal :g :v :sort :r :!`, `:w >> file`, `:w !cmd`, a range before `:w`, `:reg :marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`.
+- **Ex:** `:d :m :t :co :y :pu :j :> :< :p`, `:sort :r :!`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, `:marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`.
 - **Insert keys:** `<Home> <End> <PageUp> <PageDown> C-Left C-Right S-Tab C-c C-g C-h C-j C-k <Insert>`. `C-r =` isn't built anywhere.
 - **Syntax highlighting.** Source is one colour.
 - **Not honoured:** `.gitignore` in the finders and `:grep`.
 - **Opening:** `open -a DIE file`, a Finder double-click, `EDITOR=die` (no `--wait`).
 - **Editing CRLF and non-UTF-8 files.** They open read-only.
-- **Keeping across a restart:** `*grep*`, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.
-- **Interrupting** a slow command on a huge file. `C-g` stops only macros.
+- **The Buffer List's** `.` after its keys (your Evil repeats them, as it repeats any key that isn't Evil's), `gV` (View mode), `t` (tags tables, so `t` is Evil's), `M-s a C-s`, `M-s a C-M-s` and `M-s a C-o` (searching the marked buffers), `M-DEL`, a middle click, and the column keys `gl gh { }`.
+- **Keeping across a restart:** `*grep*`, `*Buffer List*`, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.
+- **Interrupting** a slow command on a huge file. `C-g` stops only macros and `:norm`, so a `:g` whose command isn't `:norm` runs to its end: `:g/./s/a/b/` on 40,000 lines takes about 2 s.
 - **Mouse:** double-click and drag autoscroll.
 - **Linux:** this page is macOS. The Linux build is checked, not run as an app.

@@ -642,7 +642,7 @@ impl Ctx {
         let Content::Text(t) = &b.content else {
             return None; // Surfaces save themselves, from M1.
         };
-        if b.name == MESSAGES || b.name == GREP {
+        if b.name == MESSAGES || b.name == GREP || b.name == crate::menu::MENU {
             return None;
         }
         let window = self.window_used_last(id);

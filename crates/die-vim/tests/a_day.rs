@@ -227,29 +227,29 @@ fn rename_a_function_across_files() {
     );
 }
 
-/// Add a match arm: yank one and change it.
+/// Add a row to a table: yank one and change it.
 #[test]
-fn add_a_match_arm_by_yanking_and_changing_one() {
+fn add_a_table_row_by_yanking_and_changing_one() {
     let mut d = Day::new("arm");
     let ex = d.disk("ex.rs");
     d.open("ex.rs");
-    let arm = "        \"b\" | \"buffer\" => buffer(ctx, rest),\n";
+    let arm = "    (\"b\", \"buffer\", |c, _, rest| buffer(c, rest)),\n";
     let (line, _) = place(&ex, arm, 0);
 
-    d.keys("/\"b\" <CR>yyp");
+    d.keys("/\"b\",<CR>yyp");
     assert_eq!(
         d.at(),
-        ("ex.rs".to_string(), line + 1, 9),
+        ("ex.rs".to_string(), line + 1, 5),
         "the pasted line"
     );
     d.keys("ci\"bn<Esc>");
-    d.keys("f|wci\"bnext<Esc>");
-    d.keys("f=wcwnext_buffer<Esc>");
-    d.keys("lci(ctx<Esc>");
-    let new = "        \"bn\" | \"bnext\" => next_buffer(ctx),\n";
+    d.keys("f,wci\"bnext<Esc>");
+    d.keys("f|;wcwnext_buffer<Esc>");
+    d.keys("lci(c<Esc>");
+    let new = "    (\"bn\", \"bnext\", |c, _, rest| next_buffer(c)),\n";
     assert_eq!(d.text(), ex.replace(arm, &format!("{arm}{new}")));
     assert_eq!(d.at().1, line + 1);
-    assert_eq!(d.at().2, new.find("ctx)").unwrap() + 3);
+    assert_eq!(d.at().2, new.find("c)").unwrap() + 1);
 
     // Five changes, and each is one `u`.
     d.keys("uuuu");
