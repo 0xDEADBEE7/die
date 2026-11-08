@@ -30,6 +30,15 @@ const SIZE: (f64, f64) = (1200.0, 800.0);
 const CHECK_SIZE: (f64, f64) = (420.0, 280.0);
 /// How many frame times `Stats` keeps.
 const FRAME_TIMES: usize = 4096;
+/// Set to anything, DIE's windows can't be seen or clicked and it has no Dock icon, so a test's DIE
+/// stays off your screen. The window server still has the windows, so everything works as it
+/// would except what reaches the display: S1's checks, which measure that, can't run unseen.
+pub const UNSEEN: &str = "DIE_UNSEEN";
+
+/// Whether this DIE is a test's, kept off your screen (`UNSEEN`).
+pub fn unseen() -> bool {
+    std::env::var_os(UNSEEN).is_some_and(|v| !v.is_empty())
+}
 
 /// How long the loop may sleep.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -308,7 +317,13 @@ pub struct Options {
     pub hidden: bool,
     /// What to do when the first frame is up.
     pub first_frame: Option<FirstFrame>,
+    /// What to do with the files you open with DIE from Finder, the Dock or `open -a`. It's
+    /// called on the main thread, outside the loop's turns, so it mustn't block.
+    pub on_open: Option<OnOpen>,
 }
+
+/// Takes the files opened with this app from outside it (`Options::on_open`).
+pub type OnOpen = Box<dyn Fn(Vec<std::path::PathBuf>)>;
 
 /// Open the window and run until it closes or a check ends. The exit code, or why there's
 /// no window.
@@ -318,10 +333,13 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
     ctx.messages.extend(unopened);
     latency.stage("core");
     let mut builder = EventLoop::<Wake>::with_user_event();
-    if let Err(e) = driver::prepare_loop(&mut builder, options.script.is_none()) {
+    if let Err(e) = driver::prepare_loop(&mut builder, options.script.is_none() && !unseen()) {
         ctx.messages.push(e);
     }
     let event_loop = builder.build().map_err(|e| e.to_string())?;
+    if let Some(Err(e)) = options.on_open.map(driver::on_open_files) {
+        ctx.messages.push(e);
+    }
     let proxy = event_loop.create_proxy();
     let wake = proxy.clone();
     ctx.set_waker(move || {
@@ -402,8 +420,13 @@ impl Shell {
         };
         let attributes = driver::window_attributes(attributes)
             .with_title(&self.title)
-            .with_visible(!self.hidden);
+            .with_visible(!self.hidden && !unseen());
         let window = el.create_window(attributes).map_err(|e| e.to_string())?;
+        if unseen() {
+            // Made unseen before it's shown, so it never shows.
+            driver::unseen(&window)?;
+            window.set_visible(!self.hidden);
+        }
         self.latency.stage("window");
         let scale = window.scale_factor();
         let font = driver::Config {

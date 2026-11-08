@@ -532,7 +532,7 @@ impl Ctx {
     pub fn step(&mut self) -> bool {
         self.fed_at = 0;
         self.collect_due();
-        if self.prompt_take_feed() || self.grep_take() {
+        if self.prompt_take_feed() || self.grep_take() || self.streams_take() {
             return true;
         }
         if let Some(q) = self.queue.pop_front() {
@@ -614,10 +614,11 @@ impl Ctx {
         wait
     }
 
-    /// Write the session, then shut extensions down in reverse order and cancel what they
-    /// detached (C4). What your config detached goes last, since an extension's `shutdown` can
-    /// still run config's commands.
+    /// Stop the commands still running, write the session, then shut extensions down in reverse
+    /// order and cancel what they detached (C4). What your config detached goes last, since an
+    /// extension's `shutdown` can still run config's commands.
     pub fn shutdown(&mut self) {
+        self.stop_processes();
         self.save_session_at_quit();
         for i in (0..self.exts.len()).rev() {
             let r = self.guarded(i, |ctx| {

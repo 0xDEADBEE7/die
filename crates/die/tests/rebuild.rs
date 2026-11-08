@@ -1,7 +1,7 @@
 //! `rebuild`, with `sh` standing in for cargo: what it says goes in `*rebuild*` as it says it,
 //! a build that works restarts and leaves nothing behind, one that fails restarts nothing and
-//! leaves its first error on screen, and the workspace is the checkout the bundle names,
-//! whatever file you're in.
+//! leaves its first error on screen, where `gf` and `next-error` find it, and the workspace is the
+//! checkout the bundle names, whatever file you're in.
 
 use die_test_cap as _;
 
@@ -127,6 +127,7 @@ fn a_build_that_fails_restarts_nothing_and_shows_its_first_error_where_gf_finds_
                   echo ' --> crates/die/src/lib.rs:3:5' >&2; echo 'error: could not compile' >&2; \
                   exit 101";
     let (mut ctx, restarts) = editor(&d, script);
+    std::fs::write(root.join("crates/die/src/lib.rs"), "a\nb\nlet x = y;\n").unwrap();
     let here = edit_in(&mut ctx, &root);
     start_rebuild(&mut ctx);
     ctx.run_until_idle();
@@ -149,6 +150,16 @@ fn a_build_that_fails_restarts_nothing_and_shows_its_first_error_where_gf_finds_
     let w = ctx.window_list()[1];
     let at = ctx.text(buf).unwrap().cursor(w).unwrap();
     assert!(said[at..].starts_with("error[E0425]"), "{}", &said[at..]);
+
+    // `next-error` goes through it as through `*compilation*`.
+    ctx.type_keys(":cn<CR>");
+    let (b, w) = (ctx.focused_buffer().unwrap(), ctx.focused().unwrap());
+    assert_eq!(b, here, "{:?}", ctx.messages);
+    assert_eq!(
+        ctx.text(b).unwrap().cursor(w),
+        Some(4 + 4),
+        "line 3, column 5"
+    );
 }
 
 #[test]

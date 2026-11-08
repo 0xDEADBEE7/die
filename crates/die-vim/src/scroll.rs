@@ -179,6 +179,37 @@ pub fn page(ctx: &mut Ctx, a: &Args, down: bool) -> Result {
     land(ctx, a, target, Some(goal))
 }
 
+/// `<PageDown>` and `<PageUp>` in insert state, your Emacs's `scroll-up-command` and
+/// `scroll-down-command`: a window less two rows, or count rows. With the text's end, or its
+/// start, already in view they fail. A cursor the view leaves behind goes to the start of the row
+/// it left by.
+pub fn emacs_page(ctx: &mut Ctx, a: &Args, down: bool) -> Result {
+    let (b, w, sel, rows) = view(ctx, a)?;
+    let t = ctx.text_mut(b)?;
+    let n = a.count.unwrap_or(rows.saturating_sub(PAGE_OVERLAP).max(1));
+    let at_end = t.screen_pos(w, line_end(t, last_line(t))).is_some();
+    let moved = match down {
+        true if at_end => 0,
+        true => scroll_down(t, w, n),
+        false => t
+            .scroll_rows(w, -isize::try_from(n).unwrap_or(isize::MAX))
+            .unwrap_or(0),
+    };
+    if moved == 0 {
+        let e = if down {
+            "End of buffer"
+        } else {
+            "Beginning of buffer"
+        };
+        return Err(Error::Msg(e.into()));
+    }
+    if t.screen_pos(w, sel.head).is_none() {
+        let first = pushed_row(t, w, sel.head).and_then(|r| r.stops().first().map(|st| st.pos));
+        t.set_cursor(w, first.unwrap_or(sel.head));
+    }
+    Ok(())
+}
+
 /// `C-e` and `C-y`: count rows, the cursor staying unless the view leaves it behind, and then at
 /// the start of the row it left by: unlike the other scrolling commands they don't restore the
 /// column. A `C-e` count that goes past the text's end doesn't scroll at all, and a `C-y` count

@@ -14,6 +14,7 @@ use die_test_cap as _;
 compile_error!("DIE requires panic = \"unwind\" (C9). Set it in the config crate's profile.");
 
 mod app;
+mod clients;
 mod commands;
 mod dispatch;
 mod error;
@@ -30,6 +31,7 @@ mod layout;
 mod menu;
 mod messages;
 mod pointer;
+pub mod process;
 mod project;
 mod prompt;
 mod rt;
@@ -42,6 +44,7 @@ mod windows;
 mod workspace;
 
 pub use app::{Button, Input, PointerEvent, PointerKind, TURN_LIMIT};
+pub use clients::{Outcome, Waited};
 pub use commands::{CommandDescription, KeyAction, KeyDescription};
 pub use dispatch::*;
 pub use error::*;

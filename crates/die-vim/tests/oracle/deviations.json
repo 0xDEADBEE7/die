@@ -60,7 +60,18 @@
         { "case": "insert-keys/C-o-w-last-word", "note": "w stops on the last character, and a C-o goes back from there", "fixture": "hand-written/insert-keys.json" },
         { "case": "insert-keys/C-o-G-last-line", "note": "G stops on the last line, in the column it was in", "fixture": "hand-written/insert-keys.json" },
         { "case": "insert-keys/C-o-dd-last-line", "note": "dd leaves the cursor on the new last line, and past its end, as your Evil does without the final newline", "fixture": "hand-written/insert-keys.json" },
-        { "case": "visual-corners/v-G-d", "note": "G in visual state stops on the last line, so it takes as far as the goal column there, and the newline stays", "fixture": "hand-written/visual-corners.json" }
+        { "case": "visual-corners/v-G-d", "note": "G in visual state stops on the last line, so it takes as far as the goal column there, and the newline stays", "fixture": "hand-written/visual-corners.json" },
+        { "case": "ex-lines/d-count-past-end", "note": "the cursor goes to the end of the new last line, as your Evil's does without the final newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/d-dollar", "note": "the cursor goes to the end of the new last line, as your Evil's does without the final newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/d-last-line", "note": "the cursor goes to the end of the new last line, as your Evil's does without the final newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/g-d-adjacent", "note": "the cursor goes to the end of the new last line, as your Evil's does without the final newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/g-d-at-colon", "note": "the cursor goes to the end of the new last line, as your Evil's does without the final newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/g-d-last", "note": "the cursor goes to the end of the new last line, as your Evil's does without the final newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/g-d-no-match", "note": "the cursor goes to the end of the new last line, as your Evil's does without the final newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/g-d-register-append", "note": "the cursor goes to the end of the new last line, as your Evil's does without the final newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/g-d-registers", "note": "the cursor goes to the end of the new last line, as your Evil's does without the final newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/j-last-line", "note": "`:j` on the last line has nothing to join, and the final newline stays, as with `J`", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/d-count1-last-nl", "note": "a count after the last line takes that line alone, and the cursor goes to the end of the new last line, as after `:$d`", "fixture": "hand-written/ex-lines.json" }
       ]
     },
     {
@@ -283,7 +294,8 @@
         { "case": "marks/g-semi-same-line-is-one", "fixture": "hand-written/marks.json" },
         { "case": "marks/g-semi-then-comma", "fixture": "hand-written/marks.json" },
         { "case": "marks/g-semi-three-lines", "fixture": "hand-written/marks.json" },
-        { "case": "marks/dot-mark-substitute", "note": "`.` is the last line :s changed, as in Vim", "fixture": "hand-written/marks.json" }
+        { "case": "marks/dot-mark-substitute", "note": "`.` is the last line :s changed, as in Vim", "fixture": "hand-written/marks.json" },
+        { "case": "insert-emacs/C-j-replace-bs", "fixture": "hand-written/insert-emacs.json" }
       ]
     },
     {
@@ -311,6 +323,93 @@
       "cases": [
         { "case": "universal-argument/operator-then-c-u-drops-the-operator", "fixture": "hand-written/universal-argument.json" },
         { "case": "universal-argument/operator-count-then-c-u-drops-both", "fixture": "hand-written/universal-argument.json" }
+      ]
+    },
+    {
+      "rule": "`:pu` leaves the register as it was",
+      "kind": "evil-bug",
+      "evil": "`:pu` takes the yank handler off the text it puts, in place, so the register it put, and the kill ring and `0` that share its text, hold characters after it, and `p` from them then puts them inside a line.",
+      "die_vim": "The register keeps what it held, lines and all.",
+      "cases": [
+        { "case": "ex-lines/pu-line", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-bang", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-put", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-register", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-register-space", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-unnamed", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-range", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-zero", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-range-two", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-indent", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-multiline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-multiline-bang", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-last-no-newline", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-undo", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-at-colon", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-visual", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-bang-undo", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-undo-mid", "fixture": "hand-written/ex-lines.json" }
+      ]
+    },
+    {
+      "rule": "`:pu` after the last line keeps the final newline",
+      "kind": "evil-bug",
+      "evil": "`:pu` on the text's last line, as `:$pu` and a `:g/pat/pu` that reaches it are, puts an empty line and then the text, and the final newline goes. The register loses its lines as in the rule before.",
+      "die_vim": "The lines go after the last line and the final newline stays, as with `p`. The register keeps its lines.",
+      "cases": [
+        { "case": "ex-lines/pu-dollar", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/pu-empty-text", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/g-pu", "fixture": "hand-written/ex-lines.json" }
+      ]
+    },
+    {
+      "rule": "a count counts from the range's last line",
+      "kind": "evil-bug",
+      "evil": "`:d`, `:y` and `:j` with a count start from the line before the one the range ends on when that's the text's last line and it has no final newline, as `(line-beginning-position 0)` from the range's end is: `:d 1` on that line deletes the line above it.",
+      "die_vim": "As Vim and as your Evil on any other line: the count's lines start with the range's last line.",
+      "cases": [
+        { "case": "ex-lines/d-count1-last-nonl", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/d-count2-last-nonl", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/d-range-count-last-nonl", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/y-count1-last-nonl", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/j-count2-last-nonl", "fixture": "hand-written/ex-lines.json" }
+      ]
+    },
+    {
+      "rule": "line 0 is line 1",
+      "kind": "evil-bug",
+      "evil": "`:0` is an empty range at the text's start: `:0d` and `:0y` take an empty line into `\"`, `:0j` does nothing, and `:0m$` and `:0t$` add an empty line at the end.",
+      "die_vim": "As Vim does for a command that can't take line 0: it's line 1. `:0pu`, `:0r`, `:m0` and `:t0` still put lines above line 1.",
+      "cases": [
+        { "case": "ex-lines/zero-d", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/zero-y", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/zero-j", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/zero-m", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/zero-t", "fixture": "hand-written/ex-lines.json" }
+      ]
+    },
+    {
+      "rule": "`:sort u` keeps a text without a final newline that way",
+      "kind": "evil-bug",
+      "evil": "When the last line has no newline and is the same as the one before it once sorted, `:sort u` deletes it from its start, so the newline before it stays and the text ends in one.",
+      "die_vim": "The lines left keep the text's last line without a newline.",
+      "cases": [
+        { "case": "ex-lines/sort-u-last-nonl", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/sort-u-last-nonl-2", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/sort-ui-last-nonl", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/sort-u-only-dupes-nonl", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/sort-u-not-last-nonl", "fixture": "hand-written/ex-lines.json" }
+      ]
+    },
+    {
+      "rule": "`:m` of every line of a text without a final newline",
+      "kind": "evil-bug",
+      "evil": "`:m` that moves every line of a text with no final newline, as `:m$` on a single line or `:%m$`, deletes them all, fails with \"Beginning of buffer\" taking the newline it looks for before the end, and leaves the text empty.",
+      "die_vim": "The lines go where they were, ending in a newline, as any `:m` to after the last line of such a text does in your Evil.",
+      "cases": [
+        { "case": "ex-lines/m-dollar-single-nonl", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/m-1-single-nonl", "fixture": "hand-written/ex-lines.json" },
+        { "case": "ex-lines/m-all-dollar-nonl", "fixture": "hand-written/ex-lines.json" }
       ]
     }
   ]

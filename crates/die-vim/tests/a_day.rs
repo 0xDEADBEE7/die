@@ -233,7 +233,7 @@ fn add_a_table_row_by_yanking_and_changing_one() {
     let mut d = Day::new("arm");
     let ex = d.disk("ex.rs");
     d.open("ex.rs");
-    let arm = "    (\"b\", \"buffer\", |c, _, rest| buffer(c, rest)),\n";
+    let arm = "    (\"b\", \"buffer\", P(|c, _, rest| buffer(c, rest))),\n";
     let (line, _) = place(&ex, arm, 0);
 
     d.keys("/\"b\",<CR>yyp");
@@ -246,7 +246,7 @@ fn add_a_table_row_by_yanking_and_changing_one() {
     d.keys("f,wci\"bnext<Esc>");
     d.keys("f|;wcwnext_buffer<Esc>");
     d.keys("lci(c<Esc>");
-    let new = "    (\"bn\", \"bnext\", |c, _, rest| next_buffer(c)),\n";
+    let new = "    (\"bn\", \"bnext\", P(|c, _, rest| next_buffer(c))),\n";
     assert_eq!(d.text(), ex.replace(arm, &format!("{arm}{new}")));
     assert_eq!(d.at().1, line + 1);
     assert_eq!(d.at().2, new.find("c)").unwrap() + 1);

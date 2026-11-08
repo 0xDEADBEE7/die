@@ -45,7 +45,6 @@ use crate::files::{FileState, Fingerprint, Uneditable};
 use crate::ids::*;
 use crate::keymap::State;
 use crate::messages::MESSAGES;
-use crate::project::GREP;
 use crate::prompt::HISTORY;
 use crate::windows::{Place, PlaceList, View, Window};
 use crate::workspace::tree::Layout;
@@ -642,7 +641,9 @@ impl Ctx {
         let Content::Text(t) = &b.content else {
             return None; // Surfaces save themselves, from M1.
         };
-        if b.name == MESSAGES || b.name == GREP || b.name == crate::menu::MENU {
+        // An output buffer, as `*grep*` and `*compilation*`, comes from a run that's gone.
+        let output = self.procs.outputs.contains(&id);
+        if output || [MESSAGES, crate::menu::MENU].contains(&b.name.as_str()) {
             return None;
         }
         let window = self.window_used_last(id);
