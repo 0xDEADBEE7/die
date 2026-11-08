@@ -18,7 +18,8 @@ name = "die-core"
 path = "crates/die-core"
 # 14,000 until the terminal's core half: surfaces' styled cells, cursor and events, and PTYs (about 1,030).
 # 14,790 until copy state: a surface's text as a snapshot die-vim runs over, followed and drawn over its cells (about 370).
-limit = 15160
+# 15,160 until the core half's review: a PTY program's locale, output's time a frame, the key that enters insert.
+limit = 15235
 
 [[crate]]
 name = "die-render"
@@ -131,7 +132,8 @@ name = "ext, dispatch, rt"
 # 1,535 until the macro review: the loop says when keys fed apart have run out, before the next key.
 # 1,545 until the terminal: `Surface`'s cursor, status and Esc, its events, and a PTY's turn.
 # 1,575 until copy state: `Surface::text` and `scroll_to`, the snapshot in `Content`, the text kind's keys after a surface's.
-limit = 1600
+# 1,600 until the core half's review: the key that enters passthrough keeps its release, and output's time a frame.
+limit = 1615
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
@@ -155,10 +157,11 @@ files = ["files.rs", "files/"]
 # 1,331 until kill-buffer's question was shared with the Buffer List's `x`.
 # 1,339 until `:`'s list kept Evil's history keys and put first the command a name runs.
 # 1,370 until `describe-key` said a terminal's passthrough is insert, and which Esc leaves it.
+# 1,390 until `surface-paste` read a register by the keymap's rule, as `<C-r>` does.
 [[module]]
 crate = "die-core"
 name = "command line, prompt, core commands"
-limit = 1390
+limit = 1395
 files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "commands/"]
 
 [[module]]
@@ -201,7 +204,8 @@ files = ["clients.rs"]
 crate = "die-core"
 name = "surfaces and PTYs"
 # 975 until copy state: the snapshot, its updates as a window follows, and the cursor, selection and matches over the cells.
-limit = 1285
+# 1,285 until the core half's review: a frame blank and new after a panic, a press elsewhere's drag, and LANG.
+limit = 1300
 files = ["surface.rs", "pty.rs", "surface/", "pty/"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
@@ -219,8 +223,9 @@ name = "session"
 # what an extension keeps, by name, whole and by buffer, is about 80. 1,385 until `die --wait`
 # kept its connection after the answer, to hear `done` on. 1,425 until a waiting client heard
 # `failed` and `moved`, and asked the next instance to wait on its files `again`. 1,480 until
-# `sys` said where DIE's own binary is, for a PTY's trampoline.
-limit = 1490
+# `sys` said where DIE's own binary is, for a PTY's trampoline. 1,490 until it said the locale a
+# PTY's program gets when DIE.app has none, from your region (`AppleLocale`).
+limit = 1520
 # 1,000 until K13: the full session came to 1,039. 1,060 until K13's review fixes. 1,085 until K15
 # held input during a restart's handover. 1,086 until the MVP run: opening a file in the running
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
@@ -270,7 +275,8 @@ platforms = ["macos"]
 # has no event for them, so `application:openURLs:` goes on its app delegate's class, about 30.
 # 1,300 until their names came composed (NFC), as typed: safe calls on NSURL and NSString.
 # 1,305 until a test's DIE ran unseen: three safe setters, with `attach`'s one `unsafe` shared.
-limit = 1315
+# 1,315 until a PTY's trampoline marked the fds Metal opened close-on-exec: one `unsafe` borrow.
+limit = 1335
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it

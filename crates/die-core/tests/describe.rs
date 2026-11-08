@@ -216,8 +216,8 @@ fn in_passthrough_it_reports_the_surface_and_keeps_the_key_from_it() {
     h.run("describe-key", &Args::default()).unwrap();
     typed(&mut h, "a");
     let to_surface = "goes to the term surface, which handles it.\n\
-                      In insert state a surface gets every key but the DIE layer's, and DIE's \
-                      keymaps, the leader's included, wait for normal state.\n";
+                      In insert state a surface gets every key but the DIE layer's, the \
+                      leader's included. Keys go through the keymaps in normal state.\n";
     assert_eq!(help(&h), format!("a in Insert {to_surface}"));
     assert_eq!(h.focused(), Some(w));
     let ev = KeyEvent::press(Key::Char('a'));

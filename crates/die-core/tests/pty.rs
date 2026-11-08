@@ -7,7 +7,7 @@
 
 use die_test_cap as _;
 
-use die_core::pty::{BATCH, HANGUP_WAIT, trampoline};
+use die_core::pty::{BATCH, HANGUP_WAIT, OUTPUT_TURN, trampoline};
 use die_core::*;
 use std::cell::RefCell;
 use std::io;
@@ -191,6 +191,35 @@ fn it_runs_where_and_with_what_it_was_told() {
     assert!(text(&t).contains("[]"), "{}", text(&t));
 }
 
+/// The argument that runs this binary as a DIE with no locale, as DIE.app from the Dock is.
+const NO_LOCALE: &str = "--as-if-from-the-dock";
+
+fn with_no_locale_a_program_gets_its_regions_in_utf_8() {
+    let me = std::env::current_exe().unwrap();
+    let mut run = std::process::Command::new(me);
+    for k in ["LANG", "LC_ALL", "LC_CTYPE"] {
+        run.env_remove(k);
+    }
+    let out = run.arg(NO_LOCALE).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{said}");
+    let lang = said.lines().find_map(|l| l.strip_prefix("LANG="));
+    assert!(lang.is_some_and(|l| l.ends_with(".UTF-8")), "{said}");
+    assert!(said.contains("charmap UTF-8"), "{said}");
+}
+
+/// [`NO_LOCALE`]'s run: what a shell says of its locale.
+fn as_if_from_the_dock() {
+    let mut ctx = editor();
+    let t = start(
+        &mut ctx,
+        sh("echo \"LANG=$LANG\"; echo \"charmap $(locale charmap)\""),
+        size(80, 24),
+    );
+    wait_end(&mut ctx, &t);
+    print!("{}", text(&t));
+}
+
 fn it_leads_a_session_on_its_own_controlling_terminal() {
     let mut ctx = editor();
     let t = start(&mut ctx, PtyCommand::new("/bin/sh").arg("-i"), size(80, 24));
@@ -309,6 +338,38 @@ fn a_flood_doesnt_hold_up_a_key_or_the_frame() {
     let pid = pty.pid().unwrap();
     drop(pty);
     assert!(gone_soon(pid), "yes ends with its terminal");
+}
+
+fn with_no_key_waiting_a_flood_has_batches_until_its_time_is_up() {
+    let mut ctx = editor();
+    let got = Rc::new(RefCell::new(0));
+    let g = got.clone();
+    let cmd = PtyCommand::new("yes")
+        .arg("a flood of output")
+        .on_output(move |_, bytes| {
+            *g.borrow_mut() += bytes.len();
+            Ok(())
+        });
+    let pty = ctx.pty(cmd, size(80, 24)).unwrap();
+    assert!(ctx.run_until(WAIT, |_| *got.borrow() > 4 * BATCH));
+    // As the host drives it: turns, then a frame at 120 Hz.
+    let (start, mut slowest) = (Instant::now(), Duration::ZERO);
+    *got.borrow_mut() = 0;
+    for _ in 0..30 {
+        let turn = Instant::now();
+        ctx.run_ready();
+        slowest = slowest.max(turn.elapsed());
+        std::thread::sleep(Duration::from_millis(8));
+    }
+    let (frames, bytes) = (30, *got.borrow());
+    println!(
+        "  {} KiB a frame, {:.0} MiB/s, the slowest turn {slowest:?}",
+        bytes / frames / 1024,
+        bytes as f64 / start.elapsed().as_secs_f64() / f64::from(1 << 20)
+    );
+    assert!(bytes > frames * BATCH, "more than a batch a frame: {bytes}");
+    assert!(slowest < OUTPUT_TURN * 10, "a turn took {slowest:?}");
+    drop(pty);
 }
 
 fn all_of_a_floods_output_comes_before_its_exit() {
@@ -435,6 +496,9 @@ fn main() {
     if let Some(code) = trampoline() {
         std::process::exit(code);
     }
+    if std::env::args().any(|a| a == NO_LOCALE) {
+        return as_if_from_the_dock();
+    }
     let tests: &[(&str, Test)] = &[
         (
             "a_shell_echoes_what_it_is_sent",
@@ -453,6 +517,10 @@ fn main() {
             it_runs_where_and_with_what_it_was_told,
         ),
         (
+            "with_no_locale_a_program_gets_its_regions_in_utf_8",
+            with_no_locale_a_program_gets_its_regions_in_utf_8,
+        ),
+        (
             "it_leads_a_session_on_its_own_controlling_terminal",
             it_leads_a_session_on_its_own_controlling_terminal,
         ),
@@ -463,6 +531,10 @@ fn main() {
         (
             "a_flood_doesnt_hold_up_a_key_or_the_frame",
             a_flood_doesnt_hold_up_a_key_or_the_frame,
+        ),
+        (
+            "with_no_key_waiting_a_flood_has_batches_until_its_time_is_up",
+            with_no_key_waiting_a_flood_has_batches_until_its_time_is_up,
         ),
         (
             "all_of_a_floods_output_comes_before_its_exit",

@@ -7,12 +7,15 @@ pub mod appkit;
 pub mod catch;
 /// The system clipboard.
 pub mod clipboard;
+/// The fds a program on a PTY inherits.
+pub mod fds;
 /// Metal.
 pub mod metal;
 /// Core Text.
 pub mod text;
 
 pub use clipboard::system_clipboard;
+pub use fds::close_on_exec_inherited;
 
 /// Whether DIE can draw here: a Mac without Metal can't.
 pub fn ready() -> Result<(), String> {

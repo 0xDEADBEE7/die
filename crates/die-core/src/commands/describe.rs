@@ -337,7 +337,7 @@ impl fmt::Display for KeyDescription {
                     writeln!(
                         f,
                         "In insert state a surface gets every key but the DIE layer's, \
-                         and DIE's keymaps, the leader's included, wait for normal state."
+                         the leader's included. Keys go through the keymaps in normal state."
                     )?;
                 }
             }
@@ -364,7 +364,12 @@ impl fmt::Display for CommandDescription {
             writeln!(f, "No key is bound to it.")?;
         }
         for (map, state, keys) in &self.keys {
-            writeln!(f, "{keys} in {}, in {map}", Shown(*state))?;
+            let on = if *state == State::Passthrough {
+                " on a surface"
+            } else {
+                ""
+            };
+            writeln!(f, "{keys} in {}{on}, in {map}", Shown(*state))?;
         }
         Ok(())
     }

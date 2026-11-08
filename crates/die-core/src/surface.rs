@@ -31,8 +31,9 @@ pub enum Color {
 }
 
 /// One cell of a [`Frame`]. Core resolves what the scene's [`Cell`] doesn't hold: reverse video
-/// swaps the colors, faint blends the foreground 65 % toward the background (as ghostel does),
-/// before the swap, invisible text draws a space with no line, and blinking text draws steadily.
+/// swaps the colors, faint keeps 65 % of the foreground and takes 35 % of the background (as
+/// ghostel does), before the swap, invisible text draws a space with no line, and blinking text
+/// draws steadily.
 /// Cells are built with [`FrameCell::new`] and then their fields set, so a field added later
 /// (overline and the link id) breaks no surface.
 #[non_exhaustive]
@@ -427,11 +428,11 @@ impl Ctx {
             s.render(&mut frame, &info);
             s.cursor(&info)
         }));
-        // Until the next good render (§15).
+        // Until the next good render (§15), which finds the frame blank and new, as at first.
+        let panicked = drawn.is_err();
         let cursor = drawn.unwrap_or_else(|_| {
             frame.clear();
             frame.text(0, 0, "<render panicked>", &FrameCell::blank());
-            frame.new = true;
             None
         });
         let blank = Cell::styled(Glyph::Char(' '), base);
@@ -440,7 +441,10 @@ impl Ctx {
                 scene.put(p.row + r, p.col + c, cell.resolve(blank.fg, blank.bg));
             }
         }
-        frame.new = false;
+        if panicked {
+            frame.clear();
+        }
+        frame.new = panicked;
         frame.seen = true;
         self.surfaces.frames.insert(buf, frame);
         if top.is_some() {
@@ -472,8 +476,9 @@ impl Ctx {
     }
 
     /// The surface window a pointer event goes to, if any: the one that had the press, for a
-    /// drag or a release, or else the one whose area it's over. With a prompt open, only a
-    /// press's drags and release.
+    /// drag or a release, or else the one whose area it's over. A drag or release from a press
+    /// that went elsewhere, as to text, isn't a surface's. With a prompt open, only a press's
+    /// drags and release.
     pub(crate) fn surface_target(
         &self,
         p: &PointerEvent,
@@ -485,7 +490,7 @@ impl Ctx {
         let copying = |w: WindowId| self.window_buffer(w).is_some_and(|b| self.text(b).is_ok());
         let w = match self.surfaces.pressed {
             Some(w) if held => w,
-            _ if self.prompt.is_some() => return None,
+            _ if held || self.prompt.is_some() => return None,
             _ => hit.filter(|h| h.part == WindowPart::Text)?.window,
         };
         let buf = self.window_buffer(w)?;
@@ -537,17 +542,18 @@ pub(crate) fn register_commands(reg: &mut Registry) {
     reg.command(
         "surface-paste",
         "Paste into this buffer's surface as one piece, which a terminal brackets: the register \
-         given, or else what the system clipboard holds",
+         given, as the keymap reads it (die-vim's `+` is the clipboard), or else what the system \
+         clipboard holds",
         |ctx, a| {
             let buf = a.buffer.or_else(|| ctx.focused_buffer());
             let buf = buf.ok_or_else(|| Error::Msg("No buffer to paste into".into()))?;
             let text = match a.register {
-                Some(r) => ctx.register(r).map(|r| r.text.clone()),
+                Some(r) => ctx.register_text(r)?,
                 None => (ctx.clipboard().map(|r| r.text))
-                    .or_else(|| ctx.register('"').map(|r| r.text.clone())),
+                    .or_else(|| ctx.register('"').map(|r| r.text.clone()))
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| Error::Msg("Nothing to paste".into()))?,
             };
-            let text = text.filter(|t| !t.is_empty());
-            let text = text.ok_or_else(|| Error::Msg("Nothing to paste".into()))?;
             if !matches!(
                 ctx.buffers.get(buf).map(|b| &b.content),
                 Some(Content::Custom { .. })
@@ -556,7 +562,9 @@ pub(crate) fn register_commands(reg: &mut Registry) {
                     "This buffer shows no surface to paste into".into(),
                 ));
             }
-            ctx.surface_event(buf, &Event::Paste(text))?;
+            if !text.is_empty() {
+                ctx.surface_event(buf, &Event::Paste(text))?; // `_` pastes nothing
+            }
             Ok(())
         },
     );

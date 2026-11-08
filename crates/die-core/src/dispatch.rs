@@ -200,6 +200,25 @@ impl Ctx {
         if state == State::Passthrough && self.describing.is_none() {
             return self.dispatch_passthrough(win, buf, ev);
         }
+        let (key, pressed) = (ev.key, ev.kind != KeyKind::Release);
+        self.dispatch_keymaps(win, buf, state, ev, src);
+        // A key that put a surface in passthrough, as `i` does, or a command opening a terminal,
+        // keeps its repeats and release from it: the program never had its press (§7).
+        if pressed && self.state() == State::Passthrough && !self.swallow.contains(&key) {
+            self.swallow.push(key);
+        }
+    }
+
+    /// Everything but passthrough: the keymaps, a prompt, describe-key, and a surface's `event()`
+    /// for what none of them takes.
+    fn dispatch_keymaps(
+        &mut self,
+        win: WindowId,
+        buf: BufferId,
+        state: State,
+        ev: KeyEvent,
+        src: KeySource,
+    ) {
         if ev.kind == KeyKind::Release || matches!(ev.key, Key::Modifier(_) | Key::Unidentified) {
             return; // release events, lone modifier keys and unnamed keys never reach keymaps
         }
