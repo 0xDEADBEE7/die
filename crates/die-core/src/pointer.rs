@@ -48,6 +48,14 @@ impl Drawn {
         self.positions.clone_from(&s.positions);
         self.placed = placed;
     }
+
+    /// Where the last frame drew a window.
+    pub(crate) fn placement(&self, w: WindowId) -> Option<WindowPlacement> {
+        self.placed
+            .iter()
+            .find(|(p, ..)| p.window == w)
+            .map(|p| p.0)
+    }
 }
 
 impl Ctx {

@@ -218,6 +218,8 @@ pub fn caps_event(held: &Held) -> KeyEvent {
 pub struct Pointer {
     double_click: Duration,
     at: (usize, usize),
+    /// Where it is in physical pixels, for a surface that wants more than the cell.
+    px: Option<(f32, f32)>,
     /// The buttons held, oldest first, each with the click count of its press.
     held: Vec<(Button, u8)>,
     last: Option<(Button, (usize, usize), Instant)>,
@@ -230,6 +232,7 @@ impl Pointer {
         Pointer {
             double_click,
             at: (0, 0),
+            px: None,
             held: vec![],
             last: None,
             clicks: 0,
@@ -237,7 +240,7 @@ impl Pointer {
     }
 
     /// It moved to `px` in a frame of `grid` (columns, rows). An event only if it's on another
-    /// cell, since nothing DIE does depends on where in a cell it is.
+    /// cell, since nothing DIE does depends on where in a cell it is. Each event says the pixel.
     pub fn moved(
         &mut self,
         px: (f64, f64),
@@ -249,6 +252,7 @@ impl Pointer {
             ((p.max(0.0) / f64::from(size.max(1))) as usize).min(cells.saturating_sub(1))
         };
         let at = (along(px.1, cell.h, grid.1), along(px.0, cell.w, grid.0));
+        self.px = Some((px.0 as f32, px.1 as f32));
         if at == self.at {
             return None;
         }
@@ -320,6 +324,7 @@ impl Pointer {
             col: self.at.1,
             clicks,
             mods,
+            px: self.px,
         }
     }
 }

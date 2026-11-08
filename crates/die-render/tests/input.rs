@@ -286,7 +286,8 @@ fn clicks_count_up_while_they_are_quick_on_one_cell_with_one_button() {
 }
 
 #[test]
-fn moving_gives_an_event_per_cell_clamped_to_the_frame_and_drags_with_a_button_down() {
+fn moving_gives_an_event_per_cell_clamped_to_the_frame_with_its_pixel_and_drags_with_a_button_down()
+{
     let (c, grid, mods) = (cell(), (80, 24), ctrl());
     let (w, h) = (f64::from(c.w), f64::from(c.h));
     let mut p = Pointer::new(Duration::ZERO);
@@ -298,12 +299,18 @@ fn moving_gives_an_event_per_cell_clamped_to_the_frame_and_drags_with_a_button_d
         col: 3,
         clicks: 0,
         mods,
+        px: Some(((w * 3.5) as f32, (h * 2.5) as f32)),
     };
     assert_eq!(moved, want);
     assert_eq!(p.moved((w * 3.9, h * 2.9), &c, grid, mods), None);
     let at = Instant::now();
     let down = p.button(MouseButton::Left, true, at, mods).unwrap();
     assert_eq!((down.row, down.col), (2, 3));
+    let within = Some(((w * 3.9) as f32, (h * 2.9) as f32));
+    assert_eq!(
+        down.px, within,
+        "a move within the cell isn't an event, but it's where the press is"
+    );
     let drag = p.moved((w * 4.0, h * 2.0), &c, grid, mods).unwrap();
     assert_eq!(drag.kind, PointerKind::Drag(Button::Left));
     assert_eq!(drag.clicks, 0);

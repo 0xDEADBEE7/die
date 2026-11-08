@@ -654,6 +654,7 @@ fn pointer(ctx: &mut Ctx, kind: PointerKind, row: usize, col: usize) {
         col,
         clicks,
         mods,
+        px: None,
     }));
     ctx.run_ready();
     ctx.scene();

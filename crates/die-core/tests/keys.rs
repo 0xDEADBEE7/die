@@ -137,7 +137,7 @@ fn a_modes_char_beats_the_kind_keymaps_j() {
 }
 
 #[test]
-fn passthrough_cmd_esc_first_and_other_keys_to_event() {
+fn passthrough_esc_leaves_the_cmd_layer_is_dies_and_other_keys_go_to_event() {
     let (mut ctx, log, _, _) = setup("");
     let events = Rc::new(RefCell::new(vec![]));
     let t = ctx.create_surface(
@@ -162,7 +162,6 @@ fn passthrough_cmd_esc_first_and_other_keys_to_event() {
         cmd_v.clone(),
         cmd_v.clone().kind(KeyKind::Repeat),
         cmd_v.clone().kind(KeyKind::Release),
-        esc.clone(), // ESC goes to the program (D18)
         cmd_esc.clone(),
         cmd_esc.clone().kind(KeyKind::Repeat),
         esc.clone().kind(KeyKind::Release), // Cmd may be up by now
@@ -174,24 +173,34 @@ fn passthrough_cmd_esc_first_and_other_keys_to_event() {
     let got: Vec<Event> = events.borrow().clone();
     assert_eq!(
         got,
-        [
-            Event::Key(a.clone()),
-            Event::Key(a.kind(KeyKind::Release)),
-            Event::Key(esc.clone())
-        ]
+        [Event::Key(a.clone()), Event::Key(a.kind(KeyKind::Release))]
     );
     assert_eq!(
         take(&log),
         ["paste"],
         "Cmd layer went to DIE's keymaps; its repeat and release were swallowed"
     );
-    ctx.input(esc);
+    ctx.input(esc.clone());
     ctx.run_until_idle();
     assert_eq!(
         take(&log),
         ["esc-normal"],
-        "a fresh Esc reaches normal state's keymaps"
+        "a fresh Esc reaches normal state's keymaps, as vterm-send-escape is bound"
     );
+
+    // A plain Esc leaves too (scope D18 as amended), with its repeat and release.
+    ctx.set_state(State::Passthrough);
+    for ev in [
+        esc.clone(),
+        esc.clone().kind(KeyKind::Repeat),
+        esc.clone().kind(KeyKind::Release),
+    ] {
+        ctx.input(ev);
+    }
+    ctx.run_until_idle();
+    assert_eq!(ctx.state(), State::Normal, "Esc left passthrough");
+    assert_eq!(events.borrow().len(), 2, "the surface got none of it");
+    assert!(take(&log).is_empty());
     let _ = w;
 }
 

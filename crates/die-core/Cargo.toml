@@ -16,6 +16,7 @@ regex-automata.workspace = true
 regex-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rustix.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true
@@ -23,3 +24,9 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+# A PTY's program starts through the test binary's own trampoline (`pty::trampoline`), which
+# `main` has to call first, so this test has no harness.
+[[test]]
+name = "pty"
+harness = false

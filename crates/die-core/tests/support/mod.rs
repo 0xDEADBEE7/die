@@ -459,8 +459,8 @@ impl Surface for TermSurface {
     fn kind(&self) -> &'static str {
         "term"
     }
-    fn render(&mut self, _cols: usize, _rows: usize, out: &mut Vec<String>) {
-        out.push("$ ".into());
+    fn render(&mut self, frame: &mut Frame, _: &RenderInfo) {
+        frame.text(0, 0, "$ ", &FrameCell::blank());
     }
     fn event(&mut self, ev: &Event, _ctx: &mut Ctx) -> bool {
         self.events.borrow_mut().push(ev.clone());

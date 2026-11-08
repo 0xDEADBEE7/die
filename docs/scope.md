@@ -135,8 +135,10 @@ A surface is whatever a buffer displays. Core provides one built-in surface and 
 ```
 Surface
   kind()               "term": identity for keymaps, restore and describe
-  render(area, frame, info)  cells + placements (images, pixel buffers)
+  render(frame, info)  styled cells over the window's whole area, then placements (images, pixel buffers)
+  cursor() / status()  optional: the cursor in the area, a status-line segment
   event(event, ctx)    input that keymaps didn't take; in passthrough, every key outside the DIE layer
+  takes_esc()          optional: a plain Esc in passthrough is the surface's now (D18)
   initial_state()      normal by default; passthrough for terminals
   text()               optional: full text content, for copy state and search beyond the viewport
   scroll_to / reveal   optional: let copy state and search move the view
@@ -172,7 +174,7 @@ Every action is a named command with a docstring, registered in a single registr
 
 - **Hooks:** buffer lifecycle, after an edit, before and after a save, mode on and off, focus, idle. Hooks are queued (contract C3), so there's no before-edit hook; modes catch up with `edits_since` (contract C15). A save runs its write as a queued step after the before-save hooks.
 - **Timers.**
-- **Process API:** spawn with piped stdio (output can stream into a buffer or surface), or spawn on a PTY. Every child, shells included, is started with `posix_spawn` and close-on-exec by default, on macOS and glibc, so no child can hold another terminal open.
+- **Process API:** spawn with piped stdio (output can stream into a buffer or surface), or spawn on a PTY. Every fd DIE opens is close-on-exec, so no child can hold another terminal open. A program on a PTY starts through DIE's own binary, which makes the PTY its controlling terminal and `exec`s it, since that takes code in the child that std offers only through `unsafe` ([extension-contract.md](extension-contract.md) §12).
 - Background threads post messages to the main loop (D7).
 - **Terminal output is parsed in each terminal's helper process** (D20). DIE's main thread receives finished frames and never waits on a helper.
 - **Environment.** PATH additions and an env file are declared in your config, mirroring `init.el`, so DIE.app started from the Dock finds cargo. The same file covers DIE started from a `.desktop` file on Linux. Secrets are never logged.

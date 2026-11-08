@@ -928,7 +928,7 @@ impl Surface for Plain {
     fn kind(&self) -> &'static str {
         "plain"
     }
-    fn render(&mut self, _: usize, _: usize, _: &mut Vec<String>) {}
+    fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
     fn event(&mut self, ev: &Event, _: &mut Ctx) -> bool {
         self.log.borrow_mut().push(ev.clone());
         false
@@ -936,15 +936,22 @@ impl Surface for Plain {
 }
 
 #[test]
-fn a_surface_hears_its_size_and_the_focus() {
+fn a_surface_hears_its_size_its_cells_pixels_and_the_focus() {
     let (mut c, _, a) = frame(80, 24, "text");
     let log: Rc<RefCell<Vec<Event>>> = Rc::default();
     let s = c.create_surface("s", Plain { log: log.clone() });
     let w = c.show(s, ShowIn::Split(Side::Right)).unwrap().unwrap();
     c.run_until_idle();
+    let cell = CellPixels::default();
+    let resize = |cols, rows| Event::Resize {
+        window: w,
+        cols,
+        rows,
+        cell,
+    };
     assert_eq!(
         *log.borrow(),
-        [Event::Resize { cols: 40, rows: 22 }, Event::Focus(true),],
+        [resize(40, 22), Event::Focus(true),],
         "shown in a new window, then focused"
     );
     log.borrow_mut().clear();
@@ -957,9 +964,27 @@ fn a_surface_hears_its_size_and_the_focus() {
     c.focus(w);
     c.resize(a, 30, 22).unwrap();
     c.run_until_idle();
+    assert_eq!(*log.borrow(), [Event::Focus(true), resize(49, 22)]);
+    log.borrow_mut().clear();
+
+    let cell = CellPixels {
+        width: 16,
+        height: 34,
+        scale: 2.0,
+    };
+    c.set_cell_pixels(cell);
+    c.set_cell_pixels(cell);
+    c.run_until_idle();
+    let resized = Event::Resize {
+        window: w,
+        cols: 49,
+        rows: 22,
+        cell,
+    };
     assert_eq!(
         *log.borrow(),
-        [Event::Focus(true), Event::Resize { cols: 49, rows: 22 }]
+        [resized],
+        "new pixels, once, and no word of the same ones"
     );
     log.borrow_mut().clear();
 

@@ -466,6 +466,10 @@ impl Ctx {
         if !self.timers_ran {
             self.collect_timers();
         }
+        // As timers: a PTY's output gets a batch, then a key or the frame (contract §12).
+        if !self.ptys.ran {
+            self.ptys.ran = self.ptys_take();
+        }
         self.cleanup(|ctx| {
             ctx.idle.retain(|t| t.sub.alive.get());
             ctx.subs.retain(|e| e.inner.alive.get());
@@ -560,6 +564,7 @@ impl Ctx {
             return true;
         }
         self.timers_ran = false;
+        self.ptys.ran = false;
         self.quit_fed();
         if self.fed_ran_out() {
             return true;
@@ -618,6 +623,7 @@ impl Ctx {
     /// order and cancel what they detached (C4). What your config detached goes last, since an
     /// extension's `shutdown` can still run config's commands.
     pub fn shutdown(&mut self) {
+        self.stop_ptys();
         self.stop_processes();
         self.save_session_at_quit();
         for i in (0..self.exts.len()).rev() {

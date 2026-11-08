@@ -15,6 +15,7 @@ use crate::keys::*;
 use crate::pointer::Drawn;
 use crate::prompt::Prompt;
 use crate::rt::*;
+use crate::surface::*;
 use crate::text::*;
 use crate::windows::Window;
 use crate::workspace::tree::Tree;
@@ -117,34 +118,62 @@ pub trait Mode: Any {
     }
 }
 
-/// Input a surface receives through [`Surface::event`].
+/// Input a surface receives through [`Surface::event`]. More kinds can come, so a match on it
+/// needs a `_` arm.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Event {
-    /// A key no keymap took, or any key in passthrough.
+    /// A key no keymap took, or in passthrough every key outside the DIE layer, with its repeats
+    /// and releases.
     Key(KeyEvent),
-    /// A window showing the surface changed size, in cells.
+    /// A window showing the surface has this size, which is its whole area: when the surface
+    /// goes into a window ([`Ctx::open_window`]'s caller gave the size), when the window changes
+    /// size, and when its cells change in pixels.
     Resize {
-        /// Its new width.
+        /// The window.
+        window: WindowId,
+        /// Its width in cells.
         cols: usize,
-        /// Its new height.
+        /// Its height in cells.
         rows: usize,
+        /// A cell's size in physical pixels, and the display's scale.
+        cell: CellPixels,
     },
     /// A window showing the surface gained or lost the focus.
     Focus(bool),
+    /// The pointer, over a window showing the surface, or dragging from one.
+    Pointer(SurfacePointer),
+    /// Text to paste as one piece, which a terminal brackets: the DIE layer's V in passthrough,
+    /// or `surface-paste`.
+    Paste(String),
 }
 
 /// A custom surface: what a buffer shows when it isn't text (contract §10).
 pub trait Surface: Any {
     /// Its kind (`"term"`), which names its keymap.
     fn kind(&self) -> &'static str;
-    /// Write its rows. No `Ctx`, so it runs synchronously (C3).
-    fn render(&mut self, cols: usize, rows: usize, out: &mut Vec<String>);
+    /// Draw the window's whole area into `frame`. No `Ctx`, so it runs synchronously (C3).
+    fn render(&mut self, frame: &mut Frame, info: &RenderInfo);
+    /// Where the cursor is in the area, as the last render left it. None draws none.
+    fn cursor(&self, _info: &RenderInfo) -> Option<SurfaceCursor> {
+        None
+    }
+    /// A segment for the status line of a window showing it, such as a terminal's title.
+    fn status(&self) -> Option<String> {
+        None
+    }
     /// Input keymaps didn't take; every key (and release) in passthrough. Checked out (C2).
     fn event(&mut self, _ev: &Event, _ctx: &mut Ctx) -> bool {
         false
     }
     /// Whether it handles this key in passthrough, so `describe-key` can say so (contract §7).
     fn handles(&self, _key: &KeyEvent) -> bool {
+        false
+    }
+    /// Whether a plain Esc in passthrough goes to `event()` now, rather than leaving for normal
+    /// state: a terminal says yes on the alternate screen, or when its toggle sends Esc to the
+    /// program (scope D18). The DIE layer's Esc leaves whatever this says.
+    fn takes_esc(&self) -> bool {
         false
     }
     /// The state a buffer showing it starts in.
@@ -389,6 +418,10 @@ pub struct Ctx {
     pub(crate) search_highlight: Option<Pattern>,
     /// `*grep*`'s search, streamed commands, and what `next-error` goes through.
     pub(crate) procs: crate::process::Procs,
+    /// What surfaces drew last, their cells in pixels, and the pointer's press on one.
+    pub(crate) surfaces: Surfaces,
+    /// The PTYs open, and whether their output had a turn since the last key.
+    pub(crate) ptys: crate::pty::Ptys,
     /// What `*Buffer List*` lists.
     pub(crate) menu: crate::menu::Menu,
     /// The `die --wait` clients waiting on buffers.
@@ -473,6 +506,7 @@ impl Ctx {
         crate::layout::register_commands(&mut reg);
         crate::commands::register_commands(&mut reg);
         crate::project::register_commands(&mut reg);
+        crate::surface::register_commands(&mut reg);
         let mut errors = vec![];
         let mut slots: Vec<ExtSlot> = vec![];
         for mut e in exts {
@@ -569,6 +603,8 @@ impl Ctx {
             faces,
             search_highlight: None,
             procs: Default::default(),
+            surfaces: Default::default(),
+            ptys: Default::default(),
             menu: Default::default(),
             clients: Default::default(),
             quit_wanted: false,
