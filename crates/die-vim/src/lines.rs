@@ -11,7 +11,7 @@ use crate::grammar::{buffer_window, forget_goal};
 use crate::operators::{self, Span};
 use crate::substitute::{Address, Lines};
 use crate::text::{indent_end, last_line, line_end, normal_pos, rest_pos};
-use crate::{marks, registers, visual};
+use crate::{Vim, marks, registers, visual};
 use die_core::{Args, BufferId, Ctx, Dir, Error, Origin, Pattern, Result, TextBuf, WindowId};
 use std::ops::Range;
 
@@ -123,7 +123,8 @@ pub fn delete(ctx: &mut Ctx, lines: &Lines, rest: &str) -> Result {
 }
 
 /// `:y [x] [count]`: as `yy` takes the lines. Your Evil's cursor goes back where it was after a
-/// range, to the selection's start after `'<,'>`, and to the line's start after none.
+/// range, to the selection's start if `:` was typed in visual state, and to the line's start after
+/// no range.
 pub fn yank(ctx: &mut Ctx, lines: &Lines, rest: &str) -> Result {
     let (register, count) = register_and_count(rest)?;
     let r = taken(ctx, lines)?;
@@ -131,9 +132,10 @@ pub fn yank(ctx: &mut Ctx, lines: &Lines, rest: &str) -> Result {
     let (first, last) = counted(t, &r, count);
     let saved = operators::taken(t, span(t, first, last));
     registers::save(ctx, register, saved, true)?;
+    let from_visual = ctx.with_ext(|v: &mut Vim, _| v.ex_visual)?;
     let to = match lines {
         Lines::Cursor => Some(ctx.text(r.b)?.line_start(r.first)),
-        Lines::Selection => ctx.text(r.b)?.mark('<'),
+        _ if from_visual => ctx.text(r.b)?.mark('<'),
         _ => None,
     };
     let t = ctx.text_mut(r.b)?;
@@ -209,13 +211,17 @@ fn put_lines(t: &mut TextBuf, at: usize, mut lines: String) -> Result<usize> {
 
 /// `:m address`: the lines go after that line, `:m0` to the top. A text without a final newline
 /// keeps it that way, unless the lines go last, as in your Evil. Moved into itself, nothing moves.
+/// To where they are, nothing moves either, and a range given leaves the cursor at its start.
 pub fn move_to(ctx: &mut Ctx, lines: &Lines, rest: &str) -> Result {
     let r = taken(ctx, lines)?;
     let to = address(ctx, &r, rest)?;
+    let t = ctx.text_mut(r.b)?;
     if to == r.first {
+        if r.named {
+            t.set_cursor(r.w, t.line_start(r.first));
+        }
         return Ok(());
     }
-    let t = ctx.text_mut(r.b)?;
     let span = span(t, r.first, r.last);
     let (beg, end) = (span.beg, span.end);
     let lines = t.rope().byte_slice(beg..end).to_string();

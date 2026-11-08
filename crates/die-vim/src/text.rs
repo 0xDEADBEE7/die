@@ -138,6 +138,12 @@ const COMBINING: [(u8, u8); 12] = [
     (FULL_GREEK, ROMAN), (FULL_GREEK, HALF_KANA), (FULL_GREEK, FULL_WIDTH),
 ];
 
+/// Your Emacs's own `word-separating-categories` and `word-combining-categories`, marks aside,
+/// which its `forward-word` uses outside your Evil's motions: hiragana then katakana splits, and a
+/// kanji joins the kana after it.
+const EMACS_SEPARATING: [(u8, u8); 1] = [(HIRAGANA, KATAKANA)];
+const EMACS_COMBINING: [(u8, u8); 2] = [(KANJI, HIRAGANA), (KANJI, KATAKANA)];
+
 /// A word character's script and categories, from Emacs's tables (`scripts.rs`).
 fn script(c: char) -> (u8, u8) {
     let i = RANGES.partition_point(|r| r.0 <= c as u32);
@@ -152,15 +158,24 @@ fn script(c: char) -> (u8, u8) {
 /// are known here; the table gives any other mark its own script, so it joins letters
 /// of that script.
 fn word_boundary(a: char, b: char) -> bool {
+    boundary(a, b, &SEPARATING, &COMBINING)
+}
+
+/// [`word_boundary`] with your Emacs's own lists, as `left-word` and `right-word` have them.
+pub fn emacs_word_boundary(a: char, b: char) -> bool {
+    boundary(a, b, &EMACS_SEPARATING, &EMACS_COMBINING)
+}
+
+fn boundary(a: char, b: char, separating: &[(u8, u8)], combining_pairs: &[(u8, u8)]) -> bool {
     if combining(a) || combining(b) {
         return false;
     }
     let ((sa, ca), (sb, cb)) = (script(a), script(b));
     let pair = |&(x, y): &(u8, u8)| ca & x != 0 && cb & x == 0 && ca & y == 0 && cb & y != 0;
     if sa == sb {
-        SEPARATING.iter().any(pair)
+        separating.iter().any(pair)
     } else {
-        !COMBINING.iter().any(pair)
+        !combining_pairs.iter().any(pair)
     }
 }
 
@@ -515,6 +530,29 @@ mod tests {
         }
         assert!(!same_word('a', '_', false));
         assert!(same_word(':', '>', false));
+    }
+
+    /// `left-word` and `right-word` aren't Evil's motions, so they keep Emacs's own lists.
+    #[test]
+    fn emacs_words_keep_emacs_lists() {
+        for (a, b, ends) in [
+            ('a', 'b', false),
+            ('a', '1', false),
+            ('a', 'α', true),
+            ('a', 'а', true),
+            ('日', '本', false),
+            ('本', 'は', false),
+            ('日', 'カ', false),
+            ('カ', '日', true),
+            ('は', 'a', true),
+            ('で', 'テ', true),
+            ('テ', 'で', false),
+            ('テ', 'ｱ', false),
+            ('a', 'Ａ', true),
+            ('а', '\u{301}', false),
+        ] {
+            assert_eq!(emacs_word_boundary(a, b), ends, "{a} {b}");
+        }
     }
 
     /// These marks lead their scripts' blocks, so the table must give them their own

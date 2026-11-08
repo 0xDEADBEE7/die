@@ -2,7 +2,7 @@
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
 use crate::substitute::{self, Lines};
-use crate::{each, lines, registers, shell, sort, visual, window};
+use crate::{Vim, each, lines, registers, shell, sort, visual, window};
 use die_core::{
     Args, BufferId, Ctx, Error, FileTarget, Origin, PromptSpec, Result, ShowIn, Side, project_root,
     recent_first,
@@ -156,7 +156,8 @@ pub fn open_with(ctx: &mut Ctx, a: &Args, after: &str) -> Result {
         .candidates(names(ctx))
         .matches_part(|line| Some(command_at(line)).filter(|r| r.end == line.len()))
         .tiers(tier);
-    if ctx.focused_buffer().is_some_and(|b| visual::is_on(ctx, b)) {
+    let from_visual = ctx.focused_buffer().is_some_and(|b| visual::is_on(ctx, b));
+    if from_visual {
         visual::escape(ctx, a)?;
         spec = spec.initial(substitute::VISUAL);
     } else if let Some(n) = a.count {
@@ -166,8 +167,8 @@ pub fn open_with(ctx: &mut Ctx, a: &Args, after: &str) -> Result {
         };
         spec = spec.initial(&range);
     }
-    ctx.prompt(spec, |ctx, answer| match answer {
-        Some(text) => run(ctx, &text),
+    ctx.prompt(spec, move |ctx, answer| match answer {
+        Some(text) => run_line(ctx, &text, from_visual),
         None => Ok(()),
     });
     Ok(())
@@ -178,6 +179,11 @@ pub fn open_with(ctx: &mut Ctx, a: &Args, after: &str) -> Result {
 /// in the registry can be called this way (contract §6), and from a selection: the others take no
 /// range, so it's ignored.
 pub fn run(ctx: &mut Ctx, text: &str) -> Result {
+    run_line(ctx, text, false)
+}
+
+/// [`run`], for a line typed after `:` in visual state or not.
+fn run_line(ctx: &mut Ctx, text: &str, from_visual: bool) -> Result {
     let line = text.trim_start().trim_start_matches(':').trim_start();
     let text = line.trim_end();
     if let Some((range, rest)) = substitute::parse(text) {
@@ -195,7 +201,7 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     if let Some(done) = shell::ex(ctx, &lines, range, rest.trim_start()) {
         return done;
     }
-    if let Some(done) = on_lines(ctx, &lines, rest.trim()) {
+    if let Some(done) = on_lines(ctx, &lines, rest.trim(), from_visual) {
         return done;
     }
     let text = without_range(text)?;
@@ -230,7 +236,7 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
 /// A command on lines, with its range and what follows its name. As your Evil reads a name, it's
 /// a run of letters, or of `~&*@<>=:#`, so `:m0`, `:t.`, `:d2` and `:>` need no space, and `:>>` is
 /// no command. A name that carries on with `-`, as `kill-buffer` does, is that command's.
-fn on_lines(ctx: &mut Ctx, lines: &Lines, after: &str) -> Option<Result> {
+fn on_lines(ctx: &mut Ctx, lines: &Lines, after: &str, from_visual: bool) -> Option<Result> {
     let symbol = |c: char| "~&*@<>=:#".contains(c);
     let end = match after.chars().next()? {
         c if symbol(c) => after.find(|c| !symbol(c)),
@@ -245,7 +251,11 @@ fn on_lines(ctx: &mut Ctx, lines: &Lines, after: &str) -> Option<Result> {
         return None;
     };
     let bang = rest.strip_prefix('!');
-    Some(f(ctx, lines, bang.is_some(), bang.unwrap_or(rest).trim()))
+    let visual =
+        |ctx: &mut Ctx, on| -> Result { Ok(ctx.with_ext(|v: &mut Vim, _| v.ex_visual = on)?) };
+    let r = visual(ctx, from_visual)
+        .and_then(|_| f(ctx, lines, bang.is_some(), bang.unwrap_or(rest).trim()));
+    Some(r.and(visual(ctx, false)))
 }
 
 /// The line without the range that only `:s`, `:norm`, `:g` and the commands on lines read. A line number alone goes

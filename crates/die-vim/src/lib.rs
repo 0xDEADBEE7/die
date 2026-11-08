@@ -102,6 +102,9 @@ pub struct Vim {
     each: Vec<each::Run>,
     /// The last `:!` command, which `:!!` runs again.
     shell: Option<String>,
+    /// A command on lines is running from a `:` typed in visual state, whose start your Evil's
+    /// `:y` goes back to.
+    ex_visual: bool,
 }
 
 #[rustfmt::skip]
@@ -486,6 +489,13 @@ impl Extension for Vim {
                 .bind(state, "<S-Tab>", "vim-undefined")
                 .bind(state, "<C-c><any>", "vim-undefined")
                 .bind(state, "<C-h><any>", "vim-help");
+            // Keys that are characters to Emacs, so a digraph's first key: all but `C-g`'s quit.
+            for c in ('a'..='z').filter(|&c| c != 'g') {
+                k.bind(state, &format!("<C-k><C-{c}><any>"), "vim-insert-digraph");
+            }
+            for first in ["<Tab>", "<CR>", "<BS>"] {
+                k.bind(state, &format!("<C-k>{first}<any>"), "vim-insert-digraph");
+            }
         }
 
         for m in MOTIONS {
