@@ -6,6 +6,7 @@
 use die_test_cap as _;
 
 pub mod app;
+pub mod rebuild;
 
 pub use die_core as core;
 pub use die_render as render;
