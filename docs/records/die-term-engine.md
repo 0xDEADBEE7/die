@@ -41,7 +41,7 @@ A self-drawing terminal view embedded in DIE was ruled out. Copy state, Vim moti
   - Ghostty stops publishing the xcframework, or renames it
   - a fix DIE needs has no signed build within about 4 weeks
 
-  A third trigger, a target Ghostty doesn't publish (Linux today), was proposed in [platforms.md](platforms.md) §4.3 and declined on 2026-10-19, as was asking Ghostty to publish Linux archives. Where a signed Linux archive comes from is open until before M2 (scope D10).
+  A third trigger, a target Ghostty doesn't publish (Linux today), was proposed in [platforms.md](platforms.md) §4.3 and declined on 2026-10-19, as was asking Ghostty to publish Linux archives. Where a signed Linux archive comes from is open until before M2 (scope D10). *On 2026-11-08 you chose this trigger for Linux: DIE's CI builds the Linux archive, set up before M2.*
 - **Engine to alacritty_terminal plus a DIE-written kitty graphics layer.** About 7.5–8.5k lines plus about 2k of tests. This happens if:
   - libghostty-vt's C API is withdrawn or relicensed
   - no published build passes DIE's battery for 3 months
