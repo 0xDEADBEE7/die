@@ -342,6 +342,68 @@ fn messages_are_never_fallen_back_on_and_come_back_when_killed() {
     assert_eq!(ctx.text(log).unwrap().rope().to_string(), "two\n");
 }
 
+/// With a maximum width on the focused buffer, as `\z` gives it, the prompt, its list and the
+/// echo area start where that window's text does. In a split, that's the focused window's.
+#[test]
+fn the_prompt_its_list_and_messages_line_up_with_the_text_above() {
+    let mut ctx = ctx();
+    ctx.set_frame_size(40, 12);
+    let b = ctx.focused_buffer().unwrap();
+    let settings = ctx.text_mut(b).unwrap().settings_mut();
+    (settings.max_width, settings.center) = (Some(20), true);
+    let starts = |row: &str| row.find(|c| c != ' ');
+    let rows = |ctx: &mut Ctx| {
+        let scene = ctx.scene();
+        let rows: Vec<String> = (0..scene.rows).map(|r| scene.row_text(r)).collect();
+        (rows, scene.cursors[0].col)
+    };
+
+    let answers = ask(&mut ctx, PromptSpec::new("Pick: ").candidates(["alpha"]));
+    let (shown, bar) = rows(&mut ctx);
+    let line = shown.iter().find(|r| r.contains("Pick:")).unwrap();
+    assert_eq!(
+        starts(line),
+        Some(10),
+        "the text's column, (40 - 20) / 2: {shown:?}"
+    );
+    assert_eq!(
+        bar,
+        line.find("Pick:").unwrap() + "Pick: ".len(),
+        "the cursor follows"
+    );
+    let row = shown.iter().find(|r| r.contains("alpha")).unwrap();
+    assert_eq!(starts(row), Some(10), "{shown:?}");
+    ctx.type_keys("<Esc>");
+    assert_eq!(answers.borrow().as_slice(), [None]);
+    ctx.messages.push("said".into());
+    let (shown, _) = rows(&mut ctx);
+    assert_eq!(starts(shown.last().unwrap()), Some(10), "{shown:?}");
+
+    let w = ctx.focused().unwrap();
+    let right = ctx.split_window(w, Side::Right).unwrap();
+    ctx.focus(right);
+    ask(&mut ctx, PromptSpec::new("Pick: "));
+    let (shown, _) = rows(&mut ctx);
+    let line = shown.last().unwrap();
+    assert_eq!(
+        starts(line),
+        Some(20),
+        "the right window's column: {shown:?}"
+    );
+
+    let plain = ctx.create_text("plain", "");
+    ctx.focus(w);
+    ctx.type_keys("<Esc>");
+    ctx.show(plain, ShowIn::Current).unwrap();
+    ask(&mut ctx, PromptSpec::new("Pick: "));
+    let (shown, _) = rows(&mut ctx);
+    assert_eq!(
+        starts(shown.last().unwrap()),
+        Some(0),
+        "without one, the frame's: {shown:?}"
+    );
+}
+
 /// As Emacs's `*Messages*`: opened at its end, and a cursor there stays there, in any window.
 #[test]
 fn messages_follow_their_end_in_a_window_at_the_end() {
