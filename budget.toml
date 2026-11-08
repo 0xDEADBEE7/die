@@ -210,11 +210,12 @@ files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame
 
 # `die --check`: the window's own checks, which ship in the binary. R3's are about 420
 # lines, R6 adds `typing` and `firstframe`, and V5 `idle-60`'s count of the OS's wakes. 720
-# until `show` held the cursor to whether the window really has the keyboard.
+# until `show` held the cursor to whether the window really has the keyboard. 730 until its
+# cover could be unseen too.
 [[module]]
 crate = "die-render"
 name = "checks"
-limit = 730
+limit = 735
 files = ["check.rs"]
 
 # 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
@@ -231,7 +232,8 @@ platforms = ["macos"]
 # neither this budget nor `cargo xtask lint` read. 1,270 until files opened from Finder: winit 0.30
 # has no event for them, so `application:openURLs:` goes on its app delegate's class, about 30.
 # 1,300 until their names came composed (NFC), as typed: safe calls on NSURL and NSString.
-limit = 1305
+# 1,305 until a test's DIE ran unseen: three safe setters, with `attach`'s one `unsafe` shared.
+limit = 1315
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
@@ -241,5 +243,6 @@ crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
 # 160 until U7's landing found it at 162 from another package. 165 until `on_open_files`.
-limit = 170
+# 170 until `unseen`.
+limit = 175
 files = ["platform/backend.rs"]

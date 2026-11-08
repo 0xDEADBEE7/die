@@ -1,6 +1,7 @@
 //! `cargo xtask restart-loop N`, exit test (b): N rebuilds and restarts of DIE.app over one
 //! session. The bundle and the state directory are its own, under a bundle id of its own, so
-//! your DIE.app and its lock aren't touched. It launches with `open -g` and quits what it starts.
+//! your DIE.app and its lock aren't touched. It launches with `open -g`, unseen (`DIE_UNSEEN`), so
+//! no window shows, and quits what it starts.
 //!
 //! Under `--restart-loop` DIE writes a digest of its session after each restore and waits for a
 //! go-ahead file, which gives this time to put a fresh build in the bundle, and then restarts.
@@ -267,6 +268,7 @@ impl<'a> Loop<'a> {
             .arg("-g")
             .arg("--env")
             .arg(format!("DIE_STATE_DIR={}", self.state.display()))
+            .args(["--env", "DIE_UNSEEN=1"])
             .arg(&self.app)
             .args(["--args", "--restart-loop"])
             .status()

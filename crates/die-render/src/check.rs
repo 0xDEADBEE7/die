@@ -10,7 +10,7 @@
 
 use crate::driver;
 use crate::latency;
-use crate::window::{Remote, Script, Shell, floating_window};
+use crate::window::{Remote, Script, Shell, floating_window, unseen};
 use die_core::{BufferId, CursorShape, ShowIn, Underline};
 use die_core::{Cell, Ctx, Glyph, Key, KeyEvent, Origin, Result as CoreResult, Rgb, Scene};
 use std::collections::HashSet;
@@ -411,8 +411,13 @@ fn cover(s: &mut Shell, el: &ActiveEventLoop) -> Result<(), String> {
         f64::from(size.width) / k + 40.0,
         f64::from(size.height) / k + 40.0,
     );
-    let window = el.create_window(floating_window(at, over));
-    s.cover = Some(window.map_err(|e| e.to_string())?);
+    let attributes = floating_window(at, over).with_visible(!unseen());
+    let window = el.create_window(attributes).map_err(|e| e.to_string())?;
+    if unseen() {
+        driver::unseen(&window)?;
+        window.set_visible(true);
+    }
+    s.cover = Some(window);
     Ok(())
 }
 

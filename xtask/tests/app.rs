@@ -1,4 +1,5 @@
-//! F4a and K12: DIE.app, launched as you'd launch it, with `open -g` so that it takes no focus.
+//! F4a and K12: DIE.app, launched as you'd launch it, with `open -g` so that it takes no focus,
+//! and unseen (`DIE_UNSEEN`), so that its window doesn't show over your work.
 //! Each test uses a bundle of its own under a test bundle id and a state directory of its
 //! own, so your DIE.app and its lock aren't touched, and quits what it started. They bundle
 //! the dev build, which `cargo test` mostly has already; `cargo xtask app` bundles release.
@@ -19,6 +20,9 @@ use xtask::util::root;
 const SESSION: &str = r#"{"version":1,"focus":0,"buffers":[
     {"name":"*notes*","text":"unsaved words","modified":true,"cursor":3}
 ]}"#;
+
+/// For `open --env`: no window of a test's DIE shows, through its restarts too.
+const UNSEEN: &str = "DIE_UNSEEN=1";
 
 /// A restart's limit here: the plan's first check on the 1 s it has.
 const RESTART_MS: f64 = 500.0;
@@ -72,6 +76,7 @@ impl App {
                 .args(options)
                 .arg("--env")
                 .arg(format!("DIE_STATE_DIR={}", self.state.display()))
+                .args(["--env", UNSEEN])
                 .arg("--stderr")
                 .arg(&self.stderr)
                 .arg(&self.app)
@@ -280,6 +285,7 @@ fn die_from_a_terminal(app: &App, args: &[&str]) {
         .current_dir(&app.dir)
         .env_remove("PWD")
         .env("DIE_STATE_DIR", &app.state)
+        .env("DIE_UNSEEN", "1")
         .output()
         .unwrap();
     let said = String::from_utf8_lossy(&out.stderr);
@@ -483,6 +489,7 @@ fn die_waiting(app: &App, args: &[&str]) -> std::process::Child {
         .current_dir(&app.dir)
         .env_remove("PWD")
         .env("DIE_STATE_DIR", &app.state)
+        .env("DIE_UNSEEN", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -581,6 +588,7 @@ fn open_a_starts_an_instance_with_the_file_and_then_sends_files_to_it() {
             .arg("-g")
             .arg("--env")
             .arg(format!("DIE_STATE_DIR={}", app.state.display()))
+            .args(["--env", UNSEEN])
             .arg("--stderr")
             .arg(&app.stderr)
             .arg("-a")

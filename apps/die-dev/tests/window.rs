@@ -32,6 +32,10 @@
 //! The child has no Dock icon and floats, so a check sees its own window even with
 //! other apps in front. It never activates: `show` proves that, and it's your focus
 //! the rule protects. Where there's no backend (the Linux stub), these skip.
+//!
+//! Those windows show over your work, and can't be hidden, since what S1 measures is what
+//! reaches the display: macOS shows a see-through window to no one. So S1's checks run only
+//! with `DIE_ON_SCREEN=1`, and plain `die file.txt` runs unseen (`DIE_UNSEEN`).
 
 use die_test_cap as _;
 
@@ -52,6 +56,16 @@ static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 fn no_backend() -> bool {
     die::render::platform::backend::ready().is_err()
+}
+
+/// S1's checks measure what reaches the display, so their windows must be seen, over whatever
+/// you're doing. They run only when `DIE_ON_SCREEN` is set, and otherwise pass having done nothing.
+fn not_on_screen() -> bool {
+    let off = std::env::var_os("DIE_ON_SCREEN").is_none_or(|v| v.is_empty());
+    if off {
+        println!("skipped: S1's checks open windows on your screen, and DIE_ON_SCREEN=1 runs them");
+    }
+    no_backend() || off
 }
 
 fn file(name: &str, text: &str) -> PathBuf {
@@ -161,7 +175,7 @@ fn num(m: &HashMap<String, String>, k: &str) -> f64 {
 #[test]
 #[ignore = "window: runs in ci --full"]
 fn the_window_holds_to_s1s_rules() {
-    if no_backend() {
+    if not_on_screen() {
         return;
     }
     let run = run_check("idle,resize,scale,occlusion,show");
@@ -210,7 +224,7 @@ fn the_window_holds_to_s1s_rules() {
 #[test]
 #[ignore = "window: runs in ci --full"]
 fn a_resize_frame_stays_under_s1s_limit() {
-    if no_backend() {
+    if not_on_screen() {
         return;
     }
     // S1's 8 ms at p99. The best of three tries.
@@ -230,7 +244,7 @@ fn a_resize_frame_stays_under_s1s_limit() {
 #[test]
 #[ignore = "window: runs in ci --full"]
 fn typing_redraw_and_first_frame_hold_on_the_real_app_and_the_log_has_them() {
-    if no_backend() {
+    if not_on_screen() {
         return;
     }
     let log = file("latency.log", "");
@@ -272,7 +286,7 @@ fn typing_redraw_and_first_frame_hold_on_the_real_app_and_the_log_has_them() {
 #[test]
 #[ignore = "window: runs in ci --full"]
 fn a_minute_idle_and_twenty_occlusions_hold_on_the_real_app() {
-    if no_backend() {
+    if not_on_screen() {
         return;
     }
     let run = run_check("idle-60,occlusion-20");
@@ -290,7 +304,7 @@ fn a_minute_idle_and_twenty_occlusions_hold_on_the_real_app() {
 #[test]
 #[ignore = "window: runs in ci --full"]
 fn show_passes_whatever_file_was_named() {
-    if no_backend() {
+    if not_on_screen() {
         return;
     }
     let long = "word ".repeat(60) + "\n";
@@ -326,6 +340,7 @@ fn die_file_stays_up_and_says_nothing() {
     let path = file("plain.txt", "plain\n");
     let mut child = Command::new(DIE)
         .arg(path)
+        .env("DIE_UNSEEN", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
