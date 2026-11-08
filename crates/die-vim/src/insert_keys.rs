@@ -384,13 +384,15 @@ fn digraph(a: char, b: char) -> Option<char> {
 }
 
 /// `C-k` and two keys: their digraph, or the second key if they make none, count times, as your
-/// Evil's `evil-insert-digraph`. In replace state it goes over as many characters. A key that
-/// isn't a character fails, as there.
+/// Evil's `evil-insert-digraph`. In replace state it goes over as many characters. `<Tab>`, `<CR>`,
+/// `<BS>` and a control key are their characters, as Emacs reads them. A key that isn't a
+/// character, as an arrow or `<Esc>`, fails, as there.
 pub fn insert_digraph(ctx: &mut Ctx, a: &Args) -> Result {
     let (b, _) = buffer_window(ctx, a)?;
     let typed = |i: usize| {
-        let s = a.keys.get(i)?.printable()?;
-        s.chars().next().filter(|_| s.chars().count() == 1)
+        let ev = a.keys.get(i)?;
+        let code = literal_code(ev).filter(|_| ev.chord().key != Key::Esc);
+        code.and_then(char::from_u32)
     };
     let (Some(first), Some(second)) = (typed(1), typed(2)) else {
         return Err(Error::Msg("Wrong type argument: characterp".into()));
@@ -426,8 +428,11 @@ pub fn toggle_replace(ctx: &mut Ctx, a: &Args) -> Result {
     r
 }
 
-/// `C-g`, your Emacs's `keyboard-quit`: a count goes, and it says so.
-pub fn quit(ctx: &mut Ctx, _: &Args) -> Result {
+/// `C-g`, your Emacs's `keyboard-quit`: a `C-u` count goes, and it says so. Your Evil's advice on
+/// it ends the session's recording (`Session::quit`).
+pub fn quit(ctx: &mut Ctx, a: &Args) -> Result {
+    let (b, _) = buffer_window(ctx, a)?;
+    ctx.with_ext(|v: &mut Vim, _| v.inserts.get_mut(&b).map(Session::quit))?;
     ctx.set_prefix(Prefix::default());
     ctx.messages.push("Quit".into());
     Ok(())

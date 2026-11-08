@@ -1,10 +1,11 @@
 //! The ex line commands and insert state's Emacs keys where the oracle can't reach: messages,
-//! `*help*`, a range given backward, and how long `:g` takes on a big text. The oracle holds the
-//! rest, in `ex-lines.json`, `insert-emacs.json` and `insert-emacs-tty.json`.
+//! `*help*`, a range given backward, `C-g`, which ends the oracle's batch Emacs, and how long `:g`
+//! takes on a big text. The oracle holds the rest, in `ex-lines.json`, `insert-emacs.json` and
+//! `insert-emacs-tty.json`.
 
 use die_test_cap as _;
 
-use die_core::{BufferId, Harness, State, WindowId};
+use die_core::{Args, BufferId, Ctx, Extension, Harness, Registry, Result, State, WindowId};
 use die_vim::Vim;
 use std::time::{Duration, Instant};
 
@@ -44,12 +45,36 @@ fn a_bad_sort_pattern_changes_nothing() {
     assert_eq!(text(&h, b), "b\na\n");
 }
 
+/// An extension with a command whose name starts with `move`, as `:m`'s does.
+struct MoveIt;
+
+impl Extension for MoveIt {
+    fn name(&self) -> &'static str {
+        "move-it"
+    }
+    fn register(&mut self, reg: &mut Registry) {
+        fn say(ctx: &mut Ctx, a: &Args) -> Result {
+            ctx.messages.push(format!("move-it ran with {:?}", a.text));
+            Ok(())
+        }
+        reg.command("move-it", "Says it ran.", say);
+    }
+}
+
 #[test]
 fn a_name_that_goes_on_is_another_command() {
-    let (mut h, b, _) = editor("a\nb\n", 0);
-    let errors = keys(&mut h, ":move-it<CR>");
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert_eq!(text(&h, b), "a\nb\n", "not :m with an address of -it");
+    let mut h = Harness::new(vec![Box::new(Vim::default()), Box::new(MoveIt)]).unwrap();
+    let (b, _) = h.open_text("t", "a\nb\n").unwrap();
+    assert!(keys(&mut h, ":move-it far<CR>").is_empty());
+    assert_eq!(
+        h.messages.last().map(String::as_str),
+        Some("move-it ran with Some(\"far\")")
+    );
+    assert_eq!(text(&h, b), "a\nb\n");
+    // With no command of that name it's `:m` with an address of `-nope`, as in your Evil
+    // (the oracle's `name-dash-unknown` has it fail too).
+    assert_eq!(keys(&mut h, ":move-nope<CR>"), ["Invalid address"]);
+    assert_eq!(text(&h, b), "a\nb\n");
 }
 
 #[test]
@@ -77,6 +102,39 @@ fn c_g_in_insert_state_drops_a_count_and_stays() {
     assert_eq!(h.messages.last().map(String::as_str), Some("Quit"));
     assert!(keys(&mut h, "<Esc>").is_empty());
     assert_eq!(text(&h, b), "xab\n");
+}
+
+/// What a `C-g` in insert state does to `.`, a count and the other lines, as the owner's Evil did
+/// it in batch Emacs, its keys typed one by one with the quit caught: `keyboard-quit`'s advice,
+/// `evil-repeat-abort`, ends the session's recording there.
+#[test]
+fn c_g_ends_what_dot_and_a_count_repeat() {
+    for (start, typed, want) in [
+        // `.` repeats the change before.
+        ("x\ny\n", "iab<Esc>j0iQ<C-g><Esc>k0.", "ababx\nQy\n"),
+        // The count and the other lines put in what came before the `C-g`.
+        ("x\n", "3ia<C-g>b<Esc>", "abaax\n"),
+        ("x\n", "3oa<C-g>b<Esc>", "x\nab\na\na\n"),
+        ("x\n", "3Oa<C-g>b<Esc>", "ab\na\na\nx\n"),
+        ("xyzuvw\n", "3Ra<C-g>b<Esc>", "abaavw\n"),
+        (
+            "abc\ndef\nghi\n",
+            "<C-v>jjIa<C-g>b<Esc>",
+            "ababc\nadef\naghi\n",
+        ),
+        // Register `.` still has all of it.
+        ("x\n", "ia<C-g>b<Esc>\".p", "ababx\n"),
+    ] {
+        let (mut h, b, _) = editor(start, 0);
+        assert!(keys(&mut h, typed).is_empty(), "{typed}");
+        assert_eq!(text(&h, b), want, "{typed}");
+        assert_eq!(h.state(), State::Normal, "{typed}");
+    }
+    // With no change before, `.` has nothing to repeat, as your Evil's ring is empty.
+    let (mut h, b, _) = editor("x\ny\n", 0);
+    assert!(keys(&mut h, "iab<C-g>c<Esc>j0").is_empty());
+    assert_eq!(keys(&mut h, ".").len(), 1, "nothing to repeat");
+    assert_eq!(text(&h, b), "abcx\ny\n");
 }
 
 #[test]

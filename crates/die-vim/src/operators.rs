@@ -303,7 +303,7 @@ pub fn lines(t: &TextBuf, beg: usize, end: usize) -> Span {
 }
 
 /// Where the line after `line` starts, or the end of the text.
-fn after_line(t: &TextBuf, line: usize) -> usize {
+pub fn after_line(t: &TextBuf, line: usize) -> usize {
     if line + 1 < t.line_count() {
         t.line_start(line + 1)
     } else {

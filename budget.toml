@@ -45,7 +45,8 @@ path = "crates/die-vim"
 # 9,400 until the ex commands on lines, `:d :y :pu :m :t :j :> :< :sort` (about 490), and insert state's Emacs keys with C-k's 1,665 digraphs (about 260).
 # 10,160 until `:!`, `:{range}!`, `:r`, the `!` operator and `:make`.
 # 10,330 until `:cq` gave up on a `die --wait` client's file, so that git stops.
-limit = 10340
+# 10,340 until the review fixes of the ex commands on lines and insert state's Emacs keys: `C-g`, `C-u n <Home>`, Emacs's words for `C-Left`.
+limit = 10383
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 [[crate]]

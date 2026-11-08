@@ -4,18 +4,23 @@
 //!
 //! The flags are your Evil's: `i` ignores case, `u` keeps the first of lines that are the same
 //! once sorted, `n` sorts by the first decimal number, `x` hexadecimal (`0x` and `-` allowed), `o`
-//! octal and `b` binary, a line with no number coming first. A pattern skips what it matches, so
+//! octal and `b` binary. A line with no number sorts as your Emacs's `most-negative-fixnum`, so
+//! before every number but those below it. A pattern skips what it matches, so
 //! the rest of the line is sorted on, or with `r` that match is, and a line it doesn't match sorts
 //! as empty. The pattern is Rust's (D4), and ignores case as Emacs's `case-fold-search` does. Your
 //! Evil's empty pattern means none: the last search is `/`'s isearch, which it doesn't see.
 
 use crate::each;
 use crate::lines;
+use crate::operators::after_line;
 use crate::substitute::Lines;
 use crate::text::rest_pos;
 use die_core::{Ctx, Error, Origin, Pattern, Result, TextBuf};
 use std::cmp::Ordering;
 use std::ops::Range;
+
+/// What a line with no number sorts as: your Emacs's `most-negative-fixnum`.
+const NO_NUMBER: i128 = -(1 << 61);
 
 #[derive(Default)]
 struct Flags {
@@ -42,7 +47,7 @@ pub fn sort(ctx: &mut Ctx, lines: &Lines, reverse: bool, rest: &str) -> Result {
     };
     let r = lines::taken(ctx, lines)?;
     let t = ctx.text_mut(r.b)?;
-    let (beg, end) = (t.line_start(r.first), line_after(t, r.last));
+    let (beg, end) = (t.line_start(r.first), after_line(t, r.last));
     let text = t.rope().byte_slice(beg..end).to_string();
     let body = text.strip_suffix('\n').unwrap_or(&text);
     let mut rows: Vec<(Range<usize>, &str)> = vec![];
@@ -88,14 +93,6 @@ pub fn sort(ctx: &mut Ctx, lines: &Lines, reverse: bool, rest: &str) -> Result {
     t.tx(Origin::User).replace(beg..end, new).commit()?;
     t.set_cursor(r.w, rest_pos(t, beg));
     Ok(())
-}
-
-/// Where the line after `line` starts, or the text's end.
-fn line_after(t: &TextBuf, line: usize) -> usize {
-    match line + 1 < t.line_count() {
-        true => t.line_start(line + 1),
-        false => t.len(),
-    }
 }
 
 /// The two in the order of their characters, each in lower case.
@@ -147,7 +144,7 @@ fn key(t: &TextBuf, row: Range<usize>, f: &Flags) -> Key {
     }
     let text = t.rope().byte_slice(part).to_string();
     match f.radix {
-        Some(radix) => Key::Number(number(&text, radix).unwrap_or(i128::MIN)),
+        Some(radix) => Key::Number(number(&text, radix).unwrap_or(NO_NUMBER)),
         None => Key::Text(text),
     }
 }
