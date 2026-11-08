@@ -49,7 +49,7 @@ fn leader_x_runs_the_command_chosen_from_the_palette() {
 }
 
 /// `:` lists commands as `\x` does, for the name after a range, and a row runs only once you've
-/// moved to it.
+/// moved to it. The top row is the command the name runs.
 #[test]
 fn colon_lists_commands_as_the_palette_does() {
     let (mut h, b) = harness("abc\n");
@@ -66,6 +66,16 @@ fn colon_lists_commands_as_the_palette_does() {
     assert_eq!(h.prompt_candidates()[0], "vim-undo", "the last run first");
     typed(&mut h, "subs<Tab>/b/X/<CR>");
     assert_eq!(text(&h, b), "aXc\n");
+    for (name, top) in [
+        ("q", "quit"),
+        ("w", "write"),
+        ("s", "substitute"),
+        ("di", "display"),
+    ] {
+        typed(&mut h, &format!(":{name}"));
+        assert_eq!(h.prompt_candidates()[0], top, "what {name} runs, first");
+        typed(&mut h, "<Esc><Esc>");
+    }
 }
 
 #[test]

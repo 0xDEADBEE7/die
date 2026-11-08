@@ -70,6 +70,11 @@ fn w_refuses_a_file_that_changed_and_w_bang_overwrites_it() {
     let errors = keys(&mut h, ":w<CR>");
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("changed on disk"), "{errors:?}");
+    let errors = keys(&mut h, ":up!<CR>");
+    assert!(
+        errors[0].contains("changed on disk"),
+        "your Evil's :up has no !"
+    );
     assert_eq!(read(&path), "from a formatter, longer\n");
     assert_eq!(text(&h, b), "xone\n");
     assert!(keys(&mut h, ":w!<CR>").is_empty());
@@ -418,6 +423,17 @@ fn a_selections_range_is_refused_by_w_and_ignored_by_commands_that_take_none() {
     assert!(keys(&mut h, "ix<Esc>").is_empty());
     assert_eq!(keys(&mut h, "V:w<CR>").len(), 1);
     assert_eq!(keys(&mut h, "V:wri<Tab><CR>").len(), 1, "by any name");
+    let said = keys(&mut h, "V:up<CR>");
+    assert_eq!(
+        said,
+        [":'<,'>up isn't built"],
+        "and :up, as your Evil's writes those lines"
+    );
+    assert_eq!(
+        keys(&mut h, ":1,2w<CR>"),
+        [":1,2w isn't built"],
+        "or any range"
+    );
     assert_eq!(read(&path), "one\ntwo\n");
     assert!(keys(&mut h, "V:<CR>").is_empty());
     assert!(keys(&mut h, ":%vsplit<CR>").is_empty());
@@ -443,7 +459,11 @@ fn colon_lists_commands_for_the_name_after_the_range() {
     assert_eq!(h.prompt_candidates()[0], "nohlsearch");
     assert!(keys(&mut h, "<Tab>").is_empty());
     assert_eq!(h.prompt_text(), Some("2,5nohlsearch"), "the range stays");
-    assert!(keys(&mut h, " ").is_empty());
+    assert!(
+        keys(&mut h, "<CR>").is_empty(),
+        "and a command with none ignores it"
+    );
+    assert!(keys(&mut h, ":2,5nohl ").is_empty());
     assert!(h.prompt_candidates().is_empty(), "an argument has no list");
     assert!(keys(&mut h, "<Esc>:s/").is_empty());
     assert!(h.prompt_candidates().is_empty(), "nor a pattern");
@@ -455,31 +475,96 @@ fn colon_lists_commands_for_the_name_after_the_range() {
 
     assert!(keys(&mut h, "<Esc>ix<Esc>:wri<CR>").is_empty());
     assert_eq!(read(&path), "x1\ntwo\n", "Vim's short names");
-    assert!(keys(&mut h, "iy<Esc>:wri<Down><CR>").is_empty());
+    let said = keys(&mut h, "iy<Esc>:vim-und<CR>");
+    assert_eq!(
+        said,
+        ["no command named vim-und"],
+        "the line, not the top row"
+    );
+    assert!(keys(&mut h, ":wri<Down><CR>").is_empty());
     assert_eq!(read(&path), "yx1\ntwo\n", "a row you move to");
     assert!(keys(&mut h, ":substitute/x/X/<CR>").is_empty());
     assert!(keys(&mut h, "j:subs<Tab>/two/2/<CR>").is_empty());
     assert_eq!(text(&h, b), "yX1\n2\n");
+    assert!(keys(&mut h, "u:<Down>").is_empty());
+    assert_eq!(h.prompt_chosen(), Some("substitute"), "the last run");
+    assert!(keys(&mut h, "<CR>").is_empty());
+    assert_eq!(text(&h, b), "yX1\n2\n", "which runs alone as :& does");
 }
 
-/// With no list, `<Up>` and `C-p` recall the history as they did.
+/// The top row is the command the name runs, as Vim reads a short name, then the names it starts,
+/// then the others flex matches. So `<Tab>` and `<Down>` from `:q` are `quit`, never `wq`.
 #[test]
-fn colon_recalls_the_history_with_no_list() {
+fn colon_puts_the_command_a_name_runs_first() {
+    let mut h = editor();
+    h.open_text("t", "a\n").unwrap();
+    for (name, top) in [
+        ("q", "quit"),
+        ("w", "write"),
+        ("x", "xit"),
+        ("u", "undo"),
+        ("e", "edit"),
+        ("s", "substitute"),
+        ("b", "buffer"),
+        ("g", "global"),
+        ("v", "vglobal"),
+        ("di", "display"),
+        ("sp", "split"),
+        ("bN", "bNext"),
+        ("vim-undo", "vim-undo"),
+    ] {
+        assert!(keys(&mut h, &format!(":{name}")).is_empty());
+        assert_eq!(h.prompt_candidates()[0], top, "{name}");
+        assert!(keys(&mut h, "<Tab>").is_empty());
+        assert_eq!(h.prompt_text(), Some(top), "{name}");
+        assert!(keys(&mut h, "<Esc><Esc>").is_empty());
+    }
+    assert!(keys(&mut h, ":no").is_empty());
+    let listed = h.prompt_candidates();
+    assert_eq!(listed[..2], ["normal", "nohlsearch"], "names it starts");
+    let undo = listed.iter().position(|n| *n == "undo").unwrap();
+    assert!(listed[..undo].iter().all(|n| n.starts_with("no")));
+}
+
+/// Beside `:`'s list the history keys are your Evil's: from the line, `<Up>` and `C-p` go back,
+/// and once you're in the history the keys going forward stay there too, though a line there may
+/// be a name that has a list. From the line, `<Down>` goes into the list.
+#[test]
+fn colon_keeps_evils_history_keys_beside_its_list() {
     let mut h = editor();
     let (b, _) = h.open_text("t", "a b\n").unwrap();
-    assert!(keys(&mut h, ":s/a/x/<CR>:s/b/y/<CR>uu").is_empty());
-    assert!(keys(&mut h, ":s/<Up><Up><CR>").is_empty());
-    assert_eq!(text(&h, b), "x b\n", "<Up> takes what starts the same");
-    assert!(keys(&mut h, "u:<Up><CR>").is_empty());
+    assert!(keys(&mut h, ":s/a/x/<CR>:noh<CR>u").is_empty());
+    assert!(keys(&mut h, ":s/b/y/<C-p>").is_empty());
+    assert_eq!(h.prompt_text(), Some("noh"));
+    assert!(!h.prompt_candidates().is_empty(), "a name has its list");
+    assert!(keys(&mut h, "<C-n>").is_empty());
+    assert_eq!(h.prompt_text(), Some("s/b/y/"), "C-n walks back");
+    assert!(keys(&mut h, "<Esc>:no<PageUp>").is_empty());
+    assert_eq!(h.prompt_text(), Some("noh"), "<PageUp> too");
+    assert!(keys(&mut h, "<PageDown><PageDown>").is_empty());
+    assert_eq!(h.prompt_text(), Some("no"));
+    assert!(keys(&mut h, "<Down>").is_empty());
     assert_eq!(
-        text(&h, b),
-        "a b\n",
-        "but moves in the list when there's one"
+        h.prompt_chosen(),
+        None,
+        "past the newest, still the history's"
     );
-    assert!(keys(&mut h, ":<M-p><CR>").is_empty());
-    assert_eq!(text(&h, b), "x b\n", "where <M-p> has the history");
-    assert!(keys(&mut h, "u:s/<C-p><C-p><CR>").is_empty());
-    assert_eq!(text(&h, b), "a y\n", "and C-p has it with none");
+    assert!(keys(&mut h, "<BS><Down>").is_empty());
+    assert!(h.prompt_chosen().is_some(), "typing ends the walk");
+    assert!(keys(&mut h, "<Up>").is_empty());
+    assert_eq!(
+        h.prompt_chosen(),
+        None,
+        "<Up> from the first row is the line"
+    );
+    assert!(keys(&mut h, "<Up>").is_empty());
+    assert_eq!(
+        h.prompt_text(),
+        Some("noh"),
+        "and from the line, the history"
+    );
+    assert!(keys(&mut h, "<Esc><Esc>:s<Up><CR>").is_empty());
+    assert_eq!(text(&h, b), "x b\n", "<Up> takes what starts the same");
 }
 
 /// A project on disk, with an editor on `src/a.txt`, whose lines name other files.

@@ -113,7 +113,8 @@ pub fn range(text: &str) -> (Lines, &str) {
     }
 }
 
-/// A line that's `:s`: its range, and what follows the `s`, which starts with the delimiter.
+/// A line that's `:s`: its range, and what follows the `s`, which starts with the delimiter. The
+/// name alone is `:&`.
 pub fn parse(text: &str) -> Option<(Lines, &str)> {
     let (range, rest) = range(text);
     match rest {
@@ -123,6 +124,10 @@ pub fn parse(text: &str) -> Option<(Lines, &str)> {
     }
     let typed = rest.bytes().zip(NAME.1.bytes()).take_while(|(a, b)| a == b);
     let rest = rest.get(typed.count()..).filter(|r| r.len() < rest.len())?;
+    // The last substitution again, as your Evil reads an empty argument.
+    if rest.is_empty() {
+        return Some((range, AGAIN));
+    }
     // `-` and `_` carry on a command's name, such as `s-foo`.
     let delimiter = rest
         .chars()

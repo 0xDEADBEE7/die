@@ -83,18 +83,19 @@ These work on `:`, `/`, `?` and the finders.
 | `<BS>` `C-h`, `<Del>` `C-d`, `C-w` `M-BS`, `M-d` | Delete a character, a word |
 | `C-u`, `C-k` | Delete to the line's start, to its end |
 
-On `:`, `/` and `?` only: `C-v` inserts the next key literally, `<Up>` `<Down>` recall history matching what's typed, `C-b` goes to the start, and `C-u` deletes the whole line. `C-p` `C-n` also go through history. On `:` these four do that only while it shows no list.
+On `:`, `/` and `?` only: `C-v` inserts the next key literally, `<Up>` `<Down>` recall history matching what's typed, `C-b` goes to the start, and `C-u` deletes the whole line. `C-p` `C-n` also go through history. On `:` they do beside its list too, as below.
 
-**`:`'s list.** While the line is a command's name, after any range (`%`, `'<,'>`, `2,5`), `:` shows a list like `M-x`'s, flex matched against the name: the ex commands under their whole names (`write`, `quit`, `substitute`, `vsplit`, `nohlsearch`) and every other command, the ones you ran from `:` first.
+**`:`'s list.** While the line is a command's name, after any range (`%`, `'<,'>`, `2,5`), `:` shows a list like `M-x`'s, flex matched against the name: the ex commands under their whole names (`write`, `quit`, `substitute`, `vsplit`, `nohlsearch`) and every other command. With nothing typed, the ones you ran from `:` come first. Once you type, the top row is the command the name runs, as Vim reads a short name (`quit` for `q`, `substitute` for `s`, `display` for `di`), then the names it starts, then the others that match.
 
 | Keys | What they do on `:` |
 |---|---|
-| `<CR>` | Run the line as typed, so `:w` writes. Once you've moved to a row, run that row, with the range kept |
-| `<Down>` `C-n`, `<Up>` `C-p`, `<PageDown>` `<PageUp>`, `M-<` `M->` | Move in the list. No row is chosen until you do, and `<Up>` from the first goes back to the line |
+| `<CR>` | Run the line as typed, so `:w` writes. Once you've moved to a row, run that row, with the range kept, which a command that takes none ignores |
+| `<Down>` `C-n`, `<PageDown>`, `M-<` `M->` | Move in the list. No row is chosen until you do |
+| `<Up>` `C-p`, `<PageUp>` | From the line, history as in Vim, so `:<Up>` brings back the last line and `:s<Up>` the last `:s`. In the list, move up, and from the first row back to the line |
 | `<Tab>` | Put the chosen row, or else the top one, in place of the name, with nothing after it |
 | `M-p` `M-n` | History, list or not |
 
-Once anything follows the name (a space, a `!`, or `/` after `s`), the list goes and the keys are as above. With nothing typed the list is every command, the last run first, so `:` then `<Up>` doesn't bring back the last line as in Vim: `M-p` does.
+Once you're in the history, all of these that walk it stay there until you change the line, so `C-p` `C-n` go back and forth as in Vim, though a line there is a name with a list. Once anything follows the name (a space, a `!`, or `/` after `s`), the list goes, and its rows: the line moves to the bottom row, as Vim's is, and the keys are as above.
 
 In `\f`, `<S-Tab>` goes up a directory: a name you've half typed goes first, then the directory on the line, and from `~/` it goes to `/Users/`.
 
@@ -135,7 +136,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **Registers:** `"x` then a command. `a-z`, `A-Z` to append, `0`, `1-9`, `-`, `_`, `+` the clipboard, and read-only `.`, `:`, `/`, `%`. Every kill also goes to the clipboard, as in your Emacs. `:reg` (`:registers`, `:di`, `:display`) lists them all in `*registers*` below, a macro as its keys, and `:reg ab` only `a` and `b`. `:q` closes it.
 - **Macros:** `q{x}` records into `x`, `q{X}` adds to it, and `q` stops. While it records, the bottom row's right end says `recording @x`. `@x` plays it, `@@` plays the last again, `@:` runs the last ex line, each with a count. A macro can be edited as text: `"xp`, change it, `0"xy$`. A typed `C-g` stops a running macro, or a `:norm`.
 - **On each line:** `:norm keys` (`:normal`, `:norm!`) types the keys on each line of a range, from the line's start, the cursor's line if none is given: `:%norm A;`, `:'<,'>norm @q`, `:5,$norm .`. A line whose keys fail is left quietly and the next goes ahead, and one `u` undoes it all. Each character is a key, so put an Esc or Enter in with `C-v` first. `:g/pat/cmd` runs an ex command on each line that matches, and `:g!` and `:v` on each that doesn't, the whole file if no range is given: `:g/TODO/norm @q`, `:v/^$/norm A;`. Any delimiter works, an empty pattern is the last search, and the pattern becomes the last search. It needs a command: there's no `:p` or `:d`.
-- **Substitute:** `:s/a/b/`, with flags `g` and `&`, `~` for the last replacement, ranges `%`, `'<,'>`, `N,M`, `.`, `$`, `'x`, `+n`, `-n`. `&` repeats it on the line, `g&` everywhere, also `:&`, `:&&`.
+- **Substitute:** `:s/a/b/`, with flags `g` and `&`, `~` for the last replacement, ranges `%`, `'<,'>`, `N,M`, `.`, `$`, `'x`, `+n`, `-n`. `&` repeats it on the line, `g&` everywhere, also `:&`, `:&&`, and `:s` alone.
 
 ## Selecting
 
@@ -172,7 +173,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 - **A terminal.** No terminal buffers exist. cargo, git and Claude Code run in a terminal of your own next to DIE, and `die file:line` from there.
 - **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`.
-- **Ex:** `:d :m :t :co :y :pu :j :> :< :p`, `:sort :r :!`, `:w >> file`, `:w !cmd`, a range before `:w`, `:marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`.
+- **Ex:** `:d :m :t :co :y :pu :j :> :< :p`, `:sort :r :!`, `:w >> file`, `:w !cmd`, a range before `:w` or `:up`, `:marks :jumps :pwd :cd :make`, `:cc :cfirst`, Tab completion in `:e`, `:s` flags other than `g` and `&`.
 - **Insert keys:** `<Home> <End> <PageUp> <PageDown> C-Left C-Right S-Tab C-c C-g C-h C-j C-k <Insert>`. `C-r =` isn't built anywhere.
 - **Syntax highlighting.** Source is one colour.
 - **Not honoured:** `.gitignore` in the finders and `:grep`.

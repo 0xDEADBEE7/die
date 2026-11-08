@@ -1,7 +1,8 @@
 //! The `:` command line. K11a gives it its input; V2 and V5 fill in what it does.
 use crate::grammar::{Kind, buffer_window, run_motion};
 use crate::motions::goto_line;
-use crate::{each, registers, substitute, visual, window};
+use crate::substitute::{self, Lines};
+use crate::{each, registers, visual, window};
 use die_core::{
     Args, BufferId, Ctx, Error, FileTarget, Origin, PromptSpec, Result, ShowIn, Side, project_root,
     recent_first,
@@ -22,7 +23,8 @@ const EX: &[(&str, &str, ExFn)] = &[
     ("q", "quit", |c, bang, rest| file_command(c, "q", bang, rest)),
     ("wq", "wq", |c, bang, rest| file_command(c, "wq", bang, rest)),
     ("x", "xit", |c, bang, rest| file_command(c, "wq", bang, rest)),
-    ("up", "update", |c, bang, rest| file_command(c, "w", bang, rest)),
+    // Your Evil's `evil-update` takes no bang: `:up!` is `:up`.
+    ("up", "update", |c, _, rest| file_command(c, "w", false, rest)),
     ("wa", "wall", |c, bang, _| write_all(c, bang)),
     ("qa", "qall", |c, bang, _| window::quit_app(c, bang)),
     ("quita", "quitall", |c, bang, _| window::quit_app(c, bang)),
@@ -51,6 +53,13 @@ const EX: &[(&str, &str, ExFn)] = &[
 /// Whether `name` is the command with this shortest and whole name, as `wri` is `w[rite]`.
 pub(crate) fn abbreviates(name: &str, (short, whole): (&str, &str)) -> bool {
     name.len() >= short.len() && whole.starts_with(name)
+}
+
+/// The whole name of the ex command `name` names, as `write` for `wri`, or else `name`.
+fn whole_name(name: &str) -> &str {
+    ex_names()
+        .find(|&n| abbreviates(name, n))
+        .map_or(name, |n| n.1)
 }
 
 /// The table's command that `name` names, with a `!` after it or not.
@@ -87,7 +96,7 @@ fn command_at(line: &str) -> Range<usize> {
 }
 
 /// `:`'s list: the ex commands by their whole names and every other command, those `:` ran last
-/// first, as [`recent_first`] orders them.
+/// first, as [`recent_first`] orders them, while nothing's typed.
 fn names(ctx: &Ctx) -> Vec<String> {
     let all = ex_names().map(|n| n.1).chain(ctx.command_names());
     let mut all: Vec<String> = all.map(String::from).collect();
@@ -95,10 +104,15 @@ fn names(ctx: &Ctx) -> Vec<String> {
     all.dedup();
     let run = ctx.prompt_history("ex").iter().filter_map(|line| {
         let name = &line[command_at(line)];
-        let ex = ex_names().find(|&n| abbreviates(name, n));
-        (!name.is_empty()).then(|| ex.map_or(name, |n| n.1).to_string())
+        (!name.is_empty()).then(|| whole_name(name).to_string())
     });
     recent_first(&run.collect::<Vec<_>>(), all)
+}
+
+/// A row's tier in `:`'s list for the name typed: the command it runs first, as `quit` for `q`,
+/// then the names it starts, then the others that match.
+fn tier(name: &str, item: &str) -> usize {
+    usize::from(item != whole_name(name)) + usize::from(!item.starts_with(name))
 }
 
 /// `:`: read a line and run it, with your Evil's line keys. `<BS>` on an empty line leaves it,
@@ -111,7 +125,8 @@ pub fn open(ctx: &mut Ctx, a: &Args) -> Result {
         .backspace_cancels()
         .evil_keys()
         .candidates(names(ctx))
-        .matches_part(|line| Some(command_at(line)).filter(|r| r.end == line.len()));
+        .matches_part(|line| Some(command_at(line)).filter(|r| r.end == line.len()))
+        .tiers(tier);
     if ctx.focused_buffer().is_some_and(|b| visual::is_on(ctx, b)) {
         visual::escape(ctx, a)?;
         spec = spec.initial(substitute::VISUAL);
@@ -168,18 +183,22 @@ pub fn run(ctx: &mut Ctx, text: &str) -> Result {
     ctx.run(name, &args)
 }
 
-/// The line without the range that only `:s` reads. `:'<,'>w` writes only those lines in your
-/// Evil, and that isn't built, so it's refused: writing the whole file would be wrong.
+/// The line without the range that only `:s`, `:norm` and `:g` read. A line number alone goes
+/// there, and a window command keeps its count. `:'<,'>w` and `:'<,'>up` write only those lines in
+/// your Evil, and that isn't built, so they're refused: writing the whole file would be wrong.
 fn without_range(text: &str) -> Result<&str> {
-    let Some(rest) = text.strip_prefix(substitute::VISUAL) else {
-        return Ok(text.strip_prefix('%').map_or(text, str::trim_start));
-    };
-    let rest = rest.trim_start();
+    let (lines, after) = substitute::range(text);
+    let rest = after.trim_start();
     let name = rest.split_whitespace().next().unwrap_or_default();
-    match ex_command(name).map(|e| e.1) {
-        Some("write" | "wq") => Err(Error::Msg(format!(
+    let count = text.starts_with(|c: char| c.is_ascii_digit()) && window::named(name);
+    let writes = matches!(ex_command(name), Some((_, "write" | "wq" | "update", _)));
+    match lines {
+        Lines::Cursor => Ok(text),
+        Lines::Between(..) if rest.is_empty() || count => Ok(text),
+        Lines::All => Ok(rest),
+        _ if writes => Err(Error::Msg(format!(
             ":{}{name} isn't built",
-            substitute::VISUAL
+            &text[..text.len() - after.len()]
         ))),
         _ => Ok(rest),
     }
