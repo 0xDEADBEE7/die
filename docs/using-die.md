@@ -12,7 +12,7 @@ open ~/Applications/DIE.app
 - `cargo xtask app` links `~/.local/bin/die` if that directory is on your PATH. Otherwise it prints the one line to add to your shell config. It replaces a link there but never a file. `--home DIR` installs under DIR instead, to try it without touching yours.
 - There is one instance. Launching it again from the Dock or Finder does nothing.
 - **After changing DIE or your config:** `:rebuild` in DIE. It runs `cargo xtask app` in the checkout this DIE.app was installed from, whatever file you're in, with cargo's output in `*rebuild*` below. To build another checkout, run `cargo xtask app` there once, and `:rebuild` builds that one from then on. If it builds, DIE restarts into it. If not, nothing is installed, the cursor in `*rebuild*` is on the first error, and `gf` on its `-->` line opens the file there. It replaces the bundle that's running, so it refuses for one outside an `Applications` folder. A change to your config takes about 2 s. By hand it's `cargo xtask app` in a terminal, then `:restart`.
-- **What a restart keeps:** your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search. `*grep*` doesn't come back. A new build that fails to start leaves the old instance running.
+- **What a restart keeps:** your buffers, unsaved text, splits, cursors, marks, registers, macros, `.` and last search. `*grep*` and `*Buffer List*` don't come back. A new build that fails to start leaves the old instance running.
 - **Quit:** `:q` on the last window, `:qa`, or Cmd-Q. Each refuses if a file is unsaved. `:qa!` doesn't.
 
 From a terminal, `die` opens files in the running DIE and returns at once. If none is running, it starts one.
@@ -39,6 +39,7 @@ The leader is `\`, in normal state.
 | `\p` | `find-file-project` | Fuzzy find under the nearest parent with `.git` |
 | `\f` | `find-file` | Find a file, going down from the buffer's directory |
 | `\/`, `\]` | `switch-buffer` | Switch buffer |
+| `\}`, `\?` | `buffer-menu` | The Buffer List, to show, save and kill buffers |
 | `\r` | `grep` | Search the project |
 | `\x`, `M-x` | `command-palette` | Run any command by name, recent first. `M-x` works in insert and visual too |
 | `\z` | `toggle-max-width` | Turn the 80-column centered text on or off. The prompts, their lists and the messages line up with it |
@@ -54,6 +55,17 @@ The leader is `\`, in normal state.
 - `<CR>` on a row opens it in another window.
 - `:cn`, `:cp` go to the next and previous result, from any window.
 - `gf` and `gF` open `path:line:col`, `path:line`, `path(line)` or `path(line,col)` under the cursor, trying the buffer's directory and then the project root. `]f [f ]F [F` do the same. `gf` in Visual takes the selection as the name.
+
+**The Buffer List**, `\}`, `\?`, `:ls` or `:buffers`, shows `*Buffer List*` in this window, as your Emacs's `buffer-menu` does. `:files`, or a count first, lists only buffers with files. A row per buffer, the one used last first, leaving out the menu and names starting with a space. Its columns are Emacs's: `C` is `.` for the buffer you came from, `>` for one marked to show, `D` to kill; `R` is `%` for read-only; `M` is `*` for unsaved changes, `S` to save; then the name, the size in characters, the mode (Fundamental, as DIE has no major modes yet) and the file. The titles are its first line. Evil's keys work there, except these, which are evil-collection's:
+
+- `d` and `C-k` mark the line's buffer to kill and move down, `C-d` moving up, a count marking that many. `s` marks it to save and `m` to show, each moving down.
+- `u` takes the line's marks off and moves down, or up with a count. `<Del>` moves up and takes that line's off. `U` takes every mark off.
+- `x` saves what's marked `S` and kills what's marked `D`, asking as `:kill-buffer` does when that loses changes to a file. `no` keeps that one and goes on, `Esc` stops there.
+- `~` marks the buffer as having no unsaved changes, or with a count as having some. `%` turns its read-only on or off.
+- `go` and `<CR>` show the buffer in this window, `gO` in another (a split if this one is alone), `1` alone, `2` with the buffer before it above, and `gv` alone with each one marked `>` in a window below.
+- `o` and `S` sort by the column under the cursor, or by a count's column from 0 (`3o` by name), and the other way when pressed again. `T` lists only buffers with files, or all of them again. `gr` lists the buffers again. `X` puts the buffer last in the buffer list, and its row at the end.
+- `q` and `ZZ` show what the window showed before and put the menu last. `ZQ` closes the window, as elsewhere.
+- `1` and `2` aren't counts there, and `gg` goes to the titles.
 
 ## Prompts
 
@@ -151,7 +163,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 - **`C-w` then:** `h j k l` and arrows, `w W t b p` to move; `s S v n` to split; `c q o` to close; `= + - > < _ |` to size; `H J K L` to move the window; `r R x` to rotate and exchange; `:` for ex; digits for a count. A key with Control does the same, as `C-w C-h`.
 - **Ex:** `:sp[lit]`, `:vs[plit]`, `:new`, `:vne[w]`, each with a file; `:clo[se]`, `:on[ly]`. Every ex command takes Vim's short forms, as `:wri`, `:bdel`, `:nohls`, `:sub/a/b/`.
-- **Buffers:** `:e file`, `:e!`, `:b name`, `:bn`, `:bp`, `C-^`, `:bd`, `:bw` (`!` to drop unsaved text), `:kill-buffer`. `:bn` and `:bp` go through file buffers. `:ls` (or `:buffers`) lists every buffer in `*messages*` and shows it there, the one used last first, `.` for this one, `%` read-only, `*` unsaved. `:files` lists only those with a file.
+- **Buffers:** `:e file`, `:e!`, `:b name`, `:bn`, `:bp`, `C-^`, `:bd`, `:bw` (`!` to drop unsaved text), `:kill-buffer`. `:bn` and `:bp` go through file buffers. `:ls` (or `:buffers`) opens [the Buffer List](#dies-own-keys), and `:files` the same with only buffers with files.
 - **Files:** `:w`, `:w!` over a file changed on disk, `:up`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:wqa`, `:xa`, `:qa`, `ZZ`, `ZQ`. Files changed on disk reload by themselves if you have no unsaved text there, and `:w` refuses if you have.
 - **Saving elsewhere:** `:w path` from a buffer with no file, such as `:new`'s, saves it there, and the buffer then visits that file. From a buffer with a file it writes a copy, and the buffer keeps its file and its unsaved changes, as in your Evil. `:sav[eas] path` saves and moves the buffer to the new file. A path is taken from the buffer's directory, as `:e` takes it, and `~/` is your home. A file that's already there is written over only with `!` (`:w! path`, `:saveas! path`). `:wq path` and `:x path` write there, then close.
 - **Which file:** `:f` (`:file`) and `C-g` say the file's full path, its lines and how far down the cursor is, as your Evil's `:f` does. The status line shows only the directory. `C-g` is Vim's: your Evil's quits.
@@ -166,7 +178,8 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **Not honoured:** `.gitignore` in the finders and `:grep`.
 - **Opening:** `open -a DIE file`, a Finder double-click, `EDITOR=die` (no `--wait`).
 - **Editing CRLF and non-UTF-8 files.** They open read-only.
-- **Keeping across a restart:** `*grep*`, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.
+- **The Buffer List's** `gV` (View mode), `t` (tags tables, so `t` is Evil's), `M-s a C-s`, `M-s a C-M-s` and `M-s a C-o` (searching the marked buffers), `M-DEL`, a middle click, and the column keys `gl gh { }`.
+- **Keeping across a restart:** `*grep*`, `*Buffer List*`, the search highlight, `g;`'s list, a register over 1 MiB, and a `q` still recording.
 - **Interrupting** a slow command on a huge file. `C-g` stops only macros.
 - **Mouse:** double-click and drag autoscroll.
 - **Linux:** this page is macOS. The Linux build is checked, not run as an app.

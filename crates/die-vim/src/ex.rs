@@ -30,9 +30,9 @@ const EX: &[(&str, &str, ExFn)] = &[
     ("xa", "xall", |c, bang, _| write_all(c, bang).and_then(|_| window::quit_app(c, false))),
     ("sav", "saveas", |c, bang, rest| write(c, buffer_window(c, &Args::default())?.0, rest, bang, true)),
     ("f", "file", |c, _, _| show_file_info(c, &Args::default())),
-    ("ls", "ls", |c, _, _| list_buffers(c, false)),
-    ("buffers", "buffers", |c, _, _| list_buffers(c, false)),
-    ("files", "files", |c, _, _| list_buffers(c, true)),
+    ("ls", "ls", |c, _, _| c.run("buffer-menu", &Args::default())),
+    ("buffers", "buffers", |c, _, _| c.run("buffer-menu", &Args::default())),
+    ("files", "files", |c, _, _| c.run("buffer-menu", &Args { count: Some(1), ..Args::default() })),
     ("reg", "registers", |c, _, rest| show_registers(c, rest)),
     ("di", "display", |c, _, rest| show_registers(c, rest)),
     ("bn", "bnext", |c, _, _| window::buffer_step(c, true)),
@@ -253,33 +253,6 @@ pub fn show_file_info(ctx: &mut Ctx, a: &Args) -> Result {
         }
     };
     ctx.messages.push(line);
-    Ok(())
-}
-
-/// `:ls`: a line in `*messages*` for each buffer, the one used last first, which the window
-/// then shows, as your Evil's `buffer-menu` takes it. `.` is this one, `%` read-only, `*` unsaved.
-/// `:files` lists only those with a file.
-fn list_buffers(ctx: &mut Ctx, files_only: bool) -> Result {
-    let here = ctx.focused_buffer();
-    let mut lines = vec![];
-    for b in ctx.buffer_list() {
-        let file = ctx.file(b).map(|f| f.path.display().to_string());
-        let t = ctx.text(b).ok();
-        let mark = |on: bool, c: char| if on { c } else { ' ' };
-        let ro = mark(t.is_some_and(|t| t.settings().read_only), '%');
-        let unsaved = mark(file.is_some() && t.is_some_and(|t| t.modified()), '*');
-        let name = ctx.buffer_name(b).unwrap_or_default();
-        let line = format!("{}{ro}{unsaved} {name:<20} ", mark(here == Some(b), '.'));
-        if file.is_some() || !files_only {
-            lines.push(line + &file.unwrap_or_default());
-        }
-    }
-    ctx.messages
-        .extend(lines.iter().map(|l| l.trim_end().into()));
-    let log = ctx.messages_buffer();
-    if here != Some(log) {
-        ctx.show(log, ShowIn::Current)?;
-    }
     Ok(())
 }
 

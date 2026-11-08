@@ -57,5 +57,9 @@ pub fn mono_dark() -> Theme {
         .face("prompt-current", s().fg(FG_BRIGHT).bg(BG_HL))
         // completions-common-part
         .face("prompt-match", s().fg(FG_BRIGHT).bold())
+        // header-line, without its box: the Buffer List's titles
+        .face("header-line", s().fg(FG_MID).bg(BG_SUBTLE))
+        // buffer-menu-buffer, which mono-dark leaves at Emacs's bold
+        .face("buffer-menu-buffer", s().fg(FG).bold())
         .face("cursor", s().bg(FG))
 }

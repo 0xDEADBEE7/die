@@ -387,6 +387,8 @@ pub struct Ctx {
     pub(crate) search_highlight: Option<Pattern>,
     /// What `*grep*` holds, and the search that's filling it.
     pub(crate) grep: Option<crate::project::Grep>,
+    /// What `*Buffer List*` lists.
+    pub(crate) menu: crate::menu::Menu,
     /// `Ctx::quit` was called.
     pub(crate) quit_wanted: bool,
     /// A restart wrote the session, so a key or a click now would be lost with this instance.
@@ -562,6 +564,7 @@ impl Ctx {
             faces,
             search_highlight: None,
             grep: None,
+            menu: Default::default(),
             quit_wanted: false,
             handing_over: false,
         };

@@ -27,6 +27,7 @@ pub mod instance;
 mod keymap;
 mod keys;
 mod layout;
+mod menu;
 mod messages;
 mod pointer;
 mod project;
