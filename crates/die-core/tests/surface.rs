@@ -1,6 +1,7 @@
 //! What core offers a terminal's surface (contract §7 and §10, scope D18): styled cells over the
-//! window's whole area, the surface's cursor and status segment, the events it hears, and
-//! passthrough as insert state with the DIE layer kept for DIE.
+//! window's area, which a maximum width narrows and centers as it does a file's text, the
+//! surface's cursor and status segment, the events it hears, and passthrough as insert state with
+//! the DIE layer kept for DIE.
 
 use die_test_cap as _;
 
@@ -16,13 +17,15 @@ struct Seen {
     infos: Vec<RenderInfo>,
 }
 
-/// A surface that puts its cells when its frame is new, and logs what it hears.
+/// A surface that puts its cells when its frame is new, and logs what it hears. With text, it
+/// has copy state.
 struct Grid {
     seen: Rc<RefCell<Seen>>,
     cells: Vec<(usize, usize, FrameCell)>,
     cursor: Option<SurfaceCursor>,
     status: Option<String>,
     takes_esc: Rc<StdCell<bool>>,
+    text: Option<String>,
 }
 
 impl Surface for Grid {
@@ -56,6 +59,9 @@ impl Surface for Grid {
     fn initial_state(&self) -> State {
         State::Passthrough
     }
+    fn text(&mut self, _: bool) -> Option<SurfaceText> {
+        self.text.clone().map(SurfaceText::new)
+    }
 }
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
@@ -83,6 +89,7 @@ impl Extension for Toy {
         g.bind(State::Passthrough, "<D-q>", "quit-ish")
             .bind(State::Passthrough, "<D-v>", "surface-paste")
             .bind(State::Normal, "<leader>f", "leader-f")
+            .bind(State::Normal, "<leader>z", "toggle-max-width")
             .bind(State::Insert, "<C-c>", "quit-ish");
         reg.kind_keymap("grid")
             .bind(State::Normal, "<Esc>", "send-esc")
@@ -101,17 +108,27 @@ struct Setup {
     win: WindowId,
 }
 
-/// A harness whose text buffers have margins, a width and line numbers, with a text window on
+/// A harness whose text buffers have line numbers but no maximum width, with a text window on
 /// the left and the surface on the right, focused.
 fn setup(cells: Vec<(usize, usize, FrameCell)>) -> Setup {
+    let numbers = Settings {
+        line_numbers: LineNumbers::Absolute,
+        ..Settings::default()
+    };
+    setup_with(cells, None, numbers, (ShowIn::Split(Side::Right), 80))
+}
+
+/// [`setup`] with these text defaults, the surface giving `text`, shown `how` in a frame `cols`
+/// wide.
+fn setup_with(
+    cells: Vec<(usize, usize, FrameCell)>,
+    text: Option<&str>,
+    text_defaults: Settings,
+    (how, cols): (ShowIn, usize),
+) -> Setup {
     let log: Log = Rc::default();
     let config = Config {
-        text_defaults: Settings {
-            max_width: Some(20),
-            center: true,
-            line_numbers: LineNumbers::Absolute,
-            ..Settings::default()
-        },
+        text_defaults,
         ..Config::default()
     };
     let mut h = Harness::with_config(vec![Box::new(Toy(log.clone()))], config).unwrap();
@@ -123,10 +140,11 @@ fn setup(cells: Vec<(usize, usize, FrameCell)>) -> Setup {
         cursor: None,
         status: None,
         takes_esc: takes_esc.clone(),
+        text: text.map(String::from),
     };
     let buf = h.create_surface("grid", grid);
-    let win = h.show(buf, ShowIn::Split(Side::Right)).unwrap().unwrap();
-    h.send(Input::Resize { cols: 80, rows: 26 });
+    let win = h.show(buf, how).unwrap().unwrap();
+    h.send(Input::Resize { cols, rows: 26 });
     Setup {
         h,
         log,
@@ -271,7 +289,7 @@ fn cells_resolve_over_the_whole_area_as_the_contract_says() {
         None,
         "a surface's cells map to no text"
     );
-    assert_eq!(c0, 40, "no margin before it, though text buffers have one");
+    assert_eq!(c0, 40, "no gutter before it, though text buffers have one");
     let text_row = scene.row_text(r0);
     assert!(
         text_row.ends_with("│abcd ") || text_row.contains("│abcde"),
@@ -795,4 +813,307 @@ fn in_normal_state_its_kinds_keymap_is_looked_up_as_usual() {
             .starts_with("j in Insert goes to the grid surface"),
         "{d}"
     );
+}
+
+/// Your config's text defaults: 80 columns, centered, with line numbers a surface doesn't get.
+fn centered() -> Settings {
+    Settings {
+        max_width: Some(80),
+        center: true,
+        line_numbers: LineNumbers::Absolute,
+        ..Settings::default()
+    }
+}
+
+/// The areas it was told of, by window, since the last look.
+fn resizes(s: &Setup) -> Vec<(WindowId, usize, usize)> {
+    let evs = events(s).into_iter();
+    evs.filter_map(|e| match e {
+        Event::Resize {
+            window, cols, rows, ..
+        } => Some((window, cols, rows)),
+        _ => None,
+    })
+    .collect()
+}
+
+const BG: Rgb = Rgb(0x10, 0x10, 0x10);
+const SELECTION: Rgb = Rgb(0x40, 0x40, 0x40);
+
+#[test]
+fn a_max_width_gives_it_a_files_centered_area_and_toggles_with_it() {
+    let cells = vec![(0, 0, cell('a')), (0, 79, cell('z')), (23, 79, cell('y'))];
+    let mut s = setup_with(cells, None, centered(), (ShowIn::Current, 120));
+    let w = s.win;
+    assert_eq!(s.h.window_size(w), Some((120, 24)));
+    let g = s.h.surface_area(w).unwrap();
+    assert_eq!(
+        (g.pad, g.gutter, g.text_x, g.text_w),
+        (20, 0, 20, 80),
+        "no gutter"
+    );
+    assert_eq!(resizes(&s).last(), Some(&(w, 80, 24)), "it hears its area");
+    assert_eq!(
+        s.h.settings(s.buf).unwrap().max_width,
+        Some(80),
+        "the defaults'"
+    );
+    let scene = s.h.scene();
+    let glyph = |r: usize, c: usize| scene.row(r)[c].glyph.clone();
+    assert_eq!(
+        (glyph(0, 20), glyph(0, 99), glyph(23, 99)),
+        (Glyph::Char('a'), Glyph::Char('z'), Glyph::Char('y'))
+    );
+    let margins = (0..20).chain(100..120);
+    for c in margins {
+        let m = &scene.row(5)[c];
+        assert_eq!(
+            (&m.glyph, m.bg),
+            (&Glyph::Char(' '), BG),
+            "blank, the default face"
+        );
+    }
+    let status = scene.row(24);
+    assert_eq!(
+        (status[0].bg, status[119].bg),
+        (Rgb(0x28, 0x28, 0x28), Rgb(0x28, 0x28, 0x28))
+    );
+    assert!(
+        scene.row_text(24).starts_with(" grid"),
+        "the status line spans the window"
+    );
+    let frame = |s: &Setup| s.seen.borrow().renders.last().map(|r| (r.1, r.2));
+    assert_eq!(frame(&s), Some((80, 24)), "its frame is the area");
+    s.h.with_surface(s.buf, |g: &mut Grid, _| {
+        g.cursor = Some(SurfaceCursor::at(1, 2))
+    })
+    .unwrap();
+    let cursor = s.h.scene().cursors[0];
+    assert_eq!(
+        (cursor.row, cursor.col),
+        (1, 22),
+        "its cursor is in the area"
+    );
+    // In insert state, `toggle-max-width` widens it to the window, and back.
+    s.h.run("toggle-max-width", &Args::default()).unwrap();
+    s.h.run_until_idle();
+    assert_eq!(resizes(&s), [(w, 120, 24)]);
+    let scene = s.h.scene();
+    assert_eq!(scene.row(0)[0].glyph, Glyph::Char('a'));
+    assert_eq!(frame(&s), Some((120, 24)));
+    assert_eq!(s.h.settings(s.buf).unwrap().max_width, None);
+    s.h.run("toggle-max-width", &Args::default()).unwrap();
+    s.h.run_until_idle();
+    assert_eq!(resizes(&s), [(w, 80, 24)]);
+    assert_eq!(s.h.scene().row(0)[20].glyph, Glyph::Char('a'));
+    // Anything else that changes the width or centering does it too.
+    s.h.change_settings(s.buf, |s| s.center = false).unwrap();
+    s.h.run_until_idle();
+    assert_eq!(resizes(&s), [(w, 80, 24)], "told again, at the same size");
+    assert_eq!(s.h.scene().row(0)[0].glyph, Glyph::Char('a'), "at the left");
+    s.h.change_settings(s.buf, |s| s.max_width = Some(100))
+        .unwrap();
+    s.h.run_until_idle();
+    assert_eq!(resizes(&s), [(w, 100, 24)]);
+}
+
+#[test]
+fn the_pointer_is_in_the_areas_cells_and_a_margin_isnt_the_programs() {
+    let mut s = setup_with(vec![], None, centered(), (ShowIn::Current, 120));
+    s.h.set_cell_pixels(CellPixels {
+        width: 10,
+        height: 20,
+        scale: 2.0,
+    });
+    s.h.run_until_idle();
+    events(&s);
+    let at = |kind, row, col: usize| {
+        Input::Pointer(PointerEvent {
+            kind,
+            row,
+            col,
+            clicks: 1,
+            mods: Mods::default(),
+            px: Some((col as f32 * 10.0 + 3.0, row as f32 * 20.0 + 5.0)),
+        })
+    };
+    let pointers = |s: &Setup| {
+        let evs = events(s).into_iter();
+        let ps = evs.filter_map(|e| match e {
+            Event::Pointer(p) => Some((p.kind, p.row, p.col, p.x, p.y)),
+            _ => None,
+        });
+        ps.collect::<Vec<_>>()
+    };
+    let (press, release) = (
+        PointerKind::Press(Button::Left),
+        PointerKind::Release(Button::Left),
+    );
+    let drag = PointerKind::Drag(Button::Left);
+    s.h.send(at(press, 2, 23));
+    assert_eq!(
+        pointers(&s),
+        [(press, 2, 3, 33.0, 45.0)],
+        "from the area's edge"
+    );
+    s.h.send(at(drag, 3, 5));
+    s.h.send(at(drag, 3, 115));
+    s.h.send(at(release, 3, 115));
+    assert_eq!(
+        pointers(&s),
+        [
+            (drag, 3, 0, 0.0, 65.0),
+            (drag, 3, 79, 799.0, 65.0),
+            (release, 3, 79, 799.0, 65.0)
+        ],
+        "drags held inside it"
+    );
+    for col in [5, 19, 100, 119] {
+        s.h.send(at(press, 2, col));
+        s.h.send(at(PointerKind::Move, 2, col));
+        s.h.send(at(release, 2, col));
+    }
+    assert_eq!(
+        pointers(&s),
+        [],
+        "a margin is no part of the program's grid"
+    );
+    let scroll = PointerKind::Scroll { dx: 0.0, dy: 1.0 };
+    s.h.send(at(scroll, 2, 5));
+    assert_eq!(
+        pointers(&s),
+        [(scroll, 2, 0, 0.0, 45.0)],
+        "the wheel scrolls it from a margin, as a file's text"
+    );
+}
+
+#[test]
+fn copy_states_cursor_and_selection_are_drawn_on_its_cells_at_the_new_offset() {
+    let long = "x".repeat(100);
+    let text = format!("one\n{long}\ntwo\n");
+    let mut s = setup_with(vec![], Some(&text), centered(), (ShowIn::Current, 120));
+    let (w, buf) = (s.win, s.buf);
+    s.h.type_keys("<Esc>").unwrap();
+    assert_eq!(s.h.state(), State::Normal);
+    let cursor = |h: &mut Harness| {
+        let c = h.scene().cursors[0];
+        (c.row, c.col)
+    };
+    assert_eq!(
+        cursor(&mut s.h),
+        (2, 20),
+        "on the last line, at the area's edge"
+    );
+    let vp = s.h.text(buf).unwrap().viewport(w).unwrap();
+    let firsts: Vec<_> = vp.rows.iter().map(|r| r.first_line).collect();
+    assert_eq!(
+        firsts,
+        [0, 1, 2, 3],
+        "a line wider than the area doesn't wrap"
+    );
+    // A click in a margin is a click in a file's margin: the row's start, or its end.
+    let click = |h: &mut Harness, col| {
+        for kind in [
+            PointerKind::Press(Button::Left),
+            PointerKind::Release(Button::Left),
+        ] {
+            let ptr = PointerEvent {
+                kind,
+                row: 0,
+                col,
+                clicks: 1,
+                mods: Mods::default(),
+                px: None,
+            };
+            h.send(Input::Pointer(ptr));
+        }
+        h.text(buf).unwrap().cursor(w)
+    };
+    assert_eq!(click(&mut s.h, 5), Some(0));
+    assert_eq!(click(&mut s.h, 110), Some(3));
+    assert_eq!(click(&mut s.h, 21), Some(1));
+    assert!(
+        events(&s).iter().all(|e| !matches!(e, Event::Pointer(_))),
+        "the program hears none of it"
+    );
+    let sel = Selection {
+        anchor: 0,
+        head: 2,
+        shape: Shape::Char,
+        goal: None,
+    };
+    s.h.text_mut(buf).unwrap().set_selection(w, sel);
+    s.h.set_state_of(buf, State::Visual);
+    let selected = |h: &mut Harness| {
+        let scene = h.scene();
+        let row = scene.row(0);
+        (0..120)
+            .filter(|&c| row[c].bg == SELECTION)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(selected(&mut s.h), [20, 21, 22]);
+    assert_eq!(cursor(&mut s.h), (0, 22));
+    events(&s);
+    s.h.run("toggle-max-width", &Args::default()).unwrap();
+    s.h.run_until_idle();
+    assert_eq!(resizes(&s), [(w, 120, 24)], "the surface hears it");
+    assert_eq!(selected(&mut s.h), [0, 1, 2], "at the new offset");
+    assert_eq!(cursor(&mut s.h), (0, 2));
+    s.h.set_state_of(buf, State::Normal);
+    s.h.type_keys("\\z").unwrap();
+    s.h.run_until_idle();
+    assert_eq!(resizes(&s), [(w, 80, 24)], "`\\z` in normal state");
+    assert_eq!(cursor(&mut s.h), (0, 22));
+    assert_eq!(
+        s.h.text(buf).unwrap().settings().max_width,
+        Some(80),
+        "the snapshot's too"
+    );
+}
+
+#[test]
+fn a_window_opened_on_it_tells_it_a_narrower_area() {
+    let mut s = setup_with(vec![], None, centered(), (ShowIn::Current, 120));
+    events(&s);
+    let w = s.h.open_window(s.buf, 100, 10).unwrap();
+    s.h.run_until_idle();
+    assert_eq!(resizes(&s), [(w, 80, 10)]);
+    let w = s.h.open_window(s.buf, 60, 10).unwrap();
+    s.h.run_until_idle();
+    assert_eq!(resizes(&s), [], "its caller gave the size: {w:?}");
+}
+
+#[test]
+fn two_windows_on_it_each_get_their_own_area() {
+    let mut s = setup_with(
+        vec![(0, 0, cell('a'))],
+        None,
+        centered(),
+        (ShowIn::Current, 172),
+    );
+    let a = s.win;
+    let b = s.h.split_window(a, Side::Right).unwrap();
+    let rows = s.h.window_size(b).unwrap().1;
+    s.h.resize(b, 50, rows).unwrap();
+    s.h.run_until_idle();
+    let (ca, cb) = (s.h.window_size(a).unwrap().0, s.h.window_size(b).unwrap().0);
+    assert_eq!((ca, cb), (121, 50));
+    let got = resizes(&s);
+    assert_eq!(got.iter().rfind(|r| r.0 == a), Some(&(a, 80, 24)));
+    assert_eq!(
+        got.iter().rfind(|r| r.0 == b),
+        Some(&(b, 50, 24)),
+        "narrower than the width"
+    );
+    let (pa, pb) = (s.h.surface_area(a).unwrap(), s.h.surface_area(b).unwrap());
+    assert_eq!(
+        (pa.text_x, pa.text_w, pb.text_x, pb.text_w),
+        (20, 80, 0, 50)
+    );
+    let (_, ac) = origin(&mut s.h, a);
+    let (_, bc) = origin(&mut s.h, b);
+    let scene = s.h.scene();
+    assert_eq!(scene.row(0)[ac + 20].glyph, Glyph::Char('a'));
+    assert_eq!(scene.row(0)[bc].glyph, Glyph::Char('a'));
+    assert_eq!(scene.row(0)[ac].glyph, Glyph::Char(' '));
 }

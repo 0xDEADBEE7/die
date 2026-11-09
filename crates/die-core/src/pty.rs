@@ -119,7 +119,7 @@ pub fn trampoline() -> Option<i32> {
     })
 }
 
-/// A terminal's size: cells, and the pixels of the whole area (TIOCSWINSZ).
+/// A terminal's size: cells, and the pixels they cover (TIOCSWINSZ).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct PtySize {
     /// Columns.

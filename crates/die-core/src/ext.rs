@@ -126,9 +126,10 @@ pub enum Event {
     /// A key no keymap took, or in passthrough every key outside the DIE layer, with its repeats
     /// and releases.
     Key(KeyEvent),
-    /// A window showing the surface has this size, which is its whole area: when the surface
-    /// goes into a window ([`Ctx::open_window`]'s caller gave the size), when the window changes
-    /// size, and when its cells change in pixels.
+    /// A window showing the surface has an area this size ([`Ctx::surface_area`]): when the
+    /// surface goes into a window ([`Ctx::open_window`]'s caller gave the size), when the window
+    /// changes size, when the buffer's maximum width or centering changes, and when its cells
+    /// change in pixels.
     Resize {
         /// The window.
         window: WindowId,
@@ -152,7 +153,7 @@ pub enum Event {
 pub trait Surface: Any {
     /// Its kind (`"term"`), which names its keymap.
     fn kind(&self) -> &'static str;
-    /// Draw the window's whole area into `frame`. No `Ctx`, so it runs synchronously (C3).
+    /// Draw the window's area into `frame`. No `Ctx`, so it runs synchronously (C3).
     fn render(&mut self, frame: &mut Frame, info: &RenderInfo);
     /// Where the cursor is in the area, as the last render left it. None draws none.
     fn cursor(&self, _info: &RenderInfo) -> Option<SurfaceCursor> {
@@ -328,6 +329,11 @@ pub(crate) enum Content {
         obj: Option<Box<dyn Surface>>,
         /// Its copy state's snapshot, outside passthrough.
         copy: Option<Box<Copy>>,
+        /// Its own settings, a text buffer's defaults at first, whose maximum width and
+        /// centering place its area (contract §10).
+        settings: Settings,
+        /// The maximum width `toggle-max-width` turned off.
+        max_width_off: Option<usize>,
     },
 }
 

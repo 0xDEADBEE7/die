@@ -822,21 +822,7 @@ impl TextBuf {
             LineNumbers::Off => 0,
             _ => numbered.to_string().len().max(3) + 1,
         };
-        let avail = v.cols.saturating_sub(gutter).max(2);
-        let text_w = self.settings.max_width.map_or(avail, |m| m.clamp(2, avail));
-        let pad = if self.settings.center {
-            (avail - text_w) / 2
-        } else {
-            0
-        };
-        Some(Geometry {
-            cols: v.cols,
-            rows: v.rows,
-            pad,
-            gutter,
-            text_x: pad + gutter,
-            text_w,
-        })
+        Some(self.settings.place(v.cols, v.rows, gutter))
     }
     fn mode(&self, g: &Geometry) -> Option<Mode> {
         let wrap = self.settings.wrap;
@@ -1094,24 +1080,48 @@ impl TextBuf {
     }
 }
 
+impl Settings {
+    /// Where text goes in a window `cols` × `rows` with a gutter this wide, as the maximum width
+    /// and centering place it (contract §9, "Gutter and width"). A surface's area is the text
+    /// area with no gutter (§10).
+    pub fn place(&self, cols: usize, rows: usize, gutter: usize) -> Geometry {
+        let avail = cols.saturating_sub(gutter).max(2);
+        let text_w = self.max_width.map_or(avail, |m| m.clamp(2, avail));
+        let pad = if self.center { (avail - text_w) / 2 } else { 0 };
+        let text_x = pad + gutter;
+        Geometry {
+            cols,
+            rows,
+            pad,
+            gutter,
+            text_x,
+            text_w,
+        }
+    }
+}
+
 /// Core's layout commands.
 pub(crate) fn register_commands(reg: &mut Registry) {
-    let doc =
-        "Turn the buffer's maximum text width off, or back on at the width it had (80 if none)";
+    let doc = "Turn the buffer's maximum text width off, or back on at the width it had (80 if \
+               none). A surface buffer's area narrows and widens with it";
     reg.command("toggle-max-width", doc, |ctx, a| {
         let w = a.window.or(ctx.focused());
         let b = a.buffer.or(w.and_then(|w| ctx.window_buffer(w)));
         let b = b.ok_or_else(|| Error::Msg("No buffer".into()))?;
-        let t = ctx.text_mut(b)?;
-        match t.settings.max_width.take() {
-            Some(m) => t.max_width_off = Some(m),
-            None => t.settings.max_width = Some(t.max_width_off.unwrap_or(80)),
-        }
-        Ok(())
+        let (s, off) = ctx.widths_mut(b)?;
+        let width = match s.max_width {
+            Some(m) => {
+                *off = Some(m);
+                None
+            }
+            None => Some(off.unwrap_or(80)),
+        };
+        ctx.change_settings(b, |s| s.max_width = width)
     });
 }
 
-/// Where a window's text goes: centered maximum width, gutter, text area.
+/// Where a window's text goes: centered maximum width, gutter, text area. A surface's area is
+/// its text area ([`Ctx::surface_area`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Geometry {
     /// The window's width in cells.

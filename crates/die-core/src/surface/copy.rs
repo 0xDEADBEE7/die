@@ -4,7 +4,9 @@
 //! selection and the search's matches drawn over them. A window whose cursor is on the
 //! surface's cursor line or below it, in normal state, follows new output, as Evil's point
 //! follows a terminal's cursor; one that went up stays where it is until it comes back down,
-//! with the text read all the same, so what it draws is what it yanks.
+//! with the text read all the same, so what it draws is what it yanks. The snapshot has the
+//! surface buffer's maximum width and centering, and never wraps, so its text area is the
+//! surface's area and its cells land on the surface's.
 
 use crate::ext::*;
 use crate::ids::*;
@@ -185,7 +187,21 @@ impl Ctx {
         {
             *copy = Some(Box::new(c));
         }
+        self.copy_widths(buf);
         self.copy_home(buf, st.shown_top);
+    }
+
+    /// Give the snapshot the surface buffer's maximum width and centering.
+    pub(crate) fn copy_widths(&mut self, buf: BufferId) {
+        let Some(Content::Custom { copy, settings, .. }) =
+            self.buffers.get_mut(buf).map(|b| &mut b.content)
+        else {
+            return;
+        };
+        if let Some(c) = copy {
+            let s = &mut c.text.settings;
+            (s.max_width, s.center) = (settings.max_width, settings.center);
+        }
     }
 
     /// Read the whole text again, as after a resize reflows it.
@@ -311,8 +327,8 @@ impl Ctx {
         Some(t.line_of(t.scroll(w)?.0))
     }
 
-    /// Draw copy state's selection and search matches over the cells a surface drew, and
-    /// return the cursor, as `draw_window` does.
+    /// Draw copy state's selection and search matches over the cells a surface drew in its
+    /// area, which is the snapshot's text area, and return the cursor, as `draw_window` does.
     pub(crate) fn draw_copy(
         &self,
         scene: &mut Scene,
@@ -323,6 +339,10 @@ impl Ctx {
         let t = self.buffers.get(buf)?.content.text()?;
         let (w, cols) = (p.window, self.windows.get(p.window)?.cols);
         let (vp, sel) = (t.viewport(w)?, t.selection(w)?);
+        let g = vp.geometry;
+        // A click past a row's end, the right margin too, finds its end, as in a text window.
+        let (x0, room) = (p.col + g.text_x, cols.saturating_sub(g.text_x));
+        let area = g.text_w.min(room);
         let shown = || {
             let cells = vp.rows.iter().flat_map(|r| r.cells.iter().map(|c| c.pos));
             cells.chain(vp.rows.iter().filter_map(|r| r.line_end.map(|e| e.pos)))
@@ -359,23 +379,23 @@ impl Ctx {
             let at = cells.map(|(j, c)| (j, c.pos, c.vcol)).chain(ends);
             let y = p.row + i;
             let mut end = None;
-            for (j, pos, vcol) in at.filter(|a| a.0 < cols) {
+            for (j, pos, vcol) in at.filter(|a| a.0 < area) {
                 // A click finds the position, as on text, and past the row's end its end.
-                scene.map(y, p.col + j, (w, pos));
+                scene.map(y, x0 + j, (w, pos));
                 end = Some((j, pos));
                 let Some(face) = face_at(pos, vcol) else {
                     continue;
                 };
                 let style = self.faces.get(face);
-                let Some(mut cell) = scene.row(y).get(p.col + j).cloned() else {
+                let Some(mut cell) = scene.row(y).get(x0 + j).cloned() else {
                     continue;
                 };
                 cell.fg = style.fg.unwrap_or(cell.fg);
                 cell.bg = style.bg.unwrap_or(cell.bg);
-                scene.put(y, p.col + j, cell);
+                scene.put(y, x0 + j, cell);
             }
             if let Some((j, pos)) = end {
-                (j + 1..cols).for_each(|x| scene.map(y, p.col + x, (w, pos)));
+                (j + 1..room).for_each(|x| scene.map(y, x0 + x, (w, pos)));
             }
         }
         let (row, col) = t.screen_pos(w, sel.head)?;

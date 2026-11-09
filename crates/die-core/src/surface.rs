@@ -1,7 +1,8 @@
 //! What a custom surface draws and hears (contract §10, scope D8 and D18): the cell frame it
-//! renders into, with the window's whole area and no gutter, margins or centering, its cursor and
-//! status segment, and the pointer, paste and resize it's told of. Core resolves the frame's cells
-//! into the scene, so a surface doesn't need the theme: a default color is the `default` face's.
+//! renders into, over its window's area, which is a text window's text area with no gutter, so
+//! the buffer's maximum width and centering give it margins, its cursor and status segment, and
+//! the pointer, paste and resize it's told of. Core resolves the frame's cells into the scene, so
+//! a surface doesn't need the theme: a default color is the `default` face's.
 #![warn(missing_docs)]
 use crate::app::{PointerEvent, PointerKind};
 use crate::error::*;
@@ -10,6 +11,7 @@ use crate::faces::{Rgb, Style, Underline};
 use crate::ids::*;
 use crate::keymap::State;
 use crate::keys::Mods;
+use crate::layout::Geometry;
 use crate::pointer::{CellHit, WindowPart};
 use crate::scene::{Cell, CursorShape, Glyph, Scene, WindowPlacement, glyphs};
 use std::collections::HashMap;
@@ -139,7 +141,7 @@ impl From<Cell> for FrameCell {
     }
 }
 
-/// The cells a surface renders into: its window's whole area, row by row. Core keeps it between
+/// The cells a surface renders into: its window's area, row by row. Core keeps it between
 /// frames, so a surface can rewrite only the rows that changed. It's new, and blank, at a
 /// surface's first render, after a resize, and when a window of another size drew it last.
 #[derive(Default)]
@@ -361,13 +363,36 @@ impl Ctx {
     pub fn cell_pixels(&self) -> CellPixels {
         self.surfaces.cell
     }
-    /// Tell a window's surface its size, if it shows one (C3).
+    /// Where window `w` shows its surface, if it shows one: the text area its buffer's
+    /// `max_width` and `center` give a window this size, with no gutter (contract §9, "Gutter and
+    /// width"), `text_w` cells from `text_x` on every row, and never past the window's edge.
+    pub fn surface_area(&self, w: WindowId) -> Option<Geometry> {
+        let win = self.windows.get(w)?;
+        let Content::Custom { settings, .. } = &self.buffers.get(win.buffer)?.content else {
+            return None;
+        };
+        let mut g = settings.place(win.cols, win.rows, 0);
+        g.text_w = g.text_w.min(win.cols.saturating_sub(g.text_x));
+        Some(g)
+    }
+    /// A surface buffer's maximum width or centering changed: its snapshot takes them, and each
+    /// window showing it tells the surface its new area.
+    pub(crate) fn surface_area_changed(&mut self, buf: BufferId) {
+        self.copy_widths(buf);
+        for w in self.windows_showing(buf) {
+            self.surface_resized(w, buf);
+        }
+    }
+    /// Tell a window's surface its area's size, if it shows one (C3).
     pub(crate) fn surface_resized(&mut self, w: WindowId, buf: BufferId) {
         let Some(Content::Custom { owner, .. }) = self.buffers.get(buf).map(|b| &b.content) else {
             return;
         };
         let (owner, cell) = (*owner, self.surfaces.cell);
-        let Some((cols, rows)) = self.window_size(w) else {
+        let Some(Geometry {
+            text_w: cols, rows, ..
+        }) = self.surface_area(w)
+        else {
             return;
         };
         self.defer_as(owner, move |ctx| {
@@ -397,8 +422,9 @@ impl Ctx {
             .retain(|_, f| std::mem::take(&mut f.seen));
     }
 
-    /// Draw a surface's window: the whole area, from its frame. Returns its cursor, as
-    /// `draw_window` does, with the shape it asks for.
+    /// Draw a surface's window: its area from its frame, with the margins left blank in the
+    /// default face, as a text window's are. Returns its cursor, as `draw_window` does, with the
+    /// shape it asks for.
     pub(crate) fn draw_surface(
         &mut self,
         scene: &mut Scene,
@@ -406,8 +432,9 @@ impl Ctx {
         base: Style,
         focused: bool,
     ) -> Option<(usize, usize, bool, Option<CursorShape>)> {
-        let win = self.windows.get(p.window)?;
-        let (cols, rows, buf) = (win.cols, win.rows, win.buffer);
+        let buf = self.windows.get(p.window)?.buffer;
+        let g = self.surface_area(p.window)?;
+        let (cols, rows) = (g.text_w, g.rows);
         self.copy_sync(buf, true);
         let top = self.copy_top(buf, p.window);
         let info = RenderInfo {
@@ -438,7 +465,8 @@ impl Ctx {
         let blank = Cell::styled(Glyph::Char(' '), base);
         for r in 0..rows {
             for (c, cell) in frame.row(r).iter().enumerate() {
-                scene.put(p.row + r, p.col + c, cell.resolve(blank.fg, blank.bg));
+                let x = p.col + g.text_x + c;
+                scene.put(p.row + r, x, cell.resolve(blank.fg, blank.bg));
             }
         }
         if panicked {
@@ -450,8 +478,8 @@ impl Ctx {
         if top.is_some() {
             return self.draw_copy(scene, p, buf, focused);
         }
-        let cursor = cursor.filter(|c| c.visible)?;
-        Some((cursor.row, cursor.col, false, Some(cursor.shape)))
+        let cursor = cursor.filter(|c| c.visible && c.row < rows && c.col < cols)?;
+        Some((cursor.row, g.text_x + cursor.col, false, Some(cursor.shape)))
     }
 
     /// What a window's status line says of `buf`: its status text, or for a surface that gives
@@ -477,9 +505,9 @@ impl Ctx {
     }
 
     /// The surface window a pointer event goes to, if any: the one that had the press, for a
-    /// drag or a release, or else the one whose area it's over. A drag or release from a press
-    /// that went elsewhere, as to text, isn't a surface's. With a prompt open, only a press's
-    /// drags and release.
+    /// drag or a release, or else the one whose area it's over, or for the wheel whose margin.
+    /// A drag or release from a press that went elsewhere, as to text or a margin, isn't a
+    /// surface's. With a prompt open, only a press's drags and release.
     pub(crate) fn surface_target(
         &self,
         p: &PointerEvent,
@@ -489,11 +517,21 @@ impl Ctx {
         // Copy state's pointer is a text window's: a click moves the cursor, a drag selects,
         // the wheel scrolls the snapshot.
         let copying = |w: WindowId| self.window_buffer(w).is_some_and(|b| self.text(b).is_ok());
+        let in_area = |w: WindowId| {
+            let (Some(at), Some(g)) = (self.drawn.placement(w), self.surface_area(w)) else {
+                return false;
+            };
+            let x = at.col + g.text_x;
+            matches!(p.kind, PointerKind::Scroll { .. }) || (x..x + g.text_w).contains(&p.col)
+        };
         let w = match self.surfaces.pressed {
             Some(w) if held => w,
             _ if held || self.prompt.is_some() => return None,
             _ => hit.filter(|h| h.part == WindowPart::Text)?.window,
         };
+        if !held && !in_area(w) {
+            return None;
+        }
         let buf = self.window_buffer(w)?;
         let custom = matches!(self.buffers.get(buf)?.content, Content::Custom { .. });
         (custom && !copying(w)).then_some(w)
@@ -506,21 +544,22 @@ impl Ctx {
             PointerKind::Release(_) => self.surfaces.pressed = None,
             _ => {}
         }
-        let (Some(at), Some((cols, rows)), Some(buf)) = (
+        let (Some(at), Some(g), Some(buf)) = (
             self.drawn.placement(w),
-            self.window_size(w),
+            self.surface_area(w),
             self.window_buffer(w),
         ) else {
             return;
         };
+        let (left, cols, rows) = (at.col + g.text_x, g.text_w, g.rows);
         let row = p.row.saturating_sub(at.row).min(rows.saturating_sub(1));
-        let col = p.col.saturating_sub(at.col).min(cols.saturating_sub(1));
+        let col = p.col.saturating_sub(left).min(cols.saturating_sub(1));
         let (cw, ch) = (
             self.surfaces.cell.width as f32,
             self.surfaces.cell.height as f32,
         );
         let (x, y) = match p.px {
-            Some((x, y)) => (x - at.col as f32 * cw, y - at.row as f32 * ch),
+            Some((x, y)) => (x - left as f32 * cw, y - at.row as f32 * ch),
             None => (col as f32 * cw, row as f32 * ch),
         };
         let inside =
