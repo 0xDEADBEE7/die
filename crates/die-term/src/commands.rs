@@ -5,10 +5,11 @@
 //! as a login shell, or the one a config sets, as `ghostel-shell` does. `:term cmd` runs `cmd`
 //! through it; more are `*terminal*<2>` and so on. `term-switch` goes to `*terminal*` and opens
 //! it if it isn't there, as ghostel does. In normal state, Esc goes to the program, as your
-//! `vterm-send-escape` binding has it, but once a run of Escs and never to the shell at its
-//! prompt; `i`, `a`, `I` and `A` go back to insert at the live screen, `p` and `P` paste, `G`
-//! goes to the terminal's cursor, and `C-c C-r` changes where insert state's Esc goes, as
-//! evil-ghostel's `evil-ghostel-toggle-send-escape` does. The program's exit closes the buffer.
+//! `vterm-send-escape` binding has it, but once a run of Escs, never to the shell at its prompt
+//! and never in line mode; `i`, `a`, `I` and `A` go back to insert at the live screen, `p` and
+//! `P` paste, `G` goes to the terminal's cursor, and `C-c C-r` changes where insert state's Esc
+//! goes, as evil-ghostel's `evil-ghostel-toggle-send-escape` does. The program's exit closes the
+//! buffer.
 use crate::Term;
 use crate::surface::{CopyFn, Escape, KIND, TermSurface};
 use die_core::{
@@ -297,14 +298,16 @@ impl Terminals {
 
     /// Esc in normal state: one to the program, as `vterm-send-escape` sends it, and stay. None
     /// to the shell `term` started while it's at its prompt, as Evil's Esc does nothing there,
-    /// and none again until another key, so Esc pressed a few times sends one. A count sends that
-    /// many, at the prompt too.
+    /// nor in line mode, where it would wait for the prompt and make its first key Meta, and none
+    /// again until another key, so Esc pressed a few times sends one. A count sends that many, at
+    /// most 2, Claude Code's rewind; after a register Esc only ends the prefix.
     fn send_escape(&mut self, ctx: &mut Ctx, a: &Args) -> Result {
         let keys = self.keys.get();
         with_term(ctx, a, |s, _| {
             let n = match a.count {
-                Some(n) => n,
-                None if s.busy() && s.esc_sent != Some(keys) => 1,
+                _ if a.register.is_some() || !s.reads_keys() => 0,
+                Some(n) => n.min(2),
+                None if s.esc_sent != Some(keys) => 1,
                 None => 0,
             };
             if n > 0 {
@@ -390,7 +393,8 @@ impl Extension for Terminals {
         reg.ext_command(
             "term-send-escape",
             "Esc in a terminal's normal state: send Esc to the program, and stay in normal state. \
-             Not to the shell at its prompt, and once until another key; a count sends that many",
+             Not to the shell at its prompt nor in line mode, and once until another key; a count \
+             sends that many, at most 2",
             Terminals::send_escape,
         );
         reg.command(
@@ -432,7 +436,9 @@ impl Extension for Terminals {
         });
         let keys = self.keys.clone();
         ctx.observe_keys(move |ev, _| {
-            if ev.key != Key::Esc || ev.mods != die_core::Mods::default() {
+            // As a keymap reads it, so Ctrl-[ is an Esc too.
+            let chord = ev.chord();
+            if chord.key != Key::Esc || chord.mods != die_core::Mods::default() {
                 keys.set(keys.get() + 1);
             }
         })
