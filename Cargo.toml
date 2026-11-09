@@ -8,6 +8,7 @@ members = [
     "crates/die-term",
     "crates/die",
     "apps/die-dev",
+    "extensions/die-orchid-client",
     "tools/evil-oracle",
     "tools/test-cap",
     "xtask",
@@ -20,6 +21,7 @@ default-members = [
     "crates/die-term",
     "crates/die",
     "apps/die-dev",
+    "extensions/die-orchid-client",
 ]
 
 [workspace.package]
@@ -36,6 +38,8 @@ die-render = { path = "crates/die-render" }
 die-vim = { path = "crates/die-vim" }
 die-term = { path = "crates/die-term" }
 die = { path = "crates/die" }
+# Your packages' ports, built here under extensions/, outside the product and its budget (scope D14).
+die-orchid-client = { path = "extensions/die-orchid-client" }
 evil-oracle = { path = "tools/evil-oracle" }
 die-test-cap = { path = "tools/test-cap" }
 
@@ -50,6 +54,8 @@ regex-syntax = { version = "=0.8.11", default-features = false }
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
+# Local time for die-orchid-client's stubs, from the system's zoneinfo (no bundled database).
+jiff = { version = "=0.2.41", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 # The terminal engine's Rust API, pinned at the rev crates/die-term-sys/ghostty-vt.lock names,
 # without its PNG decoder (D10, docs/records/s2-term-engine.md). Its sys crate is die-term-sys,
 # through the `[patch]` below.

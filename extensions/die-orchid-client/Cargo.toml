@@ -1,0 +1,24 @@
+[package]
+name = "die-orchid-client"
+description = "A port of your emacs-orchid-client: orchid's sessions and chats in DIE (scope D14)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# An extension, outside the product: it depends on die-core only, never on `die`, so it stays
+# platform-neutral (`cargo xtask lint` checks). It moves to its own repository at M4.
+[dependencies]
+die-core.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+die-test-cap.workspace = true
+die-vim.workspace = true
+
+[lints]
+workspace = true

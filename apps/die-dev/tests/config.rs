@@ -5,10 +5,12 @@
 use die_test_cap as _;
 
 use die::core::{
-    Ctx, Frame, LineNumbers, RenderInfo, Rgb, Settings, ShowIn, Surface, WindowPlacement, Wrap,
+    Ctx, Frame, Harness, LineNumbers, RenderInfo, Rgb, Settings, ShowIn, Surface, WindowPlacement,
+    Wrap,
 };
 use die::render::font::{Draw, RangeRule};
 use die_dev::{Args, config, directory, parse_args, status_text};
+use die_orchid_client::Orchid;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -54,6 +56,41 @@ fn settings(file: &str) -> Settings {
 #[test]
 fn every_binding_names_a_command_that_exists() {
     die::start(config(vec![])).unwrap();
+}
+
+/// emacs-orchid-client's port comes in through `die::Config.extensions`, its commands with it, and
+/// `\o` runs `orchid` in normal state, as `init.el` binds it. Only `describe-key` asks, so none of
+/// orchid's commands runs, and nothing reads your `~/.config/orchid`.
+#[test]
+fn orchid_comes_in_through_the_config_and_leader_o_opens_it() {
+    let ctx = die::start(config(vec![])).unwrap();
+    for name in [
+        "orchid",
+        "orchid-open-session",
+        "orchid-new-session",
+        "orchid-log-show",
+    ] {
+        assert_eq!(ctx.command_doc(name).map(|d| d.1), Some("orchid"), "{name}");
+    }
+    let config = config(vec![]);
+    let mut exts = die::built_in();
+    exts.extend(config.extensions);
+    let mut h = Harness::with_config(exts, config.core).unwrap();
+    assert!(h.with_ext(|_: &mut Orchid, _| ()).is_ok());
+    h.open_text("t", "").unwrap();
+    let logs = h.type_keys("\\hk\\o").unwrap();
+    assert!(logs.iter().all(|k| k.errors.is_empty()), "{logs:?}");
+    let help = h.find_buffer("*help*").expect("*help* is there");
+    let help = h.text(help).unwrap().rope().to_string();
+    assert!(
+        help.contains("orchid") && help.contains("Open the orchid session browser"),
+        "{help}"
+    );
+    assert_eq!(
+        h.next_timer(),
+        None,
+        "and no timer of orchid's runs while nothing's open"
+    );
 }
 
 #[test]
