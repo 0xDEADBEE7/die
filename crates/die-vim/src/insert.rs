@@ -139,6 +139,8 @@ pub struct Session {
     /// After a `C-g`, how many of the edits a count and the other lines put in again: those
     /// before it, as your Evil's insertion stops recording there.
     replays: Option<usize>,
+    /// The text's revision when the session last looked, to follow what others changed since.
+    seen: u64,
 }
 
 /// What a key in replace state wrote over: the bytes it now holds, and what they were.
@@ -163,6 +165,7 @@ impl Session {
             insertion: None,
             pasted: vec![],
             replays: None,
+            seen: u64::MAX,
         }
     }
 
@@ -188,6 +191,32 @@ impl Session {
         self.insertion = Some((at, at));
     }
 
+    /// Follow what others changed since the session last looked, as an extension's silent edit
+    /// above the typed text (a chat's events streaming in), so its places stay on what it typed.
+    /// Its own edits are `User` edits, and it moves its places for those itself. Places the
+    /// change log no longer reaches back to are forgotten.
+    pub fn follow(&mut self, t: &TextBuf) {
+        let since = std::mem::replace(&mut self.seen, t.rev());
+        let Some(changes) = t.edits_since(since) else {
+            if since <= t.rev() {
+                (self.left, self.insertion, self.restore) = (None, None, vec![]);
+            }
+            return;
+        };
+        for c in changes.filter(|c| c.silent || c.origin == Origin::Extension) {
+            let m = |p, right| moved(p, c, right);
+            let range = |(b, e): (usize, usize)| (m(b, true), m(e, false).max(m(b, true)));
+            (self.left, self.insertion) =
+                (self.left.map(|p| m(p, true)), self.insertion.map(range));
+            for r in &mut self.restore {
+                (r.at, r.end) = range((r.at, r.end));
+            }
+            if let Some(rows) = self.rows.as_mut().filter(|r| c.start_point.line < r.line) {
+                rows.line = (rows.line + c.new_end_point.line).saturating_sub(c.old_end_point.line);
+            }
+        }
+    }
+
     /// Bytes from `beg` that were `old` long are now up to `end`.
     fn note(&mut self, beg: usize, old: usize, end: usize) {
         let replacing = self.entry == Entry::Replace;
@@ -196,6 +225,24 @@ impl Session {
             ins => *ins = Some((beg, end)),
         }
     }
+}
+
+/// Where `p` goes through a change, past text put in at it if `right`, as core moves a marker.
+fn moved(p: usize, c: &die_core::Change, right: bool) -> usize {
+    match p {
+        p if p < c.start => p,
+        p if p > c.old_end || (p == c.old_end && c.old_end > c.start) => p - c.old_end + c.new_end,
+        p if (p == c.start && c.old_end > c.start) || !right => c.start,
+        _ => c.new_end,
+    }
+}
+
+/// The last insertion's text, while its places are on the text.
+fn inserted(t: &TextBuf, s: &Session) -> Option<String> {
+    let (b, e) = s
+        .insertion
+        .filter(|&(b, e)| b <= e && t.is_boundary(b) && t.is_boundary(e))?;
+    Some(t.rope().byte_slice(b..e).to_string())
 }
 
 /// Enter insert state: move to where `entry` inserts, opening a line if it does.
@@ -244,10 +291,11 @@ pub fn begin(ctx: &mut Ctx, a: &Args, entry: Entry) -> Result<Session> {
             State::Insert
         },
     );
-    let left = ctx.text(b)?.cursor(w);
+    let (left, seen) = (ctx.text(b)?.cursor(w), ctx.text(b)?.rev());
     Ok(Session {
         entry,
         left,
+        seen,
         count: a.count.unwrap_or(1).max(1),
         drop_indent: !replacing && entry != Entry::Insert && entry != Entry::InsertLine,
         ..Session::bare()
@@ -262,6 +310,7 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
     let ends = matches!(e, Edit::Home | Edit::End);
     let tenths = a.count.filter(|_| ends && !bare);
     let t = ctx.text_mut(b)?;
+    s.follow(t);
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
     s.drop_indent &= s.left == Some(p);
     let once = matches!(
@@ -342,9 +391,10 @@ pub fn edit(ctx: &mut Ctx, a: &Args, s: &mut Session, e: Edit) -> Result {
 /// indentation if nothing was typed on it, close the undo step, and step back off
 /// the end of the insertion, as Evil does. An edit that fails here still ends the
 /// session; the first error is returned.
-pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
+pub fn end(ctx: &mut Ctx, a: &Args, mut s: Option<Session>) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
-    if let Some(s) = &s {
+    if let Some(s) = &mut s {
+        s.follow(ctx.text(b)?);
         keep_insertion(ctx, b, s)?;
     }
     let t = ctx.text_mut(b)?;
@@ -365,10 +415,7 @@ pub fn end(ctx: &mut Ctx, a: &Args, s: Option<Session>) -> Result {
 fn close(t: &mut TextBuf, w: WindowId, s: &mut Session) -> Result {
     let drop_indent = s.drop_indent && s.left == t.cursor(w);
     if !s.pasted.is_empty() {
-        let held = s.insertion.filter(|&(_, e)| e <= t.len());
-        let text = held.map_or(String::new(), |(b, e)| {
-            t.rope().byte_slice(b..e).to_string()
-        });
+        let text = inserted(t, s).unwrap_or_default();
         let take = match s.entry {
             Entry::Replace => text.chars().count(),
             _ => 0,
@@ -391,9 +438,7 @@ fn close(t: &mut TextBuf, w: WindowId, s: &mut Session) -> Result {
 
 /// Register `.`: what the session last put in, or nothing if it made no change.
 fn keep_insertion(ctx: &mut Ctx, b: BufferId, s: &Session) -> Result {
-    let t = ctx.text(b)?;
-    let held = s.insertion.filter(|&(_, e)| e <= t.len());
-    match held.map(|(beg, e)| t.rope().byte_slice(beg..e).to_string()) {
+    match inserted(ctx.text(b)?, s) {
         Some(text) => ctx.set_register(
             '.',
             Register {
@@ -410,6 +455,7 @@ fn keep_insertion(ctx: &mut Ctx, b: BufferId, s: &Session) -> Result {
 /// stepping back unless the cursor is past the line's last character.
 pub fn pause(ctx: &mut Ctx, a: &Args, s: &mut Session) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
+    s.follow(ctx.text(b)?);
     keep_insertion(ctx, b, s)?;
     s.count = 1;
     let t = ctx.text_mut(b)?;
@@ -430,6 +476,7 @@ pub fn pause(ctx: &mut Ctx, a: &Args, s: &mut Session) -> Result {
 pub fn switch(ctx: &mut Ctx, a: &Args, s: &mut Session, to: State) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
+    s.follow(t);
     s.count = 1;
     let r = close(t, w, s);
     (s.rows, s.drop_indent, s.insertion) = (None, false, None);
@@ -498,6 +545,7 @@ pub fn killed(ctx: &Ctx, a: &Args, e: &Edit) -> Result<Option<Register>> {
 pub fn swap(ctx: &mut Ctx, a: &Args, s: &mut Session, beg: usize, new: &str) -> Result {
     let (b, w) = buffer_window(ctx, a)?;
     let t = ctx.text_mut(b)?;
+    s.follow(t);
     let p = t.cursor(w).ok_or(Error::Msg("no cursor".into()))?;
     let old = t.rope().byte_slice(beg..p).to_string();
     let here = (p < line_end(t, t.line_of(p)))

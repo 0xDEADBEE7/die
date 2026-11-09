@@ -1,4 +1,5 @@
-//! mono-dark styles every base and UI face, and draws as your Emacs does.
+//! mono-dark styles every base and UI face, and only faces core or an extension of yours
+//! declares, and draws as your Emacs does.
 
 use die_test_cap as _;
 
@@ -14,11 +15,15 @@ fn mono_dark_styles_every_core_face() {
             "mono-dark doesn't style {name}"
         );
     }
-    assert_eq!(
-        t.faces.len(),
-        BASE_FACES.len() + UI_FACES.len(),
-        "every face it styles is a core face"
-    );
+    let core = BASE_FACES.iter().chain(UI_FACES).map(|f| f.0);
+    let orchid = die_orchid_client::FACES.iter().map(|f| f.0);
+    let known: Vec<&str> = core.chain(orchid).collect();
+    for name in t.faces.keys() {
+        assert!(
+            known.contains(&name.as_str()),
+            "{name} is no core or orchid face"
+        );
+    }
 }
 
 #[test]

@@ -21,7 +21,8 @@ const ANSI: [&str; 16] = [
     "#444444", "#dd6666", "#77cc77", "#ccaa55", "#7799bb", "#aa88aa", "#66aaaa", "#eeeeee",
 ];
 
-/// mono-dark: every base and UI face, styled as your Emacs draws it.
+/// mono-dark: every base and UI face, styled as your Emacs draws it, and the orchid faces whose
+/// Emacs faces no base face matches.
 pub fn mono_dark() -> Theme {
     let s = Style::new;
     Theme::new("mono-dark", ANSI.map(Rgb::hex))
@@ -62,4 +63,10 @@ pub fn mono_dark() -> Theme {
         // buffer-menu-buffer, which mono-dark leaves at Emacs's bold
         .face("buffer-menu-buffer", s().fg(FG).bold())
         .face("cursor", s().bg(FG))
+        // font-lock-string-face, which emacs-orchid-client's chat header shows its workspace in.
+        // Its other faces come out as mono-dark has them from the base faces they inherit.
+        .face("orchid-chat-header-workspace", s().fg(FG_MID))
+        // seek's search line, `(:background "#3a3a3a")`, which the session browser draws while
+        // you type a query.
+        .face("orchid-seek-search", s().bg(BORDER))
 }
