@@ -20,5 +20,11 @@ die.workspace = true
 [dev-dependencies]
 die-test-cap.workspace = true
 
+# A PTY's program starts through the test binary's own trampoline (`die::other_mode`), which
+# `main` has to call first, so this test has no harness.
+[[test]]
+name = "terminal"
+harness = false
+
 [lints]
 workspace = true

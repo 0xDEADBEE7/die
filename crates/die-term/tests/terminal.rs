@@ -1,6 +1,7 @@
 //! Terminal buffers on real PTYs (scope §6, D18): typing reaches the shell and its output the
-//! cells; Esc leaves insert on the main screen, goes to the program in normal state and on the
-//! alternate screen, and the toggle routes it; a resize reaches `stty size`; a paste is bracketed;
+//! cells; Esc leaves insert on the main screen, goes to the program in normal state (once a run,
+//! and not to the shell at its prompt nor in line mode) and on the alternate screen, and the
+//! toggle routes it; a resize reaches `stty size`; a paste is bracketed;
 //! a flood doesn't hold up a key; the wheel scrolls back; the program's exit closes the buffer;
 //! normal state is your Evil over the scrollback, follows output at the bottom and keeps the
 //! program's colors; and nothing is left running after a quit, with no terminal in the session.
@@ -15,7 +16,7 @@ use die_core::*;
 use die_term::{Escape, NAME, Spec, TermSurface, Terminals, busy, open};
 use die_vim::Vim;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -35,8 +36,7 @@ fn home() -> PathBuf {
 
 /// `/bin/sh` as a login shell with a HOME of its own, as `term` starts your shell.
 fn sh_spec() -> Spec {
-    let mut spec = Spec::new(NAME, "/bin/sh");
-    spec.login = true;
+    let mut spec = Spec::shell(Path::new("/bin/sh"));
     spec.env = vec![
         ("HOME".into(), home().into()),
         ("ENV".into(), "".into()),
@@ -196,6 +196,14 @@ fn typing_reaches_the_shell_and_its_output_the_cells() {
     assert!(ctx.text(buf).is_err(), "a surface, not text");
 }
 
+/// Ctrl-[ as the host delivers it, a `[` with Ctrl, which keymaps read as `<Esc>`.
+fn ctrl_bracket() -> KeyEvent {
+    KeyEvent::press(Key::Char('[')).mods(Mods {
+        ctrl: true,
+        ..Mods::default()
+    })
+}
+
 fn esc_leaves_insert_on_the_main_screen_and_goes_to_the_program_in_normal() {
     let (mut ctx, _) = shell();
     ctx.type_keys("cat -v<CR>");
@@ -212,17 +220,168 @@ fn esc_leaves_insert_on_the_main_screen_and_goes_to_the_program_in_normal() {
     ctx.type_keys("i");
     assert_eq!(ctx.state(), State::Passthrough, "i goes back to insert");
     ctx.type_keys("x<CR>");
-    // cat -v shows the Esc that normal state sent, with what was typed after it.
-    wait_for(&mut ctx, "^[x");
+    // cat reads a line at a time, so an Esc would only have been a byte at the start of its
+    // next line, and normal state sent none: `x` alone, where it echoed `^[x`.
+    wait_until(&mut ctx, "x read", |ctx| {
+        screen(ctx).lines().filter(|l| *l == "x").count() == 2
+    });
+    assert!(!screen(&mut ctx).contains("^["), "{}", screen(&mut ctx));
     for key in ["a", "I", "A"] {
         ctx.type_keys("<Esc>");
         assert_eq!(ctx.state(), State::Normal);
         ctx.type_keys(key);
         assert_eq!(ctx.state(), State::Passthrough, "{key} goes back to insert");
     }
-    ctx.type_keys("<C-c>");
+    // Ctrl-[ is Esc, as in your Emacs, so it leaves insert too.
+    ctx.input(ctrl_bracket());
+    ctx.run_until_idle();
+    assert_eq!(ctx.state(), State::Normal, "Ctrl-[ leaves insert");
+    ctx.type_keys("i<C-c>");
     wait_until(&mut ctx, "back at the prompt", |ctx| busy(ctx).is_empty());
 }
+
+/// `program` as the terminal's shell, interactive and not login, as ghostel and vterm start
+/// bash, with a HOME and a ZDOTDIR of its own whose startup files set a prompt, at that prompt.
+fn shell_at_its_prompt(program: &str) -> (Ctx, BufferId) {
+    shell_at_its_prompt_with(program, "")
+}
+
+/// [`shell_at_its_prompt`], with `bashrc` after the prompt in the `.bashrc`.
+fn shell_at_its_prompt_with(program: &str, bashrc: &str) -> (Ctx, BufferId) {
+    let home = home();
+    std::fs::write(home.join(".bashrc"), format!("PS1='bash-here$ '\n{bashrc}")).unwrap();
+    std::fs::write(home.join(".zshrc"), "PS1='zsh-here$ '\n").unwrap();
+    let mut spec = Spec {
+        login: false,
+        ..Spec::shell(Path::new(program))
+    };
+    spec.env = vec![
+        ("HOME".into(), home.clone().into()),
+        ("ZDOTDIR".into(), home.into()),
+        ("BASH_SILENCE_DEPRECATION_WARNING".into(), "1".into()),
+    ];
+    let mut ctx = editor();
+    let buf = open(&mut ctx, spec, ShowIn::Current).unwrap();
+    wait_until(&mut ctx, "at its prompt", |ctx| {
+        screen(ctx).lines().any(|l| l.ends_with("-here$"))
+    });
+    (ctx, buf)
+}
+
+/// What you hit: Esc pressed a few times at bash's prompt sent it Esc Esc, which bash 3.2 reads
+/// as `complete` ("Display all 1773 possibilities?"), and a lone Esc that made the next key Meta,
+/// as `M-l`. At the shell's own prompt normal state's Esc now sends nothing, in bash and zsh.
+fn esc_in_normal_never_reaches_a_shell_at_its_prompt() {
+    for program in ["/bin/bash", "/bin/zsh"] {
+        let (mut ctx, _) = shell_at_its_prompt(program);
+        assert!(busy(&mut ctx).is_empty(), "{program} at its prompt");
+        ctx.type_keys("<Esc><Esc><Esc><Esc>");
+        assert_eq!(ctx.state(), State::Normal);
+        // Longer than zsh's KEYTIMEOUT, so a lone Esc would have been read as one.
+        settle(&mut ctx, Duration::from_millis(500));
+        ctx.type_keys("i");
+        ctx.type_keys("lx=ok; echo got-$lx<CR>");
+        wait_for(&mut ctx, "got-ok");
+        let s = screen(&mut ctx);
+        assert!(
+            !s.contains("Display all") && !s.contains("not found"),
+            "{program}:\n{s}"
+        );
+        // Nor with a count, which Esc cancels in Vim, nor after a register: `5<Esc>` sent bash
+        // five, which listed every command, and the odd one made the next key Meta.
+        ctx.type_keys("<Esc>5<Esc>3<Esc><Esc>\"a<Esc>");
+        assert_eq!(ctx.state(), State::Normal);
+        settle(&mut ctx, Duration::from_millis(500));
+        ctx.type_keys("ilx=ok; echo again-$lx<CR>");
+        wait_for(&mut ctx, "again-ok");
+        let s = screen(&mut ctx);
+        assert!(!s.contains("Display all"), "{program}:\n{s}");
+    }
+}
+
+/// A job that doesn't read keys, as `sleep` or a build, leaves the terminal in line mode, where
+/// an Esc is only a byte waiting for the next line: the prompt then read it as Meta and ate the
+/// first letter typed, `iecho hi` running `cho hi`. Normal state's Esc sends none in line mode.
+fn esc_in_normal_during_a_job_in_line_mode_waits_for_no_prompt() {
+    for program in ["/bin/bash", "/bin/zsh"] {
+        let (mut ctx, _) = shell_at_its_prompt(program);
+        ctx.type_keys("sleep 1; echo slept-$((2+3))<CR>");
+        wait_busy(&mut ctx);
+        ctx.type_keys("<Esc><Esc>2<Esc>");
+        assert_eq!(ctx.state(), State::Normal);
+        wait_for(&mut ctx, "slept-5");
+        wait_until(&mut ctx, "back at the prompt", |ctx| busy(ctx).is_empty());
+        settle(&mut ctx, Duration::from_millis(300));
+        ctx.type_keys("ilx=ok; echo got-$lx<CR>");
+        wait_for(&mut ctx, "got-ok");
+        let s = screen(&mut ctx);
+        assert!(
+            !s.contains("^[") && !s.contains("not found"),
+            "{program}:\n{s}"
+        );
+    }
+}
+
+/// A raw reader in the foreground prints the bytes it reads as hex, up to an `x`.
+const RAW: &str = r#"stty -icanon -echo
+echo "raw-$1"
+v=
+while c=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' '); [ "$c" != 78 ]; do v="$v $c"; done
+stty sane
+echo "read-$1:$v."
+"#;
+
+/// Normal state's Esc sends one a run: Escs with no other key between them send one, so pressing
+/// it a few times to be sure of normal state doesn't interrupt Claude Code then rewind it. The
+/// Esc that leaves insert sends nothing, a motion re-arms it, a held Esc's repeats send nothing
+/// more, and nor do Ctrl-[s, which are Esc. `2<Esc>` sends two, as Claude Code's rewind wants, a
+/// larger count two as well, and an Esc after a register only ends the prefix.
+fn normal_states_esc_sends_one_a_run_and_a_count_at_most_two() {
+    let (mut ctx, _) = shell();
+    let reader = home().join("raw");
+    std::fs::write(&reader, RAW).unwrap();
+    let held = vec![KeyEvent::press(Key::Esc).kind(KeyKind::Repeat); 3];
+    let ctrl = vec![ctrl_bracket(); 3];
+    // The keys, then events after them, and the bytes the program reads.
+    let cases = [
+        ("four", "<Esc><Esc><Esc><Esc>", &[][..], " 1b"),
+        ("two", "<Esc><Esc>", &[], " 1b"),
+        ("held", "<Esc><Esc>", &held, " 1b"),
+        ("ctrl", "<Esc>", &ctrl, " 1b"),
+        ("count", "<Esc>2<Esc><Esc>", &[], " 1b 1b"),
+        ("big", "<Esc>9<Esc>", &[], " 1b 1b"),
+        ("register", "<Esc>\"a<Esc>", &[], ""),
+        ("motion", "<Esc><Esc>k<Esc><Esc>", &[], " 1b 1b"),
+    ];
+    let mut wrong = vec![];
+    for (name, keys, then, want) in cases {
+        ctx.type_keys(&format!("sh '{}' {name}<CR>", reader.display()));
+        wait_for(&mut ctx, &format!("raw-{name}"));
+        wait_busy(&mut ctx);
+        ctx.type_keys(keys);
+        for ev in then {
+            ctx.input(ev.clone());
+        }
+        ctx.run_until_idle();
+        assert_eq!(ctx.state(), State::Normal, "{name}");
+        ctx.type_keys("ix");
+        wait_for(&mut ctx, &format!("read-{name}:"));
+        let s = screen(&mut ctx);
+        let got = s.lines().find(|l| l.starts_with(&format!("read-{name}:")));
+        if got != Some(format!("read-{name}:{want}.").as_str()) {
+            wrong.push(format!("{keys}: {got:?}, not{want}"));
+        }
+        wait_until(&mut ctx, "back at the prompt", |ctx| busy(ctx).is_empty());
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A reader of two raw bytes on the alternate screen.
+const ALT_RAW: &str = r#"printf '\033[?1049h'; stty -icanon -echo
+echo alt-ready
+v=$(dd bs=1 count=2 2>/dev/null | od -An -tx1); stty sane; printf '\033[?1049l'
+echo read: $v
+"#;
 
 fn esc_reaches_vim_and_less_on_the_alternate_screen() {
     let (mut ctx, buf) = shell();
@@ -255,13 +414,13 @@ fn esc_reaches_vim_and_less_on_the_alternate_screen() {
     assert!(alt(&mut ctx, buf), "less read Esc q as one command");
     ctx.type_keys("q");
     wait_until(&mut ctx, "out of less", |ctx| !alt(ctx, buf));
-    // And as bytes: a program on the alternate screen reads the Esc itself.
-    ctx.type_keys(
-        "printf '\\033[?1049h'; stty -icanon -echo; \
-         v=$(dd bs=1 count=2 2>/dev/null | od -An -tx1); stty sane; printf '\\033[?1049l'; \
-         echo read: $v<CR>",
-    );
-    wait_until(&mut ctx, "on the alternate screen", |ctx| alt(ctx, buf));
+    // And as bytes: a program on the alternate screen reads the Esc itself. A script of its own,
+    // so the reader is a job with the terminal: a `$(...)` at the prompt is in the shell's group.
+    let reader = home().join("alt");
+    std::fs::write(&reader, ALT_RAW).unwrap();
+    ctx.type_keys(&format!("sh '{}'<CR>", reader.display()));
+    wait_for(&mut ctx, "alt-ready");
+    assert!(alt(&mut ctx, buf), "on the alternate screen");
     wait_busy(&mut ctx);
     ctx.type_keys("<Esc>x");
     assert_eq!(ctx.state(), State::Passthrough);
@@ -464,8 +623,11 @@ fn a_flood_doesnt_hold_up_a_key() {
         "{waited:?}, {back_waited:?}"
     );
     assert!(insert_slowest < most && normal_slowest < most);
-    // Typing in a flood: C-c stops one, and the prompt comes back.
-    ctx.type_keys("yes<CR>");
+    // Typing in a flood: C-c stops one, and the prompt comes back. Typed without waiting for
+    // idle, which a flood never is.
+    for key in [Key::Char('y'), Key::Char('e'), Key::Char('s'), Key::Enter] {
+        ctx.input(KeyEvent::press(key));
+    }
     wait_busy(&mut ctx);
     wait_for(&mut ctx, "y\ny\ny");
     let typed = Instant::now();
@@ -492,11 +654,18 @@ fn slow_output_holds_a_turn_for_a_few_ms() {
     let dir = home();
     let slow = "\x1b#8".repeat(300_000);
     std::fs::write(dir.join("slow"), slow).unwrap();
-    ctx.type_keys(&format!(
-        "cat {}/slow; echo slow-$((3*3))<CR>",
-        dir.display()
-    ));
-    wait_busy(&mut ctx);
+    // Typed and waited for in turns as the host takes them: idle, which `type_keys` waits for,
+    // comes only once it's all parsed, with `cat` long gone.
+    let cmd = format!("cat {}/slow; echo slow-$((3*3))", dir.display());
+    for c in cmd.chars() {
+        ctx.input(KeyEvent::press(Key::Char(c)));
+    }
+    ctx.input(KeyEvent::press(Key::Enter));
+    let start = Instant::now();
+    while !screen(&mut ctx).contains("EEEEEEEE") && start.elapsed() < WAIT {
+        ctx.run_ready();
+    }
+    assert!(!screen(&mut ctx).contains("slow-9"), "still parsing");
     let (slowest, mean) = frames(&mut ctx, 50);
     let esc = KeyEvent::press(Key::Esc);
     let (turns, waited) = key_in_flood(&mut ctx, esc, |ctx| ctx.state() == State::Normal);
@@ -928,6 +1097,82 @@ fn zsh_reports_its_directory_and_reads_your_startup_files_as_ever() {
     }
 }
 
+/// A `.bashrc` that exports `PROMPT_COMMAND`, as a common history line does, hands DIE's hook
+/// on to a bash started in the terminal, which has no such function: it said "command not
+/// found" at every prompt.
+fn a_nested_bash_says_nothing_of_dies_hook() {
+    let export = "export PROMPT_COMMAND=\"history -a${PROMPT_COMMAND:+; $PROMPT_COMMAND}\"\n";
+    let (mut ctx, _) = shell_at_its_prompt_with("/bin/bash", export);
+    ctx.type_keys("bash<CR>");
+    wait_busy(&mut ctx);
+    ctx.type_keys("echo nested-$((1+1))<CR>");
+    wait_for(&mut ctx, "nested-2");
+    settle(&mut ctx, Duration::from_millis(300));
+    ctx.type_keys("echo again-$((2+2))<CR>");
+    wait_for(&mut ctx, "again-4");
+    settle(&mut ctx, Duration::from_millis(300));
+    let s = screen(&mut ctx);
+    assert!(!s.contains("__die_osc7"), "{s}");
+    ctx.type_keys("exit<CR>");
+    wait_until(&mut ctx, "back at the prompt", |ctx| busy(ctx).is_empty());
+}
+
+/// macOS reads a PTY's foreground group as 0 until the program has made it its terminal, which
+/// rustix took for a pid: a panic in a test build, undefined in a release one. Esc in normal
+/// state asks at once, so a terminal can be asked from the moment it opens.
+fn busy_can_be_asked_from_the_moment_a_terminal_opens() {
+    let mut ctx = editor();
+    let buf = open(&mut ctx, sh_spec(), ShowIn::Current).unwrap();
+    let start = Instant::now();
+    let mut asked = 0;
+    while !screen(&mut ctx).lines().any(|l| l.ends_with('$')) && start.elapsed() < WAIT {
+        assert!(
+            busy(&mut ctx).is_empty(),
+            "a shell that's starting isn't busy"
+        );
+        asked += 1;
+        ctx.run_ready();
+    }
+    assert!(asked > 1, "asked {asked} times");
+    assert!(ctx.is_live(buf));
+    ctx.type_keys("sleep 5<CR>");
+    wait_busy(&mut ctx);
+}
+
+/// A directory with a line break, a tab, a BEL, an Esc or a `%` in its name is reported, each
+/// escaped as `%XX`: a BEL ended the OSC early, and the rest of the name went to the screen.
+fn the_shells_report_a_directory_with_control_characters() {
+    for program in ["/bin/bash", "/bin/zsh"] {
+        let (mut ctx, buf) = shell_at_its_prompt(program);
+        ctx.type_keys("mkdir -p \"$HOME\"/odd && cd \"$HOME\"/odd<CR>");
+        let odd = |ctx: &mut Ctx| ctx.directory(buf).is_some_and(|d| d.ends_with("odd"));
+        wait_until(&mut ctx, "in odd", odd);
+        let name = "nl\nt\tbel\u{7}pc%esc\u{1b}x";
+        ctx.type_keys("d=$'nl\\nt\\tbel\\apc%esc\\ex'; mkdir \"$d\" && cd \"$d\"<CR>");
+        wait_until(&mut ctx, "in the odd one", |ctx| {
+            ctx.directory(buf).is_some_and(|d| d.ends_with(name))
+        });
+        // What a BEL would have left of the name after it, `%` escaped.
+        settle(&mut ctx, Duration::from_millis(200));
+        let s = screen(&mut ctx);
+        assert!(!s.contains("pc%25"), "{program}:\n{s}");
+    }
+}
+
+/// The terminal keeps UTF-8 when it erases: Backspace over `é` in a program reading a line takes
+/// both its bytes, as vterm's `stty iutf8` has it.
+fn backspace_in_line_mode_erases_a_whole_character() {
+    let (mut ctx, _) = shell();
+    ctx.type_keys("head -n 1 | od -An -tx1<CR>");
+    wait_busy(&mut ctx);
+    ctx.input(KeyEvent::committed("é"));
+    ctx.type_keys("<BS>a<CR>");
+    wait_until(&mut ctx, "read", |ctx| busy(ctx).is_empty());
+    let s = screen(&mut ctx);
+    let bytes = |l: &str| l.split_whitespace().collect::<Vec<_>>() == ["61", "0a"];
+    assert!(s.lines().any(bytes), "{s}");
+}
+
 fn a_quit_leaves_nothing_running_and_the_session_no_terminal() {
     let (mut ctx, buf) = shell();
     assert!(
@@ -971,6 +1216,18 @@ fn main() {
         (
             "esc_leaves_insert_on_the_main_screen_and_goes_to_the_program_in_normal",
             esc_leaves_insert_on_the_main_screen_and_goes_to_the_program_in_normal,
+        ),
+        (
+            "esc_in_normal_never_reaches_a_shell_at_its_prompt",
+            esc_in_normal_never_reaches_a_shell_at_its_prompt,
+        ),
+        (
+            "normal_states_esc_sends_one_a_run_and_a_count_at_most_two",
+            normal_states_esc_sends_one_a_run_and_a_count_at_most_two,
+        ),
+        (
+            "esc_in_normal_during_a_job_in_line_mode_waits_for_no_prompt",
+            esc_in_normal_during_a_job_in_line_mode_waits_for_no_prompt,
         ),
         (
             "esc_reaches_vim_and_less_on_the_alternate_screen",
@@ -1040,6 +1297,22 @@ fn main() {
         (
             "zsh_reports_its_directory_and_reads_your_startup_files_as_ever",
             zsh_reports_its_directory_and_reads_your_startup_files_as_ever,
+        ),
+        (
+            "a_nested_bash_says_nothing_of_dies_hook",
+            a_nested_bash_says_nothing_of_dies_hook,
+        ),
+        (
+            "busy_can_be_asked_from_the_moment_a_terminal_opens",
+            busy_can_be_asked_from_the_moment_a_terminal_opens,
+        ),
+        (
+            "the_shells_report_a_directory_with_control_characters",
+            the_shells_report_a_directory_with_control_characters,
+        ),
+        (
+            "backspace_in_line_mode_erases_a_whole_character",
+            backspace_in_line_mode_erases_a_whole_character,
         ),
         (
             "a_quit_leaves_nothing_running_and_the_session_no_terminal",
