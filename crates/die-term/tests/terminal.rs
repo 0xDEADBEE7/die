@@ -533,18 +533,14 @@ printf 'fullscreen-ready\r\n'
 exec dd bs=1 of="$1" 2>/dev/null
 "#;
 
-/// What you hit with Claude Code's fullscreen mode: its Esc no longer goes to it from insert,
-/// whatever it asked of the terminal. The leaving Esc and its release send nothing, nor does a
-/// click in normal state, and normal state's next Esc sends one, as the flags encode it: a
-/// press and its release. More Escs send nothing, and Esc Esc from insert sends one again.
-fn a_fullscreen_program_loses_esc_to_normal_state_and_gets_one_from_the_next() {
+/// A shell after `seq 1 30`, running [`FULLSCREEN`], ready, and what it has logged so far.
+fn fullscreen() -> (Ctx, BufferId, impl Fn() -> String) {
     let (mut ctx, buf) = shell();
     ctx.type_keys("seq 1 30<CR>");
     wait_for(&mut ctx, "\n30\n");
     let dir = home();
     let (script, log) = (dir.join("fullscreen"), dir.join("log"));
     std::fs::write(&script, FULLSCREEN).unwrap();
-    let logged = || String::from_utf8_lossy(&std::fs::read(&log).unwrap_or_default()).into_owned();
     ctx.type_keys(&format!(
         "sh '{}' '{}'<CR>",
         script.display(),
@@ -552,6 +548,17 @@ fn a_fullscreen_program_loses_esc_to_normal_state_and_gets_one_from_the_next() {
     ));
     wait_for(&mut ctx, "fullscreen-ready");
     wait_busy(&mut ctx);
+    let logged =
+        move || String::from_utf8_lossy(&std::fs::read(&log).unwrap_or_default()).into_owned();
+    (ctx, buf, logged)
+}
+
+/// What you hit with Claude Code's fullscreen mode: its Esc no longer goes to it from insert,
+/// whatever it asked of the terminal. The leaving Esc and its release send nothing, nor does a
+/// click in normal state, and normal state's next Esc sends one, as the flags encode it: a
+/// press and its release. More Escs send nothing, and Esc Esc from insert sends one again.
+fn a_fullscreen_program_loses_esc_to_normal_state_and_gets_one_from_the_next() {
+    let (mut ctx, buf, logged) = fullscreen();
     let modes = with(&mut ctx, buf, |s| s.term().modes());
     let asked = modes.alt_screen && modes.kitty_flags == 31 && modes.bracketed_paste;
     assert!(asked && modes.mouse != MouseTracking::None, "{modes:?}");
@@ -593,6 +600,108 @@ fn a_fullscreen_program_loses_esc_to_normal_state_and_gets_one_from_the_next() {
     settle(&mut ctx, Duration::from_millis(300));
     assert_eq!(logged(), two, "one more from Esc Esc in insert");
     assert_eq!(ctx.state(), State::Normal);
+}
+
+/// The wheel goes to a program that tracks the mouse in normal state too, as in insert and as
+/// your ghostel sends it in every Evil state, so Claude Code's fullscreen mode scrolls its
+/// transcript after an Esc. Its screen has no scrollback for copy state to scroll.
+fn the_wheel_in_normal_state_goes_to_a_program_that_tracks_the_mouse() {
+    let (mut ctx, _, logged) = fullscreen();
+    ctx.set_cell_pixels(CellPixels {
+        width: 8,
+        height: 16,
+        scale: 1.0,
+    });
+    ctx.scene();
+    ctx.handle(wheel(-3.0));
+    ctx.run_until_idle();
+    let up = "\x1b[<64;6;6M".repeat(3);
+    let found = ctx.run_until(Duration::from_secs(3), |_| logged() == up);
+    assert!(found, "the wheel in insert: {:?}", logged());
+    ctx.type_keys("<Esc>");
+    assert_eq!(ctx.state(), State::Normal);
+    ctx.scene();
+    ctx.handle(wheel(3.0));
+    ctx.run_until_idle();
+    let down = up + &"\x1b[<65;6;6M".repeat(3);
+    let found = ctx.run_until(Duration::from_secs(3), |_| logged() == down);
+    assert!(found, "the wheel in normal state: {:?}", logged());
+    assert_eq!(ctx.state(), State::Normal);
+}
+
+/// A key let go after Esc left insert still has its release sent, as kitty's flag 2 asks, so
+/// the program never thinks it's held: a letter rolled over into Esc, and Ctrl-['s Ctrl.
+fn a_key_let_go_in_normal_state_has_its_release_sent() {
+    let (mut ctx, _, logged) = fullscreen();
+    let a = Key::Char('a');
+    ctx.input(KeyEvent::press(a));
+    ctx.input(KeyEvent::press(Key::Esc));
+    ctx.input(KeyEvent::press(a).kind(KeyKind::Release));
+    ctx.input(KeyEvent::press(Key::Esc).kind(KeyKind::Release));
+    ctx.run_until_idle();
+    assert_eq!(ctx.state(), State::Normal, "rolled over into Esc");
+    let rolled = "\x1b[97;;97u\x1b[97;1:3u";
+    let found = ctx.run_until(Duration::from_secs(3), |_| logged() == rolled);
+    assert!(found, "a's release: {:?}", logged());
+    ctx.type_keys("i");
+    let ctrl = Mods {
+        ctrl: true,
+        ..Mods::default()
+    };
+    let control = Key::Modifier(ModifierKey::Control);
+    ctx.input(KeyEvent::press(control).mods(ctrl));
+    ctx.input(ctrl_bracket());
+    ctx.input(ctrl_bracket().kind(KeyKind::Release));
+    ctx.input(KeyEvent::press(control).kind(KeyKind::Release));
+    ctx.run_until_idle();
+    assert_eq!(ctx.state(), State::Normal, "Ctrl-[ leaves insert");
+    let held = format!("{rolled}\x1b[57442;5u\x1b[57442;1:3u");
+    let found = ctx.run_until(Duration::from_secs(3), |_| logged() == held);
+    assert!(found, "Ctrl's release: {:?}", logged());
+}
+
+/// `C-c C-c` in normal state sends the program C-c, as your ghostel's map has it in every input
+/// mode, and `C-c C-z`, `C-c C-\` and `C-c C-d` theirs, as the bytes, which the terminal's line
+/// discipline makes signals of: so it interrupts a job without going back to insert.
+fn c_c_c_c_in_normal_state_sends_the_program_c_c() {
+    let (mut ctx, _, logged) = fullscreen();
+    ctx.type_keys("<Esc><C-c><C-c><C-c><C-z><C-c><C-\\><C-c><C-d>");
+    let found = ctx.run_until(Duration::from_secs(3), |_| logged() == "\x03\x1a\x1c\x04");
+    assert!(found, "{:?}: {:?}", logged(), ctx.messages);
+    assert_eq!(ctx.state(), State::Normal);
+    let (mut ctx, _) = shell();
+    ctx.type_keys("sleep 1000<CR>");
+    wait_busy(&mut ctx);
+    ctx.type_keys("<Esc><C-c><C-c>");
+    wait_until(&mut ctx, "sleep interrupted", |ctx| busy(ctx).is_empty());
+    assert_eq!(ctx.state(), State::Normal);
+}
+
+/// A program leaving the alternate screen while normal state's cursor is up its screen sends the
+/// window to the terminal's cursor, as `G` does, since the alternate screen's line numbers say
+/// nothing of the scrollback's lines.
+fn leaving_the_alternate_screen_takes_normal_state_to_the_terminals_cursor() {
+    let (mut ctx, buf) = shell();
+    ctx.type_keys("seq 1 3000<CR>");
+    wait_for(&mut ctx, "\n3000\n");
+    let dir = home();
+    let (script, go) = (dir.join("alt"), dir.join("go"));
+    let alt_then_back = "printf '\\033[?1049h\\033[H'; seq -f 'alt %g' 1 20\n\
+                         while [ ! -e \"$1\" ]; do sleep 0.05; done; printf '\\033[?1049l'\n";
+    std::fs::write(&script, alt_then_back).unwrap();
+    ctx.type_keys(&format!("sh '{}' '{}'<CR>", script.display(), go.display()));
+    wait_for(&mut ctx, "alt 20");
+    ctx.type_keys("<Esc>gg");
+    assert_eq!(snapshot(&mut ctx, buf).1, "alt 1");
+    std::fs::write(&go, "").unwrap();
+    wait_until(&mut ctx, "back at a prompt", |ctx| {
+        !alt(ctx, buf) && snapshot(ctx, buf).0.contains("\n3000\n")
+    });
+    settle(&mut ctx, Duration::from_millis(300));
+    let (_, at) = snapshot(&mut ctx, buf);
+    assert!(at.ends_with('$'), "on the terminal's cursor: {at:?}");
+    cursor_row_shows(&mut ctx, buf, &at);
+    assert_eq!(misdrawn(&mut ctx, buf), Vec::<String>::new());
 }
 
 fn a_resize_reaches_stty_size_and_exit_closes_the_buffer() {
@@ -1350,6 +1459,22 @@ fn main() {
         (
             "a_fullscreen_program_loses_esc_to_normal_state_and_gets_one_from_the_next",
             a_fullscreen_program_loses_esc_to_normal_state_and_gets_one_from_the_next,
+        ),
+        (
+            "the_wheel_in_normal_state_goes_to_a_program_that_tracks_the_mouse",
+            the_wheel_in_normal_state_goes_to_a_program_that_tracks_the_mouse,
+        ),
+        (
+            "a_key_let_go_in_normal_state_has_its_release_sent",
+            a_key_let_go_in_normal_state_has_its_release_sent,
+        ),
+        (
+            "c_c_c_c_in_normal_state_sends_the_program_c_c",
+            c_c_c_c_in_normal_state_sends_the_program_c_c,
+        ),
+        (
+            "leaving_the_alternate_screen_takes_normal_state_to_the_terminals_cursor",
+            leaving_the_alternate_screen_takes_normal_state_to_the_terminals_cursor,
         ),
         (
             "a_resize_reaches_stty_size_and_exit_closes_the_buffer",

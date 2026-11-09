@@ -3,10 +3,10 @@
 //! showing the surface's own cells at the snapshot's scroll position, with the cursor, the
 //! selection and the search's matches drawn over them. A window whose cursor is on the
 //! surface's cursor line or below it, in normal state, follows new output, as Evil's point
-//! follows a terminal's cursor; one that went up stays where it is until it comes back down,
-//! with the text read all the same, so what it draws is what it yanks. The snapshot has the
-//! surface buffer's maximum width and centering, and never wraps, so its text area is the
-//! surface's area and its cells land on the surface's.
+//! follows a terminal's cursor; one that went up stays where it is until it comes back down, or
+//! the surface numbers its lines afresh, with the text read all the same, so what it draws is
+//! what it yanks. The snapshot has the surface buffer's maximum width and centering, and never
+//! wraps, so its text area is the surface's area and its cells land on the surface's.
 
 use crate::ext::*;
 use crate::ids::*;
@@ -36,6 +36,9 @@ pub struct SurfaceText {
     /// The line its own view shows on the top row, when that's above the live view's, as after
     /// the wheel in insert state: copy state starts there, with the cursor on its last row.
     pub shown_top: Option<usize>,
+    /// Its lines are numbered afresh, as after a terminal switches screens: a window's line says
+    /// nothing of where it was, so every window goes to the cursor, as `G` does.
+    pub renumbered: bool,
 }
 
 impl SurfaceText {
@@ -252,7 +255,7 @@ impl Ctx {
         let (t, cursor) = (&c.text, c.cursor);
         let (cursor_line, live) = (t.line_of(cursor), c.live_top());
         let at = |p: usize| (t.line_of(p), t.display_col(p));
-        let places: Vec<Place> = (t.views.iter())
+        let mut places: Vec<Place> = (t.views.iter())
             .map(|(&w, v)| {
                 let head = at(v.sel.head);
                 let top = t.line_of(t.scroll(w).map_or(0, |s| s.0));
@@ -280,6 +283,9 @@ impl Ctx {
         }
         let Some(c) = self.copy_mut(buf) else { return };
         c.take(&st);
+        for p in places.iter_mut().filter(|_| st.renumbered) {
+            (p.below, p.on_cursor, p.above_live) = (Some(0), true, 0);
+        }
         let (t, cursor) = (&mut c.text, c.cursor);
         let (cursor_line, last) = (t.line_of(cursor), last_line(t));
         let live = t.line_of(t.top_limit.unwrap_or(0));

@@ -203,6 +203,15 @@ impl Ctx {
                 }
             }
         }
+        // A release goes where its press went, whatever has the keys now, so a program that asked
+        // for releases hears a key let go after Esc left passthrough, or the focus moved.
+        if ev.kind == KeyKind::Release
+            && let Some(i) = self.passed.iter().position(|(_, k)| same_key(k, &ev))
+        {
+            let (buf, _) = self.passed.swap_remove(i);
+            let _ = self.surface_event(buf, &Event::Key(ev)); // a panic is said, and none is fed
+            return;
+        }
         let Some(win) = self.focused else { return };
         let Some(buf) = self.window_buffer(win) else {
             return;
@@ -285,7 +294,8 @@ impl Ctx {
     /// keymap reads as Esc. Each swallows its repeats and release.
     fn dispatch_passthrough(&mut self, win: WindowId, buf: BufferId, ev: KeyEvent) {
         let esc = ev.chord();
-        let plain = |ctx: &Ctx| esc.mods == Mods::default() && !ctx.surface_takes_esc(buf);
+        let takes = |ctx: &Ctx| ctx.surface_says(buf, |s| s.takes_esc());
+        let plain = |ctx: &Ctx| esc.mods == Mods::default() && !takes(ctx);
         if esc.key == Key::Esc && ev.kind == KeyKind::Press && (ev.mods.super_ || plain(self)) {
             self.set_state_of(buf, State::Normal);
             self.swallow.push(ev.key);
@@ -301,8 +311,9 @@ impl Ctx {
             self.swallow.push(ev.key);
             return self.run_key(&name, vec![ev], win, buf);
         }
-        // A repeat or release goes only where its press went: never one of a key DIE took, as
-        // the `i` that came here, nor a Shift pressed in normal state (§7).
+        // A repeat goes only where its press went, and a release went there already (above):
+        // never one of a key DIE took, as the `i` that came here, nor a Shift pressed in normal
+        // state (§7).
         let held = |(b, k): &(BufferId, KeyEvent)| *b == buf && same_key(k, &ev);
         match (ev.kind, self.passed.iter().position(held)) {
             (KeyKind::Press, _) => {
@@ -312,9 +323,8 @@ impl Ctx {
                 }
                 self.passed.push((buf, ev.clone()));
             }
-            (KeyKind::Release, Some(i)) => drop(self.passed.swap_remove(i)),
             (KeyKind::Repeat, Some(_)) => {}
-            (_, None) => return,
+            _ => return,
         }
         if let Err(Error::Panicked { .. }) = self.surface_event(buf, &Event::Key(ev)) {
             self.drop_fed();

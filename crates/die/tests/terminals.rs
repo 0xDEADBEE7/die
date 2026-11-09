@@ -76,6 +76,36 @@ mod on_macos {
         assert!(ctx.quit_wanted(), "{:?}", ctx.messages);
     }
 
+    /// `:q` in the last window, `:q!`, `ZQ`, `:qa` and `:qa!` ask as Cmd-Q does while a program
+    /// runs in a terminal: with insert's Esc going to normal state on vim's screen too, the `:q`
+    /// of a vim habit after one Esc is DIE's.
+    pub fn colon_q_asks_while_a_program_runs_in_a_terminal() {
+        let (mut ctx, _) = shell();
+        ctx.type_keys("sleep 1000<CR>");
+        wait(&mut ctx, "busy", |ctx| busy(ctx) == [NAME]);
+        ctx.type_keys("<Esc>");
+        assert_eq!(ctx.state(), State::Normal);
+        let want = "A program is running in *terminal*. Quit anyway? (y or n)";
+        for quit in [":q<CR>", ":q!<CR>", "ZQ", ":qa<CR>", ":qa!<CR>"] {
+            ctx.type_keys(quit);
+            assert!(!ctx.quit_wanted(), "{quit} asks first");
+            let asked = screen(&mut ctx)
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .to_string();
+            assert!(
+                asked.starts_with(want),
+                "{quit}: {asked:?} {:?}",
+                ctx.messages
+            );
+            ctx.type_keys("n<CR>");
+            assert!(!ctx.quit_wanted(), "{quit}, then n");
+        }
+        ctx.type_keys(":q<CR>y<CR>");
+        assert!(ctx.quit_wanted(), "{:?}", ctx.messages);
+    }
+
     pub fn an_osc_52_copy_is_a_kill_that_p_pastes() {
         let (mut ctx, _) = shell();
         ctx.type_keys("printf '\\033]52;c;Y29waWVk\\a'<CR>");
@@ -142,6 +172,10 @@ fn main() {
             (
                 "cmd_q_asks_while_a_program_runs_in_a_terminal",
                 on_macos::cmd_q_asks_while_a_program_runs_in_a_terminal,
+            ),
+            (
+                "colon_q_asks_while_a_program_runs_in_a_terminal",
+                on_macos::colon_q_asks_while_a_program_runs_in_a_terminal,
             ),
             (
                 "an_osc_52_copy_is_a_kill_that_p_pastes",

@@ -385,7 +385,12 @@ impl Surface for TermSurface {
 
     fn event(&mut self, ev: &die_core::Event, ctx: &mut Ctx) -> bool {
         match ev {
-            die_core::Event::Key(k) if ctx.state_of(self.buf) == State::Passthrough => self.key(k),
+            // A release comes in any state, when its press came in insert (contract §7).
+            die_core::Event::Key(k)
+                if k.kind == KeyKind::Release || ctx.state_of(self.buf) == State::Passthrough =>
+            {
+                self.key(k)
+            }
             die_core::Event::Resize {
                 cols, rows, cell, ..
             } => {
@@ -418,6 +423,13 @@ impl Surface for TermSurface {
             Escape::Program => true,
             Escape::Normal => false,
         }
+    }
+
+    /// In normal state too, the wheel goes to a program that tracks the mouse, as ghostel's
+    /// scroll intercept sends it in every Evil state: Claude Code's fullscreen mode scrolls its
+    /// transcript with it, and its screen has no scrollback for copy state to scroll.
+    fn takes_wheel(&self) -> bool {
+        self.term.modes().mouse != MouseTracking::None
     }
 
     fn initial_state(&self) -> State {

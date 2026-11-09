@@ -124,7 +124,7 @@ pub trait Mode: Any {
 #[non_exhaustive]
 pub enum Event {
     /// A key no keymap took, or in passthrough every key outside the DIE layer, with its repeats
-    /// and releases.
+    /// and releases. A release of a key pressed there comes in any state.
     Key(KeyEvent),
     /// A window showing the surface has an area this size ([`Ctx::surface_area`]): when the
     /// surface goes into a window ([`Ctx::open_window`]'s caller gave the size), when the window
@@ -164,7 +164,8 @@ pub trait Surface: Any {
     fn status(&self) -> Option<String> {
         None
     }
-    /// Input keymaps didn't take; every key (and release) in passthrough. Checked out (C2).
+    /// Input keymaps didn't take; every key (and release) in passthrough, and the release of a
+    /// key pressed there, whatever the state by then. Checked out (C2).
     fn event(&mut self, _ev: &Event, _ctx: &mut Ctx) -> bool {
         false
     }
@@ -177,6 +178,12 @@ pub trait Surface: Any {
     /// evil-ghostel's `auto`, on the alternate screen (scope D18). The DIE layer's Esc leaves
     /// whatever this says.
     fn takes_esc(&self) -> bool {
+        false
+    }
+    /// Whether the wheel goes to `event()` in copy state now, rather than scrolling the
+    /// snapshot: a terminal says yes while its program tracks the mouse, as ghostel sends it there
+    /// in every Evil state (scope D18).
+    fn takes_wheel(&self) -> bool {
         false
     }
     /// The state a buffer showing it starts in.

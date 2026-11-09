@@ -113,7 +113,7 @@ impl Ctx {
             .filter(|_| !passthrough || last.mods.super_)
             .map(|(i, (_, km))| (i, km.lookup(state, keys)))
             .find(|(_, l)| *l != Lookup::None);
-        let plain = last.mods == Mods::default() && !self.surface_takes_esc(buf);
+        let plain = last.mods == Mods::default() && !self.surface_says(buf, |s| s.takes_esc());
         let (action, by) = match &hit {
             _ if passthrough && last.key == Key::Esc && (last.mods.super_ || plain) => {
                 (KeyAction::LeavesPassthrough, None)
