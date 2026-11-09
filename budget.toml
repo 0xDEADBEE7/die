@@ -23,7 +23,8 @@ path = "crates/die-core"
 # 15,280 until the Esc review: a PTY's line mode, IUTF8, no foreground group read without a session, and Ctrl-[ leaving passthrough.
 # 15,295 until a surface's area took a file's width and margins: its settings, `\z` on it, and its frame, pointer and copy state at the offset.
 # 15,385 until the alternate screen's Esc review: the wheel in copy state, a release where its press went, a switch of screens followed.
-limit = 15400
+# 15,400 until the margins review: through a resize, each window keeps its place in the lines of output a surface says it wrapped.
+limit = 15440
 
 [[crate]]
 name = "die-render"
@@ -221,7 +222,8 @@ name = "surfaces and PTYs"
 # 1,320 until the Esc review: a PTY's line mode, IUTF8, and its foreground group only with a session.
 # 1,335 until a surface's area: `surface_area`, a Resize when its width changes, the frame, cursor, pointer and copy state at its offset.
 # 1,380 until the alternate screen's Esc review: `surface_says`, the wheel `takes_wheel` takes, and `renumbered`.
-limit = 1385
+# 1,385 until the margins review: `SurfaceText::wrapped`, kept a line at a time, and each window's place in its line of output through a resize.
+limit = 1425
 files = ["surface.rs", "pty.rs", "surface/", "pty/"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.

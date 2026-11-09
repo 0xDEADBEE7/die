@@ -6,7 +6,9 @@
 //! follows a terminal's cursor; one that went up stays where it is until it comes back down, or
 //! the surface numbers its lines afresh, with the text read all the same, so what it draws is
 //! what it yanks. The snapshot has the surface buffer's maximum width and centering, and never
-//! wraps, so its text area is the surface's area and its cells land on the surface's.
+//! wraps, so its text area is the surface's area and its cells land on the surface's. A resize
+//! that reflows the lines the surface wrapped keeps every other window in its line of output, at
+//! its column there, as a file's window keeps its text through `\z`.
 
 use crate::ext::*;
 use crate::ids::*;
@@ -15,6 +17,7 @@ use crate::layout::CellKind;
 use crate::scene::{CursorShape, Scene, WindowPlacement, selected};
 use crate::text::*;
 use crate::windows::View;
+use std::collections::VecDeque;
 
 /// What copy state reads of a surface ([`Surface::text`]): lines, each ending in a newline,
 /// oldest first. An update replaces the last text's lines from `from` to its end, after
@@ -39,6 +42,10 @@ pub struct SurfaceText {
     /// Its lines are numbered afresh, as after a terminal switches screens: a window's line says
     /// nothing of where it was, so every window goes to the cursor, as `G` does.
     pub renumbered: bool,
+    /// The lines, counted from `from`, that run on into the next one, each with the columns it
+    /// takes, as a terminal wraps a line of output wider than itself. A resize reflows them, and
+    /// a window keeps its place in the line of output they make up.
+    pub wrapped: Vec<(usize, usize)>,
 }
 
 impl SurfaceText {
@@ -58,6 +65,8 @@ pub(crate) struct Copy {
     cursor: usize,
     /// The surface said its text changed since the last read.
     stale: bool,
+    /// Each line's columns if it runs on into the next ([`SurfaceText::wrapped`]), else 0.
+    wraps: VecDeque<usize>,
 }
 
 /// Where a window was in a snapshot, to put it back after an update.
@@ -76,6 +85,28 @@ struct Place {
     above_live: usize,
 }
 
+/// A snapshot line and display column as a place in a line of output, as `wraps` says the
+/// surface wrapped it: the lines of output ended before it, and the columns before it in its own.
+fn unwrapped(wraps: &VecDeque<usize>, (line, col): (usize, usize)) -> (usize, usize) {
+    let before = wraps.range(..line.min(wraps.len()));
+    let first = before.clone().rposition(|&w| w == 0).map_or(0, |i| i + 1);
+    let ended = before.clone().filter(|&&w| w == 0).count();
+    (ended, col + before.skip(first).sum::<usize>())
+}
+
+/// The snapshot line and display column of an [`unwrapped`] place, in lines wrapped as `wraps`
+/// says.
+fn rewrapped(wraps: &VecDeque<usize>, (n, mut col): (usize, usize)) -> (usize, usize) {
+    let mut ends = wraps.iter().enumerate().filter(|(_, w)| **w == 0);
+    let mut line = n
+        .checked_sub(1)
+        .map_or(0, |n| ends.nth(n).map_or(wraps.len(), |e| e.0 + 1));
+    while let Some(&w) = wraps.get(line).filter(|&&w| w > 0 && col >= w) {
+        (line, col) = (line + 1, col - w);
+    }
+    (line, col)
+}
+
 /// The line a cursor can go to last: the one before the empty line after a final newline.
 fn last_line(t: &TextBuf) -> usize {
     let ends = !t.is_empty() && t.rope().byte(t.len() - 1) == b'\n';
@@ -90,6 +121,16 @@ impl Copy {
         let from = t.line_start(st.dropped + st.from);
         t.splice(from..t.len(), &st.text);
         t.splice(0..cut, "");
+        let w = &mut self.wraps;
+        w.truncate(st.dropped + st.from);
+        let at = w.len();
+        w.resize(at + st.text.matches('\n').count(), 0);
+        for &(line, cols) in &st.wrapped {
+            if let Some(w) = w.get_mut(at + line) {
+                *w = cols;
+            }
+        }
+        w.drain(..st.dropped.min(w.len()));
         let (line, byte) = st.cursor.unwrap_or((last_line(t), 0));
         let at = (t.line_start(line) + byte).min(t.len());
         self.cursor = t.snap(at, None);
@@ -183,6 +224,7 @@ impl Ctx {
             text,
             cursor: 0,
             stale: false,
+            wraps: VecDeque::new(),
         };
         c.take(&st);
         if let Some(Content::Custom { copy, .. }) =
@@ -248,7 +290,8 @@ impl Ctx {
     /// Read what changed, in normal state with no prompt, or with `whole` all of it. Each
     /// follower keeps its place below the surface's cursor line, on the cursor if it was there,
     /// and its distance above the live view. The others keep their lines, less those that left
-    /// the start, so the rows a surface shows there are still the lines they have.
+    /// the start, so the rows a surface shows there are still the lines they have; after a
+    /// resize, their places in the lines of output the surface reflowed.
     fn copy_follow(&mut self, buf: BufferId, whole: bool) {
         let follows = self.state_of(buf) == State::Normal && self.prompt.is_none();
         let Some(c) = self.copy_mut(buf) else { return };
@@ -282,7 +325,14 @@ impl Ctx {
             (st.dropped, st.from) = (0, 0);
         }
         let Some(c) = self.copy_mut(buf) else { return };
+        let old = whole.then(|| std::mem::take(&mut c.wraps));
         c.take(&st);
+        if let Some(old) = &old {
+            let moved = |at| rewrapped(&c.wraps, unwrapped(old, at));
+            for p in places.iter_mut().filter(|p| p.below.is_none()) {
+                (p.head, p.anchor, p.top) = (moved(p.head), moved(p.anchor), moved((p.top, 0)).0);
+            }
+        }
         for p in places.iter_mut().filter(|_| st.renumbered) {
             (p.below, p.on_cursor, p.above_live) = (Some(0), true, 0);
         }
