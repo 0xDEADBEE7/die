@@ -1,7 +1,8 @@
 //! Your config's terminal on a real PTY: `\e` starts `/bin/bash` as your Emacs's ghostel and
 //! vterm do, interactive and not a login shell, so it reads `~/.bashrc`; bash reports `cd` and
-//! keeps your `PROMPT_COMMAND` and `$?`; and Esc pressed a few times at its prompt reaches
-//! nothing, where it opened bash's "Display all 1773 possibilities?".
+//! keeps your `PROMPT_COMMAND` and `$?`; Esc pressed a few times at its prompt reaches nothing,
+//! where it opened bash's "Display all 1773 possibilities?"; and the terminal is 80 columns,
+//! centered, as a file is, until `\z` widens it to the window, with the cursor kept on its text.
 //!
 //! A PTY's program starts through this binary's own trampoline, as it does through DIE's, so
 //! this has no test harness: `main` is the trampoline first. bash would read your `~/.bashrc`,
@@ -84,10 +85,57 @@ PROMPT_COMMAND=mine
         ctx.shutdown();
     }
 
+    /// The test, in the process with its own HOME: in a window 120 columns wide, the terminal
+    /// is your text's 80, centered, and `\z` in normal state widens it to the window and back,
+    /// as `stty size` says, and keeps a cursor scrolled back on its line through the reflow.
+    fn the_terminal_is_80_columns_centered_until_leader_z() {
+        let mut ctx = start(die_dev::config(vec![])).unwrap();
+        ctx.set_frame_size(120, 26);
+        ctx.type_keys("<leader>e");
+        wait_for(&mut ctx, "dev-bash$");
+        let w = ctx.focused().unwrap();
+        let area = ctx.surface_area(w).unwrap();
+        assert_eq!((area.text_x, area.text_w, area.rows), (20, 80, 24));
+        let prompt = screen(&mut ctx);
+        let prompt = prompt.lines().find(|l| l.contains("dev-bash$")).unwrap();
+        assert!(
+            prompt.starts_with(&format!("{}dev-bash$", " ".repeat(20))),
+            "{prompt:?}"
+        );
+        ctx.type_keys("echo one-$(stty size)<CR>");
+        wait_for(&mut ctx, "one-24 80");
+        let size = |ctx: &mut Ctx, keys: &str, want: &str| {
+            ctx.type_keys("<Esc>");
+            assert_eq!(ctx.state(), State::Normal);
+            ctx.type_keys(keys);
+            let _ = ctx.run_until(Duration::from_millis(100), |_| false);
+            ctx.type_keys("i");
+            assert_eq!(ctx.state(), State::Passthrough);
+            ctx.type_keys(&format!("echo {want}-$(stty size)<CR>"));
+        };
+        size(&mut ctx, "<leader>z", "two");
+        wait_for(&mut ctx, "two-24 120");
+        assert_eq!(ctx.surface_area(w).unwrap().text_x, 0);
+        size(&mut ctx, "<leader>z", "three");
+        wait_for(&mut ctx, "three-24 80");
+        // Scrolled back, `\z` keeps the cursor on its text through the reflow, as in a file.
+        ctx.type_keys("clear; for i in $(seq 10 69); do printf M$i; printf 'x%.0s' $(seq 97);");
+        ctx.type_keys(" echo; done; echo DONE-$((2+2))<CR>");
+        wait_for(&mut ctx, "DONE-4");
+        ctx.type_keys("<Esc>gg/M30x<CR><leader>z");
+        let _ = ctx.run_until(Duration::from_millis(100), |_| false);
+        ctx.type_keys("yy");
+        let m30 = format!("M30{}\n", "x".repeat(97));
+        assert_eq!(ctx.register('"').unwrap().text, m30, "the line it was on");
+        ctx.shutdown();
+    }
+
     pub fn main() {
         if std::env::var_os(CHILD).is_some() {
             leader_e_starts_bin_bash_reading_bashrc_and_reporting_cd();
             println!("test leader_e_starts_bin_bash_reading_bashrc_and_reporting_cd ... ok");
+            the_terminal_is_80_columns_centered_until_leader_z();
+            println!("test the_terminal_is_80_columns_centered_until_leader_z ... ok");
             return;
         }
         let home = std::env::temp_dir().join(format!("die-dev-terminal-{}", std::process::id()));
@@ -106,7 +154,7 @@ PROMPT_COMMAND=mine
             .unwrap();
         let _ = std::fs::remove_dir_all(&home);
         if !status.success() {
-            println!("test leader_e_starts_bin_bash_reading_bashrc_and_reporting_cd ... FAILED");
+            println!("test result: FAILED");
             std::process::exit(1);
         }
         println!("test result: 0 failed");

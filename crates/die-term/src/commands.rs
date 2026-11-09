@@ -8,13 +8,14 @@
 //! `vterm-send-escape` binding has it, but once a run of Escs, never to the shell at its prompt
 //! and never in line mode; `i`, `a`, `I` and `A` go back to insert at the live screen, `p` and
 //! `P` paste, `G` goes to the terminal's cursor, and `C-c C-r` changes where insert state's Esc
-//! goes, as evil-ghostel's `evil-ghostel-toggle-send-escape` does. The program's exit closes the
-//! buffer.
+//! goes: to normal state, the default, or to the program, or evil-ghostel's `auto` with a count.
+//! `C-c C-c`, `C-c C-z`, `C-c C-\` and `C-c C-d` send those keys, as ghostel's do. The program's
+//! exit closes the buffer.
 use crate::Term;
 use crate::surface::{CopyFn, Escape, KIND, TermSurface};
 use die_core::{
-    Args, BufferId, Ctx, Error, Extension, Key, KeyEvent, PtyCommand, Register, Registry, Result,
-    Rgb, ShowIn, State,
+    Args, BufferId, Ctx, Error, Extension, Key, KeyEvent, KeyKind, PtyCommand, Register, Registry,
+    Result, Rgb, ShowIn, State,
 };
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -36,8 +37,6 @@ pub struct Terminals {
     /// What a program's OSC 52 write does with its text. The default puts it on the system
     /// clipboard; the facade makes it a kill as well, as Emacs's `kill-new` does.
     on_copy: CopyFn,
-    /// Insert state's Esc went to a program on its alternate screen, and said so once.
-    hinted: bool,
     /// Keys but a plain Esc seen outside insert state, so normal state's Esc can tell another
     /// key came since it last sent one.
     keys: Rc<Cell<u64>>,
@@ -49,7 +48,6 @@ impl Default for Terminals {
             shell: None,
             login: true,
             on_copy: to_clipboard,
-            hinted: false,
             keys: Rc::default(),
         }
     }
@@ -149,6 +147,15 @@ fn open_with(ctx: &mut Ctx, mut spec: Spec, how: ShowIn, copy: CopyFn) -> Result
     let short = short.to_string_lossy().into_owned();
     let s = TermSurface::new(term, &spec.name, &short, Path::new("/"), copy);
     let buf = ctx.create_surface(&spec.name, s);
+    // The area the window gives it, as the buffer's maximum width and centering leave it.
+    let area = ctx.settings(buf).map(|s| s.place(cols, rows, 0).text_w);
+    let cols = area.map_or(cols, |w| w.min(cols));
+    let size = (to_u16(cols), to_u16(rows));
+    ctx.with_surface(buf, |s: &mut TermSurface, _| {
+        if s.term.size() != size {
+            s.term.resize(size.0, size.1, (cell.width, cell.height));
+        }
+    })?;
     if let Some(dir) = &spec.dir {
         ctx.set_directory(buf, dir.clone());
     }
@@ -233,18 +240,6 @@ pub fn busy(ctx: &mut Ctx) -> Vec<String> {
     names
 }
 
-/// Say once a run that insert state's Esc went to a program on its alternate screen.
-pub(crate) fn hint_once(ctx: &mut Ctx) {
-    let first = ctx.with_ext(|t: &mut Terminals, _| !std::mem::replace(&mut t.hinted, true));
-    if matches!(first, Ok(true)) {
-        ctx.messages.push(
-            "Esc went to the program, which is on its alternate screen. Cmd-Esc goes to normal \
-             state, and C-c C-r there changes where Esc goes"
-                .into(),
-        );
-    }
-}
-
 /// The terminal a command acts on: the buffer it was given, or the focused one.
 fn this(ctx: &Ctx, a: &Args) -> Result<BufferId> {
     let buf = a.buffer.or_else(|| ctx.focused_buffer());
@@ -296,11 +291,12 @@ impl Terminals {
         }
     }
 
-    /// Esc in normal state: one to the program, as `vterm-send-escape` sends it, and stay. None
-    /// to the shell `term` started while it's at its prompt, as Evil's Esc does nothing there,
-    /// nor in line mode, where it would wait for the prompt and make its first key Meta, and none
-    /// again until another key, so Esc pressed a few times sends one. A count sends that many, at
-    /// most 2, Claude Code's rewind; after a register Esc only ends the prefix.
+    /// Esc in normal state: one to the program, as `vterm-send-escape` sends it, and stay, with
+    /// its release for a program whose kitty flags ask for releases. None to the shell `term`
+    /// started while it's at its prompt, as Evil's Esc does nothing there, nor in line mode,
+    /// where it would wait for the prompt and make its first key Meta, and none again until
+    /// another key, so Esc pressed a few times sends one. A count sends that many, at most 2,
+    /// Claude Code's rewind; after a register Esc only ends the prefix.
     fn send_escape(&mut self, ctx: &mut Ctx, a: &Args) -> Result {
         let keys = self.keys.get();
         with_term(ctx, a, |s, _| {
@@ -312,7 +308,9 @@ impl Terminals {
             };
             if n > 0 {
                 s.esc_sent = Some(keys);
-                let bytes = s.term.key(&KeyEvent::press(Key::Esc));
+                let mut bytes = s.term.key(&KeyEvent::press(Key::Esc));
+                let release = KeyEvent::press(Key::Esc).kind(KeyKind::Release);
+                bytes.extend(s.term.key(&release)); // none unless the flags ask
                 s.write(&bytes.repeat(n));
             }
         })
@@ -343,24 +341,21 @@ fn insert(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
-/// evil-ghostel's `evil-ghostel-toggle-send-escape`: from auto to whichever way auto doesn't
-/// send Esc now, and from either back to auto. A count of 1, 2 or 3 picks auto, the program or
-/// normal state.
+/// Where insert state's Esc goes, as evil-ghostel's `evil-ghostel-toggle-send-escape` changes
+/// it: from normal state, the default, to the program, and from the program or auto back to
+/// normal state. A count of 1, 2 or 3 picks evil-ghostel's auto, the program or normal state.
 fn toggle_escape(ctx: &mut Ctx, a: &Args) -> Result {
     let said = with_term(ctx, a, |s, _| {
         let alt = s.term.alt_screen();
         s.escape = match (a.count, s.escape) {
             (Some(1), _) => Escape::Auto,
-            (Some(2), _) => Escape::Program,
-            (Some(3), _) => Escape::Normal,
+            (Some(2), _) | (None, Escape::Normal) => Escape::Program,
+            (Some(3), _) | (None, _) => Escape::Normal,
             (Some(n), _) => {
                 return Err(Error::Msg(format!(
                     "No Esc routing {n}: 1 is auto, 2 the program, 3 normal state"
                 )));
             }
-            (None, Escape::Auto) if alt => Escape::Normal,
-            (None, Escape::Auto) => Escape::Program,
-            (None, _) => Escape::Auto,
         };
         Ok(match (s.escape, alt) {
             (Escape::Auto, true) => "Esc in insert: auto (to the program now)",
@@ -372,6 +367,16 @@ fn toggle_escape(ctx: &mut Ctx, a: &Args) -> Result {
     ctx.messages.push(said.into());
     Ok(())
 }
+
+/// What normal state's `C-c` keys send, as your ghostel's map has them in every input mode: the
+/// bytes, which the line discipline makes signals of whatever the kitty flags are.
+#[rustfmt::skip]
+const SENDS: [(&str, &str, u8, &str); 4] = [
+    ("<C-c><C-c>", "term-send-C-c", 0x03, "Send C-c to the terminal's program, an interrupt, as ghostel-send-C-c does"),
+    ("<C-c><C-z>", "term-send-C-z", 0x1a, "Send C-z to the terminal's program, a suspend, as ghostel-send-C-z does"),
+    ("<C-c><C-\\>", "term-send-C-backslash", 0x1c, "Send C-\\ to the terminal's program, a quit, as ghostel-send-C-backslash does"),
+    ("<C-c><C-d>", "term-send-C-d", 0x04, "Send C-d to the terminal's program, an end of file, as ghostel-send-C-d does"),
+];
 
 impl Extension for Terminals {
     fn name(&self) -> &'static str {
@@ -410,11 +415,17 @@ impl Extension for Terminals {
         );
         reg.command(
             "term-toggle-send-escape",
-            "Change where a plain Esc in this terminal's insert state goes: from auto (to the \
-             program on its alternate screen, else to normal state) to the other way, and back. \
-             A count of 1, 2 or 3 picks auto, the program or normal state",
+            "Change where a plain Esc in this terminal's insert state goes: from normal state, \
+             the default, to the program, and back. A count of 1, 2 or 3 picks auto (the \
+             program on its alternate screen, else normal state), the program or normal state",
             toggle_escape,
         );
+        for (key, cmd, byte, doc) in SENDS {
+            reg.command(cmd, doc, move |ctx, a| {
+                with_term(ctx, a, |s, _| s.write(&[byte]))
+            });
+            reg.kind_keymap(KIND).bind(State::Normal, key, cmd);
+        }
         let k = reg.kind_keymap(KIND);
         k.bind(State::Normal, "<Esc>", "term-send-escape")
             .bind(State::Normal, "<C-c><C-r>", "term-toggle-send-escape")

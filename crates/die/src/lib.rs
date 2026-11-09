@@ -90,12 +90,8 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
     let register = core.register.take();
     core.register = Some(Box::new(move |reg| {
         // Cmd-Q, in every state, since the DIE layer belongs to DIE (scope D18). It asks first
-        // while a program runs in a terminal.
-        reg.command("quit", "Quit DIE.", |ctx, _| {
-            terminals::unless_busy(ctx, terminals::Ending::Quit, |ctx| {
-                die_vim::quit_app(ctx, false)
-            })
-        });
+        // while a program runs in a terminal, as die-vim's quits do (`built_in`).
+        reg.command("quit", "Quit DIE.", |ctx, _| die_vim::quit_app(ctx, false));
         terminals::register(reg);
         for state in [
             State::Normal,
@@ -157,9 +153,11 @@ pub fn start(config: Config) -> Result<Ctx, Vec<String>> {
     Ok(ctx)
 }
 
-/// The extensions every DIE has, in order: die-vim, then die-term where its engine is.
+/// The extensions every DIE has, in order: die-vim, then die-term where its engine is. Every
+/// quit asks first while a program runs in a terminal: Cmd-Q, `:q` in the last window and `:qa`.
 pub fn built_in() -> Vec<Box<dyn Extension>> {
-    let mut exts: Vec<Box<dyn Extension>> = vec![Box::new(Vim::default())];
+    let vim = Vim::default().asking_before_quit(terminals::before_quit);
+    let mut exts: Vec<Box<dyn Extension>> = vec![Box::new(vim)];
     exts.extend(terminals::extension());
     exts
 }

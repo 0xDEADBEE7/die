@@ -21,7 +21,10 @@ path = "crates/die-core"
 # 15,160 until the core half's review: a PTY program's locale, output's time a frame, the key that enters insert.
 # 15,235 until the terminal's review: a frozen window's text read, a prompt over insert, releases by physical key, `G`'s cursor and `3p`.
 # 15,280 until the Esc review: a PTY's line mode, IUTF8, no foreground group read without a session, and Ctrl-[ leaving passthrough.
-limit = 15295
+# 15,295 until a surface's area took a file's width and margins: its settings, `\z` on it, and its frame, pointer and copy state at the offset.
+# 15,385 until the alternate screen's Esc review: the wheel in copy state, a release where its press went, a switch of screens followed.
+# 15,400 until the margins review: through a resize, each window keeps its place in the lines of output a surface says it wrapped.
+limit = 15440
 
 [[crate]]
 name = "die-render"
@@ -54,7 +57,8 @@ path = "crates/die-vim"
 # 10,383 until the review fixes of `:!`: a filter whose output isn't UTF-8 leaves the text alone.
 # 10,387 until copy state: no insert session starts on a surface's snapshot.
 # 10,390 until the terminal: OSC 52 as a kill.
-limit = 10391
+# 10,391 until `:q`, `:qa` and `ZQ` asked as Cmd-Q does while a program runs in a terminal.
+limit = 10410
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 # Guard 7: about 4k of glue, plus about 1k for the helper process (D20). The engine side came
@@ -113,7 +117,8 @@ files = ["text.rs", "undo.rs", "text/", "undo/"]
 crate = "die-core"
 name = "layout"
 # 950 until copy state: no window's top below a snapshot's live view.
-limit = 960
+# 960 until `Settings::place`, the width rule a surface's area shares, and `toggle-max-width` on a surface.
+limit = 965
 files = ["layout.rs", "layout/"]
 
 [[module]]
@@ -137,14 +142,17 @@ name = "ext, dispatch, rt"
 # 1,575 until copy state: `Surface::text` and `scroll_to`, the snapshot in `Content`, the text kind's keys after a surface's.
 # 1,600 until the core half's review: the key that enters passthrough keeps its release, and output's time a frame.
 # 1,615 until the terminal's review: a repeat or release reaches a surface only after its press, by the physical key.
-limit = 1635
+# 1,635 until a surface buffer's own settings in `Content`.
+# 1,640 until the alternate screen's Esc review: a release goes where its press went, and `Surface::takes_wheel`.
+limit = 1650
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
 crate = "die-core"
 name = "workspace, windows, pointer"
-limit = 1365
+limit = 1395
 # 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs. 1,340 until U7, whose lists of places are about 20.
+# 1,365 until `Ctx::settings` and `change_settings` reached a surface buffer's width, and `open_window` told a narrower area.
 files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
 
 [[module]]
@@ -202,7 +210,7 @@ name = "clients"
 limit = 145
 files = ["clients.rs"]
 
-# New with the terminal: what a surface draws (styled cells over the whole area, its cursor and
+# New with the terminal: what a surface draws (styled cells over its area, its cursor and
 # status segment) and hears (pointer, paste, resize in pixels), and the PTYs die-term runs
 # programs on, with the trampoline that gives one its controlling terminal without `unsafe`.
 [[module]]
@@ -212,7 +220,10 @@ name = "surfaces and PTYs"
 # 1,285 until the core half's review: a frame blank and new after a panic, a press elsewhere's drag, and LANG.
 # 1,300 until the terminal's review: a frozen window read, the wheel's place kept, `surface_cursor`, `3p`.
 # 1,320 until the Esc review: a PTY's line mode, IUTF8, and its foreground group only with a session.
-limit = 1335
+# 1,335 until a surface's area: `surface_area`, a Resize when its width changes, the frame, cursor, pointer and copy state at its offset.
+# 1,380 until the alternate screen's Esc review: `surface_says`, the wheel `takes_wheel` takes, and `renumbered`.
+# 1,385 until the margins review: `SurfaceText::wrapped`, kept a line at a time, and each window's place in its line of output through a resize.
+limit = 1425
 files = ["surface.rs", "pty.rs", "surface/", "pty/"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
@@ -349,11 +360,12 @@ files = ["surface.rs"]
 # Opening terminals (`term`, `term-switch`, `open`), the exit, `busy`, and normal state's commands
 # and keys: Esc to the program, `i a I A`, `p P` and the Esc toggle. From 320 to 330 with the
 # review's fixes: `G` to the terminal's cursor, and `:term cmd`. To 360 with Esc in normal: not
-# to the shell at its prompt, once until another key, and a config's choice of shell.
+# to the shell at its prompt, once until another key, and a config's choice of shell. To 370
+# with ghostel's `C-c C-c`, `C-c C-z`, `C-c C-\` and `C-c C-d` in normal state.
 [[module]]
 crate = "die-term"
 name = "commands"
-limit = 360
+limit = 370
 files = ["commands.rs"]
 
 # Shell integration (scope §6): a zsh's `.zshenv` of DIE's, which reports the directory at each
