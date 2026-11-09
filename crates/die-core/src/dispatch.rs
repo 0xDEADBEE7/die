@@ -281,13 +281,14 @@ impl Ctx {
     }
 
     /// Passthrough is insert state on a surface (scope D18): the DIE layer's Esc leaves it for
-    /// normal state, and so does a plain Esc the surface doesn't take now. Each swallows its
-    /// repeats and release.
+    /// normal state, and so does a plain Esc the surface doesn't take now, Ctrl-[ too, which a
+    /// keymap reads as Esc. Each swallows its repeats and release.
     fn dispatch_passthrough(&mut self, win: WindowId, buf: BufferId, ev: KeyEvent) {
-        let plain = |ctx: &Ctx| ev.mods == Mods::default() && !ctx.surface_takes_esc(buf);
-        if ev.key == Key::Esc && ev.kind == KeyKind::Press && (ev.mods.super_ || plain(self)) {
+        let esc = ev.chord();
+        let plain = |ctx: &Ctx| esc.mods == Mods::default() && !ctx.surface_takes_esc(buf);
+        if esc.key == Key::Esc && ev.kind == KeyKind::Press && (ev.mods.super_ || plain(self)) {
             self.set_state_of(buf, State::Normal);
-            self.swallow.push(Key::Esc);
+            self.swallow.push(ev.key);
             return;
         }
         let named = !matches!(ev.key, Key::Modifier(_) | Key::Unidentified);
