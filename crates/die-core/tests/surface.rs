@@ -1117,3 +1117,115 @@ fn two_windows_on_it_each_get_their_own_area() {
     assert_eq!(scene.row(0)[bc].glyph, Glyph::Char('a'));
     assert_eq!(scene.row(0)[ac].glyph, Glyph::Char(' '));
 }
+
+/// A surface whose lines of output wrap at its width, as a terminal's do: its text is their
+/// rows, saying which run on into the next, and its last Resize reflows them.
+struct Flow {
+    lines: Vec<String>,
+    cols: usize,
+}
+
+impl Surface for Flow {
+    fn kind(&self) -> &'static str {
+        "grid"
+    }
+    fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
+    fn event(&mut self, ev: &Event, _: &mut Ctx) -> bool {
+        if let Event::Resize { cols, .. } = ev {
+            self.cols = *cols;
+        }
+        true
+    }
+    fn initial_state(&self) -> State {
+        State::Passthrough
+    }
+    fn text(&mut self, _: bool) -> Option<SurfaceText> {
+        let mut st = SurfaceText::new(String::new());
+        let mut row = 0;
+        for l in &self.lines {
+            let chars: Vec<char> = l.chars().collect();
+            let rows: Vec<&[char]> = chars.chunks(self.cols).collect();
+            for (i, r) in rows.iter().enumerate() {
+                if i + 1 < rows.len() {
+                    st.wrapped.push((row, self.cols));
+                }
+                st.text.extend(r.iter());
+                st.text.push('\n');
+                row += 1;
+            }
+        }
+        st.live_top = row;
+        Some(st)
+    }
+}
+
+#[test]
+fn a_reflow_keeps_each_window_in_its_line_of_output() {
+    let config = Config {
+        text_defaults: centered(),
+        ..Config::default()
+    };
+    let mut h = Harness::with_config(vec![Box::new(Toy(Log::default()))], config).unwrap();
+    h.open_text("t", "text\n").unwrap();
+    let lines = (0..10).map(|i| format!("L{i}-{}", "abcdefghij".repeat(10)));
+    let flow = Flow {
+        lines: lines.collect(),
+        cols: 120,
+    };
+    let buf = h.create_surface("grid", flow);
+    let a = h.show(buf, ShowIn::Current).unwrap().unwrap();
+    h.send(Input::Resize {
+        cols: 120,
+        rows: 26,
+    });
+    let b = h.split_window(a, Side::Below).unwrap();
+    h.focus(a);
+    h.type_keys("<Esc>").unwrap();
+    assert_eq!(h.state(), State::Normal);
+    // At 80 columns each 103-character line is two rows: L3's second is line 7.
+    let at = |h: &mut Harness, line: usize, col: usize| h.text(buf).unwrap().line_start(line) + col;
+    let place = |h: &mut Harness, w: WindowId| {
+        let t = h.text(buf).unwrap();
+        let (sel, top) = (t.selection(w).unwrap(), t.scroll(w).unwrap().0);
+        let at = |p: usize| (t.line_of(p), t.display_col(p));
+        (at(sel.anchor), at(sel.head), t.line_of(top))
+    };
+    let set = |h: &mut Harness, w: WindowId, anchor: usize, head: usize, top: usize| {
+        let sel = Selection {
+            anchor,
+            head,
+            shape: Shape::Char,
+            goal: None,
+        };
+        let t = h.text_mut(buf).unwrap();
+        t.set_selection(w, sel);
+        let top = t.line_start(top);
+        t.set_scroll(w, top, 0);
+    };
+    let (l3, l1) = (at(&mut h, 7, 10), at(&mut h, 2, 5));
+    set(&mut h, a, l3, l3, 4);
+    set(&mut h, b, l1, l1, 2);
+    assert_eq!(place(&mut h, a), ((7, 10), (7, 10), 4));
+    h.type_keys("\\z").unwrap();
+    h.run_until_idle();
+    assert_eq!(h.text(buf).unwrap().line_count(), 11, "a row a line now");
+    assert_eq!(
+        place(&mut h, a),
+        ((3, 90), (3, 90), 2),
+        "L3 at its column, under L2"
+    );
+    assert_eq!(place(&mut h, b), ((1, 5), (1, 5), 1), "L1");
+    // And back, with a selection from L1's start.
+    let (from, to) = (at(&mut h, 1, 0), at(&mut h, 3, 90));
+    set(&mut h, a, from, to, 1);
+    h.set_state_of(buf, State::Visual);
+    h.run("toggle-max-width", &Args::default()).unwrap();
+    h.run_until_idle();
+    assert_eq!(h.text(buf).unwrap().line_count(), 21);
+    assert_eq!(
+        place(&mut h, a),
+        ((2, 0), (7, 10), 2),
+        "both ends kept, the top too"
+    );
+    assert_eq!(place(&mut h, b), ((2, 5), (2, 5), 2));
+}

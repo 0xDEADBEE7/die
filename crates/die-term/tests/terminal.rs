@@ -704,6 +704,50 @@ fn leaving_the_alternate_screen_takes_normal_state_to_the_terminals_cursor() {
     assert_eq!(misdrawn(&mut ctx, buf), Vec::<String>::new());
 }
 
+/// `\z` in normal state reflows the terminal's lines, and the cursor stays on its text, as in a
+/// file: on a line's start through a widening, and on its column through a narrowing.
+fn toggle_max_width_in_normal_state_keeps_the_cursor_on_its_text() {
+    let (mut ctx, buf) = shell();
+    let w = ctx.focused().unwrap();
+    ctx.resize(w, 120, 24).unwrap();
+    ctx.change_settings(buf, |s| (s.max_width, s.center) = (Some(80), false))
+        .unwrap();
+    let digits = "0123456789".repeat(8);
+    ctx.type_keys(&format!(
+        "clear; for i in 0 1 2 3 4 5 6 7 8 9; do echo L$i-{digits}-E$i; done; echo DONE-$((1+1))<CR>"
+    ));
+    wait_until(&mut ctx, "a prompt after DONE-2", |ctx| {
+        let s = screen(ctx);
+        let after = s.split("\nDONE-2\n").nth(1).unwrap_or_default();
+        after.lines().next().is_some_and(|l| l.ends_with('$'))
+    });
+    let toggle = |ctx: &mut Ctx, cols: usize| {
+        ctx.run("toggle-max-width", &Args::default()).unwrap();
+        wait_until(ctx, "resized", |ctx| {
+            with(ctx, buf, |s| s.term().size().0) == cols as u16
+        });
+        settle(ctx, Duration::from_millis(100));
+    };
+    ctx.type_keys("<Esc>gg/L3-<CR>");
+    let l3 = format!("L3-{}", &digits[..77]);
+    cursor_row_shows(&mut ctx, buf, &l3);
+    toggle(&mut ctx, 120);
+    let whole = format!("L3-{digits}-E3");
+    cursor_row_shows(&mut ctx, buf, &whole);
+    assert_eq!(misdrawn(&mut ctx, buf), Vec::<String>::new());
+    ctx.type_keys("yy");
+    assert_eq!(ctx.register('"').unwrap().text, format!("{whole}\n"));
+    ctx.type_keys("$");
+    toggle(&mut ctx, 80);
+    cursor_row_shows(&mut ctx, buf, "789-E3");
+    let t = ctx.text(buf).unwrap();
+    let at = t.cursor(w).unwrap();
+    assert_eq!(t.display_col(at), 5, "the column it had in its line");
+    let above = t.rope().line(t.line_of(at) - 1).to_string();
+    assert_eq!(above.trim_end(), l3, "the row before is its line's first");
+    assert_eq!(misdrawn(&mut ctx, buf), Vec::<String>::new());
+}
+
 fn a_resize_reaches_stty_size_and_exit_closes_the_buffer() {
     let (mut ctx, buf) = shell();
     ctx.type_keys("stty size<CR>");
@@ -1475,6 +1519,10 @@ fn main() {
         (
             "leaving_the_alternate_screen_takes_normal_state_to_the_terminals_cursor",
             leaving_the_alternate_screen_takes_normal_state_to_the_terminals_cursor,
+        ),
+        (
+            "toggle_max_width_in_normal_state_keeps_the_cursor_on_its_text",
+            toggle_max_width_in_normal_state_keeps_the_cursor_on_its_text,
         ),
         (
             "a_resize_reaches_stty_size_and_exit_closes_the_buffer",
