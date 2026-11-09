@@ -26,8 +26,7 @@ mod on_macos {
         let mut ctx = start(config).unwrap();
         let home = std::env::temp_dir().join(format!("die-terminals-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
-        let mut spec = Spec::new(NAME, "/bin/sh");
-        spec.login = true;
+        let mut spec = Spec::shell(std::path::Path::new("/bin/sh"));
         spec.env = vec![
             ("HOME".into(), home.into()),
             ("BASH_SILENCE_DEPRECATION_WARNING".into(), "1".into()),

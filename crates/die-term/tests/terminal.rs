@@ -15,7 +15,7 @@ use die_core::*;
 use die_term::{Escape, NAME, Spec, TermSurface, Terminals, busy, open};
 use die_vim::Vim;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -35,8 +35,7 @@ fn home() -> PathBuf {
 
 /// `/bin/sh` as a login shell with a HOME of its own, as `term` starts your shell.
 fn sh_spec() -> Spec {
-    let mut spec = Spec::new(NAME, "/bin/sh");
-    spec.login = true;
+    let mut spec = Spec::shell(Path::new("/bin/sh"));
     spec.env = vec![
         ("HOME".into(), home().into()),
         ("ENV".into(), "".into()),
@@ -222,6 +221,106 @@ fn esc_leaves_insert_on_the_main_screen_and_goes_to_the_program_in_normal() {
     }
     ctx.type_keys("<C-c>");
     wait_until(&mut ctx, "back at the prompt", |ctx| busy(ctx).is_empty());
+}
+
+/// `program` as the terminal's shell, interactive and not login, as ghostel and vterm start
+/// bash, with a HOME and a ZDOTDIR of its own whose startup files set a prompt, at that prompt.
+fn shell_at_its_prompt(program: &str) -> (Ctx, BufferId) {
+    let home = home();
+    std::fs::write(home.join(".bashrc"), "PS1='bash-here$ '\n").unwrap();
+    std::fs::write(home.join(".zshrc"), "PS1='zsh-here$ '\n").unwrap();
+    let mut spec = Spec {
+        login: false,
+        ..Spec::shell(Path::new(program))
+    };
+    spec.env = vec![
+        ("HOME".into(), home.clone().into()),
+        ("ZDOTDIR".into(), home.into()),
+        ("BASH_SILENCE_DEPRECATION_WARNING".into(), "1".into()),
+    ];
+    let mut ctx = editor();
+    let buf = open(&mut ctx, spec, ShowIn::Current).unwrap();
+    wait_until(&mut ctx, "at its prompt", |ctx| {
+        screen(ctx).lines().any(|l| l.ends_with("-here$"))
+    });
+    (ctx, buf)
+}
+
+/// What you hit: Esc pressed a few times at bash's prompt sent it Esc Esc, which bash 3.2 reads
+/// as `complete` ("Display all 1773 possibilities?"), and a lone Esc that made the next key Meta,
+/// as `M-l`. At the shell's own prompt normal state's Esc now sends nothing, in bash and zsh.
+fn esc_in_normal_never_reaches_a_shell_at_its_prompt() {
+    for program in ["/bin/bash", "/bin/zsh"] {
+        let (mut ctx, _) = shell_at_its_prompt(program);
+        assert!(busy(&mut ctx).is_empty(), "{program} at its prompt");
+        ctx.type_keys("<Esc><Esc><Esc><Esc>");
+        assert_eq!(ctx.state(), State::Normal);
+        // Longer than zsh's KEYTIMEOUT, so a lone Esc would have been read as one.
+        settle(&mut ctx, Duration::from_millis(500));
+        ctx.type_keys("i");
+        ctx.type_keys("lx=ok; echo got-$lx<CR>");
+        wait_for(&mut ctx, "got-ok");
+        let s = screen(&mut ctx);
+        assert!(
+            !s.contains("Display all") && !s.contains("not found"),
+            "{program}:\n{s}"
+        );
+        // A count is explicit, so it goes even at the prompt: bash completes on each Esc Esc,
+        // and lists on the second.
+        if program == "/bin/bash" {
+            ctx.type_keys("<Esc>4<Esc>");
+            wait_for(&mut ctx, "Display all");
+            ctx.type_keys("in");
+        }
+    }
+}
+
+/// A raw reader in the foreground prints the bytes it reads as hex, up to an `x`.
+const RAW: &str = r#"stty -icanon -echo
+echo "raw-$1"
+v=
+while c=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' '); [ "$c" != 78 ]; do v="$v $c"; done
+stty sane
+echo "read-$1:$v."
+"#;
+
+/// Normal state's Esc sends one a run: Escs with no other key between them send one, so pressing
+/// it a few times to be sure of normal state doesn't interrupt Claude Code then rewind it. The
+/// Esc that leaves insert sends nothing, a motion re-arms it, a held Esc's repeats send nothing
+/// more, and `2<Esc>` sends two, as Claude Code's rewind wants.
+fn normal_states_esc_sends_one_a_run_and_a_count_that_many() {
+    let (mut ctx, _) = shell();
+    let reader = home().join("raw");
+    std::fs::write(&reader, RAW).unwrap();
+    // The keys, then how many repeats of a held Esc, and the bytes the program reads.
+    let cases = [
+        ("four", "<Esc><Esc><Esc><Esc>", 0, " 1b"),
+        ("two", "<Esc><Esc>", 0, " 1b"),
+        ("held", "<Esc><Esc>", 3, " 1b"),
+        ("count", "<Esc>2<Esc><Esc>", 0, " 1b 1b"),
+        ("motion", "<Esc><Esc>k<Esc><Esc>", 0, " 1b 1b"),
+    ];
+    for (name, keys, repeats, want) in cases {
+        ctx.type_keys(&format!("sh '{}' {name}<CR>", reader.display()));
+        wait_for(&mut ctx, &format!("raw-{name}"));
+        wait_busy(&mut ctx);
+        ctx.type_keys(keys);
+        for _ in 0..repeats {
+            ctx.input(KeyEvent::press(Key::Esc).kind(KeyKind::Repeat));
+        }
+        ctx.run_until_idle();
+        assert_eq!(ctx.state(), State::Normal, "{name}");
+        ctx.type_keys("ix");
+        wait_for(&mut ctx, &format!("read-{name}:"));
+        let s = screen(&mut ctx);
+        let got = s.lines().find(|l| l.starts_with(&format!("read-{name}:")));
+        assert_eq!(
+            got,
+            Some(format!("read-{name}:{want}.").as_str()),
+            "{name}:\n{s}"
+        );
+        wait_until(&mut ctx, "back at the prompt", |ctx| busy(ctx).is_empty());
+    }
 }
 
 fn esc_reaches_vim_and_less_on_the_alternate_screen() {
@@ -971,6 +1070,14 @@ fn main() {
         (
             "esc_leaves_insert_on_the_main_screen_and_goes_to_the_program_in_normal",
             esc_leaves_insert_on_the_main_screen_and_goes_to_the_program_in_normal,
+        ),
+        (
+            "esc_in_normal_never_reaches_a_shell_at_its_prompt",
+            esc_in_normal_never_reaches_a_shell_at_its_prompt,
+        ),
+        (
+            "normal_states_esc_sends_one_a_run_and_a_count_that_many",
+            normal_states_esc_sends_one_a_run_and_a_count_that_many,
         ),
         (
             "esc_reaches_vim_and_less_on_the_alternate_screen",

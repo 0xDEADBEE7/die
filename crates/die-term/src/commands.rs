@@ -1,45 +1,55 @@
 //! die-term as an extension: opening terminals, and the commands and keys a terminal's normal
 //! state has (scope §6, D18).
 //!
-//! `term` opens your `$SHELL` as a login shell in the buffer's directory, in this window, in
-//! insert state, and `:term cmd` runs `cmd` through it; more are `*terminal*<2>` and so on.
-//! `term-switch` goes to `*terminal*` and opens it if it isn't there, as ghostel does. In normal
-//! state, Esc goes to the program, as your `vterm-send-escape` binding has it, `i`, `a`, `I` and
-//! `A` go back to insert at the live screen, `p` and `P` paste, `G` goes to the terminal's
-//! cursor, and `C-c C-r` changes where insert state's Esc goes, as evil-ghostel's
-//! `evil-ghostel-toggle-send-escape` does. The program's exit closes the buffer.
+//! `term` opens your shell in the buffer's directory, in this window, in insert state: `$SHELL`
+//! as a login shell, or the one a config sets, as `ghostel-shell` does. `:term cmd` runs `cmd`
+//! through it; more are `*terminal*<2>` and so on. `term-switch` goes to `*terminal*` and opens
+//! it if it isn't there, as ghostel does. In normal state, Esc goes to the program, as your
+//! `vterm-send-escape` binding has it, but once a run of Escs and never to the shell at its
+//! prompt; `i`, `a`, `I` and `A` go back to insert at the live screen, `p` and `P` paste, `G`
+//! goes to the terminal's cursor, and `C-c C-r` changes where insert state's Esc goes, as
+//! evil-ghostel's `evil-ghostel-toggle-send-escape` does. The program's exit closes the buffer.
 use crate::Term;
 use crate::surface::{CopyFn, Escape, KIND, TermSurface};
 use die_core::{
     Args, BufferId, Ctx, Error, Extension, Key, KeyEvent, PtyCommand, Register, Registry, Result,
     Rgb, ShowIn, State,
 };
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::rc::Rc;
 
 /// The first terminal's name. The next is `*terminal*<2>`.
 pub const NAME: &str = "*terminal*";
 
 /// die-term, registered by the `die` facade.
 pub struct Terminals {
-    /// The shell `term` starts, as a login shell. None is `$SHELL`, or `/bin/sh` without one.
+    /// The shell `term` starts. None is `$SHELL`, or `/bin/sh` without one.
     shell: Option<PathBuf>,
+    /// Whether it starts as a login shell, as `$SHELL` does.
+    login: bool,
     /// What a program's OSC 52 write does with its text. The default puts it on the system
     /// clipboard; the facade makes it a kill as well, as Emacs's `kill-new` does.
     on_copy: CopyFn,
     /// Insert state's Esc went to a program on its alternate screen, and said so once.
     hinted: bool,
+    /// Keys but a plain Esc seen outside insert state, so normal state's Esc can tell another
+    /// key came since it last sent one.
+    keys: Rc<Cell<u64>>,
 }
 
 impl Default for Terminals {
     fn default() -> Terminals {
         Terminals {
             shell: None,
+            login: true,
             on_copy: to_clipboard,
             hinted: false,
+            keys: Rc::default(),
         }
     }
 }
@@ -49,10 +59,16 @@ impl Terminals {
     pub fn copying_with(self, f: CopyFn) -> Terminals {
         Terminals { on_copy: f, ..self }
     }
-    /// With `term` starting `shell` rather than `$SHELL`.
-    pub fn with_shell(self, shell: impl Into<PathBuf>) -> Terminals {
-        let shell = Some(shell.into());
-        Terminals { shell, ..self }
+    /// With `term` starting `shell` as a login shell, rather than `$SHELL`.
+    pub fn with_shell(mut self, shell: impl Into<PathBuf>) -> Terminals {
+        self.set_shell(shell, true);
+        self
+    }
+    /// `term` starts `shell` rather than `$SHELL`, as a login shell or, as vterm starts bash,
+    /// interactive and not login, so it reads `~/.bashrc`. A config sets it from its startup
+    /// hook, through `Ctx::with_ext`, as Emacs's `(setq ghostel-shell ...)`.
+    pub fn set_shell(&mut self, shell: impl Into<PathBuf>, login: bool) {
+        (self.shell, self.login) = (Some(shell.into()), login);
     }
 }
 
@@ -70,7 +86,10 @@ pub struct Spec {
     pub program: OsString,
     /// Its arguments.
     pub args: Vec<OsString>,
-    /// Start it as a login shell (`argv[0]` is `-zsh`), and count it busy only while a job runs.
+    /// It's the terminal's shell: busy only while a job has the terminal, and normal state's Esc
+    /// doesn't reach it at its prompt.
+    pub shell: bool,
+    /// Start it as a login shell: `argv[0]` is `-zsh`.
     pub login: bool,
     /// Where it starts. None is the new buffer's directory: the focused buffer's.
     pub dir: Option<PathBuf>,
@@ -85,15 +104,17 @@ impl Spec {
             name: name.into(),
             program: program.into(),
             args: vec![],
+            shell: false,
             login: false,
             dir: None,
             env: vec![],
         }
     }
 
-    /// `shell` as a login shell, in `*terminal*`.
+    /// `shell` as the terminal's shell and a login shell, in `*terminal*`.
     pub fn shell(shell: &Path) -> Spec {
         Spec {
+            shell: true,
             login: true,
             ..Spec::new(NAME, shell)
         }
@@ -157,12 +178,12 @@ fn open_with(ctx: &mut Ctx, mut spec: Spec, how: ShowIn, copy: CopyFn) -> Result
             return Err(e);
         }
     };
-    let login = spec.login;
+    let shell = spec.shell;
     ctx.with_surface(buf, move |s: &mut TermSurface, _| {
         s.buf = buf;
         s.name = name;
         s.dir = dir;
-        s.shell = login;
+        s.shell = shell;
         s.pty = Some(pty);
         s.cell = cell;
     })?;
@@ -241,13 +262,17 @@ fn with_term<R>(
 }
 
 impl Terminals {
-    /// What `term` runs: the shell as a login shell.
+    /// What `term` runs: the shell, as a login shell unless the config said otherwise.
     fn shell_spec(&self) -> Spec {
         let shell = self.shell.clone().or_else(|| {
             let sh = std::env::var_os("SHELL").filter(|s| !s.is_empty());
             sh.map(PathBuf::from)
         });
-        Spec::shell(&shell.unwrap_or_else(|| PathBuf::from("/bin/sh")))
+        let spec = Spec::shell(&shell.unwrap_or_else(|| PathBuf::from("/bin/sh")));
+        Spec {
+            login: self.login,
+            ..spec
+        }
     }
 
     /// `:term`, or with a command, `:term top`, that command through the shell, as Vim's
@@ -256,7 +281,7 @@ impl Terminals {
         let mut spec = self.shell_spec();
         if let Some(cmd) = a.text.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
             spec.args = vec!["-c".into(), cmd.into()];
-            spec.login = false;
+            (spec.shell, spec.login) = (false, false);
         }
         open_with(ctx, spec, ShowIn::Current, self.on_copy).map(drop)
     }
@@ -269,14 +294,26 @@ impl Terminals {
             None => open_with(ctx, self.shell_spec(), ShowIn::Current, self.on_copy).map(drop),
         }
     }
-}
 
-/// Esc in normal state: to the program, and stay.
-fn send_escape(ctx: &mut Ctx, a: &Args) -> Result {
-    with_term(ctx, a, |s, _| {
-        let bytes = s.term.key(&KeyEvent::press(Key::Esc));
-        s.write(&bytes);
-    })
+    /// Esc in normal state: one to the program, as `vterm-send-escape` sends it, and stay. None
+    /// to the shell `term` started while it's at its prompt, as Evil's Esc does nothing there,
+    /// and none again until another key, so Esc pressed a few times sends one. A count sends that
+    /// many, at the prompt too.
+    fn send_escape(&mut self, ctx: &mut Ctx, a: &Args) -> Result {
+        let keys = self.keys.get();
+        with_term(ctx, a, |s, _| {
+            let n = match a.count {
+                Some(n) => n,
+                None if s.busy() && s.esc_sent != Some(keys) => 1,
+                None => 0,
+            };
+            if n > 0 {
+                s.esc_sent = Some(keys);
+                let bytes = s.term.key(&KeyEvent::press(Key::Esc));
+                s.write(&bytes.repeat(n));
+            }
+        })
+    }
 }
 
 /// `G` in normal state: with no count, die-vim's `G` and then on to the terminal's cursor, as
@@ -339,9 +376,10 @@ impl Extension for Terminals {
     }
 
     fn register(&mut self, reg: &mut Registry) {
-        let doc = "Open a terminal: your $SHELL as a login shell, in this buffer's directory, in \
-                   this window, in insert state, or with a command, as `:term top`, that command \
-                   through it. Another is *terminal*<2>, and so on";
+        let doc = "Open a terminal: your shell ($SHELL as a login shell, unless your config sets \
+                   one), in this buffer's directory, in this window, in insert state, or with a \
+                   command, as `:term top`, that command through it. Another is *terminal*<2>, \
+                   and so on";
         reg.ext_command("term", doc, Terminals::term);
         reg.ext_command("terminal", doc, Terminals::term);
         reg.ext_command(
@@ -349,10 +387,11 @@ impl Extension for Terminals {
             "Go to *terminal*, and open it if it isn't there, as ghostel does",
             Terminals::switch,
         );
-        reg.command(
+        reg.ext_command(
             "term-send-escape",
-            "Esc in a terminal's normal state: send Esc to the program, and stay in normal state",
-            send_escape,
+            "Esc in a terminal's normal state: send Esc to the program, and stay in normal state. \
+             Not to the shell at its prompt, and once until another key; a count sends that many",
+            Terminals::send_escape,
         );
         reg.command(
             "term-goto-cursor",
@@ -384,12 +423,20 @@ impl Extension for Terminals {
         }
     }
 
-    /// The login shell's PATH, which a terminal's first program waits for (`die_core::process`).
-    fn init(&mut self, _ctx: &mut Ctx) -> Result {
+    /// The login shell's PATH, which a terminal's first program waits for (`die_core::process`),
+    /// and the count of keys normal state's Esc goes by.
+    fn init(&mut self, ctx: &mut Ctx) -> Result {
         let warm = std::thread::Builder::new().name("die-term-path".into());
         let _ = warm.spawn(|| {
             die_core::process::path();
         });
+        let keys = self.keys.clone();
+        ctx.observe_keys(move |ev, _| {
+            if ev.key != Key::Esc || ev.mods != die_core::Mods::default() {
+                keys.set(keys.get() + 1);
+            }
+        })
+        .detach();
         Ok(())
     }
 }

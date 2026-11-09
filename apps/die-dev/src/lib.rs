@@ -9,7 +9,7 @@ use die_test_cap as _;
 pub mod theme;
 
 use die::app::Launch;
-use die::core::{FileInfo, LineNumbers, Registry, Settings, State, Wrap};
+use die::core::{Ctx, FileInfo, LineNumbers, Registry, Settings, State, Wrap};
 use die::render::check;
 use die::render::driver::Config as Font;
 use std::ffi::OsString;
@@ -92,6 +92,7 @@ pub fn config(files: Vec<PathBuf>) -> die::Config {
         theme: Some(theme::mono_dark()),
         text_defaults: text_defaults(),
         file_settings: Some(Box::new(file_settings)),
+        startup: Some(Box::new(startup)),
         ..die::core::Config::default()
     };
     die::Config {
@@ -122,6 +123,17 @@ fn bindings(reg: &mut Registry) {
     // `termin-open` and `ghostel`: a new terminal, and the first one.
     keys.bind(State::Normal, "<leader>e", "term");
     keys.bind(State::Normal, "<leader>g", "term-switch");
+}
+
+/// `init.el`'s `ghostel-shell` and `vterm-shell`: `term` starts `/bin/bash`, interactive and not
+/// a login shell, as vterm (and so termin, your `\e`) starts it, so it reads your `~/.bashrc`.
+/// Only macOS has terminals (D10).
+fn startup(ctx: &mut Ctx) -> die::core::Result {
+    #[cfg(target_os = "macos")]
+    ctx.with_ext(|t: &mut die::term::Terminals, _| t.set_shell("/bin/bash", false))?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = ctx;
+    Ok(())
 }
 
 /// `global-visual-line-mode` and `visual-fill-column`, centered at 80.
