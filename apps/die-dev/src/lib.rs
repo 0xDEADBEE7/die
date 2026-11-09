@@ -97,11 +97,18 @@ pub fn config(files: Vec<PathBuf>) -> die::Config {
     };
     die::Config {
         core,
+        extensions: extensions(),
         status_text: Some(Box::new(status_text(&started, home.as_deref()))),
         font: Font::term(16.0, 1.0),
         files,
-        ..die::Config::default()
     }
+}
+
+/// The packages your `init.el` loads, as DIE has them: emacs-orchid-client's port, with its
+/// defaults, as you set none of its options. It finds `orchid` on your login shell's PATH, which
+/// has `~/.local/bin`, as `init.el` adds it to `exec-path`.
+pub fn extensions() -> Vec<Box<dyn die::core::Extension>> {
+    vec![Box::new(die_orchid_client::Orchid::default())]
 }
 
 /// `init.el`'s leader, and the bindings whose commands exist so far.
@@ -123,6 +130,8 @@ fn bindings(reg: &mut Registry) {
     // `termin-open` and `ghostel`: a new terminal, and the first one.
     keys.bind(State::Normal, "<leader>e", "term");
     keys.bind(State::Normal, "<leader>g", "term-switch");
+    // emacs-orchid-client's session browser, in normal state, as `init.el` binds it.
+    keys.bind(State::Normal, "<leader>o", "orchid");
 }
 
 /// `init.el`'s `ghostel-shell` and `vterm-shell`: `term` starts `/bin/bash`, interactive and not

@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 die.workspace = true
+# Your emacs-orchid-client's port, as init.el loads emacs-orchid-client (scope D14).
+die-orchid-client.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true

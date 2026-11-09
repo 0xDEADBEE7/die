@@ -1,0 +1,108 @@
+#!/bin/sh
+# A stand-in for orchid 0.2.2, for tests/end_to_end.rs: the commands the client runs, done as
+# orchid does them (its src/main.rs, src/cli_send.rs, src/store.rs) and in the shapes its
+# src/model.rs defines, under the root it's given and nowhere else. Its answers go to stdout, its
+# chatter to stderr, and its errors to stderr as orchid's, with exit 1. A send's turn is a worker
+# in the background that echoes the message, as orchid's `echo` connection does. `stop` hangs, for
+# the client's timeout. It records the PATH and the ORCHID_ variables it was given, and a new
+# session's parent is the ORCHID_SESSION_ID it inherited, as orchid's is.
+set -u
+
+fail() {
+  printf '{"error":"command_failed","message":"%s"}\n' "$1" >&2
+  exit 1
+}
+
+[ "${1-}" = "--config" ] || fail "--config must come first"
+root=$2
+shift 2
+mkdir -p "$root/sessions"
+printf '%s\n' "$PATH" > "$root/fake-path"
+printf '%s %s %s\n' "${ORCHID_SESSION_ID-unset}" "${ORCHID_CONFIG-unset}" "${ORCHID_HOOK_DEPTH-unset}" \
+  > "$root/fake-env"
+echo "fake-orchid: $*" >&2
+
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# A session's state, in files of its own beside its metadata.json: label, dir, created, parent.
+get() { cat "$root/sessions/$1/fake-$2" 2>/dev/null; }
+put() { printf '%s' "$3" > "$root/sessions/$1/fake-$2"; }
+
+quoted() { if [ -n "$1" ]; then printf '"%s"' "$1"; else printf null; fi; }
+
+# metadata.json for session $1 with status $2 and worker $3, written by a rename as orchid does.
+meta() {
+  dir="$root/sessions/$1"
+  pid=${3:-null}
+  printf '{"id":"%s","label":%s,"working_dir":"%s","created_at":"%s","updated_at":"%s","parent":%s,"agent_name":"echo","agent":{"prompt":"default","connection":"echo"},"status":"%s","pid":%s,"token_estimate":12,"token_usage":{"marginal_input":0,"cumulative_input":2000,"cumulative_output":10,"cumulative_cached_input":0,"requests":1,"method":"local_tokenizer"},"termination_reason":null}\n' \
+    "$1" "$(quoted "$(get "$1" label)")" "$(get "$1" dir)" "$(get "$1" created)" "$(now)" \
+    "$(quoted "$(get "$1" parent)")" "$2" "$pid" > "$dir/metadata.json.tmp"
+  mv "$dir/metadata.json.tmp" "$dir/metadata.json"
+}
+
+# One event, appended to session $1's events.jsonl: $2 is its id, $3 its fields.
+event() {
+  printf '{%s,"event_id":"%s","timestamp":"%s","connection":"echo","token_usage":{"marginal_input":1000,"cumulative_input":2000,"cumulative_output":10,"cumulative_cached_input":0,"requests":1,"method":"local_tokenizer"}}\n' \
+    "$3" "$2" "$(now)" >> "$root/sessions/$1/events.jsonl"
+}
+
+exists() { [ -f "$root/sessions/$1/metadata.json" ] || fail "no session $1"; }
+
+case "${1-}" in
+  --version) echo "orchid 0.2.2 (fake)" ;;
+  agent) echo '{"agents":[{"name":"echo","valid":true},{"name":"broken","valid":false}]}' ;;
+  create)
+    shift
+    agent=default dir=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --agent) agent=$2; shift 2 ;;
+        --working-dir) dir=$(cd "$2" && pwd -P) || fail "no directory $2"; shift 2 ;;
+        --label) shift 2 ;;
+        *) fail "create: what is $1" ;;
+      esac
+    done
+    [ "$agent" = echo ] || fail "no agent named $agent"
+    n=$(($(cat "$root/fake-count" 2>/dev/null || echo 0) + 1))
+    echo "$n" > "$root/fake-count"
+    id=$(printf 'e2e00000-0000-0000-0000-%012d' "$n")
+    mkdir -p "$root/sessions/$id"
+    put "$id" dir "$dir"
+    put "$id" created "$(now)"
+    put "$id" parent "${ORCHID_SESSION_ID-}"
+    meta "$id" idle
+    printf '{"id":"%s","status":"idle","agent":"%s"}\n' "$id" "$agent" ;;
+  set)
+    id=$2
+    exists "$id"
+    [ "${3-}" = --label ] && put "$id" label "$4"
+    meta "$id" idle
+    echo '{"updated":true}' ;;
+  send)
+    [ "${2-}" = --id ] && [ "${4-}" = -- ] || fail "send --id ID -- MESSAGE"
+    id=$3 message=$5
+    exists "$id"
+    [ "$message" = "fail please" ] && fail "the echo connection refused it"
+    n=$(($(cat "$root/fake-count" 2>/dev/null || echo 0) + 1))
+    echo "$n" > "$root/fake-count"
+    event "$id" "u$n" "\"type\":\"message\",\"role\":\"user\",\"content\":\"$message\""
+    # The worker: away from the client's pipes, as orchid's is.
+    (
+      sleep 0.2
+      event "$id" "a$n" "\"type\":\"message\",\"role\":\"assistant\",\"content\":\"echo: $message\""
+      meta "$id" idle
+    ) < /dev/null > /dev/null 2>&1 &
+    meta "$id" running "$!"
+    printf '{"id":"%s","status":"running","pid":%s}\n' "$id" "$!" ;;
+  stop)
+    # A stop that hangs, with a child of its own that would hold the pipes.
+    sleep 30 &
+    echo "$!" > "$root/fake-sleeper"
+    wait ;;
+  delete)
+    exists "$2"
+    mkdir -p "$root/archive"
+    mv "$root/sessions/$2" "$root/archive/$2"
+    printf '{"id":"%s","archived":true}\n' "$2" ;;
+  *) fail "unknown command ${1-}" ;;
+esac
