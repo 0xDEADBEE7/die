@@ -58,7 +58,9 @@ path = "crates/die-vim"
 # 10,387 until copy state: no insert session starts on a surface's snapshot.
 # 10,390 until the terminal: OSC 52 as a kill.
 # 10,391 until `:q`, `:qa` and `ZQ` asked as Cmd-Q does while a program runs in a terminal.
-limit = 10410
+# 10,410 until orchid's chat: an insert session follows an extension's edits made while it's open,
+# as a chat's events going in above, so its places stay on what you typed and Esc can't slice stale ones.
+limit = 10450
 note = "guard 7, since 2026-10-19; 5,000 until V2, 5,600 until V5 and V6 together came to 5,610, 5,700 until the review fixes of V2, 5,720 until Cmd-Q shared the rule for quitting, 5,721 until the review fixes of V5, 5,780 until K15's `:noh` and `C-u 3`"
 
 # Guard 7: about 4k of glue, plus about 1k for the helper process (D20). The engine side came

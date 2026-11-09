@@ -2,7 +2,7 @@
 
 use die_test_cap as _;
 
-use die_core::{Harness, Input, parse_keys};
+use die_core::{Harness, Input, Origin, State, parse_keys};
 use die_vim::Vim;
 use std::time::Duration;
 
@@ -136,4 +136,39 @@ fn a_huge_register_stays_out_of_the_session() {
     let session = h.session_json();
     assert!(session.contains("short text"));
     assert!(session.len() < 1 << 20, "{} bytes", session.len());
+}
+
+#[test]
+fn an_extensions_edit_above_what_youre_typing_keeps_the_insert_session_on_it() {
+    // A chat's events go in silently above its input while you type there.
+    let (mut h, b) = editor("──\n");
+    let above = |h: &mut Harness, s: &str| {
+        let t = h.text_mut(b).unwrap();
+        t.tx(Origin::Extension)
+            .silent()
+            .insert(0, s)
+            .commit()
+            .unwrap();
+    };
+    assert!(keys(&mut h, "oabc").is_empty());
+    above(&mut h, &"─".repeat(5));
+    // Its places had gone stale, and Esc sliced the text inside a `─`: a panic, still in insert.
+    assert!(keys(&mut h, "<Esc>").is_empty());
+    assert_eq!(h.state_of(b), State::Normal);
+    assert_eq!(h.register('.').map(|r| r.text.as_str()), Some("abc"));
+    assert!(keys(&mut h, "Ade").is_empty());
+    above(&mut h, "x\n");
+    assert!(keys(&mut h, "f<Esc>").is_empty());
+    assert_eq!(text(&h, b), "x\n───────\nabcdef\n");
+    assert_eq!(
+        h.register('.').map(|r| r.text.as_str()),
+        Some("def"),
+        "typed on either side"
+    );
+    assert!(keys(&mut h, "u").is_empty());
+    assert_eq!(
+        text(&h, b),
+        "x\n───────\nabc\n",
+        "undo takes back only the typing"
+    );
 }

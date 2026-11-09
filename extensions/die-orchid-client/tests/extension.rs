@@ -189,24 +189,27 @@ fn the_registry_tells_its_watchers_of_each_status_change() {
 fn open_session_finds_one_by_label_too() {
     let root = TempRoot::new("open");
     let fake = FakeRunner::new();
-    let (mut h, _) = harness(&root, &fake);
+    let (mut h, notes) = harness(&root, &fake);
     let mut m = Meta::new("0f1e2d3c-aaaa-bbbb-cccc-123456789abc");
     m.label = Some("my-label".into());
     m.write(root.path());
     run(&mut h, "orchid-open-session", Some("my-label"));
-    assert!(
-        last(&h).contains("0f1e2d3c-aaaa-bbbb-cccc-123456789abc"),
+    let chat = h.focused_buffer().unwrap();
+    assert_eq!(
+        h.buffer_name(chat),
+        Some("*orchid-chat-default-die-89abc*"),
         "{:?}",
         h.messages
     );
-    // Asked for, by id.
+    // Asked for, by id: the chat open on it.
+    h.show(notes, die_core::ShowIn::Current).unwrap();
     h.run("orchid-open-session", &Args::default()).unwrap();
     let screen = h.screen();
     assert!(screen.contains("Session ID or label:"), "{screen}");
     h.type_keys("0f1e2d3c-aaaa-bbbb-cccc-123456789abc<CR>")
         .unwrap();
     h.run_until_idle();
-    assert!(last(&h).contains("0f1e2d3c-aaaa-bbbb-cccc-123456789abc"));
+    assert_eq!(h.focused_buffer(), Some(chat));
     let before = h.messages.len();
     run(&mut h, "orchid-open-session", Some("nope"));
     let said = h.take_errors();
@@ -237,11 +240,17 @@ fn new_session_offers_the_valid_agents_and_starts_here() {
     h.type_keys("dev<CR>").unwrap();
     h.run_until_idle();
     let dir = root.path().display().to_string();
-    assert!(
-        last(&h).contains("developer") && last(&h).contains(&dir),
-        "{:?}",
-        h.messages
+    let create = fake.argvs().pop().unwrap();
+    assert_eq!(
+        create[2..],
+        ["create", "--agent", "developer", "--working-dir", &dir]
     );
+    let pending = h.buffer_name(h.focused_buffer().unwrap()).unwrap();
+    assert!(
+        pending.starts_with("*orchid-chat-developer-") && pending.ends_with("-new*"),
+        "{pending}"
+    );
+    h.take_errors();
     fake.reply("agent", Reply::ok(r#"{"agents":[]}"#));
     run(&mut h, "orchid-new-session", None);
     assert_eq!(h.prompt_text(), None);
