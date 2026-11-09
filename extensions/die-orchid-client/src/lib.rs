@@ -14,7 +14,7 @@
 //! - [`poll`]: the one timer every orchid buffer shares;
 //! - [`log`]: `*Orchid Log*`;
 //! - [`browser`] and [`chat`]: the two kinds of buffer, the browser drawn by [`seek`], your list
-//!   browser;
+//!   browser, and a chat's collapsible [`sections`] and its processing [`indicator`];
 //! - [`fixtures`]: sessions for tests, by hand.
 //!
 //! Nothing here reads or runs anything at registration or init. The config root is worked out
@@ -29,9 +29,11 @@ pub mod browser;
 pub mod chat;
 pub mod cli;
 pub mod fixtures;
+pub mod indicator;
 pub mod log;
 pub mod parse;
 pub mod poll;
+pub mod sections;
 pub mod seek;
 pub mod store;
 
