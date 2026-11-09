@@ -4,7 +4,9 @@
 
 use die_test_cap as _;
 
-use die::core::{Ctx, LineNumbers, Rgb, Settings, WindowPlacement, Wrap};
+use die::core::{
+    Ctx, Frame, LineNumbers, RenderInfo, Rgb, Settings, ShowIn, Surface, WindowPlacement, Wrap,
+};
 use die::render::font::{Draw, RangeRule};
 use die_dev::{Args, config, directory, parse_args, status_text};
 use std::path::{Path, PathBuf};
@@ -132,6 +134,29 @@ fn text_wraps_at_80_centered_everywhere_as_visual_fill_column_does() {
         assert_eq!(s.max_width, Some(80), "{file}");
         assert!(s.center, "{file}");
     }
+}
+
+#[test]
+fn a_terminal_is_80_columns_centered_as_a_file_is_and_leader_z_widens_it() {
+    struct Term;
+    impl Surface for Term {
+        fn kind(&self) -> &'static str {
+            "term"
+        }
+        fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
+    }
+    let mut ctx = die::start(config(vec![])).unwrap();
+    ctx.set_frame_size(120, 26);
+    let buf = ctx.create_surface("*terminal*", Term);
+    let w = ctx.show(buf, ShowIn::Current).unwrap().unwrap();
+    let s = ctx.settings(buf).unwrap();
+    assert_eq!((s.max_width, s.center), (Some(80), true));
+    let area = |ctx: &Ctx| ctx.surface_area(w).map(|g| (g.text_x, g.text_w));
+    assert_eq!(area(&ctx), Some((20, 80)));
+    ctx.type_keys("\\z");
+    assert_eq!(area(&ctx), Some((0, 120)), "{:?}", ctx.messages);
+    ctx.type_keys("\\z");
+    assert_eq!(area(&ctx), Some((20, 80)));
 }
 
 #[test]

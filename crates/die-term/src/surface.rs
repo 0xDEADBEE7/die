@@ -13,9 +13,10 @@
 //! while [`TermSurface::busy`] and out of line mode, and once until another key.
 //!
 //! **Size.** One terminal has one size, whichever windows show it (C10): the smallest columns
-//! and the smallest rows among them, as Emacs's `window-adjust-process-window-size-smallest`
-//! gives a process, so the program never draws past a window. A larger window shows the grid at
-//! its top left. It's worked out again on each resize and focus change.
+//! and the smallest rows among their areas, as Emacs's `window-adjust-process-window-size-smallest`
+//! gives a process, so the program never draws past one. An area is what the buffer's maximum
+//! width and centering leave of a window, as for a file's text (`Ctx::surface_area`). A larger
+//! area shows the grid at its top left. It's worked out again on each resize and focus change.
 use crate::{CopyText, Event, MouseTracking, PasteRefused, Pointer, PointerAction, PointerButton};
 use crate::{Term, TermCursor};
 use die_core::{
@@ -232,12 +233,13 @@ impl TermSurface {
         }
     }
 
-    /// Fit the terminal to the windows showing it: the smallest columns and rows among them, and
-    /// `fallback`'s size if none in the split tree does.
+    /// Fit the terminal to the windows showing it: the smallest columns and rows among their
+    /// areas, and `fallback`'s size if none in the split tree does.
     fn fit(&mut self, ctx: &mut Ctx, fallback: Option<(usize, usize)>, cell: CellPixels) {
         let showing = ctx.window_list().into_iter();
         let showing = showing.filter(|w| ctx.window_buffer(*w) == Some(self.buf));
-        let sizes = showing.filter_map(|w| ctx.window_size(w));
+        let areas = showing.filter_map(|w| ctx.surface_area(w));
+        let sizes = areas.map(|g| (g.text_w, g.rows));
         let sizes: Vec<(usize, usize)> = sizes.filter(|&(c, r)| c > 0 && r > 0).collect();
         let size = match (
             sizes.iter().map(|s| s.0).min(),

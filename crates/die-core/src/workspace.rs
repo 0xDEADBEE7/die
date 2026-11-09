@@ -132,6 +132,8 @@ impl Ctx {
             owner: self.cur_ext(),
             obj: Some(Box::new(s)),
             copy: None,
+            settings: self.text_defaults.clone(),
+            max_width_off: None,
         };
         self.add_buffer(name, content, state)
     }
@@ -219,6 +221,40 @@ impl Ctx {
     pub fn text(&self, buf: BufferId) -> Result<&TextBuf> {
         let b = self.buffers.get(buf).ok_or(Checkout::Gone)?;
         b.content.text().ok_or(Error::NotText)
+    }
+    /// A buffer's settings: a text buffer's, or a surface buffer's own, which start as a text
+    /// buffer's defaults and whose `max_width` and `center` place its area (contract §10). Copy
+    /// state's snapshot has settings of its own, which `text` gives.
+    pub fn settings(&self, buf: BufferId) -> Result<&Settings> {
+        match &self.buffers.get(buf).ok_or(Checkout::Gone)?.content {
+            Content::Text(t) => Ok(&t.settings),
+            Content::Custom { settings, .. } => Ok(settings),
+        }
+    }
+    /// Change a buffer's [settings](Ctx::settings). When a surface buffer's area changes, each
+    /// window showing it hears a `Resize` (C3), and copy state follows.
+    pub fn change_settings(&mut self, buf: BufferId, f: impl FnOnce(&mut Settings)) -> Result {
+        let s = self.widths_mut(buf)?.0;
+        let was = (s.max_width, s.center);
+        f(s);
+        if (s.max_width, s.center) != was {
+            self.surface_area_changed(buf);
+        }
+        Ok(())
+    }
+    /// A buffer's settings and the width `toggle-max-width` turned off.
+    pub(crate) fn widths_mut(
+        &mut self,
+        buf: BufferId,
+    ) -> Result<(&mut Settings, &mut Option<usize>)> {
+        match &mut self.buffers.get_mut(buf).ok_or(Checkout::Gone)?.content {
+            Content::Text(t) => Ok((&mut t.settings, &mut t.max_width_off)),
+            Content::Custom {
+                settings,
+                max_width_off,
+                ..
+            } => Ok((settings, max_width_off)),
+        }
     }
     /// Core-owned text is borrowed by id, never checked out (C2).
     pub fn text_mut(&mut self, buf: BufferId) -> Result<&mut TextBuf> {

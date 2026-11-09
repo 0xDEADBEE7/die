@@ -146,6 +146,15 @@ fn open_with(ctx: &mut Ctx, mut spec: Spec, how: ShowIn, copy: CopyFn) -> Result
     let short = short.to_string_lossy().into_owned();
     let s = TermSurface::new(term, &spec.name, &short, Path::new("/"), copy);
     let buf = ctx.create_surface(&spec.name, s);
+    // The area the window gives it, as the buffer's maximum width and centering leave it.
+    let area = ctx.settings(buf).map(|s| s.place(cols, rows, 0).text_w);
+    let cols = area.map_or(cols, |w| w.min(cols));
+    let size = (to_u16(cols), to_u16(rows));
+    ctx.with_surface(buf, |s: &mut TermSurface, _| {
+        if s.term.size() != size {
+            s.term.resize(size.0, size.1, (cell.width, cell.height));
+        }
+    })?;
     if let Some(dir) = &spec.dir {
         ctx.set_directory(buf, dir.clone());
     }

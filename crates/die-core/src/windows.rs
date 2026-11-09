@@ -212,7 +212,7 @@ impl Ctx {
     /// So it takes the focus only without a frame size, from a host that places windows itself:
     /// once the host has set one, it draws with [`Ctx::scene`], and the focus stays in the tree
     /// unless [`Ctx::focus`] moves it. Windows join the tree through [`Ctx::split_window`] and
-    /// [`Ctx::show`].
+    /// [`Ctx::show`]. A surface hears a `Resize` only if its area is narrower than this size.
     pub fn open_window(&mut self, buf: BufferId, cols: usize, rows: usize) -> Result<WindowId> {
         self.buffers.get(buf).ok_or(Checkout::Gone)?;
         let used = self.next_tick();
@@ -239,6 +239,11 @@ impl Ctx {
         }
         if first || !self.tree.fixed {
             self.take_focus(w);
+        }
+        // The caller gave the window's size, which a surface's area can be narrower than.
+        let narrower = self.surface_area(w).is_some_and(|g| g.text_w < cols);
+        if narrower && self.window_size(w) == Some((cols, rows)) {
+            self.surface_resized(w, buf);
         }
         Ok(w)
     }
