@@ -172,8 +172,9 @@ pub trait Surface: Any {
         false
     }
     /// Whether a plain Esc in passthrough goes to `event()` now, rather than leaving for normal
-    /// state: a terminal says yes on the alternate screen, or when its toggle sends Esc to the
-    /// program (scope D18). The DIE layer's Esc leaves whatever this says.
+    /// state: a terminal says yes when its toggle sends Esc to the program, always or, under
+    /// evil-ghostel's `auto`, on the alternate screen (scope D18). The DIE layer's Esc leaves
+    /// whatever this says.
     fn takes_esc(&self) -> bool {
         false
     }

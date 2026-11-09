@@ -9,9 +9,10 @@
 //! asks of DIE collects as [`Event`]s ([`Term::take_events`]). [`Term::frame`] turns the screen,
 //! or a scrolled-back viewport, into rows of die-core cells. Keys, the pointer, pastes and focus
 //! become bytes for the PTY ([`Term::key`], [`Term::mouse`], [`Term::paste`], [`Term::focus`]).
-//! [`Term::modes`] says what the surface routes by: the alternate screen (scope D18's Esc), mouse
-//! tracking and bracketed paste. [`Term::text`] is copy state's text (D19, scope §5.5), which
-//! [`CopyText`] gives core's snapshot whole, then as it follows new output.
+//! [`Term::modes`] says what the surface routes by: the alternate screen (scope D18's Esc under
+//! its toggle's auto), mouse tracking and bracketed paste. [`Term::text`] is copy state's text
+//! (D19, scope §5.5), which [`CopyText`] gives core's snapshot whole, then as it follows new
+//! output.
 //!
 //! The engine's defaults that DIE overrides are the record's (docs/records/die-term-engine.md
 //! §2): 10,000 lines of scrollback capped at 64 MB, mode 2027, Option as Alt, set colors, and
@@ -141,8 +142,8 @@ pub enum MouseFormat {
 /// The modes a terminal's surface routes input by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Modes {
-    /// The program is on the alternate screen (vim, less, htop): Esc in insert goes to it
-    /// (scope D18), and the wheel may send arrow keys.
+    /// The program is on the alternate screen (vim, less, htop): Esc in insert goes to it under
+    /// the Esc toggle's auto (scope D18), and the wheel may send arrow keys.
     pub alt_screen: bool,
     /// How the program tracks the mouse.
     pub mouse: MouseTracking,
