@@ -13,7 +13,8 @@
 //! - [`parse`]: events as the chat shows them, with tokens and local times;
 //! - [`poll`]: the one timer every orchid buffer shares;
 //! - [`log`]: `*Orchid Log*`;
-//! - [`browser`] and [`chat`]: the two kinds of buffer;
+//! - [`browser`] and [`chat`]: the two kinds of buffer, the browser drawn by [`seek`], your list
+//!   browser;
 //! - [`fixtures`]: sessions for tests, by hand.
 //!
 //! Nothing here reads or runs anything at registration or init. The config root is worked out
@@ -31,6 +32,7 @@ pub mod fixtures;
 pub mod log;
 pub mod parse;
 pub mod poll;
+pub mod seek;
 pub mod store;
 
 use cli::{Cli, Cmd, FakeRunner, ProcessRunner, Runner};
@@ -133,6 +135,7 @@ pub const FACES: &[(&str, &str, Option<bool>)] = &[
     (face::DIFF_CONTEXT, "shadow", None),
     (face::BROWSER_ACTIVE, "success", Some(true)),
     (face::BROWSER_IDLE, "shadow", None),
+    (seek::face::SEARCH, "highlight", None),
 ];
 
 // ------------------------------------------------------------------ the registry's news

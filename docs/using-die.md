@@ -253,7 +253,19 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 `\o`, or `M-x orchid`, is your emacs-orchid-client, ported as die-orchid-client: an extension DIE builds beside itself, outside the product (scope D14), which your config registers. It drives orchid 0.2.2, your agent CLI, as Emacs does: `orchid` on the PATH your login shell sets (so `~/.local/bin/orchid` from DIE.app too), on orchid's own root, `$ORCHID_CONFIG` or else `~/.config/orchid`, passed to every command as `--config`. Its commands never inherit `ORCHID_SESSION_ID`, `ORCHID_CONFIG` or `ORCHID_HOOK_DEPTH`, so a DIE started from inside an orchid tool doesn't make its sessions children of that one. Emacs and DIE can be open on the same sessions at once: control goes through orchid, and its files are read without a lock, as orchid's own readers read them.
 
-The browser (`*orchid-sessions*`) and the chats (`*orchid-chat-<agent>-<wsdir>-<id5>*`) come next, and this section grows with them. Until then `\o` and opening a chat say they aren't built yet. What's there:
+The chats (`*orchid-chat-<agent>-<wsdir>-<id5>*`) come next, and this section grows with them. Until then opening or starting a chat says it isn't built yet.
+
+**The session browser**, `\o` or `M-x orchid`, shows `*orchid-sessions*` in this window, never a split, laid out as seek laid it out in Emacs: the title centred in `─`, the search line, the columns `LABEL`, `STATUS` and `UPDATED`, and a row per session, the one changed last first. It's 78 columns wide, or the window's width if that's less, and its lines are cut rather than wrapped. LABEL is the session's label, or else its agent and workspace (`default-die`), or else its id. STATUS is `ACTIVE` while a chat is open on it and `IDLE` otherwise, with `•RUN` while it runs, wherever the turn was started, and `DEL` or `KILL` when it's marked. UPDATED says how long ago it last changed. The selected row is highlighted, and no cursor is drawn. A window shows as many rows as fit under the six lines above them, 20 at most, and `No results` when there are none.
+
+It reads each session's `metadata.json` rather than running `orchid list`, so it opens at once, with times and order Emacs's never had. A status that changes redraws it, and while a window shows it, it reads the sessions again every 2 s, so a turn you started from Emacs shows too. When the list changes under it, the selection stays on its session. It's read-only, and `:rebuild` brings it back with its query, selection and marks. In normal state, as your Evil has its keys:
+
+- `j` and `k` move down and up, `p` up too (in Emacs, Evil's `p` pasted there), and `J` and `K` a page.
+- `RET` opens the selected session's chat in this window, or goes to the one open on it, and kills the browser. `n` asks `Agent: ` among the valid agents and starts a chat on a new session in the browser's directory, the one of the buffer you opened it from; the browser stays. `q` kills it.
+- `r` and `g` read the sessions again.
+- `D` marks the session to delete (orchid archives it) and `S` to stop its turn, which only a running one has; each moves down. `u` takes the mark off. `x` asks `Execute N marked operation(s)? (yes or no)`, which wants `yes` or `no` typed out, as `yes-or-no-p` does, so a bare `RET` asks again. Then it deletes and stops each in turn, in the order you marked them, keeps the marks that failed (`*Orchid Log*` says why), reads the sessions again and says what it did: `Deleted 1 session, Killed 1 process, 1 failed`.
+- `/` and `a` search: what you type filters the rows, its characters in that order, in any case, in the label, the status (`run` finds the running ones) or the time it changed. Every printable key goes into the query, `j` and `q` too. `DEL` takes one back, `RET` and `Esc` stop with the query kept, and `C-g` clears it. `d` clears it from normal state too, and goes back to the first row.
+
+What else there is:
 
 - `M-x orchid-check-cli` says whether orchid is on the PATH and its version, and warns below 0.2, which this client is written for.
 - `M-x orchid-list-sessions` lists each session as `  label (id)`, oldest first, in `*orchid-list-sessions*`, below, with the focus staying, as Emacs's echo area showed them.
@@ -264,7 +276,7 @@ The browser (`*orchid-sessions*`) and the chats (`*orchid-chat-<agent>-<wsdir>-<
 
 ## What isn't there yet
 
-- **orchid:** the session browser and the chats, which come next ([orchid](#orchid)).
+- **orchid:** the chats, which come next ([orchid](#orchid)). In the session browser, insert and visual state have die-vim's keys, where your Emacs's browser keymap worked in insert state too.
 - **Terminal:** surviving `:rebuild` and `:restart` (D20's holder and helper come next); editing the shell's line from normal state, as evil-ghostel's `d`, `c`, `x` and `u` do; Cmd-C, and selecting with the pointer in insert state; images (kitty graphics); shell integration's prompt navigation, and bash's directory tracking (zsh's is there); links (OSC 8); the bell; and terminals on Linux.
 - **Running commands:** `M-&` and a command ending in `&` (Emacs's async shell commands), `C-u M-!` (output at the cursor), completion in the command prompts, stopping a `:!` that went on in the background before DIE quits, asking before quitting stops a command, and in `*compilation*` `go` (show an error without going there), `[[` `]]` (by file) and `q`. `:w !cmd`. Backspaces in output aren't moved over, as comint does.
 - **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`, `<Insert>`.
