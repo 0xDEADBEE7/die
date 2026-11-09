@@ -538,14 +538,10 @@ fn ret_opens_the_chat_here_and_kills_the_browser() {
     assert_eq!(h.find_buffer(BUFFER), None);
     assert!(h.take_errors().is_empty());
     let opened = h
-        .with_ext(|o: &mut Orchid, ctx| o.chat_buffer(ctx, "s-a").is_some())
+        .with_ext(|o: &mut Orchid, ctx| o.chat_buffer(ctx, "s-a"))
         .unwrap();
-    // The chat package's chat, or until it lands, its stub's word for it.
-    assert!(
-        opened || h.messages.iter().any(|m| m.contains("s-a")),
-        "{:?}",
-        h.messages
-    );
+    assert!(opened.is_some(), "{:?}", h.messages);
+    assert_eq!(h.focused_buffer(), opened, "in this window");
     assert_eq!(h.window_list().len(), 1);
 }
 
@@ -577,19 +573,16 @@ fn n_asks_for_a_valid_agent_and_starts_in_the_browsers_directory() {
     assert!(h.screen().contains("Agent:"));
     keys(&mut h, "def<CR>");
     h.run_until_idle();
-    // The chat package's create, or until it lands, its stub's word for it.
     let shown = dir.display().to_string();
-    let created = fake.argvs().iter().any(|a| {
-        a.contains(&"create".to_string())
-            && a.contains(&shown)
-            && a.contains(&"default".to_string())
-    });
-    let said = h
-        .messages
-        .iter()
-        .any(|m| m.contains("default") && m.contains(&shown));
-    assert!(created || said, "{:?} {:?}", fake.argvs(), h.messages);
-    assert_eq!(fake.argvs()[0][2], "agent");
+    let argvs: Vec<Vec<String>> = fake.argvs().into_iter().map(|a| a[2..].to_vec()).collect();
+    assert_eq!(
+        argvs,
+        [
+            vec!["agent"],
+            vec!["create", "--agent", "default", "--working-dir", &shown],
+        ]
+    );
+    assert_eq!(fake.calls()[1].cwd.as_deref(), Some(dir.as_path()));
 }
 
 #[test]

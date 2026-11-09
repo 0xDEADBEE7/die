@@ -147,7 +147,9 @@ const RESTING: Duration = Duration::from_secs(5);
 
 /// The one timer behind the file poll and the session's looks, so an editor nobody is using
 /// stays asleep: a tick every [`RESTING`] once nothing has happened for [`REST_AFTER`], and
-/// anything that happens wakes it. One timer, so their wakes coincide.
+/// anything you do wakes it. A timer's or a job's call isn't something you did, so an extension's
+/// poll doesn't keep it awake: what one changes is seen at the next tick. One timer, so their
+/// wakes coincide.
 #[derive(Default)]
 pub(crate) struct Tick {
     timer: Option<Sub>,
@@ -155,10 +157,8 @@ pub(crate) struct Tick {
     due: Duration,
     /// When the file poll next runs.
     files_due: Duration,
-    /// When something last happened.
+    /// When you last did something.
     active: Duration,
-    /// The call that just ran was a tick that found nothing new.
-    found_nothing: bool,
 }
 
 /// The shortest period a repeating timer can have, so one with none can't hold the loop.
@@ -339,7 +339,6 @@ impl Ctx {
         if std::mem::take(&mut self.files.noticed) {
             return;
         }
-        self.pace.found_nothing = true;
         let quiet = now.saturating_sub(self.pace.active);
         if quiet >= REST_AFTER && !self.session_behind() {
             self.arm_tick(RESTING);
@@ -553,9 +552,6 @@ impl Ctx {
                     self.report_key(r);
                 } else {
                     self.report(r);
-                }
-                if !std::mem::take(&mut self.pace.found_nothing) {
-                    self.touch();
                 }
                 // Code that runs between units (the host, a harness) gets a number of its own.
                 self.cmd_seq += 1;

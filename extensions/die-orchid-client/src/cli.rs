@@ -315,6 +315,8 @@ impl Runner for ProcessRunner {
         if let Some(dir) = &call.cwd {
             cmd.current_dir(dir);
         }
+        // A group of its own, which a timeout stops whole: what a hung orchid started goes too.
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -332,9 +334,9 @@ fn failed(why: String) -> Reply {
     }
 }
 
-/// `child`'s output and exit, killing it at `timeout`. Each stream is read on a thread of its own,
-/// so neither fills its pipe while the other is read; one a grandchild holds open is given up on
-/// at the timeout.
+/// `child`'s output and exit, killing it and its process group at `timeout`. Each stream is read
+/// on a thread of its own, so neither fills its pipe while the other is read; one held open by a
+/// process that left the group is given up on at the timeout.
 fn wait(mut child: std::process::Child, timeout: Duration) -> Reply {
     let start = Instant::now();
     let out = read_all(child.stdout.take());
@@ -347,6 +349,7 @@ fn wait(mut child: std::process::Child, timeout: Duration) -> Reply {
                 break;
             }
             Ok(None) if start.elapsed() >= timeout => {
+                kill_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 let limit = timeout.as_secs_f64();
@@ -368,6 +371,23 @@ fn wait(mut child: std::process::Child, timeout: Duration) -> Reply {
     reply.stdout = out.recv_timeout(left).unwrap_or_default();
     reply.stderr = err.recv_timeout(left).unwrap_or_default();
     reply
+}
+
+/// Stop the process group `leader` leads, with `kill`, as std can't signal a group.
+fn kill_group(leader: u32) {
+    let Some(kill) = ["/bin/kill", "/usr/bin/kill"]
+        .into_iter()
+        .find(|k| Path::new(k).exists())
+    else {
+        return;
+    };
+    let group = format!("-{leader}");
+    let _ = Command::new(kill)
+        .args(["-KILL", "--", &group])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// All of a stream, read on a thread, as text.

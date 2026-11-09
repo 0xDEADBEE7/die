@@ -9,7 +9,8 @@
 //! does. A clean buffer reads its file again.
 //!
 //! **Writing.** About 1 s after the last change, or about 5 s after the first change not yet
-//! written if changes keep coming, and on restart and quit. The main thread takes a
+//! written if changes keep coming, and on restart and quit. A change a timer or a job makes after
+//! 30 s of nothing from you waits for the next look, within 5 s. The main thread takes a
 //! snapshot, whose ropes share their text, and a thread of its own encodes and writes it: to a
 //! temporary file, flushed, renamed over the last one, which is kept as `session.prev.json`.
 //! A crash at any point leaves one or the other, and a load falls back on the previous copy.
