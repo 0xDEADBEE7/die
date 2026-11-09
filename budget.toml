@@ -20,7 +20,8 @@ path = "crates/die-core"
 # 14,790 until copy state: a surface's text as a snapshot die-vim runs over, followed and drawn over its cells (about 370).
 # 15,160 until the core half's review: a PTY program's locale, output's time a frame, the key that enters insert.
 # 15,235 until the terminal's review: a frozen window's text read, a prompt over insert, releases by physical key, `G`'s cursor and `3p`.
-limit = 15280
+# 15,280 until the Esc review: a PTY's line mode, IUTF8, no foreground group read without a session, and Ctrl-[ leaving passthrough.
+limit = 15295
 
 [[crate]]
 name = "die-render"
@@ -210,7 +211,8 @@ name = "surfaces and PTYs"
 # 975 until copy state: the snapshot, its updates as a window follows, and the cursor, selection and matches over the cells.
 # 1,285 until the core half's review: a frame blank and new after a panic, a press elsewhere's drag, and LANG.
 # 1,300 until the terminal's review: a frozen window read, the wheel's place kept, `surface_cursor`, `3p`.
-limit = 1320
+# 1,320 until the Esc review: a PTY's line mode, IUTF8, and its foreground group only with a session.
+limit = 1335
 files = ["surface.rs", "pty.rs", "surface/", "pty/"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
@@ -356,8 +358,10 @@ files = ["commands.rs"]
 
 # Shell integration (scope §6): a zsh's `.zshenv` of DIE's, which reports the directory at each
 # prompt (OSC 7). New with the terminal review's fixes. To 75 with bash 3.2's rc for the same.
+# To 115 with the Esc review's: control characters escaped, a quiet hook in a nested bash, and the
+# directory made private and each file new.
 [[module]]
 crate = "die-term"
 name = "shell integration"
-limit = 75
+limit = 115
 files = ["shell.rs"]

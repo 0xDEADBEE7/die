@@ -32,7 +32,7 @@ use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
-use rustix::termios::{LocalModes, Winsize};
+use rustix::termios::{InputModes, LocalModes, OptionalActions, Winsize};
 use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, PipeReader, PipeWriter, Read, Write};
@@ -300,17 +300,30 @@ impl Pty {
         lock(&self.shared.proc).pid.map(|p| p.as_raw_pid() as u32)
     }
     /// The terminal's foreground process group: the program's own pid while it's at a prompt,
-    /// and a job's while one runs, so a kill can be confirmed.
+    /// and a job's while one runs, so a kill can be confirmed. None while the terminal has no
+    /// session: before the program has made it its terminal, and once it has ended.
     pub fn foreground_group(&self) -> Option<u32> {
         let master = lock(&self.shared.master).clone()?;
+        // macOS reads the group of a terminal with no session as 0, which rustix would make a
+        // pid of, so the session first. Only an exit between the two can still give the 0.
+        rustix::termios::tcgetsid(&*master).ok()?;
         let group = rustix::termios::tcgetpgrp(&*master).ok()?;
         Some(group.as_raw_pid() as u32)
     }
     /// Whether the terminal echoes what's typed: false at a password prompt.
     pub fn echoes(&self) -> Option<bool> {
-        let master = lock(&self.shared.master).clone()?;
-        let modes = rustix::termios::tcgetattr(&*master).ok()?;
+        let modes = self.modes()?;
         Some(modes.local_modes.contains(LocalModes::ECHO))
+    }
+    /// Whether the terminal hands input on a line at a time (ICANON), as a shell leaves it for
+    /// a job that doesn't read keys, so what's typed waits for the line's end.
+    pub fn line_mode(&self) -> Option<bool> {
+        let modes = self.modes()?;
+        Some(modes.local_modes.contains(LocalModes::ICANON))
+    }
+    fn modes(&self) -> Option<rustix::termios::Termios> {
+        let master = lock(&self.shared.master).clone()?;
+        rustix::termios::tcgetattr(&*master).ok()
     }
     /// Hang the terminal up, as closing a terminal window does, and kill what's left of the
     /// program [`HANGUP_WAIT`] later. Its callbacks don't run after this.
@@ -439,6 +452,10 @@ fn open(size: PtySize) -> io::Result<(OwnedFd, OwnedFd)> {
     let slave = rustix::fs::open(name.as_c_str(), flags, Mode::empty())?;
     // Only once the slave is open (S3).
     rustix::termios::tcsetwinsize(&master, size.winsize())?;
+    // A line's erase takes a whole UTF-8 character, as vterm's `stty iutf8` has it.
+    let mut modes = rustix::termios::tcgetattr(&slave)?;
+    modes.input_modes |= InputModes::IUTF8;
+    rustix::termios::tcsetattr(&slave, OptionalActions::Now, &modes)?;
     rustix::fs::fcntl_setfl(&master, OFlags::NONBLOCK)?;
     Ok((master, slave))
 }

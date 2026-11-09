@@ -9,7 +9,8 @@
 //!
 //! Normal state is copy state: core reads the engine's text through [`CopyText`] as the buffer
 //! leaves insert, and again as output arrives, and die-vim's grammar runs over it. Its Esc goes
-//! to the program only while [`TermSurface::busy`], and once until another key.
+//! to the program only while [`TermSurface::busy`] and out of line mode, and once until another
+//! key.
 //!
 //! **Size.** One terminal has one size, whichever windows show it (C10): the smallest columns
 //! and the smallest rows among them, as Emacs's `window-adjust-process-window-size-smallest`
@@ -178,12 +179,21 @@ impl TermSurface {
 
     /// Whether a program other than the shell has the terminal, as a quit should ask about.
     pub fn busy(&self) -> bool {
-        let Some(pty) = &self.pty else { return false };
-        match (pty.pid(), pty.foreground_group()) {
-            (Some(pid), Some(group)) => !self.shell || pid != group,
-            (Some(_), None) => !self.shell,
-            _ => false,
+        let Some(pid) = self.pty.as_ref().and_then(Pty::pid) else {
+            return false;
+        };
+        match self.pty.as_ref().and_then(Pty::foreground_group) {
+            Some(group) => !self.shell || pid != group,
+            None => !self.shell,
         }
+    }
+
+    /// Whether an Esc sent now is a key to a program: one other than the shell has the terminal
+    /// and reads keys as they come. In line mode, as during a job that reads none, it would only
+    /// be a byte at the start of the next line, which the prompt then reads as Meta.
+    pub(crate) fn reads_keys(&self) -> bool {
+        let line_mode = self.pty.as_ref().and_then(Pty::line_mode);
+        line_mode == Some(false) && self.busy()
     }
 
     /// Back to insert at the live screen, from `i`, `a`, `I` or `A`.
@@ -264,8 +274,9 @@ impl TermSurface {
         if ev.kind != KeyKind::Release && !matches!(ev.key, Key::Modifier(_)) {
             self.term.scroll_to_bottom();
         }
-        let plain = ev.mods == die_core::Mods::default();
-        if ev.key == Key::Esc && ev.kind == KeyKind::Press && plain && self.escape == Escape::Auto {
+        let esc = ev.chord(); // Ctrl-[ too
+        let plain_esc = esc.key == Key::Esc && esc.mods == die_core::Mods::default();
+        if plain_esc && ev.kind == KeyKind::Press && self.escape == Escape::Auto {
             crate::commands::hint_once(ctx);
         }
         self.write(&bytes);
