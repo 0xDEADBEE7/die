@@ -230,6 +230,9 @@ fn it_leads_a_session_on_its_own_controlling_terminal() {
     t.pty.write(b"ps -o stat= -o tty= -p $$\n");
     let found = ctx.run_until(WAIT, |_| text(&t).contains("Ss"));
     assert!(found, "a session leader in the foreground: {:?}", text(&t));
+    // `ps` has printed but may not have exited yet, and the shell takes the terminal back
+    // only then.
+    ctx.run_until(WAIT, |_| t.pty.foreground_group() == Some(pid));
     assert_eq!(
         t.pty.foreground_group(),
         Some(pid),

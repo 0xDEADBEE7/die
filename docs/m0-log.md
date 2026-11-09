@@ -754,6 +754,10 @@ These stand with the entry below's list, which no one has worked through.
 891. Budget: die-core from 15,400 to 15,440 (15,433 now), its surfaces and PTYs from 1,385 to 1,425 (1,418: 887). die-term is 2,122 of 5,000, its copy state 71 of 80.
 892. Open: 888's wide character. A window that left the terminal for another buffer has its parked place carried through a whole read as an edit, as before, not put back on its text; I didn't try one. 875's two items stand. Not tried in your DIE.app, since nothing may go on your screen.
 
+**The harness's wait, at the merge gate**
+
+893. The gate on 4815b75 hung in `a_flood_doesnt_hold_up_a_key`: the harness's `Ctx::run_until` drained until idle, and an endless `yes` is never idle, since each 4 ms parse leaves a zero-delay timer due, so it could take a million turns. It now takes a frame's turns at a time (`run_ready`), as the host does, and asks `done` between them. DIE itself was never affected: the host doesn't drain, and the test's frames stayed under 2 ms. Two tests raced once the wait came back a frame sooner, and now wait for what they check: `g_goes_to_the_terminals_cursor_and_p_takes_a_count` pastes only after `stty -echo` has run (it saw `clear`'s pid as busy, and the terminal echoed the paste as well), and `it_leads_a_session_on_its_own_controlling_terminal` waits for the shell to take the terminal back from `ps`. Each passed 6 runs of 6; the flood test passes in 39 s.
+
 ## 2026-11-07: 28 packages on `m0/integration`, and none of them on `main`
 
 **Waiting on you:**

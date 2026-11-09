@@ -1198,7 +1198,9 @@ fn g_goes_to_the_terminals_cursor_and_p_takes_a_count() {
     // `"a3p` pastes three times, in one piece. (`3"ap` is once, as in your Evil, whose `"`
     // takes the count.)
     ctx.type_keys("i");
-    ctx.type_keys("clear; stty -icanon -echo; cat -v<CR>");
+    // Pasted only once `stty` has turned the echo off, or the terminal would echo it as well.
+    ctx.type_keys("clear; stty -icanon -echo; echo \"ca\"t-ready; cat -v<CR>");
+    wait_for(&mut ctx, "cat-ready");
     wait_busy(&mut ctx);
     let ab = Register {
         kind: RegKind::Char,
