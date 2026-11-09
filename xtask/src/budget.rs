@@ -37,6 +37,10 @@ pub struct CrateBudget {
     /// Dev-only code: counted, not capped, not in the product total.
     #[serde(default)]
     pub dev: bool,
+    /// An extension built here, outside the product (scope D14): counted, not capped, not in the
+    /// product total.
+    #[serde(default)]
+    pub extension: bool,
     pub note: Option<String>,
     /// The platforms the crate builds for, when its modules differ by platform.
     #[serde(default)]
@@ -67,6 +71,7 @@ pub struct Counted {
     pub lines: usize,
     pub limit: Option<usize>,
     pub dev: bool,
+    pub extension: bool,
     pub note: Option<String>,
     pub modules: Vec<CountedModule>,
     /// Each build: (platform, lines, limit).
@@ -109,6 +114,7 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
             .collect();
         check_platforms(c, &mods)?;
         check_generated(c)?;
+        check_extension(c)?;
         let mut total = 0;
         let mut generated = 0;
         let mut per_mod = vec![0; mods.len()];
@@ -174,6 +180,7 @@ pub fn measure(root: &Path, budget: &Budget) -> Result<Vec<Counted>> {
             lines: total,
             limit: c.limit,
             dev: c.dev,
+            extension: c.extension,
             note: c.note.clone(),
             builds: builds(c, total, &modules),
             modules,
@@ -200,6 +207,25 @@ fn check_generated(c: &CrateBudget) -> Result {
             bindings.display()
         )),
         None => Ok(()),
+    }
+}
+
+/// An extension lives under `extensions/`, and has no limit: it's outside guard 7 (scope D14).
+fn check_extension(c: &CrateBudget) -> Result {
+    match (c.extension, c.path.starts_with("extensions/")) {
+        (true, false) => Err(format!(
+            "budget.toml: the extension {} isn't under extensions/",
+            c.name
+        )),
+        (false, true) => Err(format!(
+            "budget.toml: {} is under extensions/, so it's an extension",
+            c.name
+        )),
+        (true, true) if c.limit.is_some() || c.dev => Err(format!(
+            "budget.toml: the extension {} has a limit or is dev; it's outside guard 7 (scope D14)",
+            c.name
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -269,10 +295,11 @@ pub fn report(counted: &[Counted]) -> (String, Vec<String>) {
     s += &format!("{:<w$} {:>7} {:>7}\n", "crate / module", "lines", "limit");
     let mut product = 0;
     for c in counted {
-        let limit = match (c.limit, c.dev) {
-            (Some(l), _) => l.to_string(),
-            (None, true) => "dev".into(),
-            (None, false) => "-".into(),
+        let limit = match (c.limit, c.dev, c.extension) {
+            (Some(l), _, _) => l.to_string(),
+            (None, true, _) => "dev".into(),
+            (None, false, true) => "ext".into(),
+            (None, false, false) => "-".into(),
         };
         let note = c
             .note
@@ -305,7 +332,7 @@ pub fn report(counted: &[Counted]) -> (String, Vec<String>) {
         if c.generated > 0 {
             s += &format!("{:<w$} {:>7}\n", "  generated, in no total", c.generated);
         }
-        if !c.dev {
+        if !c.dev && !c.extension {
             product += c.lines;
         }
     }
@@ -337,6 +364,7 @@ mod tests {
             path: "crates/die-render".into(),
             limit: Some(7000),
             dev: false,
+            extension: false,
             note: None,
             builds: vec!["macos".into(), "linux".into()],
             build_limit: Some(5000),
@@ -387,6 +415,7 @@ mod tests {
             lines: 5200,
             limit: krate.limit,
             dev: false,
+            extension: false,
             note: None,
             builds: builds(&krate, 5200, &[]),
             modules: Vec::new(),
@@ -413,6 +442,7 @@ mod tests {
             lines: total,
             limit: krate.limit,
             dev: false,
+            extension: false,
             note: None,
             builds: builds(&krate, total, &modules),
             modules,
@@ -428,6 +458,44 @@ mod tests {
                 "die-render's linux build (its neutral and linux modules) is 5100 lines, over its 5000",
             ]
         );
+    }
+
+    #[test]
+    fn an_extension_is_counted_uncapped_and_out_of_the_product() {
+        let tmp = crate::util::TempDir::new("budget-extension").unwrap();
+        let root = tmp.path();
+        let write = |rel: &str, src: &str| crate::util::write(&root.join(rel), src).unwrap();
+        write("crates/core/src/lib.rs", "pub fn a() {}\n");
+        write(
+            "extensions/ext/src/lib.rs",
+            "pub fn b() {}\npub fn c() {}\n",
+        );
+        let budget = |ext: &str| -> Result<Vec<Counted>> {
+            let toml = format!(
+                "[[crate]]\nname = \"core\"\npath = \"crates/core\"\nlimit = 1\n\
+                 [[crate]]\nname = \"ext\"\npath = \"extensions/ext\"\n{ext}\n"
+            );
+            measure(root, &toml::from_str(&toml).unwrap())
+        };
+        let counted = budget("extension = true").unwrap();
+        let (text, over) = report(&counted);
+        assert!(over.is_empty(), "{over:?}");
+        assert!(
+            text.contains("ext                            2     ext"),
+            "{text}"
+        );
+        assert!(
+            text.trim_end()
+                .ends_with("product code                   1"),
+            "{text}"
+        );
+        for wrong in [
+            "",
+            "extension = true\nlimit = 5",
+            "extension = true\ndev = true",
+        ] {
+            assert!(budget(wrong).is_err(), "{wrong:?}");
+        }
     }
 
     #[test]

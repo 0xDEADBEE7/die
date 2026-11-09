@@ -62,6 +62,7 @@ The leader is `\`, in normal state.
 | `\hc` | `describe-command` | What a command does |
 | `\e`, `:term`, `:terminal` | `term` | Open a new [terminal](#terminal) in this window, as your `termin-open` does |
 | `\g` | `term-switch` | Go to `*terminal*`, or open it, as your `ghostel` does |
+| `\o` | `orchid` | orchid's session browser, as your emacs-orchid-client's `orchid`: see [orchid](#orchid) |
 | Cmd-Q | `quit` | Quit, in every state. It asks first while a program runs in a terminal |
 | Cmd-V in a terminal | `surface-paste` | Paste the clipboard into the program, as one piece it sees bracketed, or `"` if the clipboard has no text |
 
@@ -248,8 +249,22 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 - **The program's keys:** `<Esc>` sends the program one Esc and stays in normal state, as your `vterm-send-escape` binding does, so Esc Esc from insert interrupts Claude Code, on either screen. It's encoded as the program's kitty flags ask, with its release for a program that asked for releases. Unlike vterm's, more Escs with no other key between them send nothing, so Esc pressed a few times to be sure of normal state sends one; any other key, a motion too, re-arms it, and so does going back through insert. At the shell's own prompt Esc sends nothing at all, as Evil's Esc does nothing, so bash doesn't offer to "Display all 1773 possibilities". Nor does it while the terminal is in line mode, as a job that reads no keys leaves it (`sleep`, a `cargo build`, `cat`): there an Esc would only wait for the prompt, which would read it as Meta and lose your first letter. A count sends that many, at most two, and only where a lone Esc would go: `2<Esc>` is Claude Code's rewind. After a register (`"a<Esc>`) Esc only ends the prefix. A shell you start inside the terminal, as `zsh` typed at bash's prompt, is a program to DIE, so Esc reaches it, and its line editor then reads the first key you type after `i` as Meta, as bash did. The other way round, a program in the shell's own process group, as `fzf` in `cd $(fzf --height 40%)`, looks like the shell at its prompt, so normal state's Esc doesn't reach it; `C-c C-r` sends insert's Esc to it. `i a I A` go back to insert, at the live screen. `p P` and Cmd-V paste into the program, the clipboard or `"x`, and with a count, as `"a3p`, that many times. `C-c C-c` sends the program C-c, as your ghostel's does in every input mode, so it interrupts a job or Claude Code without going back to insert; `C-c C-z`, `C-c C-\` and `C-c C-d` send C-z, C-\ and C-d. `C-c C-r` is the toggle above.
 - **The mouse** is a file's: a click moves the cursor (in a margin, to the row's start or end), a drag selects, the wheel scrolls the scrollback. The program hears no click or drag in normal state. A program that tracks the mouse (Claude Code's fullscreen mode, htop) still gets the wheel, as in insert and as your ghostel sends it in every Evil state, since its screen has no scrollback to scroll.
 
+## orchid
+
+`\o`, or `M-x orchid`, is your emacs-orchid-client, ported as die-orchid-client: an extension DIE builds beside itself, outside the product (scope D14), which your config registers. It drives orchid 0.2.2, your agent CLI, as Emacs does: `orchid` on the PATH your login shell sets (so `~/.local/bin/orchid` from DIE.app too), on orchid's own root, `$ORCHID_CONFIG` or else `~/.config/orchid`, passed to every command as `--config`. Its commands never inherit `ORCHID_SESSION_ID`, `ORCHID_CONFIG` or `ORCHID_HOOK_DEPTH`, so a DIE started from inside an orchid tool doesn't make its sessions children of that one. Emacs and DIE can be open on the same sessions at once: control goes through orchid, and its files are read without a lock, as orchid's own readers read them.
+
+The browser (`*orchid-sessions*`) and the chats (`*orchid-chat-<agent>-<wsdir>-<id5>*`) come next, and this section grows with them. Until then `\o` and opening a chat say they aren't built yet. What's there:
+
+- `M-x orchid-check-cli` says whether orchid is on the PATH and its version, and warns below 0.2, which this client is written for.
+- `M-x orchid-list-sessions` lists each session as `  label (id)`, oldest first, in `*orchid-list-sessions*`, below, with the focus staying, as Emacs's echo area showed them.
+- `M-x orchid-open-session` asks `Session ID or label: ` (or takes it after the name, `:orchid-open-session ID`), and finds it by its label too, which Emacs's didn't.
+- `M-x orchid-new-session` asks `Agent: ` among the agents `orchid agent` says are valid, and starts in the buffer's directory.
+- `M-x orchid-log-show` shows `*Orchid Log*`, the client's own log, below, as `display-buffer` does. It keeps the last 2,000 lines, and isn't kept over a restart.
+- Nothing of orchid's runs or is read until you ask, and while no orchid buffer is open, the client sets no timer.
+
 ## What isn't there yet
 
+- **orchid:** the session browser and the chats, which come next ([orchid](#orchid)).
 - **Terminal:** surviving `:rebuild` and `:restart` (D20's holder and helper come next); editing the shell's line from normal state, as evil-ghostel's `d`, `c`, `x` and `u` do; Cmd-C, and selecting with the pointer in insert state; images (kitty graphics); shell integration's prompt navigation, and bash's directory tracking (zsh's is there); links (OSC 8); the bell; and terminals on Linux.
 - **Running commands:** `M-&` and a command ending in `&` (Emacs's async shell commands), `C-u M-!` (output at the cursor), completion in the command prompts, stopping a `:!` that went on in the background before DIE quits, asking before quitting stops a command, and in `*compilation*` `go` (show an error without going there), `[[` `]]` (by file) and `q`. `:w !cmd`. Backspaces in output aren't moved over, as comint does.
 - **Normal keys:** `gq gw`, `( )` and `is as`, `it at`, `gn gN`, `g?`, `gm`, `gp gP`, `Q`, `C-]`, `C-w f`, `[] ][`, `z. z<CR> z- z+ z^`, folds, `gD`, `C-l`, `C-x`, `]p [p`, `<Insert>`.

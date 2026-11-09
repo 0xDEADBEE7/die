@@ -6,7 +6,7 @@ This doc expands §5.4 (surfaces) and §5.10 (extension contract) of [scope.md](
 
 On 2026-10-19 you confirmed C1–C13. C2, C4 and C9 are amended by what the review's Rust prototype found, and C14–C17 are new. Spike S4 checked the details on 2026-10-19 ([records/s4-core-api.md](records/s4-core-api.md)), and you accepted its recommendations. Its clarifications are folded in below.
 
-> **This doc defines what DIE's core has to provide. It doesn't plan any extensions.** seek, scrib, manifold, orchid, termin, delta, `die-seek` and the markdown view appear only as requirements, meaning "the core must make this possible". You'll build them yourself later, separately. The Vim grammar (`die-vim`) and kitty-level terminals (`die-term`) are part of DIE itself and are built here (scope D15). Internally they're crates that use this same contract.
+> **This doc defines what DIE's core has to provide. It doesn't plan any extensions.** seek, scrib, manifold, orchid, termin, delta, `die-seek` and the markdown view appear only as requirements, meaning "the core must make this possible". You'll build them yourself later, separately, but for the ports of your packages that you choose: those are built in this repo under `extensions/`, outside the product, its budget and core, on die-core's public API alone, until each moves to its own repository at M4 (scope D14, amended 2026-11-09, at your word: "not part of die itself as the core product but similar to my emacs-orchid-client"). The first is die-orchid-client. The Vim grammar (`die-vim`) and kitty-level terminals (`die-term`) are part of DIE itself and are built here (scope D15). Internally they're crates that use this same contract.
 
 ## 1. What your packages actually need
 
@@ -250,7 +250,7 @@ The text surface belongs to core. This section covers what extensions can do wit
 | Face | Styles a range | Search highlights, orchid message styling, delta's diff lines |
 | Hide | Hides a range, showing nothing, replacement text, or a placement (an image or pixel buffer) | manifold folds, orchid collapsibles, markdown markup hiding and inline images |
 | Virtual text | Shows text just before a position, without adding it to the buffer. An end-of-line hint anchors at the newline. | Inline hints, token counts |
-| Read-only | Blocks `User` edits in a range | orchid's transcript |
+| Read-only | Blocks `User` edits in a range | orchid's separators and restored line (in Emacs nothing else of its transcript is read-only) |
 | Keymap | Keys pressed with the cursor in the range use this keymap first | Buttons, collapsible toggles, markdown links |
 | Tag | Attaches an extension value to a range, which can be looked up by position | "Which session, section or note is under the cursor?" |
 

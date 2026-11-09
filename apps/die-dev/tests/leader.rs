@@ -7,8 +7,12 @@ use die::core::{BufferId, Harness};
 use die_dev::config;
 use std::path::PathBuf;
 
+/// Your config's keys over DIE's own extensions and yours, as `die::start` puts them together.
 fn harness(text: &str) -> (Harness, BufferId) {
-    let mut h = Harness::with_config(die::built_in(), config(vec![]).core).unwrap();
+    let config = config(vec![]);
+    let mut exts = die::built_in();
+    exts.extend(config.extensions);
+    let mut h = Harness::with_config(exts, config.core).unwrap();
     let (b, _) = h.open_text("t", text).unwrap();
     (h, b)
 }

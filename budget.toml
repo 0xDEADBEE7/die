@@ -86,6 +86,14 @@ path = "crates/die"
 name = "die-dev"
 path = "apps/die-dev"
 
+# Your packages' ports, chosen by you, are built here under extensions/, outside the product, its
+# budget and core (scope D14). Counted, never capped, and in no product total.
+[[crate]]
+name = "die-orchid-client"
+path = "extensions/die-orchid-client"
+extension = true
+note = "an extension, outside guard 7: your emacs-orchid-client's port"
+
 [[crate]]
 name = "xtask"
 path = "xtask"
