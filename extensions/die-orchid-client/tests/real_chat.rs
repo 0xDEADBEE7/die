@@ -1,5 +1,6 @@
-//! A chat on the real orchid, offline: a new session made through the chat, a message sent from
-//! it, and the turn followed to its end from the files orchid writes. Ignored, since it needs the
+//! A chat on the real orchid, offline: a new session made through the chat, `hello` sent from it,
+//! the turn followed to its end from the files orchid writes, and a restart that brings the chat
+//! back from them, as `:rebuild` does. Ignored, since it needs the
 //! binary: `ORCHID_BIN=~/.local/bin/orchid cargo test -p die-orchid-client --test real_chat --
 //! --ignored`. As `tests/orchid.rs` does, it runs in a process of its own with a HOME of its own
 //! and no `ORCHID_` variables, on a root of its own, with orchid's built-in `echo` connection: no
@@ -7,7 +8,7 @@
 
 use die_test_cap as _;
 
-use die_core::Harness;
+use die_core::{Config, Harness};
 use die_orchid_client::cli::{Cmd, FakeRunner, ProcessRunner};
 use die_orchid_client::fixtures::TempRoot;
 use die_orchid_client::poll::FAST;
@@ -67,11 +68,23 @@ fn a_chat_talks_to_orchid_0_2_2() {
         path: Some(path.unwrap()),
         env: vec![],
     };
-    let mut orchid = Orchid::for_tests(&root, FakeRunner::new()).with_runner(runner);
-    orchid.options.program = bin;
-    let mut h = Harness::new(vec![Box::new(Vim::default()), Box::new(orchid)]).unwrap();
+    let state = home.join("state");
+    let up = || {
+        let mut orchid = Orchid::for_tests(&root, FakeRunner::new()).with_runner(runner.clone());
+        orchid.options.program = bin.clone();
+        let config = Config {
+            session: Some(state.clone()),
+            ..Config::default()
+        };
+        let exts: Vec<Box<dyn die_core::Extension>> =
+            vec![Box::new(Vim::default()), Box::new(orchid)];
+        let mut h = Harness::with_config(exts, config).unwrap();
+        h.resume_session();
+        h.set_window_size(80, 40);
+        h
+    };
+    let mut h = up();
     h.open_text("notes", "").unwrap();
-    h.set_window_size(80, 40);
 
     // A new session's chat, then the session's.
     chat::new_session(&mut h, "echo", &work).unwrap();
@@ -90,7 +103,7 @@ fn a_chat_talks_to_orchid_0_2_2() {
     assert_eq!(meta.label.as_deref(), Some("echo-work"), "set --label ran");
 
     // A message from the chat, and orchid's echo of it, followed in.
-    h.type_keys("i-hello there<CR>").unwrap();
+    h.type_keys("ihello<CR>").unwrap();
     let start = Instant::now();
     let text = |h: &Harness| h.text(b).unwrap().rope().to_string();
     while !text(&h).contains("[Finished: ") {
@@ -104,17 +117,33 @@ fn a_chat_talks_to_orchid_0_2_2() {
     }
     assert!(h.take_errors().is_empty(), "{:?}", h.messages);
     let t = text(&h);
-    let user = t.find("[user]    [-hello there").expect(&t);
-    let reply = t.find("[agnt]    [-hello there").expect(&t);
+    let user = t.find("[user]    [hello").expect(&t);
+    let reply = t.find("[agnt]    [hello").expect(&t);
     let finished = t.find("[Finished: ").unwrap();
     assert!(user < reply && reply < finished, "{t}");
-    assert_eq!(
-        t.matches("[user]    [-hello there").count(),
-        1,
-        "shown once"
-    );
+    assert_eq!(t.matches("[user]    [hello").count(), 1, "shown once");
     let meta = store::read_metadata(&root, &id).unwrap();
     assert_eq!(meta.status, Status::Idle);
+
+    // A restart: the chat comes back from what orchid wrote, in its window, and follows again.
+    h.type_keys("unsent<Esc>").unwrap();
+    h.hand_over_session().unwrap();
+    drop(h);
+    let mut h = up();
+    h.run_until_idle();
+    assert!(h.take_errors().is_empty(), "{:?}", h.messages);
+    let b = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(b), Some(name.as_str()));
+    let text = |h: &Harness| h.text(b).unwrap().rope().to_string();
+    let t = text(&h);
+    assert!(
+        t.contains("[user]    [hello") && t.contains("[agnt]    [hello"),
+        "{t}"
+    );
+    assert!(
+        t.contains("[session restored]") && t.ends_with("\n\nunsent"),
+        "{t:?}"
+    );
 
     // Done: archive it, which the chat says once.
     let cli = die_orchid_client::cli(&mut h).unwrap();

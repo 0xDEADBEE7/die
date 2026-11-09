@@ -42,7 +42,7 @@ use crate::cli::{Cli, Cmd, Outcome};
 use crate::indicator::{self, Indicator};
 use crate::parse::{self, Piece, Section, WIDTH};
 use crate::poll::{self, Polling};
-use crate::sections::{self, Build, Mark, Sections, Toggled};
+use crate::sections::{self, Anchor, Build, Key, Mark, Sections, Toggled};
 use crate::store::{self, Event, EventKind, Metadata, Restored, Tail};
 use crate::{Kind, Options, Orchid, face, log};
 use die_core::session::{Value, json};
@@ -132,6 +132,30 @@ impl Env {
 struct Pending {
     agent: String,
     dir: PathBuf,
+    /// When `create` was first run for it.
+    since: Timestamp,
+}
+
+impl Pending {
+    /// The session `create` made for this chat, if one was made and the chat didn't hear of it,
+    /// as when DIE restarted while orchid was making it: the newest of `agent` working in `dir`,
+    /// made since, with no events yet.
+    fn made(&self, root: &Path) -> Option<String> {
+        let dir = self.dir.canonicalize().ok();
+        let since = self.since - jiff::SignedDuration::from_secs(2);
+        let ours = |m: &Metadata| {
+            let there = m.working_dir.as_deref().map(Path::new);
+            m.agent_name.as_deref() == Some(self.agent.as_str())
+                && there.and_then(|d| d.canonicalize().ok()) == dir
+                && m.created_at.is_some_and(|c| c >= since)
+                && std::fs::metadata(store::events_path(root, &m.id)).map_or(true, |f| f.len() == 0)
+        };
+        let all = store::scan(root);
+        all.into_iter()
+            .filter(ours)
+            .max_by_key(|m| m.created_at)
+            .map(|m| m.id)
+    }
 }
 
 /// A chat's state (Emacs's buffer-local `orchid-chat--*` and `orchid-processing--*`).
@@ -306,7 +330,9 @@ impl Live {
     fn kept(&self) -> Value {
         match (&self.id, &self.pending) {
             (Some(id), _) => json!({ "id": id }),
-            (None, Some(p)) => json!({"pending": {"agent": p.agent, "dir": p.dir}}),
+            (None, Some(p)) => {
+                json!({"pending": {"agent": p.agent, "dir": p.dir, "since": p.since.to_string()}})
+            }
             (None, None) => json!({}),
         }
     }
@@ -977,11 +1003,13 @@ fn start(
     })?
 }
 
-/// Follow the chat on the shared poll, and keep it over a restart, with its unsent input.
+/// Follow the chat on the shared poll, and keep it over a restart, with its unsent input, the
+/// sections expanded and where each window on it is.
 fn attach(o: &mut Orchid, ctx: &mut Ctx, buf: BufferId) -> Result {
-    let (state, input, follows, fast) = with_chat(ctx, buf, |c, _| {
+    let (state, input, open, follows, fast) = with_chat(ctx, buf, |c, _| {
         let follows = c.id.is_some() && !c.gone;
-        Ok((c.kept(), c.input.clone(), follows, c.wants_fast()))
+        let open = c.sections.expanded();
+        Ok((c.kept(), c.input.clone(), open, follows, c.wants_fast()))
     })?;
     if follows {
         let tick = move |ctx: &mut Ctx| on_chat(ctx, buf, |c, ctx| c.tick(ctx));
@@ -997,10 +1025,71 @@ fn attach(o: &mut Orchid, ctx: &mut Ctx, buf: BufferId) -> Result {
         let at = input.pos(t)?;
         let mut kept = state.clone();
         kept["input"] = Value::String(t.rope().byte_slice(at..).to_string());
+        kept["open"] = json!(open.borrow().iter().collect::<Vec<_>>());
+        kept["places"] = places(ctx, t, buf, at);
         Some(kept)
     };
     o.track_with(buf, Kind::Chat, state, keep);
     Ok(())
+}
+
+/// Where each window on the chat is, its cursor and its top, as `[offset, anchor]`: the offset in
+/// the text as the session keeps it, and where that is in terms a chat built anew has, a section
+/// or the input. A restart finds a window's place by its offset.
+fn places(ctx: &Ctx, t: &die_core::TextBuf, buf: BufferId, input: usize) -> Value {
+    let mut out: Vec<Value> = vec![];
+    for w in windows(ctx, buf) {
+        let top = t.scroll(w).map(|s| s.0);
+        for p in [t.cursor(w), top].into_iter().flatten() {
+            let anchor = match p.checked_sub(input) {
+                Some(d) => json!(["input", d]),
+                None => Sections::anchor(t, p).json(),
+            };
+            let place = json!([p, anchor]);
+            if !out.contains(&place) {
+                out.push(place);
+            }
+        }
+    }
+    Value::Array(out)
+}
+
+/// A window, its cursor and its scroll (its top and the row in it).
+type View = (WindowId, Option<usize>, Option<(usize, usize)>);
+
+/// Where a window's place, `p` in the text the session kept, is in the chat built anew: by the
+/// place kept nearest it, which shifts as much, or failing that in the input as far as it was,
+/// `old_input` being where the old one started. None if there's no telling.
+fn moved(
+    c: &Live,
+    t: &die_core::TextBuf,
+    kept: &[(usize, Value)],
+    p: usize,
+    old_input: Option<usize>,
+) -> Option<usize> {
+    let input = c.input.at(t);
+    let near = kept
+        .iter()
+        .min_by_key(|(x, _)| x.abs_diff(p))
+        .filter(|(x, _)| x.abs_diff(p) <= 8);
+    let base = match near {
+        Some((x, a)) if a.get(0).and_then(Value::as_str) == Some("input") => {
+            let d = a.get(1)?.as_u64()? as usize;
+            Some((input + d, *x))
+        }
+        Some((x, a)) => Some((c.sections.resolve(t, &Anchor::from_json(a)?)?, *x)),
+        None => None,
+    };
+    let pos = match (base, old_input) {
+        (Some((at, x)), _) => (at + p).checked_sub(x)?,
+        (None, Some(old)) if p >= old => input + (p - old),
+        _ => return None,
+    };
+    let mut pos = pos.min(t.len());
+    while !t.is_boundary(pos) {
+        pos -= 1;
+    }
+    Some(pos)
 }
 
 /// The chat's buffer's directory: the session's working directory, as Emacs's `default-directory`
@@ -1056,6 +1145,7 @@ pub fn new_session(ctx: &mut Ctx, agent: &str, working_dir: &Path) -> Result {
     let pending = Pending {
         agent: agent.to_string(),
         dir: working_dir.to_path_buf(),
+        since: Timestamp::now(),
     };
     start(ctx, buf, env, |c, ctx| c.lay_out_pending(ctx, pending, ""))?;
     let w = ctx.show(buf, ShowIn::Current)?;
@@ -1189,6 +1279,12 @@ pub(crate) fn restore(orchid: &mut Orchid, ctx: &mut Ctx, buf: BufferId, state: 
     let text = ctx.text(buf)?.rope().to_string();
     let old_input = text.ends_with(&input).then(|| text.len() - input.len());
     let was = cursors(ctx, buf, old_input);
+    // Each window's place as core brought it back, in the text the session kept.
+    let views: Vec<View> = {
+        let t = ctx.text(buf)?;
+        let view = |w: WindowId| (w, t.cursor(w), t.scroll(w));
+        windows(ctx, buf).into_iter().map(view).collect()
+    };
     if let Some(p) = state.get("pending") {
         let pending = Pending {
             agent: p
@@ -1197,12 +1293,23 @@ pub(crate) fn restore(orchid: &mut Orchid, ctx: &mut Ctx, buf: BufferId, state: 
                 .unwrap_or("default")
                 .into(),
             dir: p.get("dir").and_then(Value::as_str).unwrap_or("/").into(),
+            since: p
+                .get("since")
+                .and_then(Value::as_str)
+                .and_then(|t| t.parse().ok())
+                .unwrap_or_else(Timestamp::now),
         };
+        // A session orchid made for it while DIE was down is this chat's, rather than a second.
+        let made = pending.made(&env.root);
         start(ctx, buf, env, |c, ctx| {
             c.lay_out_pending(ctx, pending, &input)
         })?;
         put_cursors(ctx, buf, was)?;
         attach(orchid, ctx, buf)?;
+        if let Some(id) = made {
+            ctx.defer(move |ctx| created(ctx, buf, Ok(json!({ "id": id }))));
+            return Ok(());
+        }
         return create(ctx, buf);
     }
     let id = state
@@ -1213,13 +1320,45 @@ pub(crate) fn restore(orchid: &mut Orchid, ctx: &mut Ctx, buf: BufferId, state: 
         Ok(meta) => {
             orchid.update_session(ctx, meta.clone());
             let restored = restore_events(&env, id)?;
+            let open: Vec<Key> = state
+                .get("open")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|k| k.as_str().map(String::from))
+                .collect();
+            let kept: Vec<(usize, Value)> = state
+                .get("places")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|p| Some((p.get(0)?.as_u64()? as usize, p.get(1)?.clone())))
+                .collect();
             start(ctx, buf, env, |c, ctx| {
-                c.lay_out(ctx, &meta, restored, &input)
+                c.lay_out(ctx, &meta, restored, &input)?;
+                let t = ctx.text_mut(buf)?;
+                c.sections.expand(t, &open)?;
+                // Each window where it was: on the same text, else in the input as far, else at
+                // the end.
+                let end = t.len();
+                let to = |t: &die_core::TextBuf, p: Option<usize>| {
+                    p.and_then(|p| moved(c, t, &kept, p, old_input))
+                };
+                for (w, head, top) in views {
+                    let (head, at) = (to(t, head), to(t, top.map(|s| s.0)));
+                    t.set_cursor(w, head.unwrap_or(end));
+                    if let (Some(at), Some((_, row))) = (at, top) {
+                        t.set_scroll(w, at, row);
+                    }
+                }
+                Ok(())
             })?;
         }
-        Err(_) => start(ctx, buf, env, |c, ctx| c.lay_out_gone(ctx, id, &input))?,
+        Err(_) => {
+            start(ctx, buf, env, |c, ctx| c.lay_out_gone(ctx, id, &input))?;
+            put_cursors(ctx, buf, was)?;
+        }
     }
-    put_cursors(ctx, buf, was)?;
     attach(orchid, ctx, buf)
 }
 

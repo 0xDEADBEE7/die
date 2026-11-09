@@ -8,13 +8,18 @@
 //! Text goes in through a [`Build`]: the text, with the faces, read-only ranges and sections on
 //! parts of it, put in with one silent edit and then decorated, since core has no styled
 //! insertion yet. A [`Mark`] is a marker that can be moved, shared with what a restart keeps.
+//!
+//! A section made from an event has a [`Key`], its event's id and where it is among the event's
+//! sections, which names it again when a restart builds the chat anew: the sections you had
+//! expanded are expanded again ([`Sections::expanded`], [`Sections::expand`]), and a window's
+//! place goes back to the same text ([`Sections::anchor`], [`Sections::resolve`]).
 
 use crate::parse::{self, Piece, Section, Shown};
 use crate::store::Event;
 use die_core::{Deco, DecorationId, Gravity, MarkerId, Origin, Result, Reveal, TextBuf};
 use jiff::tz::TimeZone;
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -53,6 +58,49 @@ impl Mark {
 
 // ------------------------------------------------------------------ building text
 
+/// What names a section over a restart: its event's id, then where it is among the event's
+/// sections, as `ID#0`, and inside it, as a result's second file, `ID#0.1`. Sections from no
+/// event, as your message's stub before orchid has it, have none.
+pub type Key = String;
+
+/// The keys of the sections expanded now, shared with what a restart keeps.
+pub type Open = Rc<RefCell<BTreeSet<Key>>>;
+
+/// Where a position is, in terms a chat built anew still has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Anchor {
+    /// So far into the section with this key.
+    In(Key, usize),
+    /// So far past the end of the section with this key, the last before it.
+    After(Key, usize),
+    /// So far from the start, before any section: the header.
+    Top(usize),
+}
+
+impl Anchor {
+    /// As JSON, for what a restart keeps.
+    pub fn json(&self) -> serde_json::Value {
+        match self {
+            Anchor::In(k, d) => serde_json::json!(["in", k, d]),
+            Anchor::After(k, d) => serde_json::json!(["after", k, d]),
+            Anchor::Top(d) => serde_json::json!(["top", d]),
+        }
+    }
+
+    /// From [`Anchor::json`]'s.
+    pub fn from_json(v: &serde_json::Value) -> Option<Anchor> {
+        let kind = v.get(0)?.as_str()?;
+        let last = |i| v.get(i)?.as_u64().map(|d| d as usize);
+        let key = || Some(v.get(1)?.as_str()?.to_string());
+        match kind {
+            "in" => Some(Anchor::In(key()?, last(2)?)),
+            "after" => Some(Anchor::After(key()?, last(2)?)),
+            "top" => Some(Anchor::Top(last(1)?)),
+            _ => None,
+        }
+    }
+}
+
 /// What a lazy section's detail is made from on its first expand.
 #[derive(Clone, Debug)]
 struct Lazy {
@@ -67,6 +115,7 @@ struct New {
     stub_end: usize,
     end: usize,
     lazy: Option<Lazy>,
+    key: Option<Key>,
 }
 
 /// Text to put in a chat in one edit, with what decorates parts of it.
@@ -129,11 +178,21 @@ impl Build {
 
     /// A detail's pieces: text in its faces, and sections inside it, collapsed.
     pub fn pieces(&mut self, pieces: &[Piece]) -> &mut Build {
+        self.pieces_in(pieces, None)
+    }
+
+    /// [`Build::pieces`], inside the section keyed `parent`, whose sections theirs extend.
+    fn pieces_in(&mut self, pieces: &[Piece], parent: Option<&str>) -> &mut Build {
+        let mut n = 0;
         for p in pieces {
             match p {
                 Piece::Text(s, Some(f)) => self.styled(s, f),
                 Piece::Text(s, None) => self.push(s),
-                Piece::Section(s, inner) => self.section(s, Some(inner), None),
+                Piece::Section(s, inner) => {
+                    let key = parent.map(|k| format!("{k}.{n}"));
+                    n += 1;
+                    self.section(s, Some(inner), None, key)
+                }
             };
         }
         self
@@ -141,14 +200,20 @@ impl Build {
 
     /// A collapsed section: its stub, then the detail under it, `pieces` now, or else made from
     /// `lazy` on the first expand.
-    fn section(&mut self, s: &Section, pieces: Option<&[Piece]>, lazy: Option<Lazy>) -> &mut Build {
+    fn section(
+        &mut self,
+        s: &Section,
+        pieces: Option<&[Piece]>,
+        lazy: Option<Lazy>,
+        key: Option<Key>,
+    ) -> &mut Build {
         let start = self.len();
         // A stub is one line, so its end is the first newline after its start.
         self.styled(&s.stub.replace('\n', " "), s.face);
         let stub_end = self.len();
         self.push("\n");
         if let Some(p) = pieces {
-            self.pieces(p);
+            self.pieces_in(p, key.as_deref());
         }
         let end = self.len();
         self.sections.push(New {
@@ -156,13 +221,14 @@ impl Build {
             stub_end,
             end,
             lazy,
+            key,
         });
         self
     }
 
     /// One collapsed section with this stub and the detail `pieces`, made now: your own message.
     pub fn eager(&mut self, s: &Section, pieces: &[Piece]) -> &mut Build {
-        self.section(s, Some(pieces), None)
+        self.section(s, Some(pieces), None, None)
     }
 
     /// An event as the chat shows it, and the newline after it, as the Emacs client's
@@ -180,15 +246,16 @@ impl Build {
                     if i > 0 {
                         self.push("\n");
                     }
+                    let key = event.event_id.as_ref().map(|id| format!("{id}#{i}"));
                     if s.lazy {
                         let lazy = Lazy {
                             event: event.clone(),
                             index: i,
                         };
-                        self.section(s, None, Some(lazy));
+                        self.section(s, None, Some(lazy), key);
                     } else {
                         let pieces = parse::detail(event, i);
-                        self.section(s, Some(&pieces), None);
+                        self.section(s, Some(&pieces), None, key);
                     }
                 }
             }
@@ -200,9 +267,10 @@ impl Build {
 
 // ------------------------------------------------------------------ the sections
 
-/// What a section's `Deco::Tag` holds: its number in its chat's [`Sections`].
+/// What a section's `Deco::Tag` holds: its number in its chat's [`Sections`], and its key, so
+/// what a restart keeps can be read from the text alone.
 #[derive(Debug)]
-struct Tag(u64);
+struct Tag(u64, Option<Key>);
 
 #[derive(Debug)]
 struct Entry {
@@ -212,6 +280,7 @@ struct Entry {
     hide: Option<DecorationId>,
     /// What makes the detail, until its first expand.
     lazy: Option<Lazy>,
+    key: Option<Key>,
 }
 
 /// A chat's sections, by number.
@@ -219,6 +288,8 @@ struct Entry {
 pub struct Sections {
     by_id: HashMap<u64, Entry>,
     next: u64,
+    by_key: HashMap<Key, u64>,
+    open: Open,
 }
 
 /// What a toggle did.
@@ -256,15 +327,20 @@ impl Sections {
         for s in b.sections {
             let id = self.next;
             self.next += 1;
-            let tag = t.decorate(at + s.start..at + s.end, Deco::Tag(Rc::new(Tag(id))))?;
+            let tag = Deco::Tag(Rc::new(Tag(id, s.key.clone())));
+            let tag = t.decorate(at + s.start..at + s.end, tag)?;
             let hidden = t.decorate(at + s.stub_end..at + s.end, hide())?;
             if s.lazy.is_some() {
                 count(|st| st.created += 1);
+            }
+            if let Some(k) = &s.key {
+                self.by_key.insert(k.clone(), id);
             }
             let entry = Entry {
                 tag,
                 hide: Some(hidden),
                 lazy: s.lazy,
+                key: s.key,
             };
             self.by_id.insert(id, entry);
         }
@@ -287,7 +363,7 @@ impl Sections {
         let find = |p: usize| {
             let tags = t.decorations_at(p).filter_map(|(_, d)| match &d.deco {
                 Deco::Tag(v) => {
-                    let Tag(id) = v.downcast_ref::<Tag>()?;
+                    let Tag(id, _) = v.downcast_ref::<Tag>()?;
                     self.by_id.contains_key(id).then_some((d.range.len(), *id))
                 }
                 _ => None,
@@ -321,17 +397,25 @@ impl Sections {
             return Ok(None);
         };
         let entry = self.by_id.get_mut(&id).expect("a section with a range");
+        let key = entry.key.clone();
         if entry.hide.is_none() {
             entry.hide = Some(t.decorate(stub_end..end, hide())?);
+            if let Some(k) = &key {
+                self.open.borrow_mut().remove(k);
+            }
             return Ok(Some(Toggled::Collapsed));
         }
         if let Some(h) = entry.hide.take() {
             t.undecorate(h);
         }
+        if let Some(k) = &key {
+            self.open.borrow_mut().insert(k.clone());
+        }
         if let Some(lazy) = entry.lazy.take() {
             let began = Instant::now();
             let mut b = Build::new();
-            b.push("\n").pieces(&parse::detail(&lazy.event, lazy.index));
+            let detail = parse::detail(&lazy.event, lazy.index);
+            b.push("\n").pieces_in(&detail, key.as_deref());
             // The lone newline that stood in for it goes, and the tag's end follows.
             self.place(t, stub_end..end, b)?;
             let took = began.elapsed();
@@ -341,6 +425,74 @@ impl Sections {
             });
         }
         Ok(Some(Toggled::Expanded))
+    }
+
+    /// The keys of the sections expanded now, which follow each toggle.
+    pub fn expanded(&self) -> Open {
+        self.open.clone()
+    }
+
+    /// Expand the sections with these keys, a section before those inside it, as a restart
+    /// brings back what was expanded. Keys no section has any more are passed over.
+    pub fn expand(&mut self, t: &mut TextBuf, keys: &[Key]) -> Result {
+        let mut keys: Vec<&Key> = keys.iter().collect();
+        let depth = |k: &&Key| k.rsplit('#').next().map_or(0, |p| p.matches('.').count());
+        keys.sort_by_key(depth);
+        for k in keys {
+            if let Some(id) = self.by_key.get(k).copied()
+                && self.collapsed(id)
+            {
+                self.toggle(t, id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Where `pos` is in a chat's text, by the keyed section it's in, the innermost, or else the
+    /// last one before it, or else from the start. It reads the text alone, as what a restart
+    /// keeps is worked out with nothing else.
+    pub fn anchor(t: &TextBuf, pos: usize) -> Anchor {
+        let mut inside: Option<(usize, &Key, usize)> = None;
+        let mut before: Option<(usize, usize, &Key)> = None;
+        for (_, d) in t.decorations() {
+            let Deco::Tag(v) = &d.deco else { continue };
+            let Some(Tag(_, Some(key))) = v.downcast_ref::<Tag>() else {
+                continue;
+            };
+            let r = &d.range;
+            if r.contains(&pos) {
+                if inside.is_none_or(|(len, _, _)| r.len() < len) {
+                    inside = Some((r.len(), key, pos - r.start));
+                }
+            } else if r.end <= pos
+                && before.is_none_or(|(end, len, _)| (r.end, r.len()) > (end, len))
+            {
+                before = Some((r.end, r.len(), key));
+            }
+        }
+        match (inside, before) {
+            (Some((_, k, d)), _) => Anchor::In(k.clone(), d),
+            (None, Some((end, _, k))) => Anchor::After(k.clone(), pos - end),
+            (None, None) => Anchor::Top(pos),
+        }
+    }
+
+    /// Where `anchor` is in `t`, if its section is there, at a character's start.
+    pub fn resolve(&self, t: &TextBuf, anchor: &Anchor) -> Option<usize> {
+        let range = |k: &Key| self.range(t, *self.by_key.get(k)?);
+        let pos = match anchor {
+            Anchor::In(k, d) => {
+                let (start, _, end) = range(k)?;
+                (start + d).min(end)
+            }
+            Anchor::After(k, d) => range(k)?.2 + d,
+            Anchor::Top(d) => *d,
+        };
+        let mut pos = pos.min(t.len());
+        while !t.is_boundary(pos) {
+            pos -= 1;
+        }
+        Some(pos)
     }
 
     /// A search landed in the hidden text `hide` hides: expand its section. False if it isn't

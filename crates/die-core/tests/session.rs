@@ -748,6 +748,42 @@ fn looks_rest_when_nothing_changes_and_a_change_wakes_them() {
     assert_ne!(fs::read_to_string(&file).unwrap(), before);
 }
 
+/// A timer that keeps firing isn't you using the editor, as an extension's poll isn't: the looks
+/// rest as they would without it, and what a timer changes is still written.
+#[test]
+fn an_extensions_repeating_timer_doesnt_keep_the_looks_awake() {
+    let dir = Dir::new();
+    let file = dir.0.join(FILE);
+    let mut h = kept_in(&dir.0);
+    let (buf, _) = h.open_text("notes", "").unwrap();
+    h.resume_session();
+    let _poll = h.every(Duration::from_secs(2), |_| Ok(()));
+    let wakes = |h: &mut Harness, over: Duration| {
+        let end = h.now() + over;
+        let mut n = 0;
+        while let Some(at) = h.next_timer().filter(|at| *at <= end) {
+            h.advance(at.saturating_sub(h.now()).max(Duration::from_millis(1)));
+            n += 1;
+        }
+        h.advance(end.saturating_sub(h.now()));
+        n
+    };
+    wakes(&mut h, Duration::from_secs(40));
+    let n = wakes(&mut h, Duration::from_secs(60));
+    assert!(
+        n <= 30 + 12,
+        "the timer's 30 and the resting looks' 12, not {n}"
+    );
+    let _edit = h.after(Duration::from_secs(1), move |ctx| {
+        let t = ctx.text_mut(buf)?;
+        t.tx(Origin::Extension).insert(0, "a timer's").commit()?;
+        Ok(())
+    });
+    h.advance(Duration::from_secs(8));
+    h.flush_session();
+    assert!(fs::read_to_string(&file).unwrap().contains("a timer's"));
+}
+
 /// What K13 adds to the file counts as a change, or the idle write wouldn't happen for it.
 #[test]
 fn a_change_beside_the_text_is_written() {
