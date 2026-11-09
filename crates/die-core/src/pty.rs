@@ -119,7 +119,7 @@ pub fn trampoline() -> Option<i32> {
     })
 }
 
-/// A terminal's size: cells, and the pixels of the whole area (TIOCSWINSZ).
+/// A terminal's size: cells, and the pixels they cover (TIOCSWINSZ).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct PtySize {
     /// Columns.
@@ -685,17 +685,22 @@ impl Ctx {
 
     /// Harness: take turns until `done` says so, or `wait` has passed, for what comes from
     /// another thread with no job to wait on, as a PTY's output does. Whether `done` said so.
+    /// It takes a frame's turns at a time, as the host does, and asks `done` between them: a
+    /// program that never stops printing (`yes`) is never idle, so draining until idle would
+    /// keep it here for a million turns of parsing.
     pub fn run_until(&mut self, wait: Duration, mut done: impl FnMut(&mut Ctx) -> bool) -> bool {
         let start = Instant::now();
         loop {
-            self.drain(false);
+            let ran = self.run_ready();
             if done(self) {
                 return true;
             }
             if start.elapsed() > wait {
                 return false;
             }
-            std::thread::sleep(Duration::from_millis(1));
+            if !ran {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
     }
 }

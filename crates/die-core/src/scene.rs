@@ -466,14 +466,18 @@ impl Ctx {
 
     /// The columns the prompt and the echo area use, start and end: with a maximum width on
     /// the focused window's buffer (`\z`), that window's margins, where its line numbers start
-    /// and where its text ends, as your Emacs's minibuffer has them. Otherwise the frame's.
+    /// and where its text or a surface's area ends, as your Emacs's minibuffer has them.
+    /// Otherwise the frame's.
     fn prompt_band(&self, placements: &[WindowPlacement], cols: usize) -> (usize, usize) {
         let band = || {
             let w = self.focused()?;
             let p = placements.iter().find(|p| p.window == w)?;
-            let t = self.text(self.windows.get(w)?.buffer).ok()?;
-            t.settings().max_width?;
-            let g = t.geometry(w)?;
+            let buf = self.windows.get(w)?.buffer;
+            self.settings(buf).ok()?.max_width?;
+            let g = match self.surface_area(w) {
+                Some(g) => g,
+                None => self.text(buf).ok()?.geometry(w)?,
+            };
             let x = (p.col + g.pad).min(cols.saturating_sub(2));
             Some((x, (x + g.gutter + g.text_w).min(cols)))
         };

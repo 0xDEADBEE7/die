@@ -3,8 +3,12 @@
 //! showing the surface's own cells at the snapshot's scroll position, with the cursor, the
 //! selection and the search's matches drawn over them. A window whose cursor is on the
 //! surface's cursor line or below it, in normal state, follows new output, as Evil's point
-//! follows a terminal's cursor; one that went up stays where it is until it comes back down,
-//! with the text read all the same, so what it draws is what it yanks.
+//! follows a terminal's cursor; one that went up stays where it is until it comes back down, or
+//! the surface numbers its lines afresh, with the text read all the same, so what it draws is
+//! what it yanks. The snapshot has the surface buffer's maximum width and centering, and never
+//! wraps, so its text area is the surface's area and its cells land on the surface's. A resize
+//! that reflows the lines the surface wrapped keeps every other window in its line of output, at
+//! its column there, as a file's window keeps its text through `\z`.
 
 use crate::ext::*;
 use crate::ids::*;
@@ -13,6 +17,7 @@ use crate::layout::CellKind;
 use crate::scene::{CursorShape, Scene, WindowPlacement, selected};
 use crate::text::*;
 use crate::windows::View;
+use std::collections::VecDeque;
 
 /// What copy state reads of a surface ([`Surface::text`]): lines, each ending in a newline,
 /// oldest first. An update replaces the last text's lines from `from` to its end, after
@@ -34,6 +39,13 @@ pub struct SurfaceText {
     /// The line its own view shows on the top row, when that's above the live view's, as after
     /// the wheel in insert state: copy state starts there, with the cursor on its last row.
     pub shown_top: Option<usize>,
+    /// Its lines are numbered afresh, as after a terminal switches screens: a window's line says
+    /// nothing of where it was, so every window goes to the cursor, as `G` does.
+    pub renumbered: bool,
+    /// The lines, counted from `from`, that run on into the next one, each with the columns it
+    /// takes, as a terminal wraps a line of output wider than itself. A resize reflows them, and
+    /// a window keeps its place in the line of output they make up.
+    pub wrapped: Vec<(usize, usize)>,
 }
 
 impl SurfaceText {
@@ -53,6 +65,8 @@ pub(crate) struct Copy {
     cursor: usize,
     /// The surface said its text changed since the last read.
     stale: bool,
+    /// Each line's columns if it runs on into the next ([`SurfaceText::wrapped`]), else 0.
+    wraps: VecDeque<usize>,
 }
 
 /// Where a window was in a snapshot, to put it back after an update.
@@ -71,6 +85,28 @@ struct Place {
     above_live: usize,
 }
 
+/// A snapshot line and display column as a place in a line of output, as `wraps` says the
+/// surface wrapped it: the lines of output ended before it, and the columns before it in its own.
+fn unwrapped(wraps: &VecDeque<usize>, (line, col): (usize, usize)) -> (usize, usize) {
+    let before = wraps.range(..line.min(wraps.len()));
+    let first = before.clone().rposition(|&w| w == 0).map_or(0, |i| i + 1);
+    let ended = before.clone().filter(|&&w| w == 0).count();
+    (ended, col + before.skip(first).sum::<usize>())
+}
+
+/// The snapshot line and display column of an [`unwrapped`] place, in lines wrapped as `wraps`
+/// says.
+fn rewrapped(wraps: &VecDeque<usize>, (n, mut col): (usize, usize)) -> (usize, usize) {
+    let mut ends = wraps.iter().enumerate().filter(|(_, w)| **w == 0);
+    let mut line = n
+        .checked_sub(1)
+        .map_or(0, |n| ends.nth(n).map_or(wraps.len(), |e| e.0 + 1));
+    while let Some(&w) = wraps.get(line).filter(|&&w| w > 0 && col >= w) {
+        (line, col) = (line + 1, col - w);
+    }
+    (line, col)
+}
+
 /// The line a cursor can go to last: the one before the empty line after a final newline.
 fn last_line(t: &TextBuf) -> usize {
     let ends = !t.is_empty() && t.rope().byte(t.len() - 1) == b'\n';
@@ -85,6 +121,16 @@ impl Copy {
         let from = t.line_start(st.dropped + st.from);
         t.splice(from..t.len(), &st.text);
         t.splice(0..cut, "");
+        let w = &mut self.wraps;
+        w.truncate(st.dropped + st.from);
+        let at = w.len();
+        w.resize(at + st.text.matches('\n').count(), 0);
+        for &(line, cols) in &st.wrapped {
+            if let Some(w) = w.get_mut(at + line) {
+                *w = cols;
+            }
+        }
+        w.drain(..st.dropped.min(w.len()));
         let (line, byte) = st.cursor.unwrap_or((last_line(t), 0));
         let at = (t.line_start(line) + byte).min(t.len());
         self.cursor = t.snap(at, None);
@@ -178,6 +224,7 @@ impl Ctx {
             text,
             cursor: 0,
             stale: false,
+            wraps: VecDeque::new(),
         };
         c.take(&st);
         if let Some(Content::Custom { copy, .. }) =
@@ -185,7 +232,21 @@ impl Ctx {
         {
             *copy = Some(Box::new(c));
         }
+        self.copy_widths(buf);
         self.copy_home(buf, st.shown_top);
+    }
+
+    /// Give the snapshot the surface buffer's maximum width and centering.
+    pub(crate) fn copy_widths(&mut self, buf: BufferId) {
+        let Some(Content::Custom { copy, settings, .. }) =
+            self.buffers.get_mut(buf).map(|b| &mut b.content)
+        else {
+            return;
+        };
+        if let Some(c) = copy {
+            let s = &mut c.text.settings;
+            (s.max_width, s.center) = (settings.max_width, settings.center);
+        }
     }
 
     /// Read the whole text again, as after a resize reflows it.
@@ -229,14 +290,15 @@ impl Ctx {
     /// Read what changed, in normal state with no prompt, or with `whole` all of it. Each
     /// follower keeps its place below the surface's cursor line, on the cursor if it was there,
     /// and its distance above the live view. The others keep their lines, less those that left
-    /// the start, so the rows a surface shows there are still the lines they have.
+    /// the start, so the rows a surface shows there are still the lines they have; after a
+    /// resize, their places in the lines of output the surface reflowed.
     fn copy_follow(&mut self, buf: BufferId, whole: bool) {
         let follows = self.state_of(buf) == State::Normal && self.prompt.is_none();
         let Some(c) = self.copy_mut(buf) else { return };
         let (t, cursor) = (&c.text, c.cursor);
         let (cursor_line, live) = (t.line_of(cursor), c.live_top());
         let at = |p: usize| (t.line_of(p), t.display_col(p));
-        let places: Vec<Place> = (t.views.iter())
+        let mut places: Vec<Place> = (t.views.iter())
             .map(|(&w, v)| {
                 let head = at(v.sel.head);
                 let top = t.line_of(t.scroll(w).map_or(0, |s| s.0));
@@ -263,7 +325,17 @@ impl Ctx {
             (st.dropped, st.from) = (0, 0);
         }
         let Some(c) = self.copy_mut(buf) else { return };
+        let old = whole.then(|| std::mem::take(&mut c.wraps));
         c.take(&st);
+        if let Some(old) = &old {
+            let moved = |at| rewrapped(&c.wraps, unwrapped(old, at));
+            for p in places.iter_mut().filter(|p| p.below.is_none()) {
+                (p.head, p.anchor, p.top) = (moved(p.head), moved(p.anchor), moved((p.top, 0)).0);
+            }
+        }
+        for p in places.iter_mut().filter(|_| st.renumbered) {
+            (p.below, p.on_cursor, p.above_live) = (Some(0), true, 0);
+        }
         let (t, cursor) = (&mut c.text, c.cursor);
         let (cursor_line, last) = (t.line_of(cursor), last_line(t));
         let live = t.line_of(t.top_limit.unwrap_or(0));
@@ -311,8 +383,8 @@ impl Ctx {
         Some(t.line_of(t.scroll(w)?.0))
     }
 
-    /// Draw copy state's selection and search matches over the cells a surface drew, and
-    /// return the cursor, as `draw_window` does.
+    /// Draw copy state's selection and search matches over the cells a surface drew in its
+    /// area, which is the snapshot's text area, and return the cursor, as `draw_window` does.
     pub(crate) fn draw_copy(
         &self,
         scene: &mut Scene,
@@ -323,6 +395,10 @@ impl Ctx {
         let t = self.buffers.get(buf)?.content.text()?;
         let (w, cols) = (p.window, self.windows.get(p.window)?.cols);
         let (vp, sel) = (t.viewport(w)?, t.selection(w)?);
+        let g = vp.geometry;
+        // A click past a row's end, the right margin too, finds its end, as in a text window.
+        let (x0, room) = (p.col + g.text_x, cols.saturating_sub(g.text_x));
+        let area = g.text_w.min(room);
         let shown = || {
             let cells = vp.rows.iter().flat_map(|r| r.cells.iter().map(|c| c.pos));
             cells.chain(vp.rows.iter().filter_map(|r| r.line_end.map(|e| e.pos)))
@@ -359,23 +435,23 @@ impl Ctx {
             let at = cells.map(|(j, c)| (j, c.pos, c.vcol)).chain(ends);
             let y = p.row + i;
             let mut end = None;
-            for (j, pos, vcol) in at.filter(|a| a.0 < cols) {
+            for (j, pos, vcol) in at.filter(|a| a.0 < area) {
                 // A click finds the position, as on text, and past the row's end its end.
-                scene.map(y, p.col + j, (w, pos));
+                scene.map(y, x0 + j, (w, pos));
                 end = Some((j, pos));
                 let Some(face) = face_at(pos, vcol) else {
                     continue;
                 };
                 let style = self.faces.get(face);
-                let Some(mut cell) = scene.row(y).get(p.col + j).cloned() else {
+                let Some(mut cell) = scene.row(y).get(x0 + j).cloned() else {
                     continue;
                 };
                 cell.fg = style.fg.unwrap_or(cell.fg);
                 cell.bg = style.bg.unwrap_or(cell.bg);
-                scene.put(y, p.col + j, cell);
+                scene.put(y, x0 + j, cell);
             }
             if let Some((j, pos)) = end {
-                (j + 1..cols).for_each(|x| scene.map(y, p.col + x, (w, pos)));
+                (j + 1..room).for_each(|x| scene.map(y, x0 + x, (w, pos)));
             }
         }
         let (row, col) = t.screen_pos(w, sel.head)?;

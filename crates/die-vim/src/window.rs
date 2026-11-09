@@ -297,8 +297,19 @@ fn refusal(ctx: &Ctx, b: BufferId) -> Error {
     ))
 }
 
-/// Quit, which refuses while a file has unsaved changes. `force` drops them instead.
+/// Quit, which refuses while a file has unsaved changes. `force` drops them instead. Then the
+/// config's question, if it has one ([`crate::Vim::asking_before_quit`]), whatever `force` is,
+/// since `!` speaks for unsaved text and not for a program running in a terminal.
 pub fn quit_app(ctx: &mut Ctx, force: bool) -> Result {
+    let ask = ctx.with_ext(|v: &mut crate::Vim, _| v.ask_before_quit)?;
+    let refused = !force && ctx.buffer_list().into_iter().any(|b| unsaved(ctx, b));
+    match ask.filter(|_| !refused) {
+        Some(ask) => ask(ctx, Box::new(move |ctx| quit_now(ctx, force))),
+        None => quit_now(ctx, force), // which refuses unsaved text before anything's asked
+    }
+}
+
+fn quit_now(ctx: &mut Ctx, force: bool) -> Result {
     let all = ctx.buffer_list().into_iter();
     let unsaved: Vec<BufferId> = all.filter(|b| unsaved(ctx, *b)).collect();
     if let Some(b) = unsaved.first().filter(|_| !force) {

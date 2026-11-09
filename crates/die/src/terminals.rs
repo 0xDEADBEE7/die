@@ -59,6 +59,12 @@ pub enum Ending {
     Rebuild,
 }
 
+/// What die-vim asks before it quits (`Vim::asking_before_quit`): Cmd-Q's question, for `:q` in
+/// the last window and `:qa` too, with `!` as well, since `!` speaks only for unsaved text.
+pub(crate) fn before_quit(ctx: &mut Ctx, quit: Box<dyn FnOnce(&mut Ctx) -> Result>) -> Result {
+    unless_busy(ctx, Ending::Quit, quit)
+}
+
 /// Do `then` now if no terminal has a program running, or else once you say yes (scope D18's
 /// Cmd-Q). A shell at its prompt doesn't count.
 pub fn unless_busy(

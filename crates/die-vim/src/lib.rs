@@ -106,6 +106,21 @@ pub struct Vim {
     /// A command on lines is running from a `:` typed in visual state, whose start your Evil's
     /// `:y` goes back to.
     ex_visual: bool,
+    /// What every quit asks first ([`Vim::asking_before_quit`]).
+    ask_before_quit: Option<AskBeforeQuit>,
+}
+
+/// A question before DIE quits, given the quit to do on a yes, as the `die` facade asks while a
+/// program runs in a terminal (scope D18).
+pub type AskBeforeQuit = fn(&mut Ctx, Box<dyn FnOnce(&mut Ctx) -> Result>) -> Result;
+
+impl Vim {
+    /// With `ask` asked before every quit: `:q` in the last window, `:qa`, `ZQ` and the rest,
+    /// with `!` too, and the facade's Cmd-Q, once unsaved text is refused.
+    pub fn asking_before_quit(mut self, ask: AskBeforeQuit) -> Vim {
+        self.ask_before_quit = Some(ask);
+        self
+    }
 }
 
 #[rustfmt::skip]

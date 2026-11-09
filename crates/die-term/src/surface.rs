@@ -3,19 +3,20 @@
 //! What the program prints reaches [`Term::feed`] from the top of the loop, for at most [`TURN`]
 //! a turn, so a key or the frame goes between, and the engine's answers go back to the PTY. In
 //! insert state, which is core's passthrough, every key outside the DIE layer goes through the
-//! engine's encoder to the program; core leaves for normal state on a plain Esc unless
-//! [`Surface::takes_esc`] says the program has it: on the alternate screen, or always or never as
-//! the buffer's [`Escape`] routing says, as evil-ghostel's `evil-ghostel-escape` does.
+//! engine's encoder to the program; core leaves for normal state on a plain Esc, on the alternate
+//! screen too, unless [`Surface::takes_esc`] says the program has it, as the buffer's [`Escape`]
+//! routing says: never by default, always, or on the alternate screen, evil-ghostel's `auto`.
 //!
 //! Normal state is copy state: core reads the engine's text through [`CopyText`] as the buffer
-//! leaves insert, and again as output arrives, and die-vim's grammar runs over it. Its Esc goes
-//! to the program only while [`TermSurface::busy`] and out of line mode, and once until another
-//! key.
+//! leaves insert, and again as output arrives, and die-vim's grammar runs over it, over the
+//! alternate screen's rows alone while a program is there. Its Esc goes to the program only
+//! while [`TermSurface::busy`] and out of line mode, and once until another key.
 //!
 //! **Size.** One terminal has one size, whichever windows show it (C10): the smallest columns
-//! and the smallest rows among them, as Emacs's `window-adjust-process-window-size-smallest`
-//! gives a process, so the program never draws past a window. A larger window shows the grid at
-//! its top left. It's worked out again on each resize and focus change.
+//! and the smallest rows among their areas, as Emacs's `window-adjust-process-window-size-smallest`
+//! gives a process, so the program never draws past one. An area is what the buffer's maximum
+//! width and centering leave of a window, as for a file's text (`Ctx::surface_area`). A larger
+//! area shows the grid at its top left. It's worked out again on each resize and focus change.
 use crate::{CopyText, Event, MouseTracking, PasteRefused, Pointer, PointerAction, PointerButton};
 use crate::{Term, TermCursor};
 use die_core::{
@@ -29,16 +30,18 @@ use std::time::{Duration, Instant};
 /// The surface kind, which names the keymap a terminal's normal state uses.
 pub const KIND: &str = "term";
 
-/// Where a plain Esc in insert state goes: evil-ghostel's three routings, set per buffer by
-/// `term-toggle-send-escape`.
+/// Where a plain Esc in insert state goes, set per buffer by `term-toggle-send-escape`: to
+/// normal state by default, on the alternate screen too, so Esc Esc reaches a fullscreen
+/// program from insert (scope D18).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Escape {
-    /// To the program while it's on the alternate screen (vim, less, htop), else to normal state.
-    #[default]
+    /// evil-ghostel's `auto`: to the program while it's on the alternate screen (vim, less,
+    /// htop), else to normal state.
     Auto,
-    /// Always to the program.
+    /// Always to the program, for vim run in the terminal.
     Program,
     /// Always to normal state.
+    #[default]
     Normal,
 }
 
@@ -230,12 +233,13 @@ impl TermSurface {
         }
     }
 
-    /// Fit the terminal to the windows showing it: the smallest columns and rows among them, and
-    /// `fallback`'s size if none in the split tree does.
+    /// Fit the terminal to the windows showing it: the smallest columns and rows among their
+    /// areas, and `fallback`'s size if none in the split tree does.
     fn fit(&mut self, ctx: &mut Ctx, fallback: Option<(usize, usize)>, cell: CellPixels) {
         let showing = ctx.window_list().into_iter();
         let showing = showing.filter(|w| ctx.window_buffer(*w) == Some(self.buf));
-        let sizes = showing.filter_map(|w| ctx.window_size(w));
+        let areas = showing.filter_map(|w| ctx.surface_area(w));
+        let sizes = areas.map(|g| (g.text_w, g.rows));
         let sizes: Vec<(usize, usize)> = sizes.filter(|&(c, r)| c > 0 && r > 0).collect();
         let size = match (
             sizes.iter().map(|s| s.0).min(),
@@ -262,7 +266,7 @@ impl TermSurface {
         ctx.surface_text_changed(self.buf);
     }
 
-    fn key(&mut self, ev: &KeyEvent, ctx: &mut Ctx) -> bool {
+    fn key(&mut self, ev: &KeyEvent) -> bool {
         // The DIE layer is DIE's (scope D18): a Cmd chord nothing binds goes nowhere.
         if ev.mods.super_ || ev.key == Key::Modifier(ModifierKey::Super) {
             return false;
@@ -273,11 +277,6 @@ impl TermSurface {
         }
         if ev.kind != KeyKind::Release && !matches!(ev.key, Key::Modifier(_)) {
             self.term.scroll_to_bottom();
-        }
-        let esc = ev.chord(); // Ctrl-[ too
-        let plain_esc = esc.key == Key::Esc && esc.mods == die_core::Mods::default();
-        if plain_esc && ev.kind == KeyKind::Press && self.escape == Escape::Auto {
-            crate::commands::hint_once(ctx);
         }
         self.write(&bytes);
         true
@@ -386,8 +385,11 @@ impl Surface for TermSurface {
 
     fn event(&mut self, ev: &die_core::Event, ctx: &mut Ctx) -> bool {
         match ev {
-            die_core::Event::Key(k) if ctx.state_of(self.buf) == State::Passthrough => {
-                self.key(k, ctx)
+            // A release comes in any state, when its press came in insert (contract §7).
+            die_core::Event::Key(k)
+                if k.kind == KeyKind::Release || ctx.state_of(self.buf) == State::Passthrough =>
+            {
+                self.key(k)
             }
             die_core::Event::Resize {
                 cols, rows, cell, ..
@@ -421,6 +423,13 @@ impl Surface for TermSurface {
             Escape::Program => true,
             Escape::Normal => false,
         }
+    }
+
+    /// In normal state too, the wheel goes to a program that tracks the mouse, as ghostel's
+    /// scroll intercept sends it in every Evil state: Claude Code's fullscreen mode scrolls its
+    /// transcript with it, and its screen has no scrollback for copy state to scroll.
+    fn takes_wheel(&self) -> bool {
+        self.term.modes().mouse != MouseTracking::None
     }
 
     fn initial_state(&self) -> State {
