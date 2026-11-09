@@ -1,7 +1,7 @@
 //! Terminal buffers on real PTYs (scope §6, D18): typing reaches the shell and its output the
-//! cells; Esc leaves insert on the main screen, goes to the program in normal state (once a run,
-//! and not to the shell at its prompt nor in line mode) and on the alternate screen, and the
-//! toggle routes it; a resize reaches `stty size`; a paste is bracketed;
+//! cells; Esc leaves insert, on the alternate screen too, even with a fullscreen program's kitty
+//! flags, and goes to the program in normal state (once a run, and not to the shell at its prompt
+//! nor in line mode), and the toggle routes it; a resize reaches `stty size`; a paste is bracketed;
 //! a flood doesn't hold up a key; the wheel scrolls back; the program's exit closes the buffer;
 //! normal state is your Evil over the scrollback, follows output at the bottom and keeps the
 //! program's colors; and nothing is left running after a quit, with no terminal in the session.
@@ -13,7 +13,7 @@ use die_test_cap as _;
 
 use die_core::pty::trampoline;
 use die_core::*;
-use die_term::{Escape, NAME, Spec, TermSurface, Terminals, busy, open};
+use die_term::{Escape, MouseTracking, NAME, Spec, TermSurface, Terminals, busy, open};
 use die_vim::Vim;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -383,30 +383,45 @@ v=$(dd bs=1 count=2 2>/dev/null | od -An -tx1); stty sane; printf '\033[?1049l'
 echo read: $v
 "#;
 
-fn esc_reaches_vim_and_less_on_the_alternate_screen() {
+/// What you asked: Esc in insert goes to normal state on the alternate screen too, and normal
+/// state's Esc then goes to the program, so Esc Esc leaves vim's insert mode and less reads it.
+/// Normal state there is copy state over the program's screen alone.
+fn esc_on_the_alternate_screen_goes_to_normal_and_esc_esc_reaches_vim_and_less() {
     let (mut ctx, buf) = shell();
     ctx.type_keys("vim -u NONE<CR>");
     wait_until(&mut ctx, "in vim", |ctx| alt(ctx, buf));
+    wait_busy(&mut ctx);
     wait_for(&mut ctx, "~");
     settle(&mut ctx, Duration::from_millis(300));
     ctx.type_keys("i<Esc>");
-    assert_eq!(ctx.state(), State::Passthrough, "Esc went to vim");
-    assert!(
-        ctx.messages
-            .iter()
-            .any(|m| m.contains("Cmd-Esc goes to normal")),
-        "it says so once: {:?}",
-        ctx.messages
+    assert_eq!(
+        ctx.state(),
+        State::Normal,
+        "Esc on vim's screen leaves insert"
     );
+    let text = ctx.text(buf).unwrap().rope().to_string();
+    assert!(
+        text.contains("\n~\n") && !text.contains("vim -u NONE"),
+        "vim's screen alone: {text:?}"
+    );
+    ctx.type_keys("<Esc>");
+    assert_eq!(ctx.state(), State::Normal, "Esc in normal stays there");
+    ctx.type_keys("i");
     settle(&mut ctx, Duration::from_millis(200));
-    // Had Esc not reached vim, this would be text in vim's buffer.
+    // Had the Esc not reached vim, still in its insert mode, this would be text in its buffer.
     ctx.type_keys(":q<CR>");
     wait_until(&mut ctx, "out of vim", |ctx| !alt(ctx, buf));
     ctx.type_keys("printf 'one\\ntwo\\n' | less<CR>");
     wait_until(&mut ctx, "in less", |ctx| alt(ctx, buf));
     wait_for(&mut ctx, "(END)");
+    wait_busy(&mut ctx);
     ctx.type_keys("<Esc>");
-    assert_eq!(ctx.state(), State::Passthrough, "Esc went to less");
+    assert_eq!(
+        ctx.state(),
+        State::Normal,
+        "Esc on less's screen leaves insert"
+    );
+    ctx.type_keys("<Esc>i");
     settle(&mut ctx, Duration::from_millis(200));
     // less reads Esc q as one command, so only the second q quits: it had the Esc.
     ctx.type_keys("q");
@@ -414,18 +429,19 @@ fn esc_reaches_vim_and_less_on_the_alternate_screen() {
     assert!(alt(&mut ctx, buf), "less read Esc q as one command");
     ctx.type_keys("q");
     wait_until(&mut ctx, "out of less", |ctx| !alt(ctx, buf));
-    // And as bytes: a program on the alternate screen reads the Esc itself. A script of its own,
-    // so the reader is a job with the terminal: a `$(...)` at the prompt is in the shell's group.
+    // And as bytes: the leaving Esc sends none, normal state's one. A script of its own, so the
+    // reader is a job with the terminal: a `$(...)` at the prompt is in the shell's group.
     let reader = home().join("alt");
     std::fs::write(&reader, ALT_RAW).unwrap();
     ctx.type_keys(&format!("sh '{}'<CR>", reader.display()));
     wait_for(&mut ctx, "alt-ready");
     assert!(alt(&mut ctx, buf), "on the alternate screen");
     wait_busy(&mut ctx);
-    ctx.type_keys("<Esc>x");
-    assert_eq!(ctx.state(), State::Passthrough);
+    ctx.type_keys("<Esc>");
+    assert_eq!(ctx.state(), State::Normal);
+    ctx.type_keys("<Esc>ix");
     wait_for(&mut ctx, "read: 1b 78");
-    // The DIE layer's Esc leaves even on the alternate screen.
+    // The DIE layer's Esc leaves as ever.
     ctx.type_keys("vim -u NONE<CR>");
     wait_until(&mut ctx, "in vim again", |ctx| alt(ctx, buf));
     ctx.type_keys("<D-Esc>");
@@ -434,13 +450,20 @@ fn esc_reaches_vim_and_less_on_the_alternate_screen() {
     settle(&mut ctx, Duration::from_millis(200));
     ctx.type_keys(":q<CR>");
     wait_until(&mut ctx, "out of vim again", |ctx| !alt(ctx, buf));
+    let hints = ctx.messages.iter().filter(|m| m.contains("alternate"));
+    assert_eq!(hints.count(), 0, "no hint: {:?}", ctx.messages);
 }
 
-fn the_toggle_sends_esc_to_the_program_or_to_normal_state() {
+/// The toggle: insert's Esc goes to normal state by default; `C-c C-r` sends it to the program,
+/// for vim run in the terminal, and back. `1 C-c C-r` is evil-ghostel's auto, `2` the program
+/// and `3` normal state, and from auto the toggle is back at normal state.
+fn the_toggle_sends_insert_esc_to_the_program_and_a_count_picks_auto() {
     let (mut ctx, buf) = shell();
+    let escape = |ctx: &mut Ctx| with(ctx, buf, |s| s.escape());
+    assert_eq!(escape(&mut ctx), Escape::Normal, "the default");
     ctx.run("term-toggle-send-escape", &Args::default())
         .unwrap();
-    assert_eq!(with(&mut ctx, buf, |s| s.escape()), Escape::Program);
+    assert_eq!(escape(&mut ctx), Escape::Program);
     assert_eq!(
         ctx.messages.last().unwrap(),
         "Esc in insert: to the program"
@@ -453,36 +476,123 @@ fn the_toggle_sends_esc_to_the_program_or_to_normal_state() {
     wait_for(&mut ctx, "^[y");
     ctx.run("term-toggle-send-escape", &Args::default())
         .unwrap();
-    assert_eq!(with(&mut ctx, buf, |s| s.escape()), Escape::Auto);
-    let said = ctx.messages.last().unwrap();
-    assert_eq!(said, "Esc in insert: auto (to normal state now)");
+    assert_eq!(escape(&mut ctx), Escape::Normal);
+    assert_eq!(
+        ctx.messages.last().unwrap(),
+        "Esc in insert: to normal state"
+    );
     ctx.type_keys("<Esc>");
-    assert_eq!(ctx.state(), State::Normal, "auto, on the main screen");
+    assert_eq!(ctx.state(), State::Normal, "back to normal state");
     // C-c C-r is the toggle's key in normal state, as evil-ghostel binds it.
     ctx.type_keys("<C-c><C-r>");
-    assert_eq!(with(&mut ctx, buf, |s| s.escape()), Escape::Program);
+    assert_eq!(escape(&mut ctx), Escape::Program);
     ctx.type_keys("i<C-c>");
     wait_until(&mut ctx, "back at the prompt", |ctx| busy(ctx).is_empty());
-    // Always to normal state, even on the alternate screen.
-    let three = Args {
-        count: Some(3),
-        ..Args::default()
-    };
-    ctx.run("term-toggle-send-escape", &three).unwrap();
-    assert_eq!(with(&mut ctx, buf, |s| s.escape()), Escape::Normal);
+    // The program's: insert's Esc leaves vim's insert mode, and DIE stays in insert.
     ctx.type_keys("vim -u NONE<CR>");
     wait_until(&mut ctx, "in vim", |ctx| alt(ctx, buf));
+    wait_busy(&mut ctx);
+    settle(&mut ctx, Duration::from_millis(300));
+    ctx.type_keys("i<Esc>");
+    assert_eq!(ctx.state(), State::Passthrough, "Esc went to vim");
+    // Auto: to vim on its screen, and to normal state on the main screen.
+    ctx.type_keys("<D-Esc>1<C-c><C-r>");
+    assert_eq!(escape(&mut ctx), Escape::Auto);
+    let said = ctx.messages.last().unwrap();
+    assert_eq!(said, "Esc in insert: auto (to the program now)");
+    ctx.type_keys("i<Esc>");
+    assert_eq!(ctx.state(), State::Passthrough, "auto, on vim's screen");
+    settle(&mut ctx, Duration::from_millis(200));
+    // Had either Esc not reached vim, this would be text in its buffer.
+    ctx.type_keys(":q<CR>");
+    wait_until(&mut ctx, "out of vim", |ctx| !alt(ctx, buf));
     ctx.type_keys("<Esc>");
-    assert_eq!(ctx.state(), State::Normal, "routed to normal state");
+    assert_eq!(ctx.state(), State::Normal, "auto, on the main screen");
+    ctx.type_keys("<C-c><C-r>");
+    assert_eq!(escape(&mut ctx), Escape::Normal, "from auto, the default");
+    for (n, want) in [(2, Escape::Program), (3, Escape::Normal), (1, Escape::Auto)] {
+        ctx.type_keys(&format!("{n}<C-c><C-r>"));
+        assert_eq!(escape(&mut ctx), want, "{n} C-c C-r");
+    }
+    let said = ctx.messages.last().unwrap();
+    assert_eq!(said, "Esc in insert: auto (to normal state now)");
     let bad = Args {
         count: Some(4),
         ..Args::default()
     };
     assert!(ctx.run("term-toggle-send-escape", &bad).is_err());
-    ctx.type_keys("i");
-    settle(&mut ctx, Duration::from_millis(200));
-    ctx.type_keys(":q<CR>");
-    wait_until(&mut ctx, "out of vim", |ctx| !alt(ctx, buf));
+}
+
+/// A fullscreen program, as Claude Code's fullscreen mode and btop are: on the alternate
+/// screen, with the kitty keyboard flags pushed (31: every key as an escape code, releases
+/// too), SGR mouse tracking and bracketed paste, then reading raw and logging every byte.
+const FULLSCREEN: &str = r#"printf '\033[?1049h\033[>31u\033[?1000h\033[?1006h\033[?2004h\033[H'
+printf 'fullscreen top\r\n'
+stty raw -echo
+printf 'fullscreen-ready\r\n'
+exec dd bs=1 of="$1" 2>/dev/null
+"#;
+
+/// What you hit with Claude Code's fullscreen mode: its Esc no longer goes to it from insert,
+/// whatever it asked of the terminal. The leaving Esc and its release send nothing, nor does a
+/// click in normal state, and normal state's next Esc sends one, as the flags encode it: a
+/// press and its release. More Escs send nothing, and Esc Esc from insert sends one again.
+fn a_fullscreen_program_loses_esc_to_normal_state_and_gets_one_from_the_next() {
+    let (mut ctx, buf) = shell();
+    ctx.type_keys("seq 1 30<CR>");
+    wait_for(&mut ctx, "\n30\n");
+    let dir = home();
+    let (script, log) = (dir.join("fullscreen"), dir.join("log"));
+    std::fs::write(&script, FULLSCREEN).unwrap();
+    let logged = || String::from_utf8_lossy(&std::fs::read(&log).unwrap_or_default()).into_owned();
+    ctx.type_keys(&format!(
+        "sh '{}' '{}'<CR>",
+        script.display(),
+        log.display()
+    ));
+    wait_for(&mut ctx, "fullscreen-ready");
+    wait_busy(&mut ctx);
+    let modes = with(&mut ctx, buf, |s| s.term().modes());
+    let asked = modes.alt_screen && modes.kitty_flags == 31 && modes.bracketed_paste;
+    assert!(asked && modes.mouse != MouseTracking::None, "{modes:?}");
+    ctx.type_keys("<Esc>");
+    ctx.input(KeyEvent::press(Key::Esc).kind(KeyKind::Release));
+    ctx.run_until_idle();
+    assert_eq!(ctx.state(), State::Normal, "Esc leaves insert");
+    let text = ctx.text(buf).unwrap().rope().to_string();
+    assert!(
+        text.starts_with("fullscreen top\nfullscreen-ready\n") && !text.contains("30"),
+        "the program's screen alone: {text:?}"
+    );
+    ctx.scene();
+    for kind in [
+        PointerKind::Press(Button::Left),
+        PointerKind::Release(Button::Left),
+    ] {
+        ctx.handle(Input::Pointer(PointerEvent {
+            kind,
+            row: 0,
+            col: 3,
+            clicks: 1,
+            mods: Mods::default(),
+            px: None,
+        }));
+    }
+    ctx.run_until_idle();
+    let one = "\x1b[27u\x1b[27;1:3u";
+    ctx.type_keys("<Esc>");
+    wait_until(&mut ctx, "an Esc logged", |_| !logged().is_empty());
+    ctx.type_keys("<Esc><Esc>");
+    settle(&mut ctx, Duration::from_millis(300));
+    assert_eq!(logged(), one, "one Esc, from normal state's first");
+    ctx.type_keys("i<Esc><Esc>");
+    let two = one.repeat(2);
+    wait_until(&mut ctx, "a second Esc logged", |_| {
+        logged().len() >= two.len()
+    });
+    settle(&mut ctx, Duration::from_millis(300));
+    assert_eq!(logged(), two, "one more from Esc Esc in insert");
+    assert_eq!(ctx.state(), State::Normal);
 }
 
 fn a_resize_reaches_stty_size_and_exit_closes_the_buffer() {
@@ -1230,12 +1340,16 @@ fn main() {
             esc_in_normal_during_a_job_in_line_mode_waits_for_no_prompt,
         ),
         (
-            "esc_reaches_vim_and_less_on_the_alternate_screen",
-            esc_reaches_vim_and_less_on_the_alternate_screen,
+            "esc_on_the_alternate_screen_goes_to_normal_and_esc_esc_reaches_vim_and_less",
+            esc_on_the_alternate_screen_goes_to_normal_and_esc_esc_reaches_vim_and_less,
         ),
         (
-            "the_toggle_sends_esc_to_the_program_or_to_normal_state",
-            the_toggle_sends_esc_to_the_program_or_to_normal_state,
+            "the_toggle_sends_insert_esc_to_the_program_and_a_count_picks_auto",
+            the_toggle_sends_insert_esc_to_the_program_and_a_count_picks_auto,
+        ),
+        (
+            "a_fullscreen_program_loses_esc_to_normal_state_and_gets_one_from_the_next",
+            a_fullscreen_program_loses_esc_to_normal_state_and_gets_one_from_the_next,
         ),
         (
             "a_resize_reaches_stty_size_and_exit_closes_the_buffer",
