@@ -408,9 +408,19 @@ impl Orchid {
         self.buffers(ctx, Kind::Chat).into_iter().find(on)
     }
 
-    /// A buffer was killed: forget it, and stop the poll if it was the last to want it.
+    /// A buffer was killed: forget it, and stop the poll if it was the last to want it. A chat
+    /// takes its session's events' log with it, as Emacs's stopped its monitor.
     fn killed(&mut self, ctx: &mut Ctx, buf: BufferId) {
-        self.tracked.remove(&buf);
+        let gone = self.tracked.remove(&buf);
+        let id = gone.and_then(|t| Some(t.state.get("id")?.as_str()?.to_string()));
+        if let Some(id) = id {
+            ctx.defer(move |ctx| {
+                if let Some(log) = ctx.find_buffer(&chat::events_buffer(&id)) {
+                    ctx.kill(log);
+                }
+                Ok(())
+            });
+        }
         self.poll.settle(ctx);
     }
 }
@@ -458,7 +468,9 @@ pub fn refresh_sessions(
 
 /// Ask for an agent, as the Emacs client's `Agent: ` did: `orchid agent`'s, those it says are
 /// valid (the Emacs client offered broken ones too, A12), one of them required. Then `done`
-/// with it. With none, it says so, and asks nothing.
+/// with it. With none, it says so, and asks nothing. A prompt you opened while orchid answered
+/// stays yours, and `Agent: ` comes when it closes: Emacs asked orchid while it waited, so it
+/// never took a prompt from you.
 pub fn read_agent(
     ctx: &mut Ctx,
     done: impl FnOnce(&mut Ctx, String) -> Result + 'static,
@@ -481,19 +493,39 @@ pub fn read_agent(
                 "No agents available; check `orchid agent' and your CLI configuration".into(),
             ));
         }
-        let spec = PromptSpec::new("Agent: ").candidates(names).require_match();
-        ctx.prompt(spec, |ctx, agent| match agent.filter(|a| !a.is_empty()) {
-            Some(agent) => done(ctx, agent),
-            None => Ok(()),
-        });
+        ask_agent(ctx, names, Box::new(done));
         Ok(())
     };
     cli(ctx)?.run(ctx, Cmd::Agent, None, answered).detach();
     Ok(())
 }
 
-/// Ask `question` as Emacs's `yes-or-no-p` does: `yes` or `no` typed out, never a bare `<CR>`, and
-/// again until it's one of them. Then `done` with the answer. A cancel answers nothing.
+/// How often `Agent: ` looks again for the prompt that was open when orchid answered to close.
+const PROMPT_WAIT: Duration = Duration::from_millis(200);
+
+/// What an agent's answer does.
+type AgentChosen = Box<dyn FnOnce(&mut Ctx, String) -> Result>;
+
+/// `Agent: ` among `names`, once no other prompt is open.
+fn ask_agent(ctx: &mut Ctx, names: Vec<String>, done: AgentChosen) {
+    if ctx.prompt_text().is_some() {
+        let again = move |ctx: &mut Ctx| {
+            ask_agent(ctx, names, done);
+            Ok(())
+        };
+        ctx.after(PROMPT_WAIT, again).detach();
+        return;
+    }
+    let spec = PromptSpec::new("Agent: ").candidates(names).require_match();
+    ctx.prompt(spec, |ctx, agent| match agent.filter(|a| !a.is_empty()) {
+        Some(agent) => done(ctx, agent),
+        None => Ok(()),
+    });
+}
+
+/// Ask `question` as Emacs's `yes-or-no-p` does: `yes` or `no` typed out, in any case but with
+/// nothing around it, never a bare `<CR>`, and again until it's one of them. Then `done` with the
+/// answer. A cancel answers nothing.
 pub fn yes_or_no(
     ctx: &mut Ctx,
     question: &str,
@@ -508,7 +540,7 @@ type Answered = Box<dyn FnOnce(&mut Ctx, bool) -> Result>;
 fn ask_yes_or_no(ctx: &mut Ctx, question: String, done: Answered) {
     let label = format!("{question}(yes or no) ");
     ctx.prompt(label.as_str(), move |ctx, answer| {
-        match answer.as_deref().map(str::trim) {
+        match answer.map(|a| a.to_lowercase()).as_deref() {
             None => Ok(()),
             Some("yes") => done(ctx, true),
             Some("no") => done(ctx, false),
@@ -566,17 +598,23 @@ fn here(ctx: &Ctx, args: &Args) -> PathBuf {
 // ------------------------------------------------------------------ commands
 
 /// `orchid-open-session`: by id or label, asked for unless given (`:orchid-open-session ID`),
-/// from the sessions there are now. The Emacs client lost the id it found by label (B1).
+/// from the sessions there are now, and then says so, as Emacs's did. The Emacs client lost the
+/// id it found by label (B1).
 fn open_session(ctx: &mut Ctx, args: &Args) -> Result {
     let open = |ctx: &mut Ctx, wanted: String| -> Result {
         ctx.messages.push("Refreshing sessions...".into());
         refresh_sessions(ctx, move |ctx| {
             let found =
                 ctx.with_ext(|o: &mut Orchid, _| o.find_session(&wanted).map(|s| s.id.clone()))?;
-            let id = found.ok_or_else(|| {
-                Error::Msg(format!("Failed to open session: no session {wanted}"))
-            })?;
-            chat::open(ctx, &id)
+            let said = match found {
+                Some(id) => {
+                    chat::open(ctx, &id)?;
+                    format!("Opened session: {wanted}")
+                }
+                None => format!("Failed to open session: Session '{wanted}' not found"),
+            };
+            ctx.messages.push(said);
+            Ok(())
         })?
         .detach();
         Ok(())
@@ -592,6 +630,21 @@ fn open_session(ctx: &mut Ctx, args: &Args) -> Result {
             ctx.prompt("Session ID or label: ", move |ctx, answer| match answer {
                 Some(a) if !a.trim().is_empty() => open(ctx, a.trim().to_string()),
                 _ => Ok(()),
+            });
+            Ok(())
+        }
+    }
+}
+
+/// `orchid-log-show`: `Session ID: `, unless given (`:orchid-log-show ID`), then that session's
+/// events as its chat has read them, as Emacs's showed its monitor's copy of them.
+fn log_show(ctx: &mut Ctx, args: &Args) -> Result {
+    match args.text.as_deref().map(str::trim) {
+        Some(id) if !id.is_empty() => chat::show_events(ctx, id),
+        _ => {
+            ctx.prompt("Session ID: ", |ctx, id| match id {
+                Some(id) => chat::show_events(ctx, &id),
+                None => Ok(()),
             });
             Ok(())
         }
@@ -684,6 +737,11 @@ impl Extension for Orchid {
             browser::show(ctx)
         });
         reg.command(
+            "orchid-session-browser-show",
+            "Show the orchid session browser, as orchid does.",
+            |ctx, _| browser::show(ctx),
+        );
+        reg.command(
             "orchid-open-session",
             "Open a chat on an orchid session, by its id or label.",
             open_session,
@@ -703,9 +761,11 @@ impl Extension for Orchid {
             "Say whether orchid is on the PATH, and its version.",
             check_cli,
         );
-        reg.command("orchid-log-show", "Show *Orchid Log*.", |ctx, _| {
-            log::show(ctx)
-        });
+        reg.command(
+            "orchid-log-show",
+            "Show the events of a session a chat follows, as it has read them.",
+            log_show,
+        );
         browser::register(reg);
         chat::register(reg);
     }

@@ -13,14 +13,44 @@ use die_orchid_client::{Kind, LIST_BUFFER, Orchid, StatusChange, log, refresh_se
 use die_vim::Vim;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-const COMMANDS: [&str; 6] = [
+/// Every command of the Emacs client's, from its `(interactive)` defuns, but for `M-p` and `M-n`'s
+/// `orchid-chat-previous-input` and `orchid-chat-next-input`, which did nothing (call 903).
+const COMMANDS: [&str; 32] = [
     "orchid",
     "orchid-open-session",
     "orchid-new-session",
     "orchid-list-sessions",
     "orchid-check-cli",
     "orchid-log-show",
+    "orchid-session-browser-show",
+    "orchid-session-browser-execute",
+    "orchid-session-browser-mark-for-deletion",
+    "orchid-session-browser-mark-for-kill",
+    "orchid-session-browser-move-down",
+    "orchid-session-browser-move-up",
+    "orchid-session-browser-new",
+    "orchid-session-browser-page-down",
+    "orchid-session-browser-page-up",
+    "orchid-session-browser-quit",
+    "orchid-session-browser-refresh",
+    "orchid-session-browser-search",
+    "orchid-session-browser-search-backspace",
+    "orchid-session-browser-search-clear",
+    "orchid-session-browser-search-exit",
+    "orchid-session-browser-search-self-insert",
+    "orchid-session-browser-select",
+    "orchid-session-browser-unmark",
+    "orchid-chat-close",
+    "orchid-chat-handle-tab",
+    "orchid-chat-load-more-history",
+    "orchid-chat-newline",
+    "orchid-chat-send-input",
+    "orchid-chat-show-session-browser",
+    "orchid-collapsible-report-stats",
+    "orchid-collapsible-toggle-at-point",
 ];
 
 fn harness_with(orchid: Orchid) -> (Harness, BufferId) {
@@ -201,6 +231,7 @@ fn open_session_finds_one_by_label_too() {
         "{:?}",
         h.messages
     );
+    assert_eq!(last(&h), "Opened session: my-label");
     // Asked for, by id: the chat open on it.
     h.show(notes, die_core::ShowIn::Current).unwrap();
     h.run("orchid-open-session", &Args::default()).unwrap();
@@ -210,15 +241,14 @@ fn open_session_finds_one_by_label_too() {
         .unwrap();
     h.run_until_idle();
     assert_eq!(h.focused_buffer(), Some(chat));
-    let before = h.messages.len();
-    run(&mut h, "orchid-open-session", Some("nope"));
-    let said = h.take_errors();
     assert_eq!(
-        said,
-        ["Failed to open session: no session nope"],
-        "{:?}",
-        &h.messages[before..]
+        last(&h),
+        "Opened session: 0f1e2d3c-aaaa-bbbb-cccc-123456789abc",
+        "what you typed, as Emacs said it"
     );
+    run(&mut h, "orchid-open-session", Some("nope"));
+    assert!(h.take_errors().is_empty());
+    assert_eq!(last(&h), "Failed to open session: Session 'nope' not found");
 }
 
 #[test]
@@ -260,6 +290,45 @@ fn new_session_offers_the_valid_agents_and_starts_here() {
     );
 }
 
+/// `orchid agent` answers while you're typing in a prompt of your own: yours stays, and `Agent: `
+/// comes once it's closed, as Emacs's synchronous call never took a prompt from you.
+#[test]
+fn the_agent_prompt_waits_for_one_you_opened_meanwhile() {
+    let root = TempRoot::new("agent-wait");
+    let fake = FakeRunner::new();
+    let (mut h, notes) = harness(&root, &fake);
+    h.set_directory(notes, root.path());
+    let go = Arc::new(AtomicBool::new(false));
+    let gate = go.clone();
+    let agents = json!({"agents": [{"name": "default", "valid": true}]}).to_string();
+    fake.on("agent", move |_| {
+        while !gate.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Reply::ok(&agents)
+    });
+    h.run("orchid-new-session", &Args::default()).unwrap();
+    for ev in die_core::parse_keys(":ech").unwrap() {
+        h.input(ev);
+        while h.step() {}
+    }
+    assert_eq!(h.prompt_text(), Some("ech"));
+    go.store(true, Ordering::SeqCst);
+    h.run_until_idle();
+    h.advance(std::time::Duration::from_secs(1));
+    assert_eq!(h.prompt_text(), Some("ech"), "what you were typing stays");
+    assert!(h.take_errors().is_empty());
+    h.type_keys("<Esc>").unwrap();
+    assert_eq!(h.prompt_text(), None);
+    h.advance(std::time::Duration::from_millis(200));
+    assert_eq!(h.prompt_candidates(), ["default"], "then it asks");
+    assert!(h.screen().contains("Agent:"));
+    h.type_keys("default<CR>").unwrap();
+    h.run_until_idle();
+    let create = fake.argvs().pop().unwrap();
+    assert_eq!(create[2..4], ["create", "--agent"]);
+}
+
 #[test]
 fn list_sessions_lists_them_oldest_first_in_a_buffer_of_its_own() {
     let root = TempRoot::new("list");
@@ -287,7 +356,7 @@ fn list_sessions_lists_them_oldest_first_in_a_buffer_of_its_own() {
 }
 
 #[test]
-fn the_log_keeps_its_last_lines_and_shows_beside() {
+fn the_log_keeps_its_last_lines() {
     let root = TempRoot::new("log");
     let mut orchid = Orchid::for_tests(root.path(), FakeRunner::new());
     orchid.options.log_lines = 3;
@@ -321,12 +390,9 @@ fn the_log_keeps_its_last_lines_and_shows_beside() {
         .insert(0, "x")
         .commit();
     assert!(edit.is_err());
-    run(&mut h, "orchid-log-show", None);
-    assert_eq!(h.window_list().len(), 2);
-    assert_eq!(h.focused_buffer(), Some(notes), "the focus stays");
-    // Shown already: nothing changes.
-    run(&mut h, "orchid-log-show", None);
-    assert_eq!(h.window_list().len(), 2);
+    // It isn't shown: you go to it as to any buffer, as in Emacs.
+    assert_eq!(h.window_list().len(), 1);
+    assert_eq!(h.focused_buffer(), Some(notes));
 }
 
 #[test]
@@ -410,8 +476,9 @@ fn yes_or_no_wants_the_word_typed_out() {
         screen.contains("Execute 2 marked operation(s)? (yes or no)"),
         "{screen}"
     );
-    // A bare RET, and a `y`, are no answer: it asks again.
-    for keys in ["<CR>", "y<CR>"] {
+    // A bare RET, a `y`, and a `yes` with a space before it are no answer: it asks again, as
+    // `yes-or-no-p` does, which doesn't trim.
+    for keys in ["<CR>", "y<CR>", " yes<CR>", "yes <CR>"] {
         h.type_keys(keys).unwrap();
         assert!(said.borrow().is_empty(), "{keys}");
         assert_eq!(last(&h), "Please answer yes or no.");
@@ -422,6 +489,13 @@ fn yes_or_no_wants_the_word_typed_out() {
     ask(&mut h);
     h.type_keys("no<CR>").unwrap();
     assert_eq!(*said.borrow(), [true, false]);
+    // In any case, as `yes-or-no-p` downcases the answer.
+    for (keys, yes) in [("YES<CR>", true), ("Yes<CR>", true), ("No<CR>", false)] {
+        ask(&mut h);
+        h.type_keys(keys).unwrap();
+        assert_eq!(said.borrow().last(), Some(&yes), "{keys}");
+    }
+    said.borrow_mut().truncate(2);
     // A cancel answers nothing.
     ask(&mut h);
     h.type_keys("<Esc>").unwrap();

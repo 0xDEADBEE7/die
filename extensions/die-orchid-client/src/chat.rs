@@ -48,14 +48,18 @@ use crate::{Kind, Options, Orchid, face, log};
 use die_core::session::{Value, json};
 use die_core::{
     Args, BufferId, Checkout, Ctx, DecorationId, Error, Mode, Origin, PromptSpec, Registry, Result,
-    ShowIn, State, WindowId,
+    Selection, ShowIn, State, WindowId, parse_keys,
 };
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+/// The session's files a chat reads, as its log names them.
+const METADATA: &str = "metadata.json";
+const EVENTS: &str = "events.jsonl";
 
 /// The mode every chat buffer has (Emacs's `orchid-chat-mode`), whose keymap your config can bind
 /// in.
@@ -187,8 +191,8 @@ struct Live {
     sent: VecDeque<String>,
     /// The session was archived: it isn't followed any more.
     gone: bool,
-    /// The last trouble reading the session's files, logged once.
-    trouble: Option<String>,
+    /// The last trouble reading each of the session's files, logged once.
+    trouble: HashMap<&'static str, String>,
 }
 
 impl Live {
@@ -211,7 +215,7 @@ impl Live {
             sending: 0,
             sent: VecDeque::new(),
             gone: false,
-            trouble: None,
+            trouble: HashMap::new(),
         }
     }
 
@@ -354,13 +358,14 @@ impl Live {
     }
 
     /// `b` just above your input, which then starts after it, with its blank line: what you typed
-    /// stays as it was, and so does each cursor in it. The next events go at `under`, an offset
-    /// into `b`, if it's given.
+    /// stays as it was, and so does each window's selection on it, both its ends, as Emacs's
+    /// point and mark stayed on their text. The next events go at `under`, an offset into `b`, if
+    /// it's given.
     fn above_input(&mut self, ctx: &mut Ctx, b: Build, under: Option<usize>) -> Result {
         let wins = windows(ctx, self.buf);
         let t = ctx.text_mut(self.buf)?;
         let at = self.input.at(t);
-        let keep = in_input(t, &wins, at);
+        let keep = selections(t, &wins);
         let cursor_here = self.cursor.at(t) == at;
         let n = b.len();
         self.sections.place(t, at..at, b)?;
@@ -378,9 +383,12 @@ impl Live {
             nl.push("\n");
             self.sections.place(t, input..input, nl)?;
         }
-        let shift = usize::from(!blank);
-        for (w, off) in keep {
-            t.set_cursor(w, input + off + shift);
+        let by = n + usize::from(!blank);
+        let moved = |p: usize| if p >= at { p + by } else { p };
+        for (w, sel) in keep {
+            if sel.anchor >= at || sel.head >= at {
+                t.set_selection(w, shifted(sel, moved));
+            }
         }
         Ok(())
     }
@@ -483,11 +491,24 @@ impl Live {
         };
         ind.draw(ctx, self.buf, true)?;
         let wins = windows(ctx, self.buf);
+        // In visual state the selection stretches to the end, as Emacs's `(goto-char
+        // (point-max))` stretched the region.
+        let visual = ctx
+            .focused()
+            .filter(|_| ctx.state_of(self.buf) == State::Visual);
         let t = ctx.text_mut(self.buf)?;
         let (input, end) = (self.input.at(t), t.len());
-        for w in wins {
-            if t.cursor(w).is_some_and(|c| c < input) {
-                t.set_cursor(w, end);
+        for (w, sel) in selections(t, &wins) {
+            if sel.head < input {
+                let to = match visual == Some(w) {
+                    true => Selection {
+                        head: end,
+                        goal: None,
+                        ..sel
+                    },
+                    false => Selection::cursor(end),
+                };
+                t.set_selection(w, to);
             }
         }
         Ok(())
@@ -517,6 +538,7 @@ impl Live {
         };
         let status = match store::read_metadata(&self.env.root, &id) {
             Ok(m) => {
+                self.trouble.remove(METADATA);
                 if let Some(ind) = &mut self.indicator {
                     ind.tokens = m.token_usage.cumulative_input;
                 }
@@ -529,7 +551,7 @@ impl Live {
                 return self.lost(ctx);
             }
             Err(e) => {
-                self.trouble(ctx, &format!("metadata.json: {e}"));
+                self.trouble(ctx, METADATA, &e);
                 None
             }
         };
@@ -540,9 +562,12 @@ impl Live {
         self.pace(ctx)
     }
 
+    /// Whether orchid still has the session: its `metadata.json`, which orchid replaces by a
+    /// rename and so is never missing while it does. A directory holding only `.flock` is a
+    /// session gone, which orchid's lock made again when a send or its worker reached the id.
     fn exists(&self) -> bool {
         let id = self.id.as_deref().unwrap_or_default();
-        store::session_dir(&self.env.root, id).is_dir()
+        store::metadata_path(&self.env.root, id).is_file()
     }
 
     /// The lines added to `events.jsonl` since the last read.
@@ -552,6 +577,8 @@ impl Live {
         };
         match self.tail.read(&store::events_path(&self.env.root, &id)) {
             Ok(read) => {
+                self.trouble.remove(EVENTS);
+                self.copy_events(ctx, &id, &read)?;
                 for line in read.lines {
                     self.take_line(ctx, &line)?;
                 }
@@ -559,9 +586,30 @@ impl Live {
             Err(e) if e.kind() == io::ErrorKind::NotFound && !self.exists() => {
                 return self.lost(ctx);
             }
-            Err(e) => self.trouble(ctx, &format!("events.jsonl: {e}")),
+            Err(e) => self.trouble(ctx, EVENTS, &e),
         }
         Ok(())
+    }
+
+    /// What the follow read, into the session's [`events_buffer`] too, if `orchid-log-show` made
+    /// it: as the Emacs client's monitor kept its copy, all of the file again if it shrank.
+    fn copy_events(&mut self, ctx: &mut Ctx, id: &str, read: &store::Lines) -> Result {
+        let Some(buf) = ctx.find_buffer(&events_buffer(id)) else {
+            return Ok(());
+        };
+        let mut text = read.lines.join("\n");
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        match read.restarted {
+            true => ctx
+                .output_buffer(&events_buffer(id), &text, &self.env.root)
+                .map(drop),
+            false => {
+                ctx.append_output(buf, &text);
+                Ok(())
+            }
+        }
     }
 
     /// One new line: an event shown once, at the assistant cursor. Your own message was shown
@@ -622,12 +670,13 @@ impl Live {
         Ok(())
     }
 
-    /// Log trouble reading the session's files, once until it changes.
-    fn trouble(&mut self, ctx: &mut Ctx, what: &str) {
-        if self.trouble.as_deref() != Some(what) {
+    /// Log trouble reading one of the session's files, once until it changes or the file reads.
+    fn trouble(&mut self, ctx: &mut Ctx, file: &'static str, e: &io::Error) {
+        let what = e.to_string();
+        if self.trouble.get(file) != Some(&what) {
             let id = self.id.as_deref().unwrap_or_default();
-            let _ = log::log(ctx, &format!("{id}: {what}"));
-            self.trouble = Some(what.to_string());
+            let _ = log::log(ctx, &format!("{id}: {file}: {what}"));
+            self.trouble.insert(file, what);
         }
     }
 
@@ -656,6 +705,13 @@ impl Live {
         let message = t.rope().byte_slice(input..).to_string().trim().to_string();
         if message.is_empty() {
             return Ok(());
+        }
+        // orchid would refuse it, and its lock would make the session's directory again.
+        if self.gone {
+            let id = self.id.as_deref().unwrap_or_default();
+            return Err(Error::Msg(format!(
+                "Session {id} is gone (archived or deleted); nothing was sent"
+            )));
         }
         let Some(id) = self.id.clone() else {
             return Err(Error::Msg(
@@ -708,26 +764,36 @@ impl Live {
 
     /// `TAB`: toggle the section at the cursor; in your input, a tab; elsewhere, a word on what
     /// it's for.
-    fn handle_tab(&mut self, ctx: &mut Ctx, w: Option<WindowId>) -> Result {
-        let t = ctx.text_mut(self.buf)?;
-        let here = w.and_then(|w| t.cursor(w)).unwrap_or(t.len());
-        if let Some(id) = self.sections.at(t, here) {
-            let (start, stub_end, _) = self.sections.range(t, id).unwrap_or_default();
-            let toggled = self.sections.toggle(t, id)?;
-            // From inside what it hid, to the stub.
-            if let (Some(Toggled::Collapsed), Some(w)) = (toggled, w)
-                && here > stub_end
-            {
-                t.set_cursor(w, start);
-            }
+    fn handle_tab(&mut self, ctx: &mut Ctx, w: Option<WindowId>, args: &Args) -> Result {
+        if self.toggle_at(ctx, w)? {
             return Ok(());
         }
+        let t = ctx.text(self.buf)?;
+        let here = w.and_then(|w| t.cursor(w)).unwrap_or(t.len());
         if here >= self.input.at(t) {
-            t.tx(Origin::User).insert(here, "\t").commit()?;
-            return Ok(());
+            return insert_tab(ctx, self.buf, w, args);
         }
         ctx.messages.push(TAB_ELSEWHERE.into());
         Ok(())
+    }
+
+    /// Toggle the section at the cursor, Emacs's `orchid-collapsible-toggle-at-point`: whether
+    /// there was one.
+    fn toggle_at(&mut self, ctx: &mut Ctx, w: Option<WindowId>) -> Result<bool> {
+        let t = ctx.text_mut(self.buf)?;
+        let here = w.and_then(|w| t.cursor(w)).unwrap_or(t.len());
+        let Some(id) = self.sections.at(t, here) else {
+            return Ok(false);
+        };
+        let (start, stub_end, _) = self.sections.range(t, id).unwrap_or_default();
+        let toggled = self.sections.toggle(t, id)?;
+        // From inside what it hid, to the stub.
+        if let (Some(Toggled::Collapsed), Some(w)) = (toggled, w)
+            && here > stub_end
+        {
+            t.set_cursor(w, start);
+        }
+        Ok(true)
     }
 
     /// Older history, above what's shown: the events before the oldest shown, as many as a
@@ -756,7 +822,7 @@ impl Live {
         let mut b = Build::new();
         transcript(&mut b, &events, &self.env.zone);
         if self.first_user {
-            b.styled(&format!("\n{}\n\n", rule()), face::SEPARATOR);
+            between_turns(&mut b);
         }
         self.first_user = events.first().is_some_and(|e| is_user(e));
         let t = ctx.text_mut(self.buf)?;
@@ -794,11 +860,13 @@ pub fn separator(label: Option<&str>) -> String {
     }
 }
 
-/// What follows the input marker: the blank line under the separator, then what you typed.
-fn input_area(typed: &str) -> String {
-    match typed.starts_with('\n') {
-        true => typed.to_string(),
-        false => format!("\n{typed}"),
+/// What follows the input marker: in a new chat, the blank line under the separator; in one made
+/// again (a restart, a new session's), the input as it was, byte for byte, as what was typed on
+/// that blank line has none before it.
+fn input_area(kept: &str) -> String {
+    match kept.is_empty() {
+        true => "\n".to_string(),
+        false => kept.to_string(),
     }
 }
 
@@ -855,10 +923,18 @@ fn transcript(b: &mut Build, events: &[Rc<Event>], zone: &TimeZone) {
     let mut any = false;
     for e in events {
         if any && is_user(e) {
-            b.styled(&format!("\n{}\n\n", rule()), face::SEPARATOR);
+            between_turns(b);
         }
         any |= b.event(e, true, zone);
     }
+}
+
+/// The rule before a restored turn: the Emacs client's separator event, `\n` and the rule and
+/// `\n\n` in its face, then the `\n` it put after every event it showed. So a blank line comes
+/// before the rule and two after it.
+fn between_turns(b: &mut Build) {
+    b.styled(&format!("\n{}\n\n", rule()), face::SEPARATOR)
+        .push("\n");
 }
 
 /// Whole seconds since `t`, none if it's ahead.
@@ -895,10 +971,19 @@ fn windows(ctx: &Ctx, buf: BufferId) -> Vec<WindowId> {
         .collect()
 }
 
-/// The windows whose cursor is in the input, which starts at `input`, and how far into it.
-fn in_input(t: &die_core::TextBuf, wins: &[WindowId], input: usize) -> Vec<(WindowId, usize)> {
-    let at = |w: &WindowId| Some((*w, t.cursor(*w)?.checked_sub(input)?));
-    wins.iter().filter_map(at).collect()
+/// Each of `wins`' selection on `t`.
+pub(crate) fn selections(t: &die_core::TextBuf, wins: &[WindowId]) -> Vec<(WindowId, Selection)> {
+    let sel = |w: &WindowId| Some((*w, t.selection(*w)?));
+    wins.iter().filter_map(sel).collect()
+}
+
+/// `sel` with both its ends moved by `f`, its shape and goal column kept.
+pub(crate) fn shifted(sel: Selection, f: impl Fn(usize) -> usize) -> Selection {
+    Selection {
+        anchor: f(sel.anchor),
+        head: f(sel.head),
+        ..sel
+    }
 }
 
 /// The command's buffer, and its window if it shows it.
@@ -951,6 +1036,29 @@ fn newline(ctx: &mut Ctx, buf: BufferId, w: Option<WindowId>, args: &Args) -> Re
     let t = ctx.text_mut(buf)?;
     let here = w.and_then(|w| t.cursor(w)).unwrap_or(t.len());
     t.tx(Origin::User).insert(here, "\n").commit()?;
+    Ok(())
+}
+
+/// A tab at the cursor, as Emacs's `(insert "\t")`. In insert state it's die-vim's quoted insert
+/// of the tab key, so the insert session takes it in with what you type around it, and `.` puts
+/// it in again, as Evil's insertion held it.
+fn insert_tab(ctx: &mut Ctx, buf: BufferId, w: Option<WindowId>, args: &Args) -> Result {
+    if ctx.state_of(buf) == State::Insert {
+        let tab = Args {
+            keys: parse_keys("<Tab>").unwrap_or_default(),
+            count: None,
+            buffer: Some(buf),
+            window: w,
+            ..args.clone()
+        };
+        match ctx.run("vim-quoted-insert", &tab) {
+            Err(Error::NoCommand(_)) => {}
+            r => return r,
+        }
+    }
+    let t = ctx.text_mut(buf)?;
+    let here = w.and_then(|w| t.cursor(w)).unwrap_or(t.len());
+    t.tx(Origin::User).insert(here, "\t").commit()?;
     Ok(())
 }
 
@@ -1092,19 +1200,11 @@ fn moved(
     Some(pos)
 }
 
-/// The chat's buffer's directory: the session's working directory, as Emacs's `default-directory`
-/// for `/new`, if it's there.
-fn set_directory(ctx: &mut Ctx, buf: BufferId, meta: &Metadata) {
-    if let Some(dir) = meta.working_dir.as_deref().map(Path::new)
-        && dir.is_dir()
-    {
-        ctx.set_directory(buf, dir);
-    }
-}
-
 /// Open a chat on `session_id` in the selected window, or go to the one open on it. Its last
 /// events come back from `events.jsonl` as collapsed stubs, and from where they end it follows
-/// the session, quickly while it runs.
+/// the session, quickly while it runs. Its directory is the one you opened it from (the
+/// browser's, for its `RET`), as Emacs's `get-buffer-create` gave it the current buffer's, not the
+/// session's: only `/new` goes by the session's.
 pub fn open(ctx: &mut Ctx, session_id: &str) -> Result {
     let (open, env) =
         ctx.with_ext(|o: &mut Orchid, ctx| (o.chat_buffer(ctx, session_id), Env::of(o)))?;
@@ -1118,7 +1218,6 @@ pub fn open(ctx: &mut Ctx, session_id: &str) -> Result {
     let restored = restore_events(&env, session_id)?;
     let count = restored.events.len();
     let buf = ctx.create_text(&buffer_name(&meta), "");
-    set_directory(ctx, buf, &meta);
     start(ctx, buf, env, |c, ctx| c.lay_out(ctx, &meta, restored, ""))?;
     let w = ctx.show(buf, ShowIn::Current)?;
     to_end(ctx, buf, w)?;
@@ -1221,8 +1320,11 @@ fn created(ctx: &mut Ctx, pending: BufferId, out: Outcome) -> Result {
     let was = cursors(ctx, pending, Some(at));
     let typing = ctx.state_of(pending) == State::Insert;
     let buf = ctx.create_text(&buffer_name(&meta), "");
-    ctx.set_directory(buf, &p.dir);
-    set_directory(ctx, buf, &meta);
+    // The pending chat's directory, as Emacs's renamed buffer kept its own.
+    let dir = ctx
+        .directory(pending)
+        .map_or_else(|| p.dir.clone(), Path::to_path_buf);
+    ctx.set_directory(buf, dir);
     start(ctx, buf, env.clone(), |c, ctx| {
         c.lay_out(ctx, &meta, restored, &input)
     })?;
@@ -1360,6 +1462,60 @@ pub(crate) fn restore(orchid: &mut Orchid, ctx: &mut Ctx, buf: BufferId, state: 
         }
     }
     attach(orchid, ctx, buf)
+}
+
+// ------------------------------------------------------------------ the events' log
+
+/// The buffer `orchid-log-show` shows a session's events in, the Emacs client's name for its hidden
+/// copy of `events.jsonl`.
+pub fn events_buffer(id: &str) -> String {
+    format!(" *orchid-log:{id}*")
+}
+
+/// `orchid-log-show`'s: the session's events as a chat following it has read them, in
+/// [`events_buffer`], where `display-buffer` puts it. The first time, the last
+/// [`Options::restore_max_bytes`] of what the chat has read, in whole lines, as Emacs's monitor
+/// read the file at its start; then the chat adds what it reads, as Emacs's did. With no chat on
+/// it, Emacs's error.
+pub fn show_events(ctx: &mut Ctx, id: &str) -> Result {
+    let name = events_buffer(id);
+    if let Some(log) = ctx.find_buffer(&name) {
+        return crate::display_buffer(ctx, log);
+    }
+    let not = || Error::Msg(format!("Not monitoring session {id}"));
+    let chat = ctx.with_ext(|o: &mut Orchid, ctx| o.chat_buffer(ctx, id))?;
+    let read = chat.and_then(|buf| {
+        let what = |c: &mut Live, _: &mut Ctx| {
+            let following = c.id.as_deref() == Some(id) && !c.gone;
+            let path = store::events_path(&c.env.root, id);
+            let max = c.env.options.restore_max_bytes;
+            Ok(following.then(|| (path, c.tail.offset(), max, c.env.root.clone())))
+        };
+        with_chat(ctx, buf, what).ok().flatten()
+    });
+    let (path, upto, max, root) = read.ok_or_else(not)?;
+    let text =
+        read_to(&path, upto, max).map_err(|e| Error::Msg(format!("{}: {e}", path.display())))?;
+    let log = ctx.output_buffer(&name, &text, &root)?;
+    crate::display_buffer(ctx, log)
+}
+
+/// `path`'s whole lines before `upto`, the last `max` bytes of them.
+fn read_to(path: &Path, upto: u64, max: u64) -> io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let from = upto.saturating_sub(max);
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(from))?;
+    let mut bytes = vec![];
+    file.take(upto - from).read_to_end(&mut bytes)?;
+    if from > 0 {
+        let first = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| i + 1);
+        bytes.drain(..first);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 // ------------------------------------------------------------------ the slash menu
@@ -1513,7 +1669,15 @@ pub(crate) fn register(reg: &mut Registry) {
         "TAB in a chat: expand or collapse the section at the cursor; in the input, a tab.",
         |ctx, a| {
             let (buf, w) = target(ctx, a)?;
-            with_chat(ctx, buf, |c, ctx| c.handle_tab(ctx, w))
+            with_chat(ctx, buf, |c, ctx| c.handle_tab(ctx, w, a))
+        },
+    );
+    reg.command(
+        "orchid-collapsible-toggle-at-point",
+        "Expand or collapse a chat's section at the cursor, as TAB does there; nothing where there's none.",
+        |ctx, a| {
+            let (buf, w) = target(ctx, a)?;
+            on_chat(ctx, buf, |c, ctx| c.toggle_at(ctx, w).map(drop))
         },
     );
     reg.command(

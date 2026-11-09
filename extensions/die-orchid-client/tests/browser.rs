@@ -138,7 +138,7 @@ fn the_browser_draws_seeks_layout_at_78_columns_in_this_window() {
     assert_eq!(padded.chars().count(), 78);
     let t = h.text(buf).unwrap();
     let s = t.settings();
-    assert!(s.read_only && !s.cursor_visible && s.wrap == Wrap::Off);
+    assert!(s.read_only && !s.cursor_visible && s.wrap == Wrap::Word);
     assert!(!t.modified());
     assert!(
         fake.calls().is_empty(),
@@ -485,15 +485,25 @@ fn a_narrower_window_draws_it_narrower_and_a_short_one_scrolls() {
         60,
         "the selected row fills the width"
     );
-    // Narrower than the columns: their line is cut by the window, as truncate-lines cuts it.
+    // Narrower than the columns: their line wraps at a word, as your Emacs's visual-line-mode
+    // wrapped it, and nothing is lost.
     h.set_window_size(40, 24);
     let screen = lines(&mut h);
     assert_eq!(
         screen[0],
         format!("{} Orchid Sessions {}", rule(11), rule(12))
     );
-    assert_eq!(screen[4], format!("{:<32}STATUS", "LABEL"));
-    assert_eq!(screen[6], format!("{:<32}IDLE", "one"));
+    assert_eq!(screen[1], rule(40));
+    assert_eq!(
+        screen[4..9],
+        [
+            "LABEL",
+            "STATUS     UPDATED",
+            &rule(40),
+            "one",
+            "IDLE       just now"
+        ]
+    );
     // Ten rows high: four rows under the chrome, scrolled to the selection.
     h.set_window_size(80, 10);
     let screen = lines(&mut h);
@@ -510,6 +520,30 @@ fn a_narrower_window_draws_it_narrower_and_a_short_one_scrolls() {
         screen.join("\n")
     );
     assert!(selected(&mut h, buf).starts_with("five"));
+}
+
+#[test]
+fn a_row_wider_than_the_window_wraps_at_a_word_as_your_emacs_did() {
+    let root = TempRoot::new("browser-wrap");
+    let (mut h, _) = harness(&root, &FakeRunner::new());
+    session(&root, "s-a", Some("default-other-proj"), "running", 14 * 60);
+    let buf = orchid(&mut h);
+    h.set_window_size(50, 24);
+    let screen = lines(&mut h);
+    assert_eq!(
+        screen[6..8],
+        [
+            format!("{:<32}IDLE•RUN   14", "default-other-proj"),
+            "hours ago".to_string()
+        ],
+        "{}",
+        screen.join("\n")
+    );
+    let text = h.text(buf).unwrap().rope().to_string();
+    assert!(
+        text.contains(&row("default-other-proj", "IDLE•RUN", "14 hours ago")),
+        "the row's text is all there: {text}"
+    );
 }
 
 #[test]

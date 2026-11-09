@@ -11,7 +11,7 @@
 
 use crate::parse;
 use crate::sections::Mark;
-use die_core::{BufferId, Ctx, Origin, Result, Sub, WindowId};
+use die_core::{BufferId, Ctx, Origin, Result, Selection, Sub, WindowId};
 use std::time::Duration;
 
 /// The face the line is in (Emacs's `shadow`).
@@ -67,9 +67,10 @@ impl Indicator {
         self.before + ctx.now().saturating_sub(self.since).as_secs()
     }
 
-    /// Draw the line again in `buf`, silently, keeping each window's cursor where it was on it,
-    /// as Emacs saved and restored every window's point. Nothing if the text there isn't the
-    /// indicator's any more, as after you deleted it.
+    /// Draw the line again in `buf`, silently, keeping each window's selection where it was on
+    /// it, both ends, its shape and its goal column, as Emacs saved and restored every window's
+    /// point and its region went on. Nothing if the text there isn't the indicator's any more, as
+    /// after you deleted it.
     pub fn draw(&self, ctx: &mut Ctx, buf: BufferId, finished: bool) -> Result {
         let new = line(self.seconds(ctx), finished, self.tokens);
         let windows: Vec<WindowId> = ctx
@@ -88,19 +89,23 @@ impl Indicator {
         if !ours || old == new {
             return Ok(());
         }
-        let on_it: Vec<(WindowId, usize)> = windows
-            .iter()
-            .filter_map(|w| Some((*w, t.cursor(*w)?)))
-            .filter(|(_, c)| (start..=end).contains(c))
-            .map(|(w, c)| (w, c - start))
+        let on = |p: &usize| (start..=end).contains(p);
+        let on_it: Vec<(WindowId, Selection)> = crate::chat::selections(t, &windows)
+            .into_iter()
+            .filter(|(_, s)| on(&s.anchor) || on(&s.head))
             .collect();
         let len = new.len();
         t.tx(Origin::Extension)
             .silent()
             .replace(start..end, new)
             .commit()?;
-        for (w, off) in on_it {
-            t.set_cursor(w, start + off.min(len));
+        let moved = |p: usize| match p {
+            p if p < start => p,
+            p if p <= end => start + (p - start).min(len),
+            p => p - end + start + len,
+        };
+        for (w, sel) in on_it {
+            t.set_selection(w, crate::chat::shifted(sel, moved));
         }
         Ok(())
     }

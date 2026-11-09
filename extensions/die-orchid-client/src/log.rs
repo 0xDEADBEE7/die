@@ -1,8 +1,8 @@
 //! `*Orchid Log*`: the client's own log, `[HH:MM:SS] what happened`, as the Emacs client's
 //! `orchid-log` wrote it, but kept to its last [`crate::Options::log_lines`] lines (2,000 by
 //! default), where Emacs's grew without end. It's an output buffer: read-only, unmodified, and
-//! not kept over a restart, as Emacs's isn't. `orchid-log-show` shows it as `display-buffer`
-//! does: in another window, or a new one below, with the focus staying.
+//! not kept over a restart, as Emacs's isn't. You go to it as to any buffer, as in Emacs:
+//! `orchid-log-show` shows a session's events, as Emacs's did.
 
 use crate::Orchid;
 use die_core::{Ctx, Origin, Result};
@@ -36,16 +36,4 @@ impl Orchid {
 /// [`Orchid::log`], from outside the extension.
 pub fn log(ctx: &mut Ctx, what: &str) -> Result {
     ctx.with_ext(|o: &mut Orchid, ctx| o.log(ctx, what))?
-}
-
-/// `orchid-log-show`: `*Orchid Log*` where `display-buffer` would put it ([`crate::display_buffer`]).
-pub fn show(ctx: &mut Ctx) -> Result {
-    let buf = match ctx.find_buffer(BUFFER) {
-        Some(buf) => buf,
-        None => {
-            let root = ctx.with_ext(|o: &mut Orchid, _| o.root().to_path_buf())?;
-            ctx.output_buffer(BUFFER, "", &root)?
-        }
-    };
-    crate::display_buffer(ctx, buf)
 }
