@@ -8,7 +8,8 @@
 //! the buffer's [`Escape`] routing says, as evil-ghostel's `evil-ghostel-escape` does.
 //!
 //! Normal state is copy state: core reads the engine's text through [`CopyText`] as the buffer
-//! leaves insert, and again as output arrives, and die-vim's grammar runs over it.
+//! leaves insert, and again as output arrives, and die-vim's grammar runs over it. Its Esc goes
+//! to the program only while [`TermSurface::busy`], and once until another key.
 //!
 //! **Size.** One terminal has one size, whichever windows show it (C10): the smallest columns
 //! and the smallest rows among them, as Emacs's `window-adjust-process-window-size-smallest`
@@ -62,6 +63,9 @@ pub struct TermSurface {
     pub(crate) shell: bool,
     pub(crate) dir: PathBuf,
     pub(crate) escape: Escape,
+    /// The count of keys when normal state's Esc last sent one, which it doesn't again until
+    /// another key (`Terminals`).
+    pub(crate) esc_sent: Option<u64>,
     pub(crate) copy: CopyFn,
     pub(crate) cell: CellPixels,
     /// The cursor as the last frame left it, and the area that frame had.
@@ -91,6 +95,7 @@ impl TermSurface {
             shell: false,
             dir: dir.into(),
             escape: Escape::default(),
+            esc_sent: None,
             copy,
             cell: CellPixels::default(),
             at: None,

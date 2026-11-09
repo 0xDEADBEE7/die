@@ -346,17 +346,18 @@ files = ["surface.rs"]
 
 # Opening terminals (`term`, `term-switch`, `open`), the exit, `busy`, and normal state's commands
 # and keys: Esc to the program, `i a I A`, `p P` and the Esc toggle. From 320 to 330 with the
-# review's fixes: `G` to the terminal's cursor, and `:term cmd`.
+# review's fixes: `G` to the terminal's cursor, and `:term cmd`. To 360 with Esc in normal: not
+# to the shell at its prompt, once until another key, and a config's choice of shell.
 [[module]]
 crate = "die-term"
 name = "commands"
-limit = 330
+limit = 360
 files = ["commands.rs"]
 
-# Shell integration (scope §6): a login zsh's `.zshenv` of DIE's, which reports the directory
-# at each prompt (OSC 7). New with the terminal review's fixes; bash 3.2's comes later.
+# Shell integration (scope §6): a zsh's `.zshenv` of DIE's, which reports the directory at each
+# prompt (OSC 7). New with the terminal review's fixes. To 75 with bash 3.2's rc for the same.
 [[module]]
 crate = "die-term"
 name = "shell integration"
-limit = 50
+limit = 75
 files = ["shell.rs"]
