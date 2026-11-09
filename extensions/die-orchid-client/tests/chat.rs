@@ -160,8 +160,9 @@ fn a_restore_lays_the_chat_out_as_emacs_did() {
         "\n\n".into(),
         stub("[rslt]", &"─".repeat(47)),
         "\n  Call ID: c1\n  Result:\n  a\n  b\n".into(),
-        // Before each of your messages that follows another event.
-        format!("\n{rule}\n\n"),
+        // Before each of your messages that follows another event: Emacs's separator event and
+        // the newline after every event.
+        format!("\n{rule}\n\n\n"),
         stub("[user]", "again"),
         "\nagain\n".into(),
         stub("[fail]", "connection refused"),
@@ -186,6 +187,7 @@ fn a_restore_lays_the_chat_out_as_emacs_did() {
         &stub("[rslt]", &"─".repeat(47)),
         "",
         &rule,
+        "",
         "",
         &stub("[user]", "again"),
         &stub("[fail]", "connection refused"),
@@ -336,6 +338,88 @@ fn tab_on_a_stub_expands_and_collapses_it() {
     assert!(keys(&mut h, "<Tab>").is_empty());
     assert_eq!(cursor(&h, b, w), stub_at);
     assert_eq!(rows(&mut h)[at + 1], "");
+}
+
+#[test]
+fn toggle_at_point_toggles_the_section_there_and_does_nothing_elsewhere() {
+    let root = TempRoot::new("toggle-at-point");
+    let fake = FakeRunner::new();
+    let events = [fixtures::message("e1", "user", "the detail")];
+    let (mut h, b, w) = opened(&root, &fake, &events);
+    let toggle = |h: &mut Harness| {
+        h.run("orchid-collapsible-toggle-at-point", &Args::default())
+            .unwrap();
+    };
+    on(&mut h, b, w, "[user]", 0);
+    toggle(&mut h);
+    assert!(rows(&mut h).contains(&"the detail".to_string()));
+    toggle(&mut h);
+    assert!(!rows(&mut h).contains(&"the detail".to_string()));
+    // In the input, nothing: no tab, no word on what TAB is for.
+    let (before, said) = (text(&h, b), h.messages.len());
+    let end = before.len();
+    h.text_mut(b).unwrap().set_cursor(w, end);
+    toggle(&mut h);
+    assert_eq!(text(&h, b), before);
+    assert_eq!(h.messages.len(), said);
+}
+
+#[test]
+fn a_stub_with_tabs_control_characters_or_emoji_takes_one_row() {
+    let root = TempRoot::new("widths");
+    let fake = FakeRunner::new();
+    let events = [
+        fixtures::message("e1", "assistant", "col1\tcol2\tcol3 and more text"),
+        fixtures::message(
+            "e2",
+            "assistant",
+            "⚠️ Two tests fail on main; ✔️ the rest pass",
+        ),
+        fixtures::message("e3", "assistant", "crlf reply\r\nsecond line"),
+        fixtures::tool_call("e4", "c1", "bash", json!({"cmd": "printf 'a\tb'"})),
+    ];
+    let (mut h, _, _) = opened(&root, &fake, &events);
+    let shown = rows(&mut h);
+    let stubs: Vec<&String> = shown
+        .iter()
+        .filter(|r| r.starts_with("[agnt]") || r.starts_with("[bash]"))
+        .collect();
+    assert_eq!(stubs.len(), 4, "{shown:#?}");
+    for r in stubs {
+        assert!(r.ends_with("[ 63k] [11:16:46]"), "{r:?}");
+    }
+    assert!(
+        !shown
+            .iter()
+            .any(|r| r.trim_start().starts_with("[11:16:46]")),
+        "no time wrapped onto a row of its own: {shown:#?}"
+    );
+}
+
+#[test]
+fn a_chat_takes_the_directory_it_was_opened_from() {
+    let root = TempRoot::new("chat-dir");
+    let fake = FakeRunner::new();
+    let (from, work) = (root.path().join("from"), root.path().join("work"));
+    for d in [&from, &work] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let mut h = harness(Orchid::for_tests(root.path(), fake.clone()));
+    let notes = h.focused_buffer().unwrap();
+    h.set_directory(notes, &from);
+    let mut m = Meta::new(ID);
+    m.working_dir = Some(work.display().to_string());
+    m.write(root.path());
+    fixtures::append(root.path(), ID, &[fixtures::message("e1", "user", "x")]);
+    chat::open(&mut h, ID).unwrap();
+    h.run_until_idle();
+    let b = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(b), Some("*orchid-chat-default-work-89abc*"));
+    assert_eq!(
+        h.directory(b),
+        Some(from.as_path()),
+        "as get-buffer-create gave it the current buffer's, not the session's"
+    );
 }
 
 #[test]
@@ -692,9 +776,10 @@ fn older_history_loads_above_in_order() {
             "answer 3"
         ]
     );
-    // Each turn under a separator, as a restore lays them out.
-    let rule = format!("\n{}\n\n", chat::rule());
-    assert_eq!(text(&h, b).matches(&rule).count(), 2);
+    // Each turn under a separator, as a restore lays them out: a blank line before the rule and
+    // two after.
+    let rule = format!("\n\n{}\n\n\n[user]", chat::rule());
+    assert_eq!(text(&h, b).matches(&rule).count(), 2, "{}", text(&h, b));
     more(&mut h);
     assert_eq!(h.messages.last().unwrap(), "No more history to load");
 }

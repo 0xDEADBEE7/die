@@ -482,11 +482,13 @@ fn tick(ctx: &mut Ctx, buf: BufferId) -> Result {
     }
 }
 
-/// Make `buf` the browser: read-only, its lines cut rather than wrapped, no cursor drawn, no
-/// undo, and the mode on. The width and centering stay yours, as a file's.
+/// Make `buf` the browser: read-only, its lines wrapped at words, no cursor drawn, no undo, and
+/// the mode on. The width and centering stay yours, as a file's. The browser mode's
+/// `truncate-lines` never held in your Emacs: `global-visual-line-mode` came on after it, so a
+/// row wider than the window wrapped at a word there too.
 fn prepare(ctx: &mut Ctx, buf: BufferId) -> Result {
     ctx.change_settings(buf, |s| {
-        (s.wrap, s.read_only, s.cursor_visible, s.undo_steps) = (Wrap::Off, true, false, 0);
+        (s.wrap, s.read_only, s.cursor_visible, s.undo_steps) = (Wrap::Word, true, false, 0);
     })?;
     ctx.enable_mode::<Browser>(buf)
 }

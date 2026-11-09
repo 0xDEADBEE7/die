@@ -490,6 +490,223 @@ fn an_archived_session_says_so_once_and_isnt_followed() {
 }
 
 #[test]
+fn a_selection_stays_on_its_text_as_a_turn_goes_in_ticks_and_finishes() {
+    let root = TempRoot::new("selection");
+    let fake = FakeRunner::new();
+    let mut h = harness(&root, &fake);
+    let (b, w) = opened(
+        &mut h,
+        &root,
+        meta("idle"),
+        &[fixtures::message("e1", "user", "x")],
+    );
+    keys(&mut h, "Gihello world<Esc>0vllll");
+    assert_eq!(h.state_of(b), State::Visual);
+    let sel = |h: &Harness| h.text(b).unwrap().selection(w).unwrap();
+    let selected = |h: &Harness| {
+        let s = sel(h);
+        let t = text(h, b);
+        t[s.anchor.min(s.head)..=s.anchor.max(s.head)].to_string()
+    };
+    assert_eq!(selected(&h), "hello");
+    // A turn from elsewhere goes in above the input: the selection stays on what it selected.
+    meta("running").write(root.path());
+    let sent = message_ago("e2", "user", "from emacs", Duration::ZERO);
+    fixtures::append(root.path(), ID, &[sent]);
+    h.advance(SLOW);
+    assert!(indicator_row(&mut h).is_some());
+    assert_eq!(selected(&h), "hello");
+    assert_eq!(h.state_of(b), State::Visual);
+    keys(&mut h, "d");
+    assert_eq!(input(&h, b), " world\n", "the operator took the selection");
+    // A line selection from the turn's stub down to the indicator keeps its shape and ends as
+    // the line ticks.
+    let t = text(&h, b);
+    let stub = t.find("[user]    [from emacs").unwrap();
+    let line = t.find("[Processing: ").unwrap();
+    h.text_mut(b).unwrap().set_cursor(w, stub);
+    keys(&mut h, "V");
+    let on_line = die_core::Selection {
+        head: line + 3,
+        ..sel(&h)
+    };
+    h.text_mut(b).unwrap().set_selection(w, on_line);
+    let before = sel(&h);
+    assert_eq!(before.shape, die_core::Shape::Line);
+    h.advance(2 * SECOND);
+    assert!(
+        indicator_row(&mut h)
+            .unwrap()
+            .starts_with("[Processing: 2s]")
+    );
+    assert_eq!(sel(&h), before, "both ends, the shape and the goal kept");
+    assert_eq!(h.state_of(b), State::Visual);
+    // The finish stretches a selection in the transcript to the end, as Emacs's
+    // `(goto-char (point-max))` stretched the region.
+    meta("idle").write(root.path());
+    h.advance(FAST);
+    assert!(indicator_row(&mut h).unwrap().starts_with("[Finished: "));
+    let end = sel(&h);
+    assert_eq!(h.state_of(b), State::Visual);
+    assert_eq!((end.anchor, end.shape), (before.anchor, before.shape));
+    let t = h.text(b).unwrap();
+    assert_eq!(t.line_of(end.head), t.line_of(t.len()));
+}
+
+#[test]
+fn a_gone_chat_sends_nothing_and_a_session_left_as_its_lock_is_gone() {
+    let root = TempRoot::new("gone-send");
+    let fake = FakeRunner::new();
+    sends(&fake, &root);
+    let mut h = harness(&root, &fake);
+    let (b, _) = opened(
+        &mut h,
+        &root,
+        meta("idle"),
+        &[fixtures::message("e1", "user", "x")],
+    );
+    std::fs::remove_dir_all(store::session_dir(root.path(), ID)).unwrap();
+    h.advance(SLOW);
+    assert!(text(&h, b).contains("is gone"));
+    let refused = keys(&mut h, "Gihello<CR>");
+    assert_eq!(
+        refused,
+        [format!(
+            "Session {ID} is gone (archived or deleted); nothing was sent"
+        )]
+    );
+    assert!(
+        fake.calls().is_empty(),
+        "orchid isn't asked: {:?}",
+        fake.argvs()
+    );
+    assert!(
+        !store::session_dir(root.path(), ID).exists(),
+        "so its lock doesn't make the directory again"
+    );
+    assert!(!text(&h, b).contains("[user]    [hello"));
+    // A running session whose directory is left holding only orchid's lock, as a send or its
+    // worker leaves it after a delete: gone, said once, and the log isn't filled.
+    let root = TempRoot::new("gone-flock");
+    let fake = FakeRunner::new();
+    let mut h = harness(&root, &fake);
+    let (b, _) = opened(
+        &mut h,
+        &root,
+        meta("running"),
+        &[fixtures::message("e1", "user", "x")],
+    );
+    let dir = store::session_dir(root.path(), ID);
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(".flock"), "").unwrap();
+    for _ in 0..20 {
+        h.advance(FAST);
+    }
+    let t = text(&h, b);
+    assert_eq!(t.matches("is gone (archived or deleted)").count(), 1, "{t}");
+    assert_eq!(period(&mut h), None, "nothing left to poll");
+    let about: Vec<String> = log_lines(&h)
+        .into_iter()
+        .filter(|l| l.starts_with(ID))
+        .collect();
+    assert_eq!(about.len(), 1, "{about:?}");
+}
+
+#[test]
+fn trouble_reading_each_file_is_logged_once() {
+    let root = TempRoot::new("trouble");
+    let fake = FakeRunner::new();
+    let mut h = harness(&root, &fake);
+    opened(
+        &mut h,
+        &root,
+        meta("running"),
+        &[fixtures::message("e1", "user", "x")],
+    );
+    // Neither file reads: metadata.json isn't JSON, and events.jsonl is a directory.
+    std::fs::write(store::metadata_path(root.path(), ID), "{").unwrap();
+    let events = store::events_path(root.path(), ID);
+    std::fs::remove_file(&events).unwrap();
+    std::fs::create_dir(&events).unwrap();
+    for _ in 0..10 {
+        h.advance(FAST);
+    }
+    let about: Vec<String> = log_lines(&h)
+        .into_iter()
+        .filter(|l| l.starts_with(ID))
+        .collect();
+    assert_eq!(about.len(), 2, "{about:?}");
+    assert!(about[0].contains("metadata.json") && about[1].contains("events.jsonl"));
+}
+
+#[test]
+fn log_show_shows_the_events_a_chat_has_read_and_keeps_them_coming() {
+    let root = TempRoot::new("log-show");
+    let fake = FakeRunner::new();
+    let mut h = harness(&root, &fake);
+    let notes = h.focused_buffer().unwrap();
+    let events = [
+        fixtures::message("e1", "user", "hello"),
+        fixtures::message("e2", "assistant", "Hi!"),
+    ];
+    let (chat, _) = opened(&mut h, &root, meta("idle"), &events);
+    h.show(notes, die_core::ShowIn::Current).unwrap();
+    // Not followed: Emacs's error.
+    let args = |id: &str| die_core::Args {
+        text: Some(id.into()),
+        ..die_core::Args::default()
+    };
+    let err = h.run("orchid-log-show", &args("nope")).unwrap_err();
+    assert_eq!(err.to_string(), "Not monitoring session nope");
+    // Asked for, as Emacs's `Session ID: `.
+    h.run("orchid-log-show", &die_core::Args::default())
+        .unwrap();
+    assert!(h.screen().contains("Session ID:"));
+    h.type_keys(&format!("{ID}<CR>")).unwrap();
+    h.run_until_idle();
+    let name = chat::events_buffer(ID);
+    assert_eq!(name, format!(" *orchid-log:{ID}*"));
+    let log = h.find_buffer(&name).expect("the events' buffer");
+    assert_eq!(text(&h, log), format!("{}\n", events.join("\n")));
+    assert_eq!(h.window_list().len(), 2, "display-buffer's: beside");
+    assert_eq!(h.focused_buffer(), Some(notes), "the focus stays");
+    assert!(h.text(log).unwrap().settings().read_only);
+    // What the chat reads next goes in too.
+    let more = fixtures::message("e3", "assistant", "More.");
+    fixtures::append(root.path(), ID, std::slice::from_ref(&more));
+    h.advance(SLOW);
+    assert_eq!(text(&h, log), format!("{}\n{more}\n", events.join("\n")));
+    // Killing the chat stops it, as Emacs's monitor stopped.
+    h.kill(chat);
+    h.run_until_idle();
+    assert_eq!(h.find_buffer(&name), None);
+}
+
+#[test]
+fn a_tab_in_your_input_is_part_of_what_dot_puts_in_again() {
+    let root = TempRoot::new("tab-dot");
+    let fake = FakeRunner::new();
+    let mut h = harness(&root, &fake);
+    let (b, _) = opened(
+        &mut h,
+        &root,
+        meta("idle"),
+        &[fixtures::message("e1", "user", "x")],
+    );
+    let sep = chat::separator(Some("die"));
+    let ends = |h: &Harness, what: &str| text(h, b).ends_with(&format!("{sep}\n{what}"));
+    keys(&mut h, "Gia<Tab>b<Esc>");
+    assert!(ends(&h, "a\tb\n"), "{:?}", text(&h, b));
+    assert_eq!(h.register('.').map(|r| r.text.as_str()), Some("a\tb"));
+    // `i`'s again, before the last character.
+    keys(&mut h, "$.");
+    assert!(ends(&h, "a\ta\tbb\n"), "{:?}", text(&h, b));
+    keys(&mut h, "u");
+    assert!(ends(&h, "a\tb\n"), "one undo takes back what `.` put in");
+}
+
+#[test]
 fn a_turn_sent_from_elsewhere_shows_as_one_of_yours() {
     let root = TempRoot::new("elsewhere");
     let fake = FakeRunner::new();

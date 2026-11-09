@@ -9,14 +9,15 @@
 //! `fs_read`'s `paths`, `failure` and `termination` events, and results that aren't a file map.
 //!
 //! Times are local, in the zone the caller passes, so tests pass a fixed one. Widths are
-//! columns, as Emacs's `string-width` counts them.
+//! columns, as DIE draws them ([`width`]).
 
 use crate::store::{Event, EventKind, Metadata, Tool, ToolCall};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use serde_json::Value;
 use std::path::Path;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// A chat's lines: the stubs, the separators, the indicator.
 pub const WIDTH: usize = 80;
@@ -47,14 +48,29 @@ pub mod face {
 
 // ------------------------------------------------------------------ widths, tokens, times
 
-/// Columns, as Emacs's `string-width` counts them: wide characters take two, combining ones
-/// none, and the ambiguous ones (`…`, `─`, `•`) one.
+/// The columns a tab counts for, as Emacs's `string-width` counts one (`tab-width`'s default).
+/// DIE draws a tab to the next tab stop, which is never further.
+const TAB: usize = 8;
+
+/// The columns `s` takes, as DIE's layout draws it, so a stub is never wider than 80: each
+/// grapheme cluster as wide as Unicode says and one at least (`⚠️` two, `é` one), a control
+/// character as `^M` or `\200` (two or four), and a tab eight, as Emacs's `string-width` counted
+/// it, which DIE's tab stops never pass.
 pub fn width(s: &str) -> usize {
-    s.chars().map(|c| c.width().unwrap_or(0)).sum()
+    s.graphemes(true).map(cluster_width).sum()
+}
+
+fn cluster_width(g: &str) -> usize {
+    match g.chars().next() {
+        Some('\t') => TAB,
+        Some(c) if c < ' ' || c == '\x7f' => 2,
+        Some(c) if c.is_control() => 4,
+        _ => g.width().max(1),
+    }
 }
 
 /// `s` cut to `cols` columns, with `ellipsis` in the last of them when it's cut, as Emacs's
-/// `truncate-string-to-width` with an ellipsis. A wide character that would cross the edge goes.
+/// `truncate-string-to-width` with an ellipsis. A cluster that would cross the edge goes.
 pub fn truncate_width(s: &str, cols: usize, ellipsis: &str) -> String {
     if width(s) <= cols {
         return s.to_string();
@@ -62,13 +78,13 @@ pub fn truncate_width(s: &str, cols: usize, ellipsis: &str) -> String {
     let room = cols.saturating_sub(width(ellipsis));
     let mut out = String::new();
     let mut used = 0;
-    for c in s.chars() {
-        let w = c.width().unwrap_or(0);
+    for g in s.graphemes(true) {
+        let w = cluster_width(g);
         if used + w > room {
             break;
         }
         used += w;
-        out.push(c);
+        out.push_str(g);
     }
     out + ellipsis
 }
@@ -1124,5 +1140,44 @@ mod tests {
             truncate_width(&"界".repeat(20), 30, ".."),
             format!("{}..", "界".repeat(14))
         );
+    }
+
+    #[test]
+    fn widths_are_as_die_draws_them_and_tabs_as_emacs_counted() {
+        // A tab is eight, as Emacs's `string-width` said: this stub is Emacs's byte for byte.
+        let at: Timestamp = "2026-07-22T01:16:46Z".parse().unwrap();
+        let zone = crate::test_zone();
+        let tabbed = stub_line(
+            "[agnt] [col1\tcol2\tcol3 and more text]",
+            Some(at),
+            Some(63_000),
+            &zone,
+        );
+        assert_eq!(
+            tabbed,
+            "[agnt]    [col1\tcol2\tcol3 and more text     ]    [ 63k] [11:16:46]"
+        );
+        // A cluster is as wide as DIE draws it, and a control character as `^M` or `\200`.
+        assert_eq!(width("⚠️ ok"), 5);
+        assert_eq!(width("✔️"), 2);
+        assert_eq!(width("e\u{301}"), 1);
+        assert_eq!(width("a\rb\x7f"), 6);
+        assert_eq!(width("\u{80}"), 4);
+        assert_eq!(width("👨‍👩‍👧"), 2);
+        for preview in [
+            "⚠️ Two tests fail on main; ✔️ the rest pass",
+            "crlf reply\r second line",
+        ] {
+            let stub = stub_line(
+                &format!("[agnt] [{preview}]"),
+                Some(at),
+                Some(63_000),
+                &zone,
+            );
+            assert_eq!(width(&stub), WIDTH, "{stub}");
+        }
+        // Cut between clusters, never inside one.
+        assert_eq!(truncate_width("ab⚠️cd", 3, ""), "ab");
+        assert_eq!(truncate_width("ab⚠️cd", 4, ""), "ab⚠️");
     }
 }

@@ -461,3 +461,37 @@ fn a_session_orchid_made_while_die_was_down_is_the_new_chats() {
     assert_eq!(argvs, ["set"], "no second create");
     assert!(h.take_errors().is_empty(), "{:?}", h.messages);
 }
+
+/// What you typed on the blank line under the last separator, where `G`, `j` and a click land,
+/// comes back as it was, with the cursor on the same character, and stays so over a second
+/// restart.
+#[test]
+fn an_input_typed_on_the_blank_line_comes_back_as_it_was() {
+    let (root, state) = (
+        TempRoot::new("restart-blank"),
+        TempRoot::new("restart-blank-state"),
+    );
+    running(root.path(), ID, false);
+    fixtures::append(root.path(), ID, &[fixtures::message("e1", "user", "x")]);
+    let fake = FakeRunner::new();
+    let mut h = up(&root, &state, &fake);
+    h.open_text("notes", "").unwrap();
+    chat::open(&mut h, ID).unwrap();
+    h.run_until_idle();
+    keys(&mut h, "Gihello<Esc>");
+    let b = h.focused_buffer().unwrap();
+    let sep = chat::separator(Some("die"));
+    let typed = format!("{sep}\nhello\n");
+    assert!(text(&h, b).ends_with(&typed));
+    for round in ["first", "second"] {
+        h = restart(h, &root, &state, &fake);
+        let b = h.focused_buffer().unwrap();
+        assert_eq!(h.buffer_name(b), Some(NAME), "{round}");
+        let t = text(&h, b);
+        assert!(t.ends_with(&typed), "{round}: {t:?}");
+        let w = h.focused().unwrap();
+        let at = h.text(b).unwrap().cursor(w).unwrap();
+        assert_eq!(&t[at..], "o\n", "{round}: the cursor on the same character");
+    }
+    assert!(h.take_errors().is_empty(), "{:?}", h.messages);
+}
