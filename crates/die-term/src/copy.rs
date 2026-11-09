@@ -5,7 +5,8 @@
 //! isn't the live screen. As output comes, an update reads only from the row that was the
 //! screen's top at the last read, since rows above it are history and don't change, and says
 //! how many of the oldest lines left the scrollback. A resize, a switch of
-//! screens or a flood past what the marks can count reads the whole text again.
+//! screens or a flood past what the marks can count reads the whole text again, and a switch of
+//! screens says the lines are numbered afresh.
 //!
 //! The snapshot ends at the cursor's line, or at the last line with something on it below that:
 //! the screen's blank rows past both aren't lines a motion goes to, so `G` and `j` stop at the
@@ -23,6 +24,8 @@ pub struct CopyText {
     /// The absolute row of the screen's top at the last read.
     screen_top: u64,
     mark: Option<Mark>,
+    /// The last read was the alternate screen's.
+    alt: bool,
 }
 
 /// `text`'s rows as lines, each ending in a newline, up to the cursor's line or the last one
@@ -72,6 +75,9 @@ impl CopyText {
         st.live_top = (screen_top - first) as usize;
         let shown = term.viewport();
         st.shown_top = (!shown.at_bottom).then(|| shown.top.saturating_sub(first) as usize);
+        // Another screen's rows have nothing to do with the last one's.
+        let alt = term.alt_screen();
+        st.renumbered = std::mem::replace(&mut self.alt, alt) != alt;
         (self.first, self.screen_top) = (first, screen_top);
         st
     }

@@ -9,7 +9,8 @@
 //! and never in line mode; `i`, `a`, `I` and `A` go back to insert at the live screen, `p` and
 //! `P` paste, `G` goes to the terminal's cursor, and `C-c C-r` changes where insert state's Esc
 //! goes: to normal state, the default, or to the program, or evil-ghostel's `auto` with a count.
-//! The program's exit closes the buffer.
+//! `C-c C-c`, `C-c C-z`, `C-c C-\` and `C-c C-d` send those keys, as ghostel's do. The program's
+//! exit closes the buffer.
 use crate::Term;
 use crate::surface::{CopyFn, Escape, KIND, TermSurface};
 use die_core::{
@@ -367,6 +368,16 @@ fn toggle_escape(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
+/// What normal state's `C-c` keys send, as your ghostel's map has them in every input mode: the
+/// bytes, which the line discipline makes signals of whatever the kitty flags are.
+#[rustfmt::skip]
+const SENDS: [(&str, &str, u8, &str); 4] = [
+    ("<C-c><C-c>", "term-send-C-c", 0x03, "Send C-c to the terminal's program, an interrupt, as ghostel-send-C-c does"),
+    ("<C-c><C-z>", "term-send-C-z", 0x1a, "Send C-z to the terminal's program, a suspend, as ghostel-send-C-z does"),
+    ("<C-c><C-\\>", "term-send-C-backslash", 0x1c, "Send C-\\ to the terminal's program, a quit, as ghostel-send-C-backslash does"),
+    ("<C-c><C-d>", "term-send-C-d", 0x04, "Send C-d to the terminal's program, an end of file, as ghostel-send-C-d does"),
+];
+
 impl Extension for Terminals {
     fn name(&self) -> &'static str {
         "die-term"
@@ -409,6 +420,12 @@ impl Extension for Terminals {
              program on its alternate screen, else normal state), the program or normal state",
             toggle_escape,
         );
+        for (key, cmd, byte, doc) in SENDS {
+            reg.command(cmd, doc, move |ctx, a| {
+                with_term(ctx, a, |s, _| s.write(&[byte]))
+            });
+            reg.kind_keymap(KIND).bind(State::Normal, key, cmd);
+        }
         let k = reg.kind_keymap(KIND);
         k.bind(State::Normal, "<Esc>", "term-send-escape")
             .bind(State::Normal, "<C-c><C-r>", "term-toggle-send-escape")

@@ -408,10 +408,11 @@ impl Ctx {
             Ok(())
         });
     }
-    /// Whether a surface's buffer takes plain Esc now in passthrough ([`Surface::takes_esc`]).
-    pub(crate) fn surface_takes_esc(&self, buf: BufferId) -> bool {
+    /// What a surface's buffer says of itself now, as whether it takes plain Esc in passthrough
+    /// ([`Surface::takes_esc`]). False for text, or a surface checked out.
+    pub(crate) fn surface_says(&self, buf: BufferId, f: impl Fn(&dyn Surface) -> bool) -> bool {
         match self.buffers.get(buf).map(|b| &b.content) {
-            Some(Content::Custom { obj: Some(s), .. }) => s.takes_esc(),
+            Some(Content::Custom { obj: Some(s), .. }) => f(s.as_ref()),
             _ => false,
         }
     }
@@ -514,15 +515,16 @@ impl Ctx {
         hit: Option<CellHit>,
     ) -> Option<WindowId> {
         let held = matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_));
+        let wheel = matches!(p.kind, PointerKind::Scroll { .. });
         // Copy state's pointer is a text window's: a click moves the cursor, a drag selects,
-        // the wheel scrolls the snapshot.
+        // the wheel scrolls the snapshot, unless the surface takes the wheel now.
         let copying = |w: WindowId| self.window_buffer(w).is_some_and(|b| self.text(b).is_ok());
         let in_area = |w: WindowId| {
             let (Some(at), Some(g)) = (self.drawn.placement(w), self.surface_area(w)) else {
                 return false;
             };
             let x = at.col + g.text_x;
-            matches!(p.kind, PointerKind::Scroll { .. }) || (x..x + g.text_w).contains(&p.col)
+            wheel || (x..x + g.text_w).contains(&p.col)
         };
         let w = match self.surfaces.pressed {
             Some(w) if held => w,
@@ -534,7 +536,8 @@ impl Ctx {
         }
         let buf = self.window_buffer(w)?;
         let custom = matches!(self.buffers.get(buf)?.content, Content::Custom { .. });
-        (custom && !copying(w)).then_some(w)
+        let taken = wheel && self.surface_says(buf, |s| s.takes_wheel());
+        (custom && (taken || !copying(w))).then_some(w)
     }
 
     /// Give a pointer event to the surface in `w`, in its area's cells and pixels.
