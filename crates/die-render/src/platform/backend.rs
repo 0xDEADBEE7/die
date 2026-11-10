@@ -181,9 +181,10 @@ pub mod appkit {
 
 /// The GPU's side.
 pub mod metal {
-    use super::{Never, appkit::Surface};
+    use super::{Never, appkit::Surface, pixbuf::Pixels};
     use crate::frame::{Image, Presented, Quad, Upload};
-    use die_core::Rgb;
+    use die_core::{PixelBufferId, Rgb};
+    use std::sync::Arc;
 
     /// A GPU, which this target can't have.
     pub struct Gpu(Never);
@@ -205,12 +206,24 @@ pub mod metal {
 
     impl Pipeline {
         /// Never runs.
+        pub fn show_pixels(&mut self, _: Arc<Pixels>) {
+            match self.0 {}
+        }
+
+        /// Never runs.
         pub fn upload(&self, _: &Upload) -> Result<(), String> {
             match self.0 {}
         }
 
         /// Never runs.
-        pub fn render(&mut self, _: &[Quad], _: Rgb, _: u32, _: u32) -> Result<Image, String> {
+        pub fn render(
+            &mut self,
+            _: &[Quad],
+            _: &[(usize, PixelBufferId)],
+            _: Rgb,
+            _: u32,
+            _: u32,
+        ) -> Result<Image, String> {
             match self.0 {}
         }
 
@@ -218,10 +231,57 @@ pub mod metal {
         pub fn present(
             &mut self,
             _: &[Quad],
+            _: &[(usize, PixelBufferId)],
             _: Rgb,
             _: &Surface,
             _: bool,
         ) -> Result<Option<Presented>, String> {
+            match self.0 {}
+        }
+    }
+}
+
+/// The pixel buffers' side.
+pub mod pixbuf {
+    use super::Never;
+    use crate::frame::PixelStats;
+    use crate::window::Pending;
+    use die_core::{PixelBufferId, PixelRect, PixelSink};
+    use std::sync::Arc;
+
+    /// The host's pixel sink, which this target can't have: core says it shows no pixels.
+    pub struct Pixels(Never);
+
+    impl Pixels {
+        /// There's none.
+        pub fn new(_: Pending) -> Option<Arc<Pixels>> {
+            None
+        }
+
+        /// Never runs.
+        pub fn stats(&self) -> PixelStats {
+            match self.0 {}
+        }
+    }
+
+    impl PixelSink for Pixels {
+        /// Never runs.
+        fn create(&self, _: PixelBufferId, _: u32, _: u32) {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        fn present(&self, _: PixelBufferId, _: &[u8], _: u32, _: PixelRect) {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        fn resize(&self, _: PixelBufferId, _: u32, _: u32) {
+            match self.0 {}
+        }
+
+        /// Never runs.
+        fn destroy(&self, _: PixelBufferId) {
             match self.0 {}
         }
     }

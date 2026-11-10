@@ -291,20 +291,23 @@ files = ["pixels.rs"]
 # and replace the stub.
 
 # 2,300 until a pointer event said its pixel, and core heard the cells' pixels, for terminals.
+# 2,305 until M3a: the placements' quads beside the row layers, `Pending` read by the loop as a
+# PTY's waiting output is, and a drag on every pointer sample while a button is held.
 [[module]]
 crate = "die-render"
 name = "neutral"
-limit = 2305
+limit = 2380
 files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "input.rs", "sprite.rs", "window.rs", "latency.rs"]
 
 # `die --check`: the window's own checks, which ship in the binary. R3's are about 420
 # lines, R6 adds `typing` and `firstframe`, and V5 `idle-60`'s count of the OS's wakes. 720
 # until `show` held the cursor to whether the window really has the keyboard. 730 until its
-# cover could be unseen too.
+# cover could be unseen too. 735 until M3a's `pixels`, S1's check 3 on DIE's own path: a surface
+# of the check's own, a producer thread's frames through the ring, and the drawable read back.
 [[module]]
 crate = "die-render"
 name = "checks"
-limit = 735
+limit = 895
 files = ["check.rs"]
 
 # 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
@@ -323,7 +326,12 @@ platforms = ["macos"]
 # 1,300 until their names came composed (NFC), as typed: safe calls on NSURL and NSString.
 # 1,305 until a test's DIE ran unseen: three safe setters, with `attach`'s one `unsafe` shared.
 # 1,315 until a PTY's trampoline marked the fds Metal opened close-on-exec: one `unsafe` borrow.
-limit = 1335
+# 1,335 until M3a's staging ring, the eighth raise (2026-11-10): `pixbuf.rs`, about 290 lines,
+# copies a present's rows into shared MTLBuffers on the producer's thread, hands them to the main
+# thread by `try_lock` alone and blits them into the buffer's texture, with two `Send` wrappers
+# for Metal's buffers and textures; metal.rs binds each placement's texture for its one quad.
+# The macOS build stands at 4,955 of guard 7's 5,000 with it.
+limit = 1690
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
@@ -333,8 +341,9 @@ crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
 # 160 until U7's landing found it at 162 from another package. 165 until `on_open_files`.
-# 170 until `unseen`.
-limit = 175
+# 170 until `unseen`. 175 until M3a: `pixbuf::Pixels`, a sink this target hasn't, so core shows
+# no pixels there, and the placements through `render` and `present`.
+limit = 220
 files = ["platform/backend.rs"]
 
 # die-term's engine side (scope §6): a `Term` with bytes in and cells out, keys in and bytes
