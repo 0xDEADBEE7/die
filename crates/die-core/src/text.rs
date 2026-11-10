@@ -359,10 +359,11 @@ pub(crate) fn map_pos(p: usize, start: usize, old_end: usize, new_end: usize, g:
 }
 
 fn blocks(ro: &Range<usize>, r: &Range<usize>) -> bool {
+    // An empty range protects no text, as one an extension's edit emptied: it blocks nothing.
     if r.start == r.end {
         ro.start < r.start && r.start < ro.end
     } else {
-        r.start < ro.end && ro.start < r.end
+        !ro.is_empty() && r.start < ro.end && ro.start < r.end
     }
 }
 
