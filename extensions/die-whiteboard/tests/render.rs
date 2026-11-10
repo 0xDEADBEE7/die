@@ -1,6 +1,7 @@
 //! The cell renderer's screen for a small board, as text: box glyphs for a rectangle and an
 //! arrow, braille for an ellipse and a stroke, a label as text, the ink's colour per cell, and
-//! the newest element winning a cell.
+//! the newest element winning a cell. Cells are asked for (`pixels: false`), as a host without
+//! pixels gets them; the pixel renderer's tests are in `tests/pixels.rs`.
 
 use die_test_cap as _;
 
@@ -12,7 +13,11 @@ use die_whiteboard::model::{Point, Shape};
 
 #[test]
 fn a_small_board_as_cells() {
-    let mut s = setup("render");
+    let mut s = setup_cells("render");
+    assert!(
+        s.h.scene().placements.is_empty(),
+        "no pixel buffer in cells"
+    );
     {
         let shared = board(&mut s.h, s.buf);
         let mut st = shared.borrow_mut();

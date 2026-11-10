@@ -1,5 +1,5 @@
-//! The cell renderer: the board in DIE's own cells, buildable today and the Linux preview's
-//! fallback once the pixel renderer exists. Rectangles, lines and arrows snap to the grid and
+//! The cell renderer: the board in DIE's own cells, where the host shows no pixels (Linux until
+//! the wgpu ring) or where you ask for them. Rectangles, lines and arrows snap to the grid and
 //! draw in the light box glyphs (U+2500-257F), which die-render joins across cells; arrowheads
 //! are `▶ ◀ ▲ ▼`; ellipses and strokes are braille (U+2800-28FF, 2×4 dots a cell, the ink's
 //! colour per cell); labels are text; the selection is reverse video, the highlighter faint.
@@ -11,7 +11,7 @@
 use crate::model::{CellSize, Element, Id, LIVE, Point, Rect, Shape, label_lines};
 use crate::render::{Damage, Renderer, Scene};
 use crate::view::View;
-use die_core::{CellPixels, Color, Frame, FrameCell, Glyph, RenderInfo};
+use die_core::{CellPixels, Color, Ctx, Frame, FrameCell, Glyph, RenderInfo};
 use std::f32::consts::TAU;
 
 const UP: u8 = 1;
@@ -26,7 +26,7 @@ const BOX: [char; 16] = [
 
 /// A cell's width and height when the host hasn't said, as in a harness without
 /// `set_cell_pixels`: a text cell at about 16 pt on a 1x display.
-const FALLBACK_CELL: (f32, f32) = (10.0, 20.0);
+pub const FALLBACK_CELL: (f32, f32) = (10.0, 20.0);
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 enum Kind {
@@ -352,7 +352,7 @@ impl Renderer for Cells {
         "cells"
     }
 
-    fn resize(&mut self, _cols: usize, _rows: usize, _cell: CellPixels) {
+    fn resize(&mut self, _cols: usize, _rows: usize, _cell: CellPixels, _: &mut Ctx) {
         self.stale = true;
     }
 
