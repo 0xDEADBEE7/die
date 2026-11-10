@@ -75,6 +75,32 @@ fn c14_transaction_is_atomic() {
     );
 }
 
+#[test]
+fn c14_an_empty_read_only_range_blocks_nothing_so_undo_and_redo_round_trip() {
+    // The gate's property test found it (prop.proptest-regressions, fd99bf…): an open group of
+    // extension edits, a read-only range made empty, then undo and redo. The undo deleted
+    // across the range's point, the redo's insertions carried the point along, and its
+    // deletion then spanned the point and was refused.
+    let (mut ctx, b, _) = vim_ctx("a", 40, 10);
+    let t = ctx.text_mut(b).unwrap();
+    t.begin_undo_group();
+    t.tx(Origin::Extension).insert(0, "aa").commit().unwrap();
+    t.tx(Origin::Extension).insert(2, "aaa").commit().unwrap();
+    t.tx(Origin::Extension).replace(3..6, "").commit().unwrap();
+    t.decorate(0..0, Deco::ReadOnly).unwrap();
+    assert_eq!(t.rope().to_string(), "aaa");
+    t.undo().unwrap();
+    assert_eq!(t.rope().to_string(), "a");
+    t.redo().expect("redo right after a successful undo");
+    assert_eq!(t.rope().to_string(), "aaa");
+    // A range an extension's edit emptied protects nothing either: the user deletes across it.
+    let ro = t.decorate(1..2, Deco::ReadOnly).unwrap();
+    t.tx(Origin::Extension).replace(1..2, "").commit().unwrap();
+    assert!(t.decoration(ro).unwrap().range.is_empty());
+    t.tx(Origin::User).replace(0..2, "").commit().unwrap();
+    assert_eq!(t.rope().to_string(), "");
+}
+
 // ---------------------------------------------------------------- criterion 6: undo
 
 fn chat() -> (Ctx, BufferId, WindowId) {
