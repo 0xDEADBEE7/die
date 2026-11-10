@@ -23,7 +23,8 @@ use crate::model::{Element, LIVE, Point, Rect, Shape, label_lines};
 use crate::render::{Damage, Renderer, Scene};
 use crate::svg::Look;
 use die_core::{
-    CellPixels, Color, Ctx, Frame, FrameCell, Glyph, PixelBufferId, PixelRect, Producer, RenderInfo,
+    CellPixels, Color, Ctx, Frame, FrameCell, Glyph, PixelBufferId, PixelProducer, PixelRect,
+    RenderInfo,
 };
 
 /// Around a selected element's bounds, in board units: where its outline goes.
@@ -56,7 +57,7 @@ pub struct Pixels {
 }
 
 struct Buffer {
-    producer: Producer,
+    producer: PixelProducer,
     committed: Canvas,
     /// Nothing presented since it was made or resized: it's transparent, and an empty board
     /// needn't present a transparent buffer to show nothing.
@@ -303,39 +304,56 @@ impl Picture<'_, '_> {
         covered
     }
 
-    /// Draw the whole picture on `committed`, which is clear: in bands on threads of their own
-    /// for a dense board, else here. The pixels covered, if any.
-    fn draw_all(&self, committed: &mut Canvas) -> Option<PixelRect> {
-        let (w, h) = (committed.width(), committed.height());
-        let whole = PixelRect::whole(w, h);
+    /// How many bands `rect` of a board this dense is drawn in: one for a sparse board or a
+    /// short rectangle, else up to eight, one a thread.
+    fn bands(&self, rect: PixelRect) -> usize {
+        if self.scene.board.len() < BANDS_FROM {
+            return 1;
+        }
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-        let bands = threads.min(8).min(h as usize / 64);
-        if self.scene.board.len() < BANDS_FROM || bands < 2 {
+        threads.min(8).min(rect.height as usize / 64).max(1)
+    }
+
+    /// Draw the whole picture on `committed`, which is clear. The pixels covered, if any.
+    fn draw_all(&self, committed: &mut Canvas) -> Option<PixelRect> {
+        let whole = PixelRect::whole(committed.width(), committed.height());
+        if self.bands(whole) < 2 {
             return self.draw(&mut committed.target(), whole);
         }
-        let step = h.div_ceil(bands as u32);
-        let strips: Vec<PixelRect> = (0..h)
+        self.redraw(committed, whole)
+    }
+
+    /// Draw `rect` of the picture again on `committed`: in bands on threads of their own for a
+    /// dense board (a move or undo of a wide selection costs as a whole redraw does), else here.
+    /// The pixels covered, if any.
+    fn redraw(&self, committed: &mut Canvas, rect: PixelRect) -> Option<PixelRect> {
+        let bands = self.bands(rect) as u32;
+        let step = rect.height.div_ceil(bands);
+        let strips: Vec<PixelRect> = (0..rect.height)
             .step_by(step as usize)
-            .map(|y| PixelRect::new(0, y, w, step.min(h - y)))
+            .map(|y| PixelRect::new(rect.x, rect.y + y, rect.width, step.min(rect.height - y)))
             .collect();
-        let drawn: Vec<(PixelRect, Option<Canvas>, Option<PixelRect>)> = std::thread::scope(|s| {
-            let handles: Vec<_> = strips
-                .iter()
-                .map(|&strip| {
-                    s.spawn(move || {
-                        let mut part = Canvas::new(strip.width, strip.height);
-                        let covered = part
-                            .as_mut()
-                            .and_then(|p| self.draw(&mut p.target(), strip));
-                        (strip, part, covered)
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|j| j.join().expect("a band's thread doesn't panic"))
-                .collect()
-        });
+        let band = |strip: PixelRect| {
+            let mut part = Canvas::new(strip.width, strip.height);
+            let covered = part
+                .as_mut()
+                .and_then(|p| self.draw(&mut p.target(), strip));
+            (strip, part, covered)
+        };
+        let drawn: Vec<(PixelRect, Option<Canvas>, Option<PixelRect>)> = if bands < 2 {
+            strips.into_iter().map(band).collect()
+        } else {
+            std::thread::scope(|s| {
+                let handles: Vec<_> = strips
+                    .iter()
+                    .map(|&strip| s.spawn(move || band(strip)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|j| j.join().expect("a band's thread doesn't panic"))
+                    .collect()
+            })
+        };
         let mut covered = None;
         for (strip, part, drew) in drawn {
             if let Some(part) = part {
@@ -344,15 +362,6 @@ impl Picture<'_, '_> {
             covered = union(covered, drew);
         }
         covered
-    }
-
-    /// Draw `rect` of the picture again on `committed`.
-    fn redraw(&self, committed: &mut Canvas, rect: PixelRect) {
-        let Some(mut part) = Canvas::new(rect.width, rect.height) else {
-            return;
-        };
-        self.draw(&mut part.target(), rect);
-        committed.paste(&part, rect.x, rect.y);
     }
 }
 
@@ -409,13 +418,16 @@ impl Renderer for Pixels {
 
     fn resize(&mut self, cols: usize, rows: usize, cell: CellPixels, ctx: &mut Ctx) {
         self.cell = cell;
-        let want = (cols as u32 * cell.width, rows as u32 * cell.height);
-        if self
-            .buffer
-            .as_ref()
-            .is_some_and(|b| b.producer.size() == want)
-        {
-            return;
+        let mut want = (cols as u32 * cell.width, rows as u32 * cell.height);
+        // The buffer grows and never shrinks: a placement shows a larger buffer's top-left part,
+        // so a second window on the board, of another size (C10), or a narrowing doesn't re-make
+        // it and draw it all again at each layout change.
+        if let Some(b) = &self.buffer {
+            let (w, h) = b.producer.size();
+            want = (want.0.max(w), want.1.max(h));
+            if (w, h) == want {
+                return;
+            }
         }
         self.live = None;
         self.drawn_at = None;

@@ -47,6 +47,7 @@ struct Numbers {
     sample: Duration,
     render: Duration,
     pan: Duration,
+    move_sample: Duration,
 }
 
 /// Open the board, press a key, draw a stroke timing its third sample, draw it all again, and
@@ -96,6 +97,42 @@ fn measure(options: Options) -> (Numbers, usize) {
     );
     s.h.scene();
     let pan = t.elapsed();
+    keys(&mut s.h, "0");
+    // A marquee over most of the board, then a drag of the selection: each sample draws the
+    // region every selected stroke and its outline cover again, which for a wide selection is
+    // the board, in bands.
+    keys(&mut s.h, "v");
+    let first = {
+        let shared = board(&mut s.h, s.buf);
+        let mut st = shared.borrow_mut();
+        st.selection = st.board.elements.iter().map(|e| e.id).collect();
+        st.redraw();
+        // A stroke whose start is well inside the area, to press on.
+        st.board
+            .elements
+            .iter()
+            .find_map(|e| match &e.shape {
+                Shape::Stroke { points, .. }
+                    if (10.0..300.0).contains(&points[0].x)
+                        && (10.0..200.0).contains(&points[0].y) =>
+                {
+                    Some(points[0])
+                }
+                _ => None,
+            })
+            .expect("a stroke inside")
+    };
+    s.h.scene();
+    let at = |d: f32| (first.x + d, first.y + d);
+    press(&mut s, at(0.0));
+    drag(&mut s, at(2.0));
+    let t = Instant::now();
+    drag(&mut s, at(4.0));
+    s.h.scene();
+    let move_sample = t.elapsed();
+    release(&mut s, at(6.0));
+    let selected = board(&mut s.h, s.buf).borrow().selection.len();
+    assert_eq!(selected, 1001, "all, through the move");
     (
         Numbers {
             opened,
@@ -103,6 +140,7 @@ fn measure(options: Options) -> (Numbers, usize) {
             sample,
             render,
             pan,
+            move_sample,
         },
         text.len(),
     )
@@ -113,26 +151,33 @@ fn a_thousand_strokes_open_key_sample_and_render_within_budget() {
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     let (px, bytes) = measure(Whiteboard::for_tests().options);
     println!(
-        "1,000 strokes in pixels: open {:.1} ms, key {:.1} ms, pointer sample (rasterize + present) {:.2} ms, full re-raster {:.1} ms, wheel pan {:.1} ms ({bytes} bytes of SVG)",
+        "1,000 strokes in pixels: open {:.1} ms, key {:.1} ms, pointer sample (rasterize + present) {:.2} ms, full re-raster {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection of most of them {:.1} ms ({bytes} bytes of SVG)",
         ms(px.opened),
         ms(px.key),
         ms(px.sample),
         ms(px.render),
         ms(px.pan),
+        ms(px.move_sample),
     );
     let (cells, _) = measure(Options {
         pixels: false,
         ..Whiteboard::for_tests().options
     });
     println!(
-        "1,000 strokes in cells: open {:.1} ms, key {:.1} ms, pointer sample {:.2} ms, full cell render {:.1} ms, wheel pan {:.1} ms",
+        "1,000 strokes in cells: open {:.1} ms, key {:.1} ms, pointer sample {:.2} ms, full cell render {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection {:.1} ms",
         ms(cells.opened),
         ms(cells.key),
         ms(cells.sample),
         ms(cells.render),
         ms(cells.pan),
+        ms(cells.move_sample),
     );
     for n in [&px, &cells] {
+        assert!(
+            n.move_sample < Duration::from_millis(500),
+            "move sample {:?}",
+            n.move_sample
+        );
         assert!(n.opened < Duration::from_millis(500), "open {:?}", n.opened);
         assert!(n.key < Duration::from_millis(200), "key {:?}", n.key);
         assert!(

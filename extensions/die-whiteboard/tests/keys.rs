@@ -20,7 +20,11 @@ fn describe(h: &Harness, keys: &str) -> (String, String) {
     }
 }
 
-const NORMAL: [(&str, &str); 36] = [
+const NORMAL: [(&str, &str); 40] = [
+    ("ZZ", "whiteboard-save-and-close"),
+    ("ZQ", "vim-quit"),
+    ("<C-^>", "vim-alternate-buffer"),
+    ("<C-o>", "vim-jump-backward"),
     ("p", "whiteboard-tool-pen"),
     ("r", "whiteboard-tool-rect"),
     ("c", "whiteboard-tool-ellipse"),
@@ -214,4 +218,22 @@ fn full_width_as_an_option() {
     open(&mut h, &dir.path().join("w.svg"));
     let w = h.focused().unwrap();
     assert_eq!(h.surface_area(w).unwrap().text_w, 120);
+}
+
+#[test]
+fn zz_writes_the_board_and_closes_its_window_and_c_caret_flips_to_the_last_buffer() {
+    let mut s = setup("reflexes");
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    let notes = s.h.find_buffer("notes").unwrap();
+    keys(&mut s.h, "<C-^>");
+    assert_eq!(s.h.focused_buffer(), Some(notes), "the buffer used before");
+    keys(&mut s.h, "<C-^>");
+    assert_eq!(s.h.focused_buffer(), Some(s.buf));
+    keys(&mut s.h, "<C-w>s");
+    assert_eq!(s.h.window_list().len(), 2);
+    assert!(!s.path.exists());
+    keys(&mut s.h, "ZZ");
+    assert_eq!(s.h.window_list().len(), 1, "closed, as :x does");
+    assert!(s.path.exists(), "written first");
+    assert!(s.h.is_live(s.buf), "the buffer stays, as :x leaves it");
 }

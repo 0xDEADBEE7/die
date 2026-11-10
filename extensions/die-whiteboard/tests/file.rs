@@ -237,6 +237,8 @@ fn the_prompt_descends_lists_boards_and_takes_a_new_name() {
     std::fs::create_dir_all(dir.path().join("sub")).unwrap();
     std::fs::write(dir.path().join("old.svg"), "").unwrap();
     std::fs::write(dir.path().join("notes.txt"), "").unwrap();
+    // A board's own export, which it would refuse as not a whiteboard file, isn't listed.
+    std::fs::write(dir.path().join("old.export.svg"), "").unwrap();
     let mut h = harness();
     let notes = h.find_buffer("notes").unwrap();
     h.set_directory(notes, dir.path());
@@ -246,7 +248,7 @@ fn the_prompt_descends_lists_boards_and_takes_a_new_name() {
     assert_eq!(
         h.prompt_candidates(),
         ["old.svg", "sub/"],
-        "boards, then directories"
+        "boards, then directories, and no export"
     );
     keys(&mut h, "sub/");
     assert_eq!(h.prompt_candidates(), Vec::<&str>::new());

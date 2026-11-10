@@ -88,7 +88,8 @@ pub fn entries(dir: &Path) -> Vec<String> {
             if is_dir {
                 Some(name + "/")
             } else {
-                name.ends_with(".svg").then_some(name)
+                // Not a board's own export, which it would refuse as not a whiteboard file.
+                (name.ends_with(".svg") && !name.ends_with(".export.svg")).then_some(name)
             }
         })
         .collect();

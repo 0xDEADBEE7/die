@@ -823,8 +823,8 @@ const SIMPLE: [(&str, &str, Simple); 19] = [
     (
         "whiteboard-eraser",
         "e: the eraser, on or off: a drag erases every element it crosses. The right button erases from any tool.",
-        |s, _| {
-            s.toggle_tool(Tool::Eraser);
+        |s, now| {
+            s.toggle_tool(Tool::Eraser, now);
             Ok(Effect::None)
         },
     ),
@@ -833,7 +833,7 @@ const SIMPLE: [(&str, &str, Simple); 19] = [
         "h: nudge the selection a cell left; with nothing selected, the highlighter, on or off (the pen at 16 px and 35 %).",
         |s, now| {
             if !s.nudge(-1, 0, now) {
-                s.toggle_tool(Tool::Highlighter);
+                s.toggle_tool(Tool::Highlighter, now);
             }
             Ok(Effect::None)
         },
@@ -853,7 +853,7 @@ const SIMPLE: [(&str, &str, Simple); 19] = [
         "l: nudge the selection a cell right; with nothing selected, the line tool: the next drag draws a line, along an axis with Shift, bound to the shapes at its ends; then the pen again.",
         |s, now| {
             if !s.nudge(1, 0, now) {
-                s.set_tool(Tool::Line);
+                s.set_tool(Tool::Line, now);
             }
             Ok(Effect::None)
         },
@@ -882,9 +882,9 @@ const SIMPLE: [(&str, &str, Simple); 19] = [
     ),
     (
         "whiteboard-escape",
-        "Esc: drop the selection and whatever the pointer was doing, back to the pen.",
-        |s, _| {
-            s.escape();
+        "Esc: drop the selection and take back whatever the pointer was doing, back to the pen.",
+        |s, now| {
+            s.escape(now);
             Ok(Effect::None)
         },
     ),
@@ -976,8 +976,8 @@ const SIMPLE: [(&str, &str, Simple); 19] = [
     (
         "whiteboard-highlighter",
         "The highlighter, on or off: the pen at 16 px and 35 % opacity.",
-        |s, _| {
-            s.toggle_tool(Tool::Highlighter);
+        |s, now| {
+            s.toggle_tool(Tool::Highlighter, now);
             Ok(Effect::None)
         },
     ),
@@ -1007,8 +1007,8 @@ fn set_tool(ctx: &mut Ctx, args: &Args) -> Result {
         let names: Vec<&str> = Tool::ALL.iter().map(|t| t.name()).collect();
         Error::Msg(format!("A tool is one of {}", names.join(", ")))
     })?;
-    change(ctx, args, |s, _| {
-        s.set_tool(tool);
+    change(ctx, args, |s, now| {
+        s.set_tool(tool, now);
         Ok(Effect::None)
     })
 }
@@ -1031,6 +1031,32 @@ fn kept_board(ctx: &Ctx, buf: BufferId, st: &BoardState) -> Value {
         "selection": st.selection,
         "shown": shown,
     })
+}
+
+/// Put back the board a hand-over couldn't write: its elements over the stale file's, unsaved
+/// still, so the autosave writes them once it can, and a message says so.
+fn take_unsaved(ctx: &mut Ctx, st: &mut BoardState, v: &Value) {
+    let Some(board) = v
+        .get("svg")
+        .and_then(Value::as_str)
+        .and_then(|t| svg::read(t).ok())
+    else {
+        return;
+    };
+    // `write_board`'s error names the path; the status line names the file.
+    let error = v.get("error").and_then(Value::as_str).unwrap_or("");
+    let why = error
+        .strip_prefix(&format!("{}: ", st.path.display()))
+        .unwrap_or(error)
+        .to_string();
+    st.board = board;
+    st.dirty = true;
+    st.changed_at = ctx.now();
+    st.error = Some(format!("{}: {why}", st.name()));
+    ctx.messages.push(format!(
+        "whiteboard: {} couldn't be written at the hand-over ({why}); its unsaved changes are back from the session, and are written once it can be",
+        st.path.display()
+    ));
 }
 
 /// Put what a restart kept back on a board.
@@ -1100,6 +1126,15 @@ impl Extension for Whiteboard {
             },
         );
         reg.command(
+            "whiteboard-save-and-close",
+            "ZZ: write the board's file now and close its window, as `:x` does for a file.",
+            |ctx, a| {
+                let (buf, _) = target(ctx, a)?;
+                ctx.with_ext(|wb: &mut Whiteboard, ctx| wb.save_now(ctx, buf))??;
+                ctx.run("vim-quit", a)
+            },
+        );
+        reg.command(
             "whiteboard-export",
             "E: export the board as png (NAME.png beside the file, from the model, at your scale) or svg (NAME.export.svg); asked which if not given.",
             export_board,
@@ -1126,8 +1161,8 @@ impl Extension for Whiteboard {
         );
         for (name, _, tool, doc) in TOOLS {
             reg.command(name, doc, move |ctx, a| {
-                change(ctx, a, |s, _| {
-                    s.set_tool(tool);
+                change(ctx, a, |s, now| {
+                    s.set_tool(tool, now);
                     Ok(Effect::None)
                 })
             });
@@ -1162,6 +1197,10 @@ impl Extension for Whiteboard {
             .bind(Normal, "E", "whiteboard-export")
             .bind(Normal, "C", "whiteboard-copy-image")
             .bind(Normal, "S", "whiteboard-save")
+            .bind(Normal, "ZZ", "whiteboard-save-and-close")
+            .bind(Normal, "ZQ", "vim-quit")
+            .bind(Normal, "<C-^>", "vim-alternate-buffer")
+            .bind(Normal, "<C-o>", "vim-jump-backward")
             .bind(Normal, ":", "vim-ex")
             .bind(Normal, "<leader>z", "toggle-max-width")
             .bind(Insert, "<Esc>", "whiteboard-label-end")
@@ -1190,8 +1229,10 @@ impl Extension for Whiteboard {
     }
 
     /// Each open board: its file, view, tool, ink, width and selection, with its file written
-    /// first if it's behind, so a restart finds it on disk. Not keyed by the buffer: core keeps
-    /// buffer entries only for buffers it saves itself, and a surface's isn't one.
+    /// first if it's behind, so a restart finds it on disk; and if the write fails, the board
+    /// itself, so the restart brings its unsaved changes back rather than the stale file. Not
+    /// keyed by the buffer: core keeps buffer entries only for buffers it saves itself, and a
+    /// surface's isn't one.
     fn save_session(&self, ctx: &Ctx) -> Kept {
         let mut boards = vec![];
         for buf in ctx.buffer_list() {
@@ -1199,10 +1240,13 @@ impl Extension for Whiteboard {
                 continue;
             };
             let mut st = state.borrow_mut();
-            if st.dirty {
-                let _ = write_board(ctx, &mut st);
+            let unwritten = st.dirty.then(|| write_board(ctx, &mut st).err()).flatten();
+            let mut kept = kept_board(ctx, buf, &st);
+            if let Some(error) = unwritten {
+                let svg = svg::write(&st.board, &self.look(ctx, &st), true);
+                kept["unsaved"] = json!({ "svg": svg, "error": error });
             }
-            boards.push(kept_board(ctx, buf, &st));
+            boards.push(kept);
         }
         Kept {
             state: if boards.is_empty() {
@@ -1240,12 +1284,17 @@ impl Extension for Whiteboard {
                 }
             };
             if let Some(state) = self.boards.get(&buf) {
-                take_kept(&mut state.borrow_mut(), record);
+                let mut st = state.borrow_mut();
+                if let Some(unsaved) = record.get("unsaved") {
+                    take_unsaved(ctx, &mut st, unsaved);
+                }
+                take_kept(&mut st, record);
             }
             if record.get("shown").and_then(Value::as_bool) == Some(true) {
                 show = Some(buf);
             }
         }
+        self.arm(ctx);
         if let Some(buf) = show {
             ctx.show(buf, ShowIn::Current)?;
         }

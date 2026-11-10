@@ -11,7 +11,7 @@ use die_test_cap as _;
 mod common;
 
 use common::*;
-use die_core::{Mods, PixelRect, PointerKind, Rgb, SinkCall, Style, Theme};
+use die_core::{Mods, PixelRect, PixelSinkCall, PointerKind, Rgb, Style, Theme};
 use die_whiteboard::render::Damage;
 use std::time::Duration;
 
@@ -40,13 +40,15 @@ fn a_board_places_one_buffer_the_size_of_its_area_under_the_glyphs() {
     );
     let calls = s.h.fake_pixels().take_calls();
     assert!(
-        calls
-            .iter()
-            .any(|c| matches!(c, SinkCall::Create(i, cw, ch) if *i == id && (*cw, *ch) == (w, h))),
+        calls.iter().any(
+            |c| matches!(c, PixelSinkCall::Create(i, cw, ch) if *i == id && (*cw, *ch) == (w, h))
+        ),
         "{calls:?}"
     );
     assert!(
-        !calls.iter().any(|c| matches!(c, SinkCall::Present(..))),
+        !calls
+            .iter()
+            .any(|c| matches!(c, PixelSinkCall::Present(..))),
         "nothing presented for an empty board: {calls:?}"
     );
 }
@@ -120,7 +122,7 @@ fn each_sample_presents_the_new_segments_rectangle_alone() {
     let dots: Vec<PixelRect> = calls
         .iter()
         .filter_map(|c| match c {
-            SinkCall::Present(_, r) => Some(*r),
+            PixelSinkCall::Present(_, r) => Some(*r),
             _ => None,
         })
         .collect();
@@ -132,7 +134,7 @@ fn each_sample_presents_the_new_segments_rectangle_alone() {
     let segs: Vec<PixelRect> = calls
         .iter()
         .filter_map(|c| match c {
-            SinkCall::Present(_, r) => Some(*r),
+            PixelSinkCall::Present(_, r) => Some(*r),
             _ => None,
         })
         .collect();
@@ -148,7 +150,7 @@ fn each_sample_presents_the_new_segments_rectangle_alone() {
     let again = s.h.fake_pixels().take_calls();
     let presents = again
         .iter()
-        .filter(|c| matches!(c, SinkCall::Present(..)))
+        .filter(|c| matches!(c, PixelSinkCall::Present(..)))
         .count();
     assert!(presents <= 1, "{again:?}");
     release(&mut s, (60.0, 10.0));
@@ -156,7 +158,7 @@ fn each_sample_presents_the_new_segments_rectangle_alone() {
     // place of the live one: the whole stroke's region.
     let calls = s.h.fake_pixels().take_calls();
     let last = calls.iter().rev().find_map(|c| match c {
-        SinkCall::Present(_, r) => Some(*r),
+        PixelSinkCall::Present(_, r) => Some(*r),
         _ => None,
     });
     let last = last.expect("a present at the release");
@@ -168,12 +170,26 @@ fn each_sample_presents_the_new_segments_rectangle_alone() {
 }
 
 #[test]
-fn a_resize_remakes_the_buffer_and_draws_the_board_again() {
+fn a_resize_grows_the_buffer_and_draws_the_board_again_and_a_narrowing_keeps_it() {
     let mut s = setup("resize");
     gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
     let (id, w0, h0, _) = buffer(&mut s);
     s.h.fake_pixels().take_calls();
+    // Smaller: the buffer stays, shown from its top-left, and nothing is drawn again.
     s.h.set_window_size(60, 20);
+    s.h.run_until_idle();
+    let (id1, w, h, _) = buffer(&mut s);
+    assert_eq!((id1, w, h), (id, w0, h0), "kept");
+    let g = s.h.surface_area(s.win).unwrap();
+    assert!((g.text_w as u32 * 10, g.rows as u32 * 20) < (w0, h0));
+    let calls = s.h.fake_pixels().take_calls();
+    assert!(
+        !calls.iter().any(|c| matches!(c, PixelSinkCall::Resize(..))),
+        "{calls:?}"
+    );
+    assert!(inked(&mut s, (35.0, 10.0)));
+    // Taller: the buffer grows to the area and the board is drawn again.
+    s.h.set_window_size(100, 40);
     s.h.run_until_idle();
     let (id2, w1, h1, _) = buffer(&mut s);
     assert_eq!(id, id2, "the same buffer, resized");
@@ -183,7 +199,7 @@ fn a_resize_remakes_the_buffer_and_draws_the_board_again() {
     let calls = s.h.fake_pixels().take_calls();
     assert!(
         calls.iter().any(
-            |c| matches!(c, SinkCall::Resize(i, cw, ch) if *i == id && (*cw, *ch) == (w1, h1))
+            |c| matches!(c, PixelSinkCall::Resize(i, cw, ch) if *i == id && (*cw, *ch) == (w1, h1))
         ),
         "{calls:?}"
     );
@@ -195,7 +211,7 @@ fn a_resize_remakes_the_buffer_and_draws_the_board_again() {
     assert!(
         calls
             .iter()
-            .any(|c| matches!(c, SinkCall::Destroy(i) if *i == id)),
+            .any(|c| matches!(c, PixelSinkCall::Destroy(i) if *i == id)),
         "{calls:?}"
     );
     assert!(s.h.scene().placements.is_empty());
@@ -422,4 +438,28 @@ fn cells_when_asked_and_the_renderer_in_the_status() {
             .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
         "braille: {rows:#?}"
     );
+}
+
+#[test]
+fn a_split_doesnt_remake_the_buffer_and_each_window_shows_its_part() {
+    let mut s = setup("split");
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    let (id, w, h, _) = buffer(&mut s);
+    s.h.fake_pixels().take_calls();
+    // Two, then three windows of two sizes on one board: the buffer, sized to the first, is
+    // shown from its top-left in each (C10) rather than re-made at every layout change.
+    keys(&mut s.h, "<C-w>s<C-w>v");
+    assert_eq!(s.h.window_list().len(), 3);
+    let calls = s.h.fake_pixels().take_calls();
+    assert!(
+        !calls.iter().any(|c| matches!(c, PixelSinkCall::Resize(..))),
+        "{calls:?}"
+    );
+    let scene = s.h.scene();
+    assert_eq!(scene.placements.len(), 3, "{}", scene.snapshot());
+    assert!(scene.placements.iter().all(|p| p.buffer == id));
+    assert!(scene.placements.iter().any(|p| (p.cols as u32 * 10) < w));
+    let (id2, w2, h2, _) = buffer(&mut s);
+    assert_eq!((id2, w2, h2), (id, w, h));
+    assert!(inked(&mut s, (35.0, 10.0)));
 }
