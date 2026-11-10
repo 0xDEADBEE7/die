@@ -12,6 +12,7 @@ use die_core::{Config, Harness, State};
 use die_vim::Vim;
 use die_whiteboard::Whiteboard;
 use die_whiteboard::surface::Tool;
+use die_whiteboard::svg;
 use std::time::Duration;
 
 fn up(state: &TempDir) -> Harness {
@@ -150,4 +151,89 @@ fn boards_come_back_working_after_two_restarts() {
     let scene = s.h.scene();
     assert_eq!(scene.placements.len(), 1, "{}", scene.snapshot());
     assert!(inked(&mut s, (10.0, 20.0)), "the nudged rectangle's corner");
+}
+
+#[test]
+fn a_hand_over_that_cant_write_brings_the_unsaved_board_back_and_writes_it_once_it_can() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = TempDir::new("session-ro-state");
+    let dir = TempDir::new("session-ro-boards");
+    let ro = dir.path().join("ro");
+    std::fs::create_dir_all(&ro).unwrap();
+    let path = ro.join("ro.svg");
+    let mut h = up(&state);
+    h.open_text("notes", "notes\n").unwrap();
+    open(&mut h, &path);
+    let buf = h.focused_buffer().unwrap();
+    let win = h.focused().unwrap();
+    let mut s = Setup {
+        h,
+        dir,
+        buf,
+        win,
+        path: path.clone(),
+    };
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    s.h.advance(Duration::from_secs(2));
+    assert_eq!(
+        svg::read(&std::fs::read_to_string(&path).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+    // The directory can't be written to now: two more strokes stay unsaved.
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+    gesture(&mut s, &[(10.0, 30.0), (60.0, 30.0)]);
+    gesture(&mut s, &[(10.0, 50.0), (60.0, 50.0)]);
+    s.h.advance(Duration::from_secs(2));
+    assert!(
+        status(&mut s).contains("ro.svg: Permission denied"),
+        "{}",
+        status(&mut s)
+    );
+    let dir = s.dir;
+    let mut h = restart(s.h, &state);
+    assert_eq!(
+        svg::read(&std::fs::read_to_string(&path).unwrap())
+            .unwrap()
+            .len(),
+        1,
+        "the file is stale still"
+    );
+    let two = h.find_buffer("*whiteboard: ro.svg*").unwrap();
+    {
+        let shared = board(&mut h, two);
+        let st = shared.borrow();
+        assert_eq!(st.board.len(), 3, "the unsaved board is back");
+        assert!(st.dirty, "and still unsaved");
+        assert!(
+            st.error
+                .as_deref()
+                .is_some_and(|e| e.contains("Permission denied")),
+            "{:?}",
+            st.error
+        );
+    }
+    assert!(
+        h.messages
+            .iter()
+            .any(|m| m.contains("couldn't be written at the hand-over") && m.contains("ro.svg")),
+        "{:?}",
+        h.messages
+    );
+    assert!(
+        h.next_timer().is_some(),
+        "autosave armed, to write it once it can"
+    );
+    // Once it can be written, it is.
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+    h.advance(Duration::from_secs(2));
+    assert_eq!(
+        svg::read(&std::fs::read_to_string(&path).unwrap())
+            .unwrap()
+            .len(),
+        3
+    );
+    assert!(!board(&mut h, two).borrow().dirty);
+    drop(dir);
 }

@@ -11,6 +11,7 @@ use common::*;
 use die_core::{Button, Mods, PointerKind, State};
 use die_whiteboard::model::{Point, Shape, WIDTHS};
 use die_whiteboard::surface::Tool;
+use std::time::Duration;
 
 fn stroke_points(el: &die_whiteboard::model::Element) -> Vec<Point> {
     match &el.shape {
@@ -531,4 +532,190 @@ fn tools_by_name_and_the_status_line() {
     s.h.show(notes, die_core::ShowIn::Current).unwrap();
     let e = s.h.run("whiteboard-undo", &Default::default()).unwrap_err();
     assert_eq!(e.to_string(), "Not in a whiteboard");
+}
+
+#[test]
+fn a_click_that_ends_a_label_draws_nothing() {
+    let mut s = setup("label-end");
+    keys(&mut s.h, "t");
+    click(&mut s, (20.0, 20.0));
+    keys(&mut s.h, "hello");
+    // Clicking elsewhere ends the label, and that's all it does: no dot where it landed.
+    gesture(&mut s, &[(200.0, 200.0), (210.0, 210.0)]);
+    assert_eq!(s.h.state(), State::Normal);
+    let els = elements(&mut s.h, s.buf);
+    assert_eq!(els.len(), 1, "{els:?}");
+    assert!(matches!(&els[0].shape, Shape::Label { text, .. } if text == "hello"));
+    // `t` and a double click at one point: the empty label goes, and no dot is left.
+    keys(&mut s.h, "t");
+    click(&mut s, (100.0, 100.0));
+    assert_eq!(s.h.state(), State::Insert);
+    pointer(
+        &mut s,
+        PointerKind::Press(Button::Left),
+        (100.0, 100.0),
+        Mods::default(),
+        2,
+    );
+    pointer(
+        &mut s,
+        PointerKind::Release(Button::Left),
+        (100.0, 100.0),
+        Mods::default(),
+        2,
+    );
+    assert_eq!(s.h.state(), State::Normal);
+    assert_eq!(elements(&mut s.h, s.buf).len(), 1, "no dot");
+    // The right button ends it too, erasing nothing.
+    keys(&mut s.h, "t");
+    click(&mut s, (100.0, 150.0));
+    keys(&mut s.h, "x");
+    gesture_with(
+        &mut s,
+        &[(25.0, 22.0), (25.0, 24.0)],
+        Mods::default(),
+        Button::Right,
+    );
+    assert_eq!(s.h.state(), State::Normal);
+    assert_eq!(elements(&mut s.h, s.buf).len(), 2, "hello wasn't erased");
+}
+
+fn rect_a(s: &mut Setup) -> Point {
+    let els = elements(&mut s.h, s.buf);
+    match els[0].shape {
+        Shape::Rect { a, .. } => a,
+        ref other => panic!("{other:?}"),
+    }
+}
+
+fn undoable(s: &mut Setup) -> usize {
+    board(&mut s.h, s.buf).borrow().history.undoable()
+}
+
+#[test]
+fn a_gesture_cut_short_keeps_what_it_did_and_esc_takes_it_back() {
+    let mut s = setup("cut-short");
+    keys(&mut s.h, "r");
+    gesture(&mut s, &[(10.0, 10.0), (50.0, 50.0)]);
+    s.h.advance(Duration::from_secs(2));
+    assert!(!board(&mut s.h, s.buf).borrow().dirty);
+    // Esc mid-move: the rectangle goes back where it started, nothing to undo, nothing unsaved.
+    keys(&mut s.h, "v");
+    click(&mut s, (30.0, 30.0));
+    press(&mut s, (30.0, 30.0));
+    drag(&mut s, (60.0, 30.0));
+    drag(&mut s, (90.0, 30.0));
+    assert_eq!(rect_a(&mut s), Point::new(70.0, 10.0), "moved so far");
+    keys(&mut s.h, "<Esc>");
+    release(&mut s, (90.0, 30.0));
+    assert_eq!(rect_a(&mut s), Point::new(10.0, 10.0), "back");
+    assert_eq!(undoable(&mut s), 1);
+    assert!(!board(&mut s.h, s.buf).borrow().dirty);
+    assert_eq!(s.h.next_timer(), None);
+    // The focus going mid-move (Cmd-Tab): the move so far stays, logged, and `u` takes it back.
+    keys(&mut s.h, "v");
+    click(&mut s, (30.0, 30.0));
+    press(&mut s, (30.0, 30.0));
+    drag(&mut s, (60.0, 30.0));
+    assert!(s.h.send(die_core::Input::Focus(false)).is_empty());
+    assert!(s.h.send(die_core::Input::Focus(true)).is_empty());
+    release(&mut s, (90.0, 30.0));
+    assert_eq!(
+        rect_a(&mut s),
+        Point::new(40.0, 10.0),
+        "where it was when the focus went"
+    );
+    assert_eq!(undoable(&mut s), 2);
+    // Past the grace in which a press after the focus is the one that activated the app.
+    s.h.advance(Duration::from_millis(200));
+    assert!(board(&mut s.h, s.buf).borrow().dirty);
+    assert!(s.h.next_timer().is_some(), "autosave armed");
+    keys(&mut s.h, "u");
+    assert_eq!(rect_a(&mut s), Point::new(10.0, 10.0));
+    // A tool key mid-erase: the erase so far is logged, so `u` brings the stroke back rather than
+    // undo something else.
+    keys(&mut s.h, "<Esc>");
+    gesture(&mut s, &[(10.0, 100.0), (100.0, 100.0)]);
+    gesture(&mut s, &[(10.0, 140.0), (100.0, 140.0)]);
+    assert_eq!(elements(&mut s.h, s.buf).len(), 3);
+    keys(&mut s.h, "e");
+    press(&mut s, (50.0, 90.0));
+    drag(&mut s, (50.0, 110.0));
+    assert_eq!(elements(&mut s.h, s.buf).len(), 2, "one crossed");
+    keys(&mut s.h, "p");
+    release(&mut s, (50.0, 110.0));
+    assert_eq!(
+        elements(&mut s.h, s.buf).len(),
+        2,
+        "the release does nothing more"
+    );
+    keys(&mut s.h, "u");
+    assert_eq!(
+        elements(&mut s.h, s.buf).len(),
+        3,
+        "the erased stroke is back"
+    );
+    // Esc mid-erase puts what it took back, with nothing logged.
+    keys(&mut s.h, "e");
+    press(&mut s, (50.0, 130.0));
+    drag(&mut s, (50.0, 150.0));
+    assert_eq!(elements(&mut s.h, s.buf).len(), 2);
+    let logged = undoable(&mut s);
+    keys(&mut s.h, "<Esc>");
+    release(&mut s, (50.0, 150.0));
+    assert_eq!(elements(&mut s.h, s.buf).len(), 3, "put back");
+    assert_eq!(undoable(&mut s), logged);
+    // `u` mid-stroke commits the stroke so far, then takes it back.
+    press(&mut s, (10.0, 200.0));
+    drag(&mut s, (60.0, 200.0));
+    keys(&mut s.h, "u");
+    release(&mut s, (90.0, 200.0));
+    assert_eq!(elements(&mut s.h, s.buf).len(), 3);
+    keys(&mut s.h, "<C-r>");
+    assert_eq!(
+        elements(&mut s.h, s.buf).len(),
+        4,
+        "the stroke to where it stood"
+    );
+}
+
+#[test]
+fn the_press_that_activates_the_app_draws_nothing() {
+    let mut s = setup("activate");
+    // Cmd-Tab away and a click back: macOS activates the app, so the focus comes first, then the
+    // press, in one burst. Neither draws.
+    assert!(s.h.send(die_core::Input::Focus(false)).is_empty());
+    assert!(s.h.send(die_core::Input::Focus(true)).is_empty());
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    assert!(elements(&mut s.h, s.buf).is_empty(), "the activating press");
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    assert_eq!(elements(&mut s.h, s.buf).len(), 1, "the next one draws");
+    // Cmd-Tab back and a press later than any burst: a hand's press, which draws.
+    assert!(s.h.send(die_core::Input::Focus(false)).is_empty());
+    assert!(s.h.send(die_core::Input::Focus(true)).is_empty());
+    s.h.advance(Duration::from_secs(1));
+    gesture(&mut s, &[(10.0, 50.0), (60.0, 50.0)]);
+    assert_eq!(elements(&mut s.h, s.buf).len(), 2);
+}
+
+#[test]
+fn a_held_key_repeats_into_a_label() {
+    let mut s = setup("repeat");
+    keys(&mut s.h, "t");
+    click(&mut s, (20.0, 20.0));
+    keys(&mut s.h, "a");
+    for _ in 0..2 {
+        let repeat = die_core::KeyEvent {
+            kind: die_core::KeyKind::Repeat,
+            ..die_core::KeyEvent::press(die_core::Key::Char('a'))
+        };
+        let errors = s.h.send(die_core::Input::Key(repeat));
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    keys(&mut s.h, "<Esc>");
+    let els = elements(&mut s.h, s.buf);
+    assert!(
+        matches!(&els[0].shape, Shape::Label { text, .. } if text == "aaa"),
+        "{els:?}"
+    );
 }

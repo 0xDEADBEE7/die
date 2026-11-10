@@ -14,7 +14,7 @@ use crate::model::{
     Board, CellSize, Element, INKS, Id, LIVE, Point, Rect, Shape, WIDTH_NAMES, WIDTHS, label_lines,
 };
 use crate::render::{Damage, Renderer, Scene};
-use crate::undo::{Entry, History, original_index};
+use crate::undo::{Entry, History, original_index, revert};
 use crate::view::{View, ZOOM_STEP};
 use die_core::{
     BufferId, Button, CellPixels, Color, Ctx, CursorShape, Event, Frame, KeyEvent, KeyKind, Mods,
@@ -152,6 +152,11 @@ struct Erase {
 /// How far apart the eraser looks along a drag, in board units.
 const ERASE_STEP: f32 = 2.0;
 
+/// How long after the focus came with no press having brought it the press that activated
+/// the app (macOS activates it first, then delivers the click) can still arrive. The two come in
+/// one burst; the grace is for the clock between them, not for a hand.
+const FOCUS_GRACE: Duration = Duration::from_millis(150);
+
 /// A board as a buffer holds it.
 pub struct BoardState {
     /// Its file.
@@ -199,6 +204,9 @@ pub struct BoardState {
     pub zooms: bool,
     gesture: Gesture,
     label: Option<LabelEdit>,
+    /// When the focus came with no press having brought it: the app was activated from another,
+    /// and the press that did it is on its way, to draw nothing.
+    focused_at: Option<Duration>,
 }
 
 /// A board's state, shared by its surface and the extension.
@@ -257,6 +265,7 @@ impl BoardState {
             zooms: false,
             gesture: Gesture::None,
             label: None,
+            focused_at: None,
         }
     }
 
@@ -412,7 +421,7 @@ impl BoardState {
             PointerKind::Press(Button::Left) => self.press(p, clicks, now),
             PointerKind::Press(Button::Right) => {
                 let effect = self.end_label(now);
-                if self.focused {
+                if effect == Effect::None && self.focused && !self.activating(now) {
                     self.start_erasing(p, now);
                 }
                 effect
@@ -437,7 +446,9 @@ impl BoardState {
 
     fn press(&mut self, p: Point, clicks: u8, now: Duration) -> Effect {
         let effect = self.end_label(now);
-        if !self.focused {
+        // A press that ends a label, focuses the window or activates the app does nothing else,
+        // nor do its drags and release.
+        if effect != Effect::None || !self.focused || self.activating(now) {
             self.gesture = Gesture::Swallowed;
             return effect;
         }
@@ -699,6 +710,66 @@ impl BoardState {
         self.commit(Entry::added(i, added), now, Damage::Region(region));
     }
 
+    /// Whether this press is the one that activated the app: the focus came within
+    /// `FOCUS_GRACE` with no press having brought it. Once.
+    fn activating(&mut self, now: Duration) -> bool {
+        self.focused_at
+            .take()
+            .is_some_and(|at| now < at + FOCUS_GRACE)
+    }
+
+    /// Where the gesture under way stands: its last point.
+    fn gesture_point(&self) -> Option<Point> {
+        match &self.gesture {
+            Gesture::None | Gesture::Swallowed => None,
+            Gesture::Drawing { el, .. } | Gesture::Shaping { el, .. } => match &el.shape {
+                Shape::Stroke { points, .. } => points.last().copied(),
+                Shape::Rect { b, .. } | Shape::Ellipse { b, .. } | Shape::Line { b, .. } => {
+                    Some(*b)
+                }
+                Shape::Label { at, .. } => Some(*at),
+            },
+            Gesture::Erasing(e) => e.last,
+            Gesture::Marquee { now, .. } => Some(*now),
+            Gesture::Moving { last, .. } => Some(*last),
+        }
+    }
+
+    /// End the gesture under way as a release where it stands would, so that what it did stays
+    /// and is logged: a tool key, undo or the focus going mid-gesture loses nothing.
+    pub fn finish_gesture(&mut self, now: Duration) {
+        if let Some(p) = self.gesture_point() {
+            self.release(p, false, now);
+        }
+        self.gesture = Gesture::None;
+    }
+
+    /// Drop the gesture under way and take back what it did: a move goes back where it started,
+    /// an erase puts its elements back, a stroke or shape so far goes. Esc.
+    pub fn cancel_gesture(&mut self, now: Duration) {
+        let cell = self.cell_size();
+        match std::mem::replace(&mut self.gesture, Gesture::None) {
+            Gesture::Moving {
+                before,
+                ids,
+                moved: true,
+                ..
+            } => {
+                let after = snapshot(&self.board, &ids);
+                let entry = Entry { before, after };
+                revert(&mut self.board, &entry);
+                self.picture_changed(entry_region(&entry, cell));
+            }
+            Gesture::Erasing(erase) => {
+                let entry = self.erased(erase);
+                revert(&mut self.board, &entry);
+                // Dirty already, from the erasing: the file is written as it stands either way.
+                self.changed(now, entry_region(&entry, cell));
+            }
+            _ => self.touch(),
+        }
+    }
+
     /// Move `ids` by `d`: the selected ones whole, the rest (lines bound to them) by their
     /// bound ends.
     fn translate(&mut self, ids: &[Id], d: Point) {
@@ -836,22 +907,22 @@ impl BoardState {
 
     // -------------------------------------------------------------- commands
 
-    /// Pick a tool. A gesture under way is dropped.
-    pub fn set_tool(&mut self, tool: Tool) {
-        self.gesture = Gesture::None;
+    /// Pick a tool. A gesture under way ends where it stands.
+    pub fn set_tool(&mut self, tool: Tool, now: Duration) {
+        self.finish_gesture(now);
         self.tool = tool;
         self.touch();
     }
 
     /// Pick `tool`, or the pen if it's the tool already: `e` and `h`.
-    pub fn toggle_tool(&mut self, tool: Tool) {
+    pub fn toggle_tool(&mut self, tool: Tool, now: Duration) {
         let next = if self.tool == tool { Tool::Pen } else { tool };
-        self.set_tool(next);
+        self.set_tool(next, now);
     }
 
-    /// Esc in normal state: drop the gesture and the selection, back to the pen.
-    pub fn escape(&mut self) {
-        self.gesture = Gesture::None;
+    /// Esc in normal state: take back the gesture, drop the selection, back to the pen.
+    pub fn escape(&mut self, now: Duration) {
+        self.cancel_gesture(now);
         self.tool = Tool::Pen;
         self.deselect();
     }
@@ -887,9 +958,9 @@ impl BoardState {
         self.commit(entry, now, damage);
     }
 
-    /// Take back the last change. False with none.
+    /// Take back the last change, a gesture under way included. False with none.
     pub fn undo(&mut self, now: Duration) -> bool {
-        self.gesture = Gesture::None;
+        self.finish_gesture(now);
         let cell = self.cell_size();
         let done = self
             .history
@@ -900,7 +971,7 @@ impl BoardState {
 
     /// Do the last undone change again. False with none.
     pub fn redo(&mut self, now: Duration) -> bool {
-        self.gesture = Gesture::None;
+        self.finish_gesture(now);
         let cell = self.cell_size();
         let done = self
             .history
@@ -1239,17 +1310,26 @@ impl Surface for BoardSurface {
             }
             Event::Focus(gained) => {
                 let mut st = self.state.borrow_mut();
+                // Gained with no press having brought it (the press that focuses a window from
+                // another of DIE's comes first, swallowed): the app was activated, and the press
+                // that did it is on its way. Lost mid-gesture: the gesture ends where it stands.
+                let now = ctx.now();
+                st.focused_at = (*gained && !st.focused && !st.gesturing()).then_some(now);
                 st.focused = *gained;
                 if !gained && st.gesturing() {
-                    st.gesture = Gesture::None;
-                    st.touch();
+                    st.finish_gesture(now);
+                    let buf = st.buf;
+                    drop(st);
+                    crate::after_change(ctx, buf);
                 }
                 true
             }
-            Event::Key(k) if k.kind == KeyKind::Press => match k.printable() {
-                Some(text) if self.state.borrow().editing().is_some() => self.typed(&text, ctx),
-                _ => false,
-            },
+            Event::Key(k) if matches!(k.kind, KeyKind::Press | KeyKind::Repeat) => {
+                match k.printable() {
+                    Some(text) if self.state.borrow().editing().is_some() => self.typed(&text, ctx),
+                    _ => false,
+                }
+            }
             Event::Paste(text) if self.state.borrow().editing().is_some() => self.typed(text, ctx),
             _ => false,
         }

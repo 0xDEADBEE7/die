@@ -77,6 +77,11 @@ fn apply(board: &mut Board, remove: &[(usize, Element)], insert: &[(usize, Eleme
     }
 }
 
+/// Take back `e`, which was made and not logged: a gesture cancelled half way.
+pub fn revert(board: &mut Board, e: &Entry) {
+    apply(board, &e.after, &e.before);
+}
+
 impl History {
     /// Record a change that's been made. Anything undone is forgotten.
     pub fn push(&mut self, e: Entry) {
