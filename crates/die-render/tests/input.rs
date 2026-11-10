@@ -320,6 +320,32 @@ fn moving_gives_an_event_per_cell_clamped_to_the_frame_with_its_pixel_and_drags_
 }
 
 #[test]
+fn with_a_button_held_every_sample_is_a_drag_and_without_one_a_move_comes_per_cell() {
+    let (c, grid, mods) = (cell(), (80, 24), Mods::default());
+    let (w, h) = (f64::from(c.w), f64::from(c.h));
+    let mut p = Pointer::new(Duration::ZERO);
+    p.moved((w * 2.5, h * 1.5), &c, grid, mods).unwrap();
+    p.button(MouseButton::Left, true, Instant::now(), mods)
+        .unwrap();
+    // Ink: three samples inside one cell, each an event with its own pixel.
+    let samples = [(w * 2.6, h * 1.5), (w * 2.7, h * 1.6), (w * 2.9, h * 1.9)];
+    for (x, y) in samples {
+        let drag = p.moved((x, y), &c, grid, mods).expect("a drag per sample");
+        assert_eq!(drag.kind, PointerKind::Drag(Button::Left));
+        assert_eq!((drag.row, drag.col), (1, 2), "still that cell");
+        assert_eq!(drag.px, Some((x as f32, y as f32)));
+    }
+    let release = p
+        .button(MouseButton::Left, false, Instant::now(), mods)
+        .unwrap();
+    assert_eq!(release.kind, PointerKind::Release(Button::Left));
+    // A hover: only crossing into another cell is an event.
+    assert_eq!(p.moved((w * 2.95, h * 1.95), &c, grid, mods), None);
+    let moved = p.moved((w * 3.05, h * 1.95), &c, grid, mods).unwrap();
+    assert_eq!((moved.kind, moved.col), (PointerKind::Move, 3));
+}
+
+#[test]
 fn a_scroll_is_how_far_the_view_goes_in_cells() {
     let (c, mods) = (cell(), Mods::default());
     let p = Pointer::new(Duration::ZERO);

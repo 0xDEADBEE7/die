@@ -4,27 +4,28 @@
 //! `name: FAIL why`, and any FAIL makes the exit code 1. It reports its numbers, and
 //! `apps/die-dev/tests/window.rs` holds them to S1's limits.
 //!
-//! By S1's check: 1 is `typing`, 2 is `redraw`, 4 is `idle-60`, 5 is `occlusion-20`, 6 is
-//! `scale`, 7 is `resize` and 8 is `firstframe`. 9, fidelity, needs no window, and stays in
-//! die-render's `tests/fidelity.rs`, on the same renderer.
+//! By S1's check: 1 is `typing`, 2 is `redraw`, 3 is `pixels`, 4 is `idle-60`, 5 is
+//! `occlusion-20`, 6 is `scale`, 7 is `resize` and 8 is `firstframe`. 9, fidelity, needs no
+//! window, and stays in die-render's `tests/fidelity.rs`, on the same renderer.
 
 use crate::driver;
 use crate::latency;
 use crate::window::{Remote, Script, Shell, floating_window, unseen};
-use die_core::{BufferId, CursorShape, ShowIn, Underline};
+use die_core::{BufferId, CursorShape, Event, Frame, PixelBufferId, PixelProducer, PixelRect};
 use die_core::{Cell, Ctx, Glyph, Key, KeyEvent, Origin, Result as CoreResult, Rgb, Scene};
+use die_core::{RenderInfo, ShowIn, Surface, Underline};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use winit::dpi::LogicalSize;
 use winit::event_loop::ActiveEventLoop;
 
 /// The checks there are.
-pub const NAMES: [&str; 11] = [
+pub const NAMES: [&str; 12] = [
     "idle",
     "idle-60",
     "resize",
@@ -34,6 +35,7 @@ pub const NAMES: [&str; 11] = [
     "show",
     "typing",
     "redraw",
+    "pixels",
     "firstframe",
     "firstframe-once",
 ];
@@ -73,6 +75,12 @@ const ESC_KEY: (char, u16) = ('\u{1b}', 53);
 /// S1's check 2: every cell of a window this size changes, this many times.
 const REDRAW_GRID: (usize, usize) = (159, 49);
 const REDRAWS: usize = 600;
+/// S1's check 3: a producer on a thread of its own presents this many frames, this far apart,
+/// about a second's worth at a 240 Hz hand.
+const PIXEL_FRAMES: u32 = 240;
+const PIXEL_PERIOD: Duration = Duration::from_millis(4);
+/// Frames the loop may draw during those presents beyond one each: a resize's, or a late one.
+const PIXEL_EXTRA_FRAMES: u64 = 8;
 /// S1's check 8: launches, of which the first is cold and doesn't count.
 const LAUNCHES: usize = 12;
 const BETWEEN_LAUNCHES: Duration = Duration::from_millis(100);
@@ -117,6 +125,7 @@ pub fn script(names: Vec<String>) -> Script {
                 "show" => show(remote),
                 "typing" => typing(remote),
                 "redraw" => redraw(remote),
+                "pixels" => pixels(remote),
                 "firstframe" => firstframe(),
                 "firstframe-once" => firstframe_once(remote),
                 other => Err(format!("no such check: {other}")),
@@ -508,7 +517,7 @@ fn what_is_shown(s: &mut Shell) -> Result<Shown, String> {
         .ok_or("no window")?
         .surface
         .read_next_frame()?;
-    s.stale = true;
+    s.due.stale = true;
     s.draw();
     let scene = s.last.clone().ok_or("no frame yet")?;
     let buf = s.host.ctx.focused_buffer().ok_or("no buffer")?;
@@ -656,7 +665,7 @@ fn reattach(s: &mut Shell, readable: bool) -> Result<(), String> {
     surface.resize(surface.size(live.scale), live.scale);
     surface.watch_presents();
     live.surface = surface;
-    s.stale = true;
+    s.due.stale = true;
     Ok(())
 }
 
@@ -758,8 +767,8 @@ fn full_redraws(s: &mut Shell, el: &ActiveEventLoop) -> Result<(Vec<f64>, Vec<f6
         cpu.push(frame.cpu_ms);
         gpu.push(frame.gpu_ms);
     }
-    s.stale = true;
-    s.dirty = true;
+    s.due.stale = true;
+    s.due.dirty = true;
     Ok((cpu, gpu))
 }
 
@@ -776,6 +785,186 @@ fn redraw(r: &Remote) -> Outcome {
     )))
 }
 
+/// The `pixels` check's surface: it places one buffer over its whole area, made at its first
+/// resize and handed to the check's producer thread, as the whiteboard's does.
+struct Canvas {
+    id: Option<PixelBufferId>,
+    producer: Arc<Mutex<Option<PixelProducer>>>,
+}
+
+impl Surface for Canvas {
+    fn kind(&self) -> &'static str {
+        "pixels-check"
+    }
+
+    fn render(&mut self, frame: &mut Frame, _: &RenderInfo) {
+        if let Some(id) = self.id {
+            frame.place(id, -1);
+        }
+    }
+
+    fn event(&mut self, ev: &Event, ctx: &mut Ctx) -> bool {
+        let Event::Resize {
+            cols, rows, cell, ..
+        } = ev
+        else {
+            return false;
+        };
+        if self.id.is_none() {
+            let (w, h) = (*cols as u32 * cell.width, *rows as u32 * cell.height);
+            if let Ok((id, producer)) = ctx.pixel_buffer(w, h) {
+                self.id = Some(id);
+                *self.producer.lock().unwrap_or_else(|e| e.into_inner()) = Some(producer);
+            }
+        }
+        false
+    }
+}
+
+/// Frame `n`'s color, premultiplied RGBA at full alpha, as the producer fills its buffer.
+fn pattern(n: u32) -> [u8; 4] {
+    [(n * 7 % 200 + 55) as u8, (n * 3 % 200) as u8, 90, 255]
+}
+
+/// What the placement shows, read back from the drawable: how many pixels of the whole frame
+/// differ from the offscreen path's, how many are inside the placement, and how many of those
+/// aren't `want`.
+fn what_is_placed(s: &mut Shell, want: [u8; 3]) -> Result<(usize, usize, usize), String> {
+    let live = s.live.as_ref().ok_or("no window")?;
+    live.surface.read_next_frame()?;
+    s.due.stale = true;
+    s.draw();
+    let scene = s.last.clone().ok_or("no frame yet")?;
+    let live = s.live.as_mut().ok_or("no window")?;
+    let image = live.image.take().ok_or("no pixels came back")?;
+    let offscreen = live.renderer.render(&scene, image.w, image.h)?;
+    let on = image.bgra.chunks_exact(4);
+    let off = offscreen.bgra.chunks_exact(4);
+    let differ = on.zip(off).filter(|(a, b)| a[..3] != b[..3]).count();
+    let p = scene
+        .placements
+        .first()
+        .ok_or("no placement in the scene")?;
+    let cell = live.renderer.cell();
+    let (x0, y0) = (p.col as u32 * cell.w, p.row as u32 * cell.h);
+    let x1 = (x0 + p.cols as u32 * cell.w).min(image.w);
+    let y1 = (y0 + p.rows as u32 * cell.h).min(image.h);
+    let (mut inside, mut wrong) = (0, 0);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            inside += 1;
+            wrong += usize::from(image.rgb(x, y) != want);
+        }
+    }
+    Ok((differ, inside, wrong))
+}
+
+/// S1's check 3, on DIE's own path (M3a): a producer on a thread of its own presents
+/// `PIXEL_FRAMES` frames into a buffer the size of the window's area, placed under the glyphs.
+/// The presents draw frames with no key, timer or job, the main thread copies no pixels, the
+/// last frame's pattern is on the drawable where the placement is and the offscreen path draws
+/// the same, and dropping the producer takes the placement away.
+fn pixels(r: &Remote) -> Outcome {
+    first_frame(r)?;
+    if r.call(|s, _| s.pixels.is_none())? {
+        return Ok(Verdict::Skip("no pixel sink on this platform".into()));
+    }
+    let handed = Arc::new(Mutex::new(None));
+    let slot = handed.clone();
+    let back = r.call(move |s, _| {
+        let canvas = Canvas {
+            id: None,
+            producer: slot,
+        };
+        let ctx = &mut s.host.ctx;
+        let back = ctx.focused_buffer().ok_or("no window")?;
+        let buf = ctx.create_surface("*pixels*", canvas);
+        ctx.show(buf, ShowIn::Current).map_err(|e| e.to_string())?;
+        s.stats.frame_ms.clear();
+        s.stats.worst_turn_ms = 0.0;
+        Ok::<BufferId, String>(back)
+    })??;
+    // The surface hears its size on the loop's next turn, and makes its buffer then.
+    let start = Instant::now();
+    let mut producer = loop {
+        let handed = handed.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(p) = handed {
+            break p;
+        }
+        ensure(start.elapsed() < SETTLE, || {
+            "no pixel buffer in a second".into()
+        })?;
+        sleep(Duration::from_millis(5));
+    };
+    let read = |s: &mut Shell, _: &_| {
+        let stats = s.pixels.as_ref().map(|p| p.stats());
+        (s.stats.frames, stats.unwrap_or_default())
+    };
+    let (f0, s0) = r.call(read)?;
+    let (w, h) = producer.size();
+    let fed = std::thread::spawn(move || {
+        for n in 0..PIXEL_FRAMES {
+            let color = pattern(n);
+            for px in producer.pixels_mut().chunks_exact_mut(4) {
+                px.copy_from_slice(&color);
+            }
+            producer.present(PixelRect::whole(w, h));
+            sleep(PIXEL_PERIOD);
+        }
+        producer
+    });
+    let producer = fed.join().map_err(|_| "the producer panicked")?;
+    sleep(LATER + LATER);
+    let (f1, s1) = r.call(read)?;
+    let last = pattern(PIXEL_FRAMES - 1);
+    let placed = r.call(move |s, _| what_is_placed(s, [last[0], last[1], last[2]]))??;
+    let (differ, inside, wrong) = placed;
+    let (mut ms, worst) = r.call(|s, _| (s.stats.frame_ms.clone(), s.stats.worst_turn_ms))?;
+    drop(producer);
+    let gone = r.call(move |s, _| {
+        s.settle();
+        let gone = s.last.as_ref().is_some_and(|l| l.placements.is_empty());
+        let _ = s.host.ctx.show(back, ShowIn::Current);
+        gone
+    })?;
+    let (presents, main_bytes) = (s1.presents - s0.presents, s1.main_bytes - s0.main_bytes);
+    let frames = f1 - f0;
+    ensure(presents == u64::from(PIXEL_FRAMES), || {
+        format!("{presents} of {PIXEL_FRAMES} presents reached the sink")
+    })?;
+    ensure(main_bytes == 0, || {
+        format!("the main thread copied {main_bytes} bytes")
+    })?;
+    // One frame per present the main thread took (a superseded one rode the next), and none
+    // without one: the flag, not the scene, is what draws them.
+    let superseded = s1.superseded - s0.superseded;
+    ensure(frames + superseded >= presents, || {
+        format!("{frames} frames for {presents} presents, {superseded} superseded")
+    })?;
+    ensure(frames <= presents + PIXEL_EXTRA_FRAMES, || {
+        format!("{frames} frames for {presents} presents: more than one each")
+    })?;
+    ensure(inside > 0 && wrong == 0, || {
+        format!("{wrong} of {inside} pixels under the placement aren't the last frame's")
+    })?;
+    ensure(differ == 0, || {
+        format!("{differ} pixels differ from the offscreen path")
+    })?;
+    ensure(gone, || {
+        "the placement stayed after its producer went".into()
+    })?;
+    Ok(Verdict::Ok(format!(
+        "presents={presents} frames={frames} superseded={} ring_waits={} main_bytes={main_bytes} producer_bytes={} blits={} blit_bytes={} buffer={w}x{h} placed_px={inside} wrong={wrong} pixels_differ={differ} frame_p99_ms={:.2} worst_turn_ms={worst:.1} gone={}",
+        s1.superseded - s0.superseded,
+        s1.ring_waits - s0.ring_waits,
+        s1.producer_bytes - s0.producer_bytes,
+        s1.blits - s0.blits,
+        s1.blit_bytes - s0.blit_bytes,
+        percentile(&mut ms, 99),
+        yes_no(gone),
+    )))
+}
+
 /// One launch's end: the first frame reached the display, or the display dropped it and
 /// another is on its way. How long ago it got there, for `firstframe`.
 fn firstframe_once(r: &Remote) -> Outcome {
@@ -786,7 +975,7 @@ fn firstframe_once(r: &Remote) -> Outcome {
             s.drain_presented();
             if s.latency.first_dropped && s.latency.first_shown.is_none() {
                 s.latency.first_dropped = false;
-                s.stale = true;
+                s.due.stale = true;
             }
             s.latency.first_shown
         })?;

@@ -10,7 +10,7 @@ use die_core::{
 use die_render::font::{CellMetrics, FaceMetrics};
 use die_render::latency::Latency;
 use die_render::window::{
-    Host, RETRY_DRAW, Sleep, TURN_LIMIT, grid, holds_frame, sleep_for, sleep_or_retry,
+    Due, Host, RETRY_DRAW, Sleep, TURN_LIMIT, grid, holds_frame, sleep_for, sleep_or_retry,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -255,6 +255,30 @@ fn the_latency_log_has_a_line_for_each_stage_and_key_and_says_if_it_cannot_open(
 }
 
 #[test]
+fn pixels_pending_keep_the_loop_from_sleeping_until_a_draw_takes_them() {
+    let mut h = host("");
+    assert_eq!(h.sleep(false), Sleep::Forever);
+    let pending = h.pending();
+    assert!(!pending.is_set());
+    // A present's thread raises it; a clone is the same flag.
+    std::thread::spawn({
+        let pending = pending.clone();
+        move || pending.set()
+    })
+    .join()
+    .unwrap();
+    assert!(pending.is_set());
+    assert_eq!(
+        h.sleep(false),
+        Sleep::No,
+        "a frame is owed, as with PTY output"
+    );
+    assert!(pending.take(), "the draw takes it");
+    assert!(!pending.take(), "once");
+    assert_eq!(h.sleep(false), Sleep::Forever);
+}
+
+#[test]
 fn a_frame_that_couldnt_draw_wakes_the_loop_again() {
     assert_eq!(sleep_or_retry(Sleep::Forever, true), Sleep::For(RETRY_DRAW));
     assert_eq!(sleep_or_retry(Sleep::For(ms(5)), true), Sleep::For(ms(5)));
@@ -264,4 +288,30 @@ fn a_frame_that_couldnt_draw_wakes_the_loop_again() {
     );
     assert_eq!(sleep_or_retry(Sleep::No, true), Sleep::No);
     assert_eq!(sleep_or_retry(Sleep::Forever, false), Sleep::Forever);
+}
+
+#[test]
+fn pixels_a_held_frame_took_stay_owed_until_a_frame_draws_them() {
+    let mut due = Due::default();
+    assert!(
+        !due.frame(false, true),
+        "nothing owed, the same scene: no frame"
+    );
+    assert!(
+        due.frame(true, true),
+        "a present draws a frame whatever the scene"
+    );
+    assert!(due.frame(false, false), "and so does a scene that differs");
+    // Occluded when the present's flag was taken: the frame drawn on uncovering, whose scene is
+    // the last one's since a present changes no cell, still carries the pixels.
+    due.held(true);
+    assert!(due.frame(false, true), "owed from the held frame");
+    due.held(false);
+    assert!(due.frame(false, true), "still, until a frame draws");
+    let mut none = Due::default();
+    none.held(false);
+    assert!(
+        !none.frame(false, true),
+        "a held frame with no pixels owes none"
+    );
 }

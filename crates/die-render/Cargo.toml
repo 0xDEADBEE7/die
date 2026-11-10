@@ -60,6 +60,7 @@ objc2-metal = { version = "=0.3.2", default-features = false, features = [
     "objc2-core-foundation",
     "MTLAllocation",
     "MTLArgument",
+    "MTLBlitCommandEncoder",
     "MTLBuffer",
     "MTLCommandBuffer",
     "MTLCommandEncoder",

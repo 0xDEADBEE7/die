@@ -166,14 +166,14 @@ fn a_texture_metal_cannot_make_is_an_error_since_metal_would_stop_the_process() 
     let mut p = gpu.pipeline(8, 8).expect("a pipeline");
     let black = Rgb(0, 0, 0);
     assert_eq!(
-        p.render(&[], black, 0, 4).err().unwrap(),
+        p.render(&[], &[], black, 0, 4).err().unwrap(),
         "Metal has no 0x4 texture"
     );
-    assert!(p.render(&[], black, 4, 0).is_err());
-    assert!(p.render(&[], black, 16385, 1).is_err());
-    assert!(p.render(&[], black, 1, 16385).is_err());
-    assert_eq!(p.render(&[], black, 16384, 1).map(|i| i.w), Ok(16384));
-    assert_eq!(p.render(&[], black, 4, 4).map(|i| i.w), Ok(4));
+    assert!(p.render(&[], &[], black, 4, 0).is_err());
+    assert!(p.render(&[], &[], black, 16385, 1).is_err());
+    assert!(p.render(&[], &[], black, 1, 16385).is_err());
+    assert_eq!(p.render(&[], &[], black, 16384, 1).map(|i| i.w), Ok(16384));
+    assert_eq!(p.render(&[], &[], black, 4, 4).map(|i| i.w), Ok(4));
 }
 
 #[test]

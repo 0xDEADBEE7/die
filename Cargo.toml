@@ -9,6 +9,7 @@ members = [
     "crates/die",
     "apps/die-dev",
     "extensions/die-orchid-client",
+    "extensions/die-whiteboard",
     "tools/evil-oracle",
     "tools/test-cap",
     "xtask",
@@ -22,6 +23,7 @@ default-members = [
     "crates/die",
     "apps/die-dev",
     "extensions/die-orchid-client",
+    "extensions/die-whiteboard",
 ]
 
 [workspace.package]
@@ -40,6 +42,7 @@ die-term = { path = "crates/die-term" }
 die = { path = "crates/die" }
 # Your packages' ports, built here under extensions/, outside the product and its budget (scope D14).
 die-orchid-client = { path = "extensions/die-orchid-client" }
+die-whiteboard = { path = "extensions/die-whiteboard" }
 evil-oracle = { path = "tools/evil-oracle" }
 die-test-cap = { path = "tools/test-cap" }
 
@@ -60,6 +63,11 @@ jiff = { version = "=0.2.41", default-features = false, features = ["std", "tz-s
 # without its PNG decoder (D10, docs/records/s2-term-engine.md). Its sys crate is die-term-sys,
 # through the `[patch]` below.
 libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", default-features = false, features = ["kitty-graphics"] }
+# die-whiteboard's rasterizer, PNG encoder and the exporter's font reader: pure Rust, no build
+# scripts, behind the extension's canvas.rs and fonts.rs (scope §9's rule of two for a shared crate).
+tiny-skia = { version = "=0.12.0", default-features = false, features = ["std", "simd"] }
+png = "=0.18.1"
+fontdue = { version = "=0.9.5", default-features = false, features = ["std"] }
 # PTYs and their processes, safely (die-core's `pty`). Pure Rust: libc on macOS, syscalls on Linux.
 rustix = { version = "=1.1.5", default-features = false, features = ["std", "event", "fs", "pipe", "process", "pty", "termios"] }
 

@@ -24,7 +24,9 @@ path = "crates/die-core"
 # 15,295 until a surface's area took a file's width and margins: its settings, `\z` on it, and its frame, pointer and copy state at the offset.
 # 15,385 until the alternate screen's Esc review: the wheel in copy state, a release where its press went, a switch of screens followed.
 # 15,400 until the margins review: through a resize, each window keeps its place in the lines of output a surface says it wrapped.
-limit = 15440
+# 15,440 until M3a, the whiteboard's pixel slice: `Placement` and `Frame::place`, the producer, the sink and the harness's fake (about 320).
+# 15,755 until M3a's review: a union that saturates, and dropped buffers forgotten at the next one made.
+limit = 15765
 
 [[crate]]
 name = "die-render"
@@ -95,6 +97,12 @@ name = "die-orchid-client"
 path = "extensions/die-orchid-client"
 extension = true
 note = "an extension, outside guard 7: your emacs-orchid-client's port"
+
+[[crate]]
+name = "die-whiteboard"
+path = "extensions/die-whiteboard"
+extension = true
+note = "an extension, outside guard 7: the whiteboard (freehand, shapes, arrows, SVG and PNG)"
 
 [[crate]]
 name = "xtask"
@@ -233,15 +241,17 @@ name = "surfaces and PTYs"
 # 1,335 until a surface's area: `surface_area`, a Resize when its width changes, the frame, cursor, pointer and copy state at its offset.
 # 1,380 until the alternate screen's Esc review: `surface_says`, the wheel `takes_wheel` takes, and `renumbered`.
 # 1,385 until the margins review: `SurfaceText::wrapped`, kept a line at a time, and each window's place in its line of output through a resize.
-limit = 1425
+# 1,425 until M3a: `Frame::place`, and `draw_surface` composing each placement at the area's offset, a destroyed buffer's dropped.
+limit = 1445
 files = ["surface.rs", "pty.rs", "surface/", "pty/"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
 # 965 until a list had the status lines above it, as Emacs's minibuffer has the mode line.
+# 975 until M3a: `Placement` and `Scene.placements`, stopped above the prompt's list, in drawing order, and in the snapshot.
 [[module]]
 crate = "die-core"
 name = "faces and scene"
-limit = 975
+limit = 1005
 files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 
 [[module]]
@@ -259,11 +269,22 @@ limit = 1520
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
 files = ["session.rs", "session/", "instance.rs", "sys/"]
 
+# 800 until M3a: the harness's fake pixel sink, which keeps each buffer's latest pixels and logs each call, and `Harness::pixels`.
 [[module]]
 crate = "die-core"
 name = "harness, app interface, messages, ids, errors"
-limit = 800
+limit = 810
 files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
+
+# New with M3a, the whiteboard's pixel slice: the producer an extension draws into, the sink the
+# host installs once, and which buffers exist. Core holds no pixels (D11); the rings and textures
+# are die-render's. Images and the Hide placement wait for M3. 195 until its review: a union
+# that saturates, and buffers dropped without a placement forgotten at the next one made.
+[[module]]
+crate = "die-core"
+name = "pixels"
+limit = 205
+files = ["pixels.rs"]
 
 # die-render's modules at M0 (docs/records/platforms.md §5.7). The neutral code
 # (R2's atlas, row cache, instance building and driver, then the window, loop and
@@ -272,20 +293,26 @@ files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
 # and replace the stub.
 
 # 2,300 until a pointer event said its pixel, and core heard the cells' pixels, for terminals.
+# 2,305 until M3a: the placements' quads beside the row layers, `Pending` read by the loop as a
+# PTY's waiting output is, and a drag on every pointer sample while a button is held.
+# 2,380 until M3a's review: `Due`, which keeps the pixels a held (occluded) frame took owed for
+# the frame that follows, whose scene a present leaves unchanged.
 [[module]]
 crate = "die-render"
 name = "neutral"
-limit = 2305
+limit = 2400
 files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "input.rs", "sprite.rs", "window.rs", "latency.rs"]
 
 # `die --check`: the window's own checks, which ship in the binary. R3's are about 420
 # lines, R6 adds `typing` and `firstframe`, and V5 `idle-60`'s count of the OS's wakes. 720
 # until `show` held the cursor to whether the window really has the keyboard. 730 until its
-# cover could be unseen too.
+# cover could be unseen too. 735 until M3a's `pixels`, S1's check 3 on DIE's own path: a surface
+# of the check's own, a producer thread's frames through the ring, and the drawable read back.
+# 895 until its review held the frames to one per present taken, not just to one.
 [[module]]
 crate = "die-render"
 name = "checks"
-limit = 735
+limit = 905
 files = ["check.rs"]
 
 # 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
@@ -304,7 +331,16 @@ platforms = ["macos"]
 # 1,300 until their names came composed (NFC), as typed: safe calls on NSURL and NSString.
 # 1,305 until a test's DIE ran unseen: three safe setters, with `attach`'s one `unsafe` shared.
 # 1,315 until a PTY's trampoline marked the fds Metal opened close-on-exec: one `unsafe` borrow.
-limit = 1335
+# 1,335 until M3a's staging ring, the eighth raise (2026-11-10): `pixbuf.rs`, about 290 lines,
+# copies a present's rows into shared MTLBuffers on the producer's thread, hands them to the main
+# thread by `try_lock` alone and blits them into the buffer's texture, with two `Send` wrappers
+# for Metal's buffers and textures; metal.rs binds each placement's texture for its one quad.
+# The macOS build stands at 4,955 of guard 7's 5,000 with it.
+# 1,690 until M3a's review, the ninth raise (2026-11-10): a buffer's presenters take turns, so a
+# second thread's present loses no slot; a texture Metal can't make shows nothing in place of the
+# old size's; and the completed handler's drop runs in `catch_unwind`, as platform/mod.rs's rule
+# has it. The macOS build stands at 4,984 of 5,000: the next growth there is the cut list's.
+limit = 1700
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
@@ -314,8 +350,9 @@ crate = "die-render"
 name = "platform stub"
 platforms = ["linux"]
 # 160 until U7's landing found it at 162 from another package. 165 until `on_open_files`.
-# 170 until `unseen`.
-limit = 175
+# 170 until `unseen`. 175 until M3a: `pixbuf::Pixels`, a sink this target hasn't, so core shows
+# no pixels there, and the placements through `render` and `present`.
+limit = 220
 files = ["platform/backend.rs"]
 
 # die-term's engine side (scope §6): a `Term` with bytes in and cells out, keys in and bytes

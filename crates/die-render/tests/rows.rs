@@ -4,7 +4,8 @@
 use die_test_cap as _;
 
 use die_core::{
-    Cell, Ctx, Cursor, CursorShape, Glyph, Rgb, Scene, State, Underline, WindowPlacement,
+    Cell, Ctx, Cursor, CursorShape, FakePixelSink, Glyph, Placement, Rgb, Scene, State, Underline,
+    WindowPlacement,
 };
 use die_render::atlas::GlyphKey;
 use die_render::font::{CellMetrics, FaceMetrics};
@@ -206,6 +207,54 @@ fn every_background_comes_before_every_glyph_and_the_cursors_come_last() {
     assert_eq!(kinds[9], kind::SOLID, "{kinds:?}");
     assert_eq!(quads[9].color, rgba(RED), "the cursor");
     assert_eq!(quads.len(), 10);
+}
+
+#[test]
+fn a_placement_below_zero_goes_after_the_backgrounds_and_one_at_zero_after_the_glyphs() {
+    let mut ctx = Ctx::new(vec![]).unwrap();
+    ctx.set_pixel_sink(FakePixelSink::default()).unwrap();
+    let (under, _keep_under) = ctx.pixel_buffer(1, 1).unwrap();
+    let (over, _keep_over) = ctx.pixel_buffer(1, 1).unwrap();
+    let mut f = frames();
+    let mut s = blank(6, 3);
+    put(&mut s, 0, 0, "ab");
+    s.cells[3].bg = RED;
+    s.cursors = vec![cursor(0, 5, CursorShape::Bar)];
+    let at = |buffer, z, col, row, cols, rows| Placement {
+        buffer,
+        col,
+        row,
+        cols,
+        rows,
+        z,
+    };
+    // Core's order: lower z first.
+    s.placements = vec![at(under, -1, 1, 1, 4, 2), at(over, 0, 0, 0, 2, 1)];
+    let (quads, _, _) = frame(&mut f, &s);
+    let built = f.build(&s);
+    let kinds: Vec<u32> = quads.iter().map(|q| q.kind).collect();
+    let want = [
+        kind::SOLID,
+        kind::PIXELS,
+        kind::GRAY,
+        kind::GRAY,
+        kind::PIXELS,
+        kind::SOLID,
+    ];
+    assert_eq!(kinds, want, "{kinds:?}");
+    assert_eq!(built.placed, [(1, under), (4, over)]);
+    assert_eq!(quads[1].rect, [19.0, 40.0, 4.0 * 19.0, 2.0 * 40.0]);
+    assert_eq!(
+        quads[1].uv,
+        [0.0, 0.0, 4.0 * 19.0, 2.0 * 40.0],
+        "1:1 from the top-left"
+    );
+    assert_eq!(quads[4].rect, [0.0, 0.0, 2.0 * 19.0, 40.0]);
+    // With none placed, nothing of them is left.
+    s.placements.clear();
+    let (quads, _, _) = frame(&mut f, &s);
+    assert_eq!(quads.len(), 4);
+    assert!(f.build(&s).placed.is_empty());
 }
 
 #[test]

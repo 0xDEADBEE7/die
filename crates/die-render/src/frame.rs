@@ -12,6 +12,30 @@ pub mod kind {
     pub const GRAY: u32 = 1;
     /// A premultiplied pixel from the color atlas, as it is. `Quad::color` is unused.
     pub const COLOR: u32 = 2;
+    /// A premultiplied pixel from a placement's buffer (`rows::Frame::placed` says which), 1:1
+    /// and nearest, and nothing past the buffer's edge. `Quad::color` is unused.
+    pub const PIXELS: u32 = 3;
+}
+
+/// What the host's pixel sink has done, for the `pixels` check: the producers' presents, the
+/// bytes they copied into the staging ring on their threads and on the main thread (which must
+/// stay 0 for a producer of its own), and the blits the main thread recorded.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct PixelStats {
+    /// Presents that reached the ring.
+    pub presents: u64,
+    /// Presents whose frame the main thread never took, since a later one superseded it.
+    pub superseded: u64,
+    /// Presents that waited for a free slot.
+    pub ring_waits: u64,
+    /// Bytes copied into the ring on a producer's own thread.
+    pub producer_bytes: u64,
+    /// Bytes copied into the ring on the main thread.
+    pub main_bytes: u64,
+    /// Blits the main thread recorded, and their bytes.
+    pub blits: u64,
+    /// The bytes those blits moved.
+    pub blit_bytes: u64,
 }
 
 /// One instance of the one pipeline: a rectangle of the target, in pixels from the
