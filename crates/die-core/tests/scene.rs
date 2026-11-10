@@ -1180,6 +1180,7 @@ fn row_of(cells: Vec<Cell>) -> Scene {
         cells,
         cursors: vec![],
         background: h("#000000"),
+        placements: vec![],
     }
 }
 

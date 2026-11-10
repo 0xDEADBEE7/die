@@ -1,8 +1,9 @@
 //! What a custom surface draws and hears (contract §10, scope D8 and D18): the cell frame it
 //! renders into, over its window's area, which is a text window's text area with no gutter, so
-//! the buffer's maximum width and centering give it margins, its cursor and status segment, and
-//! the pointer, paste and resize it's told of. Core resolves the frame's cells into the scene, so
-//! a surface doesn't need the theme: a default color is the `default` face's.
+//! the buffer's maximum width and centering give it margins, the pixel buffers it places over
+//! that area (§11), its cursor and status segment, and the pointer, paste and resize it's told
+//! of. Core resolves the frame's cells into the scene, so a surface doesn't need the theme: a
+//! default color is the `default` face's.
 #![warn(missing_docs)]
 use crate::app::{PointerEvent, PointerKind};
 use crate::error::*;
@@ -12,8 +13,9 @@ use crate::ids::*;
 use crate::keymap::State;
 use crate::keys::Mods;
 use crate::layout::Geometry;
+use crate::pixels::PixelBufferId;
 use crate::pointer::{CellHit, WindowPart};
-use crate::scene::{Cell, CursorShape, Glyph, Scene, WindowPlacement, glyphs};
+use crate::scene::{Cell, CursorShape, Glyph, Placement, Scene, WindowPlacement, glyphs};
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -144,6 +146,7 @@ impl From<Cell> for FrameCell {
 /// The cells a surface renders into: its window's area, row by row. Core keeps it between
 /// frames, so a surface can rewrite only the rows that changed. It's new, and blank, at a
 /// surface's first render, after a resize, and when a window of another size drew it last.
+/// What it places ([`Frame::place`]) isn't kept: a surface places what it shows at every render.
 #[derive(Default)]
 pub struct Frame {
     cols: usize,
@@ -152,6 +155,8 @@ pub struct Frame {
     new: bool,
     /// Drawn in the last composed frame.
     seen: bool,
+    /// The pixel buffers placed this render, each over the whole area, with its z.
+    placed: Vec<(PixelBufferId, i8)>,
 }
 
 impl Frame {
@@ -195,6 +200,19 @@ impl Frame {
     /// Blank every cell.
     pub fn clear(&mut self) {
         self.cells.fill(FrameCell::blank());
+    }
+    /// Show a pixel buffer ([`Ctx::pixel_buffer`]) over the whole area, this render: its pixels
+    /// from the area's top-left corner, 1:1 in physical pixels and clipped at the area's edge,
+    /// so one sized to the area from a `Resize`'s cells and [`CellPixels`] fills it. At a
+    /// negative `z` it draws under the cells' glyphs and over their backgrounds, so text put on
+    /// the frame shows over it; at 0 and above, over the glyphs ([`Placement`]). Placed again
+    /// at the same z, it draws later. A buffer whose producer is gone draws nothing.
+    pub fn place(&mut self, buffer: PixelBufferId, z: i8) {
+        self.placed.push((buffer, z));
+    }
+    /// What's placed this render, in order, each with its z.
+    pub fn placed(&self) -> &[(PixelBufferId, i8)] {
+        &self.placed
     }
     /// The row's characters, with trailing spaces trimmed, for tests.
     pub fn row_text(&self, r: usize) -> String {
@@ -446,6 +464,7 @@ impl Ctx {
         };
         let mut frame = self.surfaces.frames.remove(&buf).unwrap_or_default();
         frame.fit(cols, rows);
+        frame.placed.clear();
         let Some(Content::Custom { obj: Some(s), .. }) =
             self.buffers.get_mut(buf).map(|b| &mut b.content)
         else {
@@ -460,6 +479,7 @@ impl Ctx {
         let panicked = drawn.is_err();
         let cursor = drawn.unwrap_or_else(|_| {
             frame.clear();
+            frame.placed.clear();
             frame.text(0, 0, "<render panicked>", &FrameCell::blank());
             None
         });
@@ -468,6 +488,19 @@ impl Ctx {
             for (c, cell) in frame.row(r).iter().enumerate() {
                 let x = p.col + g.text_x + c;
                 scene.put(p.row + r, x, cell.resolve(blank.fg, blank.bg));
+            }
+        }
+        // Over the area, at its offset, as the cells are; a destroyed buffer's placement goes.
+        for &(buffer, z) in &frame.placed {
+            if self.pixels.is_alive(buffer) {
+                scene.placements.push(Placement {
+                    buffer,
+                    col: p.col + g.text_x,
+                    row: p.row,
+                    cols,
+                    rows,
+                    z,
+                });
             }
         }
         if panicked {
