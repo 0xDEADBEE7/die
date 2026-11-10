@@ -3,6 +3,7 @@
 //! ([`rasterize`]), and the pixel renderer draws with the same calls at the view's scale into a
 //! [`Canvas`] it keeps and into the pixel buffer it shows ([`Target`]).
 
+use crate::dial::Dial;
 use crate::fonts::Fonts;
 use crate::model::{
     Board, Element, HIGHLIGHTER_ALPHA, Point, Rect, Shape, head_length, label_lines,
@@ -10,12 +11,21 @@ use crate::model::{
 use crate::svg::{Look, picture};
 use die_core::{PixelRect, Rgb};
 use tiny_skia::{
-    FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapMut, PremultipliedColorU8,
+    FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapMut, PremultipliedColorU8,
     Stroke, StrokeDash, Transform,
 };
 
 /// The longest side a raster may have: Metal's texture cap, and sanity for an export.
 pub const MAX_SIDE: u32 = 16_384;
+
+/// The tool dial's disc's opacity.
+const DIAL_ALPHA: f32 = 0.12;
+/// The hovered sector's.
+const SECTOR_ALPHA: f32 = 0.35;
+/// The spokes' and the dead zone's circle's.
+const SPOKE_ALPHA: f32 = 0.5;
+/// The straight steps a sector's arc is drawn in.
+const ARC_STEPS: usize = 6;
 
 /// Pixels, straight (not premultiplied) RGBA, rows top first.
 #[derive(Clone, PartialEq, Debug)]
@@ -315,6 +325,60 @@ impl Target<'_> {
         }
         self.with(|pm| pm.stroke_path(&path, &paint(color, alpha), &st, map.transform(), None));
     }
+    /// The tool dial in `color`: a translucent disc, the hovered sector filled, eight spokes
+    /// from the dead zone to the rim, and the dead zone's circle. Its names are the frame's cells.
+    pub fn dial(&mut self, d: &Dial, map: Map, color: Rgb) {
+        let t = map.transform();
+        let (c, r) = (d.centre, d.radius);
+        let hair = stroke(1.0 / map.scale.max(0.01));
+        let mut spokes = PathBuilder::new();
+        for k in 0..8 {
+            let dir = Dial::direction(k as f32 - 0.5);
+            spokes.move_to(c.x + dir.x * d.dead, c.y + dir.y * d.dead);
+            spokes.line_to(c.x + dir.x * r, c.y + dir.y * r);
+        }
+        spokes.push_circle(c.x, c.y, d.dead);
+        let spokes = spokes.finish();
+        let wedge = d.hovered.and_then(|i| sector(c, d.dead, r, i));
+        self.with(|pm| {
+            if let Some(disc) = PathBuilder::from_circle(c.x, c.y, r) {
+                pm.fill_path(&disc, &paint(color, DIAL_ALPHA), FillRule::Winding, t, None);
+            }
+            if let Some(wedge) = wedge {
+                pm.fill_path(
+                    &wedge,
+                    &paint(color, SECTOR_ALPHA),
+                    FillRule::Winding,
+                    t,
+                    None,
+                );
+            }
+            if let Some(spokes) = spokes {
+                pm.stroke_path(&spokes, &paint(color, SPOKE_ALPHA), &hair, t, None);
+            }
+        });
+    }
+}
+
+/// Sector `i` of a dial about `c`, from `inner` to `outer`, its arcs in straight steps.
+fn sector(c: Point, inner: f32, outer: f32, i: usize) -> Option<Path> {
+    let at = |k: usize, r: f32| {
+        let dir = Dial::direction(i as f32 - 0.5 + k as f32 / ARC_STEPS as f32);
+        (c.x + dir.x * r, c.y + dir.y * r)
+    };
+    let mut pb = PathBuilder::new();
+    let (x, y) = at(0, inner);
+    pb.move_to(x, y);
+    for k in 0..=ARC_STEPS {
+        let (x, y) = at(k, outer);
+        pb.line_to(x, y);
+    }
+    for k in (0..=ARC_STEPS).rev() {
+        let (x, y) = at(k, inner);
+        pb.line_to(x, y);
+    }
+    pb.close();
+    pb.finish()
 }
 
 /// A picture the renderer keeps: premultiplied RGBA8, `width × 4` bytes a row, transparent to

@@ -26,7 +26,8 @@ path = "crates/die-core"
 # 15,400 until the margins review: through a resize, each window keeps its place in the lines of output a surface says it wrapped.
 # 15,440 until M3a, the whiteboard's pixel slice: `Placement` and `Frame::place`, the producer, the sink and the harness's fake (about 320).
 # 15,755 until M3a's review: a union that saturates, and dropped buffers forgotten at the next one made.
-limit = 15765
+# 15,765 until the whiteboard's tool dial: a press a surface takes in normal state brings its release (15,763).
+limit = 15770
 
 [[crate]]
 name = "die-render"
@@ -162,7 +163,8 @@ name = "ext, dispatch, rt"
 # 1,615 until the terminal's review: a repeat or release reaches a surface only after its press, by the physical key.
 # 1,635 until a surface buffer's own settings in `Content`.
 # 1,640 until the alternate screen's Esc review: a release goes where its press went, and `Surface::takes_wheel`.
-limit = 1650
+# 1,650 until the whiteboard's tool dial: a press a surface takes in normal state brings its release, as in passthrough (1,649).
+limit = 1655
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]

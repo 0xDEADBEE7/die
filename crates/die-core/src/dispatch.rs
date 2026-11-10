@@ -204,7 +204,8 @@ impl Ctx {
             }
         }
         // A release goes where its press went, whatever has the keys now, so a program that asked
-        // for releases hears a key let go after Esc left passthrough, or the focus moved.
+        // for releases hears a key let go after Esc left passthrough, or the focus moved, and a
+        // surface that took a press in normal state hears the key let go.
         if ev.kind == KeyKind::Release
             && let Some(i) = self.passed.iter().position(|(_, k)| same_key(k, &ev))
         {
@@ -278,7 +279,14 @@ impl Ctx {
                 self.prefix = Prefix::default();
                 let keys = std::mem::take(&mut self.pending);
                 let last = keys.last().cloned().unwrap();
-                let handled = self.surface_event(buf, &Event::Key(last));
+                let handled = self.surface_event(buf, &Event::Key(last.clone()));
+                // The surface took the press, or declares the key: its release goes there too
+                // (§7), as in passthrough. A key a keymap took has no surface owner.
+                if last.kind == KeyKind::Press
+                    && (matches!(handled, Ok(true)) || self.surface_says(buf, |s| s.handles(&last)))
+                {
+                    self.passed_to(buf, last);
+                }
                 if !matches!(handled, Ok(true)) {
                     self.drop_fed();
                 }
@@ -316,19 +324,22 @@ impl Ctx {
         // state (§7).
         let held = |(b, k): &(BufferId, KeyEvent)| *b == buf && same_key(k, &ev);
         match (ev.kind, self.passed.iter().position(held)) {
-            (KeyKind::Press, _) => {
-                // A few are held at once, and committed text has no release: the oldest go.
-                if self.passed.len() >= 32 {
-                    self.passed.remove(0);
-                }
-                self.passed.push((buf, ev.clone()));
-            }
+            (KeyKind::Press, _) => self.passed_to(buf, ev.clone()),
             (KeyKind::Repeat, Some(_)) => {}
             _ => return,
         }
         if let Err(Error::Panicked { .. }) = self.surface_event(buf, &Event::Key(ev)) {
             self.drop_fed();
         }
+    }
+
+    /// `ev`'s press went to `buf`'s surface: its release goes there too. A few are held at once,
+    /// and committed text has no release: the oldest go.
+    fn passed_to(&mut self, buf: BufferId, ev: KeyEvent) {
+        if self.passed.len() >= 32 {
+            self.passed.remove(0);
+        }
+        self.passed.push((buf, ev));
     }
 
     /// Give a surface input, guarded, for the extension that made it. A text buffer has no

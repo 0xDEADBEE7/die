@@ -11,6 +11,7 @@
 //! - [`view`]: pan and zoom, and the pointer's way through them;
 //! - [`undo`]: the operation log;
 //! - [`surface`]: a board's state, the tools as the pointer works them, and the surface;
+//! - [`dial`]: the tool dial, Space or the right button held and a direction;
 //! - [`render`], [`pixels`] and [`cells`]: the renderer trait, the pixel renderer (tiny-skia into
 //!   a pixel buffer placed under the area's glyphs, M3a), and the cell renderer for a host that
 //!   shows no pixels;
@@ -27,6 +28,7 @@ use die_test_cap as _;
 
 pub mod canvas;
 pub mod cells;
+pub mod dial;
 pub mod export;
 pub mod file;
 pub mod fonts;
@@ -396,7 +398,8 @@ fn apply_effect(ctx: &mut Ctx, buf: BufferId, effect: Effect) {
     }
 }
 
-/// Change the board a command acts on with `f`, then set the autosave timer if it's behind.
+/// Change the board a command acts on with `f`, then set the autosave timer if it's behind. A
+/// key that reaches a command closes the tool dial first, as any key but Space does.
 fn change(
     ctx: &mut Ctx,
     args: &Args,
@@ -404,7 +407,11 @@ fn change(
 ) -> Result {
     let (buf, state) = target(ctx, args)?;
     let now = ctx.now();
-    let effect = f(&mut state.borrow_mut(), now)?;
+    let effect = {
+        let mut st = state.borrow_mut();
+        st.cancel_dial();
+        f(&mut st, now)?
+    };
     apply_effect(ctx, buf, effect);
     after_change(ctx, Some(buf));
     Ok(())
@@ -822,7 +829,7 @@ fn nudge(dc: i32, dr: i32) -> impl Fn(&mut BoardState, Duration) -> Result<Effec
 const SIMPLE: [(&str, &str, Simple); 19] = [
     (
         "whiteboard-eraser",
-        "e: the eraser, on or off: a drag erases every element it crosses. The right button erases from any tool.",
+        "e: the eraser, on or off: a drag erases every element it crosses. It's west on the tool dial (Space or the right button held) too.",
         |s, now| {
             s.toggle_tool(Tool::Eraser, now);
             Ok(Effect::None)

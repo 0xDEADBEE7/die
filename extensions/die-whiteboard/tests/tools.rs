@@ -247,7 +247,7 @@ fn an_arrow_binds_to_the_shapes_at_its_ends_and_follows_them() {
 }
 
 #[test]
-fn the_eraser_takes_what_a_drag_crosses_and_the_right_button_always_erases() {
+fn the_eraser_takes_what_a_drag_crosses_and_the_right_button_erases_nothing() {
     let mut s = setup("eraser");
     for y in [20.0, 60.0, 100.0] {
         gesture(&mut s, &[(10.0, y), (100.0, y)]);
@@ -260,21 +260,19 @@ fn the_eraser_takes_what_a_drag_crosses_and_the_right_button_always_erases() {
     assert!(status(&mut s).contains("eraser·1"), "the eraser stays on");
     keys(&mut s.h, "e");
     assert!(status(&mut s).contains("pen·1"));
+    // The right button held is the tool dial (tests/dial.rs), not the eraser: a right drag
+    // across the stroke leaves it, and picks the tool in its direction.
     gesture_with(
         &mut s,
         &[(50.0, 90.0), (50.0, 110.0)],
         Mods::default(),
         Button::Right,
     );
-    assert_eq!(
-        elements(&mut s.h, s.buf).len(),
-        0,
-        "the right button, from the pen"
-    );
+    assert_eq!(elements(&mut s.h, s.buf).len(), 1, "nothing erased");
+    assert!(status(&mut s).contains("line·1"), "{}", status(&mut s));
+    keys(&mut s.h, "<Esc>");
     keys(&mut s.h, "u");
-    assert_eq!(elements(&mut s.h, s.buf).len(), 1, "one gesture, one entry");
-    keys(&mut s.h, "u");
-    assert_eq!(elements(&mut s.h, s.buf).len(), 3);
+    assert_eq!(elements(&mut s.h, s.buf).len(), 3, "one gesture, one entry");
     keys(&mut s.h, "<C-r>");
     assert_eq!(elements(&mut s.h, s.buf).len(), 1);
 }
@@ -487,6 +485,17 @@ fn the_wheel_pans_and_the_keys_zoom() {
     );
     keys(&mut s.h, "+");
     assert_eq!(board(&mut s.h, s.buf).borrow().view.zoom, 1.25);
+    // The keys zoom about the area's centre at any zoom: the board point under it stays.
+    let g = s.h.surface_area(s.win).unwrap();
+    let centre = (g.text_w as f32 * 5.0, g.rows as f32 * 10.0);
+    let under = |s: &mut Setup| {
+        let view = board(&mut s.h, s.buf).borrow().view;
+        view.to_board(centre.0, centre.1, 2.0)
+    };
+    let before = under(&mut s);
+    keys(&mut s.h, "+");
+    let after = under(&mut s);
+    assert!(before.dist(after) < 0.01, "{before:?} moved to {after:?}");
     keys(&mut s.h, "0");
     assert_eq!(board(&mut s.h, s.buf).borrow().view, Default::default());
     assert!(pixel_px(&mut s, (60.0, 10.0)).is_some_and(|p| p[3] > 0));
