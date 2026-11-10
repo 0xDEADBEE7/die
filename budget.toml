@@ -98,6 +98,12 @@ extension = true
 note = "an extension, outside guard 7: your emacs-orchid-client's port"
 
 [[crate]]
+name = "die-whiteboard"
+path = "extensions/die-whiteboard"
+extension = true
+note = "an extension, outside guard 7: the whiteboard (freehand, shapes, arrows, SVG and PNG)"
+
+[[crate]]
 name = "xtask"
 path = "xtask"
 dev = true
