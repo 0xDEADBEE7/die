@@ -993,6 +993,48 @@ fn a_surface_hears_its_size_its_cells_pixels_and_the_focus() {
     assert_eq!(*log.borrow(), [Event::Focus(false)]);
 }
 
+/// Between two windows on one surface the focus never leaves the buffer, so the surface hears
+/// nothing: a program in two windows isn't told it lost the focus and got it back, and a dial
+/// held in one stays open. Closing one of the two is as quiet; a text window's turn is heard.
+#[test]
+fn two_windows_on_one_surface_pass_the_focus_between_them_in_silence() {
+    let (mut c, _, a) = frame(80, 24, "text");
+    let log: Rc<RefCell<Vec<Event>>> = Rc::default();
+    let s = c.create_surface("s", Plain { log: log.clone() });
+    let w = c.show(s, ShowIn::Split(Side::Right)).unwrap().unwrap();
+    let w2 = c.split_window(w, Side::Below).unwrap();
+    c.run_until_idle();
+    let focus = |log: &Rc<RefCell<Vec<Event>>>| -> Vec<Event> {
+        let mut log = log.borrow_mut();
+        let got = log.iter().filter(|e| matches!(e, Event::Focus(_)));
+        let got = got.cloned().collect();
+        log.clear();
+        got
+    };
+    focus(&log);
+    c.focus(w2);
+    c.run_until_idle();
+    c.focus(w);
+    c.run_until_idle();
+    assert_eq!(c.focused(), Some(w));
+    assert_eq!(focus(&log), [], "the buffer kept the focus");
+    c.close_window(w).unwrap();
+    c.run_until_idle();
+    assert_eq!(c.focused(), Some(w2), "the other window on it");
+    assert_eq!(focus(&log), [], "closed onto its own buffer");
+    c.focus(a);
+    c.run_until_idle();
+    assert_eq!(focus(&log), [Event::Focus(false)]);
+    c.focus(w2);
+    c.close_window(w2).unwrap();
+    c.run_until_idle();
+    assert_eq!(
+        focus(&log),
+        [Event::Focus(true), Event::Focus(false)],
+        "closed onto the text window"
+    );
+}
+
 #[test]
 fn a_window_on_a_surface_has_a_direction_from_its_first_cell() {
     let (mut c, _, a) = frame(80, 24, "text");
