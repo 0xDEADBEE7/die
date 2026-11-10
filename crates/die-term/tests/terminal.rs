@@ -658,6 +658,21 @@ fn a_key_let_go_in_normal_state_has_its_release_sent() {
     let held = format!("{rolled}\x1b[57442;5u\x1b[57442;1:3u");
     let found = ctx.run_until(Duration::from_secs(3), |_| logged() == held);
     assert!(found, "Ctrl's release: {:?}", logged());
+    // A key normal state gives nobody (F12 is unbound there, and the terminal takes no key in
+    // copy state though it declares every one) sends no release either: the program never saw
+    // its press.
+    let f12 = Key::F(12);
+    ctx.input(KeyEvent::press(f12));
+    ctx.input(KeyEvent::press(f12).kind(KeyKind::Release));
+    ctx.run_until_idle();
+    assert_eq!(ctx.state(), State::Normal);
+    assert!(
+        ctx.messages.last().is_some_and(|m| m.contains("undefined")),
+        "{:?}",
+        ctx.messages
+    );
+    settle(&mut ctx, Duration::from_millis(300));
+    assert_eq!(logged(), held, "no release for a press it never saw");
 }
 
 /// `C-c C-c` in normal state sends the program C-c, as your ghostel's map has it in every input

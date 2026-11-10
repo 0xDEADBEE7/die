@@ -7,7 +7,8 @@
 //! on a canvas of its own, and the **shown buffer**, the producer's, which is the committed
 //! picture with the gesture's live element drawn over it. A pointer sample during a pen stroke
 //! draws only the segments after the ones drawn and presents their rectangle; any other live
-//! thing (a shape, the highlighter, the marquee) is put back and drawn whole, which is small. A
+//! thing (a shape, the highlighter, the marquee, the tool dial) is put back and drawn whole,
+//! which is small, so the dial's hover costs its disc's rectangle and never the picture's. A
 //! committed change ([`Damage::Region`]) draws that region of the picture again; undo, a resize,
 //! a zoom, a theme change or the selection draw it all; a pan by whole pixels moves the picture
 //! and draws the strips it uncovers. Everything runs on the main thread, in the event's own turn
@@ -19,6 +20,7 @@
 //! don't ask for cells; [`crate::cells`] draws otherwise (Linux until the wgpu ring).
 
 use crate::canvas::{Canvas, Map, Target};
+use crate::dial::{Dial, SECTORS};
 use crate::model::{Element, LIVE, Point, Rect, Shape, label_lines};
 use crate::render::{Damage, Renderer, Scene};
 use crate::svg::Look;
@@ -71,6 +73,8 @@ enum LiveKey {
     Stroke(Point, usize, Point),
     /// Anything drawn whole: its bounds.
     Whole(Rect),
+    /// The tool dial: its centre and the sector hovered.
+    Dial(Point, Option<usize>),
 }
 
 /// What of a gesture is on the shown buffer.
@@ -84,6 +88,7 @@ struct Live {
 enum Thing<'a> {
     Element(&'a Element),
     Marquee(Rect),
+    Dial(Dial),
 }
 
 impl Thing<'_> {
@@ -99,6 +104,7 @@ impl Thing<'_> {
                 _ => LiveKey::Whole(el.bounds(cell)),
             },
             Thing::Marquee(r) => LiveKey::Whole(*r),
+            Thing::Dial(d) => LiveKey::Dial(d.centre, d.hovered),
         }
     }
 }
@@ -132,7 +138,12 @@ impl Pixels {
         let Some(buf) = &mut self.buffer else {
             return;
         };
-        if buf.fresh && scene.board.is_empty() && scene.live.is_none() && scene.marquee.is_none() {
+        if buf.fresh
+            && scene.board.is_empty()
+            && scene.live.is_none()
+            && scene.marquee.is_none()
+            && scene.dial.is_none()
+        {
             return;
         }
         let (w, h) = buf.producer.size();
@@ -197,10 +208,11 @@ impl Pixels {
 
         // 2. The shown buffer: the committed picture where it changed and under the old live
         //    drawing, then the live drawing.
-        let thing = match (scene.live, scene.marquee) {
-            (Some(el), _) => Some(Thing::Element(el)),
-            (None, Some(m)) => Some(Thing::Marquee(m)),
-            (None, None) => None,
+        let thing = match (scene.live, scene.marquee, scene.dial) {
+            (Some(el), ..) => Some(Thing::Element(el)),
+            (None, Some(m), _) => Some(Thing::Marquee(m)),
+            (None, None, Some(d)) => Some(Thing::Dial(d)),
+            (None, None, None) => None,
         };
         let key = thing.as_ref().map(|t| t.key(scene.cell));
         let was = self.live.take();
@@ -257,6 +269,10 @@ impl Pixels {
                     Thing::Marquee(m) => {
                         target.outline(m, map, scene.fg, MARQUEE_ALPHA, true);
                         map.pixels(m, AA_PAD, w, h)
+                    }
+                    Thing::Dial(d) => {
+                        target.dial(d, map, scene.fg);
+                        map.pixels(&d.bounds(), AA_PAD, w, h)
                     }
                 });
                 self.live = drawn.zip(key).map(|(rect, key)| Live { rect, key });
@@ -394,6 +410,16 @@ fn shift_between(old: Map, new: Map, w: u32, h: u32) -> Option<(i32, i32)> {
     Some((dx.round() as i32, dy.round() as i32))
 }
 
+/// Write `name` on the frame from (`row`, `col`), which may be off its top or left edge: what's
+/// past the edge is left out.
+fn put_name(frame: &mut Frame, row: i64, col: i64, name: &str, style: &FrameCell) {
+    if row < 0 {
+        return;
+    }
+    let shown: String = name.chars().skip((-col).max(0) as usize).collect();
+    frame.text(row as usize, col.max(0) as usize, &shown, style);
+}
+
 fn intersects(a: PixelRect, b: PixelRect) -> bool {
     !a.is_empty()
         && !b.is_empty()
@@ -481,7 +507,8 @@ impl Renderer for Pixels {
         }
     }
 
-    /// The pixels, then the labels as cells over them, a selected one in reverse video.
+    /// The pixels, then the labels as cells over them, a selected one in reverse video, and the
+    /// dial's names, the hovered one reversed.
     fn render(&mut self, frame: &mut Frame, scene: &Scene<'_>, _: &RenderInfo) {
         self.sync(scene);
         frame.clear();
@@ -491,6 +518,18 @@ impl Renderer for Pixels {
         } else {
             (self.cell.width as f32, self.cell.height as f32)
         };
+        if let Some(d) = scene.dial {
+            for (i, tool) in SECTORS.iter().enumerate() {
+                let (p, align) = d.name_at(i);
+                let (x, y) = scene.view.to_physical(p, self.cell.scale);
+                let (col, row) = ((x / cw).floor() as i64, (y / ch).floor() as i64);
+                let name = tool.name();
+                let col = align.start(col, name.chars().count() as i64);
+                let mut style = FrameCell::new(Glyph::Char(' '), Color::Default, Color::Default);
+                style.reverse = d.hovered == Some(i);
+                put_name(frame, row, col, name, &style);
+            }
+        }
         for el in &scene.board.elements {
             let Shape::Label { at, text } = &el.shape else {
                 continue;

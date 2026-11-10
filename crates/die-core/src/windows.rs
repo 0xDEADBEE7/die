@@ -286,15 +286,28 @@ impl Ctx {
         if !self.windows.contains_key(w) {
             return;
         }
-        let was = self.focused.filter(|f| *f != w);
         if self.focused != Some(w) {
-            let old = was.and_then(|f| self.windows.get(f)).map(|f| f.buffer);
-            if let Some(old) = old {
-                self.focus_event(old, false);
-            }
-            self.focus_event(self.windows[w].buffer, true);
+            let old = self
+                .focused
+                .and_then(|f| self.windows.get(f))
+                .map(|f| f.buffer);
+            self.focus_events(old, Some(self.windows[w].buffer));
         }
         self.take_focus(w);
+    }
+    /// The focus moved from a window on `old` to one on `new`: each surface hears, unless both
+    /// are one buffer, which kept it: a program in two windows isn't told it lost the focus and
+    /// got it back, and a dial held in one stays open.
+    fn focus_events(&mut self, old: Option<BufferId>, new: Option<BufferId>) {
+        if old == new {
+            return;
+        }
+        if let Some(old) = old {
+            self.focus_event(old, false);
+        }
+        if let Some(new) = new {
+            self.focus_event(new, true);
+        }
     }
     fn take_focus(&mut self, w: WindowId) {
         self.focused = Some(w);
@@ -579,12 +592,13 @@ impl Ctx {
             }
         }
         if self.focused == Some(w) {
-            self.focus_event(win.buffer, false);
             self.focused = None;
             let used = |id: &WindowId| self.windows.get(*id).map(|w| w.used);
             let next = self.tree.windows().into_iter().max_by_key(used);
+            let to = next.and_then(|n| self.windows.get(n)).map(|n| n.buffer);
+            self.focus_events(Some(win.buffer), to);
             match next {
-                Some(next) => self.focus(next),
+                Some(next) => self.take_focus(next),
                 None => self.cur_window = None,
             }
         }
