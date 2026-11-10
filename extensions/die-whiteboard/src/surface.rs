@@ -18,7 +18,7 @@ use crate::undo::{Entry, History, original_index};
 use crate::view::{View, ZOOM_STEP};
 use die_core::{
     BufferId, Button, CellPixels, Color, Ctx, CursorShape, Event, Frame, KeyEvent, KeyKind, Mods,
-    PointerKind, RenderInfo, State, Surface, SurfaceCursor, SurfacePointer,
+    PointerKind, RenderInfo, Rgb, State, Surface, SurfaceCursor, SurfacePointer,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -190,6 +190,9 @@ pub struct BoardState {
     pub focused: bool,
     /// Each ink's colour, as the theme has it.
     pub inks: [Color; 6],
+    /// The `default` face's foreground, which [`Color::Default`] means: the selection's and the
+    /// marquee's colour in pixels.
+    pub fg: Rgb,
     /// The buffer, once it's made.
     pub buf: Option<BufferId>,
     /// Whether the renderer draws at the view's zoom.
@@ -249,6 +252,7 @@ impl BoardState {
             area: (0, 0),
             focused: true,
             inks: [Color::Default; 6],
+            fg: Rgb(0xd0, 0xd0, 0xd0),
             buf: None,
             zooms: false,
             gesture: Gesture::None,
@@ -298,11 +302,55 @@ impl BoardState {
         self.rev += 1;
     }
 
-    /// The committed picture changed, though not the file: the view, the selection, the inks.
+    /// The committed picture changed, though not the file: the selection, the inks.
     pub fn redraw(&mut self) {
         self.board_rev += 1;
         self.rev += 1;
         self.damage = Damage::All;
+    }
+
+    /// The picture changed where it says, though not the file: the selection, or a move under
+    /// way. Nothing of the picture changed with `Damage::None`, which only redraws the frame.
+    fn picture_changed(&mut self, damage: Damage) {
+        self.rev += 1;
+        if damage != Damage::None {
+            self.board_rev += 1;
+            self.damage = self.damage.with(damage);
+        }
+    }
+
+    /// Drop the selection: the outlines go.
+    fn deselect(&mut self) {
+        let old = std::mem::take(&mut self.selection);
+        let damage = self.region_of(&old);
+        self.picture_changed(damage);
+    }
+
+    /// Where these elements are now, with their selection outlines: what changes when they
+    /// move, go, or are selected.
+    fn region_of(&self, ids: &[Id]) -> Damage {
+        let cell = self.cell_size();
+        ids.iter()
+            .filter_map(|id| self.board.get(*id))
+            .fold(Damage::None, |d, el| {
+                d.with(Damage::Region(el.bounds(cell)))
+            })
+    }
+
+    /// The view moved: the picture is the same, elsewhere in the area.
+    pub fn view_changed(&mut self) {
+        self.board_rev += 1;
+        self.rev += 1;
+        self.damage = self.damage.with(Damage::View);
+    }
+
+    /// The theme's colours, as resolved now: a change redraws the picture.
+    pub fn set_look(&mut self, inks: [Color; 6], fg: Rgb) {
+        if (self.inks, self.fg) != (inks, fg) {
+            self.inks = inks;
+            self.fg = fg;
+            self.redraw();
+        }
     }
 
     /// The board changed: the file is behind.
@@ -448,8 +496,9 @@ impl BoardState {
             Tool::Select => match self.board.hit(p, cell) {
                 Some(id) => {
                     if !self.selection.contains(&id) {
-                        self.selection = vec![id];
-                        self.redraw();
+                        let old = std::mem::replace(&mut self.selection, vec![id]);
+                        let damage = self.region_of(&old).with(self.region_of(&[id]));
+                        self.picture_changed(damage);
                     }
                     let mut ids = self.selection.clone();
                     ids.extend(self.board.followers(&self.selection));
@@ -462,10 +511,7 @@ impl BoardState {
                     };
                 }
                 None => {
-                    if !self.selection.is_empty() {
-                        self.selection.clear();
-                        self.redraw();
-                    }
+                    self.deselect();
                     self.gesture = Gesture::Marquee { start: p, now: p };
                 }
             },
@@ -566,8 +612,10 @@ impl BoardState {
                 last, before, ids, ..
             } => {
                 let d = p - last;
+                let was = self.region_of(&ids);
                 self.translate(&ids, d);
-                self.redraw();
+                let damage = was.with(self.region_of(&ids));
+                self.picture_changed(damage);
                 self.gesture = Gesture::Moving {
                     last: p,
                     before,
@@ -621,17 +669,21 @@ impl BoardState {
                 self.history.push(entry);
             }
             Gesture::Marquee { start, .. } => {
-                self.selection = self.board.within(&Rect::from_points(start, p), cell);
-                self.redraw();
+                let chosen = self.board.within(&Rect::from_points(start, p), cell);
+                let old = std::mem::replace(&mut self.selection, chosen);
+                let damage = self.region_of(&old).with(self.region_of(&self.selection));
+                self.picture_changed(damage);
             }
             Gesture::Moving {
                 before, ids, moved, ..
             } => {
                 if moved {
                     let after = snapshot(&self.board, &ids);
-                    self.commit(Entry { before, after }, now, Damage::All);
+                    let entry = Entry { before, after };
+                    let damage = entry_region(&entry, cell);
+                    self.commit(entry, now, damage);
                 } else {
-                    self.redraw();
+                    self.touch();
                 }
             }
         }
@@ -677,8 +729,7 @@ impl BoardState {
             self.width,
         );
         self.label = Some(LabelEdit { id, before: None });
-        self.selection.clear();
-        self.redraw();
+        self.deselect();
         Effect::EnterInsert
     }
 
@@ -688,8 +739,7 @@ impl BoardState {
             .index_of(id)
             .map(|i| (i, self.board.elements[i].clone()));
         self.label = Some(LabelEdit { id, before });
-        self.selection.clear();
-        self.redraw();
+        self.deselect();
         Effect::EnterInsert
     }
 
@@ -703,21 +753,28 @@ impl BoardState {
 
     /// Put `s` at the end of the label being typed. False with none.
     pub fn label_type(&mut self, s: &str, now: Duration) -> bool {
-        let Some(text) = self.label_text() else {
-            return false;
-        };
-        text.push_str(s);
-        self.changed(now, Damage::All);
-        true
+        self.edit_label_text(now, |text| text.push_str(s))
     }
 
     /// Take the last character off the label being typed.
     pub fn label_backspace(&mut self, now: Duration) -> bool {
+        self.edit_label_text(now, |text| {
+            text.pop();
+        })
+    }
+
+    /// Change the label being typed with `f`. False with none.
+    fn edit_label_text(&mut self, now: Duration, f: impl FnOnce(&mut String)) -> bool {
+        let Some(id) = self.editing() else {
+            return false;
+        };
+        let was = self.region_of(&[id]);
         let Some(text) = self.label_text() else {
             return false;
         };
-        text.pop();
-        self.changed(now, Damage::All);
+        f(text);
+        let damage = was.with(self.region_of(&[id]));
+        self.changed(now, damage);
         true
     }
 
@@ -729,7 +786,7 @@ impl BoardState {
         };
         self.tool = Tool::Pen;
         let Some(i) = self.board.index_of(edit.id) else {
-            self.redraw();
+            self.touch();
             return Effect::LeaveInsert;
         };
         let el = self.board.elements[i].clone();
@@ -746,9 +803,11 @@ impl BoardState {
             .map(|(_, e)| e)
             .eq(after.iter().map(|(_, e)| e));
         if same {
-            self.redraw();
+            self.touch();
         } else {
-            self.commit(Entry { before, after }, now, Damage::All);
+            let entry = Entry { before, after };
+            let damage = entry_region(&entry, self.cell_size());
+            self.commit(entry, now, damage);
         }
         Effect::LeaveInsert
     }
@@ -793,9 +852,8 @@ impl BoardState {
     /// Esc in normal state: drop the gesture and the selection, back to the pen.
     pub fn escape(&mut self) {
         self.gesture = Gesture::None;
-        self.selection.clear();
         self.tool = Tool::Pen;
-        self.redraw();
+        self.deselect();
     }
 
     /// Choose an ink, `1`..=6, for what's drawn next and for the selection.
@@ -824,29 +882,44 @@ impl BoardState {
             }
         }
         let after = snapshot(&self.board, &self.selection);
-        self.commit(Entry { before, after }, now, Damage::All);
+        let entry = Entry { before, after };
+        let damage = entry_region(&entry, self.cell_size());
+        self.commit(entry, now, damage);
     }
 
     /// Take back the last change. False with none.
     pub fn undo(&mut self, now: Duration) -> bool {
         self.gesture = Gesture::None;
-        let done = self.history.undo(&mut self.board).is_some();
-        if done {
-            self.selection.retain(|id| self.board.get(*id).is_some());
-            self.changed(now, Damage::All);
-        }
-        done
+        let cell = self.cell_size();
+        let done = self
+            .history
+            .undo(&mut self.board)
+            .map(|e| entry_region(e, cell));
+        self.undone(done, now)
     }
 
     /// Do the last undone change again. False with none.
     pub fn redo(&mut self, now: Duration) -> bool {
         self.gesture = Gesture::None;
-        let done = self.history.redo(&mut self.board).is_some();
-        if done {
-            self.selection.retain(|id| self.board.get(*id).is_some());
-            self.changed(now, Damage::All);
-        }
-        done
+        let cell = self.cell_size();
+        let done = self
+            .history
+            .redo(&mut self.board)
+            .map(|e| entry_region(e, cell));
+        self.undone(done, now)
+    }
+
+    /// After an undo or redo that changed `damage`, if it did anything: the selection keeps
+    /// what's still there.
+    fn undone(&mut self, damage: Option<Damage>, now: Duration) -> bool {
+        let Some(damage) = damage else {
+            return false;
+        };
+        let old = self.selection.clone();
+        self.selection.retain(|id| self.board.get(*id).is_some());
+        let damage = damage.with(self.region_of(&old));
+        self.changed(now, damage);
+        true
     }
 
     /// Delete the selection. False with none.
@@ -876,7 +949,9 @@ impl BoardState {
         let before = snapshot(&self.board, &ids);
         self.translate(&ids, d);
         let after = snapshot(&self.board, &ids);
-        self.commit(Entry { before, after }, now, Damage::All);
+        let entry = Entry { before, after };
+        let damage = entry_region(&entry, cell);
+        self.commit(entry, now, damage);
         true
     }
 
@@ -916,27 +991,36 @@ impl BoardState {
             self.board.insert(i, copy.clone());
             after.push((i, copy));
         }
-        self.selection = after.iter().map(|(_, e)| e.id).collect();
+        let old = std::mem::replace(
+            &mut self.selection,
+            after.iter().map(|(_, e)| e.id).collect(),
+        );
+        let damage = self.region_of(&old).with(self.region_of(&self.selection));
         self.commit(
             Entry {
                 before: vec![],
                 after,
             },
             now,
-            Damage::All,
+            damage,
         );
         true
     }
 
-    /// The wheel: pan by cells.
+    /// The wheel: pan by cells, to whole pixels, so the pixel renderer moves its picture rather
+    /// than drawing it again.
     pub fn pan_cells(&mut self, dx: f32, dy: f32) {
         if !dx.is_finite() || !dy.is_finite() || (dx == 0.0 && dy == 0.0) {
             return;
         }
         let size = self.cell_size();
         let f = self.view.factor(self.cell.scale);
-        self.view.pan_by(-dx * size.w * f, -dy * size.h * f);
-        self.redraw();
+        let (px, py) = ((-dx * size.w * f).round(), (-dy * size.h * f).round());
+        if px == 0.0 && py == 0.0 {
+            return;
+        }
+        self.view.pan_by(px, py);
+        self.view_changed();
     }
 
     /// Zoom by `by` about a physical pixel of the area, or its centre.
@@ -950,13 +1034,50 @@ impl BoardState {
             )
         });
         self.view.zoom_by(by, about, self.cell.scale);
-        self.redraw();
+        self.view_changed();
     }
 
     /// Back to no zoom and no pan.
     pub fn reset_view(&mut self) {
         self.view = View::default();
-        self.redraw();
+        self.view_changed();
+    }
+}
+
+/// Tell the renderer what changed in the committed picture since it last heard (`drawn_board`).
+fn pass_damage(renderer: &mut dyn Renderer, drawn_board: &mut u64, st: &mut BoardState) {
+    if st.board_rev != *drawn_board {
+        let damage = std::mem::take(&mut st.damage);
+        renderer.board_changed(if damage == Damage::None {
+            Damage::All
+        } else {
+            damage
+        });
+        *drawn_board = st.board_rev;
+    }
+}
+
+/// Where an entry's elements were and are: what changes when it's done or undone.
+fn entry_region(e: &Entry, cell: CellSize) -> Damage {
+    e.before
+        .iter()
+        .chain(&e.after)
+        .fold(Damage::None, |d, (_, el)| {
+            d.with(Damage::Region(el.bounds(cell)))
+        })
+}
+
+/// What a render draws of `st`.
+fn scene_of(st: &BoardState) -> Scene<'_> {
+    Scene {
+        board: &st.board,
+        view: &st.view,
+        inks: &st.inks,
+        fg: st.fg,
+        selection: &st.selection,
+        live: st.live(),
+        marquee: st.marquee(),
+        cell: st.cell_size(),
     }
 }
 
@@ -964,27 +1085,48 @@ impl BoardState {
 pub struct BoardSurface {
     /// The state.
     pub state: Shared,
-    renderer: Box<dyn Renderer>,
+    /// Chosen at the first event, when the host has connected its pixel sink if it has one: a
+    /// board restored at startup is made before that (`Ctx::with_config` restores the session,
+    /// the host connects the sink after), so asking at creation would get cells.
+    renderer: Option<Box<dyn Renderer>>,
+    wants_pixels: bool,
     drawn: Option<u64>,
     drawn_board: u64,
 }
 
 impl BoardSurface {
-    /// A surface on `state`, drawn by the pixel renderer if there is one, else by cells.
-    pub fn new(state: Shared) -> BoardSurface {
-        let renderer = crate::pixels::new().unwrap_or_else(|| Box::new(Cells::new()));
-        state.borrow_mut().zooms = renderer.zooms();
+    /// A surface on `state`, drawn by the pixel renderer where the host shows pixels and you
+    /// haven't asked for cells (`pixels`), else by cells.
+    pub fn new(state: Shared, pixels: bool) -> BoardSurface {
         BoardSurface {
             state,
-            renderer,
+            renderer: None,
+            wants_pixels: pixels,
             drawn: None,
             drawn_board: 0,
         }
     }
 
-    /// Which renderer draws it.
+    /// Which renderer draws it: `pixels`, `cells`, or none until its first event.
     pub fn renderer_name(&self) -> &'static str {
-        self.renderer.name()
+        self.renderer.as_ref().map_or("none yet", |r| r.name())
+    }
+
+    /// The renderer, made at the first event.
+    fn renderer(&mut self, ctx: &Ctx) -> &mut dyn Renderer {
+        let state = &self.state;
+        let wants_pixels = self.wants_pixels;
+        self.renderer
+            .get_or_insert_with(|| {
+                let renderer: Box<dyn Renderer> = if wants_pixels && ctx.pixels_supported() {
+                    Box::new(crate::pixels::Pixels::new())
+                } else {
+                    Box::new(Cells::new())
+                };
+                state.borrow_mut().zooms = renderer.zooms();
+                renderer
+            })
+            .as_mut()
     }
 
     fn apply(&self, effect: Effect, ctx: &mut Ctx) {
@@ -1006,8 +1148,20 @@ impl BoardSurface {
             st.pointer(p.kind, point, p.clicks, p.mods, now)
         };
         self.apply(effect, ctx);
+        self.update();
         let buf = self.state.borrow().buf;
         crate::after_change(ctx, buf);
+    }
+
+    /// A pointer event changed the scene: a renderer that draws pixels draws them now.
+    fn update(&mut self) {
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
+        let mut st = self.state.borrow_mut();
+        pass_damage(&mut **renderer, &mut self.drawn_board, &mut st);
+        let scene = scene_of(&st);
+        renderer.update(&scene);
     }
 
     fn typed(&mut self, text: &str, ctx: &mut Ctx) -> bool {
@@ -1027,29 +1181,19 @@ impl Surface for BoardSurface {
     }
 
     fn render(&mut self, frame: &mut Frame, info: &RenderInfo) {
+        // Nothing until the first event names the renderer, which the first `Resize` does.
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
         let mut st = self.state.borrow_mut();
-        if st.board_rev != self.drawn_board {
-            let damage = std::mem::take(&mut st.damage);
-            self.renderer.board_changed(if damage == Damage::None {
-                Damage::All
-            } else {
-                damage
-            });
-            self.drawn_board = st.board_rev;
-        }
+        pass_damage(&mut **renderer, &mut self.drawn_board, &mut st);
+        // Placed at every render: a frame keeps its cells, not its placements.
+        renderer.place(frame);
         if !frame.is_new() && self.drawn == Some(st.rev) {
             return;
         }
-        let scene = Scene {
-            board: &st.board,
-            view: &st.view,
-            inks: &st.inks,
-            selection: &st.selection,
-            live: st.live(),
-            marquee: st.marquee(),
-            cell: st.cell_size(),
-        };
-        self.renderer.render(frame, &scene, info);
+        let scene = scene_of(&st);
+        renderer.render(frame, &scene, info);
         self.drawn = Some(st.rev);
     }
 
@@ -1070,7 +1214,10 @@ impl Surface for BoardSurface {
     }
 
     fn event(&mut self, ev: &Event, ctx: &mut Ctx) -> bool {
-        self.state.borrow_mut().inks = crate::ink_colors(ctx);
+        self.renderer(ctx);
+        self.state
+            .borrow_mut()
+            .set_look(crate::ink_colors(ctx), crate::default_fg(ctx));
         match ev {
             Event::Pointer(p) => {
                 self.pointer(p, ctx);
@@ -1080,10 +1227,14 @@ impl Surface for BoardSurface {
                 cols, rows, cell, ..
             } => {
                 let mut st = self.state.borrow_mut();
-                st.cell = *cell;
-                st.area = (*cols, *rows);
-                self.renderer.resize(*cols, *rows, *cell);
-                st.redraw();
+                if (st.cell, st.area) != (*cell, (*cols, *rows)) {
+                    st.cell = *cell;
+                    st.area = (*cols, *rows);
+                    if let Some(r) = &mut self.renderer {
+                        r.resize(*cols, *rows, *cell, ctx);
+                    }
+                    st.redraw();
+                }
                 true
             }
             Event::Focus(gained) => {

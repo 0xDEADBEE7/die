@@ -11,8 +11,9 @@
 //! - [`view`]: pan and zoom, and the pointer's way through them;
 //! - [`undo`]: the operation log;
 //! - [`surface`]: a board's state, the tools as the pointer works them, and the surface;
-//! - [`render`], [`cells`] and [`pixels`]: the renderer trait, the cell renderer that runs today,
-//!   and the pixel renderer's stub for when core's pixel slice (M3a) lands;
+//! - [`render`], [`pixels`] and [`cells`]: the renderer trait, the pixel renderer (tiny-skia into
+//!   a pixel buffer placed under the area's glyphs, M3a), and the cell renderer for a host that
+//!   shows no pixels;
 //! - [`svg`] and [`file`]: the file's dialect, read and written, and the files on disk;
 //! - [`canvas`], [`fonts`] and [`export`]: tiny-skia behind one module, the exporter's font, PNG
 //!   encoding and the pasteboard's command lines.
@@ -91,10 +92,13 @@ pub struct Options {
     pub full_width: bool,
     /// How long after the last change a board is written.
     pub autosave: Duration,
+    /// Draw boards in pixels (anti-aliased ink at the display's resolution, zoom) where the host
+    /// shows them; false draws every board in cells, as a host without pixels does.
+    pub pixels: bool,
 }
 
 impl Default for Options {
-    /// DIE's font rule, PNGs at 2x on the theme's background, a file's width, a second.
+    /// DIE's font rule, PNGs at 2x on the theme's background, a file's width, a second, pixels.
     fn default() -> Options {
         Options {
             font_dir: None,
@@ -102,6 +106,7 @@ impl Default for Options {
             export_background: Background::Theme,
             full_width: false,
             autosave: Duration::from_secs(1),
+            pixels: true,
         }
     }
 }
@@ -245,9 +250,13 @@ impl Whiteboard {
         let board = file::load(path).map_err(Error::Msg)?;
         let mut state = BoardState::new(path.to_path_buf(), board);
         state.inks = ink_colors(ctx);
+        state.fg = default_fg(ctx);
         state.cell = ctx.cell_pixels();
         let state = state.shared();
-        let buf = ctx.create_surface(&file::buffer_name(path), BoardSurface::new(state.clone()));
+        // Whether the host shows pixels is asked at the surface's first event: a board restored
+        // at startup is opened before the host connects its sink.
+        let surface = BoardSurface::new(state.clone(), self.options.pixels);
+        let buf = ctx.create_surface(&file::buffer_name(path), surface);
         state.borrow_mut().buf = Some(buf);
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             ctx.set_directory(buf, dir);
@@ -373,7 +382,9 @@ fn target(ctx: &mut Ctx, args: &Args) -> Result<(BufferId, Shared)> {
     let state = ctx
         .with_ext(|wb: &mut Whiteboard, _| wb.board(buf))?
         .ok_or_else(not_a_board)?;
-    state.borrow_mut().inks = ink_colors(ctx);
+    state
+        .borrow_mut()
+        .set_look(ink_colors(ctx), default_fg(ctx));
     Ok((buf, state))
 }
 
@@ -795,7 +806,7 @@ fn nothing_selected() -> Error {
 }
 
 fn zoom_message() -> Error {
-    Error::Msg("Zoom comes with the pixel renderer (M3a); the cell renderer draws at 1:1".into())
+    Error::Msg("This board draws in cells, at 1:1; zoom needs the pixel renderer".into())
 }
 
 fn nudge(dc: i32, dr: i32) -> impl Fn(&mut BoardState, Duration) -> Result<Effect> {
@@ -917,7 +928,7 @@ const SIMPLE: [(&str, &str, Simple); 19] = [
     ),
     (
         "whiteboard-zoom-in",
-        "+: zoom in, about the area's centre (the pixel renderer; the cell renderer draws at 1:1).",
+        "+: zoom in, about the area's centre (in pixels; a board drawn in cells is at 1:1).",
         |s, _| {
             if !s.zooms {
                 return Err(zoom_message());
@@ -928,7 +939,7 @@ const SIMPLE: [(&str, &str, Simple); 19] = [
     ),
     (
         "whiteboard-zoom-out",
-        "-: zoom out, about the area's centre (the pixel renderer; the cell renderer draws at 1:1).",
+        "-: zoom out, about the area's centre (in pixels; a board drawn in cells is at 1:1).",
         |s, _| {
             if !s.zooms {
                 return Err(zoom_message());
@@ -1254,6 +1265,7 @@ mod tests {
         assert!(!o.full_width);
         assert_eq!(o.autosave, Duration::from_secs(1));
         assert_eq!(o.font_dir, None);
+        assert!(o.pixels);
         assert_eq!(Whiteboard::for_tests().options.png_scale, 1.0);
     }
 

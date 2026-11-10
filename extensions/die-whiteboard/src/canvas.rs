@@ -1,14 +1,17 @@
 //! Every tiny-skia call, behind one module, so a later plots extension can lift it into a shared
-//! crate (scope §9, the rule of two). Today the PNG exporter rasterizes the vector model here;
-//! the pixel renderer will draw with the same calls at the view's scale.
+//! crate (scope §9, the rule of two). The PNG exporter rasterizes the vector model here
+//! ([`rasterize`]), and the pixel renderer draws with the same calls at the view's scale into a
+//! [`Canvas`] it keeps and into the pixel buffer it shows ([`Target`]).
 
 use crate::fonts::Fonts;
-use crate::model::{Board, Element, HIGHLIGHTER_ALPHA, Point, Rect, Shape, label_lines};
+use crate::model::{
+    Board, Element, HIGHLIGHTER_ALPHA, Point, Rect, Shape, head_length, label_lines,
+};
 use crate::svg::{Look, picture};
-use die_core::Rgb;
+use die_core::{PixelRect, Rgb};
 use tiny_skia::{
-    FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PremultipliedColorU8, Stroke,
-    Transform,
+    FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapMut, PremultipliedColorU8,
+    Stroke, StrokeDash, Transform,
 };
 
 /// The longest side a raster may have: Metal's texture cap, and sanity for an export.
@@ -79,7 +82,7 @@ pub fn rasterize(
         -pic.min.y * scale,
     );
     for el in &board.elements {
-        draw_element(&mut pm, el, look, t, fonts);
+        draw_element(&mut pm.as_mut(), el, look, t, fonts);
     }
     Ok(Raster {
         width: w,
@@ -89,8 +92,8 @@ pub fn rasterize(
 }
 
 /// Draw one element into `pm` through `t`, a scale and a translation.
-pub fn draw_element(
-    pm: &mut Pixmap,
+fn draw_element(
+    pm: &mut PixmapMut<'_>,
     el: &Element,
     look: &Look,
     t: Transform,
@@ -142,7 +145,7 @@ pub fn draw_element(
         Shape::Line { a, b, arrow, .. } => {
             let p = paint(ink, 1.0);
             let len = a.dist(*b);
-            let (mut end, head) = (*b, 4.0 * width + 6.0);
+            let (mut end, head) = (*b, head_length(width));
             if *arrow && len > 0.0 {
                 let u = (*b - *a) * (1.0 / len);
                 let perp = Point::new(-u.y, u.x);
@@ -185,7 +188,7 @@ pub fn draw_element(
 }
 
 /// Blend a coverage bitmap of `ink` over the pixmap at (x0, y0).
-fn blit(pm: &mut Pixmap, x0: i32, y0: i32, w: usize, h: usize, cov: &[u8], ink: Rgb) {
+fn blit(pm: &mut PixmapMut<'_>, x0: i32, y0: i32, w: usize, h: usize, cov: &[u8], ink: Rgb) {
     let (pw, ph) = (pm.width() as i32, pm.height() as i32);
     let px = pm.pixels_mut();
     for j in 0..h {
@@ -216,10 +219,298 @@ fn blit(pm: &mut Pixmap, x0: i32, y0: i32, w: usize, h: usize, cov: &[u8], ink: 
     }
 }
 
+// ------------------------------------------------------------------ the pixel renderer's canvas
+
+/// Board units to a picture's pixels: `px = p × scale + (tx, ty)`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Map {
+    /// Pixels per board unit.
+    pub scale: f32,
+    /// Where the board's origin is, in pixels.
+    pub tx: f32,
+    /// See `tx`.
+    pub ty: f32,
+}
+
+impl Map {
+    /// The same picture drawn into a canvas whose top-left pixel is `r`'s.
+    pub fn into_rect(self, r: PixelRect) -> Map {
+        Map {
+            scale: self.scale,
+            tx: self.tx - r.x as f32,
+            ty: self.ty - r.y as f32,
+        }
+    }
+    fn transform(self) -> Transform {
+        Transform::from_row(self.scale, 0.0, 0.0, self.scale, self.tx, self.ty)
+    }
+    /// The pixels a board rectangle covers, `pad` pixels around, inside a `w` × `h` picture.
+    pub fn pixels(self, r: &Rect, pad: f32, w: u32, h: u32) -> PixelRect {
+        let (x0, y0) = (
+            r.min.x * self.scale + self.tx,
+            r.min.y * self.scale + self.ty,
+        );
+        let (x1, y1) = (
+            r.max.x * self.scale + self.tx,
+            r.max.y * self.scale + self.ty,
+        );
+        let clamp = |v: f32, max: u32| v.max(0.0).min(max as f32) as u32;
+        let (x0, y0) = (clamp((x0 - pad).floor(), w), clamp((y0 - pad).floor(), h));
+        let (x1, y1) = (clamp((x1 + pad).ceil(), w), clamp((y1 + pad).ceil(), h));
+        PixelRect::new(x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
+    }
+}
+
+/// The `width × 4` bytes of row `y` from `x` for `w` pixels.
+fn span(width: u32, x: u32, y: u32, w: u32) -> std::ops::Range<usize> {
+    let start = (y as usize * width as usize + x as usize) * 4;
+    start..start + w as usize * 4
+}
+
+/// Where the renderer draws: its own canvas, or the pixel buffer's bytes.
+pub enum Target<'a> {
+    /// A canvas the renderer keeps.
+    Canvas(&'a mut Canvas),
+    /// Premultiplied RGBA8, `width × 4` bytes a row, as a pixel buffer holds it.
+    Bytes {
+        /// The bytes.
+        bytes: &'a mut [u8],
+        /// Their width.
+        width: u32,
+        /// Their height.
+        height: u32,
+    },
+}
+
+impl Target<'_> {
+    fn with(&mut self, f: impl FnOnce(&mut PixmapMut<'_>)) {
+        match self {
+            Target::Canvas(c) => f(&mut c.pm.as_mut()),
+            Target::Bytes {
+                bytes,
+                width,
+                height,
+            } => {
+                if let Some(mut pm) = PixmapMut::from_bytes(bytes, *width, *height) {
+                    f(&mut pm);
+                }
+            }
+        }
+    }
+    /// Draw one element, without its label if it's one (labels are the frame's cells).
+    pub fn draw(&mut self, el: &Element, look: &Look, map: Map) {
+        self.with(|pm| draw_element(pm, el, look, map.transform(), None));
+    }
+    /// Outline a board rectangle one pixel wide in `color` at `alpha`, dashed if asked: the
+    /// selection's and the marquee's.
+    pub fn outline(&mut self, r: &Rect, map: Map, color: Rgb, alpha: f32, dashed: bool) {
+        let Some(sk) = tiny_skia::Rect::from_ltrb(r.min.x, r.min.y, r.max.x, r.max.y) else {
+            return;
+        };
+        let path = PathBuilder::from_rect(sk);
+        let mut st = stroke(1.0 / map.scale.max(0.01));
+        if dashed {
+            let d = 4.0 / map.scale.max(0.01);
+            st.dash = StrokeDash::new(vec![d, d], 0.0);
+        }
+        self.with(|pm| pm.stroke_path(&path, &paint(color, alpha), &st, map.transform(), None));
+    }
+}
+
+/// A picture the renderer keeps: premultiplied RGBA8, `width × 4` bytes a row, transparent to
+/// begin with.
+pub struct Canvas {
+    pm: Pixmap,
+}
+
+impl Canvas {
+    /// A transparent canvas this size, or None for a side of 0 or past [`MAX_SIDE`].
+    pub fn new(width: u32, height: u32) -> Option<Canvas> {
+        if width > MAX_SIDE || height > MAX_SIDE {
+            return None;
+        }
+        Pixmap::new(width, height).map(|pm| Canvas { pm })
+    }
+    /// Its width.
+    pub fn width(&self) -> u32 {
+        self.pm.width()
+    }
+    /// Its height.
+    pub fn height(&self) -> u32 {
+        self.pm.height()
+    }
+    /// The bytes.
+    pub fn data(&self) -> &[u8] {
+        self.pm.data()
+    }
+    /// A target on it.
+    pub fn target(&mut self) -> Target<'_> {
+        Target::Canvas(self)
+    }
+    /// Make it transparent.
+    pub fn clear(&mut self) {
+        self.pm.fill(tiny_skia::Color::TRANSPARENT);
+    }
+    /// Make `r` transparent.
+    pub fn clear_rect(&mut self, r: PixelRect) {
+        let r = r.clipped_to(self.width(), self.height());
+        let width = self.width();
+        for y in r.y..r.y + r.height {
+            self.pm.data_mut()[span(width, r.x, y, r.width)].fill(0);
+        }
+    }
+    /// Put a smaller canvas's pixels at (x, y), over whatever was there.
+    pub fn paste(&mut self, other: &Canvas, x: u32, y: u32) {
+        let (w, h) = (self.width(), self.height());
+        let r = PixelRect::new(x, y, other.width(), other.height()).clipped_to(w, h);
+        for row in 0..r.height {
+            let from = span(other.width(), 0, row, r.width);
+            let to = span(w, r.x, r.y + row, r.width);
+            self.pm.data_mut()[to].copy_from_slice(&other.pm.data()[from]);
+        }
+    }
+    /// Copy `r` of it into `bytes`, a picture of the same size.
+    pub fn copy_to(&self, bytes: &mut [u8], r: PixelRect) {
+        let r = r.clipped_to(self.width(), self.height());
+        for y in r.y..r.y + r.height {
+            let at = span(self.width(), r.x, y, r.width);
+            bytes[at.clone()].copy_from_slice(&self.pm.data()[at]);
+        }
+    }
+    /// Move the picture by `dx`, `dy` pixels, leaving what it uncovers transparent: the strips
+    /// that need drawing, which `shift_exposes` lists.
+    pub fn shift(&mut self, dx: i32, dy: i32) {
+        let (w, h) = (self.width() as i64, self.height() as i64);
+        let (dx, dy) = (i64::from(dx), i64::from(dy));
+        if dx.abs() >= w || dy.abs() >= h {
+            self.clear();
+            return;
+        }
+        let width = self.width();
+        let rows: Vec<u32> = if dy >= 0 {
+            (0..h).rev().map(|y| y as u32).collect()
+        } else {
+            (0..h).map(|y| y as u32).collect()
+        };
+        for y in rows {
+            let src = i64::from(y) - dy;
+            if !(0..h).contains(&src) {
+                self.pm.data_mut()[span(width, 0, y, width)].fill(0);
+                continue;
+            }
+            // The row as a whole first, then the columns within it.
+            if src != i64::from(y) {
+                let from = span(width, 0, src as u32, width);
+                let to = span(width, 0, y, width).start;
+                self.pm.data_mut().copy_within(from, to);
+            }
+            let row = &mut self.pm.data_mut()[span(width, 0, y, width)];
+            if dx > 0 {
+                let d = dx as usize * 4;
+                row.copy_within(0..row.len() - d, d);
+                row[..d].fill(0);
+            } else if dx < 0 {
+                let d = (-dx) as usize * 4;
+                row.copy_within(d.., 0);
+                let n = row.len();
+                row[n - d..].fill(0);
+            }
+        }
+    }
+    /// The strips a [`Canvas::shift`] by `dx`, `dy` uncovers, to draw again.
+    pub fn shift_exposes(&self, dx: i32, dy: i32) -> Vec<PixelRect> {
+        let (w, h) = (self.width(), self.height());
+        if dx.unsigned_abs() >= w || dy.unsigned_abs() >= h {
+            return vec![PixelRect::whole(w, h)];
+        }
+        let mut out = vec![];
+        let (ax, ay) = (dx.unsigned_abs(), dy.unsigned_abs());
+        if ay > 0 {
+            let y = if dy > 0 { 0 } else { h - ay };
+            out.push(PixelRect::new(0, y, w, ay));
+        }
+        if ax > 0 {
+            let x = if dx > 0 { 0 } else { w - ax };
+            let (y, rows) = if dy > 0 { (ay, h - ay) } else { (0, h - ay) };
+            out.push(PixelRect::new(x, y, ax, rows));
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::CellSize;
+
+    fn px(c: &Canvas, x: u32, y: u32) -> [u8; 4] {
+        let i = (y * c.width() + x) as usize * 4;
+        [
+            c.data()[i],
+            c.data()[i + 1],
+            c.data()[i + 2],
+            c.data()[i + 3],
+        ]
+    }
+
+    #[test]
+    fn a_shift_moves_the_picture_and_says_what_it_uncovered() {
+        let mut c = Canvas::new(6, 4).unwrap();
+        let mut dot = Canvas::new(1, 1).unwrap();
+        dot.target().draw(
+            &Element {
+                id: 1,
+                ink: 1,
+                width: 2,
+                shape: Shape::Stroke {
+                    points: vec![Point::new(0.0, 0.0)],
+                    highlighter: false,
+                },
+            },
+            &Look::default(),
+            Map {
+                scale: 1.0,
+                tx: 0.5,
+                ty: 0.5,
+            },
+        );
+        assert_eq!(px(&dot, 0, 0)[3], 255, "a solid pixel to move about");
+        c.paste(&dot, 2, 1);
+        c.shift(1, 2);
+        assert_eq!(px(&c, 3, 3)[3], 255, "moved right and down");
+        assert_eq!(px(&c, 2, 1)[3], 0, "and gone from where it was");
+        assert_eq!(
+            c.shift_exposes(1, 2),
+            [PixelRect::new(0, 0, 6, 2), PixelRect::new(0, 2, 1, 2)]
+        );
+        c.shift(-3, -3);
+        assert_eq!(px(&c, 0, 0)[3], 255);
+        assert_eq!(
+            c.shift_exposes(-3, -3),
+            [PixelRect::new(0, 1, 6, 3), PixelRect::new(3, 0, 3, 1)]
+        );
+        assert_eq!(c.shift_exposes(6, 0), [PixelRect::whole(6, 4)], "all of it");
+        c.clear_rect(PixelRect::new(0, 0, 1, 1));
+        assert_eq!(px(&c, 0, 0)[3], 0);
+        let mut bytes = vec![1u8; 6 * 4 * 4];
+        c.copy_to(&mut bytes, PixelRect::new(0, 0, 6, 1));
+        assert_eq!(&bytes[..4], &[0, 0, 0, 0], "the first row copied");
+        assert_eq!(bytes[24], 1, "the second left alone");
+        assert_eq!(
+            Map {
+                scale: 2.0,
+                tx: 10.0,
+                ty: 10.0
+            }
+            .pixels(
+                &Rect::from_points(Point::new(0.0, 0.0), Point::new(5.0, 5.0)),
+                1.0,
+                100,
+                100
+            ),
+            PixelRect::new(9, 9, 12, 12)
+        );
+    }
 
     #[test]
     fn a_stroke_puts_ink_where_it_goes_and_nowhere_else() {

@@ -75,11 +75,8 @@ fn the_pen_draws_a_smoothed_simplified_stroke() {
     click(&mut s, (100.0, 100.0));
     let dot = stroke_points(&elements(&mut s.h, s.buf)[2]);
     assert_eq!(dot, [Point::new(100.0, 100.0)]);
-    assert!(
-        area(&mut s)
-            .iter()
-            .any(|r| r.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)))
-    );
+    assert!(inked(&mut s, (100.0, 100.0)), "the dot is drawn");
+    assert!(!inked(&mut s, (100.0, 130.0)));
 }
 
 #[test]
@@ -189,12 +186,13 @@ fn each_shape_is_one_shot_and_shift_constrains() {
     click(&mut s, (300.0, 200.0));
     assert_eq!(elements(&mut s.h, s.buf).len(), 5);
     assert!(status(&mut s).contains("pen·1"));
-    let rows = area(&mut s);
-    assert!(
-        rows.iter().any(|r| r.contains('┌') && r.contains('┐')),
-        "{rows:#?}"
-    );
-    assert!(rows.iter().any(|r| r.contains('▶')), "{rows:#?}");
+    // Drawn: the rectangle's corner and edge, the circle's top, the arrow's head, and nothing
+    // where nothing is.
+    for at in [(10.0, 10.0), (35.0, 10.0), (120.0, 10.0), (80.0, 285.0)] {
+        assert!(inked(&mut s, at), "{at:?}");
+    }
+    assert!(!inked(&mut s, (35.0, 25.0)), "inside the rectangle");
+    assert!(!inked(&mut s, (300.0, 200.0)));
 }
 
 #[test]
@@ -349,17 +347,14 @@ fn select_moves_nudges_deletes_and_duplicates() {
     assert!(status(&mut s).contains("pen·1"));
     let errors = keys_errors(&mut s.h, "x");
     assert_eq!(errors, ["Nothing is selected"]);
-    // The selection is drawn in reverse video.
+    // The selection is outlined, 3 board units outside the element's bounds.
+    assert!(!(0..8).any(|i| inked(&mut s, (95.0, 26.0 + i as f32))));
     keys(&mut s.h, "v");
     click(&mut s, (120.0, 30.0));
-    let dump = s.h.style_dump();
-    assert!(!dump.is_empty());
-    let (r0, c0) = origin(&mut s.h, s.win);
-    let scene = s.h.scene();
-    let corner = &scene.row(r0 + 1)[c0 + 20];
-    let blank = &scene.row(r0 + 29)[c0 + 90];
-    assert_eq!(corner.glyph.to_string(), "┌");
-    assert_eq!((corner.fg, corner.bg), (blank.bg, blank.fg), "reversed");
+    assert!(
+        (0..8).any(|i| inked(&mut s, (95.0, 26.0 + i as f32))),
+        "the outline's left edge"
+    );
     // Undo takes each gesture back in turn: the delete, the duplicate, four nudges, the move.
     keys(&mut s.h, "<Esc>");
     for n in [4, 3, 3, 3, 3, 3, 3] {
@@ -472,8 +467,30 @@ fn the_press_that_focuses_the_window_draws_nothing() {
 }
 
 #[test]
-fn the_wheel_pans_and_zoom_waits_for_pixels() {
+fn the_wheel_pans_and_the_keys_zoom() {
     let mut s = setup("wheel");
+    gesture(&mut s, &[(10.0, 5.0), (60.0, 5.0)]);
+    assert!(pixel_px(&mut s, (60.0, 10.0)).is_some_and(|p| p[3] > 0));
+    pointer(
+        &mut s,
+        PointerKind::Scroll { dx: 0.0, dy: 2.0 },
+        (50.0, 50.0),
+        Mods::default(),
+        0,
+    );
+    assert_eq!(board(&mut s.h, s.buf).borrow().view.pan, (0.0, -40.0));
+    assert_eq!(
+        pixel_px(&mut s, (60.0, 10.0)),
+        Some([0, 0, 0, 0]),
+        "scrolled up two rows"
+    );
+    keys(&mut s.h, "+");
+    assert_eq!(board(&mut s.h, s.buf).borrow().view.zoom, 1.25);
+    keys(&mut s.h, "0");
+    assert_eq!(board(&mut s.h, s.buf).borrow().view, Default::default());
+    assert!(pixel_px(&mut s, (60.0, 10.0)).is_some_and(|p| p[3] > 0));
+    // The same board in cells: the wheel pans, and zoom says it needs pixels.
+    let mut s = setup_cells("wheel-cells");
     gesture(&mut s, &[(10.0, 5.0), (60.0, 5.0)]);
     let before = area(&mut s);
     assert!(!before[0].is_empty(), "{before:#?}");
@@ -484,14 +501,12 @@ fn the_wheel_pans_and_zoom_waits_for_pixels() {
         Mods::default(),
         0,
     );
-    assert_eq!(board(&mut s.h, s.buf).borrow().view.pan, (0.0, -40.0));
     let after = area(&mut s);
     assert!(after[0].is_empty(), "scrolled up two rows: {after:#?}");
     let errors = keys_errors(&mut s.h, "+");
     assert_eq!(errors.len(), 1);
     assert!(errors[0].contains("pixel renderer"), "{errors:?}");
     keys(&mut s.h, "0");
-    assert_eq!(board(&mut s.h, s.buf).borrow().view.pan, (0.0, 0.0));
     assert_eq!(area(&mut s), before);
 }
 

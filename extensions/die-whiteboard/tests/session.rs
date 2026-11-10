@@ -138,7 +138,16 @@ fn boards_come_back_working_after_two_restarts() {
         );
     }
     assert_eq!(h.focused_buffer(), Some(two));
-    let rows: Vec<String> = h.screen().lines().map(String::from).collect();
-    assert!(rows.iter().any(|r| r.contains('┌')), "drawn: {rows:#?}");
-    drop(dir);
+    // Drawn, in pixels: the board places its buffer and the rectangle's corner is inked.
+    let win = h.focused().unwrap();
+    let mut s = Setup {
+        h,
+        dir,
+        buf: two,
+        win,
+        path: std::path::PathBuf::new(),
+    };
+    let scene = s.h.scene();
+    assert_eq!(scene.placements.len(), 1, "{}", scene.snapshot());
+    assert!(inked(&mut s, (10.0, 20.0)), "the nudged rectangle's corner");
 }

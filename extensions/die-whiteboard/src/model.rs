@@ -138,6 +138,11 @@ pub const BIND_WITHIN: f32 = 12.0;
 /// How far from an element's edge a hit still counts.
 pub const HIT_SLACK: f32 = 4.0;
 
+/// An arrowhead's length for a line of `width`: what the canvas and the file draw.
+pub fn head_length(width: f32) -> f32 {
+    4.0 * width + 6.0
+}
+
 /// What an element is.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Shape {
@@ -238,7 +243,18 @@ impl Element {
             Shape::Rect { a, b } | Shape::Ellipse { a, b } => {
                 Rect::from_points(*a, *b).inflate(half)
             }
-            Shape::Line { a, b, .. } => Rect::from_points(*a, *b).inflate(half.max(1.0)),
+            Shape::Line { a, b, arrow, .. } => {
+                // The head's wings reach 0.4 of its length to each side, and its base reaches
+                // back along the line, past `a` when the line is shorter than the head.
+                let head = if *arrow {
+                    head_length(self.stroke_width())
+                } else {
+                    0.0
+                };
+                let back = if a.dist(*b) < head { head } else { 0.0 };
+                let by = half.max(1.0).max(head * 0.4).max(back);
+                Rect::from_points(*a, *b).inflate(by)
+            }
             Shape::Label { at, text } => {
                 let (w, h) = label_size(text, cell);
                 Rect::from_points(*at, Point::new(at.x + w, at.y + h))

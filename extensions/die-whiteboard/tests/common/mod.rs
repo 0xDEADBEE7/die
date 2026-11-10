@@ -1,14 +1,15 @@
 //! What the tests share: a harness with die-vim and the whiteboard, a board in a temporary
-//! directory, and the pointer in board units.
+//! directory, the pointer in board units, and the board's pixels as the fake sink has them.
 #![allow(dead_code)]
 
 use die_core::{
-    Args, BufferId, Button, CellPixels, Harness, Input, Mods, PointerEvent, PointerKind, WindowId,
+    Args, BufferId, Button, CellPixels, Harness, Input, Mods, PixelBufferId, PointerEvent,
+    PointerKind, WindowId,
 };
 use die_vim::Vim;
-use die_whiteboard::Whiteboard;
 use die_whiteboard::model::Element;
 use die_whiteboard::surface::Shared;
+use die_whiteboard::{Options, Whiteboard};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -52,10 +53,16 @@ pub struct Setup {
     pub path: PathBuf,
 }
 
-/// die-vim and the whiteboard, a text buffer open, a 100 × 30 window, and the cells known.
+/// die-vim and the whiteboard, a text buffer open, a 100 × 30 window, and the cells known. The
+/// harness has a pixel sink, so boards draw in pixels unless the options say cells.
 pub fn harness() -> Harness {
+    harness_with(Whiteboard::for_tests().options)
+}
+
+/// [`harness`] with the whiteboard's options as given.
+pub fn harness_with(options: Options) -> Harness {
     let exts: Vec<Box<dyn die_core::Extension>> =
-        vec![Box::new(Vim::default()), Box::new(Whiteboard::for_tests())];
+        vec![Box::new(Vim::default()), Box::new(Whiteboard::new(options))];
     let mut h = Harness::new(exts).unwrap();
     h.open_text("notes", "notes\n").unwrap();
     h.set_window_size(100, 30);
@@ -75,11 +82,25 @@ pub fn open(h: &mut Harness, path: &Path) {
     h.scene();
 }
 
-/// A board `NAME.svg` in a directory of its own, open and focused.
+/// A board `NAME.svg` in a directory of its own, open and focused, drawn in pixels.
 pub fn setup(name: &str) -> Setup {
+    setup_with(name, Whiteboard::for_tests().options)
+}
+
+/// [`setup`] drawn in cells, as a host without pixels draws.
+pub fn setup_cells(name: &str) -> Setup {
+    let options = Options {
+        pixels: false,
+        ..Whiteboard::for_tests().options
+    };
+    setup_with(name, options)
+}
+
+/// [`setup`] with the whiteboard's options as given.
+pub fn setup_with(name: &str, options: Options) -> Setup {
     let dir = TempDir::new(name);
     let path = dir.path().join(format!("{name}.svg"));
-    let mut h = harness();
+    let mut h = harness_with(options);
     open(&mut h, &path);
     let win = h.focused().unwrap();
     let buf = h.window_buffer(win).unwrap();
@@ -205,6 +226,46 @@ pub fn status(s: &mut Setup) -> String {
             .unwrap();
     let (_, rows) = s.h.window_size(s.win).unwrap();
     s.h.scene().row_text(p.row + rows)
+}
+
+/// The board's pixel buffer, from the scene's placement of it: its id, width, height and pixels
+/// as last presented (premultiplied RGBA8, `width * 4` a row).
+pub fn buffer(s: &mut Setup) -> (PixelBufferId, u32, u32, Vec<u8>) {
+    let scene = s.h.scene();
+    let p = scene
+        .placements
+        .first()
+        .unwrap_or_else(|| panic!("a placement: {}", scene.snapshot()));
+    let (w, h, px) = s.h.pixels(p.buffer).expect("the fake sink has the buffer");
+    (p.buffer, w, h, px)
+}
+
+/// The pixel at a physical point of the area, or None outside the buffer.
+pub fn pixel_px(s: &mut Setup, (x, y): (f32, f32)) -> Option<[u8; 4]> {
+    let (_, w, h, px) = buffer(s);
+    if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
+        return None;
+    }
+    let i = (y as u32 * w + x as u32) as usize * 4;
+    px.get(i..i + 4).map(|p| [p[0], p[1], p[2], p[3]])
+}
+
+/// The pixel at a board point, through the view.
+pub fn pixel_at(s: &mut Setup, (bx, by): (f32, f32)) -> Option<[u8; 4]> {
+    let view = board(&mut s.h, s.buf).borrow().view;
+    let p = view.to_physical(die_whiteboard::model::Point::new(bx, by), CELL.scale);
+    pixel_px(s, p)
+}
+
+/// Whether anything is drawn at a board point.
+pub fn inked(s: &mut Setup, at: (f32, f32)) -> bool {
+    pixel_at(s, at).is_some_and(|p| p[3] > 0)
+}
+
+/// How many pixels of the buffer have anything drawn.
+pub fn inked_count(s: &mut Setup) -> usize {
+    let (_, _, _, px) = buffer(s);
+    px.chunks_exact(4).filter(|p| p[3] > 0).count()
 }
 
 /// The area's rows as text.
