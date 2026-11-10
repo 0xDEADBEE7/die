@@ -125,6 +125,32 @@ impl Pending {
     }
 }
 
+/// Whether the loop owes a frame, kept across the turns in which it can't draw one.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Due {
+    /// Something may have changed, so compose a frame and see.
+    pub dirty: bool,
+    /// What's on the drawable no longer stands, whatever the scene says: the drawable changed,
+    /// or pixels were presented that no frame has carried yet.
+    pub stale: bool,
+}
+
+impl Due {
+    /// No frame could be drawn (the window is occluded, or has no drawable) after `pixels` were
+    /// taken from the sink's flag: they stay owed, as `stale`, so the frame that follows draws
+    /// them even when its scene is the last one's, as a present changes no cell. The flag itself
+    /// stays down, so the loop sleeps meanwhile.
+    pub fn held(&mut self, pixels: bool) {
+        self.stale |= pixels;
+    }
+
+    /// Whether a frame is drawn: the drawable no longer stands, pixels were presented since the
+    /// last frame, or the scene differs from the one on it.
+    pub fn frame(&self, pixels: bool, same_scene: bool) -> bool {
+        self.stale || pixels || !same_scene
+    }
+}
+
 /// Core, as a loop drives it: turns, sleep, and a frame of the split tree. K9's calls replace
 /// `step` and `next_timer` here when they land.
 pub struct Host {
@@ -229,10 +255,8 @@ pub struct Shell {
     /// Don't draw while occluded. A check for something else can turn it off, since it can't
     /// choose what you have on screen.
     pub(crate) guard: bool,
-    /// Something may have changed, so compose a frame and see.
-    pub(crate) dirty: bool,
-    /// What's on the drawable no longer stands, whatever the scene is.
-    pub(crate) stale: bool,
+    /// Whether a frame is owed.
+    pub(crate) due: Due,
     /// The last try at a frame got no drawable, or an error, so the loop mustn't sleep on it.
     undrawn: bool,
     /// Take the keyboard when the app next is the active one.
@@ -407,8 +431,10 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         remote: Remote { proxy },
         cover: None,
         guard: true,
-        dirty: true,
-        stale: true,
+        due: Due {
+            dirty: true,
+            stale: true,
+        },
         undrawn: false,
         key_when_active: false,
         focus_told: None,
@@ -671,9 +697,9 @@ impl Shell {
         let pumped = self.host.pump();
         self.more = pumped.more;
         if pumped.ran > 0 {
-            self.dirty = true;
+            self.due.dirty = true;
         }
-        if self.dirty || self.stale || self.host.pending.is_set() {
+        if self.due.dirty || self.due.stale || self.host.pending.is_set() {
             self.draw();
         }
         let ms = start.elapsed().as_secs_f64() * 1e3;
@@ -684,16 +710,16 @@ impl Shell {
     /// window is occluded, a scene that differs from what's on it is presented, or one with
     /// pixels presented since the last frame, which no cell shows.
     pub(crate) fn draw(&mut self) {
-        // Taken whether or not a frame follows: the pixels wait in the sink's ring, and the
-        // frame that `dirty` or `stale` owes takes them with it.
+        // Taken whether or not a frame follows: the pixels wait in the sink's ring, and a frame
+        // that can't be drawn now leaves them owed (`Due::held`) for the one that follows.
         let pixels = self.host.pending.take();
         let Some(live) = &mut self.live else {
-            return;
+            return self.due.held(pixels);
         };
         let px = live.surface.size(live.scale);
         if px.0 == 0 || px.1 == 0 {
             self.undrawn = false;
-            return;
+            return self.due.held(pixels);
         }
         if px != live.px {
             live.px = px;
@@ -706,18 +732,19 @@ impl Shell {
             });
             self.host.set_grid(grid(px, cell));
             self.host.pump();
-            self.stale = true;
+            self.due.stale = true;
             self.resized = true;
         }
         if holds_frame(self.guard, self.stats.frames, live.surface.occluded()) {
             self.stats.skipped += 1;
-            self.dirty = true;
+            self.due.dirty = true;
+            self.due.held(pixels);
             self.undrawn = false;
             return;
         }
-        self.dirty = false;
+        self.due.dirty = false;
         let scene = self.host.scene();
-        if !self.stale && !pixels && self.last.as_ref() == Some(&scene) {
+        if !self.due.frame(pixels, self.last.as_ref() == Some(&scene)) {
             return;
         }
         let start = Instant::now();
@@ -727,7 +754,7 @@ impl Shell {
         match presented {
             Ok(Some(presented)) => {
                 self.resized = false;
-                self.stale = false;
+                self.due.stale = false;
                 self.last_error = None;
                 let Presented {
                     w,
@@ -754,9 +781,9 @@ impl Shell {
                 }
             }
             // `about_to_wait` wakes again for it.
-            Ok(None) => self.stale = true,
+            Ok(None) => self.due.stale = true,
             Err(e) => {
-                self.stale = true;
+                self.due.stale = true;
                 if self.last_error.as_ref() != Some(&e) {
                     self.host.ctx.messages.push(e.clone());
                     self.last_error = Some(e);
@@ -781,7 +808,7 @@ impl Shell {
         }
         live.scale = scale;
         live.px = (0, 0);
-        self.dirty = true;
+        self.due.dirty = true;
     }
 }
 
@@ -801,8 +828,8 @@ impl ApplicationHandler<Wake> for Shell {
             return;
         }
         match event {
-            WindowEvent::Resized(_) | WindowEvent::RedrawRequested => self.dirty = true,
-            WindowEvent::Occluded(false) => self.dirty = true,
+            WindowEvent::Resized(_) | WindowEvent::RedrawRequested => self.due.dirty = true,
+            WindowEvent::Occluded(false) => self.due.dirty = true,
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => self.set_scale(scale_factor),
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Focused(on) => self.told_focus(on),

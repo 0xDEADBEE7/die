@@ -6,7 +6,13 @@
 //! the ring is full. The main thread only tries the locks (`Shadow::take`), records a blit of
 //! each waiting slot into its texture, and the slot goes back to its ring from the command
 //! buffer's completed handler, on Metal's thread, so the main thread never waits on a lock a
-//! producer can hold (S1's deadlock, docs/records/s1-renderer.md §4.6).
+//! producer can hold (S1's deadlock, docs/records/s1-renderer.md §4.6). Two exceptions, neither
+//! a cycle: a frame that fails to encode drops its blits on the main thread, which waits for
+//! `st`, held by a producer only across a few lines or a Metal allocation (`resize`); and a
+//! producer on the main thread itself (the whiteboard rasterizes in `event()`) waits like any
+//! producer when the ring's three slots are all in flight, which `present`'s own wait for the
+//! GPU makes rare. Two threads presenting one buffer at once are serialized by `presenting`, so
+//! the second supersedes the first and no slot is lost between the copy and the hand-off.
 
 use super::metal::texture;
 use crate::frame::PixelStats;
@@ -22,6 +28,7 @@ use objc2_metal::{
     MTLTextureUsage,
 };
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -64,10 +71,13 @@ struct State {
     waiting: Option<Waiting>,
 }
 
-/// A buffer: its state, and the signal that a slot came free, for a producer waiting on one.
+/// A buffer: its state, the signal that a slot came free, for a producer waiting on one, and
+/// the lock a present holds from its first look at the ring to its hand-off, so that two
+/// presenters of one buffer take turns. Producers' only; the main thread never touches it.
 struct Buffer {
     st: Mutex<State>,
     freed: Condvar,
+    presenting: Mutex<()>,
 }
 
 /// A lock, poisoned or not: a panic on the other side leaves the ring usable.
@@ -185,15 +195,19 @@ impl PixelSink for Pixels {
             bytes,
             waiting: None,
         };
-        let st = Mutex::new(st);
-        let freed = Condvar::new();
-        lock(&self.buffers).insert(id, Arc::new(Buffer { st, freed }));
+        let buffer = Buffer {
+            st: Mutex::new(st),
+            freed: Condvar::new(),
+            presenting: Mutex::new(()),
+        };
+        lock(&self.buffers).insert(id, Arc::new(buffer));
     }
 
     /// On the producer's thread: a free slot, waiting for one if the ring is full, the rows
     /// copied with the lock dropped, then the frame left waiting and the loop's flag raised.
     fn present(&self, id: PixelBufferId, pixels: &[u8], width: u32, mut damage: PixelRect) {
         let Some(b) = self.buffer(id) else { return };
+        let _turn = lock(&b.presenting);
         let mut st = lock(&b.st);
         if let Some(w) = st.waiting.take() {
             damage = damage.union(w.damage);
@@ -316,11 +330,12 @@ impl Drop for Blit {
 }
 
 /// Give the blits' slots back once `commands` has completed, from its handler on Metal's
-/// thread. Call it before the commit.
+/// thread. Call it before the commit. The handler runs Rust that Metal called, so a panic in
+/// it is caught (platform/mod.rs's rule) and the slots stay out, rather than unwind into Metal.
 pub(super) fn release_after(blits: Vec<Blit>, commands: &ProtocolObject<dyn MTLCommandBuffer>) {
     let held = Mutex::new(Some(blits));
     let block = RcBlock::new(move |_: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
-        drop(lock(&held).take());
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(lock(&held).take())));
     });
     // SAFETY: the block takes what the method says, Metal copies it, and all it holds is `Send`.
     unsafe { commands.addCompletedHandler(RcBlock::as_ptr(&block)) };
@@ -352,7 +367,10 @@ impl Shadow {
             let waiting = st.waiting.take();
             if let Some(w) = waiting.filter(|w| w.slot < st.slots.len()) {
                 let Some(t) = st.texture.as_ref().map(|t| Tex(t.0.clone())) else {
+                    // Metal had no texture for the new size: nothing to blit into, and the old
+                    // size's texture mustn't stand in for it.
                     st.free.push(w.slot);
+                    *texture = None;
                     continue;
                 };
                 st.shown = true;
@@ -571,5 +589,69 @@ mod tests {
         assert!(!pending.is_set());
         let b = p.buffer(a).unwrap();
         assert_eq!(lock(&b.st).free.len(), RING, "its slot came back");
+    }
+
+    #[test]
+    fn two_threads_presenting_one_buffer_at_once_lose_no_slot_and_neither_hangs() {
+        let Some((p, _)) = sink() else { return };
+        let a = id();
+        // Big, so that a copy takes long enough for the two to interleave between their locks.
+        let (w, h) = (2048, 2048);
+        p.create(a, w, h);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let (tx, rx) = mpsc::channel();
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let (p, barrier, tx) = (p.clone(), barrier.clone(), tx.clone());
+                std::thread::spawn(move || {
+                    let pixels = pixels(w, h, 1);
+                    barrier.wait();
+                    for _ in 0..12 {
+                        p.present(a, &pixels, w, PixelRect::whole(w, h));
+                    }
+                    tx.send(()).unwrap();
+                })
+            })
+            .collect();
+        drop(tx);
+        for _ in 0..2 {
+            rx.recv_timeout(Duration::from_secs(20))
+                .expect("a presenting thread hung on a slot it lost");
+        }
+        threads.into_iter().for_each(|t| t.join().unwrap());
+        let b = p.buffer(a).unwrap();
+        let st = lock(&b.st);
+        let waiting = usize::from(st.waiting.is_some());
+        assert_eq!(
+            st.free.len() + waiting,
+            RING,
+            "every slot is free or waiting"
+        );
+        let s = p.stats();
+        assert_eq!(s.presents, 24);
+        assert_eq!(s.superseded, 23, "each took the last one's slot back");
+    }
+
+    #[test]
+    fn a_resize_metal_cant_texture_shows_nothing_rather_than_the_old_size() {
+        let Some((p, _)) = sink() else { return };
+        let a = id();
+        p.create(a, 4, 4);
+        let mut shadow = Shadow::default();
+        p.present(a, &pixels(4, 4, 1), 4, PixelRect::whole(4, 4));
+        drop(shadow.take(&p));
+        assert!(shadow.texture(a).is_some());
+        // A side past Metal's cap gets no texture; core refuses such a size, but the sink
+        // mustn't rely on it.
+        let wide = die_core::PIXEL_MAX_SIDE + 1;
+        p.resize(a, wide, 1);
+        p.present(a, &pixels(wide, 1, 2), wide, PixelRect::whole(wide, 1));
+        assert!(shadow.take(&p).is_empty(), "nothing to blit into");
+        assert!(
+            shadow.texture(a).is_none(),
+            "the old size's texture doesn't stand in"
+        );
+        let b = p.buffer(a).unwrap();
+        assert_eq!(lock(&b.st).free.len(), RING, "the slot came back");
     }
 }
