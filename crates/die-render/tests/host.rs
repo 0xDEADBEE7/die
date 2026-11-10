@@ -255,6 +255,30 @@ fn the_latency_log_has_a_line_for_each_stage_and_key_and_says_if_it_cannot_open(
 }
 
 #[test]
+fn pixels_pending_keep_the_loop_from_sleeping_until_a_draw_takes_them() {
+    let mut h = host("");
+    assert_eq!(h.sleep(false), Sleep::Forever);
+    let pending = h.pending();
+    assert!(!pending.is_set());
+    // A present's thread raises it; a clone is the same flag.
+    std::thread::spawn({
+        let pending = pending.clone();
+        move || pending.set()
+    })
+    .join()
+    .unwrap();
+    assert!(pending.is_set());
+    assert_eq!(
+        h.sleep(false),
+        Sleep::No,
+        "a frame is owed, as with PTY output"
+    );
+    assert!(pending.take(), "the draw takes it");
+    assert!(!pending.take(), "once");
+    assert_eq!(h.sleep(false), Sleep::Forever);
+}
+
+#[test]
 fn a_frame_that_couldnt_draw_wakes_the_loop_again() {
     assert_eq!(sleep_or_retry(Sleep::Forever, true), Sleep::For(RETRY_DRAW));
     assert_eq!(sleep_or_retry(Sleep::For(ms(5)), true), Sleep::For(ms(5)));

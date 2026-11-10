@@ -3,11 +3,14 @@
 //! instances are is neutral code's business. A frame goes to a texture read back, or to
 //! the window's drawable, and either way `render` and `present` wait for the GPU, which
 //! the SAFETY comments on `upload` and `fill_instances` rely on. Doing without that wait
-//! takes S1's ring of buffers.
+//! takes S1's ring of buffers. The pixel buffers (M3a) have that ring (`pixbuf`): a frame
+//! first blits each one's staged rows into its texture, in the same command buffer, and a
+//! placement's quad samples the texture, bound for that one quad.
 
 use super::appkit::Surface;
+use super::pixbuf::{Blit, Pixels, Shadow, release_after};
 use crate::frame::{Image, Plane, Presented, Quad, Upload};
-use die_core::Rgb;
+use die_core::{PixelBufferId, Rgb};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
@@ -23,6 +26,7 @@ use objc2_metal::{
 use objc2_quartz_core::{CAMetalDrawable, CATransaction};
 use std::mem::size_of_val;
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// The pipeline's shader. `Quad` here must match `frame::Quad`, field for field, which
@@ -46,10 +50,13 @@ vertex Out vs(uint v [[vertex_id]], uint i [[instance_id]],
   return o;
 }
 fragment float4 fs(Out in [[stage_in]],
-                   texture2d<float> gray [[texture(0)]], texture2d<float> color [[texture(1)]]) {
+                   texture2d<float> gray [[texture(0)]], texture2d<float> color [[texture(1)]],
+                   texture2d<float> pixels [[texture(2)]]) {
   constexpr sampler s(coord::pixel, filter::nearest);
+  constexpr sampler edge(coord::pixel, filter::nearest, address::clamp_to_zero);
   if (in.kind == 0) { return float4(in.color.rgb * in.color.a, in.color.a); }
   if (in.kind == 1) { float a = gray.sample(s, in.uv).r * in.color.a; return float4(in.color.rgb * a, a); }
+  if (in.kind == 3) { return pixels.sample(edge, in.uv); }
   return color.sample(s, in.uv);
 }
 "#;
@@ -114,41 +121,25 @@ impl Gpu {
             .map_err(|e| format!("no pipeline: {e:?}"))
     }
 
-    fn texture(
-        &self,
-        (w, h): (u32, u32),
-        format: MTLPixelFormat,
-        usage: MTLTextureUsage,
-    ) -> Result<Texture, String> {
-        // Metal stops the process for a size it can't make, rather than returning none.
-        if w == 0 || h == 0 || w > MAX_TEXTURE_SIDE || h > MAX_TEXTURE_SIDE {
-            return Err(format!("Metal has no {w}x{h} texture"));
-        }
-        // SAFETY: a valid format, from the constants here, and sizes checked above.
-        let d = unsafe {
-            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                format, w as usize, h as usize, false,
-            )
-        };
-        d.setUsage(usage);
-        d.setStorageMode(MTLStorageMode::Shared);
-        self.device
-            .newTextureWithDescriptor(&d)
-            .ok_or_else(|| format!("no {w}x{h} texture"))
-    }
-
     /// The pipeline and its atlases, square textures of these sizes in pixels.
     pub fn pipeline(self, gray: u32, color: u32) -> Result<Pipeline, String> {
         let state = self.state()?;
-        let read = MTLTextureUsage::ShaderRead;
-        let gray = self.texture((gray, gray), MTLPixelFormat::R8Unorm, read)?;
-        let color = self.texture((color, color), TARGET_FORMAT, read)?;
+        let (read, shared) = (MTLTextureUsage::ShaderRead, MTLStorageMode::Shared);
+        let gray = texture(
+            &self.device,
+            (gray, gray),
+            MTLPixelFormat::R8Unorm,
+            read,
+            shared,
+        )?;
+        let color = texture(&self.device, (color, color), TARGET_FORMAT, read, shared)?;
         Ok(Pipeline {
             gpu: self,
             state,
             gray,
             color,
             instances: None,
+            pixels: None,
         })
     }
 
@@ -180,13 +171,40 @@ impl Gpu {
     }
 }
 
-/// The one pipeline, with its atlases and the buffer its instances go in.
+/// A `w` × `h` texture on `device` in this format, for this use, in this memory. A size Metal
+/// can't make is an error, since Metal would stop the process for it rather than return none.
+pub(super) fn texture(
+    device: &ProtocolObject<dyn MTLDevice>,
+    (w, h): (u32, u32),
+    format: MTLPixelFormat,
+    usage: MTLTextureUsage,
+    storage: MTLStorageMode,
+) -> Result<Texture, String> {
+    if w == 0 || h == 0 || w > MAX_TEXTURE_SIDE || h > MAX_TEXTURE_SIDE {
+        return Err(format!("Metal has no {w}x{h} texture"));
+    }
+    // SAFETY: a valid format, from the constants here, and sizes checked above.
+    let d = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            format, w as usize, h as usize, false,
+        )
+    };
+    d.setUsage(usage);
+    d.setStorageMode(storage);
+    device
+        .newTextureWithDescriptor(&d)
+        .ok_or_else(|| format!("no {w}x{h} texture"))
+}
+
+/// The one pipeline, with its atlases and the buffer its instances go in, and the host's
+/// pixel buffers with the main thread's view of them.
 pub struct Pipeline {
     gpu: Gpu,
     state: State,
     gray: Texture,
     color: Texture,
     instances: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    pixels: Option<(Arc<Pixels>, Shadow)>,
 }
 
 fn region(x: u32, y: u32, w: u32, h: u32) -> MTLRegion {
@@ -265,23 +283,52 @@ impl Pipeline {
         Ok(())
     }
 
+    /// Sample the host's pixel buffers from now on: the placements' quads draw their textures.
+    pub fn show_pixels(&mut self, pixels: Arc<Pixels>) {
+        self.pixels = Some((pixels, Shadow::default()));
+    }
+
+    /// The pixel buffers' frames waiting to be blitted, taken once there's a target to draw.
+    fn take_blits(&mut self) -> Vec<Blit> {
+        match &mut self.pixels {
+            Some((pixels, shadow)) => shadow.take(pixels),
+            None => vec![],
+        }
+    }
+
+    /// The texture a placement of `id` samples, if its buffer has been shown.
+    fn placed_texture(&self, id: PixelBufferId) -> Option<&ProtocolObject<dyn MTLTexture>> {
+        self.pixels.as_ref().and_then(|(_, s)| s.texture(id))
+    }
+
     /// Clear a new `w` × `h` texture to `clear`, draw `quads` on it, wait for the GPU and
-    /// read the pixels back. A size Metal can't make is an error.
-    pub fn render(&mut self, quads: &[Quad], clear: Rgb, w: u32, h: u32) -> Result<Image, String> {
-        autoreleasepool(|_| self.render_in_pool(quads, clear, w, h))
+    /// read the pixels back. `placed` says which quads sample a pixel buffer. A size Metal
+    /// can't make is an error.
+    pub fn render(
+        &mut self,
+        quads: &[Quad],
+        placed: &[(usize, PixelBufferId)],
+        clear: Rgb,
+        w: u32,
+        h: u32,
+    ) -> Result<Image, String> {
+        autoreleasepool(|_| self.render_in_pool(quads, placed, clear, w, h))
     }
 
     fn render_in_pool(
         &mut self,
         quads: &[Quad],
+        placed: &[(usize, PixelBufferId)],
         clear: Rgb,
         w: u32,
         h: u32,
     ) -> Result<Image, String> {
         self.fill_instances(quads)?;
         let usage = MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead;
-        let target = self.gpu.texture((w, h), TARGET_FORMAT, usage)?;
-        let commands = self.encode(quads, clear, &target, (w, h))?;
+        let shared = MTLStorageMode::Shared;
+        let target = texture(&self.gpu.device, (w, h), TARGET_FORMAT, usage, shared)?;
+        let blits = self.take_blits();
+        let commands = self.encode(quads, placed, clear, &target, (w, h), blits)?;
         commands.commit();
         finish(&commands)?;
         Ok(read_back(&target, w, h))
@@ -295,16 +342,18 @@ impl Pipeline {
     pub fn present(
         &mut self,
         quads: &[Quad],
+        placed: &[(usize, PixelBufferId)],
         clear: Rgb,
         surface: &Surface,
         sync: bool,
     ) -> Result<Option<Presented>, String> {
-        autoreleasepool(|_| self.present_in_pool(quads, clear, surface, sync))
+        autoreleasepool(|_| self.present_in_pool(quads, placed, clear, surface, sync))
     }
 
     fn present_in_pool(
         &mut self,
         quads: &[Quad],
+        placed: &[(usize, PixelBufferId)],
         clear: Rgb,
         surface: &Surface,
         sync: bool,
@@ -317,7 +366,8 @@ impl Pipeline {
         let id = surface.next_present(&drawable);
         let target = drawable.texture();
         let (w, h) = (target.width() as u32, target.height() as u32);
-        let commands = self.encode(quads, clear, &target, (w, h))?;
+        let blits = self.take_blits();
+        let commands = self.encode(quads, placed, clear, &target, (w, h), blits)?;
         surface.layer.setPresentsWithTransaction(sync);
         let show: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
         if !sync {
@@ -342,14 +392,25 @@ impl Pipeline {
     }
 
     /// Encode the frame's draw on `target`: its commands, not yet committed. The instance
-    /// buffer already holds `quads`.
+    /// buffer already holds `quads`. The pixel buffers' `blits` go first, so that their
+    /// textures hold the rows when the placements sample them, and ride the same command
+    /// buffer, a transaction present's included; their slots go back once it has completed.
     fn encode(
         &self,
         quads: &[Quad],
+        placed: &[(usize, PixelBufferId)],
         clear: Rgb,
         target: &ProtocolObject<dyn MTLTexture>,
         (w, h): (u32, u32),
+        blits: Vec<Blit>,
     ) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, String> {
+        let commands = self.gpu.queue.commandBuffer().ok_or("no command buffer")?;
+        if !blits.is_empty() {
+            let encoder = commands.blitCommandEncoder().ok_or("no blit encoder")?;
+            blits.iter().for_each(|b| b.encode(&encoder));
+            encoder.endEncoding();
+            release_after(blits, &commands);
+        }
         let pass = MTLRenderPassDescriptor::new();
         // SAFETY: attachment 0 exists: Metal has at least eight, and this is the first.
         let attachment = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
@@ -363,7 +424,6 @@ impl Pipeline {
             blue: unit(clear.2),
             alpha: 1.0,
         });
-        let commands = self.gpu.queue.commandBuffer().ok_or("no command buffer")?;
         let encoder = commands
             .renderCommandEncoderWithDescriptor(&pass)
             .ok_or("no render encoder")?;
@@ -383,21 +443,45 @@ impl Pipeline {
         unsafe { encoder.setFragmentTexture_atIndex(Some(&self.gray), 0) };
         // SAFETY: texture 1 is the shader's color atlas, a BGRA texture this pipeline made.
         unsafe { encoder.setFragmentTexture_atIndex(Some(&self.color), 1) };
-        if !quads.is_empty() {
-            // SAFETY: the shader reads `quads[instance]` for each instance, the buffer
-            // holds that many, and 4 vertices make a strip's rectangle.
-            unsafe {
-                encoder.drawPrimitives_vertexStart_vertexCount_instanceCount(
-                    MTLPrimitiveType::TriangleStrip,
-                    0,
-                    4,
-                    quads.len(),
-                )
+        // SAFETY: texture 2 is a placement's buffer while its quad draws; the color atlas
+        // stands in before that, so the binding the shader names is never empty.
+        unsafe { encoder.setFragmentTexture_atIndex(Some(&self.color), 2) };
+        // The quads in runs: those before each placement's, then that one with its buffer's
+        // texture bound, or nothing where the buffer has had no present yet.
+        let mut from = 0;
+        for &(at, id) in placed {
+            draw(&encoder, from, at);
+            from = at + 1;
+            let Some(texture) = self.placed_texture(id) else {
+                continue;
             };
+            // SAFETY: texture 2 is the placement's buffer, an RGBA8 texture the sink made and
+            // keeps while the command buffer runs.
+            unsafe { encoder.setFragmentTexture_atIndex(Some(texture), 2) };
+            draw(&encoder, at, at + 1);
         }
+        draw(&encoder, from, quads.len());
         encoder.endEncoding();
         Ok(commands)
     }
+}
+
+/// Draw `quads[from..to]`, one strip each, from the instance buffer already bound.
+fn draw(encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>, from: usize, to: usize) {
+    if to <= from {
+        return;
+    }
+    // SAFETY: the shader reads `quads[instance]` for each instance from `from`, the buffer
+    // holds that many, and 4 vertices make a strip's rectangle.
+    unsafe {
+        encoder.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
+            MTLPrimitiveType::TriangleStrip,
+            0,
+            4,
+            to - from,
+            from,
+        )
+    };
 }
 
 /// Wait for the GPU, and say if it failed.

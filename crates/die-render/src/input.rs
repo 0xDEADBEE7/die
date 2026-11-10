@@ -239,8 +239,10 @@ impl Pointer {
         }
     }
 
-    /// It moved to `px` in a frame of `grid` (columns, rows). An event only if it's on another
-    /// cell, since nothing DIE does depends on where in a cell it is. Each event says the pixel.
+    /// It moved to `px` in a frame of `grid` (columns, rows). With a button held, every sample
+    /// is a `Drag`, since ink on a pixel buffer follows the hand (M3a); otherwise a `Move` only
+    /// when it's on another cell, since nothing else DIE does depends on where in a cell it is.
+    /// Each event says the pixel.
     pub fn moved(
         &mut self,
         px: (f64, f64),
@@ -253,11 +255,11 @@ impl Pointer {
         };
         let at = (along(px.1, cell.h, grid.1), along(px.0, cell.w, grid.0));
         self.px = Some((px.0 as f32, px.1 as f32));
-        if at == self.at {
+        let dragging = self.held.first().map(|&(button, _)| button);
+        if at == self.at && dragging.is_none() {
             return None;
         }
         self.at = at;
-        let dragging = self.held.first().map(|&(button, _)| button);
         let kind = dragging.map_or(PointerKind::Move, PointerKind::Drag);
         Some(self.event(kind, 0, mods))
     }

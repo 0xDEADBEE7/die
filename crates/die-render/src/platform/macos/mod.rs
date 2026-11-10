@@ -11,6 +11,8 @@ pub mod clipboard;
 pub mod fds;
 /// Metal.
 pub mod metal;
+/// The pixel buffers' staging rings and textures.
+pub mod pixbuf;
 /// Core Text.
 pub mod text;
 

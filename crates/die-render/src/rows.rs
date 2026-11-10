@@ -14,13 +14,16 @@
 //!
 //! Instances go in three layers, so that nothing covers what should be above it:
 //! every background, then every glyph and line, then the cursors. A glyph may reach
-//! past its cell, and a neighbour's background doesn't cut it off.
+//! past its cell, and a neighbour's background doesn't cut it off. The scene's placements
+//! (M3a) go between them by their z: below 0 after the backgrounds, otherwise after the
+//! glyphs, each one quad made fresh each frame, since the list is tiny and a buffer's pixels
+//! change with no cell changing.
 
 use crate::atlas::{Atlas, Full, GlyphKey, Slot};
 use crate::font::CellMetrics;
 use crate::frame::{GlyphBitmap, Plane, Quad, Upload, kind, rgba};
 use crate::sprite::Line;
-use die_core::{Cell, Cursor, CursorShape, Glyph, Rgb, Scene, Underline};
+use die_core::{Cell, Cursor, CursorShape, Glyph, PixelBufferId, Placement, Rgb, Scene, Underline};
 use std::collections::HashSet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -202,10 +205,26 @@ fn cursor_color(color: Rgb, cell: &Cell, background: Rgb) -> Rgb {
 pub struct Frame<'a> {
     /// The instances, in draw order.
     pub quads: &'a [Quad],
+    /// Each placement's quad (`kind::PIXELS`): its index in `quads` and the buffer whose
+    /// texture it samples, in draw order.
+    pub placed: &'a [(usize, PixelBufferId)],
     /// What the target is cleared to first.
     pub clear: Rgb,
     /// Pixels for the backend to copy into the atlases first.
     pub uploads: Vec<Upload>,
+}
+
+/// A placement's instance: its cells' rectangle, sampling the buffer from its top-left 1:1.
+fn placement_quad(p: &Placement, cell: &CellMetrics) -> Quad {
+    let (cw, ch) = (cell.w as f32, cell.h as f32);
+    let (w, h) = (p.cols as f32 * cw, p.rows as f32 * ch);
+    Quad {
+        rect: [p.col as f32 * cw, p.row as f32 * ch, w, h],
+        uv: [0.0, 0.0, w, h],
+        color: 0,
+        kind: kind::PIXELS,
+        pad: [0; 2],
+    }
 }
 
 /// The row cache and the glyph atlas: the renderer's state between frames.
@@ -218,6 +237,7 @@ pub struct Frames {
     cells: Vec<Cell>,
     rows: Vec<Row>,
     quads: Vec<Quad>,
+    placed: Vec<(usize, PixelBufferId)>,
     rebuilt: Vec<usize>,
     /// Whether this frame has already started the atlas over.
     started_over: bool,
@@ -236,9 +256,18 @@ impl Frames {
             cells: vec![],
             rows: vec![],
             quads: vec![],
+            placed: vec![],
             rebuilt: vec![],
             started_over: false,
             dropped: false,
+        }
+    }
+
+    /// The quads of the scene's placements whose z `below` says, in the scene's order.
+    fn place(&mut self, scene: &Scene, below: bool) {
+        for p in scene.placements.iter().filter(|p| (p.z < 0) == below) {
+            self.placed.push((self.quads.len(), p.buffer));
+            self.quads.push(placement_quad(p, &self.cell));
         }
     }
 
@@ -344,17 +373,21 @@ impl Frames {
             self.rebuilt.push(r);
         }
         self.quads.clear();
+        self.placed.clear();
         for r in &self.rows {
             self.quads.extend_from_slice(&r.backgrounds);
         }
+        self.place(scene, true);
         for r in &self.rows {
             self.quads.extend_from_slice(&r.glyphs);
         }
+        self.place(scene, false);
         for c in &scene.cursors {
             self.cursor(c, scene.background);
         }
         Frame {
             quads: &self.quads,
+            placed: &self.placed,
             clear: scene.background,
             uploads: self.atlas.take_uploads(),
         }

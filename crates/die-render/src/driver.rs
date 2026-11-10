@@ -19,6 +19,7 @@ use crate::rows::Frames;
 use crate::sprite;
 use die_core::Scene;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 use winit::window::Window;
 
@@ -26,6 +27,7 @@ pub use crate::platform::backend::appkit::{
     KeyMonitor, Surface, double_click_interval, on_open_files, option_as_alt, post_key,
     prepare_loop, press_and_hold, process_wakeups, unseen, window_attributes,
 };
+pub use crate::platform::backend::pixbuf::Pixels;
 pub use crate::platform::backend::{close_on_exec_inherited, ready, system_clipboard};
 
 /// The gray atlas's side, in pixels: about 2,500 glyphs of a 19×40 cell.
@@ -126,6 +128,12 @@ impl Renderer {
         Ok(())
     }
 
+    /// Draw the host's pixel buffers from now on, where the scene places them: `pixels` is the
+    /// sink the host connected to core (`window::run`).
+    pub fn show_pixels(&mut self, pixels: Arc<Pixels>) {
+        self.pipeline.show_pixels(pixels);
+    }
+
     /// Give `window` a surface this renderer can present on. With `readable`, its frames can
     /// be read back (`Surface::read_next_frame`), at some cost.
     pub fn attach(&self, window: &Window, readable: bool) -> Result<Surface, String> {
@@ -154,7 +162,8 @@ impl Renderer {
             let bgra = vec![];
             return Ok(Image { w, h, bgra });
         }
-        self.pipeline.render(frame.quads, frame.clear, w, h)
+        self.pipeline
+            .render(frame.quads, frame.placed, frame.clear, w, h)
     }
 
     /// Draw `scene` on `surface`'s next drawable, as `render` does, and show it. With `sync`
@@ -173,9 +182,9 @@ impl Renderer {
             self.pipeline.upload(upload)?;
         }
         let building = start.elapsed().as_secs_f64() * 1e3;
-        let presented = self
-            .pipeline
-            .present(frame.quads, frame.clear, surface, sync)?;
+        let presented =
+            self.pipeline
+                .present(frame.quads, frame.placed, frame.clear, surface, sync)?;
         Ok(presented.map(|p| Presented {
             cpu_ms: p.cpu_ms + building,
             ..p
