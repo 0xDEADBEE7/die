@@ -9,7 +9,7 @@
 //! - `damage_is_clipped_to_the_buffer_and_none_left_is_no_present`
 //! - `a_resize_reallocates_tells_the_sink_and_clears`: the size, the stride, transparent again,
 //!   and a bad size refused with the buffer kept.
-//! - `bad_sizes_are_errors`: a side of 0 or over `MAX_SIDE`.
+//! - `bad_sizes_are_errors`: a side of 0 or over `PIXEL_MAX_SIDE`.
 //! - `a_present_from_another_thread_wakes_the_loop`: the producer moved to a thread; the waker
 //!   fires once until the loop's next turn, as a job's wake does.
 //! - `a_surface_places_its_buffer_over_its_area`: the placement's geometry is the area's,
@@ -18,7 +18,7 @@
 //! - `a_dropped_producer_destroys_its_buffer_and_its_placement_goes`
 //! - `a_placement_stops_above_the_prompts_list`: as the hollow cursors do.
 //! - `the_snapshot_lists_placements`: only when there are any.
-//! - `pixel_rects`: union and clipping.
+//! - `pixel_rects`: union, which saturates rather than overflow, and clipping.
 
 use die_test_cap as _;
 
@@ -95,7 +95,7 @@ fn centered() -> Settings {
     }
 }
 
-fn fill(p: &mut Producer, rgba: [u8; 4]) {
+fn fill(p: &mut PixelProducer, rgba: [u8; 4]) {
     for px in p.pixels_mut().chunks_exact_mut(4) {
         px.copy_from_slice(&rgba);
     }
@@ -159,9 +159,9 @@ fn a_present_updates_the_fakes_pixels() {
     assert_eq!(
         h.fake_pixels().take_calls(),
         [
-            SinkCall::Create(id, 4, 3),
-            SinkCall::Present(id, PixelRect::whole(4, 3)),
-            SinkCall::Present(id, PixelRect::new(1, 1, 1, 1)),
+            PixelSinkCall::Create(id, 4, 3),
+            PixelSinkCall::Present(id, PixelRect::whole(4, 3)),
+            PixelSinkCall::Present(id, PixelRect::new(1, 1, 1, 1)),
         ]
     );
 }
@@ -183,7 +183,7 @@ fn damage_is_clipped_to_the_buffer_and_none_left_is_no_present() {
     p.present(PixelRect::new(2, 1, 100, 100));
     assert_eq!(
         h.fake_pixels().take_calls(),
-        [SinkCall::Present(id, PixelRect::new(2, 1, 2, 2))]
+        [PixelSinkCall::Present(id, PixelRect::new(2, 1, 2, 2))]
     );
     let px = h.pixels(id).unwrap().2;
     assert_eq!(&px[0..16], &[0; 16], "the first row wasn't in it");
@@ -203,7 +203,7 @@ fn a_resize_reallocates_tells_the_sink_and_clears() {
     assert_eq!(h.pixels(id), Some((2, 5, vec![0; 40])));
     assert_eq!(
         h.fake_pixels().take_calls(),
-        [SinkCall::Resize(id, 2, 5)],
+        [PixelSinkCall::Resize(id, 2, 5)],
         "no present of its own: the producer presents when it has drawn"
     );
     assert!(p.resize(0, 5).is_err());
@@ -214,13 +214,18 @@ fn a_resize_reallocates_tells_the_sink_and_clears() {
 #[test]
 fn bad_sizes_are_errors() {
     let mut h = Harness::new(vec![]).unwrap();
-    for (w, hgt) in [(0, 1), (1, 0), (MAX_SIDE + 1, 1), (1, MAX_SIDE + 1)] {
+    for (w, hgt) in [
+        (0, 1),
+        (1, 0),
+        (PIXEL_MAX_SIDE + 1, 1),
+        (1, PIXEL_MAX_SIDE + 1),
+    ] {
         let err = h.pixel_buffer(w, hgt).err().map(|e| e.to_string());
         let want = format!("a pixel buffer is 1 to 16384 pixels a side, not {w}x{hgt}");
         assert_eq!(err.as_deref(), Some(want.as_str()));
     }
     assert_eq!(h.fake_pixels().take_calls(), [], "the sink heard of none");
-    assert!(h.pixel_buffer(MAX_SIDE, 1).is_ok());
+    assert!(h.pixel_buffer(PIXEL_MAX_SIDE, 1).is_ok());
 }
 
 #[test]
@@ -314,7 +319,7 @@ fn a_dropped_producer_destroys_its_buffer_and_its_placement_goes() {
     assert_eq!(s.h.scene().placements.len(), 1);
     s.h.fake_pixels().take_calls();
     drop(p);
-    assert_eq!(s.h.fake_pixels().take_calls(), [SinkCall::Destroy(id)]);
+    assert_eq!(s.h.fake_pixels().take_calls(), [PixelSinkCall::Destroy(id)]);
     assert_eq!(s.h.pixels(id), None);
     assert_eq!(s.h.scene().placements, [], "the surface still places it");
     assert_eq!(s.place.borrow().len(), 1);
@@ -379,4 +384,10 @@ fn pixel_rects() {
     assert_eq!(r.clipped_to(1, 1), PixelRect::new(1, 1, 0, 0));
     assert!(r.clipped_to(1, 1).is_empty());
     assert_eq!(PixelRect::whole(7, 2), PixelRect::new(0, 0, 7, 2));
+    // A rectangle past the end of u32 unions as clipping does, saturating, rather than overflow.
+    let far = PixelRect::new(u32::MAX - 1, 0, 4, 1);
+    assert_eq!(
+        far.union(PixelRect::new(0, 0, 1, 1)),
+        PixelRect::new(0, 0, u32::MAX, 1)
+    );
 }

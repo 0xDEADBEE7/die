@@ -330,7 +330,7 @@ impl Clipboard for FakeClipboard {
 
 /// What a pixel sink heard ([`PixelSink`]), in order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SinkCall {
+pub enum PixelSinkCall {
     /// A buffer this size was made.
     Create(PixelBufferId, u32, u32),
     /// This much of a buffer was presented.
@@ -345,7 +345,7 @@ pub enum SinkCall {
 struct FakePixels {
     /// Each live buffer's size and pixels, as last presented.
     buffers: HashMap<PixelBufferId, (u32, u32, Vec<u8>)>,
-    calls: Vec<SinkCall>,
+    calls: Vec<PixelSinkCall>,
 }
 
 /// A pixel sink in memory, shared by its clones: every [`Harness`] connects one. It keeps each
@@ -360,7 +360,7 @@ impl FakePixelSink {
         self.0.lock().unwrap().buffers.get(&id).cloned()
     }
     /// Every call since the last time this was asked, oldest first.
-    pub fn take_calls(&self) -> Vec<SinkCall> {
+    pub fn take_calls(&self) -> Vec<PixelSinkCall> {
         std::mem::take(&mut self.0.lock().unwrap().calls)
     }
 }
@@ -370,11 +370,11 @@ impl PixelSink for FakePixelSink {
         let mut s = self.0.lock().unwrap();
         let blank = vec![0; width as usize * height as usize * 4];
         s.buffers.insert(id, (width, height, blank));
-        s.calls.push(SinkCall::Create(id, width, height));
+        s.calls.push(PixelSinkCall::Create(id, width, height));
     }
     fn present(&self, id: PixelBufferId, pixels: &[u8], width: u32, damage: PixelRect) {
         let mut s = self.0.lock().unwrap();
-        s.calls.push(SinkCall::Present(id, damage));
+        s.calls.push(PixelSinkCall::Present(id, damage));
         let Some((w, _, kept)) = s.buffers.get_mut(&id) else {
             return;
         };
@@ -393,11 +393,11 @@ impl PixelSink for FakePixelSink {
         let mut s = self.0.lock().unwrap();
         let blank = vec![0; width as usize * height as usize * 4];
         s.buffers.insert(id, (width, height, blank));
-        s.calls.push(SinkCall::Resize(id, width, height));
+        s.calls.push(PixelSinkCall::Resize(id, width, height));
     }
     fn destroy(&self, id: PixelBufferId) {
         let mut s = self.0.lock().unwrap();
         s.buffers.remove(&id);
-        s.calls.push(SinkCall::Destroy(id));
+        s.calls.push(PixelSinkCall::Destroy(id));
     }
 }

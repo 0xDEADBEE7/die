@@ -11,7 +11,7 @@
 use crate::driver;
 use crate::latency;
 use crate::window::{Remote, Script, Shell, floating_window, unseen};
-use die_core::{BufferId, CursorShape, Event, Frame, PixelBufferId, PixelRect, Producer};
+use die_core::{BufferId, CursorShape, Event, Frame, PixelBufferId, PixelProducer, PixelRect};
 use die_core::{Cell, Ctx, Glyph, Key, KeyEvent, Origin, Result as CoreResult, Rgb, Scene};
 use die_core::{RenderInfo, ShowIn, Surface, Underline};
 use std::collections::HashSet;
@@ -79,6 +79,8 @@ const REDRAWS: usize = 600;
 /// about a second's worth at a 240 Hz hand.
 const PIXEL_FRAMES: u32 = 240;
 const PIXEL_PERIOD: Duration = Duration::from_millis(4);
+/// Frames the loop may draw during those presents beyond one each: a resize's, or a late one.
+const PIXEL_EXTRA_FRAMES: u64 = 8;
 /// S1's check 8: launches, of which the first is cold and doesn't count.
 const LAUNCHES: usize = 12;
 const BETWEEN_LAUNCHES: Duration = Duration::from_millis(100);
@@ -515,7 +517,7 @@ fn what_is_shown(s: &mut Shell) -> Result<Shown, String> {
         .ok_or("no window")?
         .surface
         .read_next_frame()?;
-    s.stale = true;
+    s.due.stale = true;
     s.draw();
     let scene = s.last.clone().ok_or("no frame yet")?;
     let buf = s.host.ctx.focused_buffer().ok_or("no buffer")?;
@@ -663,7 +665,7 @@ fn reattach(s: &mut Shell, readable: bool) -> Result<(), String> {
     surface.resize(surface.size(live.scale), live.scale);
     surface.watch_presents();
     live.surface = surface;
-    s.stale = true;
+    s.due.stale = true;
     Ok(())
 }
 
@@ -765,8 +767,8 @@ fn full_redraws(s: &mut Shell, el: &ActiveEventLoop) -> Result<(Vec<f64>, Vec<f6
         cpu.push(frame.cpu_ms);
         gpu.push(frame.gpu_ms);
     }
-    s.stale = true;
-    s.dirty = true;
+    s.due.stale = true;
+    s.due.dirty = true;
     Ok((cpu, gpu))
 }
 
@@ -787,7 +789,7 @@ fn redraw(r: &Remote) -> Outcome {
 /// resize and handed to the check's producer thread, as the whiteboard's does.
 struct Canvas {
     id: Option<PixelBufferId>,
-    producer: Arc<Mutex<Option<Producer>>>,
+    producer: Arc<Mutex<Option<PixelProducer>>>,
 }
 
 impl Surface for Canvas {
@@ -830,7 +832,7 @@ fn pattern(n: u32) -> [u8; 4] {
 fn what_is_placed(s: &mut Shell, want: [u8; 3]) -> Result<(usize, usize, usize), String> {
     let live = s.live.as_ref().ok_or("no window")?;
     live.surface.read_next_frame()?;
-    s.stale = true;
+    s.due.stale = true;
     s.draw();
     let scene = s.last.clone().ok_or("no frame yet")?;
     let live = s.live.as_mut().ok_or("no window")?;
@@ -933,7 +935,15 @@ fn pixels(r: &Remote) -> Outcome {
     ensure(main_bytes == 0, || {
         format!("the main thread copied {main_bytes} bytes")
     })?;
-    ensure(frames >= 1, || "no frame from a present alone".into())?;
+    // One frame per present the main thread took (a superseded one rode the next), and none
+    // without one: the flag, not the scene, is what draws them.
+    let superseded = s1.superseded - s0.superseded;
+    ensure(frames + superseded >= presents, || {
+        format!("{frames} frames for {presents} presents, {superseded} superseded")
+    })?;
+    ensure(frames <= presents + PIXEL_EXTRA_FRAMES, || {
+        format!("{frames} frames for {presents} presents: more than one each")
+    })?;
     ensure(inside > 0 && wrong == 0, || {
         format!("{wrong} of {inside} pixels under the placement aren't the last frame's")
     })?;
@@ -965,7 +975,7 @@ fn firstframe_once(r: &Remote) -> Outcome {
             s.drain_presented();
             if s.latency.first_dropped && s.latency.first_shown.is_none() {
                 s.latency.first_dropped = false;
-                s.stale = true;
+                s.due.stale = true;
             }
             s.latency.first_shown
         })?;

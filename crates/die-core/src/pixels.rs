@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The most a side can be: Metal's texture side cap, which the Linux backend's limits are held to
 /// when it lands.
-pub const MAX_SIDE: u32 = 16_384;
+pub const PIXEL_MAX_SIDE: u32 = 16_384;
 
 /// A pixel buffer, named across threads: its producer's, and the placements that show it. An id
 /// is never given out twice in one workspace, so a placement of a destroyed buffer names nothing.
@@ -61,15 +61,16 @@ impl PixelRect {
         PixelRect::new(x, y, right - x, bottom - y)
     }
     /// The smallest rectangle holding both, as a sink merges the damage of two presents it
-    /// takes together. An empty one adds nothing.
+    /// takes together. An empty one adds nothing; an edge past `u32::MAX` stops there.
     pub fn union(self, other: PixelRect) -> PixelRect {
         match (self.is_empty(), other.is_empty()) {
             (true, _) => other,
             (_, true) => self,
             _ => {
                 let (x, y) = (self.x.min(other.x), self.y.min(other.y));
-                let right = (self.x + self.width).max(other.x + other.width);
-                let bottom = (self.y + self.height).max(other.y + other.height);
+                let far = |a: u32, n: u32| a.saturating_add(n);
+                let right = far(self.x, self.width).max(far(other.x, other.width));
+                let bottom = far(self.y, self.height).max(far(other.y, other.height));
                 PixelRect::new(x, y, right - x, bottom - y)
             }
         }
@@ -120,7 +121,7 @@ impl<S: PixelSink + ?Sized> PixelSink for Arc<S> {
 /// persistent run of premultiplied RGBA8, `width * 4` bytes a row. It's `Send`, so a thread of
 /// its own can own it, and nothing of `Ctx` goes with it (D7). Dropping it destroys the buffer:
 /// the sink is told, and a placement that still names it draws nothing.
-pub struct Producer {
+pub struct PixelProducer {
     id: PixelBufferId,
     width: u32,
     height: u32,
@@ -133,10 +134,10 @@ pub struct Producer {
 // A producer is for another thread, so it must carry nothing of core's single-threaded state.
 const _: () = {
     const fn ok<T: Send + Sync + 'static>() {}
-    ok::<Producer>();
+    ok::<PixelProducer>();
 };
 
-impl Producer {
+impl PixelProducer {
     /// The buffer's id, for [`Frame::place`](crate::Frame::place).
     pub fn id(&self) -> PixelBufferId {
         self.id
@@ -153,7 +154,7 @@ impl Producer {
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
-    /// The pixels, to draw into. Nothing shows until [`Producer::present`].
+    /// The pixels, to draw into. Nothing shows until [`PixelProducer::present`].
     pub fn pixels_mut(&mut self) -> &mut [u8] {
         &mut self.pixels
     }
@@ -179,7 +180,7 @@ impl Producer {
     }
 }
 
-impl Drop for Producer {
+impl Drop for PixelProducer {
     fn drop(&mut self) {
         self.alive.store(false, Ordering::Release);
         self.sink.destroy(self.id);
@@ -187,16 +188,20 @@ impl Drop for Producer {
     }
 }
 
-impl fmt::Debug for Producer {
+impl fmt::Debug for PixelProducer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Producer({:?}, {}x{})", self.id, self.width, self.height)
+        write!(
+            f,
+            "PixelProducer({:?}, {}x{})",
+            self.id, self.width, self.height
+        )
     }
 }
 
 fn check_size(width: u32, height: u32) -> Result {
-    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+    if width == 0 || height == 0 || width > PIXEL_MAX_SIDE || height > PIXEL_MAX_SIDE {
         return Err(Error::Msg(format!(
-            "a pixel buffer is 1 to {MAX_SIDE} pixels a side, not {width}x{height}"
+            "a pixel buffer is 1 to {PIXEL_MAX_SIDE} pixels a side, not {width}x{height}"
         )));
     }
     Ok(())
@@ -241,11 +246,15 @@ impl Ctx {
     pub fn pixels_supported(&self) -> bool {
         self.pixels.sink.is_some()
     }
-    /// A pixel buffer `width` × `height` physical pixels, transparent, and the [`Producer`] that
+    /// A pixel buffer `width` × `height` physical pixels, transparent, and the [`PixelProducer`] that
     /// draws into it. Size it from a `Resize`'s cells and [`CellPixels`](crate::CellPixels), and
     /// show it with [`Frame::place`](crate::Frame::place). Err with no sink connected
-    /// ([`Ctx::pixels_supported`]), or a side of 0 or over [`MAX_SIDE`].
-    pub fn pixel_buffer(&mut self, width: u32, height: u32) -> Result<(PixelBufferId, Producer)> {
+    /// ([`Ctx::pixels_supported`]), or a side of 0 or over [`PIXEL_MAX_SIDE`].
+    pub fn pixel_buffer(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<(PixelBufferId, PixelProducer)> {
         let Some(sink) = self.pixels.sink.clone() else {
             return Err(Error::Msg("this host shows no pixels".into()));
         };
@@ -253,9 +262,11 @@ impl Ctx {
         self.pixels.last += 1;
         let id = PixelBufferId(self.pixels.last);
         let alive = Arc::new(AtomicBool::new(true));
+        // Buffers dropped since, placed or not, go here: compose forgets only the placed ones.
+        self.pixels.alive.retain(|_, a| a.load(Ordering::Acquire));
         self.pixels.alive.insert(id, alive.clone());
         sink.create(id, width, height);
-        let p = Producer {
+        let p = PixelProducer {
             id,
             width,
             height,
@@ -265,5 +276,24 @@ impl Ctx {
             alive,
         };
         Ok((id, p))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::FakePixelSink;
+
+    #[test]
+    fn buffers_dropped_without_a_placement_are_forgotten_at_the_next_one() {
+        let mut ctx = Ctx::new(vec![]).unwrap();
+        ctx.set_pixel_sink(FakePixelSink::default()).unwrap();
+        for _ in 0..8 {
+            let (_, producer) = ctx.pixel_buffer(1, 1).unwrap();
+            drop(producer);
+        }
+        let (id, _kept) = ctx.pixel_buffer(1, 1).unwrap();
+        assert_eq!(ctx.pixels.alive.len(), 1, "the eight dropped ones went");
+        assert!(ctx.pixels.is_alive(id));
     }
 }

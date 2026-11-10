@@ -25,7 +25,8 @@ path = "crates/die-core"
 # 15,385 until the alternate screen's Esc review: the wheel in copy state, a release where its press went, a switch of screens followed.
 # 15,400 until the margins review: through a resize, each window keeps its place in the lines of output a surface says it wrapped.
 # 15,440 until M3a, the whiteboard's pixel slice: `Placement` and `Frame::place`, the producer, the sink and the harness's fake (about 320).
-limit = 15755
+# 15,755 until M3a's review: a union that saturates, and dropped buffers forgotten at the next one made.
+limit = 15765
 
 [[crate]]
 name = "die-render"
@@ -277,11 +278,12 @@ files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
 
 # New with M3a, the whiteboard's pixel slice: the producer an extension draws into, the sink the
 # host installs once, and which buffers exist. Core holds no pixels (D11); the rings and textures
-# are die-render's. Images and the Hide placement wait for M3.
+# are die-render's. Images and the Hide placement wait for M3. 195 until its review: a union
+# that saturates, and buffers dropped without a placement forgotten at the next one made.
 [[module]]
 crate = "die-core"
 name = "pixels"
-limit = 195
+limit = 205
 files = ["pixels.rs"]
 
 # die-render's modules at M0 (docs/records/platforms.md §5.7). The neutral code
@@ -293,10 +295,12 @@ files = ["pixels.rs"]
 # 2,300 until a pointer event said its pixel, and core heard the cells' pixels, for terminals.
 # 2,305 until M3a: the placements' quads beside the row layers, `Pending` read by the loop as a
 # PTY's waiting output is, and a drag on every pointer sample while a button is held.
+# 2,380 until M3a's review: `Due`, which keeps the pixels a held (occluded) frame took owed for
+# the frame that follows, whose scene a present leaves unchanged.
 [[module]]
 crate = "die-render"
 name = "neutral"
-limit = 2380
+limit = 2400
 files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame.rs", "rows.rs", "input.rs", "sprite.rs", "window.rs", "latency.rs"]
 
 # `die --check`: the window's own checks, which ship in the binary. R3's are about 420
@@ -304,10 +308,11 @@ files = ["lib.rs", "platform/mod.rs", "atlas.rs", "driver.rs", "font.rs", "frame
 # until `show` held the cursor to whether the window really has the keyboard. 730 until its
 # cover could be unseen too. 735 until M3a's `pixels`, S1's check 3 on DIE's own path: a surface
 # of the check's own, a producer thread's frames through the ring, and the drawable read back.
+# 895 until its review held the frames to one per present taken, not just to one.
 [[module]]
 crate = "die-render"
 name = "checks"
-limit = 895
+limit = 905
 files = ["check.rs"]
 
 # 900 is the size the `unsafe` review was planned for (docs/m0-plan.md §3).
@@ -331,7 +336,11 @@ platforms = ["macos"]
 # thread by `try_lock` alone and blits them into the buffer's texture, with two `Send` wrappers
 # for Metal's buffers and textures; metal.rs binds each placement's texture for its one quad.
 # The macOS build stands at 4,955 of guard 7's 5,000 with it.
-limit = 1690
+# 1,690 until M3a's review, the ninth raise (2026-11-10): a buffer's presenters take turns, so a
+# second thread's present loses no slot; a texture Metal can't make shows nothing in place of the
+# old size's; and the completed handler's drop runs in `catch_unwind`, as platform/mod.rs's rule
+# has it. The macOS build stands at 4,984 of 5,000: the next growth there is the cut list's.
+limit = 1700
 files = ["platform/macos/"]
 
 # Every item the frame driver names needs one here, so this grows with it. R2 took it
