@@ -280,11 +280,11 @@ impl Ctx {
                 let keys = std::mem::take(&mut self.pending);
                 let last = keys.last().cloned().unwrap();
                 let handled = self.surface_event(buf, &Event::Key(last.clone()));
-                // The surface took the press, or declares the key: its release goes there too
-                // (§7), as in passthrough. A key a keymap took has no surface owner.
-                if last.kind == KeyKind::Press
-                    && (matches!(handled, Ok(true)) || self.surface_says(buf, |s| s.handles(&last)))
-                {
+                // The surface took the press: its release goes there too (§7), as in
+                // passthrough. A key a keymap took has no surface owner, and one the surface
+                // declares (`handles`) but didn't take went nowhere: a terminal declares every
+                // key for passthrough, and a program never sees a release without its press.
+                if last.kind == KeyKind::Press && matches!(handled, Ok(true)) {
                     self.passed_to(buf, last);
                 }
                 if !matches!(handled, Ok(true)) {

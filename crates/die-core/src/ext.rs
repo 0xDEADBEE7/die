@@ -170,8 +170,8 @@ pub trait Surface: Any {
     fn event(&mut self, _ev: &Event, _ctx: &mut Ctx) -> bool {
         false
     }
-    /// Whether it handles this key, so `describe-key` can say so, and so a press of it no keymap
-    /// took brings its release to `event()` as a press it takes does (contract §7).
+    /// Whether it handles this key, so `describe-key` can say so. Declaring one brings nothing
+    /// to `event()`: a release follows a press `event()` took, not one declared (contract §7).
     fn handles(&self, _key: &KeyEvent) -> bool {
         false
     }

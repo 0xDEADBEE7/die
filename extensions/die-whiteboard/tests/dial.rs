@@ -4,6 +4,9 @@
 //! nothing mid-gesture, the cells screen shows the eight names with the hovered one reversed,
 //! the pixel renderer draws the disc over the picture and presents its rectangle alone,
 //! describe-key answers for Space, and the right button held is the dial too, erasing nothing.
+//! After the review: the dial opens under the pointer after the wheel or a zoom moved the board,
+//! a right click mid-gesture ends nothing, Shift joining Space held changes nothing, and the
+//! focus passing between two windows on the board leaves the dial open.
 
 use die_test_cap as _;
 
@@ -421,4 +424,158 @@ fn the_right_button_held_is_the_dial_too_and_erases_nothing() {
     keys(&mut s.h, "u");
     assert_eq!(elements(&mut s.h, s.buf).len(), 0);
     assert_eq!(keys_errors(&mut s.h, "u"), ["nothing to undo"]);
+}
+
+#[test]
+fn the_dial_opens_under_the_pointer_after_the_wheel_and_a_zoom() {
+    let mut s = setup("dial-view");
+    // The wheel moves the board a cell under a pointer that stays, and sends no Move: the
+    // dial opens under the pointer, not where the board point it last reported is now.
+    mv(&mut s, (100.0, 100.0));
+    pointer(
+        &mut s,
+        PointerKind::Scroll { dx: 0.0, dy: 1.0 },
+        (100.0, 100.0),
+        Mods::default(),
+        0,
+    );
+    assert_eq!(board(&mut s.h, s.buf).borrow().view.pan, (0.0, -20.0));
+    space(&mut s, KeyKind::Press);
+    let d = dial(&mut s).expect("open");
+    assert_eq!(
+        (d.centre.x, d.centre.y),
+        (100.0, 110.0),
+        "a cell down the board"
+    );
+    space(&mut s, KeyKind::Release);
+    assert_eq!(tool(&mut s), Tool::Pen, "a tap picks nothing still");
+    keys(&mut s.h, "0");
+    // The zoom keys: the pointer at the area's physical (100, 80), two `+` about the centre,
+    // and the dial opens on the board point under that pixel now, about 8 cells from the stale
+    // one. A move north-east of the pointer hovers rect, as the directions are the pointer's.
+    mv(&mut s, (50.0, 40.0));
+    keys(&mut s.h, "++");
+    let view = board(&mut s.h, s.buf).borrow().view;
+    assert!(view.zoom > 1.5);
+    let under = view.to_board(100.0, 80.0, 2.0);
+    assert!(under.dist(die_whiteboard::model::Point::new(50.0, 40.0)) > 50.0);
+    space(&mut s, KeyKind::Press);
+    let d = dial(&mut s).expect("open");
+    assert!(d.centre.dist(under) < 0.01, "{:?} for {under:?}", d.centre);
+    assert_eq!(d.hovered, None);
+    mv(&mut s, (70.0, 20.0));
+    assert_eq!(
+        dial(&mut s).unwrap().hovered,
+        Some(1),
+        "north-east of the pointer"
+    );
+    space(&mut s, KeyKind::Release);
+    assert_eq!(tool(&mut s), Tool::Rect);
+    keys(&mut s.h, "<Esc>0");
+}
+
+#[test]
+fn a_right_click_mid_gesture_ends_nothing() {
+    let mut s = setup("dial-mid");
+    // The right press mid-stroke is refused the dial; its release doesn't end the stroke, which
+    // goes on to where the left button lifts.
+    press(&mut s, (10.0, 60.0));
+    drag(&mut s, (30.0, 60.0));
+    right(&mut s, PointerKind::Press(Button::Right), (30.0, 60.0));
+    assert_eq!(dial(&mut s), None, "refused mid-gesture");
+    right(&mut s, PointerKind::Release(Button::Right), (30.0, 60.0));
+    drag(&mut s, (50.0, 60.0));
+    drag(&mut s, (70.0, 60.0));
+    release(&mut s, (80.0, 60.0));
+    let els = elements(&mut s.h, s.buf);
+    assert_eq!(els.len(), 1, "{els:?}");
+    let Shape::Stroke { points, .. } = &els[0].shape else {
+        panic!("{els:?}");
+    };
+    assert_eq!(
+        points.last().map(|p| p.x),
+        Some(80.0),
+        "to the lift: {points:?}"
+    );
+    // An erase the same way crosses the stroke after the right click.
+    keys(&mut s.h, "e");
+    press(&mut s, (50.0, 10.0));
+    drag(&mut s, (50.0, 40.0));
+    right(&mut s, PointerKind::Press(Button::Right), (50.0, 40.0));
+    right(&mut s, PointerKind::Release(Button::Right), (50.0, 40.0));
+    drag(&mut s, (50.0, 70.0));
+    release(&mut s, (50.0, 80.0));
+    assert_eq!(elements(&mut s.h, s.buf).len(), 0, "erased after the click");
+    keys(&mut s.h, "e");
+    keys(&mut s.h, "u");
+    assert_eq!(elements(&mut s.h, s.buf).len(), 1, "one erase, one entry");
+    // The middle button's release ends nothing either.
+    press(&mut s, (10.0, 100.0));
+    drag(&mut s, (30.0, 100.0));
+    pointer(
+        &mut s,
+        PointerKind::Release(Button::Middle),
+        (30.0, 100.0),
+        Mods::default(),
+        1,
+    );
+    drag(&mut s, (50.0, 100.0));
+    release(&mut s, (60.0, 100.0));
+    let els = elements(&mut s.h, s.buf);
+    assert_eq!(els.len(), 2);
+    let Shape::Stroke { points, .. } = &els[1].shape else {
+        panic!("{els:?}");
+    };
+    assert_eq!(points.last().map(|p| p.x), Some(60.0));
+}
+
+#[test]
+fn shift_joining_space_held_changes_nothing() {
+    let mut s = setup("dial-shift");
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (120.0, 80.0));
+    // Shift pressed ahead of a constrained shape: the OS repeats Space shifted now. Each repeat
+    // is the dial's, not an undefined key, and the shifted release picks.
+    let shifted = KeyEvent::press(Key::Char(' ')).mods(SHIFT);
+    for _ in 0..3 {
+        let errors = s.h.send(Input::Key(shifted.clone().kind(KeyKind::Repeat)));
+        assert_eq!(errors, Vec::<String>::new());
+    }
+    assert_eq!(dial(&mut s).unwrap().hovered, Some(1), "still open on rect");
+    let errors = s.h.send(Input::Key(shifted.kind(KeyKind::Release)));
+    assert_eq!(errors, Vec::<String>::new());
+    assert_eq!(dial(&mut s), None);
+    assert_eq!(tool(&mut s), Tool::Rect);
+    // With no dial of Space's open, a shifted Space is nobody's, as before.
+    let shifted = KeyEvent::press(Key::Char(' ')).mods(SHIFT);
+    let errors = s.h.send(Input::Key(shifted.clone().kind(KeyKind::Repeat)));
+    assert_eq!(errors, ["  is undefined"]);
+    assert_eq!(tool(&mut s), Tool::Rect);
+}
+
+#[test]
+fn the_focus_passing_between_two_windows_on_the_board_leaves_the_dial_open() {
+    let mut s = setup("dial-two");
+    keys(&mut s.h, "<C-w>s");
+    assert_eq!(s.h.window_list().len(), 2);
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (120.0, 80.0));
+    assert_eq!(dial(&mut s).unwrap().hovered, Some(1));
+    let was = s.h.focused().unwrap();
+    keys(&mut s.h, "<C-w>w");
+    assert_ne!(s.h.focused(), Some(was), "the other window");
+    assert_eq!(
+        dial(&mut s).map(|d| d.hovered),
+        Some(Some(1)),
+        "the board never lost the focus, so the dial stays"
+    );
+    space(&mut s, KeyKind::Release);
+    assert_eq!(tool(&mut s), Tool::Rect);
+    // And no activation grace is armed: the next press draws.
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 40.0)]);
+    let els = elements(&mut s.h, s.buf);
+    assert_eq!(els.len(), 1, "{els:?}");
+    assert!(matches!(els[0].shape, Shape::Rect { .. }));
 }

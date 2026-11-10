@@ -212,8 +212,10 @@ pub struct BoardState {
     focused_at: Option<Duration>,
     /// The tool dial, while it's open.
     dial: Option<Dial>,
-    /// Where the pointer was last seen over the board, in board units: the dial opens there.
-    pointer_at: Option<Point>,
+    /// Where the pointer was last seen over the area, in physical pixels: the dial opens under
+    /// it. Pixels, not a board point, since the wheel and the zoom keys move the board under a
+    /// pointer that sends nothing.
+    pointer_px: Option<(f32, f32)>,
 }
 
 /// A board's state, shared by its surface and the extension.
@@ -274,7 +276,7 @@ impl BoardState {
             label: None,
             focused_at: None,
             dial: None,
-            pointer_at: None,
+            pointer_px: None,
         }
     }
 
@@ -427,20 +429,26 @@ impl BoardState {
         self.dial.is_some_and(|d| d.by == by)
     }
 
-    /// Open the tool dial by `by`, about `at`, or where the pointer was last seen over the
-    /// board, or the area's centre. Nothing while a label is typed, mid-gesture, or with one
+    /// Open the tool dial by `by`, about `at`, or under the pointer where it was last seen over
+    /// the area, or the area's centre. Nothing while a label is typed, mid-gesture, or with one
     /// open already, whoever opened it.
     pub fn open_dial(&mut self, by: Opener, at: Option<Point>) -> bool {
         if self.dial.is_some() || self.label.is_some() || self.gesturing() {
             return false;
         }
-        let centre = at.or(self.pointer_at).unwrap_or_else(|| {
-            let (x, y) = self.area_centre_px();
+        let centre = at.unwrap_or_else(|| {
+            let (x, y) = self.pointer_px.unwrap_or_else(|| self.area_centre_px());
             self.view.to_board(x, y, self.cell.scale)
         });
         self.dial = Some(Dial::open(centre, by, self.cell_size(), self.view.zoom));
         self.touch();
         true
+    }
+
+    /// The board point under the pointer where it was last seen, through the view as it is now.
+    fn pointer_board(&self) -> Option<Point> {
+        let (x, y) = self.pointer_px?;
+        Some(self.view.to_board(x, y, self.cell.scale))
     }
 
     /// The pointer is at `p` with the dial open: the sector in its direction is hovered.
@@ -468,7 +476,7 @@ impl BoardState {
         let Some(mut dial) = self.dial.take() else {
             return false;
         };
-        if let Some(p) = p.or(self.pointer_at) {
+        if let Some(p) = p.or_else(|| self.pointer_board()) {
             dial.hover(p);
         }
         match dial.tool() {
@@ -500,9 +508,9 @@ impl BoardState {
         mods: Mods,
         now: Duration,
     ) -> Effect {
-        if !matches!(kind, PointerKind::Scroll { .. }) {
-            self.pointer_at = Some(p);
-        }
+        // Every event says where the pointer is, the wheel's too: in pixels, before the wheel
+        // moves the board under it.
+        self.pointer_px = Some(self.view.to_physical(p, self.cell.scale));
         if self.dial.is_some() {
             return self.dial_pointer(kind, p, now);
         }
@@ -517,12 +525,16 @@ impl BoardState {
                 }
                 effect
             }
-            PointerKind::Press(Button::Middle) | PointerKind::Move => Effect::None,
             PointerKind::Drag(_) => {
                 self.drag(p, mods.shift, now);
                 Effect::None
             }
-            PointerKind::Release(_) => self.release(p, mods.shift, now),
+            // Only the left button starts a gesture, so only its release ends one: a right
+            // click mid-stroke, refused the dial, leaves the stroke going.
+            PointerKind::Release(Button::Left) => self.release(p, mods.shift, now),
+            PointerKind::Press(Button::Middle) | PointerKind::Release(_) | PointerKind::Move => {
+                Effect::None
+            }
             PointerKind::Scroll { dx, dy } => {
                 if mods.super_ && self.zooms {
                     let about = self.view.to_physical(p, self.cell.scale);
@@ -1351,9 +1363,10 @@ impl BoardSurface {
     }
 
     /// A key no keymap took: text into the label being typed; otherwise Space, which opens the
-    /// tool dial on its press, holds it through its repeats and picks on its release. Any other
-    /// key's press closes the dial, and isn't the board's. Space while the right button holds
-    /// the dial does nothing, and the dial waits for the button.
+    /// tool dial on its press, holds it through its repeats and picks on its release, whatever
+    /// modifier joins it while it's held (a Shift ahead of a constrained shape). Any other key's
+    /// press closes the dial, and isn't the board's. Space while the right button holds the
+    /// dial does nothing, and the dial waits for the button.
     fn key(&mut self, k: &KeyEvent, ctx: &mut Ctx) -> bool {
         if self.state.borrow().editing().is_some() {
             return match k.printable() {
@@ -1366,6 +1379,7 @@ impl BoardSurface {
         let plain = space && k.mods == Mods::default();
         let took = {
             let mut st = self.state.borrow_mut();
+            let held = space && st.dial_by(Opener::Space);
             match k.kind {
                 KeyKind::Press if plain => {
                     st.open_dial(Opener::Space, None);
@@ -1375,8 +1389,8 @@ impl BoardSurface {
                     st.cancel_dial();
                     false
                 }
-                KeyKind::Repeat => plain,
-                KeyKind::Release => space && st.dial_by(Opener::Space) && st.pick_dial(None, now),
+                KeyKind::Repeat => plain || held,
+                KeyKind::Release => held && st.pick_dial(None, now),
             }
         };
         self.update();

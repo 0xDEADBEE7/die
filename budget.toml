@@ -27,7 +27,8 @@ path = "crates/die-core"
 # 15,440 until M3a, the whiteboard's pixel slice: `Placement` and `Frame::place`, the producer, the sink and the harness's fake (about 320).
 # 15,755 until M3a's review: a union that saturates, and dropped buffers forgotten at the next one made.
 # 15,765 until the whiteboard's tool dial: a press a surface takes in normal state brings its release (15,763).
-limit = 15770
+# 15,770 until the dial's review: no focus pair between two windows on one buffer, and the pointer held by its button (15,775).
+limit = 15780
 
 [[crate]]
 name = "die-render"
@@ -170,9 +171,10 @@ files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 [[module]]
 crate = "die-core"
 name = "workspace, windows, pointer"
-limit = 1395
+limit = 1405
 # 1,240 until K13, whose saved tree is about 70 lines in workspace/tree.rs. 1,340 until U7, whose lists of places are about 20.
 # 1,365 until `Ctx::settings` and `change_settings` reached a surface buffer's width, and `open_window` told a narrower area.
+# 1,395 until the dial's review: the focus passing between two windows on one buffer sends no `Focus` pair (1,404).
 files = ["workspace.rs", "windows.rs", "pointer.rs", "workspace/"]
 
 [[module]]
