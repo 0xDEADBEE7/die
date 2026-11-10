@@ -74,7 +74,7 @@ impl Extension for Toy {
         "toy"
     }
     fn register(&mut self, reg: &mut Registry) {
-        for name in ["quit-ish", "leader-f", "send-esc"] {
+        for name in ["quit-ish", "leader-f", "send-esc", "take-x"] {
             let log = self.0.clone();
             reg.command(name, "Log its name.", move |_, _| {
                 log.borrow_mut().push(name);
@@ -95,6 +95,7 @@ impl Extension for Toy {
             .bind(State::Normal, "<Esc>", "send-esc")
             .bind(State::Normal, "i", "to-insert")
             .bind(State::Normal, "I", "to-insert")
+            .bind(State::Normal, "x", "take-x")
             .bind(State::Normal, "p", "surface-paste");
     }
 }
@@ -813,6 +814,45 @@ fn in_normal_state_its_kinds_keymap_is_looked_up_as_usual() {
             .starts_with("j in Insert goes to the grid surface"),
         "{d}"
     );
+}
+
+#[test]
+fn in_normal_state_a_release_goes_to_the_surface_whose_event_took_the_press() {
+    let mut s = setup(vec![]);
+    s.h.type_keys("<Esc>").unwrap();
+    events(&s);
+    // `j` is no keymap's: the surface takes its press, so its repeat and release reach it too,
+    // as they do in passthrough.
+    let j = KeyEvent::press(Key::Char('j'));
+    for k in [
+        j.clone(),
+        j.clone().kind(KeyKind::Repeat),
+        j.clone().kind(KeyKind::Release),
+    ] {
+        s.h.send(Input::Key(k));
+    }
+    assert_eq!(
+        keys(&s),
+        [
+            j.clone(),
+            j.clone().kind(KeyKind::Repeat),
+            j.clone().kind(KeyKind::Release)
+        ]
+    );
+    // `x` is the kind keymap's: the command runs, and the release has no surface to go to.
+    let x = KeyEvent::press(Key::Char('x'));
+    s.h.send(Input::Key(x.clone()));
+    s.h.send(Input::Key(x.kind(KeyKind::Release)));
+    assert_eq!(*s.log.borrow(), ["take-x"]);
+    assert!(keys(&s).is_empty(), "a key the keymap took has no owner");
+    // The focus moves between the press and the release: the release still goes to the
+    // surface that had the press, not to the text window that has the keys now.
+    s.h.send(Input::Key(j.clone()));
+    let left = s.h.window_list()[0];
+    s.h.focus(left);
+    s.h.send(Input::Key(j.clone().kind(KeyKind::Release)));
+    assert_eq!(keys(&s), [j.clone(), j.kind(KeyKind::Release)]);
+    assert_eq!(s.h.state_of(s.buf), State::Normal, "and nothing else moved");
 }
 
 /// Your config's text defaults: 80 columns, centered, with line numbers a surface doesn't get.

@@ -165,11 +165,13 @@ pub trait Surface: Any {
         None
     }
     /// Input keymaps didn't take; every key (and release) in passthrough, and the release of a
-    /// key pressed there, whatever the state by then. Checked out (C2).
+    /// key whose press came here, in passthrough or taken (true) in any other state, whatever
+    /// the state by then. Checked out (C2).
     fn event(&mut self, _ev: &Event, _ctx: &mut Ctx) -> bool {
         false
     }
-    /// Whether it handles this key in passthrough, so `describe-key` can say so (contract §7).
+    /// Whether it handles this key, so `describe-key` can say so, and so a press of it no keymap
+    /// took brings its release to `event()` as a press it takes does (contract §7).
     fn handles(&self, _key: &KeyEvent) -> bool {
         false
     }
