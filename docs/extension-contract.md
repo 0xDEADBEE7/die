@@ -118,7 +118,7 @@ An extension's global state is the extension struct itself. A command reaches it
 | Modal state | read and set the state, which is per buffer: of the focused buffer, or of any buffer by id; read and set the prefix argument (count and register) |
 | Async | `spawn`, `process`, `pty`, `watch`, `after`, `every`, `idle`, `prompt` (§12) |
 | Hooks | subscribe to buffer lifecycle, edits (after the fact), saves, modes, focus and idle, returning a handle (C4). A save runs its write as a queued step after the before-save hooks. |
-| Pixels | create a pixel buffer, create an image (§11) |
+| Pixels | create a pixel buffer and present into it, from any thread (§11); images come with M3 |
 | Registers | read and write typed registers (char, line or block) and the system clipboard |
 | Messages | message and error, shown in the command line and logged to a `*messages*` buffer; a note that stays at the command line's right end until it's cleared (`set_note`, die-vim's `recording @a`); a desktop notification |
 | Extensions | `with_ext::<E>` |
@@ -466,7 +466,7 @@ Surface
 - Cells are built with `FrameCell::new(glyph, fg, bg)` and then their fields set, since a struct literal doesn't compile outside die-core. So overline and the link id can arrive with die-term without breaking a producer.
 - `cursor(info)` gives a `SurfaceCursor`: row and column in the area, a `CursorShape` (block, bar, underline or hollow, as DECSCUSR sets them), visible (DECTCEM) and blinking, which draws steadily for now. Core draws it hollow in a window that doesn't take input: not focused, a prompt open, or DIE's window without the keyboard. It draws no cursor that isn't visible, and none for `None`. `CursorShape::for_state(state)` is a text window's shape in a state, passthrough's as insert's bar, for a terminal that follows the modal state on the main screen as evil-ghostel does.
 - A surface window's status line shows the surface's `status()`, or the buffer's status text if it gives none, and at the right the buffer's state as Evil's tag: `<I>` in passthrough and insert, `<N>` in normal. Your status text is made from the file a buffer visits, and a surface knows where it is: a terminal's directory, which its shell can change. A terminal's cursor is the program's, so it can't always say. Text windows show no tag.
-- Images and pixel buffers on rectangles of cells, each with a source rectangle, a pixel offset and a z-order (a negative z draws below text), come with placements (M3).
+- `frame.place(id, z)` shows a pixel buffer over the whole area, under the glyphs at a negative z (§11). Images, source rectangles and sub-cell offsets come with M3.
 - `render` can't change the workspace. It gets the surface mutably, so it can update its own caches, but it doesn't get `Ctx`. A panic in it draws `<render panicked>` until the next good render (§15), which finds the frame blank and new, so a surface that writes only its changed rows writes them all.
 - **Components are plain Rust types that render into part of an area,** so a new graphical extension can be assembled from reusable pieces. The contract needs nothing extra for this. Your existing browsers don't use custom surfaces at all (§9).
 
@@ -491,15 +491,24 @@ Surface
 
 ## 11. Pixel buffers and images
 
-- **Creating one.** `ctx.pixel_buffer(size)` returns an id and a **producer**, a handle that can be moved to another thread.
-- **Presenting.**
-  - The producer owns one persistent CPU buffer and calls `present(damage)` when it has changed something.
-  - `present` copies the damaged rectangle into a small ring of shared GPU buffers on the producer's own thread, then wakes the main loop.
-  - The main thread only records a GPU copy. It never copies pixels, never waits on the producer, and never takes a lock the producer can hold; if the hand-off is busy, the frame shows on the next wakeup.
-- **Resizing.** The surface receives a resize event (in physical pixels, with the scale factor) and resizes the pixel buffer. The producer sees the new size on its next frame.
-- **Images.** `ctx.image(bytes)` creates an immutable image from PNG or raw RGBA. Decoding happens off the main thread.
-- **Showing them.** Custom surfaces place them in `render`. Text buffers show them through a Hide decoration.
-- **Pointer events** over a placement carry coordinates in that placement's own pixel space. This is the equivalent of `posn-object-x-y` for an Emacs canvas.
+The first slice landed early as M3a (2026-11-10), with the whiteboard as its driver and die-term's kitty graphics as its second user: a mutable pixel buffer, shown over a custom surface's whole area. Core holds no pixels and has no drawing API (D11): an extension brings its rasterizer, writes a buffer it owns, and the host's renderer puts it on the GPU.
+
+**Creating one.** `ctx.pixel_buffer(width, height)` takes a size in physical pixels (from a `Resize`'s cells and its `CellPixels`: `cols × cell.width` by `rows × cell.height`) and returns a `PixelBufferId` and a **producer**. It fails with no sink connected, which `ctx.pixels_supported()` says first, and for a side of 0 or over `MAX_SIDE` (16,384). The id names the buffer across threads and is never given out twice.
+
+**The producer** (`Producer`) owns one persistent CPU buffer of premultiplied RGBA8, `width × 4` bytes a row, transparent at first: `pixels_mut()` to draw into, `pixels()`, `size()`, `stride()`, `id()`. It's `Send`, so a thread of its own can own it, and it carries nothing of `Ctx` (D7).
+- `present(damage: PixelRect)` says the rectangle is drawn. It hands the buffer to the host's sink on the calling thread, which copies the damage out, and wakes the loop so a frame follows. The damage is clipped to the buffer; nothing left means nothing happens.
+- `resize(width, height)` makes the buffer that size, transparent, and tells the sink; what was drawn is gone, and the placement shows nothing until the next present.
+- Dropping it destroys the buffer: the sink is told, and a placement that still names it draws nothing.
+
+**The sink** (`PixelSink`) is where producers' pixels go: `create`, `present(id, pixels, width, damage)`, `resize` and `destroy`. The host connects one at startup, once, with `ctx.set_pixel_sink`, as it connects the waker; die-render's is its staging ring, and the harness's is a fake. Every call runs on the producer's thread, which is the main thread for a surface that rasterizes in `event()`. The rule the shapes keep (scope §5.2): `present` may block its caller, as when the ring is full, but the main thread never waits on a lock a producer can hold; it tries the hand-off, and a busy one shows on the next frame. A buffer shows nothing until its first present after `create` or `resize`.
+
+**Showing one.** A custom surface calls `frame.place(id, z)` in `render`: the buffer over the whole area, from its top-left corner, 1:1 in physical pixels and clipped at the area's edge, so a buffer sized to the area fills it. Placements aren't kept between renders: a surface places what it shows at every render. Core composes each into `Scene.placements` at the area's offset (a `Placement`: the buffer, its cells and its z), drops a destroyed buffer's, stops each above the prompt's list as it does the hollow cursors, and lists them in drawing order, lower z first. A negative `z` draws between the cells' backgrounds and their glyphs, so text put on the frame shows over the pixels (the whiteboard's labels in the editor's font); 0 and above draws over the glyphs and under the cursors. `Frame::placed()` reads back what a render placed.
+
+**Pointer events** over a surface already carry the pixel inside the area (`SurfacePointer.x`, `y`, physical), which is a full-area placement's own pixel space; the host sends a `Drag` for every pointer sample while a button is held, so ink follows the hand rather than the cell grid.
+
+**Testing.** The harness connects a `FakePixelSink`, so `pixels_supported()` is true there, `Harness::pixels(id)` gives a buffer's size and latest pixels, and `fake_pixels().take_calls()` the `SinkCall`s the sink heard, so a test can assert what an extension drew and when. `Scene::snapshot` lists the placements when there are any.
+
+**What waits for M3:** images (`ctx.image(bytes)`, decoded off the main thread), a placement's source rectangle and sub-cell pixel offset, placements narrower than the area, `Hide` with a placement in text buffers, the display link for animation with no input, and the one-frame-behind rule for a producer thread's resize (a buffer larger than its area shows its top-left part until the producer catches up).
 
 ## 12. Async
 

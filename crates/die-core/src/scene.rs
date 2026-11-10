@@ -12,6 +12,7 @@ use crate::faces::*;
 use crate::ids::*;
 use crate::keymap::State;
 use crate::layout::{CellKind, Dir, Viewport, control_cells};
+use crate::pixels::PixelBufferId;
 use crate::text::*;
 use std::cmp::Reverse;
 use std::fmt::{self, Write};
@@ -171,8 +172,7 @@ pub struct Cursor {
 /// Where a window sits in the frame: its text area's top-left cell. The text
 /// area is the window's own size (`Ctx::window_size`), its status line is the
 /// row below that, and a divider column follows it on the right unless it
-/// reaches the frame's right edge. (`Placement` is left for M3's images and
-/// pixel buffers on rectangles of cells.)
+/// reaches the frame's right edge.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WindowPlacement {
     /// The window placed.
@@ -183,7 +183,30 @@ pub struct WindowPlacement {
     pub row: usize,
 }
 
-/// One frame, as one grid of cells.
+/// A pixel buffer on a rectangle of cells (scope §5.1): its pixels from its top-left corner,
+/// 1:1 in physical pixels, clipped at the rectangle's edge, so a buffer larger than the
+/// rectangle shows its top-left part and a smaller one leaves the rest of the rectangle as it
+/// is. A buffer the sink has no pixels for yet draws nothing. `z` orders it against the cells:
+/// below 0, between the cells' backgrounds and their glyphs, so text written over it shows; at
+/// 0 and above, over the glyphs and under the cursors. The list is in drawing order, lower `z`
+/// first. A source rectangle, a sub-cell pixel offset and images wait for M3.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Placement {
+    /// The buffer shown.
+    pub buffer: PixelBufferId,
+    /// The frame column of its left edge.
+    pub col: usize,
+    /// The frame row of its top edge.
+    pub row: usize,
+    /// Its width in cells.
+    pub cols: usize,
+    /// Its height in cells.
+    pub rows: usize,
+    /// Its layer: negative under the glyphs, otherwise over them.
+    pub z: i8,
+}
+
+/// One frame, as one grid of cells, and the pixel buffers placed on it.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Scene {
     /// The grid's width in cells.
@@ -208,6 +231,9 @@ pub struct Scene {
     pub cursors: Vec<Cursor>,
     /// `default`'s background, for the pixels around the grid.
     pub background: Rgb,
+    /// The pixel buffers surfaces placed, in drawing order. None reaches under the prompt's
+    /// list.
+    pub placements: Vec<Placement>,
 }
 
 impl Scene {
@@ -303,6 +329,20 @@ impl Scene {
             let past = if c.past_end { " past-end" } else { "" };
             let _ = writeln!(out, "{},{} {:?}{past} {}", c.row, c.col, c.shape, c.color);
         }
+        if !self.placements.is_empty() {
+            out.push_str("placements\n");
+        }
+        for p in &self.placements {
+            let Placement {
+                buffer,
+                col,
+                row,
+                cols,
+                rows,
+                z,
+            } = *p;
+            let _ = writeln!(out, "{row},{col} {cols}x{rows} z {z} {buffer:?}");
+        }
         out
     }
 }
@@ -345,6 +385,7 @@ impl Ctx {
             positions: vec![None; cols * rows],
             cursors: vec![],
             background,
+            placements: vec![],
         };
         let cursor_color = self
             .faces
@@ -459,6 +500,13 @@ impl Ctx {
             put_text(&mut scene, last, at, end, glyphs(note, base));
         }
         scene.cursors.extend(hollow);
+        // As the hollow cursors: a placement stops above the prompt's list, which draws over the
+        // windows' bottom rows. Then drawing order, lower z first.
+        scene.placements.retain_mut(|p| {
+            p.rows = p.rows.min(covered.saturating_sub(p.row));
+            p.rows > 0
+        });
+        scene.placements.sort_by_key(|p| p.z);
         self.drawn.note(&scene, placed);
         self.drawn.covered = covered;
         scene

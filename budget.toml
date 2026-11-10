@@ -24,7 +24,8 @@ path = "crates/die-core"
 # 15,295 until a surface's area took a file's width and margins: its settings, `\z` on it, and its frame, pointer and copy state at the offset.
 # 15,385 until the alternate screen's Esc review: the wheel in copy state, a release where its press went, a switch of screens followed.
 # 15,400 until the margins review: through a resize, each window keeps its place in the lines of output a surface says it wrapped.
-limit = 15440
+# 15,440 until M3a, the whiteboard's pixel slice: `Placement` and `Frame::place`, the producer, the sink and the harness's fake (about 320).
+limit = 15755
 
 [[crate]]
 name = "die-render"
@@ -233,15 +234,17 @@ name = "surfaces and PTYs"
 # 1,335 until a surface's area: `surface_area`, a Resize when its width changes, the frame, cursor, pointer and copy state at its offset.
 # 1,380 until the alternate screen's Esc review: `surface_says`, the wheel `takes_wheel` takes, and `renumbered`.
 # 1,385 until the margins review: `SurfaceText::wrapped`, kept a line at a time, and each window's place in its line of output through a resize.
-limit = 1425
+# 1,425 until M3a: `Frame::place`, and `draw_surface` composing each placement at the area's offset, a destroyed buffer's dropped.
+limit = 1445
 files = ["surface.rs", "pty.rs", "surface/", "pty/"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
 # 965 until a list had the status lines above it, as Emacs's minibuffer has the mode line.
+# 975 until M3a: `Placement` and `Scene.placements`, stopped above the prompt's list, in drawing order, and in the snapshot.
 [[module]]
 crate = "die-core"
 name = "faces and scene"
-limit = 975
+limit = 1005
 files = ["render.rs", "faces.rs", "scene.rs", "scene/"]
 
 [[module]]
@@ -259,11 +262,21 @@ limit = 1520
 # instance, and what a restart keeps of `.`, `n`, `;`, marks and `gv`.
 files = ["session.rs", "session/", "instance.rs", "sys/"]
 
+# 800 until M3a: the harness's fake pixel sink, which keeps each buffer's latest pixels and logs each call, and `Harness::pixels`.
 [[module]]
 crate = "die-core"
 name = "harness, app interface, messages, ids, errors"
-limit = 800
+limit = 810
 files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
+
+# New with M3a, the whiteboard's pixel slice: the producer an extension draws into, the sink the
+# host installs once, and which buffers exist. Core holds no pixels (D11); the rings and textures
+# are die-render's. Images and the Hide placement wait for M3.
+[[module]]
+crate = "die-core"
+name = "pixels"
+limit = 195
+files = ["pixels.rs"]
 
 # die-render's modules at M0 (docs/records/platforms.md §5.7). The neutral code
 # (R2's atlas, row cache, instance building and driver, then the window, loop and

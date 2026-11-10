@@ -466,6 +466,8 @@ pub struct Ctx {
     pub(crate) procs: crate::process::Procs,
     /// What surfaces drew last, their cells in pixels, and the pointer's press on one.
     pub(crate) surfaces: Surfaces,
+    /// The host's pixel sink, and which pixel buffers exist.
+    pub(crate) pixels: crate::pixels::Pixels,
     /// The PTYs open, and whether their output had a turn since the last key.
     pub(crate) ptys: crate::pty::Ptys,
     /// What `*Buffer List*` lists.
@@ -651,6 +653,7 @@ impl Ctx {
             search_highlight: None,
             procs: Default::default(),
             surfaces: Default::default(),
+            pixels: Default::default(),
             ptys: Default::default(),
             menu: Default::default(),
             clients: Default::default(),

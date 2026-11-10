@@ -6,11 +6,14 @@ use crate::error::Result;
 use crate::ext::{Config, Ctx, Extension};
 use crate::ids::{BufferId, WindowId};
 use crate::keys::{Mods, key_notation, typed};
+use crate::pixels::{PixelBufferId, PixelRect, PixelSink};
 use crate::rt::Clock;
 use crate::workspace::{Clipboard, RegKind, Register, ShowIn};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The text area of a harness's window until [`Harness::set_window_size`] changes it.
@@ -19,12 +22,13 @@ const ROWS: usize = 24;
 /// The status line and the command line, below a lone window's text.
 const CHROME: usize = 2;
 
-/// A workspace for tests: a fake clock, a fake clipboard, and a frame drawn after every input, as
-/// a host draws one between keystrokes, so scrolling is what it would be on screen. Everything
-/// else is [`Ctx`], which it derefs to.
+/// A workspace for tests: a fake clock, a fake clipboard, a fake pixel sink, and a frame drawn
+/// after every input, as a host draws one between keystrokes, so scrolling is what it would be
+/// on screen. Everything else is [`Ctx`], which it derefs to.
 pub struct Harness {
     ctx: Ctx,
     clipboard: FakeClipboard,
+    pixels: FakePixelSink,
     /// Errors logged outside a harness input, until [`Harness::take_errors`] reads them.
     earlier: Vec<String>,
 }
@@ -60,9 +64,13 @@ impl Harness {
         let mut ctx = Ctx::with_config(exts, config)?;
         ctx.errors = Some(vec![]);
         ctx.set_frame_size(COLS, ROWS + CHROME);
+        let pixels = FakePixelSink::default();
+        ctx.set_pixel_sink(pixels.clone())
+            .expect("a new workspace has no pixel sink");
         Ok(Harness {
             ctx,
             clipboard,
+            pixels,
             earlier: vec![],
         })
     }
@@ -71,6 +79,19 @@ impl Harness {
     /// it another kind with [`Ctx::set_clipboard`].
     pub fn fake_clipboard(&self) -> &FakeClipboard {
         &self.clipboard
+    }
+
+    /// The sink pixel buffers present to: the fake, which keeps each buffer's latest pixels and
+    /// logs every call, so a test can see what an extension drew.
+    pub fn fake_pixels(&self) -> &FakePixelSink {
+        &self.pixels
+    }
+
+    /// A pixel buffer as last presented: its width, height and pixels, premultiplied RGBA8 with
+    /// `width * 4` bytes a row, transparent where nothing was presented since it was made or
+    /// resized. None for a buffer that was destroyed or never made.
+    pub fn pixels(&self, id: PixelBufferId) -> Option<(u32, u32, Vec<u8>)> {
+        self.pixels.pixels(id)
     }
 
     /// Use this clipboard from now on, and [`Harness::fake_clipboard`] with it.
@@ -304,5 +325,79 @@ impl Clipboard for FakeClipboard {
     fn change_count(&mut self) -> Result<u64, String> {
         self.check()?;
         Ok(self.0.borrow().count)
+    }
+}
+
+/// What a pixel sink heard ([`PixelSink`]), in order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SinkCall {
+    /// A buffer this size was made.
+    Create(PixelBufferId, u32, u32),
+    /// This much of a buffer was presented.
+    Present(PixelBufferId, PixelRect),
+    /// A buffer became this size.
+    Resize(PixelBufferId, u32, u32),
+    /// A buffer went.
+    Destroy(PixelBufferId),
+}
+
+#[derive(Default)]
+struct FakePixels {
+    /// Each live buffer's size and pixels, as last presented.
+    buffers: HashMap<PixelBufferId, (u32, u32, Vec<u8>)>,
+    calls: Vec<SinkCall>,
+}
+
+/// A pixel sink in memory, shared by its clones: every [`Harness`] connects one. It keeps each
+/// buffer's latest pixels and logs each call. It takes one lock on both sides, briefly, which the
+/// rule for a host's sink forbids ([`PixelSink`]); a fake isn't a host.
+#[derive(Clone, Default)]
+pub struct FakePixelSink(Arc<Mutex<FakePixels>>);
+
+impl FakePixelSink {
+    /// A buffer's width, height and pixels as last presented ([`Harness::pixels`]).
+    pub fn pixels(&self, id: PixelBufferId) -> Option<(u32, u32, Vec<u8>)> {
+        self.0.lock().unwrap().buffers.get(&id).cloned()
+    }
+    /// Every call since the last time this was asked, oldest first.
+    pub fn take_calls(&self) -> Vec<SinkCall> {
+        std::mem::take(&mut self.0.lock().unwrap().calls)
+    }
+}
+
+impl PixelSink for FakePixelSink {
+    fn create(&self, id: PixelBufferId, width: u32, height: u32) {
+        let mut s = self.0.lock().unwrap();
+        let blank = vec![0; width as usize * height as usize * 4];
+        s.buffers.insert(id, (width, height, blank));
+        s.calls.push(SinkCall::Create(id, width, height));
+    }
+    fn present(&self, id: PixelBufferId, pixels: &[u8], width: u32, damage: PixelRect) {
+        let mut s = self.0.lock().unwrap();
+        s.calls.push(SinkCall::Present(id, damage));
+        let Some((w, _, kept)) = s.buffers.get_mut(&id) else {
+            return;
+        };
+        assert_eq!(*w, width, "a present's width is the buffer's");
+        let stride = width as usize * 4;
+        let (left, right) = (
+            damage.x as usize * 4,
+            (damage.x + damage.width) as usize * 4,
+        );
+        for row in damage.y as usize..(damage.y + damage.height) as usize {
+            let at = row * stride;
+            kept[at + left..at + right].copy_from_slice(&pixels[at + left..at + right]);
+        }
+    }
+    fn resize(&self, id: PixelBufferId, width: u32, height: u32) {
+        let mut s = self.0.lock().unwrap();
+        let blank = vec![0; width as usize * height as usize * 4];
+        s.buffers.insert(id, (width, height, blank));
+        s.calls.push(SinkCall::Resize(id, width, height));
+    }
+    fn destroy(&self, id: PixelBufferId) {
+        let mut s = self.0.lock().unwrap();
+        s.buffers.remove(&id);
+        s.calls.push(SinkCall::Destroy(id));
     }
 }
