@@ -9,8 +9,9 @@
 //! [`Renderer::update`] after each pointer event, so a renderer that draws as events come can,
 //! [`Renderer::place`] at every render, and [`Renderer::render`] whenever core asks for a frame
 //! while something's changed, with a [`Scene`] that also carries the gesture's live element,
-//! which isn't on the board yet.
+//! which isn't on the board yet, and the tool dial while it's open.
 
+use crate::dial::Dial;
 use crate::model::{Board, CellSize, Element, Id, Rect};
 use crate::view::View;
 use die_core::{CellPixels, Color, Ctx, Frame, RenderInfo, Rgb};
@@ -31,6 +32,9 @@ pub struct Scene<'a> {
     pub live: Option<&'a Element>,
     /// A marquee being dragged, in board units.
     pub marquee: Option<Rect>,
+    /// The tool dial while it's open, in board units: drawn over the committed picture as the
+    /// marquee is, never through [`Damage`], since the picture doesn't change under it.
+    pub dial: Option<Dial>,
     /// A cell in board units, for labels.
     pub cell: CellSize,
 }

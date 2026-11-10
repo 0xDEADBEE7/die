@@ -25,6 +25,8 @@ struct Grid {
     cursor: Option<SurfaceCursor>,
     status: Option<String>,
     takes_esc: Rc<StdCell<bool>>,
+    /// As die-term in copy state: it declares every key and takes none.
+    refuses_keys: Rc<StdCell<bool>>,
     text: Option<String>,
 }
 
@@ -51,7 +53,10 @@ impl Surface for Grid {
     }
     fn event(&mut self, ev: &Event, _: &mut Ctx) -> bool {
         self.seen.borrow_mut().events.push(ev.clone());
-        true
+        !(self.refuses_keys.get() && matches!(ev, Event::Key(_)))
+    }
+    fn handles(&self, _: &KeyEvent) -> bool {
+        self.refuses_keys.get()
     }
     fn takes_esc(&self) -> bool {
         self.takes_esc.get()
@@ -74,7 +79,7 @@ impl Extension for Toy {
         "toy"
     }
     fn register(&mut self, reg: &mut Registry) {
-        for name in ["quit-ish", "leader-f", "send-esc"] {
+        for name in ["quit-ish", "leader-f", "send-esc", "take-x"] {
             let log = self.0.clone();
             reg.command(name, "Log its name.", move |_, _| {
                 log.borrow_mut().push(name);
@@ -95,6 +100,7 @@ impl Extension for Toy {
             .bind(State::Normal, "<Esc>", "send-esc")
             .bind(State::Normal, "i", "to-insert")
             .bind(State::Normal, "I", "to-insert")
+            .bind(State::Normal, "x", "take-x")
             .bind(State::Normal, "p", "surface-paste");
     }
 }
@@ -104,6 +110,7 @@ struct Setup {
     log: Log,
     seen: Rc<RefCell<Seen>>,
     takes_esc: Rc<StdCell<bool>>,
+    refuses_keys: Rc<StdCell<bool>>,
     buf: BufferId,
     win: WindowId,
 }
@@ -134,12 +141,14 @@ fn setup_with(
     let mut h = Harness::with_config(vec![Box::new(Toy(log.clone()))], config).unwrap();
     h.open_text("t", "text\n").unwrap();
     let (seen, takes_esc) = (Rc::<RefCell<Seen>>::default(), Rc::new(StdCell::new(false)));
+    let refuses_keys = Rc::new(StdCell::new(false));
     let grid = Grid {
         seen: seen.clone(),
         cells,
         cursor: None,
         status: None,
         takes_esc: takes_esc.clone(),
+        refuses_keys: refuses_keys.clone(),
         text: text.map(String::from),
     };
     let buf = h.create_surface("grid", grid);
@@ -150,6 +159,7 @@ fn setup_with(
         log,
         seen,
         takes_esc,
+        refuses_keys,
         buf,
         win,
     }
@@ -552,6 +562,20 @@ fn the_pointer_reaches_it_in_its_own_cells_and_pixels() {
     let release = PointerKind::Release(Button::Left);
     s.h.send(at(release, r0, 2, None));
     assert_eq!(ptr(&events(&s)[0]).kind, release);
+    // The first button down holds the pointer until it comes up: a right click mid-drag is
+    // passed on, and the drag goes on to the left button's release, out of the area too.
+    let (rpress, rrelease) = (
+        PointerKind::Press(Button::Right),
+        PointerKind::Release(Button::Right),
+    );
+    s.h.send(at(press, r0 + 2, c0 + 3, None));
+    s.h.send(at(drag, r0 + 3, c0 + 3, None));
+    s.h.send(at(rpress, r0 + 3, c0 + 3, None));
+    s.h.send(at(rrelease, r0 + 3, c0 + 3, None));
+    s.h.send(at(drag, r0 + 30, 2, None));
+    s.h.send(at(release, r0 + 30, 2, None));
+    let kinds: Vec<_> = events(&s).iter().map(|e| ptr(e).kind).collect();
+    assert_eq!(kinds, [press, drag, rpress, rrelease, drag, release]);
     // Motion and precise scrolls over it, and nothing over the text.
     let scroll = PointerKind::Scroll { dx: 0.25, dy: -1.5 };
     s.h.send(at(PointerKind::Move, r0 + 1, c0 + 1, None));
@@ -813,6 +837,56 @@ fn in_normal_state_its_kinds_keymap_is_looked_up_as_usual() {
             .starts_with("j in Insert goes to the grid surface"),
         "{d}"
     );
+}
+
+#[test]
+fn in_normal_state_a_release_goes_to_the_surface_whose_event_took_the_press() {
+    let mut s = setup(vec![]);
+    s.h.type_keys("<Esc>").unwrap();
+    events(&s);
+    // `j` is no keymap's: the surface takes its press, so its repeat and release reach it too,
+    // as they do in passthrough.
+    let j = KeyEvent::press(Key::Char('j'));
+    for k in [
+        j.clone(),
+        j.clone().kind(KeyKind::Repeat),
+        j.clone().kind(KeyKind::Release),
+    ] {
+        s.h.send(Input::Key(k));
+    }
+    assert_eq!(
+        keys(&s),
+        [
+            j.clone(),
+            j.clone().kind(KeyKind::Repeat),
+            j.clone().kind(KeyKind::Release)
+        ]
+    );
+    // `x` is the kind keymap's: the command runs, and the release has no surface to go to.
+    let x = KeyEvent::press(Key::Char('x'));
+    s.h.send(Input::Key(x.clone()));
+    s.h.send(Input::Key(x.kind(KeyKind::Release)));
+    assert_eq!(*s.log.borrow(), ["take-x"]);
+    assert!(keys(&s).is_empty(), "a key the keymap took has no owner");
+    // The focus moves between the press and the release: the release still goes to the
+    // surface that had the press, not to the text window that has the keys now.
+    s.h.send(Input::Key(j.clone()));
+    let left = s.h.window_list()[0];
+    s.h.focus(left);
+    s.h.send(Input::Key(j.clone().kind(KeyKind::Release)));
+    assert_eq!(keys(&s), [j.clone(), j.kind(KeyKind::Release)]);
+    assert_eq!(s.h.state_of(s.buf), State::Normal, "and nothing else moved");
+    // A key the surface declares (`handles`) but doesn't take went nowhere, so its release goes
+    // nowhere either: die-term declares every key for passthrough and takes none in copy state,
+    // and a program never sees a release without its press.
+    s.h.focus(s.win);
+    s.refuses_keys.set(true);
+    events(&s);
+    let f12 = KeyEvent::press(Key::F(12));
+    let errors = s.h.send(Input::Key(f12.clone()));
+    assert_eq!(errors, ["<F12> is undefined"]);
+    s.h.send(Input::Key(f12.clone().kind(KeyKind::Release)));
+    assert_eq!(keys(&s), [f12], "the press was offered, the release not");
 }
 
 /// Your config's text defaults: 80 columns, centered, with line numbers a surface doesn't get.

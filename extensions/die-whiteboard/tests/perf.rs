@@ -1,14 +1,14 @@
 //! A board of 1,000 strokes: how long opening it, a key, a pointer sample during a stroke (its
-//! segment rasterized and presented), a full re-raster, a wheel pan and a full cell render take.
-//! The numbers are printed (`--nocapture`) and held to loose budgets, since the test profile is
-//! lightly optimized and the machine may be busy.
+//! segment rasterized and presented), a full re-raster, a wheel pan, a hover change on the tool
+//! dial and a full cell render take. The numbers are printed (`--nocapture`) and held to loose
+//! budgets, since the test profile is lightly optimized and the machine may be busy.
 
 use die_test_cap as _;
 
 mod common;
 
 use common::*;
-use die_core::{Mods, PointerKind};
+use die_core::{Input, Key, KeyEvent, KeyKind, Mods, PixelSinkCall, PointerKind};
 use die_whiteboard::model::{Board, Point, Shape};
 use die_whiteboard::svg::{self, Look};
 use die_whiteboard::{Options, Whiteboard};
@@ -48,6 +48,7 @@ struct Numbers {
     render: Duration,
     pan: Duration,
     move_sample: Duration,
+    hover: Duration,
 }
 
 /// Open the board, press a key, draw a stroke timing its third sample, draw it all again, and
@@ -57,6 +58,7 @@ fn measure(options: Options) -> (Numbers, usize) {
     let path = dir.path().join("big.svg");
     let text = svg::write(&thousand(), &Look::default(), true);
     std::fs::write(&path, &text).unwrap();
+    let pixels = options.pixels;
     let mut h = harness_with(options);
     let t = Instant::now();
     open(&mut h, &path);
@@ -98,6 +100,56 @@ fn measure(options: Options) -> (Numbers, usize) {
     s.h.scene();
     let pan = t.elapsed();
     keys(&mut s.h, "0");
+    // The tool dial over the middle of the board: a move that changes the hovered sector costs
+    // the dial's own rectangle put back and drawn again, never the picture under it.
+    let space = KeyEvent::press(Key::Char(' '));
+    pointer(
+        &mut s,
+        PointerKind::Move,
+        (200.0, 140.0),
+        Mods::default(),
+        0,
+    );
+    assert!(s.h.send(Input::Key(space.clone())).is_empty());
+    pointer(
+        &mut s,
+        PointerKind::Move,
+        (220.0, 120.0),
+        Mods::default(),
+        0,
+    );
+    s.h.scene();
+    s.h.fake_pixels().take_calls();
+    let t = Instant::now();
+    pointer(
+        &mut s,
+        PointerKind::Move,
+        (230.0, 140.0),
+        Mods::default(),
+        0,
+    );
+    s.h.scene();
+    let hover = t.elapsed();
+    let presents: Vec<_> =
+        s.h.fake_pixels()
+            .take_calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                PixelSinkCall::Present(_, r) => Some(r),
+                _ => None,
+            })
+            .collect();
+    if pixels {
+        assert_eq!(presents.len(), 1, "{presents:?}");
+        // The disc is 60 board units across, 120 px at 2x, with 2 px of edge around.
+        assert_eq!((presents[0].width, presents[0].height), (124, 124));
+    }
+    assert!(
+        s.h.send(Input::Key(space.kind(KeyKind::Release)))
+            .is_empty()
+    );
+    assert!(status(&mut s).contains("ellipse"), "{}", status(&mut s));
+    keys(&mut s.h, "<Esc>");
     // A marquee over most of the board, then a drag of the selection: each sample draws the
     // region every selected stroke and its outline cover again, which for a wide selection is
     // the board, in bands.
@@ -141,6 +193,7 @@ fn measure(options: Options) -> (Numbers, usize) {
             render,
             pan,
             move_sample,
+            hover,
         },
         text.len(),
     )
@@ -151,26 +204,28 @@ fn a_thousand_strokes_open_key_sample_and_render_within_budget() {
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     let (px, bytes) = measure(Whiteboard::for_tests().options);
     println!(
-        "1,000 strokes in pixels: open {:.1} ms, key {:.1} ms, pointer sample (rasterize + present) {:.2} ms, full re-raster {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection of most of them {:.1} ms ({bytes} bytes of SVG)",
+        "1,000 strokes in pixels: open {:.1} ms, key {:.1} ms, pointer sample (rasterize + present) {:.2} ms, full re-raster {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection of most of them {:.1} ms, a hover change on the dial {:.2} ms ({bytes} bytes of SVG)",
         ms(px.opened),
         ms(px.key),
         ms(px.sample),
         ms(px.render),
         ms(px.pan),
         ms(px.move_sample),
+        ms(px.hover),
     );
     let (cells, _) = measure(Options {
         pixels: false,
         ..Whiteboard::for_tests().options
     });
     println!(
-        "1,000 strokes in cells: open {:.1} ms, key {:.1} ms, pointer sample {:.2} ms, full cell render {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection {:.1} ms",
+        "1,000 strokes in cells: open {:.1} ms, key {:.1} ms, pointer sample {:.2} ms, full cell render {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection {:.1} ms, a hover change on the dial {:.2} ms",
         ms(cells.opened),
         ms(cells.key),
         ms(cells.sample),
         ms(cells.render),
         ms(cells.pan),
         ms(cells.move_sample),
+        ms(cells.hover),
     );
     for n in [&px, &cells] {
         assert!(
@@ -178,6 +233,7 @@ fn a_thousand_strokes_open_key_sample_and_render_within_budget() {
             "move sample {:?}",
             n.move_sample
         );
+        assert!(n.hover < Duration::from_millis(100), "hover {:?}", n.hover);
         assert!(n.opened < Duration::from_millis(500), "open {:?}", n.opened);
         assert!(n.key < Duration::from_millis(200), "key {:?}", n.key);
         assert!(

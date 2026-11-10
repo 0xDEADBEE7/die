@@ -5,7 +5,7 @@
 //! of. Core resolves the frame's cells into the scene, so a surface doesn't need the theme: a
 //! default color is the `default` face's.
 #![warn(missing_docs)]
-use crate::app::{PointerEvent, PointerKind};
+use crate::app::{Button, PointerEvent, PointerKind};
 use crate::error::*;
 use crate::ext::*;
 use crate::faces::{Rgb, Style, Underline};
@@ -356,8 +356,9 @@ pub(crate) struct Surfaces {
     /// Each surface's frame, by buffer, as its last render left it.
     frames: HashMap<BufferId, Frame>,
     pub(crate) cell: CellPixels,
-    /// The surface window a press went to, which gets the drags and the release.
-    pressed: Option<WindowId>,
+    /// The surface window a press went to, and its button, which get the drags and the release:
+    /// another button clicked meanwhile ends nothing.
+    pressed: Option<(WindowId, Button)>,
 }
 
 impl Ctx {
@@ -560,7 +561,7 @@ impl Ctx {
             wheel || (x..x + g.text_w).contains(&p.col)
         };
         let w = match self.surfaces.pressed {
-            Some(w) if held => w,
+            Some((w, _)) if held => w,
             _ if held || self.prompt.is_some() => return None,
             _ => hit.filter(|h| h.part == WindowPart::Text)?.window,
         };
@@ -575,9 +576,15 @@ impl Ctx {
 
     /// Give a pointer event to the surface in `w`, in its area's cells and pixels.
     pub(crate) fn pointer_to_surface(&mut self, w: WindowId, p: PointerEvent) {
+        // The first button down holds the pointer until it comes up: a second button's press
+        // and release meanwhile are passed on, and take nothing. The same button pressed again
+        // begins afresh, its release having been lost.
+        let held = self.surfaces.pressed.map(|(_, b)| b);
         match p.kind {
-            PointerKind::Press(_) => self.surfaces.pressed = Some(w),
-            PointerKind::Release(_) => self.surfaces.pressed = None,
+            PointerKind::Press(b) if held.is_none_or(|h| h == b) => {
+                self.surfaces.pressed = Some((w, b));
+            }
+            PointerKind::Release(b) if held == Some(b) => self.surfaces.pressed = None,
             _ => {}
         }
         let (Some(at), Some(g), Some(buf)) = (

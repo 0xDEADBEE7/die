@@ -79,8 +79,9 @@ pub struct Mods {
     pub super_: bool,
 }
 
-/// What a key did. Keymaps match `Press` and `Repeat`; `Release` reaches only surfaces in
-/// passthrough (contract §7).
+/// What a key did. Keymaps match `Press` and `Repeat`; `Release` reaches only surfaces: every
+/// key's in passthrough, and elsewhere the release of a press the surface's `event()` took
+/// (contract §7).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KeyKind {
     /// The key went down.

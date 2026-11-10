@@ -6,8 +6,10 @@
 //! The newest element wins a cell. Honest as annotation, not as handwriting.
 //!
 //! The committed picture is drawn into a grid once per change and kept; each frame copies it,
-//! draws the gesture's live element and the marquee over the copy, and writes the frame.
+//! draws the gesture's live element, the marquee and the tool dial (its names, the hovered one
+//! reversed, and a `+` at its centre) over the copy, and writes the frame.
 
+use crate::dial::SECTORS;
 use crate::model::{CellSize, Element, Id, LIVE, Point, Rect, Shape, label_lines};
 use crate::render::{Damage, Renderer, Scene};
 use crate::view::View;
@@ -100,6 +102,16 @@ impl Grid {
     fn glyph(&mut self, col: i64, row: i64, ch: char, pen: &Pen) {
         if let Some(c) = self.claim(col, row, pen.owner, pen.fg, pen.faint) {
             c.kind = Kind::Glyph(ch);
+        }
+    }
+
+    /// `text` along `row` from `col`, in reverse video if asked.
+    fn text(&mut self, col: i64, row: i64, text: &str, pen: &Pen, reverse: bool) {
+        for (j, ch) in text.chars().enumerate() {
+            if let Some(c) = self.claim(col + j as i64, row, pen.owner, pen.fg, pen.faint) {
+                c.kind = Kind::Glyph(ch);
+                c.reverse = reverse;
+            }
         }
     }
 
@@ -381,6 +393,22 @@ impl Renderer for Cells {
             grid.hline(r1, c0, c1, &pen);
             grid.vline(c0, r0, r1, &pen);
             grid.vline(c1, r0, r1, &pen);
+        }
+        if let Some(d) = scene.dial {
+            let pen = Pen {
+                owner: LIVE,
+                fg: Color::Default,
+                faint: false,
+            };
+            let (c, r) = map.cell(d.centre);
+            grid.glyph(c, r, '+', &pen);
+            for (i, tool) in SECTORS.iter().enumerate() {
+                let (p, align) = d.name_at(i);
+                let (c0, r0) = map.cell(p);
+                let name = tool.name();
+                let col = align.start(c0, name.chars().count() as i64);
+                grid.text(col, r0, name, &pen, d.hovered == Some(i));
+            }
         }
         frame.clear();
         for (i, c) in grid.cells.iter().enumerate() {

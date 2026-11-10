@@ -6,9 +6,12 @@
 //!
 //! Normal state is the tool state and the pen is its default tool; insert state exists only
 //! while a label is typed. The pointer is the board's in every state: `text()` is None, so
-//! there's no copy state.
+//! there's no copy state. Space held, or the right button held, is the tool dial
+//! ([`crate::dial`]): the only key the surface takes outside a label, declared through
+//! `handles()`, whose release core brings back to it (contract §7).
 
 use crate::cells::{Cells, cell_size};
+use crate::dial::{Dial, Opener};
 use crate::ink::{SIMPLIFY, Streamline, simplify};
 use crate::model::{
     Board, CellSize, Element, INKS, Id, LIVE, Point, Rect, Shape, WIDTH_NAMES, WIDTHS, label_lines,
@@ -17,8 +20,8 @@ use crate::render::{Damage, Renderer, Scene};
 use crate::undo::{Entry, History, original_index, revert};
 use crate::view::{View, ZOOM_STEP};
 use die_core::{
-    BufferId, Button, CellPixels, Color, Ctx, CursorShape, Event, Frame, KeyEvent, KeyKind, Mods,
-    PointerKind, RenderInfo, Rgb, State, Surface, SurfaceCursor, SurfacePointer,
+    BufferId, Button, CellPixels, Color, Ctx, CursorShape, Event, Frame, Key, KeyEvent, KeyKind,
+    Mods, PointerKind, RenderInfo, Rgb, State, Surface, SurfaceCursor, SurfacePointer,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -207,6 +210,12 @@ pub struct BoardState {
     /// When the focus came with no press having brought it: the app was activated from another,
     /// and the press that did it is on its way, to draw nothing.
     focused_at: Option<Duration>,
+    /// The tool dial, while it's open.
+    dial: Option<Dial>,
+    /// Where the pointer was last seen over the area, in physical pixels: the dial opens under
+    /// it. Pixels, not a board point, since the wheel and the zoom keys move the board under a
+    /// pointer that sends nothing.
+    pointer_px: Option<(f32, f32)>,
 }
 
 /// A board's state, shared by its surface and the extension.
@@ -266,6 +275,8 @@ impl BoardState {
             gesture: Gesture::None,
             label: None,
             focused_at: None,
+            dial: None,
+            pointer_px: None,
         }
     }
 
@@ -406,6 +417,86 @@ impl BoardState {
         !matches!(self.gesture, Gesture::None)
     }
 
+    // -------------------------------------------------------------- the dial
+
+    /// The tool dial, while it's open.
+    pub fn dial(&self) -> Option<Dial> {
+        self.dial
+    }
+
+    /// Whether the dial is open, by `by`.
+    pub fn dial_by(&self, by: Opener) -> bool {
+        self.dial.is_some_and(|d| d.by == by)
+    }
+
+    /// Open the tool dial by `by`, about `at`, or under the pointer where it was last seen over
+    /// the area, or the area's centre. Nothing while a label is typed, mid-gesture, or with one
+    /// open already, whoever opened it.
+    pub fn open_dial(&mut self, by: Opener, at: Option<Point>) -> bool {
+        if self.dial.is_some() || self.label.is_some() || self.gesturing() {
+            return false;
+        }
+        let centre = at.unwrap_or_else(|| {
+            let (x, y) = self.pointer_px.unwrap_or_else(|| self.area_centre_px());
+            self.view.to_board(x, y, self.cell.scale)
+        });
+        self.dial = Some(Dial::open(centre, by, self.cell_size(), self.view.zoom));
+        self.touch();
+        true
+    }
+
+    /// The board point under the pointer where it was last seen, through the view as it is now.
+    fn pointer_board(&self) -> Option<Point> {
+        let (x, y) = self.pointer_px?;
+        Some(self.view.to_board(x, y, self.cell.scale))
+    }
+
+    /// The pointer is at `p` with the dial open: the sector in its direction is hovered.
+    fn hover_dial(&mut self, p: Point) {
+        if let Some(d) = &mut self.dial
+            && d.hover(p)
+        {
+            self.touch();
+        }
+    }
+
+    /// Close the dial, choosing nothing. False with none open.
+    pub fn cancel_dial(&mut self) -> bool {
+        let open = self.dial.take().is_some();
+        if open {
+            self.touch();
+        }
+        open
+    }
+
+    /// Close the dial, arming the tool of the sector under the pointer (`p`, or where it was
+    /// last seen) as its key would: the pen, select, a one-shot shape or label, or the eraser
+    /// on or off. In the dead zone, nothing changes. False with none open.
+    pub fn pick_dial(&mut self, p: Option<Point>, now: Duration) -> bool {
+        let Some(mut dial) = self.dial.take() else {
+            return false;
+        };
+        if let Some(p) = p.or_else(|| self.pointer_board()) {
+            dial.hover(p);
+        }
+        match dial.tool() {
+            Some(Tool::Eraser) => self.toggle_tool(Tool::Eraser, now),
+            Some(tool) => self.set_tool(tool, now),
+            None => self.touch(),
+        }
+        true
+    }
+
+    /// The area's centre, in physical pixels.
+    fn area_centre_px(&self) -> (f32, f32) {
+        let size = self.cell_size();
+        let scale = self.cell.scale.max(1.0) as f32;
+        (
+            self.area.0 as f32 * size.w * scale / 2.0,
+            self.area.1 as f32 * size.h * scale / 2.0,
+        )
+    }
+
     // -------------------------------------------------------------- the pointer
 
     /// The pointer at `p`, in board units, did `kind`.
@@ -417,21 +508,33 @@ impl BoardState {
         mods: Mods,
         now: Duration,
     ) -> Effect {
+        // Every event says where the pointer is, the wheel's too: in pixels, before the wheel
+        // moves the board under it.
+        self.pointer_px = Some(self.view.to_physical(p, self.cell.scale));
+        if self.dial.is_some() {
+            return self.dial_pointer(kind, p, now);
+        }
         match kind {
             PointerKind::Press(Button::Left) => self.press(p, clicks, now),
             PointerKind::Press(Button::Right) => {
+                // A press that ends a label, focuses the window or activates the app does
+                // nothing else; otherwise the right button, held, is the tool dial.
                 let effect = self.end_label(now);
                 if effect == Effect::None && self.focused && !self.activating(now) {
-                    self.start_erasing(p, now);
+                    self.open_dial(Opener::RightButton, Some(p));
                 }
                 effect
             }
-            PointerKind::Press(Button::Middle) | PointerKind::Move => Effect::None,
             PointerKind::Drag(_) => {
                 self.drag(p, mods.shift, now);
                 Effect::None
             }
-            PointerKind::Release(_) => self.release(p, mods.shift, now),
+            // Only the left button starts a gesture, so only its release ends one: a right
+            // click mid-stroke, refused the dial, leaves the stroke going.
+            PointerKind::Release(Button::Left) => self.release(p, mods.shift, now),
+            PointerKind::Press(Button::Middle) | PointerKind::Release(_) | PointerKind::Move => {
+                Effect::None
+            }
             PointerKind::Scroll { dx, dy } => {
                 if mods.super_ && self.zooms {
                     let about = self.view.to_physical(p, self.cell.scale);
@@ -442,6 +545,24 @@ impl BoardState {
                 Effect::None
             }
         }
+    }
+
+    /// The pointer with the dial open: it hovers, the left button or the right button that
+    /// opened it picks, and the wheel and the other button wait.
+    fn dial_pointer(&mut self, kind: PointerKind, p: Point, now: Duration) -> Effect {
+        match kind {
+            PointerKind::Move | PointerKind::Drag(_) => self.hover_dial(p),
+            PointerKind::Press(Button::Left) => {
+                self.pick_dial(Some(p), now);
+                // Its drags and release draw nothing: no dot.
+                self.gesture = Gesture::Swallowed;
+            }
+            PointerKind::Release(Button::Right) if self.dial_by(Opener::RightButton) => {
+                self.pick_dial(Some(p), now);
+            }
+            _ => {}
+        }
+        Effect::None
     }
 
     fn press(&mut self, p: Point, clicks: u8, now: Duration) -> Effect {
@@ -920,8 +1041,10 @@ impl BoardState {
         self.set_tool(next, now);
     }
 
-    /// Esc in normal state: take back the gesture, drop the selection, back to the pen.
+    /// Esc in normal state: close the dial, take back the gesture, drop the selection, back to
+    /// the pen.
     pub fn escape(&mut self, now: Duration) {
+        self.cancel_dial();
         self.cancel_gesture(now);
         self.tool = Tool::Pen;
         self.deselect();
@@ -1096,14 +1219,7 @@ impl BoardState {
 
     /// Zoom by `by` about a physical pixel of the area, or its centre.
     pub fn zoom(&mut self, by: f32, about: Option<(f32, f32)>) {
-        let about = about.unwrap_or_else(|| {
-            let size = self.cell_size();
-            let f = self.view.factor(self.cell.scale);
-            (
-                self.area.0 as f32 * size.w * f / 2.0,
-                self.area.1 as f32 * size.h * f / 2.0,
-            )
-        });
+        let about = about.unwrap_or_else(|| self.area_centre_px());
         self.view.zoom_by(by, about, self.cell.scale);
         self.view_changed();
     }
@@ -1148,6 +1264,7 @@ fn scene_of(st: &BoardState) -> Scene<'_> {
         selection: &st.selection,
         live: st.live(),
         marquee: st.marquee(),
+        dial: st.dial(),
         cell: st.cell_size(),
     }
 }
@@ -1244,6 +1361,41 @@ impl BoardSurface {
         }
         took
     }
+
+    /// A key no keymap took: text into the label being typed; otherwise Space, which opens the
+    /// tool dial on its press, holds it through its repeats and picks on its release, whatever
+    /// modifier joins it while it's held (a Shift ahead of a constrained shape). Any other key's
+    /// press closes the dial, and isn't the board's. Space while the right button holds the
+    /// dial does nothing, and the dial waits for the button.
+    fn key(&mut self, k: &KeyEvent, ctx: &mut Ctx) -> bool {
+        if self.state.borrow().editing().is_some() {
+            return match k.printable() {
+                Some(text) if k.kind != KeyKind::Release => self.typed(&text, ctx),
+                _ => false,
+            };
+        }
+        let now = ctx.now();
+        let space = k.key == Key::Char(' ');
+        let plain = space && k.mods == Mods::default();
+        let took = {
+            let mut st = self.state.borrow_mut();
+            let held = space && st.dial_by(Opener::Space);
+            match k.kind {
+                KeyKind::Press if plain => {
+                    st.open_dial(Opener::Space, None);
+                    true
+                }
+                KeyKind::Press => {
+                    st.cancel_dial();
+                    false
+                }
+                KeyKind::Repeat => plain || held,
+                KeyKind::Release => held && st.pick_dial(None, now),
+            }
+        };
+        self.update();
+        took
+    }
 }
 
 impl Surface for BoardSurface {
@@ -1304,6 +1456,7 @@ impl Surface for BoardSurface {
                     if let Some(r) = &mut self.renderer {
                         r.resize(*cols, *rows, *cell, ctx);
                     }
+                    st.cancel_dial();
                     st.redraw();
                 }
                 true
@@ -1312,10 +1465,14 @@ impl Surface for BoardSurface {
                 let mut st = self.state.borrow_mut();
                 // Gained with no press having brought it (the press that focuses a window from
                 // another of DIE's comes first, swallowed): the app was activated, and the press
-                // that did it is on its way. Lost mid-gesture: the gesture ends where it stands.
+                // that did it is on its way. Lost mid-gesture: the gesture ends where it stands;
+                // lost with the dial open: the dial closes.
                 let now = ctx.now();
                 st.focused_at = (*gained && !st.focused && !st.gesturing()).then_some(now);
                 st.focused = *gained;
+                if !gained {
+                    st.cancel_dial();
+                }
                 if !gained && st.gesturing() {
                     st.finish_gesture(now);
                     let buf = st.buf;
@@ -1324,19 +1481,19 @@ impl Surface for BoardSurface {
                 }
                 true
             }
-            Event::Key(k) if matches!(k.kind, KeyKind::Press | KeyKind::Repeat) => {
-                match k.printable() {
-                    Some(text) if self.state.borrow().editing().is_some() => self.typed(&text, ctx),
-                    _ => false,
-                }
-            }
+            Event::Key(k) => self.key(k, ctx),
             Event::Paste(text) if self.state.borrow().editing().is_some() => self.typed(text, ctx),
             _ => false,
         }
     }
 
+    /// Typed text while a label is typed; otherwise plain Space, the tool dial.
     fn handles(&self, key: &KeyEvent) -> bool {
-        self.state.borrow().editing().is_some() && key.printable().is_some()
+        if self.state.borrow().editing().is_some() {
+            key.printable().is_some()
+        } else {
+            key.key == Key::Char(' ') && key.mods == Mods::default()
+        }
     }
 
     fn takes_wheel(&self) -> bool {
