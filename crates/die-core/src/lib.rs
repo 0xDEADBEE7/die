@@ -30,6 +30,7 @@ mod keys;
 mod layout;
 mod menu;
 mod messages;
+mod pixels;
 mod pointer;
 pub mod process;
 mod project;
@@ -53,17 +54,18 @@ pub use error::*;
 pub use ext::*;
 pub use faces::{BASE_FACES, Rgb, Style, Theme, UI_FACES, Underline};
 pub use files::{FileInfo, FileTarget, Fingerprint, StatusTextFn, Uneditable};
-pub use harness::{FakeClipboard, Harness, KeyLog};
+pub use harness::{FakeClipboard, FakePixelSink, Harness, KeyLog, PixelSinkCall};
 pub use ids::*;
 pub use keymap::*;
 pub use keys::*;
 pub use layout::{Dir, DisplayLine, Geometry, Stop, ViewRow, Viewport};
+pub use pixels::{PIXEL_MAX_SIDE, PixelBufferId, PixelProducer, PixelRect, PixelSink};
 pub use pointer::{CellHit, WindowPart};
 pub use project::{PathSource, project_root, walk};
 pub use prompt::{PromptSpec, flex_rank, recent_first};
 pub use pty::{Pty, PtyCommand, PtySize};
 pub use rt::*;
-pub use scene::{Cell, Cursor, CursorShape, Glyph, Scene, WindowPlacement};
+pub use scene::{Cell, Cursor, CursorShape, Glyph, Placement, Scene, WindowPlacement};
 pub use surface::{
     CellPixels, Color, Frame, FrameCell, RenderInfo, SurfaceCursor, SurfacePointer, SurfaceText,
 };

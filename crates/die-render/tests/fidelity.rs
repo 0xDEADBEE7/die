@@ -1427,7 +1427,7 @@ fn the_shader_blends_as_the_written_rules_say() {
         soft.upload(u);
     }
     let (w, h) = cell.grid(s.cols, s.rows);
-    let got = pipeline.render(f.quads, f.clear, w, h).unwrap();
+    let got = pipeline.render(f.quads, f.placed, f.clear, w, h).unwrap();
     let want = soft.draw(f.quads, f.clear, w, h);
     write_png(&got, "shader-gpu.png");
     write_png(&want, "shader-soft.png");

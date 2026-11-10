@@ -24,9 +24,10 @@ const CHAT: &str = "*orchid-chat-default-die-89abc*";
 fn harness(root: &TempRoot, fake: &FakeRunner) -> Harness {
     let config = die_dev::config(vec![]);
     let names: Vec<&str> = config.extensions.iter().map(|e| e.name()).collect();
-    assert_eq!(names, ["orchid"], "your config's extensions");
+    assert_eq!(names, ["orchid", "whiteboard"], "your config's extensions");
     let mut exts = die::built_in();
     exts.push(Box::new(Orchid::for_tests(root.path(), fake.clone())));
+    exts.push(Box::new(die_whiteboard::Whiteboard::for_tests()));
     let mut h = Harness::with_config(exts, config.core).unwrap();
     h.open_text("notes", "my notes\n").unwrap();
     h.set_window_size(120, 40);

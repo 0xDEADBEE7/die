@@ -18,6 +18,8 @@ path = "src/main.rs"
 die.workspace = true
 # Your emacs-orchid-client's port, as init.el loads emacs-orchid-client (scope D14).
 die-orchid-client.workspace = true
+# The whiteboard: freehand, shapes and arrows, saved as SVG, exported as PNG (scope D14).
+die-whiteboard.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true

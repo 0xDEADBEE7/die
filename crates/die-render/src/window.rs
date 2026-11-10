@@ -3,15 +3,18 @@
 //! matches the drawable to the view before every frame, and wakes only through the event
 //! loop. `Host` is what the loop decides, with no window, so its tests run anywhere.
 //! `Shell` is winit's side. Through `Remote`, a check on another thread acts in the loop.
+//! A pixel buffer's present (M3a) changes no cell, so it raises `Pending`, which the loop
+//! reads as it reads a PTY's waiting output: a frame follows with no core turn.
 
-use crate::driver::{self, KeyMonitor, Renderer, Surface};
+use crate::driver::{self, KeyMonitor, Pixels, Renderer, Surface};
 use crate::font::CellMetrics;
 use crate::frame::{Image, Presented};
 use crate::input::{Held, KeyFacts, Pointer, caps_event, key_event};
 use crate::latency::Latency;
 use die_core::{Ctx, Input, KeyEvent, PointerEvent, Scene};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
@@ -98,18 +101,78 @@ pub struct Pumped {
     pub more: bool,
 }
 
+/// Pixels are pending: a producer presented since the loop last drew, so a frame is owed
+/// whatever the scene says (contract §11). The host's sink raises it on the producer's thread;
+/// the loop takes it when it draws. A flag and no more: the pixels themselves wait in the
+/// sink's ring, and a frame that can't be drawn yet finds them there.
+#[derive(Clone, Default, Debug)]
+pub struct Pending(Arc<AtomicBool>);
+
+impl Pending {
+    /// A present arrived.
+    pub fn set(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// Whether one has since the last `take`.
+    pub fn is_set(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// Whether one has, and from now on none has.
+    pub fn take(&self) -> bool {
+        self.0.swap(false, Ordering::AcqRel)
+    }
+}
+
+/// Whether the loop owes a frame, kept across the turns in which it can't draw one.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Due {
+    /// Something may have changed, so compose a frame and see.
+    pub dirty: bool,
+    /// What's on the drawable no longer stands, whatever the scene says: the drawable changed,
+    /// or pixels were presented that no frame has carried yet.
+    pub stale: bool,
+}
+
+impl Due {
+    /// No frame could be drawn (the window is occluded, or has no drawable) after `pixels` were
+    /// taken from the sink's flag: they stay owed, as `stale`, so the frame that follows draws
+    /// them even when its scene is the last one's, as a present changes no cell. The flag itself
+    /// stays down, so the loop sleeps meanwhile.
+    pub fn held(&mut self, pixels: bool) {
+        self.stale |= pixels;
+    }
+
+    /// Whether a frame is drawn: the drawable no longer stands, pixels were presented since the
+    /// last frame, or the scene differs from the one on it.
+    pub fn frame(&self, pixels: bool, same_scene: bool) -> bool {
+        self.stale || pixels || !same_scene
+    }
+}
+
 /// Core, as a loop drives it: turns, sleep, and a frame of the split tree. K9's calls replace
 /// `step` and `next_timer` here when they land.
 pub struct Host {
     /// The editor.
     pub ctx: Ctx,
     grid: (usize, usize),
+    pending: Pending,
 }
 
 impl Host {
     /// A host with no grid yet.
     pub fn new(ctx: Ctx) -> Host {
-        Host { ctx, grid: (1, 3) }
+        Host {
+            ctx,
+            grid: (1, 3),
+            pending: Pending::default(),
+        }
+    }
+
+    /// The flag a pixel sink raises for this host.
+    pub fn pending(&self) -> Pending {
+        self.pending.clone()
     }
 
     /// Take turns until nothing is ready, or `TURN_LIMIT`.
@@ -127,8 +190,9 @@ impl Host {
 
     /// How long the loop may sleep, given whether the last pump left `more`.
     pub fn sleep(&mut self, more: bool) -> Sleep {
-        // A PTY's output past what a pump took waits for the next pump, not for a wake.
-        if more || self.ctx.pty_output_waiting() {
+        // A PTY's output past what a pump took waits for the next pump, not for a wake, and
+        // so do pixels presented since the frame.
+        if more || self.pending.is_set() || self.ctx.pty_output_waiting() {
             return Sleep::No;
         }
         sleep_for(self.ctx.next_timer(), self.ctx.now())
@@ -191,10 +255,8 @@ pub struct Shell {
     /// Don't draw while occluded. A check for something else can turn it off, since it can't
     /// choose what you have on screen.
     pub(crate) guard: bool,
-    /// Something may have changed, so compose a frame and see.
-    pub(crate) dirty: bool,
-    /// What's on the drawable no longer stands, whatever the scene is.
-    pub(crate) stale: bool,
+    /// Whether a frame is owed.
+    pub(crate) due: Due,
     /// The last try at a frame got no drawable, or an error, so the loop mustn't sleep on it.
     undrawn: bool,
     /// Take the keyboard when the app next is the active one.
@@ -222,6 +284,9 @@ pub struct Shell {
     pub(crate) latency: Latency,
     /// The last frame's id, main-thread ms and GPU ms.
     last_present: (u64, f64, f64),
+    /// The host's pixel sink, where the backend has one: the renderer blits from it, and a
+    /// check reads its counts.
+    pub(crate) pixels: Option<Arc<Pixels>>,
 }
 
 impl Shell {
@@ -347,8 +412,16 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         let _ = wake.send_event(Wake::Core);
     })
     .map_err(|e| e.to_string())?;
+    let mut host = Host::new(ctx);
+    // Where producers' pixels go (contract §11), connected once as the waker is, before any
+    // extension can ask `pixels_supported`. A target with no backend shows none.
+    let pixels = Pixels::new(host.pending());
+    if let Some(pixels) = &pixels {
+        let sink = pixels.clone();
+        host.ctx.set_pixel_sink(sink).map_err(|e| e.to_string())?;
+    }
     let mut shell = Shell {
-        host: Host::new(ctx),
+        host,
         font: options.font,
         title: options.title,
         script: options.script,
@@ -358,8 +431,10 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         remote: Remote { proxy },
         cover: None,
         guard: true,
-        dirty: true,
-        stale: true,
+        due: Due {
+            dirty: true,
+            stale: true,
+        },
         undrawn: false,
         key_when_active: false,
         focus_told: None,
@@ -377,6 +452,7 @@ pub fn run(mut ctx: Ctx, options: Options) -> Result<i32, String> {
         recorded: None,
         latency,
         last_present: (0, 0.0, 0.0),
+        pixels,
     };
     event_loop.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.drain_presented();
@@ -434,7 +510,10 @@ impl Shell {
             scale,
             ..self.font.clone()
         };
-        let renderer = Renderer::new(&font)?;
+        let mut renderer = Renderer::new(&font)?;
+        if let Some(pixels) = &self.pixels {
+            renderer.show_pixels(pixels.clone());
+        }
         let surface = renderer.attach(&window, scripted)?;
         self.latency.stage("renderer");
         if scripted || self.latency.logging() {
@@ -618,9 +697,9 @@ impl Shell {
         let pumped = self.host.pump();
         self.more = pumped.more;
         if pumped.ran > 0 {
-            self.dirty = true;
+            self.due.dirty = true;
         }
-        if self.dirty || self.stale {
+        if self.due.dirty || self.due.stale || self.host.pending.is_set() {
             self.draw();
         }
         let ms = start.elapsed().as_secs_f64() * 1e3;
@@ -628,15 +707,19 @@ impl Shell {
     }
 
     /// Draw if a frame is due: the drawable first matches the view, and then, unless the
-    /// window is occluded, a scene that differs from what's on it is presented.
+    /// window is occluded, a scene that differs from what's on it is presented, or one with
+    /// pixels presented since the last frame, which no cell shows.
     pub(crate) fn draw(&mut self) {
+        // Taken whether or not a frame follows: the pixels wait in the sink's ring, and a frame
+        // that can't be drawn now leaves them owed (`Due::held`) for the one that follows.
+        let pixels = self.host.pending.take();
         let Some(live) = &mut self.live else {
-            return;
+            return self.due.held(pixels);
         };
         let px = live.surface.size(live.scale);
         if px.0 == 0 || px.1 == 0 {
             self.undrawn = false;
-            return;
+            return self.due.held(pixels);
         }
         if px != live.px {
             live.px = px;
@@ -649,18 +732,19 @@ impl Shell {
             });
             self.host.set_grid(grid(px, cell));
             self.host.pump();
-            self.stale = true;
+            self.due.stale = true;
             self.resized = true;
         }
         if holds_frame(self.guard, self.stats.frames, live.surface.occluded()) {
             self.stats.skipped += 1;
-            self.dirty = true;
+            self.due.dirty = true;
+            self.due.held(pixels);
             self.undrawn = false;
             return;
         }
-        self.dirty = false;
+        self.due.dirty = false;
         let scene = self.host.scene();
-        if !self.stale && self.last.as_ref() == Some(&scene) {
+        if !self.due.frame(pixels, self.last.as_ref() == Some(&scene)) {
             return;
         }
         let start = Instant::now();
@@ -670,7 +754,7 @@ impl Shell {
         match presented {
             Ok(Some(presented)) => {
                 self.resized = false;
-                self.stale = false;
+                self.due.stale = false;
                 self.last_error = None;
                 let Presented {
                     w,
@@ -697,9 +781,9 @@ impl Shell {
                 }
             }
             // `about_to_wait` wakes again for it.
-            Ok(None) => self.stale = true,
+            Ok(None) => self.due.stale = true,
             Err(e) => {
-                self.stale = true;
+                self.due.stale = true;
                 if self.last_error.as_ref() != Some(&e) {
                     self.host.ctx.messages.push(e.clone());
                     self.last_error = Some(e);
@@ -724,7 +808,7 @@ impl Shell {
         }
         live.scale = scale;
         live.px = (0, 0);
-        self.dirty = true;
+        self.due.dirty = true;
     }
 }
 
@@ -744,8 +828,8 @@ impl ApplicationHandler<Wake> for Shell {
             return;
         }
         match event {
-            WindowEvent::Resized(_) | WindowEvent::RedrawRequested => self.dirty = true,
-            WindowEvent::Occluded(false) => self.dirty = true,
+            WindowEvent::Resized(_) | WindowEvent::RedrawRequested => self.due.dirty = true,
+            WindowEvent::Occluded(false) => self.due.dirty = true,
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => self.set_scale(scale_factor),
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Focused(on) => self.told_focus(on),

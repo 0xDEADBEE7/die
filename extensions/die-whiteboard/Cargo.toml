@@ -1,0 +1,25 @@
+[package]
+name = "die-whiteboard"
+description = "A whiteboard in a DIE buffer: freehand ink, shapes, arrows and labels, saved as SVG and exported as PNG (scope D14)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# An extension, outside the product: it depends on die-core only, never on `die` or die-render,
+# so it stays platform-neutral (`cargo xtask lint` checks). It moves to its own repository at M4.
+# tiny-skia stays behind canvas.rs and fontdue behind fonts.rs, so a second pixel extension can
+# lift them into a shared crate (scope §9, the rule of two).
+[dependencies]
+die-core.workspace = true
+tiny-skia.workspace = true
+png.workspace = true
+fontdue.workspace = true
+
+[dev-dependencies]
+die-test-cap.workspace = true
+die-vim.workspace = true
+
+[lints]
+workspace = true
