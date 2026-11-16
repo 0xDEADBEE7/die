@@ -104,14 +104,47 @@ pub fn config(files: Vec<PathBuf>) -> die::Config {
     }
 }
 
+/// `config`, for a run you look at, which opens on your jellyfish. `main` calls this for the two
+/// real runs only, so `config` itself stays what `--check` and the tests know: a still text
+/// buffer and no timer.
+///
+/// Your startup hook runs first, and an error of its own is what comes back, the jellyfish's only
+/// when yours had none. Then the `jellyfish` command runs when all of these hold:
+/// - no file was named, as `config.files` stands when this is called;
+/// - at most one window exists, so it never stands over a session's splits, where it would cost
+///   you one at the next restore, a window on it not coming back;
+/// - `launch` is a fresh one (no `--handover`, `--restart-loop` or `--restart-after-frame`), or
+///   nothing has the focus, as after a restart that brought nothing back, where it stands in for
+///   `*scratch*`.
+///
+/// So a cold start is the jellyfish alone, over a session that restored one window it covers
+/// that window until `q`, and `:rebuild` shows what was there.
+pub fn greeted(mut config: die::Config, launch: &Launch) -> die::Config {
+    let no_files = config.files.is_empty();
+    let fresh = launch.handover.is_none() && !launch.restart_loop && !launch.restart_after_frame;
+    let before = config.core.startup.take();
+    config.core.startup = Some(Box::new(move |ctx| {
+        let done = before.map_or(Ok(()), |hook| hook(ctx));
+        if no_files && ctx.window_list().len() <= 1 && (fresh || ctx.focused().is_none()) {
+            let shown = ctx.run("jellyfish", &die::core::Args::default());
+            return done.and(shown);
+        }
+        done
+    }));
+    config
+}
+
 /// The packages your `init.el` loads, as DIE has them: emacs-orchid-client's port, with its
 /// defaults, as you set none of its options. It finds `orchid` on your login shell's PATH, which
 /// has `~/.local/bin`, as `init.el` adds it to `exec-path`. And the whiteboard, with its defaults:
-/// PNGs at 2x on the theme's background, the fonts where DIE's are.
+/// PNGs at 2x on the theme's background, the fonts where DIE's are. And your jellyfish, with its
+/// defaults: the water's dust and twinkles but no shoal, the window's whole width, and at rest
+/// after five minutes without a key. Registering it shows nothing: `greeted` does that.
 pub fn extensions() -> Vec<Box<dyn die::core::Extension>> {
     vec![
         Box::new(die_orchid_client::Orchid::default()),
         Box::new(die_whiteboard::Whiteboard::default()),
+        Box::new(die_jellyfish::Jellyfish::default()),
     ]
 }
 
