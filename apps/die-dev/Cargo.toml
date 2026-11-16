@@ -20,6 +20,8 @@ die.workspace = true
 die-orchid-client.workspace = true
 # The whiteboard: freehand, shapes and arrows, saved as SVG, exported as PNG (scope D14).
 die-whiteboard.workspace = true
+# Your ASCII jellyfish, the buffer DIE starts on (scope D14).
+die-jellyfish.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true
