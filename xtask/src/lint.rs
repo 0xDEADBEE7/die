@@ -91,6 +91,7 @@ const NEUTRAL: &[(&str, &[&str])] = &[
     ("tools/test-cap", &[]),
     ("extensions/die-orchid-client", &[]),
     ("extensions/die-whiteboard", &[]),
+    ("extensions/die-jellyfish", &[]),
     (
         "crates/die-render",
         &[

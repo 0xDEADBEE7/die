@@ -10,6 +10,7 @@ members = [
     "apps/die-dev",
     "extensions/die-orchid-client",
     "extensions/die-whiteboard",
+    "extensions/die-jellyfish",
     "tools/evil-oracle",
     "tools/test-cap",
     "xtask",
@@ -24,6 +25,7 @@ default-members = [
     "apps/die-dev",
     "extensions/die-orchid-client",
     "extensions/die-whiteboard",
+    "extensions/die-jellyfish",
 ]
 
 [workspace.package]
@@ -43,6 +45,7 @@ die = { path = "crates/die" }
 # Your packages' ports, built here under extensions/, outside the product and its budget (scope D14).
 die-orchid-client = { path = "extensions/die-orchid-client" }
 die-whiteboard = { path = "extensions/die-whiteboard" }
+die-jellyfish = { path = "extensions/die-jellyfish" }
 evil-oracle = { path = "tools/evil-oracle" }
 die-test-cap = { path = "tools/test-cap" }
 

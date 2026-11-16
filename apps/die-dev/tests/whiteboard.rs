@@ -12,7 +12,11 @@ use std::path::PathBuf;
 fn harness() -> Harness {
     let config = die_dev::config(vec![]);
     let names: Vec<&str> = config.extensions.iter().map(|e| e.name()).collect();
-    assert_eq!(names, ["orchid", "whiteboard"], "your config's extensions");
+    assert_eq!(
+        names,
+        ["orchid", "whiteboard", "jellyfish"],
+        "your config's extensions"
+    );
     let mut exts = die::built_in();
     exts.extend(config.extensions);
     let mut h = Harness::with_config(exts, config.core).unwrap();

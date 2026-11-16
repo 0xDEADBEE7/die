@@ -19,13 +19,18 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // A run you look at opens on the jellyfish when no file is named (`greeted` says when). A
+    // check takes your config as it is: its first buffer is still, and has text.
     let code = match (args.check, die::app::bundle()) {
         (None, Some(bundle)) if die::app::is_client(&args.launch) => {
             die::app::client(&bundle, args.files, &args.launch)
         }
         (Some(names), _) => die::check(die_dev::config(args.files), names),
-        (None, Some(bundle)) => die::app::run(die_dev::config(args.files), bundle, args.launch),
-        (None, None) => die::run(die_dev::config(args.files)),
+        (None, Some(bundle)) => {
+            let config = die_dev::greeted(die_dev::config(args.files), &args.launch);
+            die::app::run(config, bundle, args.launch)
+        }
+        (None, None) => die::run(die_dev::greeted(die_dev::config(args.files), &args.launch)),
     };
     ExitCode::from(code.clamp(0, 255) as u8)
 }
