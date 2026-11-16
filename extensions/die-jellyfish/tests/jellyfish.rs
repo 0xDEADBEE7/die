@@ -3,7 +3,10 @@
 
 use die_test_cap as _;
 
-use die_core::{Args, Config, Extension, Glyph, Harness, Rgb, Settings, Style, Theme};
+use die_core::{
+    Args, Config, Extension, Glyph, Harness, Input, Key, KeyEvent, KeyLog, Mods, PointerKind, Rgb,
+    Settings, Style, Theme,
+};
 use die_jellyfish::sea::{Extras, Sea, Tones};
 use die_jellyfish::{Jellyfish, NAME, TICK};
 use die_vim::Vim;
@@ -154,6 +157,19 @@ fn it_swims_while_shown_rests_after_five_idle_minutes_wakes_at_a_key_and_leaves_
     h.advance(TICK);
     assert!(on_screen(&mut h, DARK) == at_frame(9091, DARK, TEXT));
 
+    // So do a key nobody takes, which ends no command, and the pointer on it; and losing the
+    // keyboard doesn't stop it.
+    h.advance(Duration::from_secs(300));
+    assert_eq!(h.next_timer(), None, "at rest again");
+    assert_eq!(h.type_keys("x").unwrap()[0].errors, ["x is undefined"]);
+    assert_eq!(h.next_timer(), Some(h.now() + TICK), "a key on it");
+    h.advance(Duration::from_secs(300));
+    assert_eq!(h.next_timer(), None, "and again");
+    h.pointer(PointerKind::Move, 10, 10);
+    assert_eq!(h.next_timer(), Some(h.now() + TICK), "the pointer on it");
+    h.send(Input::Focus(false));
+    assert_eq!(h.next_timer(), Some(h.now() + TICK), "without the keyboard");
+
     let buf = h.find_buffer(NAME).unwrap();
     h.kill(buf);
     assert_eq!(h.next_timer(), None, "killed");
@@ -161,12 +177,20 @@ fn it_swims_while_shown_rests_after_five_idle_minutes_wakes_at_a_key_and_leaves_
 }
 
 #[test]
-fn q_lets_it_go_to_the_buffer_beneath_colon_and_c_w_work_esc_is_silent_and_i_is_undefined() {
+fn q_uncovers_the_buffer_beneath_colon_c_w_and_c_o_work_esc_is_silent_and_i_is_undefined() {
     let mut h = harness();
     show(&mut h);
-    let log = h.type_keys("i<Esc>").unwrap();
+    let log = h.type_keys("i<Esc><C-w><Esc>").unwrap();
     assert_eq!(log[0].errors, ["i is undefined"], "as on any surface");
-    assert_eq!(log[1].errors, Vec::<String>::new(), "Esc in normal state");
+    let quiet = |log: &[KeyLog]| log.iter().all(|key| key.errors.is_empty());
+    assert!(quiet(&log[1..]), "Esc in normal state, and after C-w");
+    // Ctrl-[ as the OS sends it, `[` with Ctrl held: notation would make it Esc before core did.
+    let ctrl = Mods {
+        ctrl: true,
+        ..Mods::default()
+    };
+    let bracket = KeyEvent::press(Key::Char('[')).mods(ctrl);
+    assert_eq!(h.send(Input::Key(bracket)), Vec::<String>::new());
 
     h.type_keys("<C-w>v").unwrap();
     assert_eq!(h.window_list().len(), 2, "C-w v");
@@ -174,21 +198,36 @@ fn q_lets_it_go_to_the_buffer_beneath_colon_and_c_w_work_esc_is_silent_and_i_is_
     assert_eq!(h.window_list().len(), 1, "C-w c");
     h.type_keys(":b notes<CR>").unwrap();
     assert_eq!(showing(&h), "notes", "`:` is the command line");
+    // A buffer made since notes was shown is the newer, and the jellyfish covers the one in use
+    // all the same: C-o, which is C-^ here, goes back to the notes.
+    h.create_text("made since", "");
     h.type_keys(":jellyfish<CR>").unwrap();
     assert_eq!(showing(&h), NAME);
+    assert!(quiet(&h.type_keys("<C-o>").unwrap()));
+    assert_eq!(showing(&h), "notes", "C-o");
+    h.type_keys(":jellyfish<CR>").unwrap();
 
-    // q: the buffer goes, and the one it was shown over is back.
-    h.type_keys("q").unwrap();
+    // q: the buffer goes, and the one it was shown over is back, though a buffer made behind
+    // the jellyfish meanwhile is the one used last.
+    h.create_text("behind", "");
+    assert!(quiet(&h.type_keys("q").unwrap()), "q");
     assert_eq!(showing(&h), "notes");
     assert_eq!(h.find_buffer(NAME), None);
     assert_eq!(h.next_timer(), None);
 
-    // The next one starts at its first spark; and with no buffer beneath it, q leaves core's
-    // own empty one.
+    // The next one starts at its first spark. Its window leaves it and comes back by C-^, so
+    // what it covered is forgotten, and q shows the buffer used last, as for any buffer.
     show(&mut h);
     assert!(on_screen(&mut h, DARK) == at_frame(0, DARK, TEXT));
-    let notes = h.find_buffer("notes").unwrap();
-    h.kill(notes);
-    h.type_keys("q").unwrap();
+    assert!(quiet(&h.type_keys(":b behind<CR><C-^>q").unwrap()));
+    assert_eq!(showing(&h), "behind");
+
+    // With no buffer beneath it, q leaves core's own empty one.
+    show(&mut h);
+    for name in ["notes", "made since", "behind"] {
+        let buf = h.find_buffer(name).unwrap();
+        h.kill(buf);
+    }
+    assert!(quiet(&h.type_keys("q").unwrap()));
     assert_eq!(showing(&h), "*scratch*");
 }

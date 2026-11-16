@@ -5,7 +5,7 @@ use crate::sea::{Extras, Sea, Tones};
 use crate::{KIND, TICK};
 use die_core::{
     BufferId, Color, Ctx, Event, Frame, FrameCell, Glyph, Key, KeyEvent, Mods, RenderInfo, Rgb,
-    Sub, Surface,
+    Sub, Surface, WindowId,
 };
 use std::time::Duration;
 
@@ -41,6 +41,9 @@ pub(crate) struct Swim {
     /// What the frame core keeps already shows: the moment, columns, rows, a cell's shape, the
     /// tones and the extras.
     drawn: Option<(Duration, usize, usize, f64, Tones, Extras)>,
+    /// The window `jellyfish` put it in and the buffer that window showed until then, which is
+    /// what `q` uncovers, for as long as the window stays on the jellyfish.
+    pub(crate) covered: Option<(WindowId, BufferId)>,
 }
 
 /// The theme's `default` face as the sea takes colours, with core's own where the theme names
@@ -60,9 +63,11 @@ fn shown(ctx: &Ctx, buf: BufferId) -> bool {
     windows.iter().any(|w| ctx.window_buffer(*w) == Some(buf))
 }
 
-/// Esc with no modifier, which does nothing in normal state and says nothing.
+/// Esc with no modifier, as a keymap reads it, so Ctrl-[ too: it does nothing in normal state and
+/// says nothing.
 fn plain_esc(key: &KeyEvent) -> bool {
-    key.key == Key::Esc && key.mods == Mods::default()
+    let chord = key.chord();
+    chord.key == Key::Esc && chord.mods == Mods::default()
 }
 
 impl Swim {
@@ -78,13 +83,25 @@ impl Swim {
             rest_after,
             life: Life::Hidden,
             drawn: None,
+            covered: None,
         }
+    }
+
+    /// What it covers still. A window that has shown something else since comes back to the
+    /// jellyfish as to any buffer, from the one used last, so what it covered once is forgotten:
+    /// every tick, wake and event asks, which is as soon as the window is seen on another buffer.
+    pub(crate) fn covering(&mut self, ctx: &Ctx) -> Option<(WindowId, BufferId)> {
+        let buf = self.buf;
+        let stays = |(w, _): &(WindowId, BufferId)| ctx.window_buffer(*w) == Some(buf);
+        self.covered = self.covered.filter(stays);
+        self.covered
     }
 
     /// Swim, if a window shows it: from where it stopped, the time away not counted. Called when
     /// `jellyfish` has shown it, when a window takes it, and at anything you do to it or, while
     /// it rests, to DIE.
     pub(crate) fn wake(&mut self, ctx: &mut Ctx) {
+        self.covering(ctx);
         if matches!(self.life, Life::Swimming { .. }) {
             return;
         }
@@ -114,12 +131,16 @@ impl Swim {
     /// One frame on, in the theme's colours as they are now; or with no window showing it,
     /// nothing running until one does.
     fn tick(&mut self, ctx: &mut Ctx) {
+        self.covering(ctx);
         if !shown(ctx, self.buf) {
             self.life = Life::Hidden;
             return;
         }
         let now = ctx.now();
-        self.t += now.saturating_sub(self.last).min(STALL);
+        // A new one's first tick is one frame, however long its window took to open: at a launch
+        // it's shown before DIE has a window, and the opening would start a quarter second in.
+        let most = if self.t.is_zero() { TICK } else { STALL };
+        self.t += now.saturating_sub(self.last).min(most);
         self.last = now;
         self.tones = tones(ctx);
     }
@@ -179,6 +200,7 @@ impl Surface for Swim {
     /// window opens without the keyboard, and the buffer DIE starts on would open on an empty
     /// frame.
     fn event(&mut self, ev: &Event, ctx: &mut Ctx) -> bool {
+        self.covering(ctx);
         let stirs = matches!(
             ev,
             Event::Resize { .. } | Event::Focus(true) | Event::Pointer(_) | Event::Key(_)

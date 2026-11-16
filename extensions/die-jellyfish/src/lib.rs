@@ -88,18 +88,32 @@ impl Jellyfish {
     }
 
     /// `jellyfish`: the one swimming, or a new one, in this window, and awake.
-    fn show(&mut self, ctx: &mut Ctx, _: &Args) -> Result {
+    fn show(&mut self, ctx: &mut Ctx, a: &Args) -> Result {
         let buf = match self.buf.filter(|b| ctx.is_live(*b)) {
             Some(buf) => buf,
             None => self.hatch(ctx)?,
         };
         // As `die::start` puts its first buffer on screen.
-        if ctx.focused().is_some() {
-            ctx.show(buf, ShowIn::Current)?;
+        let before = ctx.focused().and_then(|w| Some((w, ctx.window_buffer(w)?)));
+        let mut covered = None;
+        if let Some((over, was)) = before {
+            // The buffer about to be covered is the one in use, whatever was made since it was
+            // shown, so a quit or `:rebuild` with the jellyfish up comes back on it. Focusing
+            // the focused window says so, and moves nothing; not for another window's command.
+            if a.window.is_none_or(|w| w == over) {
+                ctx.focus(over);
+            }
+            let w = ctx.show(buf, ShowIn::Current)?;
+            // What `q` uncovers. Core's "used last" isn't always it: a buffer made behind the
+            // jellyfish, as orchid's log is, is the newer.
+            covered = (w == Some(over) && was != buf).then_some((over, was));
         } else {
             ctx.open_window(buf, 80, 24)?;
         }
-        ctx.with_surface(buf, |s: &mut Swim, ctx| s.wake(ctx))?;
+        ctx.with_surface(buf, |s: &mut Swim, ctx| {
+            s.covered = covered.or(s.covered);
+            s.wake(ctx);
+        })?;
         Ok(())
     }
 
@@ -121,8 +135,26 @@ impl Jellyfish {
     }
 
     /// `jellyfish-close`: the buffer goes, and with it the timer and the moment it had reached.
-    fn close(&mut self, ctx: &mut Ctx, _: &Args) -> Result {
-        if let Some(buf) = self.buf.take() {
+    /// The window `jellyfish` put it in, if this is that window and it has stayed on the
+    /// jellyfish, goes back to the buffer it covered. Any other window showing it, and that one
+    /// otherwise, shows what core gives a killed buffer's window: the buffer used last.
+    fn close(&mut self, ctx: &mut Ctx, a: &Args) -> Result {
+        let Some(buf) = self.buf.take() else {
+            return Ok(());
+        };
+        let covered = ctx.with_surface(buf, |s: &mut Swim, ctx| s.covering(ctx));
+        // A covered buffer killed meanwhile can't be shown, and the window is core's to fill.
+        if let Ok(Some((w, was))) = covered
+            && a.window.or(ctx.focused()) == Some(w)
+            && ctx.show(was, ShowIn::Current).is_ok()
+        {
+            // The window has left it, and core has queued telling it so (`Focus(false)`). It goes
+            // after that, in the same turn: told when already gone, core would report an error.
+            ctx.defer(move |ctx| {
+                ctx.kill(buf);
+                Ok(())
+            });
+        } else {
             ctx.kill(buf);
         }
         Ok(())
@@ -131,8 +163,10 @@ impl Jellyfish {
 
 /// die-vim's `C-w` keys, a copy of die-whiteboard's table, which copies die-vim's own: a
 /// surface without text inherits none of die-vim's keys, since those are the text kind's, and an
-/// extension depends on die-core alone, so it can't ask die-vim for them.
-const WINDOW_KEYS: [(&str, &str); 32] = [
+/// extension depends on die-core alone, so it can't ask die-vim for them. Less the whiteboard's
+/// `<Esc>` row: `vim-cancel` wants a buffer with text and says so here, where with no row core
+/// drops the prefix and the count, and the surface takes the Esc in silence.
+const WINDOW_KEYS: [(&str, &str); 31] = [
     ("h <C-h> <Left> <C-Left>", "vim-window-left"),
     ("j <C-j> <Down> <C-Down>", "vim-window-down"),
     ("k <C-k> <Up> <C-Up>", "vim-window-up"),
@@ -164,7 +198,6 @@ const WINDOW_KEYS: [(&str, &str); 32] = [
     ("x <C-x>", "vim-window-exchange"),
     (":", "vim-window-ex"),
     ("0 1 2 3 4 5 6 7 8 9", "vim-window-digit-argument"),
-    ("<Esc>", "vim-cancel"),
 ];
 
 impl Extension for Jellyfish {
@@ -180,19 +213,21 @@ impl Extension for Jellyfish {
         );
         reg.ext_command(
             "jellyfish-close",
-            "q: let the jellyfish go. Its window shows the buffer you used last, or an empty one.",
+            "q: let the jellyfish go. Its window shows the buffer it covered, or the one used last.",
             Jellyfish::close,
         );
         // The keys a buffer can't do without, bound as die-whiteboard binds them for its own
-        // surface. ZZ has nothing to write here, so it's ZQ. Any other key is undefined, as on
-        // any surface, and no leader key is taken.
+        // surface. ZZ has nothing to write here, so it's ZQ. C-o is C-^: die-vim's jump list
+        // starts from a text cursor, which a jellyfish hasn't, and the buffer used before is
+        // where the first C-o from here would go. Any other key is undefined, as on any surface,
+        // and no leader key is taken.
         use State::Normal;
         let k = reg.kind_keymap(KIND);
         k.bind(Normal, "q", "jellyfish-close")
             .bind(Normal, "ZZ", "vim-quit")
             .bind(Normal, "ZQ", "vim-quit")
             .bind(Normal, "<C-^>", "vim-alternate-buffer")
-            .bind(Normal, "<C-o>", "vim-jump-backward")
+            .bind(Normal, "<C-o>", "vim-alternate-buffer")
             .bind(Normal, ":", "vim-ex");
         for (keys, name) in WINDOW_KEYS {
             for key in keys.split_whitespace() {

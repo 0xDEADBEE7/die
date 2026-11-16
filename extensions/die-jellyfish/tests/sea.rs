@@ -126,12 +126,13 @@ const STILL: &str = r#"
 #[test]
 fn a_moment_is_one_picture_whatever_was_drawn_before() {
     // One sea draws moments out of order, at three sizes, on two papers, with and without its
-    // extras: each is what a new sea draws, down to the colour of a cell with nothing in it.
+    // extras: each is what a new sea draws, down to the colour of a cell with nothing in it. A
+    // size stays for several draws, since a new size is new cells, with nothing drawn before.
     let sizes = [(100, 40), (80, 24), (50, 30)];
     let moments = [18.6, 0.6, 9.6, 3.4, 303.0, 0.0, 18.6, 44.0, 2.5, 9.6];
     let mut old = Sea::new();
     for (i, t) in moments.into_iter().enumerate() {
-        let (cols, rows) = sizes[i % 3];
+        let (cols, rows) = sizes[i / 4];
         let (paper, text) = if i % 2 == 0 { DARK } else { LIGHT };
         let tones = Tones::for_theme(paper, text);
         let extras = Extras {
