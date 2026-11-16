@@ -107,6 +107,12 @@ extension = true
 note = "an extension, outside guard 7: the whiteboard (freehand, shapes, arrows, SVG and PNG)"
 
 [[crate]]
+name = "die-jellyfish"
+path = "extensions/die-jellyfish"
+extension = true
+note = "an extension, outside guard 7: your ASCII jellyfish, the buffer DIE starts on"
+
+[[crate]]
 name = "xtask"
 path = "xtask"
 dev = true

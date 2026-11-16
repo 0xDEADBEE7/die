@@ -333,9 +333,19 @@ name = "die-dev"
 version = "0.0.0"
 dependencies = [
  "die",
+ "die-jellyfish",
  "die-orchid-client",
  "die-test-cap",
  "die-whiteboard",
+]
+
+[[package]]
+name = "die-jellyfish"
+version = "0.0.0"
+dependencies = [
+ "die-core",
+ "die-test-cap",
+ "die-vim",
 ]
 
 [[package]]
