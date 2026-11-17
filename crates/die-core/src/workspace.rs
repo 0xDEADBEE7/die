@@ -187,23 +187,10 @@ impl Ctx {
             let next = self.other_buffer();
             self.set_window_buffer(w, next);
         }
-        let hooks: Vec<_> = self
-            .subs
-            .iter()
-            .filter_map(|e| match &e.kind {
-                SubKind::Killed(f) if e.inner.alive.get() => Some((e.inner.clone(), f.clone())),
-                _ => None,
-            })
-            .collect();
-        for (inner, f) in hooks {
-            let ext = inner.ext;
-            self.queue.push_back(Queued {
-                ext,
-                alive: Some(inner),
-                keyed: false,
-                f: Box::new(move |ctx| (f.borrow_mut())(ctx, buf)),
-            });
-        }
+        self.queue_buffer_hooks(buf, |k| match k {
+            SubKind::Killed(f) => Some(f),
+            _ => None,
+        });
         true
     }
     /// The buffer a window goes to when its own dies.
