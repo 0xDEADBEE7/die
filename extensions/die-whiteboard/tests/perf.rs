@@ -1,7 +1,8 @@
 //! A board of 1,000 strokes: how long opening it, a key, a pointer sample during a stroke (its
 //! segment rasterized and presented), a full re-raster, a wheel pan, a hover change on the tool
-//! dial and a full cell render take. The numbers are printed (`--nocapture`) and held to loose
-//! budgets, since the test profile is lightly optimized and the machine may be busy.
+//! dial and a move of its needle, and a full cell render take. The numbers are printed
+//! (`--nocapture`) and held to loose budgets, since the test profile is lightly optimized and
+//! the machine may be busy.
 
 use die_test_cap as _;
 
@@ -49,6 +50,7 @@ struct Numbers {
     pan: Duration,
     move_sample: Duration,
     hover: Duration,
+    needle: Duration,
 }
 
 /// Open the board, press a key, draw a stroke timing its third sample, draw it all again, and
@@ -100,8 +102,9 @@ fn measure(options: Options) -> (Numbers, usize) {
     s.h.scene();
     let pan = t.elapsed();
     keys(&mut s.h, "0");
-    // The tool dial over the middle of the board: a move that changes the hovered sector costs
-    // the dial's own rectangle put back and drawn again, never the picture under it.
+    // The tool dial over the middle of the board: a move that changes the hovered sector draws
+    // the dial's still part again over its own rectangle of the picture, never the picture
+    // under it; a move within the sector puts back and draws only what follows the pointer.
     let space = KeyEvent::press(Key::Char(' '));
     pointer(
         &mut s,
@@ -124,13 +127,13 @@ fn measure(options: Options) -> (Numbers, usize) {
     pointer(
         &mut s,
         PointerKind::Move,
-        (230.0, 140.0),
+        (227.0, 140.0),
         Mods::default(),
         0,
     );
     s.h.scene();
     let hover = t.elapsed();
-    let presents: Vec<_> =
+    let presents = |s: &mut Setup| -> Vec<_> {
         s.h.fake_pixels()
             .take_calls()
             .into_iter()
@@ -138,11 +141,26 @@ fn measure(options: Options) -> (Numbers, usize) {
                 PixelSinkCall::Present(_, r) => Some(r),
                 _ => None,
             })
-            .collect();
+            .collect()
+    };
+    let changed = presents(&mut s);
+    let t = Instant::now();
+    pointer(
+        &mut s,
+        PointerKind::Move,
+        (228.0, 142.0),
+        Mods::default(),
+        0,
+    );
+    s.h.scene();
+    let needle = t.elapsed();
+    let moved = presents(&mut s);
     if pixels {
-        assert_eq!(presents.len(), 1, "{presents:?}");
-        // The disc is 60 board units across, 120 px at 2x, with 2 px of edge around.
-        assert_eq!((presents[0].width, presents[0].height), (124, 124));
+        // One present each, the dial's square, a small part of the 1,000 × 600 picture.
+        for p in [&changed, &moved] {
+            assert_eq!(p.len(), 1, "{p:?}");
+            assert!(p[0].width < 400 && p[0].height < 400, "{p:?}");
+        }
     }
     assert!(
         s.h.send(Input::Key(space.kind(KeyKind::Release)))
@@ -194,6 +212,7 @@ fn measure(options: Options) -> (Numbers, usize) {
             pan,
             move_sample,
             hover,
+            needle,
         },
         text.len(),
     )
@@ -204,7 +223,7 @@ fn a_thousand_strokes_open_key_sample_and_render_within_budget() {
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     let (px, bytes) = measure(Whiteboard::for_tests().options);
     println!(
-        "1,000 strokes in pixels: open {:.1} ms, key {:.1} ms, pointer sample (rasterize + present) {:.2} ms, full re-raster {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection of most of them {:.1} ms, a hover change on the dial {:.2} ms ({bytes} bytes of SVG)",
+        "1,000 strokes in pixels: open {:.1} ms, key {:.1} ms, pointer sample (rasterize + present) {:.2} ms, full re-raster {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection of most of them {:.1} ms, a hover change on the dial {:.2} ms and a move of its needle {:.2} ms ({bytes} bytes of SVG)",
         ms(px.opened),
         ms(px.key),
         ms(px.sample),
@@ -212,13 +231,14 @@ fn a_thousand_strokes_open_key_sample_and_render_within_budget() {
         ms(px.pan),
         ms(px.move_sample),
         ms(px.hover),
+        ms(px.needle),
     );
     let (cells, _) = measure(Options {
         pixels: false,
         ..Whiteboard::for_tests().options
     });
     println!(
-        "1,000 strokes in cells: open {:.1} ms, key {:.1} ms, pointer sample {:.2} ms, full cell render {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection {:.1} ms, a hover change on the dial {:.2} ms",
+        "1,000 strokes in cells: open {:.1} ms, key {:.1} ms, pointer sample {:.2} ms, full cell render {:.1} ms, wheel pan {:.1} ms, a sample dragging a selection {:.1} ms, a hover change on the dial {:.2} ms and a move of its needle {:.2} ms",
         ms(cells.opened),
         ms(cells.key),
         ms(cells.sample),
@@ -226,6 +246,7 @@ fn a_thousand_strokes_open_key_sample_and_render_within_budget() {
         ms(cells.pan),
         ms(cells.move_sample),
         ms(cells.hover),
+        ms(cells.needle),
     );
     for n in [&px, &cells] {
         assert!(
@@ -234,6 +255,11 @@ fn a_thousand_strokes_open_key_sample_and_render_within_budget() {
             n.move_sample
         );
         assert!(n.hover < Duration::from_millis(100), "hover {:?}", n.hover);
+        assert!(
+            n.needle < Duration::from_millis(100),
+            "needle {:?}",
+            n.needle
+        );
         assert!(n.opened < Duration::from_millis(500), "open {:?}", n.opened);
         assert!(n.key < Duration::from_millis(200), "key {:?}", n.key);
         assert!(

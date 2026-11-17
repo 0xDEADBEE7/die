@@ -1,12 +1,23 @@
 //! The tool dial on the harness: Space held and a direction arm the tool as its key would, the
 //! dead zone and a repeat change nothing, a click while it's open picks and leaves no dot, Esc,
 //! the focus going, a resize and any other key close it, Space types into a label and does
-//! nothing mid-gesture, the cells screen shows the eight names with the hovered one reversed,
-//! the pixel renderer draws the disc over the picture and presents its rectangle alone,
-//! describe-key answers for Space, and the right button held is the dial too, erasing nothing.
-//! After the review: the dial opens under the pointer after the wheel or a zoom moved the board,
-//! a right click mid-gesture ends nothing, Shift joining Space held changes nothing, and the
-//! focus passing between two windows on the board leaves the dial open.
+//! nothing mid-gesture, describe-key answers for Space, and the right button held is the dial
+//! too, erasing nothing. After the review: the dial opens under the pointer after the wheel or a
+//! zoom moved the board, a right click mid-gesture ends nothing, Shift joining Space held changes
+//! nothing, and the focus passing between two windows on the board leaves the dial open.
+//!
+//! The dial after the reel: past the ring, an inky tool's ink arc sets the ink and width as the
+//! keys would, one entry for a selection and none when nothing changes, and stage one never
+//! changes them; the cells screen shows the names around a `+`, the hovered one a chip in the
+//! accent, the readout under them, and in stage two the inks as swatches; the pixel renderer
+//! draws line art and a scrim, no disc, over the picture, keeps the chip's pixels clear, and on
+//! a move draws again and presents only the dial's rectangle; and the colours are the theme's
+//! `whiteboard-dial` faces.
+//!
+//! After the review: a flick that lands past the ring, in one move or into the arc's first
+//! band, picks the tool alone and leaves a selection as it was; the preview dot is a disc, not
+//! a ring; a pointer dragged far past the dial's square leaves nothing out there; and a label
+//! under the dial dims whole.
 
 use die_test_cap as _;
 
@@ -15,9 +26,9 @@ mod common;
 use common::*;
 use die_core::{
     Button, Input, Key, KeyAction, KeyEvent, KeyKind, Mods, PixelRect, PixelSinkCall, PointerKind,
-    State,
+    Rgb, State, Style, Theme,
 };
-use die_whiteboard::dial::{Dial, Opener};
+use die_whiteboard::dial::{Dial, Opener, Stage, toward};
 use die_whiteboard::model::Shape;
 use die_whiteboard::surface::Tool;
 
@@ -72,8 +83,8 @@ fn space_held_and_a_direction_arm_the_tool_as_its_key_would() {
     );
     assert_eq!(
         (d.radius, d.dead),
-        (30.0, 10.0),
-        "three cell heights, one cell's larger side"
+        (25.0, 10.0),
+        "the ring two and a half cell heights out, the dead zone a cell's larger side"
     );
     mv(&mut s, (120.0, 80.0));
     assert_eq!(dial(&mut s).unwrap().hovered, Some(1), "north-east: rect");
@@ -109,7 +120,7 @@ fn space_held_and_a_direction_arm_the_tool_as_its_key_would() {
     // Repeats of Space change nothing: the dial stays, hovering where it was.
     mv(&mut s, (100.0, 100.0));
     space(&mut s, KeyKind::Press);
-    mv(&mut s, (100.0, 130.0));
+    mv(&mut s, (100.0, 127.0));
     space(&mut s, KeyKind::Repeat);
     space(&mut s, KeyKind::Repeat);
     assert_eq!(dial(&mut s).unwrap().hovered, Some(4), "south: line");
@@ -140,8 +151,8 @@ fn a_click_while_open_picks_and_leaves_no_dot() {
     let mut s = setup("dial-click");
     mv(&mut s, (100.0, 100.0));
     space(&mut s, KeyKind::Press);
-    mv(&mut s, (100.0, 130.0));
-    click(&mut s, (100.0, 130.0));
+    mv(&mut s, (100.0, 127.0));
+    click(&mut s, (100.0, 127.0));
     assert_eq!(dial(&mut s), None, "the click picked");
     assert_eq!(tool(&mut s), Tool::Line);
     assert_eq!(elements(&mut s.h, s.buf).len(), 0, "no dot");
@@ -234,47 +245,344 @@ fn space_types_into_a_label_and_does_nothing_mid_gesture() {
     assert_eq!(tool(&mut s), Tool::Pen);
 }
 
+/// The default theme's colours the dial takes: `shadow`'s grey, the ANSI red, the background,
+/// and ink 3, the ANSI yellow.
+const FACE: Rgb = Rgb(0x70, 0x70, 0x70);
+const ACCENT: Rgb = Rgb(0xcd, 0x00, 0x00);
+const BG: Rgb = Rgb(0x10, 0x10, 0x10);
+const YELLOW: Rgb = Rgb(0xcd, 0xcd, 0x00);
+
+/// The board's tool, ink and width.
+fn armed(s: &mut Setup) -> (Tool, u8, u8) {
+    let b = board(&mut s.h, s.buf);
+    let b = b.borrow();
+    (b.tool, b.ink, b.width)
+}
+
+/// The frame's cell at a row and column of the area.
+fn cell(s: &mut Setup, row: usize, col: usize) -> die_core::Cell {
+    let (r0, c0) = origin(&mut s.h, s.win);
+    s.h.scene().row(r0 + row)[c0 + col].clone()
+}
+
+/// The point `r` units out from (100, 100), `deg` clockwise from north.
+fn out(deg: f32, r: f32) -> (f32, f32) {
+    let p = toward(deg) * r;
+    (100.0 + p.x, 100.0 + p.y)
+}
+
 #[test]
-fn the_cells_screen_shows_the_eight_names_with_the_hovered_one_reversed() {
-    let mut s = setup_cells("dial-cells");
-    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
-    // The centre at cell (20, 10): the names on whole cells around it.
+fn past_the_ring_the_ink_arc_sets_the_ink_and_width_as_the_keys_would() {
+    let mut s = setup("dial-ink");
+    // Stage one never changes them: north, inside where stage two opens (30), arms the pen as
+    // it is.
     mv(&mut s, (100.0, 100.0));
     space(&mut s, KeyKind::Press);
-    mv(&mut s, (120.0, 80.0));
+    mv(&mut s, (100.0, 76.0));
+    assert_eq!(dial(&mut s).unwrap().stage, Stage::Tools);
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Pen, 1, 1));
+    // Nor does the arc's first band, from 30 to 42.5: the arc is open, nothing is picked, and
+    // the dot is the accent's.
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (100.0, 85.0));
+    mv(&mut s, out(15.0, 38.0));
+    assert_eq!(dial(&mut s).unwrap().stage, Stage::Arc);
+    let dot = pixel_at(&mut s, out(15.0, 38.0)).unwrap();
+    assert_eq!(dot, [ACCENT.0, ACCENT.1, ACCENT.2, 255]);
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Pen, 1, 1));
+    // Past it, straight out keeps the ink, and the distance picks the width: thick from 67.5.
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (100.0, 85.0));
+    mv(&mut s, (100.0, 30.0));
+    let d = dial(&mut s).unwrap();
+    assert_eq!(
+        (d.tool(), d.stage),
+        (
+            Some(Tool::Pen),
+            Stage::Ink {
+                ink: 1,
+                width: Some(2)
+            }
+        )
+    );
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Pen, 1, 2));
+    assert!(
+        status(&mut s).contains("pen·1  thick"),
+        "{}",
+        status(&mut s)
+    );
+    // Out, then round to 40°, in the thin band: ink 3's segment. The dot is ink 3, its core
+    // the stroke's 2 px on a faint disc of it the accent dot's size, and no ring round it.
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (100.0, 85.0));
+    mv(&mut s, (100.0, 65.0));
+    mv(&mut s, out(40.0, 48.0));
+    assert_eq!(
+        dial(&mut s).unwrap().stage,
+        Stage::Ink {
+            ink: 3,
+            width: Some(0)
+        }
+    );
+    let dot = pixel_at(&mut s, out(40.0, 48.0)).unwrap();
+    assert_eq!(
+        dot,
+        [YELLOW.0, YELLOW.1, YELLOW.2, 255],
+        "the preview's ink"
+    );
+    // Across the needle, off the crosshair: 2 out is the faint disc, 4 out what's under it.
+    let across = |r: f32| {
+        let (p, q) = (out(40.0, 48.0), toward(130.0) * r);
+        (p.0 + q.x, p.1 + q.y)
+    };
+    let halo = pixel_at(&mut s, across(2.0)).unwrap();
+    assert!(
+        (50..140).contains(&halo[0]) && halo[0].abs_diff(halo[1]) < 4 && halo[2] < 30,
+        "yellow at a third: {halo:?}"
+    );
+    let past = pixel_at(&mut s, across(4.0)).unwrap();
+    assert!(past[0] < 40 && past[1] < 40, "no ring: {past:?}");
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Pen, 3, 0));
+    // A shape: east is the ellipse, whose arc has ink 3 centred on it now, so ink 5 is at 130°;
+    // 60 out is medium. It's one shot, and draws in what was picked.
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (115.0, 100.0));
+    mv(&mut s, (140.0, 100.0));
+    mv(&mut s, out(130.0, 60.0));
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Ellipse, 5, 1));
+    gesture(&mut s, &[(10.0, 150.0), (60.0, 190.0)]);
+    let els = elements(&mut s.h, s.buf);
+    assert!(matches!(els[0].shape, Shape::Ellipse { .. }), "{els:?}");
+    assert_eq!((els[0].ink, els[0].width), (5, 1));
+    assert_eq!(armed(&mut s).0, Tool::Pen);
+    // Text has no width: south-west, ink 2 at 165° with ink 5 centred on 225°; the width stays.
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, out(225.0, 15.0));
+    mv(&mut s, out(225.0, 50.0));
+    mv(&mut s, out(165.0, 50.0));
+    assert_eq!(
+        dial(&mut s).unwrap().stage,
+        Stage::Ink {
+            ink: 2,
+            width: None
+        }
+    );
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Label, 2, 1));
+    keys(&mut s.h, "<Esc>");
+    // The eraser and select have no second stage, however far out.
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (60.0, 100.0));
+    mv(&mut s, (20.0, 100.0));
+    let d = dial(&mut s).unwrap();
+    assert_eq!((d.tool(), d.stage), (Some(Tool::Eraser), Stage::Tools));
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Eraser, 2, 1));
+    keys(&mut s.h, "e");
+    // A left click in stage two picks there and leaves no dot: ink 2 is straight out now.
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (100.0, 85.0));
+    mv(&mut s, (100.0, 40.0));
+    click(&mut s, (100.0, 40.0));
+    assert_eq!(dial(&mut s), None);
+    assert_eq!(armed(&mut s), (Tool::Pen, 2, 1));
+    assert_eq!(elements(&mut s.h, s.buf).len(), 1, "no dot");
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Pen, 2, 1), "nothing left to pick");
+}
+
+#[test]
+fn a_selection_takes_stage_twos_ink_and_width_as_one_entry_and_the_same_again_logs_none() {
+    let mut s = setup("dial-selection");
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    gesture(&mut s, &[(10.0, 30.0), (60.0, 30.0)]);
+    keys(&mut s.h, "v");
+    gesture(&mut s, &[(0.0, 0.0), (80.0, 50.0)]);
+    assert_eq!(board(&mut s.h, s.buf).borrow().selection.len(), 2);
+    let styles = |s: &mut Setup| -> Vec<(u8, u8)> {
+        elements(&mut s.h, s.buf)
+            .iter()
+            .map(|e| (e.ink, e.width))
+            .collect()
+    };
+    // The pen's arc at (150, 150): ink 4 at 60°, thick at 70 out.
+    let pick = |s: &mut Setup, deg: f32| {
+        mv(s, (150.0, 150.0));
+        space(s, KeyKind::Press);
+        mv(s, (150.0, 135.0));
+        mv(s, (150.0, 115.0));
+        let p = toward(deg) * 70.0;
+        mv(s, (150.0 + p.x, 150.0 + p.y));
+        space(s, KeyKind::Release);
+    };
+    pick(&mut s, 60.0);
+    assert_eq!(armed(&mut s), (Tool::Pen, 4, 2));
+    assert_eq!(styles(&mut s), [(4, 2), (4, 2)]);
+    keys(&mut s.h, "u");
+    assert_eq!(styles(&mut s), [(1, 1), (1, 1)], "one entry for both");
+    keys(&mut s.h, "<C-r>");
+    assert_eq!(styles(&mut s), [(4, 2), (4, 2)]);
+    assert_eq!(board(&mut s.h, s.buf).borrow().selection.len(), 2);
+    // Ink 4 is centred on the pen now, so straight out is ink 4 thick again: nothing changes,
+    // and nothing is logged, so one `u` still takes the restyle back.
+    pick(&mut s, 0.0);
+    assert_eq!(styles(&mut s), [(4, 2), (4, 2)]);
+    keys(&mut s.h, "u");
+    assert_eq!(styles(&mut s), [(1, 1), (1, 1)]);
+}
+
+#[test]
+fn a_flick_past_the_ring_picks_the_tool_alone_and_leaves_the_selection_as_it_was() {
+    let mut s = setup("dial-flick");
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    gesture(&mut s, &[(10.0, 30.0), (60.0, 30.0)]);
+    keys(&mut s.h, "v");
+    gesture(&mut s, &[(0.0, 0.0), (80.0, 50.0)]);
+    let styles = |s: &mut Setup| -> Vec<(u8, u8)> {
+        elements(&mut s.h, s.buf)
+            .iter()
+            .map(|e| (e.ink, e.width))
+            .collect()
+    };
+    let at = |deg: f32, r: f32| {
+        let p = toward(deg) * r;
+        (150.0 + p.x, 150.0 + p.y)
+    };
+    // One move from the centre to 35 out at 60°: rect's sector, past where stage two opens,
+    // and in ink 2's segment of rect's arc, 15° off its axis. It's a flick, and the release
+    // where it landed is stage one's: rect, nothing else.
+    mv(&mut s, (150.0, 150.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, at(60.0, 35.0));
+    assert_eq!(dial(&mut s).unwrap().stage, Stage::Tools);
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Rect, 1, 1));
+    assert_eq!(styles(&mut s), [(1, 1), (1, 1)]);
+    // A flick of a few moves that overshoots into the arc's first band: the same.
+    mv(&mut s, (150.0, 150.0));
+    space(&mut s, KeyKind::Press);
+    for r in [15.0, 28.0, 38.0] {
+        mv(&mut s, at(60.0, r));
+    }
+    assert_eq!(dial(&mut s).unwrap().stage, Stage::Arc);
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Rect, 1, 1));
+    // And a right drag that does it in one.
+    right(&mut s, PointerKind::Press(Button::Right), (150.0, 150.0));
+    right(&mut s, PointerKind::Drag(Button::Right), at(60.0, 40.0));
+    right(&mut s, PointerKind::Release(Button::Right), at(60.0, 40.0));
+    assert_eq!(armed(&mut s), (Tool::Rect, 1, 1));
+    assert_eq!(styles(&mut s), [(1, 1), (1, 1)]);
+    assert_eq!(board(&mut s.h, s.buf).borrow().selection.len(), 2);
+    // Nothing was logged: the last entry is the second stroke still.
+    keys(&mut s.h, "u");
+    assert_eq!(elements(&mut s.h, s.buf).len(), 1);
+}
+
+#[test]
+fn the_cells_screen_shows_the_names_around_a_plus_the_hovered_one_a_chip_and_the_readout() {
+    let mut s = setup_cells("dial-cells");
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    // The centre at cell (20, 10) and the ring 25 units out: the names outside it on whole
+    // cells, clear of its ticks; the readout under them, dimmed with nothing hovered.
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
     let rows = area(&mut s);
-    assert_eq!(&rows[8][19..22], "pen", "{rows:#?}");
-    assert_eq!(&rows[9][12..27], "select     rect", "{rows:#?}");
-    assert_eq!(&rows[10][12..30], "eraser  +  ellipse", "{rows:#?}");
-    assert_eq!(&rows[11][14..28], "text     arrow", "{rows:#?}");
-    assert_eq!(&rows[12][18..22], "line", "{rows:#?}");
+    assert_eq!(&rows[5][19..22], "pen", "{rows:#?}");
+    assert_eq!(&rows[7][8..30], "select            rect", "{rows:#?}");
+    assert_eq!(
+        &rows[10][6..35],
+        "eraser        +       ellipse",
+        "{rows:#?}"
+    );
+    assert_eq!(&rows[12][10..31], "text            arrow", "{rows:#?}");
+    assert_eq!(&rows[14][18..22], "line", "{rows:#?}");
+    assert_eq!(rows[16], format!("{}pen: ink 1 · medium", " ".repeat(11)));
     assert!(
         braille(&rows[1]) >= 4,
         "the stroke is still drawn: {:?}",
         rows[1]
     );
-    let (r0, c0) = origin(&mut s.h, s.win);
-    let scene = s.h.scene();
-    let rect = &scene.row(r0 + 9)[c0 + 23];
-    let pen = &scene.row(r0 + 8)[c0 + 19];
-    assert_eq!(rect.glyph.to_string(), "r");
-    assert_eq!(
-        (rect.fg, rect.bg),
-        (pen.bg, pen.fg),
-        "rect is reversed, pen isn't"
-    );
+    let name = cell(&mut s, 5, 19);
+    assert_eq!((name.fg, name.bg), (FACE, BG), "the dial's grey");
+    assert_ne!(cell(&mut s, 16, 11).fg, FACE, "dimmed");
+    // Hovering rect: its name a chip, the accent behind the background, a cell either side.
+    mv(&mut s, (120.0, 80.0));
+    let rows = area(&mut s);
+    assert_eq!(&rows[7][25..30], " rect", "{rows:#?}");
+    for col in 25..31 {
+        let c = cell(&mut s, 7, col);
+        assert_eq!((c.fg, c.bg), (BG, ACCENT), "column {col}");
+    }
+    assert_eq!(cell(&mut s, 5, 19).bg, BG, "pen isn't a chip");
+    assert_eq!(&rows[16][15..25], "rect: once", "{rows:#?}");
+    assert_eq!(cell(&mut s, 16, 15).fg, FACE, "the key in the dial's grey");
+    assert_eq!(cell(&mut s, 16, 21).fg, ACCENT, "the value in the accent");
     space(&mut s, KeyKind::Release);
     assert_eq!(tool(&mut s), Tool::Rect);
     let rows = area(&mut s);
     assert!(
-        !rows[10].contains("eraser"),
+        rows.iter()
+            .all(|r| !r.contains("eraser") && !r.contains("once")),
         "gone with the release: {rows:#?}"
     );
-    assert!(braille(&rows[1]) >= 4, "{:?}", rows[1]);
+    keys(&mut s.h, "<Esc>");
+    // Stage two: the inks as swatches along the arc, ink 1 straight out between marks, and
+    // the chip beyond them; the other names dim, and none gives way, since cells draw no arc
+    // or guides to cross them; no width labels either.
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (100.0, 76.0));
+    mv(&mut s, (100.0, 30.0));
+    let rows = area(&mut s);
+    assert_eq!(rows[2].chars().skip(19).take(4).collect::<String>(), "[██]");
+    let marks = (
+        cell(&mut s, 2, 19),
+        cell(&mut s, 2, 20),
+        cell(&mut s, 2, 26),
+    );
+    assert_eq!(marks.0.fg, ACCENT, "the hovered ink's marks");
+    assert_eq!(
+        marks.1.fg,
+        Rgb(0xd0, 0xd0, 0xd0),
+        "ink 1, the default foreground"
+    );
+    assert_eq!(marks.2.fg, ACCENT, "ink 2, the ANSI red");
+    let swatches: usize = rows.iter().map(|r| r.matches("██").count()).sum();
+    assert_eq!(swatches, 6, "{rows:#?}");
+    assert_eq!(&rows[7][8..30], "select            rect", "{rows:#?}");
+    assert!(rows[10].contains("eraser") && rows[10].contains("ellipse"));
+    assert_ne!(cell(&mut s, 10, 6).fg, FACE, "dimmed");
+    assert_ne!(cell(&mut s, 7, 26).fg, FACE, "dimmed");
+    assert!(
+        rows[1..9].iter().all(|r| !r.contains(['2', '4', '8'])),
+        "{rows:#?}"
+    );
+    assert_eq!(rows[0].trim(), "pen", "the chip, past the arc");
+    assert_eq!(cell(&mut s, 0, 20).bg, ACCENT);
+    assert_eq!(rows[5].trim(), "", "and not where it was");
+    assert!(
+        rows.iter().any(|r| r.trim() == "pen: ink 1 · thick"),
+        "{rows:#?}"
+    );
+    space(&mut s, KeyKind::Release);
+    assert_eq!(armed(&mut s), (Tool::Pen, 1, 2));
 }
 
 #[test]
-fn the_pixel_renderer_draws_the_disc_over_the_picture_and_presents_its_rectangle_alone() {
+fn the_pixel_renderer_draws_line_art_on_a_scrim_keeps_the_chip_clear_and_presents_the_dial_alone() {
     let mut s = setup("dial-pixels");
     gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
     let picture = inked_count(&mut s);
@@ -282,43 +590,57 @@ fn the_pixel_renderer_draws_the_disc_over_the_picture_and_presents_its_rectangle
     mv(&mut s, (100.0, 100.0));
     presents(&mut s);
     space(&mut s, KeyKind::Press);
-    // The disc, 30 units around (100, 100), at 2x with 2 px of edge: the present on opening.
-    let disc = PixelRect::new(138, 138, 124, 124);
-    assert_eq!(presents(&mut s), [disc]);
-    assert!(
-        inked(&mut s, (100.0, 80.0)),
-        "the disc is translucent, not clear"
-    );
+    // The present on opening: the dial's square about the centre, (200, 200) in pixels, and
+    // not the buffer's 1000 × 600.
+    let opened = presents(&mut s);
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    let r = opened[0];
+    assert!(r.x < 200 && r.x + r.width > 200 && r.y < 200 && r.y + r.height > 200);
+    assert!(r.width < 500 && r.height < 500, "{r:?}");
     assert!(inked(&mut s, (30.0, 10.0)), "the stroke is under it still");
-    assert!(!inked(&mut s, (150.0, 100.0)), "nothing outside the disc");
-    let plain = pixel_at(&mut s, (100.0, 80.0)).unwrap()[3];
-    mv(&mut s, (120.0, 80.0));
-    assert_eq!(
-        presents(&mut s),
-        [disc],
-        "a hover change presents the disc alone"
-    );
-    let hovered = pixel_at(&mut s, (115.0, 85.0)).unwrap()[3];
+    // No disc and no wedge: off the lines, the scrim is the background, mostly opaque.
+    let scrim = pixel_at(&mut s, (88.0, 88.0)).unwrap();
     assert!(
-        hovered > plain,
-        "the hovered sector is filled: {hovered} over {plain}"
+        scrim[3] > 180 && scrim[0].abs_diff(scrim[1]) < 2 && scrim[0] < 20,
+        "{scrim:?}"
+    );
+    // On the ring at 30°: in rect's sector, and off the needle to (120, 80) and its crosshair.
+    let ring = out(30.0, 25.0);
+    assert!(
+        pixel_at(&mut s, ring).unwrap()[0] < 100,
+        "nothing hovered: no stretch"
+    );
+    // Hovering rect: its stretch of the ring thick in the accent, the needle's dot at the
+    // pointer in the accent, and the chip's pixels clear, so its cells show solid.
+    mv(&mut s, (120.0, 80.0));
+    let hovered = presents(&mut s);
+    assert_eq!(hovered.len(), 1, "{hovered:?}");
+    assert!(hovered[0].width < 500, "{hovered:?}");
+    let stretch = pixel_at(&mut s, ring).unwrap();
+    assert_eq!(stretch, [ACCENT.0, ACCENT.1, ACCENT.2, 255], "the stretch");
+    let dot = pixel_at(&mut s, (120.0, 80.0)).unwrap();
+    assert_eq!(dot, [ACCENT.0, ACCENT.1, ACCENT.2, 255], "the dot");
+    // The chip is cells 25 to 30 of row 7: pixels 250 to 310 across, 140 to 160 down.
+    assert_eq!(pixel_px(&mut s, (280.0, 150.0)).unwrap()[3], 0, "clear");
+    assert!(
+        pixel_px(&mut s, (240.0, 150.0)).unwrap()[3] > 0,
+        "the scrim beside it"
     );
     let rows = area(&mut s);
-    assert_eq!(
-        &rows[9][12..27],
-        "select     rect",
-        "the names are cells: {rows:#?}"
-    );
-    mv(&mut s, (121.0, 81.0));
-    assert_eq!(
-        presents(&mut s),
-        [],
-        "a move within the sector presents nothing"
-    );
+    assert_eq!(&rows[7][8..30], "select            rect", "{rows:#?}");
+    // A move within the sector: the needle follows, so it draws and presents, within the
+    // dial's own rectangle.
+    mv(&mut s, (121.0, 82.0));
+    let moved = presents(&mut s);
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    assert!(moved[0].width <= hovered[0].width.max(r.width), "{moved:?}");
+    let dot = pixel_at(&mut s, (121.0, 82.0)).unwrap();
+    assert_eq!(dot, [ACCENT.0, ACCENT.1, ACCENT.2, 255]);
     space(&mut s, KeyKind::Release);
     assert_eq!(tool(&mut s), Tool::Rect);
-    assert_eq!(presents(&mut s), [disc], "the picture put back under it");
-    assert!(!inked(&mut s, (100.0, 80.0)));
+    assert_eq!(presents(&mut s).len(), 1, "the picture put back under it");
+    assert!(!inked(&mut s, (88.0, 88.0)));
+    assert!(!inked(&mut s, (121.0, 82.0)));
     assert_eq!(
         inked_count(&mut s),
         picture,
@@ -326,6 +648,131 @@ fn the_pixel_renderer_draws_the_disc_over_the_picture_and_presents_its_rectangle
     );
     assert_eq!(elements(&mut s.h, s.buf).len(), 1);
     assert!(area(&mut s).iter().all(|r| !r.contains("rect")));
+}
+
+/// A board with strokes across it, the picture as it is, and a dial opened on it by the right
+/// button at (200, 150), dragged through `path`.
+fn dragged(name: &str, path: &[(f32, f32)]) -> (Setup, Vec<u8>) {
+    let mut s = setup(name);
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    gesture(&mut s, &[(20.0, 280.0), (480.0, 240.0)]);
+    keys(&mut s.h, "3");
+    gesture(&mut s, &[(470.0, 20.0), (300.0, 290.0)]);
+    let before = buffer(&mut s).3;
+    right(&mut s, PointerKind::Press(Button::Right), (200.0, 150.0));
+    for p in path {
+        right(&mut s, PointerKind::Drag(Button::Right), *p);
+    }
+    (s, before)
+}
+
+#[test]
+fn the_needle_and_crosshair_past_the_dials_square_are_put_back() {
+    // Out to the pen's arc, then far past the dial's square, in the area and out of it, the
+    // ink and width changing on the way, and back: the buffer is what going straight there
+    // draws, so nothing the needle or the crosshair drew out there is left.
+    let far = [
+        (200.0, 135.0),
+        (200.0, 100.0),
+        (480.0, 20.0),
+        (900.0, -50.0),
+        (20.0, 290.0),
+        (-300.0, 400.0),
+    ];
+    let (mut s, before) = dragged("dial-far", &far);
+    let d = dial(&mut s).unwrap();
+    assert_eq!(
+        (d.pointer.x, d.pointer.y),
+        (0.0, 299.5),
+        "held at the area's corner, well out of the dial's square"
+    );
+    assert_eq!(
+        d.stage,
+        Stage::Ink {
+            ink: 1,
+            width: Some(2)
+        },
+        "past the arc's first end, thick"
+    );
+    let there = (200.0, 95.0);
+    for p in [(200.0, 120.0), there] {
+        right(&mut s, PointerKind::Drag(Button::Right), p);
+    }
+    let (mut straight, _) = dragged("dial-straight", &[(200.0, 135.0), there]);
+    let d = dial(&mut s).unwrap();
+    assert_eq!(dial(&mut straight).unwrap().stage, d.stage);
+    assert_eq!(
+        d.stage,
+        Stage::Ink {
+            ink: 3,
+            width: Some(1)
+        }
+    );
+    assert!(
+        buffer(&mut s).3 == buffer(&mut straight).3,
+        "the far parts were put back"
+    );
+    // Esc closes it, and the picture is as it was before it opened.
+    keys(&mut s.h, "<Esc>");
+    right(&mut s, PointerKind::Release(Button::Right), there);
+    assert_eq!(dial(&mut s), None);
+    assert!(buffer(&mut s).3 == before, "the picture put back whole");
+}
+
+#[test]
+fn a_label_under_the_dial_dims_whole_in_either_renderer() {
+    for cells in [false, true] {
+        let mut s = if cells {
+            setup_cells("dial-dim-cells")
+        } else {
+            setup("dial-dim")
+        };
+        keys(&mut s.h, "t");
+        click(&mut s, (150.0, 95.0));
+        keys(&mut s.h, "abcdefghijklmnop<Esc>");
+        let rows = area(&mut s);
+        let row = rows.iter().position(|r| r.contains("abcdefghijklmnop"));
+        let row = row.unwrap_or_else(|| panic!("{rows:#?}"));
+        let col = rows[row].find("abcdefghijklmnop").unwrap();
+        let lit = cell(&mut s, row, col).fg;
+        // Its first letters are well inside the scrim, its last well past it: all of it dims
+        // alike, rather than cut mid-word.
+        mv(&mut s, (100.0, 100.0));
+        space(&mut s, KeyKind::Press);
+        let fgs: Vec<Rgb> = (0..16).map(|j| cell(&mut s, row, col + j).fg).collect();
+        assert!(
+            fgs.iter().all(|f| *f == fgs[0] && *f != lit),
+            "cells {cells}: {lit:?} then {fgs:?}"
+        );
+        space(&mut s, KeyKind::Release);
+        assert_eq!(cell(&mut s, row, col + 15).fg, lit, "lit again");
+    }
+}
+
+#[test]
+fn the_dial_takes_its_colours_from_the_whiteboard_dial_faces_and_a_theme_restyles_it() {
+    let mut s = setup_cells("dial-faces");
+    // Unstyled, the grey is `shadow`'s and the accent the theme's ANSI red.
+    let look = die_whiteboard::dial_look(&s.h);
+    assert_eq!((look.face, look.accent, look.bg), (FACE, ACCENT, BG));
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (120.0, 80.0));
+    assert_eq!(cell(&mut s, 7, 26).bg, ACCENT);
+    space(&mut s, KeyKind::Release);
+    // A theme that styles them: the next dial is in its colours.
+    let (grey, blue) = (Rgb(0x88, 0x88, 0x88), Rgb(0x00, 0x88, 0xff));
+    s.h.set_theme(
+        Theme::default()
+            .face("whiteboard-dial", Style::new().fg(grey))
+            .face("whiteboard-dial-accent", Style::new().fg(blue)),
+    );
+    mv(&mut s, (100.0, 100.0));
+    space(&mut s, KeyKind::Press);
+    mv(&mut s, (120.0, 80.0));
+    assert_eq!(cell(&mut s, 7, 26).bg, blue);
+    assert_eq!(cell(&mut s, 5, 19).fg, grey, "pen, in the theme's grey");
+    space(&mut s, KeyKind::Release);
 }
 
 #[test]
@@ -384,7 +831,7 @@ fn the_right_button_held_is_the_dial_too_and_erases_nothing() {
     // A right drag across the stroke leaves it: the eraser is a sector and e now.
     gesture_with(
         &mut s,
-        &[(50.0, 30.0), (50.0, 70.0)],
+        &[(50.0, 30.0), (50.0, 57.0)],
         Mods::default(),
         Button::Right,
     );
@@ -396,28 +843,28 @@ fn the_right_button_held_is_the_dial_too_and_erases_nothing() {
     space(&mut s, KeyKind::Press);
     space(&mut s, KeyKind::Release);
     assert_eq!(dial(&mut s).map(|d| d.by), Some(Opener::RightButton));
-    right(&mut s, PointerKind::Drag(Button::Right), (100.0, 60.0));
-    right(&mut s, PointerKind::Release(Button::Right), (100.0, 60.0));
+    right(&mut s, PointerKind::Drag(Button::Right), (100.0, 73.0));
+    right(&mut s, PointerKind::Release(Button::Right), (100.0, 73.0));
     assert_eq!(tool(&mut s), Tool::Pen);
     // And a right press while Space holds it does nothing either.
     mv(&mut s, (100.0, 100.0));
     space(&mut s, KeyKind::Press);
-    right(&mut s, PointerKind::Press(Button::Right), (140.0, 100.0));
-    right(&mut s, PointerKind::Release(Button::Right), (140.0, 100.0));
+    right(&mut s, PointerKind::Press(Button::Right), (127.0, 100.0));
+    right(&mut s, PointerKind::Release(Button::Right), (127.0, 100.0));
     let d = dial(&mut s).expect("still open");
     assert_eq!((d.centre.x, d.by), (100.0, Opener::Space));
-    mv(&mut s, (140.0, 100.0));
+    mv(&mut s, (127.0, 100.0));
     space(&mut s, KeyKind::Release);
     assert_eq!(tool(&mut s), Tool::Ellipse);
     keys(&mut s.h, "<Esc>");
     // A left press while the right button holds it picks, and draws nothing.
     right(&mut s, PointerKind::Press(Button::Right), (100.0, 100.0));
-    right(&mut s, PointerKind::Drag(Button::Right), (100.0, 130.0));
-    press(&mut s, (100.0, 130.0));
+    right(&mut s, PointerKind::Drag(Button::Right), (100.0, 127.0));
+    press(&mut s, (100.0, 127.0));
     assert_eq!(dial(&mut s), None);
     assert_eq!(tool(&mut s), Tool::Line);
-    release(&mut s, (100.0, 130.0));
-    right(&mut s, PointerKind::Release(Button::Right), (100.0, 130.0));
+    release(&mut s, (100.0, 127.0));
+    right(&mut s, PointerKind::Release(Button::Right), (100.0, 127.0));
     assert_eq!(elements(&mut s.h, s.buf).len(), 1, "no dot");
     assert_eq!(tool(&mut s), Tool::Line);
     // The dial never touched the undo log: one entry, the stroke's.

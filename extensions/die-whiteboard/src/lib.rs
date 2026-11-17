@@ -11,7 +11,8 @@
 //! - [`view`]: pan and zoom, and the pointer's way through them;
 //! - [`undo`]: the operation log;
 //! - [`surface`]: a board's state, the tools as the pointer works them, and the surface;
-//! - [`dial`]: the tool dial, Space or the right button held and a direction;
+//! - [`dial`]: the tool dial, Space or the right button held and a direction, and past its ring
+//!   the ink by angle and the width by distance;
 //! - [`render`], [`pixels`] and [`cells`]: the renderer trait, the pixel renderer (tiny-skia into
 //!   a pixel buffer placed under the area's glyphs, M3a), and the cell renderer for a host that
 //!   shows no pixels;
@@ -127,6 +128,25 @@ pub mod face {
         "whiteboard-ink-5",
         "whiteboard-ink-6",
     ];
+    /// The tool dial's grey: its names, its readout's keys, its line art at lower alpha. It
+    /// inherits `shadow`.
+    pub const DIAL: &str = "whiteboard-dial";
+    /// The tool dial's accent: the hovered name's chip, the hovered stretch of the ring, the
+    /// needle's dot, the readout's value, the crosshair faintly. Without a theme style, the
+    /// theme's ANSI red.
+    pub const DIAL_ACCENT: &str = "whiteboard-dial-accent";
+}
+
+/// The tool dial's colours: the `whiteboard-dial` face's foreground (`shadow`'s unless a theme
+/// styles it, else the default foreground), `whiteboard-dial-accent`'s (else the theme's ANSI
+/// red), and the background.
+pub fn dial_look(ctx: &Ctx) -> dial::DialLook {
+    let fg = |name: &str| ctx.face_style(name).and_then(|s| s.fg);
+    dial::DialLook {
+        face: fg(face::DIAL).unwrap_or_else(|| default_fg(ctx)),
+        accent: fg(face::DIAL_ACCENT).unwrap_or(ctx.theme().ansi[1]),
+        bg: theme_bg(ctx),
+    }
 }
 
 /// The ANSI colour each ink falls back on: index 0 is never read (ink 1 is the default
@@ -1111,6 +1131,8 @@ impl Extension for Whiteboard {
         for name in &face::INK[1..] {
             reg.face(name, None, Style::new());
         }
+        reg.face(face::DIAL, Some("shadow"), Style::new());
+        reg.face(face::DIAL_ACCENT, None, Style::new());
         reg.command(
             "whiteboard",
             "Open a whiteboard: the file given, or from a buffer that isn't a board the board used last, or else ask which.",
