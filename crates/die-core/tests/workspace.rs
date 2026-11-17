@@ -13,8 +13,8 @@
 //! - Focus by direction: picks by the cursor's row or column, and None at the frame's edge.
 //! - Killing a buffer shown in two windows: both go on showing another one, a `*scratch*` if
 //!   there's none, and the hook runs. A window's view of a buffer it left waits, moved through edits.
-//! - `show` for each `ShowIn`. Names stay unique. A directory comes from the
-//!   file, or from the buffer focused when it was made.
+//! - `show` for each `ShowIn`. Names stay unique, through a rename too. A directory comes from
+//!   the file, or from the buffer focused when it was made.
 //! - Modified: undo back clears it, a save moves what counts, text replaced by itself sets it.
 //! - Registers and the clipboard: a kind survives, an outside copy is news once, DIE's own write
 //!   and the text it knows aren't news, and what was there at startup is.
@@ -714,6 +714,28 @@ fn names_stay_unique() {
     assert!(c.kill(b));
     assert_eq!(c.buffer_name(b), None);
     assert_eq!(c.find_buffer("a<2>"), None);
+}
+
+#[test]
+fn a_rename_is_made_unique_and_a_dead_buffer_is_ignored() {
+    let mut c = ctx();
+    let a = c.create_text("a", "");
+    let b = c.create_surface("b", Plain::default());
+    assert_eq!(c.rename_buffer(b, "a"), "a<2>");
+    assert_eq!(c.buffer_name(b), Some("a<2>"));
+    assert_eq!(c.find_buffer("a<2>"), Some(b));
+    assert_eq!(c.find_buffer("b"), None, "the old name is free");
+    assert_eq!(c.rename_buffer(b, "a<2>"), "a<2>", "its own name, kept");
+    assert_eq!(c.rename_buffer(b, "c"), "c");
+    let again = c.create_text("a", "");
+    assert_eq!(
+        c.buffer_name(again),
+        Some("a<2>"),
+        "the name it left is free"
+    );
+    assert!(c.kill(a));
+    assert_eq!(c.rename_buffer(a, "d"), "");
+    assert_eq!(c.find_buffer("d"), None);
 }
 
 #[test]

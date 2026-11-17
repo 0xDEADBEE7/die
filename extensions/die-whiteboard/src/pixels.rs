@@ -8,7 +8,10 @@
 //! picture with the gesture's live element drawn over it. A pointer sample during a pen stroke
 //! draws only the segments after the ones drawn and presents their rectangle; any other live
 //! thing (a shape, the highlighter, the marquee, the tool dial) is put back and drawn whole,
-//! which is small, so the dial's hover costs its disc's rectangle and never the picture's. A
+//! which is small, so a move with the dial open costs the dial's own rectangle (its scrim's
+//! square, and the pointer's dot past it) and never the picture's, and the needle follows the
+//! pointer. Under the dial's chip the still part is cleared, so the chip's cells show solid,
+//! and only the needle, its dot and the crosshair cross it. A
 //! committed change ([`Damage::Region`]) draws that region of the picture again; undo, a resize,
 //! a zoom, a theme change or the selection draw it all; a pan by whole pixels moves the picture
 //! and draws the strips it uncovers. Everything runs on the main thread, in the event's own turn
@@ -19,8 +22,8 @@
 //! The surface picks it when the host shows pixels (`Ctx::pixels_supported()`) and your options
 //! don't ask for cells; [`crate::cells`] draws otherwise (Linux until the wgpu ring).
 
-use crate::canvas::{Canvas, Map, Target};
-use crate::dial::{Dial, SECTORS};
+use crate::canvas::{Canvas, DialColours, Map, Target};
+use crate::dial::{Dial, Layout, Text};
 use crate::model::{Element, LIVE, Point, Rect, Shape, label_lines};
 use crate::render::{Damage, Renderer, Scene};
 use crate::svg::Look;
@@ -54,6 +57,8 @@ pub struct Pixels {
     drawn_at: Option<Map>,
     /// The gesture's drawing on the shown buffer.
     live: Option<Live>,
+    /// The dial's still part, while it's open.
+    dial_base: Option<DialBase>,
     /// The host refused a buffer, which is said once.
     refused: bool,
 }
@@ -73,8 +78,8 @@ enum LiveKey {
     Stroke(Point, usize, Point),
     /// Anything drawn whole: its bounds.
     Whole(Rect),
-    /// The tool dial: its centre and the sector hovered.
-    Dial(Point, Option<usize>),
+    /// The tool dial: all of it, the pointer too, since the needle follows the pointer.
+    Dial(Dial),
 }
 
 /// What of a gesture is on the shown buffer.
@@ -82,6 +87,95 @@ struct Live {
     /// The pixels it covers, to put back from the committed picture.
     rect: PixelRect,
     key: LiveKey,
+    /// The dial's: where what follows the pointer is, to put back from its still part.
+    parts: Vec<PixelRect>,
+}
+
+/// The dial's still part ([`Target::dial_base`]) drawn over the committed picture under it,
+/// kept while the pointer moves, so a move puts back and draws only what follows the pointer.
+struct DialBase {
+    /// The dial without the pointer, the map, and the scrim's radius it was drawn for.
+    key: (Dial, Map, u32),
+    /// Where it stands in the picture.
+    at: PixelRect,
+    canvas: Canvas,
+}
+
+/// A dial to draw on the shown buffer.
+struct DialDraw<'a> {
+    d: &'a Dial,
+    layout: &'a Layout,
+    map: Map,
+    colours: DialColours<'a>,
+    /// The hovered name's chip, in the picture's pixels: clear of the still part, so its cells
+    /// show solid, with only what follows the pointer over them.
+    chip: Option<PixelRect>,
+    size: (u32, u32),
+}
+
+impl DialDraw<'_> {
+    /// Draw it over what `was` drew, with the committed picture changed in `changed`: its still
+    /// part again if that changed, or only what follows the pointer if not. What to present,
+    /// and what's on the shown buffer now.
+    fn draw(
+        &self,
+        buf: &mut Buffer,
+        kept: &mut Option<DialBase>,
+        changed: Option<PixelRect>,
+        was: Option<Live>,
+    ) -> (PixelRect, Live) {
+        let (d, map, (w, h)) = (self.d, self.map, self.size);
+        let at = map.pixels(&d.base_bounds(self.layout), AA_PAD, w, h);
+        let key = (d.still(), map, d.scrim(self.layout).to_bits());
+        let same = changed.is_none() && kept.as_ref().is_some_and(|k| k.key == key && k.at == at);
+        if !same {
+            *kept = buf.committed.cut(at).map(|mut canvas| {
+                let mut target = canvas.target();
+                target.dial_base(d, self.layout, map.into_rect(at), self.colours);
+                if let Some(chip) = self.chip.and_then(|c| overlap(c, at)) {
+                    let local =
+                        PixelRect::new(chip.x - at.x, chip.y - at.y, chip.width, chip.height);
+                    target.clear(local);
+                }
+                DialBase { key, at, canvas }
+            });
+        }
+        // Put back what was drawn: on a move, what followed the pointer; else all of it.
+        let old: Vec<PixelRect> = match was {
+            Some(l) if same && matches!(l.key, LiveKey::Dial(_)) => l.parts,
+            was => vec![union(union(changed, was.map(|l| l.rect)), Some(at)).unwrap_or(at)],
+        };
+        let bytes = buf.producer.pixels_mut();
+        for r in &old {
+            if overlap(*r, at) != Some(*r) {
+                buf.committed.copy_to(bytes, *r);
+            }
+            if let Some(k) = kept {
+                k.canvas.copy_to_at(bytes, w, h, k.at, *r);
+            }
+        }
+        let parts: Vec<PixelRect> = d
+            .live_rects(self.layout)
+            .iter()
+            .map(|r| map.pixels(r, AA_PAD, w, h))
+            .collect();
+        let mut target = Target::Bytes {
+            bytes,
+            width: w,
+            height: h,
+        };
+        // Over the chip too: the pointer may go through it, and the needle and its dot
+        // mustn't hide there.
+        target.dial_live(d, self.layout, map, self.colours);
+        let drawn = parts.iter().fold(at, |a, p| a.union(*p));
+        let present = old.iter().fold(drawn, |a, p| a.union(*p));
+        let live = Live {
+            rect: drawn,
+            key: LiveKey::Dial(*d),
+            parts,
+        };
+        (present, live)
+    }
 }
 
 /// The gesture's thing to draw over the committed picture.
@@ -104,7 +198,7 @@ impl Thing<'_> {
                 _ => LiveKey::Whole(el.bounds(cell)),
             },
             Thing::Marquee(r) => LiveKey::Whole(*r),
-            Thing::Dial(d) => LiveKey::Dial(d.centre, d.hovered),
+            Thing::Dial(d) => LiveKey::Dial(*d),
         }
     }
 }
@@ -124,6 +218,7 @@ impl Pixels {
             owed: Damage::All,
             drawn_at: None,
             live: None,
+            dial_base: None,
             refused: false,
         }
     }
@@ -249,9 +344,39 @@ impl Pixels {
                 self.live = Some(Live {
                     rect: was.rect.union(r),
                     key: key.expect("a stroke"),
+                    parts: vec![],
                 });
                 r
+            } else if let Some(Thing::Dial(d)) = &thing {
+                let origin = scene.view.to_board(0.0, 0.0, self.cell.scale);
+                let layout = d.layout(origin, scene.area, false);
+                let colours = DialColours {
+                    look: &scene.dial_look,
+                    inks: &look.inks,
+                    fg: scene.fg,
+                };
+                let chip = d.chip(&layout).and_then(|chip| {
+                    let (cw, ch) = cell_px(self.cell);
+                    let (x0, y0) = (chip.col * cw, chip.row * ch);
+                    let (x1, y1) = (x0 + chip.len * cw, y0 + ch);
+                    let at = |v: i64, max: u32| v.clamp(0, i64::from(max)) as u32;
+                    let (x0, y0) = (at(x0, w), at(y0, h));
+                    let (x1, y1) = (at(x1, w), at(y1, h));
+                    (x1 > x0 && y1 > y0).then(|| PixelRect::new(x0, y0, x1 - x0, y1 - y0))
+                });
+                let dial = DialDraw {
+                    d,
+                    layout: &layout,
+                    map,
+                    colours,
+                    chip,
+                    size: (w, h),
+                };
+                let (present, live) = dial.draw(buf, &mut self.dial_base, changed, was);
+                self.live = Some(live);
+                present
             } else {
+                self.dial_base = None;
                 let restore = union(changed, was.map(|l| l.rect));
                 if let Some(r) = restore {
                     buf.committed.copy_to(buf.producer.pixels_mut(), r);
@@ -270,12 +395,13 @@ impl Pixels {
                         target.outline(m, map, scene.fg, MARQUEE_ALPHA, true);
                         map.pixels(m, AA_PAD, w, h)
                     }
-                    Thing::Dial(d) => {
-                        target.dial(d, map, scene.fg);
-                        map.pixels(&d.bounds(), AA_PAD, w, h)
-                    }
+                    Thing::Dial(_) => unreachable!("drawn above"),
                 });
-                self.live = drawn.zip(key).map(|(rect, key)| Live { rect, key });
+                self.live = drawn.zip(key).map(|(rect, key)| Live {
+                    rect,
+                    key,
+                    parts: vec![],
+                });
                 match union(restore, drawn) {
                     Some(r) => r,
                     None => return,
@@ -410,14 +536,36 @@ fn shift_between(old: Map, new: Map, w: u32, h: u32) -> Option<(i32, i32)> {
     Some((dx.round() as i32, dy.round() as i32))
 }
 
-/// Write `name` on the frame from (`row`, `col`), which may be off its top or left edge: what's
+/// Write a run of the dial's text on the frame, which may be off its top or left edge: what's
 /// past the edge is left out.
-fn put_name(frame: &mut Frame, row: i64, col: i64, name: &str, style: &FrameCell) {
-    if row < 0 {
+pub(crate) fn put_text(frame: &mut Frame, t: &Text) {
+    if t.row < 0 {
         return;
     }
-    let shown: String = name.chars().skip((-col).max(0) as usize).collect();
-    frame.text(row as usize, col.max(0) as usize, &shown, style);
+    let mut style = FrameCell::new(Glyph::Char(' '), t.fg, t.bg);
+    style.faint = t.faint;
+    let shown: String = t.text.chars().skip((-t.col).max(0) as usize).collect();
+    frame.text(t.row as usize, t.col.max(0) as usize, &shown, &style);
+}
+
+/// A cell's physical pixels, or the fallback's while the host hasn't said.
+fn cell_px(cell: CellPixels) -> (i64, i64) {
+    if cell.width == 0 || cell.height == 0 {
+        let (w, h) = crate::cells::FALLBACK_CELL;
+        (w as i64, h as i64)
+    } else {
+        (i64::from(cell.width), i64::from(cell.height))
+    }
+}
+
+/// Where two rectangles overlap, if they do.
+fn overlap(a: PixelRect, b: PixelRect) -> Option<PixelRect> {
+    let (x0, y0) = (a.x.max(b.x), a.y.max(b.y));
+    let (x1, y1) = (
+        (a.x + a.width).min(b.x + b.width),
+        (a.y + a.height).min(b.y + b.height),
+    );
+    (x1 > x0 && y1 > y0).then(|| PixelRect::new(x0, y0, x1 - x0, y1 - y0))
 }
 
 fn intersects(a: PixelRect, b: PixelRect) -> bool {
@@ -456,6 +604,7 @@ impl Renderer for Pixels {
             }
         }
         self.live = None;
+        self.dial_base = None;
         self.drawn_at = None;
         self.owed = Damage::All;
         if want.0 == 0 || want.1 == 0 {
@@ -508,7 +657,9 @@ impl Renderer for Pixels {
     }
 
     /// The pixels, then the labels as cells over them, a selected one in reverse video, and the
-    /// dial's names, the hovered one reversed.
+    /// dial's text over those: its names, the hovered one a chip, stage two's labels and the
+    /// readout. A label under the dial's scrim is dimmed with the ink there, the whole of it,
+    /// so none is cut mid-word.
     fn render(&mut self, frame: &mut Frame, scene: &Scene<'_>, _: &RenderInfo) {
         self.sync(scene);
         frame.clear();
@@ -518,18 +669,22 @@ impl Renderer for Pixels {
         } else {
             (self.cell.width as f32, self.cell.height as f32)
         };
-        if let Some(d) = scene.dial {
-            for (i, tool) in SECTORS.iter().enumerate() {
-                let (p, align) = d.name_at(i);
-                let (x, y) = scene.view.to_physical(p, self.cell.scale);
-                let (col, row) = ((x / cw).floor() as i64, (y / ch).floor() as i64);
-                let name = tool.name();
-                let col = align.start(col, name.chars().count() as i64);
-                let mut style = FrameCell::new(Glyph::Char(' '), Color::Default, Color::Default);
-                style.reverse = d.hovered == Some(i);
-                put_name(frame, row, col, name, &style);
-            }
-        }
+        let origin = scene.view.to_board(0.0, 0.0, self.cell.scale);
+        let dial = scene.dial.map(|d| {
+            let layout = d.layout(origin, scene.area, false);
+            (d, layout)
+        });
+        // Whether the cell at (row, col) is under the dial's scrim, well inside its fade.
+        let under = |row: i64, col: i64| {
+            dial.as_ref().is_some_and(|(d, l)| {
+                let p = origin
+                    + crate::model::Point::new(
+                        (col as f32 + 0.5) * d.cell.w,
+                        (row as f32 + 0.5) * d.cell.h,
+                    );
+                p.dist(d.centre) < d.scrim(l) * 0.75
+            })
+        };
         for el in &scene.board.elements {
             let Shape::Label { at, text } = &el.shape else {
                 continue;
@@ -538,7 +693,11 @@ impl Renderer for Pixels {
             let (c0, r0) = ((x / cw).floor() as i64, (y / ch).floor() as i64);
             let fg = scene.inks[usize::from(el.ink.clamp(1, 6)) - 1];
             let reverse = scene.selection.contains(&el.id);
-            for (i, line) in label_lines(text).iter().enumerate() {
+            let lines = label_lines(text);
+            let faint = lines.iter().enumerate().any(|(i, line)| {
+                (0..line.chars().count()).any(|j| under(r0 + i as i64, c0 + j as i64))
+            });
+            for (i, line) in lines.iter().enumerate() {
                 let row = r0 + i as i64;
                 if row < 0 {
                     continue;
@@ -550,8 +709,14 @@ impl Renderer for Pixels {
                     }
                     let mut cell = FrameCell::new(Glyph::Char(ch), fg, Color::Default);
                     cell.reverse = reverse;
+                    cell.faint = faint;
                     frame.put(row as usize, col as usize, cell);
                 }
+            }
+        }
+        if let Some((d, layout)) = &dial {
+            for t in d.texts(layout, &scene.dial_look, scene.inks, None) {
+                put_text(frame, &t);
             }
         }
     }

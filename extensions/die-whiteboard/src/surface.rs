@@ -1,5 +1,6 @@
-//! A board's surface: the state a board buffer carries (its file, model, view, tool, selection,
-//! undo log and what's unsaved), the tools as the pointer works them, and the [`Surface`] core
+//! A board's surface: the state a board buffer carries (its file, or none for a scratch board,
+//! model, view, tool, selection, undo log and what's unsaved), the tools as the pointer works
+//! them, and the [`Surface`] core
 //! draws and sends events to. The state is shared between the surface and the extension
 //! ([`Shared`]), so the session's save, which has `&Ctx` alone, and a buffer's kill, which comes
 //! after the surface is gone, can still write the file.
@@ -11,7 +12,7 @@
 //! `handles()`, whose release core brings back to it (contract §7).
 
 use crate::cells::{Cells, cell_size};
-use crate::dial::{Dial, Opener};
+use crate::dial::{Armed, Dial, DialLook, Opener, Stage};
 use crate::ink::{SIMPLIFY, Streamline, simplify};
 use crate::model::{
     Board, CellSize, Element, INKS, Id, LIVE, Point, Rect, Shape, WIDTH_NAMES, WIDTHS, label_lines,
@@ -162,8 +163,15 @@ const FOCUS_GRACE: Duration = Duration::from_millis(150);
 
 /// A board as a buffer holds it.
 pub struct BoardState {
-    /// Its file.
-    pub path: PathBuf,
+    /// Its file; None for a scratch board, which has none until it's saved as one.
+    pub path: Option<PathBuf>,
+    /// A scratch board's number: 1 is `scratch`, 2 `scratch 2`.
+    pub scratch: u32,
+    /// Where it was last exported to, which `E` offers first.
+    pub exported: Option<PathBuf>,
+    /// That export's file as it was written: an export there again needn't ask to overwrite it
+    /// while nothing else has written it since.
+    pub exported_as: Option<crate::file::Stamp>,
     /// Its elements.
     pub board: Board,
     /// Where it is in the area.
@@ -178,7 +186,7 @@ pub struct BoardState {
     pub selection: Vec<Id>,
     /// The undo log.
     pub history: History,
-    /// Changed since the file was written.
+    /// Changed since the file was written. Never on a scratch board, which no file is behind.
     pub dirty: bool,
     /// When it last changed, on the workspace's clock.
     pub changed_at: Duration,
@@ -216,6 +224,8 @@ pub struct BoardState {
     /// it. Pixels, not a board point, since the wheel and the zoom keys move the board under a
     /// pointer that sends nothing.
     pointer_px: Option<(f32, f32)>,
+    /// The dial's colours, as the theme has them.
+    pub dial_look: DialLook,
 }
 
 /// A board's state, shared by its surface and the extension.
@@ -251,7 +261,18 @@ impl BoardState {
     /// A board from `path`, with its elements, the pen, ink 1 and the medium width.
     pub fn new(path: PathBuf, board: Board) -> BoardState {
         BoardState {
-            path,
+            path: Some(path),
+            ..BoardState::scratch(0, board)
+        }
+    }
+
+    /// Scratch board `n`, with these elements, as [`BoardState::new`] has a file's.
+    pub fn scratch(n: u32, board: Board) -> BoardState {
+        BoardState {
+            path: None,
+            scratch: n,
+            exported: None,
+            exported_as: None,
             board,
             view: View::default(),
             tool: Tool::Pen,
@@ -277,6 +298,7 @@ impl BoardState {
             focused_at: None,
             dial: None,
             pointer_px: None,
+            dial_look: DialLook::default(),
         }
     }
 
@@ -290,13 +312,16 @@ impl BoardState {
         cell_size(self.cell)
     }
 
-    /// The file's name.
+    /// The file's name, or a scratch board's: `scratch 2`.
     pub fn name(&self) -> String {
-        crate::file::name_of(&self.path)
+        match &self.path {
+            Some(path) => crate::file::name_of(path),
+            None => crate::file::scratch_name(self.scratch),
+        }
     }
 
     /// The status line: `arch.svg  pen·2  medium  12 elements`, ` *` while unsaved, and why a
-    /// save or export failed.
+    /// save or export failed. A scratch board's starts `scratch`, and is never unsaved.
     pub fn status(&self) -> String {
         let n = self.board.len();
         let noun = if n == 1 { "element" } else { "elements" };
@@ -373,9 +398,9 @@ impl BoardState {
         }
     }
 
-    /// The board changed: the file is behind.
+    /// The board changed: the file is behind, if it has one.
     pub fn changed(&mut self, now: Duration, damage: Damage) {
-        self.dirty = true;
+        self.dirty = self.path.is_some();
         self.changed_at = now;
         self.board_rev += 1;
         self.rev += 1;
@@ -440,7 +465,18 @@ impl BoardState {
             let (x, y) = self.pointer_px.unwrap_or_else(|| self.area_centre_px());
             self.view.to_board(x, y, self.cell.scale)
         });
-        self.dial = Some(Dial::open(centre, by, self.cell_size(), self.view.zoom));
+        let armed = Armed {
+            tool: self.tool,
+            ink: self.ink,
+            width: self.width,
+        };
+        self.dial = Some(Dial::open(
+            centre,
+            by,
+            self.cell_size(),
+            self.view.zoom,
+            armed,
+        ));
         self.touch();
         true
     }
@@ -451,7 +487,9 @@ impl BoardState {
         Some(self.view.to_board(x, y, self.cell.scale))
     }
 
-    /// The pointer is at `p` with the dial open: the sector in its direction is hovered.
+    /// The pointer is at `p` with the dial open: the sector in its direction is hovered, or
+    /// stage two's ink and width under it. The needle follows it whatever changed, through the
+    /// renderer's `update`; the frame's cells are drawn again only when what the dial says did.
     fn hover_dial(&mut self, p: Point) {
         if let Some(d) = &mut self.dial
             && d.hover(p)
@@ -471,20 +509,34 @@ impl BoardState {
 
     /// Close the dial, arming the tool of the sector under the pointer (`p`, or where it was
     /// last seen) as its key would: the pen, select, a one-shot shape or label, or the eraser
-    /// on or off. In the dead zone, nothing changes. False with none open.
+    /// on or off; past stage two's first band, the ink and width under the pointer too, as
+    /// `1`..`6` and `[` `]` would. The release doesn't open stage two, so a flick let go where
+    /// it landed is stage one's. In the dead zone, nothing changes. False with none open.
     pub fn pick_dial(&mut self, p: Option<Point>, now: Duration) -> bool {
         let Some(mut dial) = self.dial.take() else {
             return false;
         };
         if let Some(p) = p.or_else(|| self.pointer_board()) {
-            dial.hover(p);
+            dial.settle(p);
         }
-        match dial.tool() {
-            Some(Tool::Eraser) => self.toggle_tool(Tool::Eraser, now),
-            Some(tool) => self.set_tool(tool, now),
-            None => self.touch(),
+        match (dial.tool(), dial.stage) {
+            (Some(tool), Stage::Ink { ink, width }) => {
+                self.set_tool(tool, now);
+                self.set_style(ink, width, now);
+            }
+            (Some(Tool::Eraser), _) => self.toggle_tool(Tool::Eraser, now),
+            (Some(tool), _) => self.set_tool(tool, now),
+            (None, _) => self.touch(),
         }
         true
+    }
+
+    /// The theme's colours for the dial, as resolved now: a change draws the dial again.
+    pub fn set_dial_look(&mut self, look: DialLook) {
+        if self.dial_look != look {
+            self.dial_look = look;
+            self.redraw();
+        }
     }
 
     /// The area's centre, in physical pixels.
@@ -1056,6 +1108,32 @@ impl BoardState {
         self.restyle(now, |e, ink, _| e.ink = ink);
     }
 
+    /// Choose an ink and, if given, a width, as `1`..`6` and `[` `]` would, for what's drawn
+    /// next and for the selection: the dial's stage two. One entry for both, and none when the
+    /// selection has them already.
+    pub fn set_style(&mut self, ink: u8, width: Option<u8>, now: Duration) {
+        self.ink = ink.clamp(1, INKS);
+        if let Some(w) = width {
+            self.width = w.min((WIDTHS.len() - 1) as u8);
+        }
+        let (ink, w) = (self.ink, self.width);
+        let unchanged = self
+            .selection
+            .iter()
+            .filter_map(|id| self.board.get(*id))
+            .all(|e| e.ink == ink && (width.is_none() || e.width == w));
+        if unchanged {
+            self.touch();
+            return;
+        }
+        self.restyle(now, |e, ink, w| {
+            e.ink = ink;
+            if width.is_some() {
+                e.width = w;
+            }
+        });
+    }
+
     /// Step the width `by` in [`WIDTHS`], for what's drawn next and for the selection.
     pub fn step_width(&mut self, by: i8, now: Duration) {
         let last = (WIDTHS.len() - 1) as i8;
@@ -1265,6 +1343,8 @@ fn scene_of(st: &BoardState) -> Scene<'_> {
         live: st.live(),
         marquee: st.marquee(),
         dial: st.dial(),
+        dial_look: st.dial_look,
+        area: st.area,
         cell: st.cell_size(),
     }
 }
@@ -1441,6 +1521,7 @@ impl Surface for BoardSurface {
         self.state
             .borrow_mut()
             .set_look(crate::ink_colors(ctx), crate::default_fg(ctx));
+        self.state.borrow_mut().set_dial_look(crate::dial_look(ctx));
         match ev {
             Event::Pointer(p) => {
                 self.pointer(p, ctx);

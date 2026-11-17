@@ -18,11 +18,19 @@ fn mono_dark_styles_every_core_face() {
     let core = BASE_FACES.iter().chain(UI_FACES).map(|f| f.0);
     let orchid = die_orchid_client::FACES.iter().map(|f| f.0);
     let markdown = die_markdown::faces();
-    let known: Vec<&str> = core.chain(orchid).chain(markdown.map(|f| f.0)).collect();
+    let whiteboard = [
+        die_whiteboard::face::DIAL,
+        die_whiteboard::face::DIAL_ACCENT,
+    ];
+    let known: Vec<&str> = core
+        .chain(orchid)
+        .chain(markdown.map(|f| f.0))
+        .chain(whiteboard)
+        .collect();
     for name in t.faces.keys() {
         assert!(
             known.contains(&name.as_str()),
-            "{name} is no core, orchid or markdown face"
+            "{name} is no core, orchid, markdown or whiteboard face"
         );
     }
     // The markdown view draws in your stylesheet's colours: each of its faces is styled here.

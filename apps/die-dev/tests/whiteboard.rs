@@ -1,7 +1,7 @@
 //! The whiteboard through your config: it comes in through `die::Config.extensions`, `\w` opens
-//! its prompt in normal state, `\hk` describes its keys, its inks take mono-dark's colours, and a
-//! board drawn with your text defaults is 80 columns centred until `\z`. Nothing is written
-//! outside a temporary directory.
+//! a scratch board in normal state, with no prompt and no file until `S` asks where, `\hk`
+//! describes its keys, its inks take mono-dark's colours, and a board drawn with your text
+//! defaults is 80 columns centred until `\z`. Nothing is written outside a temporary directory.
 
 use die_test_cap as _;
 
@@ -39,7 +39,7 @@ fn tree(name: &str) -> PathBuf {
 }
 
 #[test]
-fn leader_w_opens_the_prompt_and_a_board_has_your_keys_and_colours() {
+fn leader_w_opens_a_scratch_board_and_a_board_has_your_keys_and_colours() {
     let dir = tree("leader");
     let mut h = harness();
     let notes = h.find_buffer("notes").unwrap();
@@ -49,7 +49,13 @@ fn leader_w_opens_the_prompt_and_a_board_has_your_keys_and_colours() {
         None,
         "nothing of the whiteboard's runs before \\w"
     );
-    for name in ["whiteboard", "whiteboard-export", "whiteboard-copy-image"] {
+    for name in [
+        "whiteboard",
+        "whiteboard-new",
+        "whiteboard-find",
+        "whiteboard-export",
+        "whiteboard-copy-image",
+    ] {
         assert_eq!(
             h.command_doc(name).map(|d| d.1),
             Some("whiteboard"),
@@ -57,15 +63,11 @@ fn leader_w_opens_the_prompt_and_a_board_has_your_keys_and_colours() {
         );
     }
     keys(&mut h, "\\w");
-    assert!(
-        h.prompt_text().unwrap().ends_with('/'),
-        "{:?}",
-        h.prompt_text()
-    );
-    keys(&mut h, "arch<CR>");
+    assert_eq!(h.prompt_text(), None, "no prompt");
     let w = h.focused().unwrap();
     let buf = h.window_buffer(w).unwrap();
-    assert_eq!(h.buffer_name(buf), Some("*whiteboard: arch.svg*"));
+    assert_eq!(h.buffer_name(buf), Some("*whiteboard: scratch*"));
+    assert_eq!(h.directory(buf), Some(dir.as_path()));
     let g = h.surface_area(w).unwrap();
     assert_eq!(
         (g.text_x, g.text_w),
@@ -98,14 +100,22 @@ fn leader_w_opens_the_prompt_and_a_board_has_your_keys_and_colours() {
         die::core::Rgb::hex("#cccccc"),
         "ink 1 is the default foreground"
     );
-    // Nothing was written: no stroke, no file.
-    assert!(!dir.join("arch.svg").exists());
+    // Nothing was written: a scratch board has no file.
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     let wb = h
         .with_ext(|wb: &mut Whiteboard, _| wb.boards().len())
         .unwrap();
     assert_eq!(wb, 1);
+    // `S` asks where, from the directory `\w` was typed in.
     h.run("whiteboard-save", &Args::default()).unwrap();
+    assert!(
+        h.prompt_text().unwrap().ends_with('/'),
+        "{:?}",
+        h.prompt_text()
+    );
+    keys(&mut h, "arch<CR>");
     assert!(dir.join("arch.svg").exists());
+    assert_eq!(h.buffer_name(buf), Some("*whiteboard: arch.svg*"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -186,8 +196,7 @@ fn a_board_drawn_in_pixels_through_your_config_exports_splits_and_survives_two_r
     h.open_text("notes", "my notes\n").unwrap();
     let notes = h.find_buffer("notes").unwrap();
     h.set_directory(notes, &dir);
-    keys(&mut h, "\\w");
-    keys(&mut h, "talk<CR>");
+    keys(&mut h, ":whiteboard talk<CR>");
     let w = h.focused().unwrap();
     let buf = h.window_buffer(w).unwrap();
     assert_eq!(h.buffer_name(buf), Some("*whiteboard: talk.svg*"));
@@ -230,8 +239,8 @@ fn a_board_drawn_in_pixels_through_your_config_exports_splits_and_survives_two_r
         .with_ext(|wb: &mut Whiteboard, _| wb.boards().len())
         .unwrap();
     assert_eq!(wb, 1);
-    // Export: the PNG beside the file, from the model, at your 2x.
-    keys(&mut h, "Epng<CR>");
+    // Export: the PNG beside the file, from the model, at your 2x, where `E` asks first.
+    keys(&mut h, "E<CR>");
     h.run_until_idle();
     let png = dir.join("talk.png");
     assert!(png.exists(), "{:?}", h.messages);
@@ -299,4 +308,47 @@ fn a_board_drawn_in_pixels_through_your_config_exports_splits_and_survives_two_r
     }
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn the_tool_dial_is_in_mono_darks_grey_and_red() {
+    use die::core::{Input, Key, KeyEvent, KeyKind, PointerKind, Rgb};
+    let dir = tree("dial");
+    let mut h = harness();
+    h.set_cell_pixels(CELL);
+    let look = die_whiteboard::dial_look(&h);
+    let hex = Rgb::hex;
+    assert_eq!(
+        (look.face, look.accent, look.bg),
+        (hex("#888888"), hex("#cc4444"), hex("#1a1a1a"))
+    );
+    let args = Args {
+        text: Some(dir.join("dial.svg").display().to_string()),
+        ..Args::default()
+    };
+    h.run("whiteboard", &args).unwrap();
+    h.run_until_idle();
+    // Space held, the pointer north-east inside the ring: rect's chip, the red behind the
+    // background; the other names in the mid grey.
+    point(&mut h, PointerKind::Move, (300.0, 200.0), 0);
+    let space = KeyEvent::press(Key::Char(' '));
+    assert!(h.send(Input::Key(space.clone())).is_empty());
+    point(&mut h, PointerKind::Move, (320.0, 180.0), 0);
+    let scene = h.scene();
+    let chip: Vec<_> = scene
+        .cells
+        .iter()
+        .filter(|c| c.bg == hex("#cc4444"))
+        .collect();
+    let text: String = chip.iter().map(|c| c.glyph.to_string()).collect();
+    assert_eq!(text, " rect ", "{}", scene.snapshot());
+    assert!(chip.iter().all(|c| c.fg == hex("#1a1a1a")));
+    let names = scene
+        .cells
+        .iter()
+        .filter(|c| c.fg == hex("#888888"))
+        .count();
+    assert!(names > 20, "the other names: {}", scene.snapshot());
+    assert!(h.send(Input::Key(space.kind(KeyKind::Release))).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
 }
