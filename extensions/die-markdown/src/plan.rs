@@ -18,7 +18,7 @@ use std::ops::Range;
 mod code;
 mod lines;
 mod table;
-mod walk;
+pub(crate) mod walk;
 
 /// The faces of headings, level 1 to level 6: `markdown-h1` to `markdown-h6`.
 pub const H: [&str; 6] = [

@@ -41,15 +41,47 @@ const BULLETS: [&str; 3] = ["•", "◦", "▪"];
 /// padding is this long at most, whatever is asked for.
 const WIDEST: usize = 4096;
 
-/// The plan of `text` as the rules make it, before the last pass puts it in order.
-pub(super) fn walk(text: &str, options: &Options) -> Plan {
-    let syntax = Syntax::ENABLE_TABLES
+/// The parser's extensions: one set for everything here that reads a markdown text, so the
+/// plan and the page take the same text for the same thing.
+pub(crate) fn syntax() -> Syntax {
+    Syntax::ENABLE_TABLES
         | Syntax::ENABLE_STRIKETHROUGH
         | Syntax::ENABLE_TASKLISTS
         | Syntax::ENABLE_FOOTNOTES
         | Syntax::ENABLE_YAML_STYLE_METADATA_BLOCKS
-        | Syntax::ENABLE_GFM;
-    let parser = Parser::new_ext(text, syntax);
+        | Syntax::ENABLE_GFM
+}
+
+/// Heading anchors as GitHub makes them, none given twice: the plan's and the page's.
+#[derive(Default)]
+pub(crate) struct Slugs {
+    /// The slugs taken, and how many times each was asked for again.
+    taken: HashMap<String, usize>,
+}
+
+impl Slugs {
+    /// The anchor of a heading whose text is `title`, and not one already given.
+    pub(crate) fn take(&mut self, title: &str) -> String {
+        let base: String = title
+            .chars()
+            .flat_map(char::to_lowercase)
+            .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+            .map(|c| if c == ' ' { '-' } else { c })
+            .collect();
+        let mut slug = base.clone();
+        while self.taken.contains_key(&slug) {
+            let again = self.taken.entry(base.clone()).or_insert(0);
+            *again += 1;
+            slug = format!("{base}-{again}");
+        }
+        self.taken.insert(slug.clone(), 0);
+        slug
+    }
+}
+
+/// The plan of `text` as the rules make it, before the last pass puts it in order.
+pub(super) fn walk(text: &str, options: &Options) -> Plan {
+    let parser = Parser::new_ext(text, syntax());
     let mut walk = Walk::new(text, options);
     // Link reference definitions, which no event shows. Their face goes on after the events'
     // faces, so over a block quote's where a definition is inside one.
@@ -150,8 +182,8 @@ pub(super) struct Walk<'a> {
     image: Option<usize>,
     /// For each line asked about, where the `>` of the run that starts it are.
     marks: HashMap<usize, Vec<usize>>,
-    /// The slugs taken, and how many times each was asked for again.
-    slugs: HashMap<String, usize>,
+    /// The headings' anchors given so far.
+    slugs: Slugs,
 }
 
 impl<'a> Walk<'a> {
@@ -175,7 +207,7 @@ impl<'a> Walk<'a> {
             heading: None,
             image: None,
             marks: HashMap::new(),
-            slugs: HashMap::new(),
+            slugs: Slugs::default(),
         }
     }
 
@@ -410,7 +442,7 @@ impl<'a> Walk<'a> {
                 title,
             }) => {
                 self.heading = None;
-                let slug = self.slug(&title);
+                let slug = self.slugs.take(&title);
                 self.out.headings.push(Heading { range, level, slug });
             }
             Some(Frame::Quote) => self.quotes = self.quotes.saturating_sub(1),
@@ -715,24 +747,6 @@ impl<'a> Walk<'a> {
             range: content,
             title: String::new(),
         }
-    }
-
-    /// A heading's anchor as GitHub makes it, and not one already given.
-    fn slug(&mut self, title: &str) -> String {
-        let base: String = title
-            .chars()
-            .flat_map(char::to_lowercase)
-            .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
-            .map(|c| if c == ' ' { '-' } else { c })
-            .collect();
-        let mut slug = base.clone();
-        while self.slugs.contains_key(&slug) {
-            let again = self.slugs.entry(base.clone()).or_insert(0);
-            *again += 1;
-            slug = format!("{base}-{again}");
-        }
-        self.slugs.insert(slug.clone(), 0);
-        slug
     }
 
     fn quote(&mut self, kind: Option<BlockQuoteKind>, range: &Range<usize>) {
