@@ -29,7 +29,9 @@ path = "crates/die-core"
 # 15,765 until the whiteboard's tool dial: a press a surface takes in normal state brings its release (15,763).
 # 15,770 until the dial's review: no focus pair between two windows on one buffer, and the pointer held by its button (15,775).
 # 15,780 until the markdown view's three pieces of the contract: file-type modes (§8), decorations swapped as one change (§9) and a call after the text has changed (§5), told within the turn that changed it (15,859).
-limit = 15860
+# 15,860 until the whiteboard's scratch boards: `Ctx::rename_buffer`, made unique as a new buffer's name, for a scratch board saved as a file (15,867).
+# 15,870 until their review: `PromptSpec::line_first`, a prompt for a file to write answering with the name typed, not the file it flex matches (15,875).
+limit = 15880
 
 [[crate]]
 name = "die-render"
@@ -209,10 +211,11 @@ files = ["files.rs", "files/"]
 # 1,370 until `describe-key` said a terminal's passthrough is insert, and which Esc leaves it.
 # 1,390 until `surface-paste` read a register by the keymap's rule, as `<C-r>` does.
 # 1,395 until a prompt put back its own buffer's state, and said it was opened over passthrough.
+# 1,405 until a prompt for a file to write could answer with the name typed until a row is moved to (1,409).
 [[module]]
 crate = "die-core"
 name = "command line, prompt, core commands"
-limit = 1405
+limit = 1410
 files = ["cmdline.rs", "prompt.rs", "commands.rs", "cmdline/", "prompt/", "commands/"]
 
 [[module]]

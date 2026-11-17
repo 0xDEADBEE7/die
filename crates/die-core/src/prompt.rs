@@ -31,6 +31,9 @@
 //!   again, as vertico's `directory` preselect has it. `<S-Tab>` goes up a directory.
 //! - History is on `<M-p>` and `<M-n>`, which also work with no candidates.
 //!
+//! With [`PromptSpec::line_first`], as for a file to write, no row is chosen until you move to
+//! one, so `<CR>` answers with the line as typed rather than with the best match for it.
+//!
 //! With [`PromptSpec::matches_part`], the candidates match only part of the line, as `:` matches
 //! a command's name after its range. No row is chosen until you move to one, so `<CR>` answers
 //! with the line as typed, and choosing a row or `<Tab>` puts it in that part and keeps the rest.
@@ -79,6 +82,7 @@ pub struct PromptSpec {
     on_change: Option<ChangeFn>,
     source: Option<Source>,
     descends: bool,
+    line_first: bool,
     require_match: bool,
     part: Option<PartFn>,
     tiers: Option<TierFn>,
@@ -103,6 +107,7 @@ impl PromptSpec {
             on_change: None,
             source: None,
             descends: false,
+            line_first: false,
             require_match: false,
             part: None,
             tiers: None,
@@ -174,6 +179,13 @@ impl PromptSpec {
         self.descends = true;
         self
     }
+    /// No row is chosen until you move to one, so `<CR>` answers with the line as typed, as
+    /// Emacs's `write-file` takes a new name: for a prompt that names a file to write, where the
+    /// best match for a new name would be another file. `<Tab>` and a row moved to are as ever.
+    pub fn line_first(mut self) -> Self {
+        self.line_first = true;
+        self
+    }
     /// Match the candidates against only the part of the line `part` names, as a byte range: for
     /// `:%no`, `Some(1..3)`. None means the line has no such part, as once an argument follows a
     /// command's name, and then there's no list. No row is chosen until you move to one, so `<CR>`
@@ -237,6 +249,8 @@ struct List {
     chosen: Option<usize>,
     /// The line can be chosen, above the first row.
     line_row: bool,
+    /// The line is chosen, whatever's typed, until a row is moved to.
+    line_first: bool,
     /// The first of `matches` showing.
     top: usize,
     /// The rows taken so far. Like the owner's minibuffer, the list grows and doesn't shrink.
@@ -244,7 +258,7 @@ struct List {
 }
 
 impl List {
-    fn new(source: Source, line_row: bool, part: Option<PartFn>, tiers: Option<TierFn>) -> List {
+    fn new(source: Source, spec: &PromptSpec, part: Option<PartFn>, tiers: Option<TierFn>) -> List {
         let (live, feed, items) = match source {
             Source::Fixed(items) => (None, None, items),
             Source::Live(f) => (Some(f), None, vec![]),
@@ -252,7 +266,8 @@ impl List {
         };
         List {
             live,
-            line_row: line_row || part.is_some(),
+            line_row: spec.descends || spec.line_first || part.is_some(),
+            line_first: spec.line_first,
             part,
             tiers,
             end: None,
@@ -281,7 +296,7 @@ impl List {
         if let Some(t) = tiers {
             self.matches.sort_by_key(|&i| t.get(i).copied());
         }
-        let on_line = self.line_row && (self.part.is_some() || query.is_empty());
+        let on_line = self.line_row && (self.part.is_some() || self.line_first || query.is_empty());
         self.chosen = (!self.matches.is_empty() && !on_line).then_some(0);
         self.top = 0;
         self.height = self.height.max(self.matches.len().min(ROWS));
@@ -529,7 +544,7 @@ impl Ctx {
         let (buf, prev) = (self.focused_buffer(), self.state());
         let mut spec: PromptSpec = spec.into();
         let (source, part, tiers) = (spec.source.take(), spec.part.take(), spec.tiers.take());
-        let list = source.map(|s| List::new(s, spec.descends, part, tiers));
+        let list = source.map(|s| List::new(s, &spec, part, tiers));
         let text = spec.initial.clone();
         self.prompt = Some(Prompt {
             cursor: text.len(),

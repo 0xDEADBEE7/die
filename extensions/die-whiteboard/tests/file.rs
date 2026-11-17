@@ -1,6 +1,6 @@
 //! The file: the dialect round trips a board exactly, a foreign SVG is refused, autosave runs a
 //! second after the last change and no timer runs while every board is clean, a kill writes, and
-//! `\w`'s prompt descends and takes a new name.
+//! `whiteboard-find`'s prompt descends and takes a new name.
 
 use die_test_cap as _;
 
@@ -196,7 +196,7 @@ fn autosave_a_second_after_the_last_change_and_no_timer_when_clean() {
     {
         let shared = board(&mut s.h, s.buf);
         let mut st = shared.borrow_mut();
-        st.path = s.dir.path().join("gone").join("x.svg");
+        st.path = Some(s.dir.path().join("gone").join("x.svg"));
     }
     gesture(&mut s, &[(10.0, 50.0), (60.0, 50.0)]);
     s.h.advance(Duration::from_secs(2));
@@ -242,7 +242,7 @@ fn the_prompt_descends_lists_boards_and_takes_a_new_name() {
     let mut h = harness();
     let notes = h.find_buffer("notes").unwrap();
     h.set_directory(notes, dir.path());
-    h.run("whiteboard", &Args::default()).unwrap();
+    h.run("whiteboard-find", &Args::default()).unwrap();
     let line = h.prompt_text().unwrap().to_string();
     assert!(line.ends_with('/'), "{line}");
     assert_eq!(
@@ -263,10 +263,7 @@ fn the_prompt_descends_lists_boards_and_takes_a_new_name() {
     h.run_until_idle();
     let buf = h.focused_buffer().unwrap();
     assert_eq!(h.buffer_name(buf), Some("*whiteboard: fresh.svg*"));
-    // From a board, `whiteboard` asks again; from text with a board open, it goes to it.
-    h.run("whiteboard", &Args::default()).unwrap();
-    assert!(h.prompt_text().is_some());
-    keys(&mut h, "<Esc>");
+    // From text with a board open, `whiteboard` goes to it, and asks nothing.
     h.show(notes, ShowIn::Current).unwrap();
     h.run("whiteboard", &Args::default()).unwrap();
     assert_eq!(h.focused_buffer(), Some(buf), "the board used last");
@@ -274,13 +271,13 @@ fn the_prompt_descends_lists_boards_and_takes_a_new_name() {
     // The one answered last lists first, once it's a file.
     h.run("whiteboard-save", &Args::default()).unwrap();
     h.show(notes, ShowIn::Current).unwrap();
-    h.run("whiteboard-new", &Args::default()).unwrap();
+    h.run("whiteboard-find", &Args::default()).unwrap();
     assert_eq!(h.prompt_candidates(), ["fresh.svg", "old.svg", "sub/"]);
     keys(&mut h, "old.svg<CR>");
     let buf = h.focused_buffer().unwrap();
     assert_eq!(h.buffer_name(buf), Some("*whiteboard: old.svg*"));
     h.show(notes, ShowIn::Current).unwrap();
-    h.run("whiteboard-new", &Args::default()).unwrap();
+    h.run("whiteboard-find", &Args::default()).unwrap();
     assert_eq!(h.prompt_candidates(), ["old.svg", "fresh.svg", "sub/"]);
     keys(&mut h, "<Esc>");
     h.show(buf, ShowIn::Current).unwrap();
