@@ -229,10 +229,33 @@ fn scratch_boards_come_back_whole_with_their_names_and_an_empty_one_doesnt() {
     };
     keys(&mut s.h, "0p");
     gesture(&mut s, &[(10.0, 150.0), (60.0, 150.0)]);
+    // Its last export is kept too: `E` offers it again and writes it again without asking.
+    let png = s.dir.path().join("board.png");
+    keys(&mut s.h, "E<CR>");
+    s.h.run_until_idle();
+    assert!(png.exists());
     let dir = s.dir;
     let mut h = restart(s.h, &state);
     let two = h.find_buffer("*whiteboard: scratch 2*").unwrap();
-    assert_eq!(board(&mut h, two).borrow().board.len(), 3);
+    assert_eq!(h.focused_buffer(), Some(two));
+    assert_eq!(h.directory(two), Some(dir.path()));
+    {
+        let shared = board(&mut h, two);
+        let st = shared.borrow();
+        assert_eq!(st.board.len(), 3);
+        assert_eq!((st.tool, st.ink, st.width), (Tool::Pen, 3, 2));
+        assert_eq!(st.view.zoom, 1.0);
+        assert_eq!(st.exported.as_deref(), Some(png.as_path()));
+    }
+    let home = std::env::home_dir();
+    keys(&mut h, "E");
+    let offered = die_whiteboard::file::abbreviate(&png, home.as_deref());
+    assert_eq!(h.prompt_text(), Some(offered.as_str()));
+    keys(&mut h, "<CR>");
+    assert_eq!(h.prompt_text(), None, "not asked to overwrite");
+    h.run_until_idle();
+    let wrote = format!("Wrote {}", png.display());
+    assert!(h.messages.last().unwrap().starts_with(&wrote));
     keys(&mut h, "Skept<CR>");
     let kept = dir.path().join("kept.svg");
     assert_eq!(

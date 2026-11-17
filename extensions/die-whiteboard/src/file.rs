@@ -17,6 +17,50 @@ pub fn with_svg(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// `path` as a board's file: `.svg` added unless it ends in `.svg`, so `arch` is `arch.svg` and
+/// `diagram.png` is `diagram.png.svg`, never a name the board's PNG export would write over.
+pub fn board_file(path: &Path) -> PathBuf {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+    {
+        return path.to_path_buf();
+    }
+    let mut name = path.as_os_str().to_owned();
+    name.push(".svg");
+    PathBuf::from(name)
+}
+
+/// Whether two paths name one file: the file on disk, where there is one, reached through a link
+/// or in another case on a disk that ignores case; or where there's none yet, the same name in
+/// the same directory.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => (x.dev(), x.ino()) == (y.dev(), y.ino()),
+        (Err(_), Err(_)) => a == b || placed(a).is_some_and(|p| placed(b) == Some(p)),
+        _ => false,
+    }
+}
+
+/// A path that isn't there yet, in its directory as the disk has it.
+fn placed(path: &Path) -> Option<PathBuf> {
+    let dir = path.parent()?.canonicalize().ok()?;
+    Some(dir.join(path.file_name()?))
+}
+
+/// A file as it is on disk, to tell whether anything has written it since: its inode, its
+/// length, and its modification time in seconds and nanoseconds. Each write DIE makes renames a
+/// new file over the old one, so it has a new inode.
+pub type Stamp = [u64; 4];
+
+/// The file's [`Stamp`], or None if there's no file.
+pub fn stamp(path: &Path) -> Option<Stamp> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some([m.ino(), m.len(), m.mtime() as u64, m.mtime_nsec() as u64])
+}
+
 /// The file's name, for the status line: `arch.svg`.
 pub fn name_of(path: &Path) -> String {
     path.file_name()
@@ -208,6 +252,18 @@ mod tests {
             "*whiteboard: arch.svg*"
         );
         assert_eq!(
+            board_file(Path::new("/a/arch")),
+            PathBuf::from("/a/arch.svg")
+        );
+        assert_eq!(
+            board_file(Path::new("/a/arch.SVG")),
+            PathBuf::from("/a/arch.SVG")
+        );
+        assert_eq!(
+            board_file(Path::new("/a/diagram.png")),
+            PathBuf::from("/a/diagram.png.svg")
+        );
+        assert_eq!(
             sibling(Path::new("/a/arch.svg"), ".png"),
             PathBuf::from("/a/arch.png")
         );
@@ -288,6 +344,39 @@ mod tests {
                 "sub/"
             ]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_file_by_two_paths_and_its_stamp() {
+        let dir = std::env::temp_dir().join(format!("die-wb-same-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+        let (real, link) = (dir.join("real/a.svg"), dir.join("link/a.svg"));
+        assert!(same_file(&real, &link), "not there yet: the same directory");
+        assert!(!same_file(&real, &dir.join("real/b.svg")));
+        let (x, y) = (dir.join("x/a.svg"), dir.join("y/a.svg"));
+        assert!(!same_file(&x, &y), "no directory to go by");
+        std::fs::write(&real, "one").unwrap();
+        assert!(same_file(&real, &link), "through the link");
+        assert!(
+            !same_file(&real, &dir.join("real/b.svg")),
+            "one there, one not"
+        );
+        let upper = dir.join("real/A.svg");
+        assert_eq!(
+            same_file(&real, &upper),
+            upper.exists(),
+            "by the disk's case"
+        );
+        // A stamp: the same through the link, another after a write.
+        let before = stamp(&real).unwrap();
+        assert_eq!(stamp(&link), Some(before));
+        write_atomic(&real, b"two").unwrap();
+        assert_ne!(stamp(&real), Some(before));
+        assert_eq!(stamp(&dir.join("real/none.svg")), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -333,6 +333,168 @@ fn export_asks_where_and_the_extension_says_what_it_writes() {
     assert_eq!(s.h.take_errors(), Vec::<String>::new());
 }
 
+/// `Save board as: ` and `Export to: ` write the name typed, or the path `E` filled in: `<CR>`
+/// never turns a new name into a listed file it flex matches, which it would write over.
+#[test]
+fn a_new_name_is_the_file_written_not_one_it_matches() {
+    let mut s = scratch("typed");
+    let dir = s.dir.path().to_path_buf();
+    std::fs::write(dir.join("archive.svg"), "").unwrap();
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    keys(&mut s.h, "Sarch");
+    assert_eq!(s.h.prompt_candidates(), ["archive.svg"], "listed");
+    assert_eq!(s.h.prompt_chosen(), None, "but not chosen");
+    keys(&mut s.h, "<CR>");
+    assert_eq!(s.h.prompt_text(), None, "nothing asked");
+    assert_eq!(elements_in(&dir.join("arch.svg")), 1);
+    assert_eq!(std::fs::read(dir.join("archive.svg")).unwrap(), b"");
+    // `E RET` writes what it shows, `arch.png`, though `arch-v1.png` matches it.
+    std::fs::write(dir.join("arch-v1.png"), "v1").unwrap();
+    keys(&mut s.h, "E");
+    let png = dir.join("arch.png");
+    assert_eq!(s.h.prompt_text(), Some(line(&png).as_str()));
+    keys(&mut s.h, "<CR>");
+    assert_eq!(s.h.prompt_text(), None, "nothing asked");
+    s.h.run_until_idle();
+    assert!(decode_png(&std::fs::read(&png).unwrap()).is_ok());
+    assert_eq!(std::fs::read(dir.join("arch-v1.png")).unwrap(), b"v1");
+    // A new name typed over the last export's is a new file, and the last export stays.
+    let before = std::fs::read(&png).unwrap();
+    gesture(&mut s, &[(10.0, 40.0), (60.0, 40.0)]);
+    keys(
+        &mut s.h,
+        &format!("E<C-u>{}<CR>", dir.join("a.png").display()),
+    );
+    assert_eq!(s.h.prompt_text(), None, "nothing asked");
+    s.h.run_until_idle();
+    assert!(decode_png(&std::fs::read(dir.join("a.png")).unwrap()).is_ok());
+    assert_eq!(std::fs::read(&png).unwrap(), before, "not written over");
+    let wrote = format!("Wrote {}", dir.join("a.png").display());
+    assert!(s.h.messages.last().unwrap().starts_with(&wrote));
+    assert_eq!(s.h.take_errors(), Vec::<String>::new());
+}
+
+/// An open board's file is that board's by any path to it: through a link to its directory, or
+/// in another case where the disk ignores case. `S` and `E` refuse it, and `:whiteboard` goes to
+/// the board.
+#[test]
+fn an_open_board_s_file_by_another_path_is_still_its() {
+    let mut s = scratch("alias");
+    let dir = s.dir.path().to_path_buf();
+    let scratch_board = s.buf;
+    let link = dir.join("link");
+    std::os::unix::fs::symlink(&dir, &link).unwrap();
+    let arch = dir.join("arch.svg");
+    open(&mut s.h, &arch);
+    let arch_board = s.h.focused_buffer().unwrap();
+    focus(&mut s, arch_board);
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    keys(&mut s.h, "S");
+    open(&mut s.h, &link.join("arch.svg"));
+    assert_eq!(
+        s.h.focused_buffer(),
+        Some(arch_board),
+        "the board open on it"
+    );
+    let count = |h: &mut Harness| h.with_ext(|wb: &mut Whiteboard, _| wb.boards().len());
+    assert_eq!(count(&mut s.h).unwrap(), 2);
+    focus(&mut s, scratch_board);
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    gesture(&mut s, &[(10.0, 30.0), (60.0, 30.0)]);
+    let mut aliases = vec![link.join("arch")];
+    if dir.join("ARCH.svg").exists() {
+        aliases.push(dir.join("ARCH"));
+    }
+    for alias in aliases {
+        let errors = keys_errors(&mut s.h, &format!("S<C-u>{}<CR>", alias.display()));
+        let refused = errors
+            .iter()
+            .any(|e| e.contains("is open in another board"));
+        assert!(refused, "{}: {errors:?}", alias.display());
+        assert_eq!(s.h.prompt_text(), None, "not asked to overwrite");
+        let to = format!("E<C-u>{}.svg<CR>", alias.display());
+        let errors = keys_errors(&mut s.h, &to);
+        let refused = errors.iter().any(|e| e.contains("is a board's own file"));
+        assert!(refused, "{}: {errors:?}", alias.display());
+    }
+    assert_eq!(
+        s.h.buffer_name(scratch_board),
+        Some("*whiteboard: scratch*")
+    );
+    assert_eq!(elements_in(&arch), 1, "the board's file as it was");
+}
+
+/// A board's file is an `.svg`: `S` adds it to `diagram.png`. And `whiteboard-export png` won't
+/// write a PNG over a board's own file, as a board opened as `x.png` has.
+#[test]
+fn a_board_s_file_is_never_its_own_png_export() {
+    let mut s = scratch("own");
+    let dir = s.dir.path().to_path_buf();
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    keys(&mut s.h, "Sdiagram.png<CR>");
+    assert_eq!(elements_in(&dir.join("diagram.png.svg")), 1);
+    assert!(!dir.join("diagram.png").exists());
+    let name = s.h.buffer_name(s.buf);
+    assert_eq!(name, Some("*whiteboard: diagram.png.svg*"));
+    let png = Args {
+        text: Some("png".into()),
+        ..Args::default()
+    };
+    s.h.run("whiteboard-export", &png).unwrap();
+    s.h.run_until_idle();
+    let beside = std::fs::read(dir.join("diagram.png.png")).unwrap();
+    assert!(decode_png(&beside).is_ok());
+    assert_eq!(elements_in(&dir.join("diagram.png.svg")), 1);
+    // A board opened on a `.png` name: its PNG beside it is its own file, refused.
+    let x = dir.join("x.png");
+    open(&mut s.h, &x);
+    let xb = s.h.focused_buffer().unwrap();
+    focus(&mut s, xb);
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    keys(&mut s.h, "S");
+    let err = s.h.run("whiteboard-export", &png).unwrap_err().to_string();
+    assert!(err.contains("x.png is a board's own file"), "{err}");
+    s.h.run_until_idle();
+    assert_eq!(elements_in(&x), 1, "still the board");
+}
+
+/// `E` writes its last export again without asking only while the file is as that export left
+/// it: once anything else has written it, here another board saved there and closed, it asks.
+#[test]
+fn the_last_export_is_asked_about_once_something_else_wrote_it() {
+    let mut s = scratch("stale");
+    let dir = s.dir.path().to_path_buf();
+    let first = s.buf;
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    let pic = dir.join("pic.svg");
+    keys(&mut s.h, &format!("E<C-u>{}<CR>", pic.display()));
+    assert!(svg::read(&std::fs::read_to_string(&pic).unwrap()).is_err());
+    keys(&mut s.h, "E");
+    assert_eq!(s.h.prompt_text(), Some(line(&pic).as_str()));
+    keys(&mut s.h, "<CR>");
+    assert_eq!(s.h.prompt_text(), None, "as it left it: not asked");
+    // Another board saved over it, then closed.
+    s.h.run("whiteboard", &Args::default()).unwrap();
+    let other = s.h.focused_buffer().unwrap();
+    focus(&mut s, other);
+    gesture(&mut s, &[(10.0, 10.0), (60.0, 10.0)]);
+    gesture(&mut s, &[(10.0, 30.0), (60.0, 30.0)]);
+    keys(&mut s.h, "S<C-u>pic<CR>");
+    let question = "pic.svg exists; overwrite? (y or n)";
+    assert!(asked(&mut s.h).ends_with(question), "{:?}", asked(&mut s.h));
+    keys(&mut s.h, "y<CR>:bd<CR>");
+    assert!(!s.h.is_live(other));
+    assert_eq!(elements_in(&pic), 2);
+    focus(&mut s, first);
+    keys(&mut s.h, "E");
+    assert_eq!(s.h.prompt_text(), Some(line(&pic).as_str()));
+    keys(&mut s.h, "<CR>");
+    assert!(asked(&mut s.h).ends_with(question), "{:?}", asked(&mut s.h));
+    keys(&mut s.h, "n<CR>");
+    assert_eq!(elements_in(&pic), 2, "the other board's file kept");
+    assert_eq!(s.h.take_errors(), Vec::<String>::new());
+}
+
 #[test]
 fn whiteboard_open_writes_a_scratch_board_to_a_temporary_file() {
     let mut s = scratch("browser");
@@ -398,10 +560,17 @@ fn a_scratch_board_of_a_thousand_strokes_in_the_session() {
         s.h.with_ext(|wb: &mut Whiteboard, ctx| wb.scratch(ctx, &dir, big, None))
             .unwrap();
     let (first, bytes) = time(&mut s.h);
-    // Unchanged, it isn't written out again; changed, it is.
-    let (again, _) = time(&mut s.h);
+    // Unchanged by its revision, the picture isn't written out again: a stroke taken away behind
+    // the revision's back is still in the session. Once the revision moves, it's written again.
+    board(&mut s.h, buf).borrow_mut().board.elements.pop();
+    let (again, kept) = time(&mut s.h);
+    assert_eq!(kept, bytes, "the picture kept, not written out again");
     board(&mut s.h, buf).borrow_mut().redraw();
-    let (changed, _) = time(&mut s.h);
+    let (changed, fewer) = time(&mut s.h);
+    assert!(
+        fewer < bytes,
+        "written again: {fewer} bytes, {bytes} before"
+    );
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     println!(
         "the session as JSON with a scratch board of 1,000 strokes kept: {:.2} ms the first time ({bytes} bytes), {:.2} ms unchanged, {:.2} ms changed; {:.2} ms with an empty one",
@@ -412,8 +581,4 @@ fn a_scratch_board_of_a_thousand_strokes_in_the_session() {
     );
     assert!(bytes > 100_000, "the board is in it: {bytes} bytes");
     assert!(first < Duration::from_millis(200), "{first:?}");
-    assert!(
-        again < first,
-        "{again:?} unchanged, {first:?} the first time"
-    );
 }

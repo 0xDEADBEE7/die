@@ -224,12 +224,16 @@ impl Whiteboard {
         self.boards.get(&buf).cloned()
     }
 
-    /// The board on `path`, if one's open.
+    /// The board on `path`'s file, if one's open: the file on disk, whatever the path it was
+    /// reached by, through a link or in another case on a disk that ignores case.
     pub fn board_on(&self, path: &Path) -> Option<BufferId> {
-        self.boards
-            .iter()
-            .find(|(_, s)| s.borrow().path.as_deref() == Some(path))
-            .map(|(b, _)| *b)
+        let on = |s: &Shared| {
+            s.borrow()
+                .path
+                .as_deref()
+                .is_some_and(|p| file::same_file(p, path))
+        };
+        self.boards.iter().find(|(_, s)| on(s)).map(|(b, _)| *b)
     }
 
     /// The board used last, if any is open.
@@ -498,13 +502,14 @@ fn show_scratch(ctx: &mut Ctx, args: &Args) -> Result {
     Ok(())
 }
 
-/// One of the prompts that ask for a path: its label, the history it keeps, and what it lists of
-/// a directory.
+/// One of the prompts that ask for a path: its label, the history it keeps, what it lists of a
+/// directory, and whether it names a file to write.
 #[derive(Clone, Copy)]
 struct Asking {
     label: &'static str,
     history: &'static str,
     list: fn(&Path) -> Vec<String>,
+    writes: bool,
 }
 
 /// `Board: `, a board to open or start.
@@ -512,6 +517,7 @@ const BOARD: Asking = Asking {
     label: "Board: ",
     history: "board",
     list: file::entries,
+    writes: false,
 };
 
 /// `Save board as: `, a scratch board's file. Its answers are boards too.
@@ -519,6 +525,7 @@ const SAVE_AS: Asking = Asking {
     label: "Save board as: ",
     history: "board",
     list: file::entries,
+    writes: true,
 };
 
 /// `Export to: `, a PNG or an SVG.
@@ -526,15 +533,17 @@ const EXPORT: Asking = Asking {
     label: "Export to: ",
     history: "export",
     list: file::exports,
+    writes: true,
 };
 
 /// What a path prompt does with the path answered.
 type Answered = Box<dyn FnOnce(&mut Ctx, PathBuf) -> Result>;
 
 /// Ask for a path from `line`: the prompt descends directories like `\f`, lists what `asking`
-/// lists, the names answered last first, and takes a new name with `<M-CR>`. Answering with a
-/// directory asks again from there; with anything else, `done` has the path. Nothing typed, or a
-/// cancel, does nothing.
+/// lists, the names answered last first, and takes a new name with `<M-CR>`. For a file to
+/// write, `<CR>` takes the line as typed too, and a listed file only once you move to it, so a
+/// new name never turns into a file it flex matches. Answering with a directory asks again from
+/// there; with anything else, `done` has the path. Nothing typed, or a cancel, does nothing.
 fn ask_path(ctx: &mut Ctx, asking: Asking, dir: PathBuf, line: &str, done: Answered) {
     let home = std::env::home_dir();
     // What was answered, as the file it named: its last part, with `.svg` as a board got it.
@@ -553,6 +562,11 @@ fn ask_path(ctx: &mut Ctx, asking: Asking, dir: PathBuf, line: &str, done: Answe
         .history(asking.history)
         .descends()
         .candidates_from(listing(dir.clone(), home.clone(), recent, asking.list));
+    let spec = if asking.writes {
+        spec.line_first()
+    } else {
+        spec
+    };
     ctx.prompt(spec, move |ctx, answer| {
         let Some(answer) = answer.filter(|a| !a.is_empty()) else {
             return Ok(());
@@ -628,14 +642,14 @@ fn board_dir(ctx: &Ctx, buf: BufferId) -> PathBuf {
     dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()))
 }
 
-/// `Save board as: ` for scratch board `buf`, from its directory, listing boards: a name without
-/// an extension gets `.svg`, a file there already is asked about, and a path another open board
-/// has is refused. Then `close`'s window closes, for `ZZ`.
+/// `Save board as: ` for scratch board `buf`, from its directory, listing boards: a name not
+/// ending in `.svg` gets it, a file there already is asked about, and another open board's file,
+/// by whatever path, is refused. Then `close`'s window closes, for `ZZ`.
 fn ask_save_as(ctx: &mut Ctx, buf: BufferId, close: Option<Args>) {
     let dir = board_dir(ctx, buf);
     let line = file::line_for(&dir, std::env::home_dir().as_deref());
     let save = move |ctx: &mut Ctx, path: PathBuf| {
-        let path = file::with_svg(&path);
+        let path = file::board_file(&path);
         let other = ctx.with_ext(|wb: &mut Whiteboard, ctx| {
             wb.board_on(&path).filter(|b| *b != buf && ctx.is_live(*b))
         })?;
@@ -796,7 +810,8 @@ impl Format {
 
 /// `whiteboard-export [png|svg]`: with one named, on a file board, `NAME.png` beside the file
 /// (at your scale on your background, rasterized from the model in a job) or `NAME.export.svg`,
-/// the picture without the dialect's attributes. Otherwise it asks `Export to: `, from where
+/// the picture without the dialect's attributes, refused if that's an open board's own file, as
+/// a board's file a name like `diagram.png` gave it. Otherwise it asks `Export to: `, from where
 /// this board last exported, or beside its file, or `board.png` in a scratch board's directory;
 /// the answer's extension says which it writes.
 fn export_board(ctx: &mut Ctx, args: &Args) -> Result {
@@ -814,7 +829,9 @@ fn export_board(ctx: &mut Ctx, args: &Args) -> Result {
         (st.path.clone(), st.exported.clone())
     };
     if let (Some(format), Some(path)) = (named, &path) {
-        return export_to(ctx, buf, &state, file::sibling(path, format.suffix()));
+        let out = file::sibling(path, format.suffix());
+        not_a_board_file(ctx, &out)?;
+        return export_to(ctx, buf, &state, out);
     }
     let dir = board_dir(ctx, buf);
     let suffix = named.unwrap_or(Format::Png).suffix();
@@ -828,9 +845,33 @@ fn export_board(ctx: &mut Ctx, args: &Args) -> Result {
     Ok(())
 }
 
+/// Refuse an export over an open board's file, by whatever path: the export is a picture the
+/// board can't read back, over its dialect.
+fn not_a_board_file(ctx: &mut Ctx, path: &Path) -> Result {
+    let board =
+        ctx.with_ext(|wb: &mut Whiteboard, ctx| wb.board_on(path).filter(|b| ctx.is_live(*b)))?;
+    match board {
+        Some(_) => Err(Error::Msg(format!(
+            "{} is a board's own file; export to another",
+            file::name_of(path)
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Whether `path` is this board's last export as the board wrote it, with nothing having written
+/// it since: then an export there again needn't ask.
+fn exported_here(st: &BoardState, path: &Path) -> bool {
+    let there = st
+        .exported
+        .as_deref()
+        .is_some_and(|p| file::same_file(p, path));
+    there && st.exported_as.is_some() && st.exported_as == file::stamp(path)
+}
+
 /// `Export to: ` from `line`, listing PNGs, SVGs and directories: the extension says what's
 /// written, `.png` or `.svg`, and nothing else is; a board's own file is refused; a file there
-/// already is asked about, unless this board exported to it last.
+/// already is asked about, unless it's this board's last export, as the board left it.
 fn ask_export(ctx: &mut Ctx, buf: BufferId, state: Shared, dir: PathBuf, line: &str) {
     let export = move |ctx: &mut Ctx, path: PathBuf| {
         let name = file::name_of(&path);
@@ -839,14 +880,8 @@ fn ask_export(ctx: &mut Ctx, buf: BufferId, state: Shared, dir: PathBuf, line: &
                 "Export to a .png or an .svg, not {name}"
             )));
         }
-        let board = ctx
-            .with_ext(|wb: &mut Whiteboard, ctx| wb.board_on(&path).filter(|b| ctx.is_live(*b)))?;
-        if board.is_some() {
-            return Err(Error::Msg(format!(
-                "{name} is a board's own file; export to another"
-            )));
-        }
-        if state.borrow().exported.as_deref() == Some(path.as_path()) {
+        not_a_board_file(ctx, &path)?;
+        if exported_here(&state.borrow(), &path) {
             return export_to(ctx, buf, &state, path);
         }
         let at = path.clone();
@@ -863,7 +898,8 @@ fn export_to(ctx: &mut Ctx, buf: BufferId, state: &Shared, out: PathBuf) -> Resu
     }
 }
 
-/// Report an export's outcome, and if it went, where: the next export starts there.
+/// Report an export's outcome, and if it went, where, and the file as it was written: the next
+/// export starts there.
 fn report_export(
     ctx: &mut Ctx,
     buf: BufferId,
@@ -873,7 +909,9 @@ fn report_export(
     if outcome.is_ok()
         && let Ok(Some(state)) = ctx.with_ext(|wb: &mut Whiteboard, _| wb.board(buf))
     {
-        state.borrow_mut().exported = Some(out);
+        let mut st = state.borrow_mut();
+        st.exported_as = file::stamp(&out);
+        st.exported = Some(out);
     }
     report(ctx, buf, outcome);
 }
@@ -1312,6 +1350,7 @@ fn kept_board(ctx: &Ctx, buf: BufferId, st: &BoardState, svg: impl FnOnce() -> S
     }
     if let Some(out) = &st.exported {
         kept["exported"] = json!(out.to_string_lossy());
+        kept["exported_as"] = json!(st.exported_as);
     }
     kept
 }
@@ -1404,6 +1443,9 @@ fn take_kept(st: &mut BoardState, v: &Value) {
     }
     if let Some(out) = v.get("exported").and_then(Value::as_str) {
         st.exported = Some(PathBuf::from(out));
+        let stamp = v.get("exported_as").and_then(Value::as_array);
+        let parts = stamp.map(|s| s.iter().filter_map(Value::as_u64).collect::<Vec<_>>());
+        st.exported_as = parts.and_then(|p| p.try_into().ok());
     }
     st.redraw();
 }
@@ -1463,7 +1505,7 @@ impl Extension for Whiteboard {
         );
         reg.command(
             "whiteboard-export",
-            "E: export the board, asking `Export to: ` (NAME.png beside the file, or where it went last); a .png is rasterized from the model at your scale, an .svg is the picture without the dialect. `png` or `svg` given writes beside a board's file without asking.",
+            "E: export the board, asking `Export to: ` (NAME.png beside the file, or where it went last); a .png is rasterized from the model at your scale, an .svg is the picture without the dialect. `png` or `svg` given writes beside a board's file without asking, unless that's an open board's own file.",
             export_board,
         );
         reg.command(
