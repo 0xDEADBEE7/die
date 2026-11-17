@@ -1,6 +1,6 @@
 [package]
 name = "die-markdown"
-description = "A rendered view of markdown in a DIE text buffer: markup hidden, text styled, toggled by a key (scope D14)"
+description = "A rendered view of markdown in DIE, toggled by a key: a page drawn as GitHub draws a README where the host shows pixels, the markup hidden in its own buffer where it doesn't (scope D14)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 # An extension, outside the product: it depends on die-core only (`cargo xtask lint` checks).
-# pulldown-cmark stays behind plan.rs, which knows nothing of the editor.
+# pulldown-cmark stays behind plan.rs and typeset/doc.rs; tiny-skia, png and ttf-parser behind
+# typeset/, the page's typesetter. Neither knows anything of the editor.
 [dependencies]
 die-core.workspace = true
 pulldown-cmark.workspace = true

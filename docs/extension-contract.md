@@ -666,7 +666,7 @@ This is a check on the core, not a plan to build anything. Each row becomes a co
 | delta (~1.4k) | An extension with the same structure: a commit browser and a file browser as text buffers with modes, and diffs as read-only text buffers | Styled insertion, face decorations for diff lines, mode keymaps and state, window size, `prompt`, `process` for git | None. Its blocking `shell-command-to-string` calls become `process` callbacks. |
 | die-vim (part of DIE, built in this project) | A built-in crate: the keymap for the `text` kind, its commands, and the copy-state grammar | All of §9's die-vim primitives | None |
 | die-term (part of DIE, built in this project) | A built-in crate with a custom surface | `pty` with the holder, passthrough, full key events, pointer events, placements, `text()` for scrollback, `scroll_to` | None |
-| markdown view (a future extension of yours) | An extension providing the file-type mode for `.md` text buffers | Face providers, stored Hide decorations with placements for images and diagrams, `image` | None. Hidden markup is stored rather than provided (C16), and updated from `edits_since`. |
+| markdown view (a future extension of yours) | An extension providing the file-type mode for `.md` text buffers | Face providers, stored Hide decorations with placements for images and diagrams, `image` | None. Hidden markup is stored rather than provided (C16), and updated from `edits_since`. die-markdown's page (2026-11-18), its view where the host shows pixels, is a custom surface with a pixel buffer of its own instead (§10, §11), its pictures decoded by the extension. |
 
 ## 19. Open questions
 
