@@ -109,6 +109,35 @@ fn windows(ctx: &Ctx) -> Vec<String> {
 }
 
 #[test]
+fn the_jellyfish_a_launch_opens_on_is_where_die_started_and_not_where_what_it_covers_is() {
+    // A DIE you quit on a buffer somewhere else, as in your notes' directory.
+    let dir = Dir::new("where");
+    let mut plain = config(vec![]);
+    plain.core.session = Some(dir.0.clone());
+    let mut ctx = die::start(plain).unwrap();
+    let scratch = ctx.focused_buffer().unwrap();
+    ctx.set_directory(scratch, &dir.0);
+    ctx.save_session().unwrap();
+    drop(ctx);
+
+    let mut ctx = start_over(&dir.0, &Launch::default());
+    assert_eq!(on_screen(&ctx), NAME);
+    let jellyfish = ctx.focused_buffer().unwrap();
+    let started = die::started_dir();
+    assert_ne!(started, dir.0);
+    assert_eq!(ctx.directory(jellyfish), Some(started.as_path()));
+    // What it covers is as the session had it: `die::app::at_launch` is what moves `*scratch*`.
+    ctx.type_keys("q");
+    let under = ctx.focused_buffer().unwrap();
+    assert_eq!(ctx.directory(under), Some(dir.0.as_path()));
+    // One of yours, asked for there, is there, as any new buffer is.
+    ctx.type_keys(":jellyfish<CR>");
+    assert_eq!(on_screen(&ctx), NAME);
+    let asked = ctx.focused_buffer().unwrap();
+    assert_eq!(ctx.directory(asked), Some(dir.0.as_path()));
+}
+
+#[test]
 fn a_fresh_start_with_no_file_opens_on_the_jellyfish_and_a_file_a_check_or_a_restart_doesnt() {
     let fresh = Launch::default();
     let mut ctx = die::start(greeted(config(vec![]), &fresh)).unwrap();

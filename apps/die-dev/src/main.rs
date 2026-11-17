@@ -27,6 +27,8 @@ fn main() -> ExitCode {
         }
         (Some(names), _) => die::check(die_dev::config(args.files), names),
         (None, Some(bundle)) => {
+            // LaunchServices starts DIE.app in `/`: it starts at home, as Emacs.app does.
+            die::app::start_at_home();
             let config = die_dev::greeted(die_dev::config(args.files), &args.launch);
             die::app::run(config, bundle, args.launch)
         }

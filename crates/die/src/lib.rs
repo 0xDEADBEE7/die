@@ -53,7 +53,8 @@ impl Default for Config {
 }
 
 /// Where DIE started, as Emacs has it: `$PWD`, which keeps the symlinks you came through, if
-/// it's absolute and the same directory as the real one. Otherwise the real one, or `/`.
+/// it's absolute and the same directory as the real one. Otherwise the real one, or `/`. For
+/// DIE.app that's your home directory, once `main` has called [`app::start_at_home`].
 pub fn started_dir() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     started_dir_from(std::env::var_os("PWD").as_deref(), cwd)
@@ -71,6 +72,14 @@ pub fn started_dir_from(pwd: Option<&OsStr>, cwd: PathBuf) -> PathBuf {
         Some(pwd) if pwd.is_absolute() && same(pwd) => pwd.to_path_buf(),
         _ => cwd,
     }
+}
+
+/// Where a DIE started in `cwd` starts instead: `home`, if `cwd` is `/`, where LaunchServices
+/// starts an app, and `home` is a directory. None anywhere else: started from a terminal, DIE
+/// starts where you were.
+pub fn home_from_root(cwd: &Path, home: Option<PathBuf>) -> Option<PathBuf> {
+    let home = home.filter(|_| cwd == Path::new("/"))?;
+    home.is_dir().then_some(home)
 }
 
 /// Everything before the window opens: the editor, with any session restored and a window on
