@@ -1279,8 +1279,16 @@ fn a_link_goes_where_it_leads_and_the_way_back_is_kept() {
     assert!(h.text(plain).is_ok());
     assert_eq!(seen(&mut h, a), None);
     assert_eq!(h.find_buffer("a.md *page*"), None);
-    h.show(a, ShowIn::Current).unwrap();
-    h.run_until_idle();
+    // `C-o` from the text comes back to the file, at the line the page's top showed, and
+    // the toggle there brings the page back where it was.
+    keys(&mut h, "<C-o>");
+    assert_eq!(h.focused_buffer(), Some(a));
+    let w = h.focused().unwrap();
+    let cursor = h.text(a).unwrap().cursor(w).unwrap();
+    assert_eq!(
+        h.text(a).unwrap().line_of(cursor),
+        h.text(a).unwrap().line_of(line)
+    );
     keys(&mut h, "\\m");
     assert_eq!(line_at_top(&mut h, a), line);
     assert_eq!(Some(pixels(&mut h).0), seen(&mut h, a).unwrap().pixels);

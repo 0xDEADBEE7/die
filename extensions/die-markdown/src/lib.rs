@@ -781,6 +781,32 @@ impl Markdown {
         Ok(())
     }
 
+    /// Before a page's link opens a file as text: core's jump list keeps no place on a page, so
+    /// the page's own file stands in for it, shown in the window at the line the page's top
+    /// showed. `C-o` and `C-^` from the text come back there, and `\m` brings the page back
+    /// where it was.
+    fn stand_in(
+        &mut self,
+        ctx: &mut Ctx,
+        state: &page::Shared,
+        file: BufferId,
+        w: WindowId,
+    ) -> Result {
+        let at = {
+            let st = state.borrow();
+            let top = st.top(Some(w)) as f32;
+            st.page(Some(w)).map(|p| p.source_at(top))
+        };
+        ctx.show(file, ShowIn::Current)?;
+        if let Some(at) = at {
+            let t = ctx.text_mut(file)?;
+            let line = t.line_start(t.line_of(at.min(t.len())));
+            t.set_cursor(w, line);
+            t.set_scroll(w, line, 0);
+        }
+        Ok(())
+    }
+
     /// Follow the ringed link of a page. A heading here scrolls to it, and a `<details>` opens
     /// or closes. A markdown file's page takes this one's place in the window, at the heading
     /// or the line the link names, and any other file opens as text; this page is put away
@@ -829,6 +855,7 @@ impl Markdown {
                 let kind = target.path.extension().and_then(|e| e.to_str());
                 let ours = |e: &String| kind.is_some_and(|k| e.eq_ignore_ascii_case(k));
                 if !self.options.extensions.iter().any(ours) {
+                    self.stand_in(ctx, state, file, w)?;
                     return self.open_text(ctx, target, anchor, false);
                 }
                 let to = ctx.open_file(&target.path)?;
