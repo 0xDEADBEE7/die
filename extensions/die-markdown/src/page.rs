@@ -114,7 +114,9 @@ pub(crate) fn theme_palette(ctx: &Ctx) -> Palette {
     let text = paper.fg.map_or(dark.text, rgb);
     let panel = bg(plan::CODE_BLOCK).or(bg(plan::CODE)).unwrap_or(canvas);
     // A quote's text is GitHub's muted colour, so the face that styles one says what muted is.
-    let quote = fg(plan::QUOTE).unwrap_or(text);
+    // The quote face stands on no base face, so a theme that styles only those gives it the
+    // quiet one's colour, as the other quiet roles have.
+    let quote = fg(plan::QUOTE).or_else(|| fg("shadow")).unwrap_or(text);
     let muted = quote;
     let subtle = fg(plan::META).unwrap_or(muted);
     let border = fg(plan::RULE).unwrap_or(subtle);
