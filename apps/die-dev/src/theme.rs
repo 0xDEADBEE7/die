@@ -23,7 +23,8 @@ const ANSI: [&str; 16] = [
 
 /// mono-dark: every base and UI face, styled as your Emacs draws it, the orchid faces whose
 /// Emacs faces no base face matches, and the markdown view's, from the stylesheet your preview
-/// uses (`mono-dark.css`).
+/// uses (`mono-dark.css`). A markdown page takes its
+/// colours from the same faces, and `tests/markdown.rs` holds them to the stylesheet's.
 pub fn mono_dark() -> Theme {
     let s = Style::new;
     Theme::new("mono-dark", ANSI.map(Rgb::hex))
@@ -70,8 +71,8 @@ pub fn mono_dark() -> Theme {
         // seek's search line, `(:background "#3a3a3a")`, which the session browser draws while
         // you type a query.
         .face("orchid-seek-search", s().bg(BORDER))
-        // h1 and h2: bright and bold over a border-coloured line. A cell has one size of
-        // letter, so the two lines stand in for 2em, and one for 1.5em.
+        // h1 and h2: bright and bold over a border-coloured line. In the view in place a cell
+        // has one size of letter, so the two lines stand in for 2em, and one for 1.5em.
         .face(
             "markdown-h1",
             heading(FG_BRIGHT).underline(Underline::Double),
@@ -80,17 +81,19 @@ pub fn mono_dark() -> Theme {
             "markdown-h2",
             heading(FG_BRIGHT).underline(Underline::Single),
         )
-        // h3 to h6 are bright and bold there too, each smaller: here each is dimmer.
+        // h3 to h5 are bright and bold there too, each smaller, as a page draws them; h6 is
+        // the dimmer one, as GitHub's is.
         .face("markdown-h3", heading(FG_BRIGHT))
-        .face("markdown-h4", heading(FG))
-        .face("markdown-h5", heading(FG_MID))
+        .face("markdown-h4", heading(FG_BRIGHT))
+        .face("markdown-h5", heading(FG_BRIGHT))
         .face("markdown-h6", s().fg(FG_MID))
         // strong, em and del
         .face("markdown-bold", s().fg(FG_BRIGHT).bold())
         .face("markdown-italic", s().fg(FG_MID).italic())
         .face("markdown-strike", s().fg(FG_DIM).strike())
-        // code, and pre with its own text colour
-        .face("markdown-code", s().fg(FG_MID).bg(BG_SUBTLE))
+        // code, and pre with its own text colour. Inline code is on the highlight grey, a
+        // shade over a block's, so it reads as a pill on a table's striped row too.
+        .face("markdown-code", s().fg(FG_MID).bg(BG_HL))
         .face("markdown-code-block", s().bg(BG_SUBTLE))
         // a
         .face(
