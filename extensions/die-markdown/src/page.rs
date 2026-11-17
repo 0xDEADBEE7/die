@@ -222,12 +222,12 @@ fn carried(t: &TextBuf, since: u64, pos: usize) -> usize {
     edits.fold(pos, through).min(t.len())
 }
 
-/// Where an anchor is on the page: the top of the heading whose slug it is, or None. The
-/// engine's `Page::anchor`, which knows a footnote's `fn-` and `fnref-` anchors too, takes this
-/// over when it arrives.
+/// Where an anchor is on the page: a heading's, a footnote's or a reference's, or None. A
+/// heading's is tried as written and then in lower case, since slugs are lower case and people
+/// write `#Installation` as often as `#installation`.
 fn anchor_y(page: &Page, name: &str) -> Option<f32> {
-    let slug = name.to_lowercase();
-    page.headings().iter().find(|h| h.slug == slug).map(|h| h.y)
+    page.anchor(name)
+        .or_else(|| page.anchor(&name.to_lowercase()))
 }
 
 // ------------------------------------------------------------------ one page
@@ -663,8 +663,7 @@ impl State {
                 to => to,
             }),
         };
-        // The one place a layout is asked for. The engine's `opened: &self.opened` goes here
-        // when it arrives.
+        // The one place a layout is asked for.
         let env = Env {
             width,
             scale,
@@ -672,6 +671,7 @@ impl State {
             dir: dir.as_deref(),
             front_matter: *front_matter,
             tab_width: t.settings().tab_width,
+            opened: &self.opened,
         };
         let rev = t.rev();
         let page = Page::new(&t.rope().to_string(), &env, fonts, pictures);
