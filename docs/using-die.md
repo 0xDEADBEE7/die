@@ -401,12 +401,12 @@ Your leader's keys and DIE's own work as anywhere, so `\f`, `\p`, `\]`, `\e` or 
 | The wheel, the trackpad | By pixels. |
 | `<Tab>` `<S-Tab>` | Ring the next link, or the one before, starting from what's in view, and scroll to it. The status line says where it leads. `<Esc>` takes the ring off. |
 | `<CR>`, a click | Follow the ringed link, or the one clicked (`markdown-follow-link`). |
-| `<C-o>` `H`, `L` | Back to where a link was followed from, and forward again, across pages. `<C-i>` is `<Tab>` to DIE, so forward is `L`. |
+| `<C-o>` `H`, `L` | Back to where a link was followed from in this window, and forward again, across pages. `<C-i>` is `<Tab>` to DIE, so forward is `L`. |
 | `:`, `<C-w>…`, `ZZ` `ZQ`, `<C-^>`, `\z` | As everywhere. `\z` narrows the area the page is centred in. |
 
-**Links.** `#heading` scrolls to the heading, by GitHub's rule for anchors and in any case. `#fn-1` and the like go to a footnote, `#name` goes to an `<a id>` or `<a name>`, and a place inside a closed `<details>` opens it. A markdown file opens as its page in this window, at the heading or the line the link names (`notes.md#set-up`, `notes.md:12`). Another file opens as text, as `:e` would, and `<C-^>` comes back to the page. A path from `/` is from the repository's top (the nearest directory with a `.git`). A web or mail address, a picture, a PDF or an HTML file goes to `open`, so a web page is your browser's.
+**Links.** `#heading` scrolls to the heading, by GitHub's rule for anchors and in any case. `#fn-1` and the like go to a footnote, `#name` goes to an `<a id>` or `<a name>`, and a place inside a closed `<details>` opens it. A markdown file opens as its page in this window, at the heading or the line the link names (`notes.md#set-up`, `notes.md:12`). Another file opens as text, as `:e` would; `<C-o>` or `<C-^>` there goes back to the markdown file at the line the page showed, where `\m` brings the page back as it was. A path from `/` is from the repository's top (the nearest directory with a `.git`). A web or mail address, a picture, a PDF or an HTML file goes to `open`, so a web page is your browser's.
 
-**Two windows.** A page in two windows is a view in each, as two browser windows on one page are: each is laid out for its own width, with its own place and its own ringed link.
+**Two windows.** A page in two windows is a view in each, as two browser windows on one page are: each is laid out for its own width, with its own place, its own ringed link and its own way back. A window that leaves a page another window still shows comes back to it where it was.
 
 **What it follows.** A page is laid out again when the file's text changes (an edit in another window, `:e!`, the file changing on disk), when its window's width or the display's scale changes, when the theme's colours change, and when a picture it was waiting for arrives. It keeps your place through all of these. A page no window shows is put away when the command ends: its file remembers where you were, and its next page starts there. **Kept:** the page the focused window showed comes back after `:rebuild` and a restart, in that window and at the same place; a file whose page you'd left remembers where you were.
 
@@ -430,7 +430,7 @@ Your leader's keys and DIE's own work as anywhere, so `\f`, `\p`, `\]`, `\e` or 
 
 mono-dark styles them from your preview's stylesheet (`mono-dark.css`) and its code theme (`grayscale-dark`). A theme that styles none of the code faces draws code plain.
 
-**What it costs.** Nothing for a file that's raw. On this Mac, in a Retina window: `\m` shows this guide (80 KB) in about 16 ms and the M0 log (480 KB) in about 20; a scroll step takes about 2 ms, and following an edit about 4 ms here and 13 ms there.
+**What it costs.** Nothing for a file that's raw. On this Mac, in a Retina window: `\m` shows this guide (80 KB) in about 18 ms and the M0 log (480 KB) in about 29; a scroll step takes about 2 ms, and following an edit about 4 ms here and 13 ms there, twice that with the page in two windows of different widths.
 
 ### The view in place
 
