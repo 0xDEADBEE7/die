@@ -124,6 +124,7 @@ fn a_page_in_your_themes_colours_is_in_the_stylesheets() {
     assert_eq!(read.marker, sheet.marker, "marker");
     assert_eq!(read.check, sheet.check, "check");
     assert_eq!(read.alerts, sheet.alerts, "alerts");
+    assert_eq!(read.syntax, sheet.syntax, "syntax");
     // And whatever field comes next.
     assert_eq!(read, sheet);
 }

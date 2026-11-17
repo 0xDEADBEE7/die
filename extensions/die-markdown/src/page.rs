@@ -15,7 +15,9 @@
 //! there. Whoever changes it ends with [`State::refresh`], which lays out again if the text, the
 //! width, the scale, the colours, the pictures or the opened details are no longer what the
 //! layout was made from, and paints what is owed, so the present rides that turn's frame.
-use crate::typeset::{AlertInk, Env, Fonts, LinkBox, Marks, Page, Palette, Picture, Pictures, Rgb};
+use crate::typeset::{
+    AlertInk, Env, Fonts, LinkBox, Marks, Page, Palette, Picture, Pictures, Rgb, Syntax,
+};
 use crate::{Colours, Markdown, plan};
 use die_core::{
     Args, BufferId, Button, CellPixels, Ctx, Error, Event, Frame, PixelBufferId, PixelProducer,
@@ -99,6 +101,26 @@ impl Kit {
     }
 }
 
+/// The faces a page's code blocks are coloured in, a role each in [`Syntax`]'s order, with the
+/// base face each is on. Only a face's foreground is read; one the theme gives none is the
+/// block's own text colour, so a theme that knows nothing of them draws code plain.
+pub(crate) const CODE_FACES: [(&str, Option<&str>); 14] = [
+    ("markdown-code-keyword", None),
+    ("markdown-code-string", None),
+    ("markdown-code-comment", Some("shadow")),
+    ("markdown-code-number", None),
+    ("markdown-code-function", None),
+    ("markdown-code-type", None),
+    ("markdown-code-constant", None),
+    ("markdown-code-meta", None),
+    ("markdown-code-variable", None),
+    ("markdown-code-tag", None),
+    ("markdown-code-attr", None),
+    ("markdown-code-inserted", Some("success")),
+    ("markdown-code-deleted", Some("error")),
+    ("markdown-code-heading", Some("heading")),
+];
+
 /// The page's colours as the theme has them: the faces the view in place draws in, read for
 /// their colours alone, since a page's weights and sizes are the sheet's. What a face doesn't
 /// say is the nearest role's, and a theme with no colours of its own gets mono-dark's.
@@ -122,6 +144,23 @@ pub(crate) fn theme_palette(ctx: &Ctx) -> Palette {
     let subtle = fg(plan::META).unwrap_or(muted);
     let border = fg(plan::RULE).unwrap_or(subtle);
     let strong = fg(plan::BOLD).unwrap_or(text);
+    let code_block = fg(plan::CODE_BLOCK).unwrap_or(text);
+    let [
+        keyword,
+        string,
+        comment,
+        number,
+        function,
+        type_,
+        constant,
+        meta,
+        variable,
+        tag,
+        attr,
+        inserted,
+        deleted,
+        heading,
+    ] = CODE_FACES.map(|(name, _)| fg(name).unwrap_or(code_block));
     let ansi = ctx.theme().ansi;
     let ink = |bar: usize, title: usize| AlertInk {
         bar: rgb(ansi[bar]),
@@ -143,7 +182,7 @@ pub(crate) fn theme_palette(ctx: &Ctx) -> Palette {
         link: fg(plan::LINK).unwrap_or(text),
         link_underline: (style(plan::LINK).underline).is_some_and(|u| u != Underline::None),
         code: fg(plan::CODE).unwrap_or(text),
-        code_block: fg(plan::CODE_BLOCK).unwrap_or(text),
+        code_block,
         quote,
         table_header: fg(plan::TABLE_HEADER).unwrap_or(strong),
         marker: fg(plan::MARKER).unwrap_or(muted),
@@ -151,6 +190,22 @@ pub(crate) fn theme_palette(ctx: &Ctx) -> Palette {
         // Note, tip, important, warning, caution: blue, green, magenta, yellow, red, the bar in
         // the colour and the title in its bright one.
         alerts: [ink(4, 12), ink(2, 10), ink(5, 13), ink(3, 11), ink(1, 9)],
+        syntax: Syntax {
+            keyword,
+            string,
+            comment,
+            number,
+            function,
+            type_,
+            constant,
+            meta,
+            variable,
+            tag,
+            attr,
+            inserted,
+            deleted,
+            heading,
+        },
     }
 }
 
