@@ -759,7 +759,14 @@ impl Lay<'_, '_> {
                     while runs.get(piece + 1).is_some_and(|r| r.0 <= at) {
                         piece += 1;
                     }
-                    let want = runs[piece].1.ink(&self.pal.syntax, ink);
+                    // A role the palette gives the block's own text colour has none of its
+                    // own, and takes the block's ink, which a quote changes, as plain code does.
+                    let role = runs[piece].1.ink(&self.pal.syntax, ink);
+                    let want = if role == self.pal.code_block {
+                        ink
+                    } else {
+                        role
+                    };
                     if want != now {
                         flush(self, from, row, now);
                         (from, now) = (self.out.glyphs.len(), want);

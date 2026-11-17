@@ -987,3 +987,49 @@ fn colours_never_change_where_a_code_line_wraps() {
         }
     }
 }
+
+#[test]
+fn a_code_colour_no_one_gave_is_the_blocks_own_in_a_quote_too() {
+    let Some(mut fonts) = fonts() else { return };
+    // A theme that styles no code face gives every role the block's text colour: a block in
+    // its language is then drawn as a plain one, in a quote's ink too.
+    let plain = Palette::mono_dark();
+    let c = plain.code_block;
+    let palette = Palette {
+        syntax: Syntax {
+            keyword: c,
+            string: c,
+            comment: c,
+            number: c,
+            function: c,
+            type_: c,
+            constant: c,
+            meta: c,
+            variable: c,
+            tag: c,
+            attr: c,
+            inserted: c,
+            deleted: c,
+            heading: c,
+        },
+        ..plain
+    };
+    assert_ne!(palette.quote, palette.code_block);
+    let pictures = Pictures::new();
+    let body = "fn main() { let s = \"x\"; // a comment\n    println!(\"{s}\"); }\n";
+    let mut paint = |lang: &str| {
+        let block = format!("```{lang}\n{body}```\n");
+        let text: String = block.lines().map(|l| format!("> {l}\n")).collect();
+        let env = env(600, 2.0, &palette, None);
+        let page = Page::new(&text, &env, &mut fonts, &pictures);
+        let h = page.height().ceil() as u32;
+        let mut pixels = vec![0u8; 600 * h as usize * 4];
+        let marks = Marks::default();
+        page.paint(&mut fonts, &pictures, &mut pixels, 600, h, 0, 0..h, &marks);
+        pixels
+    };
+    assert!(
+        paint("rust") == paint(""),
+        "a quoted rust block has colours"
+    );
+}
