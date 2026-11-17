@@ -840,13 +840,14 @@ fn refresh(ctx: &mut Ctx, buf: BufferId) -> Result {
         .unwrap_or(Ok(()))
 }
 
-/// Every face the view in place draws in: its name, the base face it's on, and what it adds. A
-/// theme that styles only the base faces still draws a rendered file sensibly, and yours can
-/// style each by name. A page in the theme's colours reads the same faces for their colours.
-pub fn faces() -> [(&'static str, Option<&'static str>, Style); 18] {
+/// Every face the view in place draws in, then those a page's code blocks are coloured in: its
+/// name, the base face it's on, and what it adds. A theme that styles only the base faces still
+/// draws a rendered file sensibly, and yours can style each by name. A page in the theme's
+/// colours reads the same faces for their colours.
+pub fn faces() -> [(&'static str, Option<&'static str>, Style); 32] {
     use Underline::{Double, Single};
     let s = Style::new;
-    [
+    let view = [
         (plan::H[0], Some("heading"), s().underline(Double)),
         (plan::H[1], Some("heading"), s().underline(Single)),
         (plan::H[2], Some("heading"), s()),
@@ -865,7 +866,12 @@ pub fn faces() -> [(&'static str, Option<&'static str>, Style); 18] {
         (plan::TABLE_HEADER, Some("bold"), s()),
         (plan::META, Some("shadow"), s()),
         (plan::ALERT, Some("bold"), s()),
-    ]
+    ];
+    let code = page::CODE_FACES.map(|(name, base)| (name, base, s()));
+    std::array::from_fn(|i| match view.get(i) {
+        Some(face) => *face,
+        None => code[i - view.len()],
+    })
 }
 
 /// What a key of the page that only moves it does, with the count.
