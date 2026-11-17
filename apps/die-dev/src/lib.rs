@@ -119,14 +119,22 @@ pub fn config(files: Vec<PathBuf>) -> die::Config {
 ///
 /// So a cold start is the jellyfish alone, over a session that restored one window it covers
 /// that window until `q`, and `:rebuild` shows what was there.
+///
+/// The jellyfish this shows is in the directory DIE started in, your home for DIE.app, and not
+/// the directory of the buffer it covers, which a `:jellyfish` of yours takes as any new buffer
+/// does: DIE starts where Emacs does, whatever the session brought back behind it.
 pub fn greeted(mut config: die::Config, launch: &Launch) -> die::Config {
     let no_files = config.files.is_empty();
-    let fresh = launch.handover.is_none() && !launch.restart_loop && !launch.restart_after_frame;
+    let fresh = launch.fresh();
+    let started = die::started_dir();
     let before = config.core.startup.take();
     config.core.startup = Some(Box::new(move |ctx| {
         let done = before.map_or(Ok(()), |hook| hook(ctx));
         if no_files && ctx.window_list().len() <= 1 && (fresh || ctx.focused().is_none()) {
             let shown = ctx.run("jellyfish", &die::core::Args::default());
+            if let Some(buf) = ctx.find_buffer(die_jellyfish::NAME) {
+                ctx.set_directory(buf, started);
+            }
             return done.and(shown);
         }
         done
