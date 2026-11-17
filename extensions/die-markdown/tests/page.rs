@@ -603,6 +603,20 @@ fn the_page_follows_the_text_and_the_width_and_goes_with_the_file() {
     assert!(h.take_errors().is_empty());
 }
 
+#[test]
+fn a_theme_that_styles_only_the_base_faces_gives_the_quiet_roles_its_shadow() {
+    let mut h = harness(Options::default());
+    h.set_theme(die_core::Theme::default());
+    let palette = die_markdown::theme_palette(&h);
+    let shadow = h.face_style("shadow").unwrap().fg.unwrap();
+    let shadow = die_markdown::typeset::Rgb(shadow.0, shadow.1, shadow.2);
+    assert_ne!(palette.text, shadow);
+    assert_eq!(palette.muted, shadow, "muted");
+    assert_eq!(palette.quote, shadow, "quote");
+    assert_eq!(palette.subtle, shadow, "subtle");
+    assert_eq!(palette.border, shadow, "border");
+}
+
 /// A harness on a state directory, as a restart finds one.
 fn up(state: &Path) -> Harness {
     let config = Config {
