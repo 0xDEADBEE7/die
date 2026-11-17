@@ -16,7 +16,8 @@
 //!   them, and the glyphs drawn and kept;
 //! - `layout`: the document set for a width, as a list of things to draw;
 //! - `paint`: the rows a buffer shows, drawn;
-//! - `picture`: PNG files, and pictures at other sizes.
+//! - `picture`: PNG files, and pictures at other sizes;
+//! - `syntax`: a fenced code block's words, by what each is, for their colours.
 
 mod doc;
 mod fonts;
@@ -26,6 +27,7 @@ mod layout;
 mod paint;
 mod picture;
 mod sheet;
+mod syntax;
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -45,6 +47,43 @@ pub struct AlertInk {
     pub bar: Rgb,
     /// Its title and icon.
     pub title: Rgb,
+}
+
+/// The colours of a fenced code block's text, by what each piece of it is. A block whose fence
+/// names no language known to the page is in the palette's `code_block` colour alone, as is
+/// what in any block is none of these: punctuation, operators, a plain name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Syntax {
+    /// The language's own words: `fn`, `if`, `return`, `defun`, `SELECT`.
+    pub keyword: Rgb,
+    /// Strings and characters, and a heredoc's or a YAML block's text.
+    pub string: Rgb,
+    /// Comments.
+    pub comment: Rgb,
+    /// Numbers, and a CSS length or colour.
+    pub number: Rgb,
+    /// A function's name where it's defined or called, a Makefile's target, a CSS class.
+    pub function: Rgb,
+    /// A type's name, where it's defined and where a capital says it's one. A language's own
+    /// types (`int`, `u32`) are its keywords' colour, as GitHub has them.
+    pub type_: Rgb,
+    /// `true`, `None`, `nil`, a constant's name, what the language comes with (`print`,
+    /// `echo`), an elisp `:keyword` or `'symbol`, a JSON key, a CSS property.
+    pub constant: Rgb,
+    /// An attribute, a decorator, a preprocessor line, a shebang, a diff's hunk header.
+    pub meta: Rgb,
+    /// A variable: `$HOME`, `${PATH}`, `$(CC)`, Ruby's `@name`, a CSS custom property.
+    pub variable: Rgb,
+    /// An HTML or XML tag's name, a CSS selector's element, a quote in a markdown block.
+    pub tag: Rgb,
+    /// An HTML or XML attribute's name; a TOML, INI or YAML key.
+    pub attr: Rgb,
+    /// A diff's added line.
+    pub inserted: Rgb,
+    /// A diff's removed line.
+    pub deleted: Rgb,
+    /// A heading in a markdown block, an INI or TOML section's.
+    pub heading: Rgb,
 }
 
 /// The colours a page is drawn in. The geometry is the sheet's and isn't here: a palette says
@@ -93,10 +132,17 @@ pub struct Palette {
     pub check: Rgb,
     /// Alerts: note, tip, important, warning, caution.
     pub alerts: [AlertInk; 5],
+    /// A code block's colours, by what its text is.
+    pub syntax: Syntax,
 }
 
 impl Palette {
-    /// The mono-dark theme's colours, as the owner's preview stylesheet has them.
+    /// The mono-dark theme's colours, as the owner's preview stylesheet has them. A code
+    /// block's are highlight.js's grayscale-dark, which the preview colours its code with, each
+    /// role in the grey that theme gives it (the base16 slot is named beside each). That theme
+    /// draws them on #101010 and a page on its panel's #252525, so a grey under 2:1 against the
+    /// panel is lifted just enough to reach it: the comments' #525252 (1.96:1) to #545454
+    /// (2.02:1), the only one. The plain text stays the page's own.
     pub fn mono_dark() -> Palette {
         let (bright, fg, mid, dim) = (
             Rgb(0xee, 0xee, 0xee),
@@ -148,10 +194,31 @@ impl Palette {
                     title: Rgb(0xdd, 0x66, 0x66),
                 },
             ],
+            syntax: Syntax {
+                keyword: Rgb(0x74, 0x74, 0x74),  // base0E
+                string: Rgb(0x8e, 0x8e, 0x8e),   // base0B
+                comment: Rgb(0x54, 0x54, 0x54),  // base03, #525252 lifted
+                number: Rgb(0x99, 0x99, 0x99),   // base09
+                function: Rgb(0x68, 0x68, 0x68), // base0D
+                type_: Rgb(0x74, 0x74, 0x74),    // base0E, as .hljs-type is
+                constant: Rgb(0x99, 0x99, 0x99), // base09, .hljs-literal
+                meta: Rgb(0x5e, 0x5e, 0x5e),     // base0F, .hljs-meta
+                variable: Rgb(0x7c, 0x7c, 0x7c), // base08
+                tag: Rgb(0x7c, 0x7c, 0x7c),      // base08, .hljs-name
+                attr: Rgb(0x99, 0x99, 0x99),     // base09, .hljs-attr
+                inserted: Rgb(0x8e, 0x8e, 0x8e), // base0B, .hljs-addition
+                deleted: Rgb(0x7c, 0x7c, 0x7c),  // base08, .hljs-deletion
+                heading: Rgb(0x68, 0x68, 0x68),  // base0D, .hljs-section
+            },
         }
     }
 
-    /// GitHub's own dark colours.
+    /// GitHub's own dark colours. A code block's are its `--color-prettylights-syntax-*`: a
+    /// keyword `keyword`, a string `string`, a comment `comment`, a number and a constant
+    /// `constant`, a function, a type and an attribute or decorator `entity`, a tag and a key
+    /// `entity-tag` (a YAML key's, though GitHub draws an HTML attribute's name in `entity`), a
+    /// variable `variable`, a diff's lines `markup-inserted-text` and `markup-deleted-text`, a
+    /// heading `markup-heading`.
     pub fn github_dark() -> Palette {
         let (fg, muted) = (Rgb(0xc9, 0xd1, 0xd9), Rgb(0x8b, 0x94, 0x9e));
         Palette {
@@ -197,10 +264,26 @@ impl Palette {
                     title: Rgb(0xf8, 0x51, 0x49),
                 },
             ],
+            syntax: Syntax {
+                keyword: Rgb(0xff, 0x7b, 0x72),
+                string: Rgb(0xa5, 0xd6, 0xff),
+                comment: Rgb(0x8b, 0x94, 0x9e),
+                number: Rgb(0x79, 0xc0, 0xff),
+                function: Rgb(0xd2, 0xa8, 0xff),
+                type_: Rgb(0xd2, 0xa8, 0xff),
+                constant: Rgb(0x79, 0xc0, 0xff),
+                meta: Rgb(0xd2, 0xa8, 0xff),
+                variable: Rgb(0xff, 0xa6, 0x57),
+                tag: Rgb(0x7e, 0xe7, 0x87),
+                attr: Rgb(0x7e, 0xe7, 0x87),
+                inserted: Rgb(0xaf, 0xf5, 0xb4),
+                deleted: Rgb(0xff, 0xdc, 0xd7),
+                heading: Rgb(0x1f, 0x6f, 0xeb),
+            },
         }
     }
 
-    /// GitHub's own light colours.
+    /// GitHub's own light colours, a code block's from the same variables as the dark ones.
     pub fn github_light() -> Palette {
         let (fg, muted) = (Rgb(0x24, 0x29, 0x2f), Rgb(0x57, 0x60, 0x6a));
         Palette {
@@ -246,6 +329,22 @@ impl Palette {
                     title: Rgb(0xcf, 0x22, 0x2e),
                 },
             ],
+            syntax: Syntax {
+                keyword: Rgb(0xcf, 0x22, 0x2e),
+                string: Rgb(0x0a, 0x30, 0x69),
+                comment: Rgb(0x6e, 0x77, 0x81),
+                number: Rgb(0x05, 0x50, 0xae),
+                function: Rgb(0x82, 0x50, 0xdf),
+                type_: Rgb(0x82, 0x50, 0xdf),
+                constant: Rgb(0x05, 0x50, 0xae),
+                meta: Rgb(0x82, 0x50, 0xdf),
+                variable: Rgb(0x95, 0x38, 0x00),
+                tag: Rgb(0x11, 0x63, 0x29),
+                attr: Rgb(0x11, 0x63, 0x29),
+                inserted: Rgb(0x11, 0x63, 0x29),
+                deleted: Rgb(0x82, 0x07, 0x1e),
+                heading: Rgb(0x05, 0x50, 0xae),
+            },
         }
     }
 }
