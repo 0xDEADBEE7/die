@@ -14,8 +14,9 @@
 //! what a cell is in pixels, and grows with the area but never shrinks, since a resize blanks
 //! the picture until the next present.
 //!
-//! What's the page's and not a window's: its file, the `<details>` the reader opened, and where
-//! the first window to show it starts.
+//! What's the page's and not a window's: its file, the `<details>` the reader opened, where the
+//! first window to show it starts, and what a window that left it for elsewhere while another
+//! kept it up had, for when that window comes back.
 //!
 //! The state is shared with the extension, as a board's is: a command reaches it without checking
 //! the surface out, `save_session` reads it with no `Ctx`, and the surface's own events find it
@@ -271,6 +272,8 @@ pub(crate) struct Left {
     pub mark: Option<Mark>,
     /// Whether it was scrolled since the toggle showed the page there.
     pub moved: bool,
+    /// Where its ringed link led, and the revision a summary's address counts its byte in.
+    pub ring: Option<(String, u64)>,
 }
 
 /// A target whose bytes were counted at revision `since`, in the text as it is now.
@@ -298,6 +301,30 @@ pub(crate) fn carried(t: &TextBuf, since: u64, pos: usize) -> usize {
         p => p,
     };
     edits.fold(pos, through).min(t.len())
+}
+
+/// Where a `<details>` tag that was at a byte of the text as it was at revision `since` is now,
+/// or None if an edit took the byte out: a block deleted is gone, and its opening doesn't pass
+/// to whatever comes up to its place.
+fn surviving(t: &TextBuf, since: u64, pos: usize) -> Option<usize> {
+    let Some(mut edits) = t.edits_since(since) else {
+        return Some(pos.min(t.len()));
+    };
+    let through = |pos: usize, c: &die_core::Change| match pos {
+        p if p >= c.old_end => Some(p - c.old_end + c.new_end),
+        p if p >= c.start => None,
+        p => Some(p),
+    };
+    edits.try_fold(pos, through).map(|p| p.min(t.len()))
+}
+
+/// Where a link leads in the text as it is now, from an address of revision `since`'s: a
+/// summary's names its `<details>` tag's byte, which moves with the edits and goes with the tag.
+fn dest_now(t: &TextBuf, since: u64, dest: String) -> Option<String> {
+    match dest.strip_prefix("details:").and_then(|o| o.parse().ok()) {
+        Some(offset) => surviving(t, since, offset).map(|o| format!("details:{o}")),
+        None => Some(dest),
+    }
 }
 
 /// A target whose offset, in physical pixels, is for a scale `by` times this one's.
@@ -373,8 +400,9 @@ struct View {
     /// The link the keyboard is on: its index into the page's links, and where it leads, which
     /// finds it again in the next layout.
     ring: Option<(usize, String)>,
-    /// Where the link to ring once there's a layout leads.
-    pending: Option<String>,
+    /// Where the link to ring once there's a layout leads, and the revision its address counts
+    /// in.
+    pending: Option<(String, u64)>,
     /// The link the pointer's button went down on.
     pressed: Option<usize>,
     /// The picture isn't what the page, the place or the ring say it should be.
@@ -441,10 +469,12 @@ impl View {
     }
 
     /// The page's end doesn't come up past the window's bottom: a taller window, a shorter page.
+    /// The place is where that put the window, as after a scroll, so a later layout doesn't take
+    /// it back to where the last one was aimed.
     fn hold(&mut self) {
         let limit = self.limit();
         if self.top > limit {
-            (self.top, self.exact, self.stale) = (limit, limit as f32, true);
+            (self.top, self.exact, self.stale, self.aimed) = (limit, limit as f32, true, None);
         }
     }
 
@@ -456,9 +486,15 @@ impl View {
         self.page()?.links().get(self.ring()?)
     }
 
-    /// Where the ringed link leads, with or without a layout to find it in.
-    fn ring_dest(&self) -> Option<String> {
-        let ringed = self.ring.as_ref().map(|r| r.1.clone());
+    /// Where the ringed link leads, with or without a layout to find it in, and the revision its
+    /// address counts in.
+    fn ring_dest(&self) -> Option<(String, u64)> {
+        let rev = self.laid.as_ref().map(|l| l.rev);
+        let ringed = self
+            .ring
+            .as_ref()
+            .zip(rev)
+            .map(|(r, rev)| (r.1.clone(), rev));
         ringed.or_else(|| self.pending.clone())
     }
 
@@ -590,13 +626,17 @@ pub(crate) struct State {
     /// The window the reader was in last: the place a restart keeps and a window split off it
     /// starts at, and the one a test or the session asks about when it names none.
     last: Option<WindowId>,
-    /// The window the surface was drawn for last, whose status line core asks for next.
+    /// The window the surface was drawn for last, whose status line core asks for next: the
+    /// ask takes it.
     drawing: Option<WindowId>,
     /// Where the first window to show the page goes, and the revision its bytes are counted in:
     /// the place a page put away or a restart kept.
     seed: Option<(Target, u64)>,
     /// Where the link the first window rings leads: the one ringed when the page was put away.
-    pending: Option<String>,
+    pending: Option<(String, u64)>,
+    /// The windows that left the page for elsewhere while another still showed it, with what
+    /// each took: one that comes back starts there, as a browser window comes back to its page.
+    parked: BTreeMap<WindowId, Left>,
     /// The `<details>` the reader has toggled, each by the byte offset of its tag, in order.
     opened: Vec<usize>,
     /// The text's revision those offsets are counted in: they move with the file's edits.
@@ -625,6 +665,7 @@ impl State {
             drawing: None,
             seed: None,
             pending: None,
+            parked: BTreeMap::new(),
             opened: vec![],
             opened_rev: rev,
             unmoved: vec![],
@@ -704,16 +745,27 @@ impl State {
     }
 
     /// Where the ringed link of the window the reader was in last leads, with or without a
-    /// layout to find it in.
-    pub fn ring_dest(&self) -> Option<String> {
+    /// layout to find it in, and the revision its address counts in.
+    pub fn ring_dest(&self) -> Option<(String, u64)> {
         let view = self.view(None).and_then(View::ring_dest);
         view.or_else(|| self.pending.clone())
     }
 
     /// Ring the link that leads here, once the first window to show the page has a layout: the
     /// ring a page put away had. None rings nothing, as for a page a link arrives at.
-    pub fn ring_later(&mut self, dest: Option<String>) {
+    pub fn ring_later(&mut self, dest: Option<(String, u64)>) {
         self.pending = dest;
+    }
+
+    /// Whether a window left the page for elsewhere while another showed it: it comes back to
+    /// its own place.
+    pub fn parks(&self, w: WindowId) -> bool {
+        self.parked.contains_key(&w)
+    }
+
+    /// What a window that left the page while another showed it had ringed.
+    pub fn parked_ring(&self, w: WindowId) -> Option<(String, u64)> {
+        self.parked.get(&w)?.ring.clone()
     }
 
     /// Where the reader is in a window, for `C-o`: on its layout, or where it's going once it
@@ -752,6 +804,7 @@ impl State {
             source: view.source_at_top(),
             mark,
             moved: !self.unmoved.contains(&w),
+            ring: view.ring_dest(),
         })
     }
 
@@ -774,10 +827,23 @@ impl State {
         }
     }
 
-    /// The windows that have left the page are forgotten, their pixel buffers with them.
+    /// The windows that have left the page are forgotten, their pixel buffers with them. One
+    /// that went elsewhere than to the page's own file keeps its place and its ring here, for
+    /// when it comes back while the page is still up.
     pub fn prune(&mut self, ctx: &Ctx) {
+        let live = ctx.window_list();
         let buf = self.buf;
-        self.views.retain(|w, _| ctx.window_buffer(*w) == buf);
+        let gone = self.views.keys().filter(|w| ctx.window_buffer(**w) != buf);
+        let gone: Vec<WindowId> = gone.copied().collect();
+        for w in gone {
+            let left = self.left(w);
+            self.views.remove(&w);
+            let elsewhere = live.contains(&w) && ctx.window_buffer(w) != Some(self.file);
+            if let Some(left) = left.filter(|_| elsewhere) {
+                self.parked.insert(w, left);
+            }
+        }
+        self.parked.retain(|w, _| live.contains(w));
         if self.last.is_some_and(|w| !self.views.contains_key(&w)) {
             self.last = None;
         }
@@ -797,6 +863,7 @@ impl State {
         // what the page was to ring, unless that was taken off.
         let view = self.views.entry(w).or_insert_with(|| {
             self.seed = None;
+            self.parked.remove(&w);
             View {
                 pending: self.pending.take(),
                 ..View::default()
@@ -911,9 +978,24 @@ impl State {
     }
 
     /// The status line: the page's name, how far down it is in the window as Vim's ruler says
-    /// it, and where the ringed link leads, which a page has no other way to show.
-    fn status(&self) -> String {
-        let view = self.view(self.drawing);
+    /// it, and where the ringed link leads, which a page has no other way to show. Core asks for
+    /// it right after it draws a window, and that's whose it is. Asked again with no drawing
+    /// between, as core asks for the status lines it draws over a prompt's list, it can't know
+    /// which window's it is: it says what every window showing the page has, or only the name.
+    fn status(&mut self) -> String {
+        if let Some(w) = self.drawing.take() {
+            return self.status_of(self.view(Some(w)));
+        }
+        let mut each = self.views.values().map(|v| self.status_of(Some(v)));
+        let first = each.next().unwrap_or_else(|| self.status_of(None));
+        match each.all(|other| other == first) {
+            true => first,
+            false => self.title.clone(),
+        }
+    }
+
+    /// The status line of a window's view.
+    fn status_of(&self, view: Option<&View>) -> String {
         let at = match view {
             Some(v) if v.laid.is_some() => match (v.top, v.limit()) {
                 (_, 0) => "All".into(),
@@ -945,8 +1027,8 @@ impl State {
         };
         let rev = t.rev();
         if rev != self.opened_rev {
-            let through = |o: &usize| carried(t, self.opened_rev, *o);
-            let mut opened: Vec<usize> = self.opened.iter().map(through).collect();
+            let through = |o: &usize| surviving(t, self.opened_rev, *o);
+            let mut opened: Vec<usize> = self.opened.iter().filter_map(through).collect();
             opened.sort_unstable();
             opened.dedup();
             (self.opened, self.opened_rev) = (opened, rev);
@@ -1056,9 +1138,21 @@ impl State {
             _ => 0.0,
         };
         // The same link stays ringed: where it was among the links if it still leads there,
-        // or wherever it has moved to; and a page brought back rings the link it had.
-        let ringed = view.ring.take().map(|(i, dest)| (Some(i), dest));
-        let ringed = ringed.or_else(|| view.pending.take().map(|dest| (None, dest)));
+        // or wherever it has moved to; and a page brought back rings the link it had. A
+        // summary's address moves with its tag.
+        let since = view.laid.as_ref().map_or(rev, |l| l.rev);
+        let ringed = view
+            .ring
+            .take()
+            .map(|(i, dest)| (Some(i), dest_now(t, since, dest)));
+        let pending = view
+            .pending
+            .take()
+            .map(|(dest, since)| dest_now(t, since, dest));
+        let ringed = match ringed {
+            Some((i, Some(dest))) => Some((i, dest)),
+            _ => pending.flatten().map(|dest| (None, dest)),
+        };
         view.ring = ringed.and_then(|(i, dest)| {
             let links = page.links();
             let same = |l: &LinkBox| l.dest == dest;
@@ -1109,11 +1203,17 @@ impl State {
 
     // -------------------------------------------------------------- events
 
-    /// A view for a window new to the page: where the page was asked to go before any window
-    /// showed it, or else where the window the reader was in last is, as a window split off
-    /// another starts where that one was, ringing what it rings.
-    fn start(&mut self) -> View {
+    /// A view for a window new to the page: where it was when it left the page for elsewhere,
+    /// if another window has shown the page since; where the page was asked to go before any
+    /// window showed it; or else where the window the reader was in last is, as a window split
+    /// off another starts where that one was, ringing what it rings.
+    fn start(&mut self, window: WindowId) -> View {
         let mut view = View::default();
+        if let Some(left) = self.parked.remove(&window) {
+            let place = left.mark.map(|m| (m.place, m.rev));
+            (view.wait, view.pending) = (place, left.ring);
+            return view;
+        }
         match (self.seed.take(), self.view(None)) {
             (Some(seed), _) => (view.wait, view.pending) = (Some(seed), self.pending.take()),
             (None, Some(last)) => (view.wait, view.pending) = (last.mark(), last.ring_dest()),
@@ -1141,7 +1241,7 @@ impl State {
         // A new scale lays every window out again, at the next refresh.
         self.cell = cell;
         if !self.views.contains_key(&window) {
-            let view = self.start();
+            let view = self.start(window);
             self.views.insert(window, view);
             self.last.get_or_insert(window);
         }
@@ -1272,7 +1372,7 @@ impl Surface for PageSurface {
     }
 
     fn status(&self) -> Option<String> {
-        Some(self.state.borrow().status())
+        Some(self.state.borrow_mut().status())
     }
 
     /// A size, the wheel and a click. Keys are the keymap's: one it doesn't bind is undefined
