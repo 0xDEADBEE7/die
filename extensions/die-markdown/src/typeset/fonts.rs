@@ -989,15 +989,15 @@ impl<'a> Pass<'a> {
         run.prev = (id != TOFU).then_some((id, c));
         let track = if id == TOFU { 0.0 } else { run.track };
         let advance = (units + track) * run.unit;
-        if run.cell > 0.0 && inst != run.primary {
-            // A glyph from another face in monospaced text takes a cell, or two if it's wide,
-            // and sits in the middle: the columns hold whatever face a symbol came from.
-            let cells = if advance > run.cell * 1.5 { 2.0 } else { 1.0 };
-            let before = (run.cell * cells - advance) / 2.0;
+        if run.cell > 0.0 && inst != run.primary && advance <= run.cell * 1.5 {
+            // A symbol from another face in monospaced text takes a cell, and sits in the
+            // middle of it, so the columns hold. One wider, as an ideograph or an emoji, keeps
+            // its own width, as a browser sets it: packed, not spread over two cells.
+            let before = (run.cell - advance) / 2.0;
             return Shaped {
                 inst,
                 id,
-                advance: run.cell * cells - before,
+                advance: run.cell - before,
                 kern: before,
             };
         }
