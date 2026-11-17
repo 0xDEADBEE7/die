@@ -5,8 +5,8 @@
 //! What the parser leaves raw is read here: addresses in plain text become links as on GitHub,
 //! footnotes are numbered by first reference and gathered for the foot, and of HTML the tags a
 //! README leans on are understood (pictures, key caps, raised and lowered text, the common
-//! inline styles, `<details>`, centred blocks), comments vanish, and any other tag is dropped
-//! with its text kept.
+//! inline styles, `<details>`, centred blocks, the places an `id` or a `name` names), comments
+//! vanish, and any other tag is dropped with its text kept.
 
 use super::html::{self, Token};
 use crate::plan::walk::{Slugs, syntax};
@@ -61,7 +61,8 @@ pub(super) enum Fit {
     Block,
     /// A loose list item's own paragraph: a gap above and below.
     Loose,
-    /// A tight item's text: no gap.
+    /// A tight item's text, or an HTML block's own text, which a browser sets in a box with
+    /// no margins: no gap.
     Tight,
 }
 
@@ -138,6 +139,9 @@ pub(super) struct Item {
 #[derive(Debug)]
 pub(super) struct Table {
     pub aligns: Vec<Align>,
+    /// Where the table stands in its column: an HTML block round it may centre it, or set it
+    /// right, as a browser sets a block narrower than its container, and its cells with it.
+    pub align: Align,
     pub head: Vec<Para>,
     pub rows: Vec<Vec<Para>>,
     pub src: Range<usize>,
@@ -167,6 +171,9 @@ pub(super) enum Inline {
     },
     /// A hard line break.
     Break,
+    /// A place an HTML tag names with `id` or `name`, which a link's `#name` leads to. It
+    /// takes no room.
+    Anchor { name: String, src: usize },
     /// A picture.
     Image {
         dest: String,
@@ -179,11 +186,13 @@ pub(super) enum Inline {
     },
 }
 
-/// The elements that may give text a colour of their own, as [`Style::roles`] packs them.
+/// The elements that may give text a colour of their own, as [`Style::roles`] packs them: a
+/// link's is there for what's drawn in the colour of an element round it, as a line through.
 pub(super) const STRONG: u32 = 1;
 pub(super) const EM: u32 = 2;
 pub(super) const STRIKE: u32 = 3;
 pub(super) const CODE: u32 = 4;
+pub(super) const LINK: u32 = 5;
 
 /// What a run of text is inside.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -267,6 +276,7 @@ enum Kind {
     },
     Table {
         aligns: Vec<Align>,
+        align: Align,
         head: Vec<Para>,
         rows: Vec<Vec<Para>>,
         in_head: bool,
@@ -285,9 +295,11 @@ struct Open {
 
 #[derive(Clone, Copy, PartialEq)]
 enum OpenKind {
-    /// A paragraph; one no `Paragraph` event opened is a tight item's text, or HTML's.
+    /// A paragraph; one no `Paragraph` event opened is a tight item's text, or HTML's. One
+    /// that's `bare` is an HTML block's text outside any `<p>`: a browser gives it no margins.
     Para {
         implicit: bool,
+        bare: bool,
     },
     Heading(u8),
     Cell,
@@ -359,11 +371,15 @@ struct Builder<'t> {
 const DEEPEST: usize = 64;
 
 impl Builder<'_> {
-    /// Opens a container, unless that's too deep.
+    /// Opens a container, unless that's too deep. A list's item always opens, one past the
+    /// depth if need be, since what a list holds outside its items is never shown: so what's
+    /// deeper goes in the deepest item.
     fn enter(&mut self, kind: Kind, src: Range<usize>) {
         self.close();
         self.marker_para();
-        if self.frames.len() >= DEEPEST {
+        let item = matches!(kind, Kind::Item { .. })
+            && matches!(self.frames.last(), Some(f) if matches!(f.kind, Kind::List { .. }));
+        if self.frames.len() >= DEEPEST && !item {
             self.unopened += 1;
         } else {
             self.frames.push(Frame::new(kind, src));
@@ -474,16 +490,34 @@ impl Builder<'_> {
                 // had it, unless a blank quote line stood between them.
                 match self.marker.take() {
                     Some((literal, at, true)) => {
-                        self.open_as(OpenKind::Para { implicit: false }, at..range.end);
+                        self.open_as(
+                            OpenKind::Para {
+                                implicit: false,
+                                bare: false,
+                            },
+                            at..range.end,
+                        );
                         self.marker_text(literal, at);
                         self.text(" ", at..at);
                     }
                     Some(marker) => {
                         self.marker = Some(marker);
                         self.marker_para();
-                        self.open_as(OpenKind::Para { implicit: false }, range);
+                        self.open_as(
+                            OpenKind::Para {
+                                implicit: false,
+                                bare: false,
+                            },
+                            range,
+                        );
                     }
-                    None => self.open_as(OpenKind::Para { implicit: false }, range),
+                    None => self.open_as(
+                        OpenKind::Para {
+                            implicit: false,
+                            bare: false,
+                        },
+                        range,
+                    ),
                 }
             }
             Tag::Heading { level, .. } => {
@@ -551,6 +585,7 @@ impl Builder<'_> {
                 });
                 let kind = Kind::Table {
                     aligns: aligns.collect(),
+                    align: self.aligns.last().map_or(Align::Start, |a| a.1),
                     head: Vec::new(),
                     rows: Vec::new(),
                     in_head: false,
@@ -667,7 +702,13 @@ impl Builder<'_> {
     /// A taken marker line as a paragraph of its own, where something else comes first.
     fn marker_para(&mut self) {
         if let Some((literal, at, _)) = self.marker.take() {
-            self.open_as(OpenKind::Para { implicit: false }, at..at + literal.len());
+            self.open_as(
+                OpenKind::Para {
+                    implicit: false,
+                    bare: false,
+                },
+                at..at + literal.len(),
+            );
             self.marker_text(literal, at);
             self.close();
         }
@@ -734,9 +775,14 @@ impl Builder<'_> {
                 });
             }
             Kind::Table {
-                aligns, head, rows, ..
+                aligns,
+                align,
+                head,
+                rows,
+                ..
             } => self.block(Block::Table(Table {
                 aligns,
+                align,
                 head,
                 rows,
                 src,
@@ -760,7 +806,13 @@ impl Builder<'_> {
     /// tight item's text.
     fn push(&mut self, inline: Inline, range: &Range<usize>) {
         if self.open.is_none() {
-            self.open_as(OpenKind::Para { implicit: true }, range.clone());
+            self.open_as(
+                OpenKind::Para {
+                    implicit: true,
+                    bare: false,
+                },
+                range.clone(),
+            );
         }
         if let Some(open) = &mut self.open {
             open.src.end = open.src.end.max(range.end);
@@ -798,16 +850,24 @@ impl Builder<'_> {
         // Nothing but white space is no paragraph. Line breaks alone are one, of that many
         // empty lines, and so is a no-break space: a browser gives each its line, and README
         // authors open space with them.
-        let blank = open.inlines.iter().all(|i| match i {
+        let space = |i: &Inline| match i {
             Inline::Text { text, .. } => text.chars().all(|c| c.is_whitespace() && c != '\u{a0}'),
-            Inline::Break | Inline::Image { .. } => false,
-        });
+            _ => false,
+        };
+        let named = |i: &Inline| matches!(i, Inline::Anchor { .. });
+        let blank = open.inlines.iter().all(space);
+        // White space and empty tags that name places make no line, as in a browser: the
+        // names stay, with no room of their own.
+        if !blank && open.inlines.iter().all(|i| space(i) || named(i)) {
+            open.inlines.retain(named);
+        }
         let in_item = matches!(
             self.frames.last().map(|f| &f.kind),
             Some(Kind::Item { .. } | Kind::Note(_))
         );
         let fit = match open.kind {
-            OpenKind::Para { implicit: true } if in_item => Fit::Tight,
+            OpenKind::Para { bare: true, .. } => Fit::Tight,
+            OpenKind::Para { implicit: true, .. } if in_item => Fit::Tight,
             OpenKind::Para { .. } if in_item => Fit::Loose,
             OpenKind::Summary => Fit::Tight,
             _ => Fit::Block,
@@ -825,20 +885,20 @@ impl Builder<'_> {
                 let slug = self.slugs.take(&open.title);
                 self.block(Block::Heading { level, slug, para });
             }
-            OpenKind::Cell => {
-                if let Some(Kind::Table {
+            OpenKind::Cell => match self.table() {
+                Some(Kind::Table {
                     head,
                     rows,
                     in_head,
                     ..
-                }) = self.table()
-                {
-                    match rows.last_mut() {
-                        Some(row) if !*in_head => row.push(para),
-                        _ => head.push(para),
-                    }
-                }
-            }
+                }) => match rows.last_mut() {
+                    Some(row) if !*in_head => row.push(para),
+                    _ => head.push(para),
+                },
+                // A table too deep to follow: its cells are paragraphs where it is.
+                _ if blank => {}
+                _ => self.block(Block::Para(para)),
+            },
             OpenKind::Summary => match self.frames.last_mut().map(|f| &mut f.kind) {
                 Some(Kind::Details { summary, .. }) if summary.is_none() => *summary = Some(para),
                 _ if blank => {}
@@ -882,7 +942,7 @@ impl Builder<'_> {
                 }
                 Mark::Link(link) => {
                     style.link = Some(link);
-                    0
+                    LINK
                 }
             };
             if role != 0 {
@@ -984,36 +1044,16 @@ impl Builder<'_> {
             return;
         }
         let (mut keys, mut values): (Vec<Para>, Vec<Para>) = (Vec::new(), Vec::new());
-        let mut at = src.start;
-        for line in text.split_inclusive('\n') {
-            let start = at;
-            at += line.len();
-            let line = line.trim_end();
-            let nested = line.starts_with([' ', '\t', '-']);
-            match line.split_once(':') {
-                Some((key, value)) if !nested && !key.is_empty() => {
-                    keys.push(cell(key.trim(), start));
-                    values.push(cell(value.trim(), start));
-                }
-                // A list or a nested key under the last key: it goes on that key's value.
-                _ if !line.trim().is_empty() => {
-                    if let Some(Inline::Text { text, .. }) =
-                        values.last_mut().and_then(|v| v.inlines.last_mut())
-                    {
-                        if !text.is_empty() {
-                            text.push(' ');
-                        }
-                        text.push_str(line.trim());
-                    }
-                }
-                _ => {}
-            }
+        for (key, value, start) in front_matter(&text, src.start) {
+            keys.push(cell(&key, start));
+            values.push(cell(&value, start));
         }
         if keys.is_empty() {
             return;
         }
         self.block(Block::Table(Table {
             aligns: vec![Align::Start; keys.len()],
+            align: Align::Start,
             head: keys,
             rows: vec![values],
             src,
@@ -1036,6 +1076,7 @@ impl Builder<'_> {
                 Token::Text(text) => {
                     // Between a block's tags, white space alone starts no paragraph.
                     if self.open.is_some() || !text.trim().is_empty() {
+                        self.bare(block, &range);
                         self.text(&html::decode(text), range);
                     }
                 }
@@ -1061,9 +1102,14 @@ impl Builder<'_> {
         let mark = |builder: &mut Builder, mark: Mark| {
             builder.marks.push((mark, Some(name.to_owned())));
         };
+        let tag = range.clone();
         match name {
-            "br" => self.push(Inline::Break, &range),
+            "br" => {
+                self.bare(block, &range);
+                self.push(Inline::Break, &range);
+            }
             "img" => {
+                self.bare(block, &range);
                 let length = |key: &str| {
                     let value = attr(key)?.trim();
                     match value.strip_suffix('%') {
@@ -1148,10 +1194,44 @@ impl Builder<'_> {
                 }
                 match name.strip_prefix('h').and_then(|l| l.parse::<u8>().ok()) {
                     Some(level @ 1..=6) => self.open_as(OpenKind::Heading(level), range),
-                    _ if name == "p" => self.open_as(OpenKind::Para { implicit: false }, range),
+                    _ if name == "p" => self.open_as(
+                        OpenKind::Para {
+                            implicit: false,
+                            bare: false,
+                        },
+                        range,
+                    ),
                     _ => {}
                 }
             }
+        }
+        // A place the tag names, as GitHub keeps an `id` or a `name` (behind its own prefix,
+        // which its links' `#name` don't write): where the tag's line is.
+        if self.skip.is_none() {
+            for key in ["id", "name"] {
+                if let Some(name) = attr(key).map(str::trim).filter(|n| !n.is_empty()) {
+                    self.bare(block, &tag);
+                    let src = tag.start;
+                    self.push(
+                        Inline::Anchor {
+                            name: name.to_owned(),
+                            src,
+                        },
+                        &(src..src),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Text an HTML block holds outside any paragraph of its own starts one with no margins.
+    fn bare(&mut self, block: bool, range: &Range<usize>) {
+        if block && self.open.is_none() {
+            let kind = OpenKind::Para {
+                implicit: true,
+                bare: true,
+            };
+            self.open_as(kind, range.clone());
         }
     }
 
@@ -1250,6 +1330,98 @@ impl Builder<'_> {
             blocks,
             links: self.links,
         }
+    }
+}
+
+/// Front matter's keys and their values as text, each with where its line starts: a value's
+/// quotes are read, a folded or literal block is its lines, and a list's items or a map's
+/// entries under a key are its value's parts, a comma apart. Only as much YAML as front matter
+/// holds: a key that isn't a plain `name:` starts nothing, and anything else is text.
+fn front_matter(text: &str, from: usize) -> Vec<(String, String, usize)> {
+    let mut lines = Vec::new();
+    let mut at = from;
+    for line in text.split_inclusive('\n') {
+        lines.push((line.trim_end(), at));
+        at += line.len();
+    }
+    let indented = |line: &str| line.starts_with([' ', '\t']) || line.trim().is_empty();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let (line, start) = lines[i];
+        i += 1;
+        if indented(line) || line.starts_with(['#', '-']) {
+            continue;
+        }
+        let (key, value) = match line.split_once(": ") {
+            Some((key, value)) => (key, value.trim()),
+            None => match line.strip_suffix(':') {
+                Some(key) => (key, ""),
+                None => continue,
+            },
+        };
+        // What's indented under the key goes with it.
+        let mut under = Vec::new();
+        while i < lines.len() && indented(lines[i].0) {
+            under.push(lines[i].0.trim());
+            i += 1;
+        }
+        let under = under
+            .into_iter()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'));
+        let value = if value.starts_with(['>', '|']) {
+            under.collect::<Vec<_>>().join(" ")
+        } else if value.is_empty() {
+            let part = |line: &str| match line.strip_prefix('-') {
+                Some(item) => scalar(item.trim()),
+                None => match line.split_once(": ") {
+                    Some((k, v)) => format!("{}: {}", k.trim(), scalar(v.trim())),
+                    None => scalar(line),
+                },
+            };
+            under.map(part).collect::<Vec<_>>().join(", ")
+        } else if let Some(list) = value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+            let items = list.split(',').map(|item| scalar(item.trim()));
+            items
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            scalar(value)
+        };
+        out.push((scalar(key.trim()), value, start));
+    }
+    out
+}
+
+/// A YAML scalar as the text it stands for: quotes read, a comment after it dropped.
+fn scalar(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some('"') => {
+            let (mut out, mut escaped) = (String::new(), false);
+            for c in chars {
+                if escaped {
+                    out.push(if matches!(c, 'n' | 't') { ' ' } else { c });
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    break;
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+        Some('\'') => {
+            let inner = value[1..].strip_suffix('\'').unwrap_or(&value[1..]);
+            inner.replace("''", "'")
+        }
+        _ => match value.find(" #") {
+            Some(at) => value[..at].trim_end().to_owned(),
+            None => value.to_owned(),
+        },
     }
 }
 
@@ -1493,6 +1665,32 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(addresses("www.a.b")[0].1, "http://www.a.b");
+    }
+
+    #[test]
+    fn front_matter_values_are_read_as_yaml_has_them() {
+        let text = "title: \"Quoted: title\"\ntags:\n  - alpha\n  - 'beta'\n  - gamma\nauthor:\n  name: Someone\n  url: https://example.com\ndescription: >\n  A folded description that runs on\n  over two lines.\nflow: [a, \"b c\"]\nplain: text # a comment\nquote: 'it''s'\n";
+        let read: Vec<(String, String)> = front_matter(text, 0)
+            .into_iter()
+            .map(|(k, v, _)| (k, v))
+            .collect();
+        let want = [
+            ("title", "Quoted: title"),
+            ("tags", "alpha, beta, gamma"),
+            ("author", "name: Someone, url: https://example.com"),
+            (
+                "description",
+                "A folded description that runs on over two lines.",
+            ),
+            ("flow", "a, b c"),
+            ("plain", "text"),
+            ("quote", "it's"),
+        ];
+        let want: Vec<(String, String)> = want
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(read, want);
     }
 
     #[test]

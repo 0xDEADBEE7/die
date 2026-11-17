@@ -502,21 +502,37 @@ impl Page {
         &self.laid.headings
     }
 
-    /// Where the place a link's `#name` names is on the page: a heading by its anchor, or what
+    /// Where the place a link's `#name` names is on the page: a heading by its anchor; what
     /// the page itself links to, a footnote (`fn-` and its label) and the references to one
-    /// (`fnref-` and its label; `-2`, `-3` and so on after it for the second and later).
+    /// (`fnref-` and its label; `-2`, `-3` and so on after it for the second and later); or
+    /// what an HTML tag names with `id` or `name`, as `<a id="top"></a>`, at the line its tag
+    /// is on. A place inside a closed `<details>` is at the summary line shown for it, and
+    /// [`Page::folded`] says which blocks to open to show it.
     pub fn anchor(&self, name: &str) -> Option<f32> {
         let heading = self.laid.headings.iter().find(|h| h.slug == name);
         let other = || self.laid.anchors.iter().find(|(n, _)| n == name);
-        heading.map(|h| h.y).or_else(|| other().map(|(_, y)| *y))
+        let hidden = || self.laid.hidden.iter().find(|(n, ..)| n == name);
+        let shown = heading.map(|h| h.y).or_else(|| other().map(|(_, y)| *y));
+        shown.or_else(|| hidden().map(|(_, y, _)| *y))
+    }
+
+    /// The closed `<details>` blocks that keep the place a `#name` names from the page, each by
+    /// the byte offset of its tag as its summary's `details:` link has it, outermost first:
+    /// toggling each (in [`Env::opened`]) and laying out again shows the place. None for a
+    /// place that's shown, or that isn't on the page at all.
+    pub fn folded(&self, name: &str) -> Option<&[usize]> {
+        let shown = self.laid.headings.iter().any(|h| h.slug == name)
+            || self.laid.anchors.iter().any(|(n, _)| n == name);
+        let hidden = self.laid.hidden.iter().find(|(n, ..)| n == name);
+        hidden
+            .filter(|_| !shown)
+            .map(|(_, _, shut)| shut.as_slice())
     }
 
     /// Where a byte of the source is on the page: the top of the line that shows it, or of the
     /// nearest thing shown after it, as for a byte in hidden markup or between blocks.
     pub fn y_of(&self, source: usize) -> f32 {
-        let spans = &self.laid.spans;
-        let at = spans.partition_point(|s| s.end <= source && s.src < source);
-        spans.get(at).or(spans.last()).map_or(0.0, |s| s.y0)
+        self.laid.y_of(source)
     }
 
     /// The source byte shown at a height of the page: the start of what the line there, or the

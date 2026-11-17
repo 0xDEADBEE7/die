@@ -272,8 +272,8 @@ fn check(text: &str, name: &str, width: u32, scale: f32, dir: &Path, fonts: &mut
             let inside =
                 r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= width as f32 && r.y + r.h <= height;
             assert!(
-                inside && r.w >= 0.0 && r.h >= 0.0,
-                "{what}: {r:?} is outside the page"
+                inside && r.w > 0.0 && r.h > 0.0,
+                "{what}: {r:?} is outside the page, or nothing"
             );
         }
     }
@@ -409,9 +409,22 @@ fn hairlines_are_a_css_pixel_at_every_scale() {
             74.0 * (rows + 1) as f32 + 2.0,
             "{rows} rows at scale 2"
         );
+        // At 1.5 a CSS pixel is snapped down to one: 9 + 36 + 9 a row and its line.
+        let page = Page::new(
+            &text,
+            &env(2400, 1.5, &palette, None),
+            &mut fonts,
+            &Pictures::new(),
+        );
+        assert_eq!(
+            page.height() - 136.0,
+            55.0 * (rows + 1) as f32 + 1.0,
+            "{rows} rows at scale 1.5"
+        );
     }
-    // A first heading's rule is two pixels at scale 2, one and a half rounded to two at 1.5.
-    for (scale, pad, rule) in [(2.0f32, 90.0f32, 2.0f32), (1.5, 68.0, 2.0)] {
+    // A first heading's rule is two pixels at scale 2, and one at 1.5, a pixel and a half
+    // snapped down as a browser snaps a border.
+    for (scale, pad, rule) in [(2.0f32, 90.0f32, 2.0f32), (1.5, 68.0, 1.0)] {
         let text = "# T\n\nunder\n";
         let page = Page::new(
             text,
@@ -473,15 +486,30 @@ fn details_are_closed_until_opened_and_their_summary_is_a_toggle() {
 #[test]
 fn spacers_nested_alerts_and_back_links_are_as_a_browser_has_them() {
     let Some(mut fonts) = fonts() else { return };
-    // A lone <br> block is an empty line with the usual margin under it; two are two lines; a
-    // paragraph of only a no-break space is a line.
+    // A lone <br> block is an empty line in a box with no margins, as is one after a </p> in
+    // the same block; two are two lines; a paragraph of only a no-break space is a paragraph,
+    // a line and its margin.
     let plain = page("a\n\nb\n", &mut fonts).height();
     let one = page("a\n\n<br>\n\nb\n", &mut fonts).height();
     let two = page("a\n\n<br>\n<br>\n\nb\n", &mut fonts).height();
+    let after = page("a\n\n<p>p</p>\n<br>\n\nb\n", &mut fonts).height();
     let nbsp = page("a\n\n&nbsp;\n\nb\n", &mut fonts).height();
-    near(one - plain, 40.0, "a line and a gap for one <br>");
-    near(two - plain, 64.0, "two lines and a gap for two");
+    near(one - plain, 24.0, "a line for one <br>");
+    near(two - plain, 48.0, "two lines for two");
+    near(
+        after - plain,
+        40.0 + 24.0,
+        "a paragraph, then a line for the <br>",
+    );
     near(nbsp - plain, 40.0, "a line and a gap for a no-break space");
+    // Before a heading the heading's own margin is what's between.
+    let heading = page("a\n\n# h\n", &mut fonts).height();
+    let spaced = page("a\n\n<br>\n\n# h\n", &mut fonts).height();
+    near(
+        spaced - heading,
+        24.0 + 16.0,
+        "the line, and the heading's 24 for the paragraph's 16",
+    );
     // An alert's marker in a list item is a quote's text: the same page as writing it plain.
     let nested = page("- > [!TIP]\n  > x\n", &mut fonts).height();
     let written = page("- > [!TIP] x\n", &mut fonts).height();
@@ -545,5 +573,276 @@ fn ideographs_break_between_and_wide_tables_keep_their_words() {
     assert!(
         page.links()[0].rects.len() > 1,
         "broken where there's no room"
+    );
+}
+
+/// The source bytes the lines of a page start at, top to bottom.
+fn line_starts(page: &Page) -> Vec<usize> {
+    let mut starts: Vec<usize> = Vec::new();
+    let mut y = 0.0;
+    while y < page.height() {
+        let at = page.source_at(y);
+        if starts.last() != Some(&at) {
+            starts.push(at);
+        }
+        y += 1.0;
+    }
+    starts
+}
+
+#[test]
+fn a_line_ends_after_a_hyphen_whatever_is_before_it_but_not_before_a_digit() {
+    let Some(mut fonts) = fonts() else { return };
+    let palette = Palette::mono_dark();
+    // Pieces that each fit the narrowest column, joined by hyphens after digits: every line
+    // after the first starts just after a hyphen, and no word is cut.
+    let pieces: Vec<String> = (0..40).map(|i| format!("aarch{i}")).collect();
+    let word = pieces.join("-");
+    let text = format!("x86_64-unknown-linux-gnu utf8-encoded AT-SPI2-bridge {word}\n");
+    let page = Page::new(
+        &text,
+        &env(0, 1.0, &palette, None),
+        &mut fonts,
+        &Pictures::new(),
+    );
+    let starts = line_starts(&page);
+    assert!(starts.len() > 4, "{starts:?}");
+    for at in &starts[1..] {
+        let before = text[..*at].chars().next_back();
+        assert!(
+            matches!(before, Some('-' | ' ')),
+            "a line starts at {:?}",
+            &text[*at..]
+        );
+    }
+    // A hyphen before a digit, or one that starts a word, isn't a place to end a line: such
+    // a word too wide for the line is cut by letters instead.
+    let text = format!("{} -{}\n", "1-2-3-4-5-6-7-8-9-0".repeat(3), "x".repeat(10));
+    let page = Page::new(
+        &text,
+        &env(0, 1.0, &palette, None),
+        &mut fonts,
+        &Pictures::new(),
+    );
+    let starts = line_starts(&page);
+    assert!(
+        starts[1..]
+            .iter()
+            .any(|at| !text[..*at].ends_with(['-', ' '])),
+        "cut, not broken at a hyphen: {starts:?}"
+    );
+    assert!(
+        !starts.iter().any(|at| text[..*at].ends_with(" -")),
+        "-x is whole"
+    );
+}
+
+#[test]
+fn a_zero_width_space_is_a_break_and_format_marks_take_no_room() {
+    let Some(mut fonts) = fonts() else { return };
+    let palette = Palette::mono_dark();
+    let text = format!("{}\n", ["alphabet"; 12].join("\u{200b}"));
+    let broken = Page::new(
+        &text,
+        &env(0, 1.0, &palette, None),
+        &mut fonts,
+        &Pictures::new(),
+    );
+    let starts = line_starts(&broken);
+    assert!(starts.len() > 2, "{starts:?}");
+    for at in &starts[1..] {
+        assert!(text[..*at].ends_with('\u{200b}'), "{:?}", &text[*at..]);
+    }
+    // Isolates draw nothing, as the other marks of direction.
+    let marked = page("x\u{2066}y\u{2069}z \u{2067}a\u{2069}\n", &mut fonts);
+    let plain = page("xyz a\n", &mut fonts);
+    assert_eq!(marked.height(), plain.height());
+}
+
+#[test]
+fn a_word_cut_over_lines_maps_to_the_bytes_of_its_letters() {
+    let Some(mut fonts) = fonts() else { return };
+    let palette = Palette::mono_dark();
+    let text = format!("Слово: {}\n", "жизнь".repeat(400));
+    for width in [500, 600, 700, 703, 720] {
+        let page = Page::new(
+            &text,
+            &env(width, 1.0, &palette, None),
+            &mut fonts,
+            &Pictures::new(),
+        );
+        let starts = line_starts(&page);
+        assert!(starts.len() > 10, "{width}: {starts:?}");
+        for at in &starts {
+            assert!(text.is_char_boundary(*at), "{width}: {at} is in a letter");
+        }
+        // Each line starts as many letters on as the lines before it hold, so a line's start
+        // is where its letters are: the starts go evenly down the word.
+        let steps: Vec<usize> = starts[2..].windows(2).map(|w| w[1] - w[0]).collect();
+        let (least, most) = (steps.iter().min(), steps.iter().max());
+        assert!(
+            most.zip(least).is_some_and(|(m, l)| m - l <= 4),
+            "{width}: {steps:?}"
+        );
+    }
+}
+
+#[test]
+fn a_table_in_a_centred_block_is_centred_and_a_shrunk_one_is_the_columns_width() {
+    let Some(mut fonts) = fonts() else { return };
+    let table = "| [A](a) | B |\n|---|---|\n| one | two |\n";
+    let plain = page(table, &mut fonts);
+    let centred = page(
+        &format!("<div align=\"center\">\n\n{table}\n</div>\n"),
+        &mut fonts,
+    );
+    let left = plain.links()[0].rects[0].x;
+    let moved = centred.links()[0].rects[0].x;
+    // The column is 890 wide from 155: the table, a hundred or so wide, is in its middle.
+    assert!(left < 200.0, "left at {left}");
+    assert!(moved > 155.0 + 890.0 / 2.0 - 120.0, "centred at {moved}");
+    // A table whose text can't fit on single lines fills the column exactly, as the rule of
+    // a first heading does: the grid's right edge meets the rule's.
+    let long = "word ".repeat(60);
+    let text = format!("# T\n\n| a | b | c |\n|---|---|---|\n| {long} | {long} | {long} |\n");
+    let palette = Palette::mono_dark();
+    let page = Page::new(
+        &text,
+        &env(1200, 1.0, &palette, None),
+        &mut fonts,
+        &Pictures::new(),
+    );
+    let rule = page.headings()[0].y + 50.0;
+    let grid = top_of(&page, &text, "| a");
+    let mut right = |y: f32| {
+        let mut pixels = vec![0u8; 1200 * 4];
+        page.paint(
+            &mut fonts,
+            &Pictures::new(),
+            &mut pixels,
+            1200,
+            1,
+            y as i32,
+            0..1,
+            &Marks::default(),
+        );
+        let canvas = [palette.canvas.0, palette.canvas.1, palette.canvas.2, 255];
+        let px = pixels.chunks_exact(4).collect::<Vec<_>>();
+        px.iter().rposition(|p| *p != canvas)
+    };
+    let (rule_end, grid_end) = (right(rule.round()), right(grid.round()));
+    assert!(rule_end.is_some(), "the rule is drawn");
+    assert_eq!(
+        grid_end, rule_end,
+        "the table's top edge ends where the rule does"
+    );
+}
+
+#[test]
+fn html_names_places_and_a_closed_details_says_what_it_hides() {
+    let Some(mut fonts) = fonts() else { return };
+    let text = "<a id=\"readme-top\"></a>\n<a name=\"old-top\"></a>\n\n# Project\n\n<h2 id=\"custom\">Custom</h2>\n\nText <span id=\"spot\">here</span>.\n\n<p align=\"right\">(<a href=\"#readme-top\">back to top</a>)</p>\n";
+    let named = page(text, &mut fonts);
+    let project = named.anchor("project").expect("the heading");
+    for name in ["readme-top", "old-top"] {
+        near(named.anchor(name).unwrap_or(-1.0), project, name);
+    }
+    near(
+        named.anchor("custom").unwrap_or(-1.0),
+        top_of(&named, text, "<h2"),
+        "an HTML heading's id is its line",
+    );
+    near(
+        named.anchor("spot").unwrap_or(-1.0),
+        top_of(&named, text, "Text"),
+        "an inline tag's id is its line",
+    );
+    assert_eq!(named.folded("readme-top"), None, "it's shown");
+    // A heading in a closed details isn't shown, but it's there: at the summary line, and
+    // the page says which block to open. Its slug still counts, so the next is usage-1.
+    let text = "[to usage](#usage)\n\n<details>\n<summary>More</summary>\n\n## Usage\n\n<details>\n<summary>Inner</summary>\n\n<a id=\"deep\"></a>\n\n</details>\n\n</details>\n\n## Usage\n\nVisible.\n";
+    let outer = text.find("<details>").expect("the outer tag");
+    let inner = text.rfind("<details>").expect("the inner tag");
+    let closed = page(text, &mut fonts);
+    let summary = top_of(&closed, text, "<summary>More");
+    near(
+        closed.anchor("usage").unwrap_or(-1.0),
+        summary,
+        "a hidden heading",
+    );
+    assert_eq!(closed.folded("usage"), Some(&[outer][..]));
+    assert_eq!(closed.folded("deep"), Some(&[outer, inner][..]));
+    assert!(closed.anchor("usage-1").is_some_and(|y| y > summary + 20.0));
+    assert_eq!(closed.folded("usage-1"), None);
+    assert_eq!(closed.anchor("nowhere"), None);
+    // Opened, the heading is shown where it is, and the inner block now hides the anchor.
+    let palette = Palette::mono_dark();
+    let opened = [outer];
+    let mut env = env(1200, 1.0, &palette, None);
+    env.opened = &opened;
+    let open = Page::new(text, &env, &mut fonts, &Pictures::new());
+    assert_eq!(open.folded("usage"), None);
+    assert!(open.anchor("usage").is_some_and(|y| y > summary + 20.0));
+    assert_eq!(open.folded("deep"), Some(&[inner][..]));
+}
+
+#[test]
+fn a_picture_from_the_top_is_from_the_repositorys_top() {
+    let Some(mut fonts) = fonts() else { return };
+    let base = std::env::temp_dir().join(format!("die-markdown-root-{}", std::process::id()));
+    let (repo, docs) = (base.join("repo"), base.join("repo/docs/deep"));
+    std::fs::create_dir_all(repo.join(".git")).expect("a repository");
+    std::fs::create_dir_all(&docs).expect("its documents");
+    let palette = Palette::mono_dark();
+    let text = "![a](/shot.png) ![b](here.png)\n";
+    let wants = |dir: &Path, fonts: &mut Fonts| {
+        let page = Page::new(
+            text,
+            &env(1200, 1.0, &palette, Some(dir)),
+            fonts,
+            &Pictures::new(),
+        );
+        page.wants().to_vec()
+    };
+    let top = std::fs::canonicalize(&repo).expect("the repository's path");
+    assert_eq!(
+        wants(&docs, &mut fonts),
+        [top.join("shot.png"), docs.join("here.png")]
+    );
+    // With no repository round it, the file's own directory.
+    let alone = base.join("alone");
+    std::fs::create_dir_all(&alone).expect("a directory");
+    assert_eq!(
+        wants(&alone, &mut fonts),
+        [alone.join("shot.png"), alone.join("here.png")]
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn deep_lists_keep_their_text_and_an_empty_heading_has_no_line() {
+    let Some(mut fonts) = fonts() else { return };
+    // Forty levels: every item is shown, each below the one before, and the text after the
+    // list is under them all.
+    let mut text = String::new();
+    for level in 0..40 {
+        text.push_str(&format!("{}- item {level}\n", "  ".repeat(level)));
+    }
+    text.push_str("\nAfter the list.\n");
+    let deep = page(&text, &mut fonts);
+    let mut last = -1.0;
+    for level in 0..40 {
+        let y = top_of(&deep, &text, &format!("item {level}\n"));
+        assert!(y > last, "item {level} at {y}, after {last}");
+        last = y;
+    }
+    assert!(top_of(&deep, &text, "After") > last);
+    // An empty first heading is its padding and its rule, 24 under what's above.
+    let text = "Above\n\n#\n\nBelow\n";
+    let empty = page(text, &mut fonts);
+    near(
+        top_of(&empty, text, "Below") - top_of(&empty, text, "Above"),
+        24.0 + 24.0 + 9.6 + 1.0 + 16.0,
+        "under an empty h1",
     );
 }
