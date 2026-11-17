@@ -29,7 +29,8 @@ path = "crates/die-core"
 # 15,765 until the whiteboard's tool dial: a press a surface takes in normal state brings its release (15,763).
 # 15,770 until the dial's review: no focus pair between two windows on one buffer, and the pointer held by its button (15,775).
 # 15,780 until the markdown view's three pieces of the contract: file-type modes (§8), decorations swapped as one change (§9) and a call after the text has changed (§5), told within the turn that changed it (15,859).
-limit = 15860
+# 15,860 until the whiteboard's scratch boards: `Ctx::rename_buffer`, made unique as a new buffer's name, for a scratch board saved as a file (15,867).
+limit = 15870
 
 [[crate]]
 name = "die-render"
