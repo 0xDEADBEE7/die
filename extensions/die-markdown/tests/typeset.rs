@@ -7,7 +7,7 @@
 use die_test_cap as _;
 
 use die_markdown::plan::{Options, plan};
-use die_markdown::typeset::{Env, Fonts, Marks, Page, Palette, Picture, Pictures};
+use die_markdown::typeset::{Env, Fonts, Marks, Page, Palette, Picture, Pictures, Rgb, Syntax};
 use std::path::{Path, PathBuf};
 
 fn fonts() -> Option<Fonts> {
@@ -901,21 +901,89 @@ fn a_rust_block_is_in_its_languages_colours_and_an_unnamed_one_is_plain() {
 #[test]
 fn colours_never_change_where_a_code_line_wraps() {
     let Some(mut fonts) = fonts() else { return };
+    // Each of the code's colours a step from its plain one, all light enough that none is
+    // drawn bolder than another: a block in its language's colours is cut at every change of
+    // colour, and still paints as an unnamed block does, to a step in a pixel. A cut that
+    // moved, dropped or doubled a glyph, or a wrap's mark, is a pixel far off.
+    let ink = Rgb(240, 240, 240);
+    let step = |r: i16, g: i16, b: i16| {
+        let s = |v: u8, d: i16| (i16::from(v) + d) as u8;
+        Rgb(s(ink.0, r), s(ink.1, g), s(ink.2, b))
+    };
     let palette = Palette::github_dark();
+    let flat = Palette {
+        code_block: ink,
+        quote: ink,
+        syntax: Syntax {
+            keyword: step(1, 0, 0),
+            string: step(0, 1, 0),
+            comment: step(0, 0, 1),
+            number: step(-1, 0, 0),
+            function: step(0, -1, 0),
+            type_: step(0, 0, -1),
+            constant: step(1, 1, 0),
+            meta: step(1, 0, 1),
+            variable: step(0, 1, 1),
+            tag: step(-1, -1, 0),
+            attr: step(-1, 0, -1),
+            inserted: step(0, -1, -1),
+            deleted: step(1, 1, 1),
+            heading: step(-1, -1, -1),
+        },
+        ..palette
+    };
     let pictures = Pictures::new();
     // Lines whose every word is another colour, and long ones, so a wrap lands where the
-    // colour changes.
+    // colour changes; wide characters, joined ones, marks and tabs among them.
     let body = "fn f(x: u32) -> u32 { let y = \"s\"; /* c */ x.max(1_000) + y.len() as u32 + 0x1F }\n\
-                pub const MAX: usize = 1; #[derive(Debug)] struct S { a: Vec<String>, b: Option<i64> }\n";
-    for width in [300, 420, 560, 700, 900] {
-        for scale in [1.0, 2.0] {
-            let mut height = |lang: &str| {
-                let text = format!("```{lang}\n{body}```\n");
-                let env = env(width, scale, &palette, None);
-                Page::new(&text, &env, &mut fonts, &pictures).height()
-            };
-            let (coloured, plain) = (height("rust"), height(""));
-            assert_eq!(coloured, plain, "{width} wide at {scale}");
+                pub const MAX: usize = 1; #[derive(Debug)] struct S { a: Vec<String>, b: Option<i64> }\n\
+                let s = \"中文字符串\"; // 注释 👍🏽👨\u{200d}👩\u{200d}👧 e\u{301}\tx\t\"q\" 'c' 0x1F\n";
+    for (lang, quoted) in [
+        ("rust", false),
+        ("rust", true),
+        ("sh", false),
+        ("python", true),
+    ] {
+        for width in [300, 420, 560, 900] {
+            for scale in [1.0, 2.0] {
+                let mut paint = |lang: &str| {
+                    let block = format!("```{lang}\n{body}```\n");
+                    let text = match quoted {
+                        true => block.lines().map(|l| format!("> {l}\n")).collect(),
+                        false => block,
+                    };
+                    let env = env(width, scale, &flat, None);
+                    let page = Page::new(&text, &env, &mut fonts, &pictures);
+                    let h = page.height().ceil() as u32;
+                    let mut pixels = vec![0u8; width as usize * h as usize * 4];
+                    let marks = Marks::default();
+                    page.paint(
+                        &mut fonts,
+                        &pictures,
+                        &mut pixels,
+                        width,
+                        h,
+                        0,
+                        0..h,
+                        &marks,
+                    );
+                    (page.height(), pixels)
+                };
+                let (coloured, plain) = (paint(lang), paint(""));
+                let what = format!(
+                    "{lang}{}: {width} wide at {scale}",
+                    ["", " quoted"][usize::from(quoted)]
+                );
+                assert_eq!(coloured.0, plain.0, "{what}");
+                let off: Vec<u8> = coloured
+                    .1
+                    .iter()
+                    .zip(&plain.1)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .collect();
+                assert!(off.iter().any(|&d| d > 0), "{what}: no colour of its own");
+                assert!(off.iter().all(|&d| d <= 2), "{what}: a glyph is elsewhere");
+            }
         }
     }
 }
