@@ -16,7 +16,8 @@
 //!   them, and the glyphs drawn and kept;
 //! - `layout`: the document set for a width, as a list of things to draw;
 //! - `paint`: the rows a buffer shows, drawn;
-//! - `picture`: PNG files, and pictures at other sizes.
+//! - `picture`: PNG files, and pictures at other sizes;
+//! - `syntax`: a fenced code block's words, by what each is, for their colours.
 
 mod doc;
 mod fonts;
@@ -26,6 +27,7 @@ mod layout;
 mod paint;
 mod picture;
 mod sheet;
+mod syntax;
 
 use std::collections::HashMap;
 use std::ops::Range;

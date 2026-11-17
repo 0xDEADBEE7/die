@@ -14,6 +14,7 @@
 use super::doc::{self, Alert, Align, Block, Doc, Fit, Inline, Item, Length, Note, Para, Table};
 use super::fonts::{Inst, Pass, Style as Face, Weight};
 use super::sheet;
+use super::syntax::Highlighter;
 use super::{Env, HeadingPos, LinkBox, Palette, Pictures, Rect, Rgb};
 use std::path::PathBuf;
 
@@ -570,8 +571,11 @@ impl Lay<'_, '_> {
                 Block::Para(para) => self.para(para, x, w, ctx),
                 Block::Heading { level, slug, para } => self.heading(*level, slug, para, x, w, ctx),
                 Block::Code {
-                    text, lines, src, ..
-                } => self.code(text, lines, src.end, x, w, ctx),
+                    text,
+                    lines,
+                    lang,
+                    src,
+                } => self.code(text, lines, src.end, lang, x, w, ctx),
                 Block::Quote {
                     alert: None,
                     blocks,
@@ -649,7 +653,19 @@ impl Lay<'_, '_> {
         self.flow.close(bottom, self.px(sheet::GAP));
     }
 
-    fn code(&mut self, text: &str, starts: &[usize], end: usize, x: f32, w: f32, ctx: &Ctx) {
+    /// A code block: its lines in the code's face, each glyph in its piece's colour where the
+    /// fence names a language the highlighter knows.
+    #[allow(clippy::too_many_arguments)]
+    fn code(
+        &mut self,
+        text: &str,
+        starts: &[usize],
+        end: usize,
+        lang: &str,
+        x: f32,
+        w: f32,
+        ctx: &Ctx,
+    ) {
         let y = self.flow.open(0.0);
         let top = y.round();
         let pad = self.px(sheet::CODE_PAD).round();
@@ -681,11 +697,13 @@ impl Lay<'_, '_> {
         let tab = self.env.tab_width.clamp(1, 64);
         let body = text.strip_suffix('\n').unwrap_or(text);
         let lines = if text.is_empty() { None } else { Some(body) };
+        let mut lit = Highlighter::new(lang);
+        let mut runs = Vec::new();
         for (n, source) in lines.iter().flat_map(|b| b.split('\n')).enumerate() {
             let first = row;
             let mut run = self.pass.run(face, size, self.s);
             let (mut from, mut pen, mut column) = (self.out.glyphs.len(), 0.0f32, 0usize);
-            let flush = |lay: &mut Self, from: usize, row: f32| {
+            let flush = |lay: &mut Self, from: usize, row: f32, ink: Rgb| {
                 if lay.out.glyphs.len() > from {
                     lay.out.ops.push(Op::Text {
                         from: from as u32,
@@ -696,7 +714,26 @@ impl Lay<'_, '_> {
                     });
                 }
             };
-            for c in source.chars() {
+            // The line's pieces, and the one the glyph at hand is in. A space takes whatever
+            // colour is going, so a run of glyphs is only cut where the ink changes.
+            match &mut lit {
+                Some(lit) => lit.line(source, &mut runs),
+                None => runs.clear(),
+            }
+            // Where the glyphs of the colour at hand start, and of the row: the row is wrapped
+            // only once it has one.
+            let (mut piece, mut now, mut row_from) = (0usize, ink, from);
+            for (at, c) in source.char_indices() {
+                if !runs.is_empty() && !c.is_whitespace() {
+                    while runs.get(piece + 1).is_some_and(|r| r.0 <= at) {
+                        piece += 1;
+                    }
+                    let want = runs[piece].1.ink(&self.pal.syntax, ink);
+                    if want != now {
+                        flush(self, from, row, now);
+                        (from, now) = (self.out.glyphs.len(), want);
+                    }
+                }
                 if c == '\t' {
                     // A tab reaches the next stop, counted in columns of the code's own face.
                     let stop = tab - column % tab;
@@ -708,11 +745,12 @@ impl Lay<'_, '_> {
                     continue;
                 }
                 let shaped = self.pass.next(&mut run, c);
-                if pen + shaped.kern + shaped.advance > room + SLACK && self.out.glyphs.len() > from
+                if pen + shaped.kern + shaped.advance > room + SLACK
+                    && self.out.glyphs.len() > row_from
                 {
                     // The line is longer than the panel: it goes on below, behind a quiet mark
                     // in the padding, so nobody takes the row for a line of its own.
-                    flush(self, from, row);
+                    flush(self, from, row, now);
                     row += line;
                     pen = 0.0;
                     let side = self.px(size).round();
@@ -723,7 +761,7 @@ impl Lay<'_, '_> {
                         px: side,
                         ink: self.pal.subtle,
                     });
-                    from = self.out.glyphs.len();
+                    (from, row_from) = (self.out.glyphs.len(), self.out.glyphs.len());
                 }
                 self.out.glyphs.push(Glyph {
                     x: left + pen + shaped.kern,
@@ -733,7 +771,7 @@ impl Lay<'_, '_> {
                 pen += shaped.kern + shaped.advance;
                 column += 1;
             }
-            flush(self, from, row);
+            flush(self, from, row, now);
             row += line;
             let start = starts.get(n).copied().unwrap_or(end);
             let next = starts.get(n + 1).copied().unwrap_or(end);
