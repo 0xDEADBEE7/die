@@ -139,8 +139,8 @@ pub fn theme_palette(ctx: &Ctx) -> typeset::Palette {
 
 // ------------------------------------------------------------------ the extension
 
-/// The places `C-o` goes back through on one file's page, the newest last, and the places it
-/// came back from, for `L`.
+/// The places `C-o` goes back through on one file's page in one window, the newest last, and
+/// the places it came back from, for `L`.
 #[derive(Default)]
 struct Trail {
     back: Vec<Mark>,
@@ -151,18 +151,18 @@ struct Trail {
 /// where the file's next page starts, and where its ringed link led.
 struct Away {
     at: usize,
-    ring: Option<String>,
+    ring: Option<(String, u64)>,
 }
 
 /// Where a window left a file's page for the file: the cursor there, its row in the window, the
-/// text's revision then, and the page's place to the pixel, which the toggle back goes to while
-/// the cursor is still there, at that row.
+/// text's revision then, and the page's place to the pixel and its ringed link, which the toggle
+/// back brings back while the cursor is still there, at that row.
 struct Return {
-    window: WindowId,
     cursor: usize,
     row: usize,
     rev: u64,
     mark: Mark,
+    ring: Option<(String, u64)>,
 }
 
 /// The extension: your options, which buffers' view in place is on, the pages, and what a file
@@ -175,16 +175,17 @@ pub struct Markdown {
     /// Each page, by its file's buffer: one a file, whichever windows show it. A page no window
     /// shows is put away when the command ends, so these are the pages on screen.
     pages: BTreeMap<BufferId, page::Shared>,
-    /// Each file's trail of followed links, which outlives its page.
-    trails: BTreeMap<BufferId, Trail>,
+    /// Each window's trail of followed links on each file's page, which outlives the page, as
+    /// a browser window has a history of its own.
+    trails: BTreeMap<(WindowId, BufferId), Trail>,
     /// Where a page that was put away was, by its file. The file's next page starts there.
     places: BTreeMap<BufferId, Away>,
     /// The `<details>` a file's last page had opened, and the text's revision their offsets
     /// count in: the file's next page opens them again, as a browser keeps them for as long as
     /// the page lives.
     opened: BTreeMap<BufferId, (Vec<usize>, u64)>,
-    /// Where a window left a file's page for the file, by file.
-    returns: BTreeMap<BufferId, Return>,
+    /// Where a window left a file's page for the file, by file and window.
+    returns: BTreeMap<(BufferId, WindowId), Return>,
     /// The fonts and the pictures, which the pages share.
     kit: page::SharedKit,
 }
@@ -297,42 +298,47 @@ impl Markdown {
     }
 
     /// From text to its page, in this window: the line the cursor is on stays at the height it
-    /// was, so the eye finds its place, and where the toggle from the page left the cursor, the
-    /// page comes back to the pixel; a page that was put away comes back where it was, since
-    /// the reader left it by a link and not by the cursor. A second window on the same file
-    /// shows the same page, with a place of its own (C10).
+    /// was, so the eye finds its place, and where this window's toggle from the page left the
+    /// cursor, the page comes back to the pixel with the link it had ringed; a page that was put
+    /// away, or that this window left by a link while another kept it up, comes back where it
+    /// was, since the reader left it by a link and not by the cursor. A second window on the
+    /// same file shows the same page, with a place of its own (C10).
     fn show_page(&mut self, ctx: &mut Ctx, a: &Args, file: BufferId) -> Result {
         // Read while the window still shows the text: core parks its view when it leaves.
-        let back = self.returns.remove(&file);
+        let win = a.window.or(ctx.focused());
+        let back = win.and_then(|w| self.returns.remove(&(file, w)));
         let cell = ctx.cell_pixels().height as f32;
         let t = ctx.text(file)?;
-        let at = a.window.or(ctx.focused()).and_then(|w| {
+        let at = win.and_then(|w| {
             let cursor = t.cursor(w)?;
             let row = t.screen_pos(w, cursor).map_or(0, |(row, _)| row);
-            let stayed = |r: &Return| {
-                r.window == w && r.row == row && page::carried(t, r.rev, r.cursor) == cursor
-            };
+            let stayed = |r: &Return| r.row == row && page::carried(t, r.rev, r.cursor) == cursor;
             if let Some(r) = back.filter(stayed) {
-                return Some(r.mark.now(t));
+                return Some((r.mark.now(t), r.ring));
             }
             let source = t.line_start(t.line_of(cursor));
             Some(match row {
                 // On the top row, the file's first line is the page's top, its padding and all.
-                0 => Target::Line(source),
-                row => Target::Place {
-                    source,
-                    offset: -(row as f32 * cell),
-                },
+                0 => (Target::Line(source), None),
+                row => {
+                    let offset = -(row as f32 * cell);
+                    (Target::Place { source, offset }, None)
+                }
             })
         });
-        let at = at.filter(|_| !self.places.contains_key(&file));
+        // A window that left the page for elsewhere while another kept it up comes back where
+        // it was, as to a page put away.
+        let up = win.zip(self.pages.get(&file));
+        let parked = up.is_some_and(|(w, s)| s.borrow().parks(w));
+        let at = at.filter(|_| !self.places.contains_key(&file) && !parked);
         let state = self.page_for(ctx, file)?;
         let buf = state.borrow().buf.ok_or(Checkout::Gone)?;
         let shown = ctx.show(buf, ShowIn::Current)?;
         let mut st = state.borrow_mut();
         // A page brought back where a link left it was put there by no cursor, so leaving it
         // moves the cursor to its top line, as leaving a scrolled page does.
-        if let Some(to) = at {
+        if let Some((to, ring)) = at {
+            st.ring_later(ring);
             st.go(ctx, shown, to);
             st.unmoved.extend(shown);
         }
@@ -397,13 +403,13 @@ impl Markdown {
         if let (Some(cursor), Some(row), Some(mark)) = (t.cursor(w), row, left.mark) {
             let rev = t.rev();
             let back = Return {
-                window: w,
                 cursor,
                 row,
                 rev,
                 mark,
+                ring: left.ring,
             };
-            self.returns.insert(file, back);
+            self.returns.insert((file, w), back);
         }
         Ok(())
     }
@@ -457,8 +463,8 @@ impl Markdown {
         let state = self.page_for(ctx, file)?;
         let buf = state.borrow().buf.ok_or(Checkout::Gone)?;
         let shown = ctx.show(buf, ShowIn::Current)?;
-        if let Some(from) = from {
-            self.left(file, from);
+        if let (Some(from), Some(w)) = (from, shown) {
+            self.left(w, file, from);
         }
         let mut st = state.borrow_mut();
         // A link arrives at a place of its own, and rings nothing: what was ringed when the page
@@ -469,28 +475,29 @@ impl Markdown {
         Ok(())
     }
 
-    /// A place was left for `file`'s page: the newest `C-o` there goes back to, and the way
-    /// forward from it is forgotten, as a browser forgets it.
-    fn left(&mut self, file: BufferId, from: Mark) {
-        let trail = self.trails.entry(file).or_default();
+    /// A place was left for `file`'s page in window `w`: the newest `C-o` there goes back to,
+    /// and the way forward from it is forgotten, as a browser forgets it.
+    fn left(&mut self, w: WindowId, file: BufferId, from: Mark) {
+        let trail = self.trails.entry((w, file)).or_default();
         trail.back.push(from);
         trail.forward.clear();
     }
 
     /// `markdown-page-older` and `markdown-page-newer`: back through the places links were
-    /// followed from, on this page or the one a link led from, and forward again. Each file
-    /// keeps its own two lists, and a place left goes on the other list of the file arrived
-    /// at. A place in a file whose buffer has gone is stepped over.
+    /// followed from in this window, on this page or the one a link led from, and forward
+    /// again. Each file keeps two lists in each window, and a place left goes on the other list
+    /// of the file arrived at. A place in a file whose buffer has gone is stepped over.
     fn travel(&mut self, ctx: &mut Ctx, a: &Args, back: bool) -> Result {
         let mut state = self.page_here(ctx, a)?;
-        let mut win = a.window.or(ctx.focused());
+        let win = a.window.or(ctx.focused());
+        let mut win = win.ok_or_else(|| Error::Msg("No window here".into()))?;
         for _ in 0..a.count.unwrap_or(1).max(1) {
             let (file, here) = {
                 let st = state.borrow();
-                (st.file, st.mark(win))
+                (st.file, st.mark(Some(win)))
             };
             let to = loop {
-                let trail = self.trails.entry(file).or_default();
+                let trail = self.trails.entry((win, file)).or_default();
                 let list = if back {
                     &mut trail.back
                 } else {
@@ -508,8 +515,8 @@ impl Markdown {
             };
             let there = self.page_for(ctx, to.file)?;
             let buf = there.borrow().buf.ok_or(Checkout::Gone)?;
-            win = ctx.show(buf, ShowIn::Current)?.or(win);
-            let trail = self.trails.entry(to.file).or_default();
+            win = ctx.show(buf, ShowIn::Current)?.unwrap_or(win);
+            let trail = self.trails.entry((win, to.file)).or_default();
             let list = if back {
                 &mut trail.forward
             } else {
@@ -518,7 +525,11 @@ impl Markdown {
             list.extend(here);
             let target = to.now(ctx.text(to.file)?);
             let mut st = there.borrow_mut();
-            st.go(ctx, win, target);
+            // Back to a page another window kept up, with the link this one had ringed.
+            if let Some(ring) = st.parked_ring(win) {
+                st.ring_later(Some(ring));
+            }
+            st.go(ctx, Some(win), target);
             st.refresh(ctx);
             drop(st);
             state = there;
@@ -532,6 +543,12 @@ impl Markdown {
     /// and the theme's colours included, and one no window shows is put away. A window that
     /// left a page for the page's own file, by `C-^`, `:b` or `:e`, left it as the toggle does.
     fn settle(&mut self, ctx: &mut Ctx) {
+        // A window that's gone takes its ways back with it.
+        if !(self.trails.is_empty() && self.returns.is_empty()) {
+            let live = ctx.window_list();
+            self.trails.retain(|(w, _), _| live.contains(w));
+            self.returns.retain(|(_, w), _| live.contains(w));
+        }
         if self.pages.is_empty() {
             return;
         }
@@ -597,10 +614,10 @@ impl Markdown {
     /// A buffer was killed. A file's page goes with the file, its trail and its kept place too,
     /// and a page killed by itself, as by `:bd` on it, is forgotten.
     fn killed(&mut self, ctx: &mut Ctx, buf: BufferId) {
-        self.trails.remove(&buf);
+        self.trails.retain(|(_, file), _| *file != buf);
         self.places.remove(&buf);
         self.opened.remove(&buf);
-        self.returns.remove(&buf);
+        self.returns.retain(|(file, _), _| *file != buf);
         match self.pages.remove(&buf) {
             Some(state) => {
                 let page = state.borrow().buf;
@@ -796,7 +813,7 @@ impl Markdown {
                 st.refresh(ctx);
                 drop(st);
                 if let Some(here) = here {
-                    self.left(file, here);
+                    self.left(w, file, here);
                 }
                 Ok(())
             }

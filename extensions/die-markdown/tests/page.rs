@@ -1728,3 +1728,222 @@ fn what_a_page_costs() {
     }
     println!("the colours read in {:?}", started.elapsed() / 1000);
 }
+
+// ------------------------------------------------------------------ two windows on one page
+
+/// a.md's page in two windows side by side, in a frame of 120 by 30: the focused one, at the
+/// left, and the other.
+fn side_by_side(h: &mut Harness, dir: &Path) -> (BufferId, WindowId, WindowId) {
+    h.set_window_size(120, 30);
+    h.run_until_idle();
+    let file = open(h, &dir.join("a.md"));
+    keys(h, "\\m<C-w>v");
+    let left = h.focused().unwrap();
+    let right = *h.window_list().iter().find(|w| **w != left).unwrap();
+    (file, left, right)
+}
+
+/// Put the keyboard in a window.
+fn into(h: &mut Harness, w: WindowId) {
+    h.focus(w);
+    h.run_until_idle();
+}
+
+/// The status lines that name a page, as each window has its own, left to right.
+fn page_statuses(h: &mut Harness) -> Vec<String> {
+    let scene = h.scene();
+    let rows = (0..scene.rows).map(|r| scene.row_text(r));
+    let rows: Vec<String> = rows.filter(|r| r.contains("*page*")).collect();
+    let parts = rows.iter().flat_map(|r| r.split('│'));
+    let parts = parts.map(|p| p.trim().trim_end_matches("<N>").trim_end().to_string());
+    parts.filter(|p| p.contains("*page*")).collect()
+}
+
+#[test]
+fn each_window_on_a_page_has_its_own_way_back() {
+    let dir = tree("trails");
+    fs::write(dir.join("a.md"), document()).unwrap();
+    fs::write(dir.join("b.md"), second()).unwrap();
+    let mut h = harness(Options::default());
+    let (file, left, right) = side_by_side(&mut h, &dir);
+    let at = |h: &mut Harness, w| seen_in(h, file, Some(w)).unwrap().top;
+    into(&mut h, right);
+    keys(&mut h, "10j");
+    let parked = at(&mut h, right);
+    into(&mut h, left);
+    ring(&mut h, file, "#part-15");
+    let before = at(&mut h, left);
+    keys(&mut h, "<CR>");
+    assert!(at(&mut h, left) > before);
+
+    // The window that followed nothing has no way back, and the one that did keeps its own.
+    into(&mut h, right);
+    assert_eq!(fails(&mut h, "<C-o>"), "No older place");
+    assert_eq!(at(&mut h, right), parked);
+    into(&mut h, left);
+    keys(&mut h, "<C-o>");
+    assert_eq!(at(&mut h, left), before);
+    into(&mut h, right);
+    assert_eq!(fails(&mut h, "L"), "No newer place");
+
+    // To another page and back in one window: the other's way forward is still nothing.
+    into(&mut h, left);
+    ring(&mut h, file, "b.md#second-part");
+    keys(&mut h, "<CR><C-o>");
+    into(&mut h, right);
+    assert_eq!(fails(&mut h, "L"), "No newer place");
+    let page = seen(&mut h, file).unwrap().buffer;
+    assert_eq!(h.window_buffer(right), Some(page));
+}
+
+#[test]
+fn a_window_that_leaves_a_page_the_other_still_shows_comes_back_to_its_own_place_and_ring() {
+    let dir = tree("own-place");
+    fs::write(dir.join("a.md"), document()).unwrap();
+    fs::write(dir.join("b.md"), second()).unwrap();
+    fs::write(dir.join("notes.txt"), "plain\ntext\n").unwrap();
+    let mut h = harness(Options::default());
+    let (file, left, right) = side_by_side(&mut h, &dir);
+    let at = |h: &mut Harness, w| {
+        let page = seen_in(h, file, Some(w)).unwrap();
+        (page.top, page.ring)
+    };
+    // Each wheeled to a place of its own, between lines, and a link ringed in the left.
+    into(&mut h, left);
+    wheel(&mut h, 18.3);
+    keys(&mut h, "<Tab>");
+    let mine = at(&mut h, left);
+    into(&mut h, right);
+    wheel(&mut h, 43.7);
+    let theirs = at(&mut h, right);
+    assert!(mine.1.is_some() && mine.0 > 0 && theirs.0 > mine.0);
+
+    // The toggle and back in each, the right's toggle away first: each comes back to its own
+    // pixel, and the left with its ring.
+    keys(&mut h, "\\m");
+    into(&mut h, left);
+    keys(&mut h, "\\m\\m");
+    assert_eq!(at(&mut h, left), mine);
+    into(&mut h, right);
+    keys(&mut h, "\\m");
+    assert_eq!(at(&mut h, right), theirs);
+
+    // Away by `:e` and back by `:b` while the other shows the page: its own place, not the
+    // other's.
+    into(&mut h, left);
+    keys(&mut h, ":e notes.txt<CR>:b a.md *page*<CR>");
+    assert_eq!(at(&mut h, left), mine);
+
+    // A link to a file that opens as text, back to the page's file and the toggle.
+    ring(&mut h, file, "notes.txt");
+    let mine = at(&mut h, left);
+    keys(&mut h, "<CR>");
+    assert_eq!(h.focused_buffer(), h.find_buffer("notes.txt"));
+    keys(&mut h, "<C-^>");
+    assert_eq!(h.focused_buffer(), Some(file));
+    keys(&mut h, "\\m");
+    assert_eq!(at(&mut h, left), mine);
+
+    // A link to another page, and `C-o` back: the place and the ring.
+    ring(&mut h, file, "b.md#second-part");
+    let mine = at(&mut h, left);
+    keys(&mut h, "<CR><C-o>");
+    assert_eq!(at(&mut h, left), mine);
+    assert_eq!(at(&mut h, right), theirs);
+}
+
+#[test]
+fn a_status_line_over_a_prompts_list_says_nothing_of_another_window() {
+    let dir = tree("prompt-status");
+    fs::write(dir.join("a.md"), document()).unwrap();
+    let mut h = harness(Options::default());
+    let (_, _, right) = side_by_side(&mut h, &dir);
+    keys(&mut h, "G");
+    into(&mut h, right);
+    assert_eq!(
+        page_statuses(&mut h),
+        ["a.md *page*  Bot", "a.md *page*  Top"]
+    );
+    // Core draws the status lines over the list again once every window is drawn, and doesn't
+    // say whose: each says what is so of it.
+    let _ = h.type_keys(":");
+    assert!(h.prompt_text().is_some());
+    let open = page_statuses(&mut h);
+    assert_eq!(open.len(), 2, "{open:?}");
+    for (line, own) in open.iter().zip(["Bot", "Top"]) {
+        let true_of_it = line == "a.md *page*" || *line == format!("a.md *page*  {own}");
+        assert!(true_of_it, "{open:?}");
+    }
+}
+
+fn two_details() -> String {
+    let mut s = String::from("# T\n\nIntro.\n\n");
+    s += "<details>\n<summary>One</summary>\n\nHidden one [in one](#in-one).\n\n</details>\n\n";
+    s += "<details>\n<summary>Two</summary>\n\nHidden two [in two](#in-two).\n\n</details>\n\n";
+    for i in 1..=12 {
+        s += &format!("## Part {i}\n\nParagraph {i}, with words enough to be a line of text.\n\n");
+    }
+    s
+}
+
+#[test]
+fn a_details_tag_moves_with_the_text_and_a_deleted_one_opens_nothing() {
+    let dir = tree("details-tags");
+    let doc = two_details();
+    fs::write(dir.join("a.md"), &doc).unwrap();
+    let mut h = harness(Options::default());
+    let a = open(&mut h, &dir.join("a.md"));
+    keys(&mut h, "\\m");
+    let one = summary(&mut h, a);
+    ring(&mut h, a, &one);
+
+    // Typed above, the summary moves and stays ringed: `<CR>` opens it.
+    let above = "A line.\n\n";
+    let t = h.text_mut(a).unwrap();
+    t.tx(Origin::User).insert(0, above).commit().unwrap();
+    h.run_until_idle();
+    let page = seen(&mut h, a).unwrap();
+    let ringed = ask(&mut h, a, |p| p.links()[page.ring.unwrap()].dest.clone());
+    assert_ne!(ringed, one);
+    assert_eq!(ringed, summary(&mut h, a));
+    keys(&mut h, "<CR>");
+    assert!(has_link(&mut h, a, "#in-one") && !has_link(&mut h, a, "#in-two"));
+
+    // The opened block deleted, and the blank line after it: the next block, which was never
+    // opened, comes up to its place and stays closed, and so it does after the undo.
+    let first = above.len() + doc.find("<details>").unwrap();
+    let second = above.len() + doc.rfind("<details>").unwrap();
+    let t = h.text_mut(a).unwrap();
+    t.tx(Origin::User).delete(first..second).commit().unwrap();
+    h.run_until_idle();
+    assert!(!has_link(&mut h, a, "#in-two"));
+    h.text_mut(a).unwrap().undo().unwrap();
+    h.run_until_idle();
+    assert!(!has_link(&mut h, a, "#in-two"));
+}
+
+#[test]
+fn a_taller_window_that_brings_the_end_up_moves_the_place_for_good() {
+    let dir = tree("hold");
+    fs::write(dir.join("a.md"), document()).unwrap();
+    let mut h = harness(Options::default());
+    let file = open(&mut h, &dir.join("a.md"));
+    keys(&mut h, "G\\m");
+    assert_eq!(top(&mut h, file), limit(&mut h, file));
+    h.set_window_size(60, 30);
+    h.run_until_idle();
+    let held = top(&mut h, file);
+    assert_eq!(held, limit(&mut h, file));
+    h.set_window_size(60, 20);
+    h.run_until_idle();
+    assert_eq!(top(&mut h, file), held);
+    // An edit lays the page out again, and the place is where the window was put.
+    let len = h.text(file).unwrap().len();
+    let t = h.text_mut(file).unwrap();
+    t.tx(Origin::User)
+        .insert(len, "\nMore.\n")
+        .commit()
+        .unwrap();
+    h.run_until_idle();
+    assert_eq!(top(&mut h, file), held);
+}
