@@ -1,10 +1,12 @@
 //! A code block's box: a row for each source line, in the code block's face from where the code
 //! starts to a right edge one cell past the longest line, or at the text area's edge if that's
-//! nearer. A fenced block's opening row shows its language and its closing row is blank.
+//! nearer. A fenced block's opening row shows its language and its closing row is blank. A line
+//! too short to reach the block's column, as a blank line in an indented block is, has the
+//! paper up to that column and the box from there, so the box's left edge is straight.
 
 use super::lines::{cells, columns, is_blank};
 use super::walk::Walk;
-use super::{CODE_BLOCK, META, shown};
+use super::{CODE_BLOCK, META, PAPER, shown};
 use std::ops::Range;
 
 /// A row of the box.
@@ -85,9 +87,17 @@ pub(super) fn layout(
 
     let longest = rows.iter().map(|r| r.start + r.width).max().unwrap_or(0);
     let edge = walk.width.min(longest + 1);
+    // The block's column: where its first row starts.
+    let column = rows.first().map_or(0, |r| r.start).min(edge);
     for row in rows {
+        // A row that ends before the block's column: the paper as far as that, drawn over the
+        // newline's face, which virtual text before it would otherwise take.
+        let short = row.width == 0 && row.start < column;
+        if short {
+            walk.virtual_text(row.end, shown(" ".repeat(column - row.start), PAPER));
+        }
         // A line wider than the box wraps, and has no padding.
-        let used = row.start + row.width;
+        let used = if short { column } else { row.start + row.width };
         if used < edge {
             walk.virtual_text(row.end, shown(" ".repeat(edge - used), CODE_BLOCK));
         }
