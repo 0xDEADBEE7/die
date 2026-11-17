@@ -119,7 +119,8 @@ pub struct Probe<'a> {
     pub buffer: BufferId,
     /// The page's row at the window's top, in physical pixels.
     pub top: i32,
-    /// The area the latest `Resize` gave, in physical pixels.
+    /// The area the picture covers, in physical pixels: the widest and the tallest of the
+    /// windows showing the page, each way.
     pub area: (u32, u32),
     /// The page's height in physical pixels, 0 while there's no layout.
     pub height: f32,
@@ -138,14 +139,35 @@ pub fn theme_palette(ctx: &Ctx) -> typeset::Palette {
 
 // ------------------------------------------------------------------ the extension
 
-/// The extension: your options, which buffers' view in place is on, and the pages.
+/// The places `C-o` goes back through on one file's page, the newest last, and the places it
+/// came back from, for `L`.
+#[derive(Default)]
+struct Trail {
+    back: Vec<Mark>,
+    forward: Vec<Mark>,
+}
+
+/// What a file keeps of a page that was put away: the byte of the source its top line showed,
+/// where the file's next page starts, and where its ringed link led.
+struct Away {
+    at: usize,
+    ring: Option<String>,
+}
+
+/// The extension: your options, which buffers' view in place is on, the pages, and what a file
+/// keeps of a page that's gone.
 #[derive(Default)]
 pub struct Markdown {
     /// Your options.
     pub options: Options,
     rendered: Rendered,
-    /// Each page, by its file's buffer: one a file, whichever windows show it.
+    /// Each page, by its file's buffer: one a file, whichever windows show it. A page no window
+    /// shows is put away when the command ends, so these are the pages on screen.
     pages: BTreeMap<BufferId, page::Shared>,
+    /// Each file's trail of followed links, which outlives its page.
+    trails: BTreeMap<BufferId, Trail>,
+    /// Where a page that was put away was, by its file. The file's next page starts there.
+    places: BTreeMap<BufferId, Away>,
     /// The fonts and the pictures, which the pages share.
     kit: page::SharedKit,
 }
@@ -211,12 +233,20 @@ impl Markdown {
 
     /// A file's page, made if there's none: a buffer named after the file's, in the file's
     /// directory, with the window's whole width, since the page centres its own column. It
-    /// shows nothing until a window shows it and says how large it is.
+    /// shows nothing until a window shows it and says how large it is, and it starts where the
+    /// file's last page was put away, if one was.
     fn page_for(&mut self, ctx: &mut Ctx, file: BufferId) -> Result<page::Shared> {
         if let Some(state) = self.pages.get(&file) {
             return Ok(state.clone());
         }
         let rev = ctx.text(file)?.rev();
+        // A view in place that's on, as one an older session brought back, goes off: a file has
+        // one rendered view at a time, and leaving the page lands on raw text.
+        let raw = |v: &mut View, ctx: &mut Ctx| match v.is_rendered() {
+            true => v.clear(file, ctx),
+            false => Ok(()),
+        };
+        ctx.with_mode(file, raw).unwrap_or(Ok(()))?;
         let name = format!("{} *page*", ctx.buffer_name(file).unwrap_or_default());
         let state = Rc::new(RefCell::new(page::State::new(file, rev, self.kit.clone())));
         let buf = ctx.create_surface(&name, page::PageSurface::new(state.clone()));
@@ -229,14 +259,19 @@ impl Markdown {
         {
             let mut st = state.borrow_mut();
             (st.buf, st.title) = (Some(buf), title);
+            if let Some(away) = self.places.remove(&file) {
+                st.go(ctx, Target::Line(away.at));
+                st.ring_later(away.ring);
+            }
         }
         self.pages.insert(file, state.clone());
         Ok(state)
     }
 
     /// From text to its page, in this window: the line the cursor is on stays at the height it
-    /// was, so the eye finds its place. A second window on the same file shows the same page,
-    /// which has one place for them both (C10).
+    /// was, so the eye finds its place; a page that was put away comes back where it was, since
+    /// the reader left it by a link and not by the cursor. A second window on the same file
+    /// shows the same page, which has one place for them both (C10).
     fn show_page(&mut self, ctx: &mut Ctx, a: &Args, file: BufferId) -> Result {
         // Read while the window still shows the text: core parks its view when it leaves.
         let t = ctx.text(file)?;
@@ -245,6 +280,7 @@ impl Markdown {
             let row = t.screen_pos(w, cursor).map_or(0, |(row, _)| row);
             Some((t.line_start(t.line_of(cursor)), row))
         });
+        let at = at.filter(|_| !self.places.contains_key(&file));
         let state = self.page_for(ctx, file)?;
         let buf = state.borrow().buf.ok_or(Checkout::Gone)?;
         let shown = ctx.show(buf, ShowIn::Current)?;
@@ -258,7 +294,11 @@ impl Markdown {
             }
             None => {}
         }
-        st.unmoved.extend(shown);
+        // A page brought back where a link left it was put there by no cursor, so leaving it
+        // moves the cursor to its top line, as leaving a scrolled page does.
+        if at.is_some() {
+            st.unmoved.extend(shown);
+        }
         st.refresh(ctx);
         Ok(())
     }
@@ -333,40 +373,64 @@ impl Markdown {
         let state = self.page_for(ctx, file)?;
         let buf = state.borrow().buf.ok_or(Checkout::Gone)?;
         ctx.show(buf, ShowIn::Current)?;
-        let mut st = state.borrow_mut();
         if let Some(from) = from {
-            st.back.push(from);
-            st.forward.clear();
+            self.left(file, from);
         }
+        let mut st = state.borrow_mut();
         st.go(ctx, to);
         st.refresh(ctx);
         Ok(())
     }
 
+    /// A place was left for `file`'s page: the newest `C-o` there goes back to, and the way
+    /// forward from it is forgotten, as a browser forgets it.
+    fn left(&mut self, file: BufferId, from: Mark) {
+        let trail = self.trails.entry(file).or_default();
+        trail.back.push(from);
+        trail.forward.clear();
+    }
+
     /// `markdown-page-older` and `markdown-page-newer`: back through the places links were
-    /// followed from, on this page or the one a link led from, and forward again. Each page
-    /// keeps its own two lists, and a place left goes on the other list of the page arrived at.
+    /// followed from, on this page or the one a link led from, and forward again. Each file
+    /// keeps its own two lists, and a place left goes on the other list of the file arrived
+    /// at. A place in a file whose buffer has gone is stepped over.
     fn travel(&mut self, ctx: &mut Ctx, a: &Args, back: bool) -> Result {
         let mut state = self.page_here(ctx, a)?;
         for _ in 0..a.count.unwrap_or(1).max(1) {
-            let (to, here) = {
-                let mut st = state.borrow_mut();
-                let list = if back { &mut st.back } else { &mut st.forward };
+            let (file, here) = {
+                let st = state.borrow();
+                (st.file, st.mark())
+            };
+            let to = loop {
+                let trail = self.trails.entry(file).or_default();
+                let list = if back {
+                    &mut trail.back
+                } else {
+                    &mut trail.forward
+                };
                 let none = if back {
                     "No older place"
                 } else {
                     "No newer place"
                 };
                 let to = list.pop().ok_or_else(|| Error::Msg(none.into()))?;
-                (to, st.mark())
+                if ctx.is_live(to.file) {
+                    break to;
+                }
             };
             let there = self.page_for(ctx, to.file)?;
             let buf = there.borrow().buf.ok_or(Checkout::Gone)?;
             ctx.show(buf, ShowIn::Current)?;
-            let mut st = there.borrow_mut();
-            let list = if back { &mut st.forward } else { &mut st.back };
+            let trail = self.trails.entry(to.file).or_default();
+            let list = if back {
+                &mut trail.forward
+            } else {
+                &mut trail.back
+            };
             list.extend(here);
-            st.go(ctx, to.target());
+            let target = to.now(ctx.text(to.file)?);
+            let mut st = there.borrow_mut();
+            st.go(ctx, target);
             st.refresh(ctx);
             drop(st);
             state = there;
@@ -376,26 +440,54 @@ impl Markdown {
     }
 
     /// After a command, and after anything else that may have changed which windows show what:
-    /// a page a window shows is brought up to date, the theme's colours included, and one no
-    /// window shows gives up its picture and its layout and keeps its place.
+    /// a page a window shows is brought up to date, the windows that left it and the theme's
+    /// colours included, and one no window shows is put away.
     fn settle(&mut self, ctx: &mut Ctx) {
         if self.pages.is_empty() {
             return;
         }
-        let windows = ctx.window_list().into_iter();
-        let shown: Vec<BufferId> = windows.filter_map(|w| ctx.window_buffer(w)).collect();
-        for state in self.pages.values() {
+        let mut away = vec![];
+        for (file, state) in &self.pages {
             let mut st = state.borrow_mut();
-            match st.buf.is_some_and(|b| shown.contains(&b)) {
+            st.prune(ctx);
+            match st.buf.is_some_and(|b| shows(ctx, b)) {
                 true => st.refresh(ctx),
-                false => st.rest(),
+                false => away.push(*file),
             }
+        }
+        for file in away {
+            self.put_away(ctx, file);
         }
     }
 
-    /// A buffer was killed. A file's page goes with the file, and a page killed by itself, as by
-    /// `:bd` on it, is forgotten.
+    /// No window shows a file's page any more, a link, `C-^` or `:e` having taken its window:
+    /// it goes, as it does on the toggle, and its place stays with the file, so the file's next
+    /// page, by the toggle or by `C-o`, starts there.
+    fn put_away(&mut self, ctx: &mut Ctx, file: BufferId) {
+        let Some(state) = self.pages.remove(&file) else {
+            return;
+        };
+        let st = state.borrow();
+        let away = Away {
+            at: st.kept(),
+            ring: st.ring_dest(),
+        };
+        self.places.insert(file, away);
+        if let Some(buf) = st.buf {
+            // Core may have queued telling it a window left; it goes after that, in the same
+            // turn: told when already gone, core would report an error.
+            ctx.defer(move |ctx| {
+                ctx.kill(buf);
+                Ok(())
+            });
+        }
+    }
+
+    /// A buffer was killed. A file's page goes with the file, its trail and its kept place too,
+    /// and a page killed by itself, as by `:bd` on it, is forgotten.
     fn killed(&mut self, ctx: &mut Ctx, buf: BufferId) {
+        self.trails.remove(&buf);
+        self.places.remove(&buf);
         match self.pages.remove(&buf) {
             Some(state) => {
                 let page = state.borrow().buf;
@@ -557,10 +649,11 @@ impl Markdown {
         Ok(())
     }
 
-    /// Follow the ringed link of a page. A heading here scrolls to it. A markdown file's page
-    /// takes this one's place in the window, at the heading or the line the link names, and any
-    /// other file opens as text, this page staying behind it for `C-^`. The rest is your
-    /// opener's. Where the reader leaves a place for another, the place is kept for `C-o`.
+    /// Follow the ringed link of a page. A heading here scrolls to it, and a `<details>` opens
+    /// or closes. A markdown file's page takes this one's place in the window, at the heading
+    /// or the line the link names, and any other file opens as text; this page is put away
+    /// either way, and comes back where it was. The rest is your opener's. Where the reader
+    /// leaves a place for another, the place is kept for `C-o`.
     fn follow_on_page(&mut self, ctx: &mut Ctx, state: &page::Shared) -> Result {
         let (file, link, here) = {
             let st = state.borrow();
@@ -568,12 +661,25 @@ impl Markdown {
         };
         let none = || Error::Msg("No link is ringed: <Tab> rings one".into());
         let link = link.ok_or_else(none)?;
+        // The engine lists a `<details>` summary as a link to `details:` and its byte offset:
+        // following it is a toggle, here, with the place kept and nothing to come back from.
+        let details = link.dest.strip_prefix("details:");
+        if let Some(offset) = details.and_then(|o| o.parse().ok()) {
+            let mut st = state.borrow_mut();
+            st.toggle_details(offset);
+            st.refresh(ctx);
+            return Ok(());
+        }
         match Dest::read(&link.dest) {
             Dest::Anchor(anchor) => {
                 let mut st = state.borrow_mut();
-                let gone = st.anchor(&anchor);
+                st.anchor(&anchor)?;
                 st.refresh(ctx);
-                gone
+                drop(st);
+                if let Some(here) = here {
+                    self.left(file, here);
+                }
+                Ok(())
             }
             Dest::Outside(address) => {
                 self.outside(ctx, address);
@@ -589,9 +695,12 @@ impl Markdown {
                     return self.open_text(ctx, target, anchor, false);
                 }
                 let to = ctx.open_file(&target.path)?;
+                // `notes.md:0` is line 1, as `die notes.md:0` opens it.
                 let at = match (anchor, target.line) {
                     (Some(anchor), _) => Target::Heading(anchor),
-                    (None, Some(line)) => Target::Line(ctx.text(to)?.line_start(line - 1)),
+                    (None, Some(line)) => {
+                        Target::Line(ctx.text(to)?.line_start(line.saturating_sub(1)))
+                    }
                     (None, None) => Target::Top,
                 };
                 self.open_page(ctx, to, at, here)
@@ -1043,8 +1152,9 @@ impl Extension for Markdown {
     /// Which buffers are rendered, so a restart shows them as they were. One whose view is in
     /// place is kept with whether it was read-only before the view made it so: core keeps the
     /// setting as the view has it. One with a page is kept with the page's place, as the byte
-    /// of the source its top line shows, and whether the focused window showed it. Both ride on
-    /// the file's buffer, since the session keeps no surface's.
+    /// of the source its top line shows, and whether the focused window showed it; one whose
+    /// page was put away is kept with that place alone, a plain byte. All ride on the file's
+    /// buffer, since the session keeps no surface's.
     fn save_session(&self, ctx: &Ctx) -> Kept {
         let rendered = self.rendered.borrow();
         let live = rendered.iter().filter(|b| ctx.is_live(b.0));
@@ -1055,6 +1165,8 @@ impl Extension for Markdown {
             let shown = st.buf.is_some() && st.buf == focused;
             buffers.push((*file, json!({ "page": st.kept(), "shown": shown })));
         }
+        let away = self.places.iter().filter(|(f, _)| ctx.is_live(**f));
+        buffers.extend(away.map(|(f, away)| (*f, json!(away.at))));
         Kept {
             state: Value::Null,
             buffers,
@@ -1065,10 +1177,19 @@ impl Extension for Markdown {
     /// it is: the host connects its pixels after this, so whether there can be a page is your
     /// option's to say here, and the first `Resize` falls back on the view in place if the host
     /// shows none. Core drops a window whose buffer it didn't keep, a page's among them, so the
-    /// page the focused window showed is shown in this one, as a board is.
+    /// page the focused window showed is shown in this one, as a board is. A page put away is
+    /// its place, waiting for the file's next page.
     fn restore_session(&mut self, ctx: &mut Ctx, kept: Kept) -> Result {
         let mut show = None;
         for (buf, kept) in kept.buffers {
+            if let Some(at) = kept.as_u64().filter(|_| self.options.page) {
+                let away = Away {
+                    at: at as usize,
+                    ring: None,
+                };
+                self.places.insert(buf, away);
+                continue;
+            }
             let place = kept.get("page").and_then(Value::as_u64);
             let back = match place.filter(|_| self.options.page) {
                 Some(at) => self.page_for(ctx, buf).map(|state| {

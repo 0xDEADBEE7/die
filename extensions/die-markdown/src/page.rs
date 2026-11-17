@@ -7,13 +7,14 @@
 //! moved (contract §11), so the buffer is the window and not the page: a scroll paints the part
 //! of the page the window shows, and presents it. The buffer is made at the first `Resize` that
 //! says what a cell is in pixels, and grows with the area but never shrinks, since a resize
-//! blanks the picture until the next present.
+//! blanks the picture until the next present. Two windows on one page have one picture between
+//! them, as large as the largest of them each way: the smaller shows its top-left part.
 //!
 //! The state is shared with the extension, as a board's is: a command reaches it without checking
 //! the surface out, `save_session` reads it with no `Ctx`, and the surface's own events find it
 //! there. Whoever changes it ends with [`State::refresh`], which lays out again if the text, the
-//! width, the scale, the colours or the pictures are no longer what the layout was made from,
-//! and paints what is owed, so the present rides that turn's frame.
+//! width, the scale, the colours, the pictures or the opened details are no longer what the
+//! layout was made from, and paints what is owed, so the present rides that turn's frame.
 use crate::typeset::{AlertInk, Env, Fonts, LinkBox, Marks, Page, Palette, Picture, Pictures, Rgb};
 use crate::{Colours, Markdown, plan};
 use die_core::{
@@ -22,7 +23,7 @@ use die_core::{
     WindowId,
 };
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -175,24 +176,34 @@ pub(crate) enum Target {
     Heading(String),
 }
 
-/// A place the reader left, for `C-o`: on this page or on the one a link led from.
+/// A place the reader left, for `C-o`: on this page or on the one a link led from. The
+/// extension keeps them by file, so they outlive the page.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Mark {
     /// The file's buffer.
     pub file: BufferId,
-    /// The byte of the source the line at the window's top showed.
-    pub source: usize,
-    /// The window's top, from that line's.
-    pub offset: f32,
+    /// Where on its page.
+    pub place: Target,
+    /// The text's revision the place's bytes are counted in.
+    pub rev: u64,
 }
 
 impl Mark {
-    /// The place, as somewhere to go.
-    pub fn target(&self) -> Target {
-        Target::Place {
-            source: self.source,
-            offset: self.offset,
-        }
+    /// The place in the text as it is now: its bytes carried through the edits since.
+    pub fn now(&self, t: &TextBuf) -> Target {
+        carry(t, self.rev, self.place.clone())
+    }
+}
+
+/// A target whose bytes were counted at revision `since`, in the text as it is now.
+fn carry(t: &TextBuf, since: u64, to: Target) -> Target {
+    match to {
+        Target::Line(source) => Target::Line(carried(t, since, source)),
+        Target::Place { source, offset } => Target::Place {
+            source: carried(t, since, source),
+            offset,
+        },
+        to => to,
     }
 }
 
@@ -211,6 +222,14 @@ fn carried(t: &TextBuf, since: u64, pos: usize) -> usize {
     edits.fold(pos, through).min(t.len())
 }
 
+/// Where an anchor is on the page: the top of the heading whose slug it is, or None. The
+/// engine's `Page::anchor`, which knows a footnote's `fn-` and `fnref-` anchors too, takes this
+/// over when it arrives.
+fn anchor_y(page: &Page, name: &str) -> Option<f32> {
+    let slug = name.to_lowercase();
+    page.headings().iter().find(|h| h.slug == slug).map(|h| h.y)
+}
+
 // ------------------------------------------------------------------ one page
 
 /// A layout, and what it was made from.
@@ -220,6 +239,7 @@ struct Laid {
     scale: f32,
     palette: Palette,
     arrivals: u64,
+    opened: Vec<usize>,
 }
 
 /// One file's page.
@@ -231,26 +251,35 @@ pub(crate) struct State {
     /// The page's buffer's name, for the status line.
     pub title: String,
     kit: SharedKit,
-    /// What the latest `Resize` said: a cell in pixels, and the area in cells.
+    /// What the latest `Resize` said a cell is in pixels: the scale, and the wheel's unit.
     cell: CellPixels,
-    area: (usize, usize),
+    /// The windows showing the page, each with its area in physical pixels. The picture is as
+    /// wide as the widest and as tall as the tallest, so none of them shows stale rows.
+    areas: BTreeMap<WindowId, (u32, u32)>,
     laid: Option<Laid>,
     /// The text's revision the layout was made for, which the places kept count their bytes in.
     rev: u64,
     /// The page's row at the window's top, in physical pixels.
     top: i32,
+    /// The same before rounding. A new layout puts the kept place at a fraction of a pixel, and
+    /// the place is measured from here, so a round trip between two layouts comes back to the
+    /// pixel it left instead of creeping one each time.
+    exact: f32,
     /// What the wheel has asked for that isn't a whole pixel yet.
     carry: f32,
     /// Where to go once there's a layout, and the revision its bytes are counted in.
     wait: Option<(Target, u64)>,
-    /// The link the keyboard is on.
-    ring: Option<usize>,
+    /// The link the keyboard is on: its index into the page's links, and where it leads, which
+    /// finds it again in the next layout.
+    ring: Option<(usize, String)>,
     /// The link the pointer's button went down on.
     pressed: Option<usize>,
-    /// The places `C-o` goes back through, the newest last.
-    pub back: Vec<Mark>,
-    /// The places it came back from.
-    pub forward: Vec<Mark>,
+    /// Where to put the ring once there's a layout: the link that was ringed when the page was
+    /// put away.
+    pending: Option<String>,
+    /// The `<details>` the reader has opened, each by the byte offset the engine names it by,
+    /// in order.
+    opened: Vec<usize>,
     /// The windows the toggle showed the page in, where nothing has scrolled it since: the
     /// toggle back leaves their cursors alone.
     pub unmoved: Vec<WindowId>,
@@ -272,16 +301,17 @@ impl State {
             title: String::new(),
             kit,
             cell: CellPixels::default(),
-            area: (0, 0),
+            areas: BTreeMap::new(),
             laid: None,
             rev,
             top: 0,
+            exact: 0.0,
             carry: 0.0,
             wait: None,
             ring: None,
             pressed: None,
-            back: vec![],
-            forward: vec![],
+            pending: None,
+            opened: vec![],
             unmoved: vec![],
             producer: None,
             stale: false,
@@ -290,13 +320,12 @@ impl State {
         }
     }
 
-    /// The area in physical pixels, as the latest `Resize` had it.
+    /// The area the picture covers, in physical pixels: the widest and the tallest of the
+    /// windows showing the page, each way.
     pub fn area(&self) -> (u32, u32) {
-        let (cols, rows) = self.area;
-        (
-            cols as u32 * self.cell.width,
-            rows as u32 * self.cell.height,
-        )
+        let widest = self.areas.values().map(|a| a.0).max();
+        let tallest = self.areas.values().map(|a| a.1).max();
+        (widest.unwrap_or(0), tallest.unwrap_or(0))
     }
 
     /// Physical pixels to a CSS pixel. A host that hasn't said counts as 1.
@@ -324,12 +353,23 @@ impl State {
 
     /// The link the keyboard is on, as an index into the page's links.
     pub fn ring(&self) -> Option<usize> {
-        self.ring
+        self.ring.as_ref().map(|r| r.0)
     }
 
     /// The link the keyboard is on.
     pub fn ringed(&self) -> Option<&LinkBox> {
-        self.page()?.links().get(self.ring?)
+        self.page()?.links().get(self.ring()?)
+    }
+
+    /// Where the ringed link leads, with or without a layout to find it in.
+    pub fn ring_dest(&self) -> Option<String> {
+        let ringed = self.ring.as_ref().map(|r| r.1.clone());
+        ringed.or_else(|| self.pending.clone())
+    }
+
+    /// Ring the link that leads here, once there's a layout: the ring a page put away had.
+    pub fn ring_later(&mut self, dest: Option<String>) {
+        self.pending = dest;
     }
 
     /// The furthest the page scrolls: its last row at the window's bottom.
@@ -338,14 +378,33 @@ impl State {
         (height.ceil() as i32 - self.area().1 as i32).max(0)
     }
 
-    /// Where the reader is, while there's a layout to say.
-    pub fn mark(&self) -> Option<Mark> {
+    /// Where the reader is on the layout: the very top as the top, which stays the top whatever
+    /// a new layout puts over the first line; anywhere else the line at the window's top and how
+    /// far under its top the window's is.
+    fn place(&self) -> Option<Target> {
         let page = self.page()?;
-        let source = page.source_at(self.top as f32);
+        if self.top == 0 {
+            return Some(Target::Top);
+        }
+        let source = page.source_at(self.exact);
+        Some(Target::Place {
+            source,
+            offset: self.exact - page.y_of(source),
+        })
+    }
+
+    /// Where the reader is, for `C-o`: on the layout, or where the page is going once it has
+    /// one.
+    pub fn mark(&self) -> Option<Mark> {
+        let (place, rev) = match (self.place(), &self.wait) {
+            (Some(place), _) => (place, self.rev),
+            (None, Some((to, rev))) => (to.clone(), *rev),
+            (None, None) => return None,
+        };
         Some(Mark {
             file: self.file,
-            source,
-            offset: self.top as f32 - page.y_of(source),
+            place,
+            rev,
         })
     }
 
@@ -367,11 +426,10 @@ impl State {
             Target::Top => 0.0,
             Target::Line(source) if page.source_at(0.0) >= *source => 0.0,
             Target::Line(source) => whole(page.y_of(*source)),
-            Target::Place { source, offset } => whole(page.y_of(*source) + offset),
+            Target::Place { source, offset } => page.y_of(*source) + offset,
             Target::Heading(anchor) => {
-                let slug = anchor.to_lowercase();
-                let found = page.headings().iter().find(|h| h.slug == slug);
-                found.ok_or_else(|| format!("No heading #{anchor}"))?.y - GAP * self.scale()
+                let y = anchor_y(page, anchor).ok_or_else(|| format!("No heading #{anchor}"))?;
+                y - GAP * self.scale()
             }
         })
     }
@@ -391,17 +449,13 @@ impl State {
         }
     }
 
-    /// Go to the heading an anchor names, keeping the place left, or say there's none.
+    /// Go to the heading an anchor names, or say there's none.
     pub fn anchor(&mut self, anchor: &str) -> Result {
         let page = self
             .page()
             .ok_or_else(|| Error::Msg("No page yet".into()))?;
         let top = self.aim(page, &Target::Heading(anchor.into()));
-        let top = top.map_err(Error::Msg)?;
-        let here = self.mark();
-        self.back.extend(here);
-        self.forward.clear();
-        self.scroll_to(top);
+        self.scroll_to(top.map_err(Error::Msg)?);
         Ok(())
     }
 
@@ -412,9 +466,17 @@ impl State {
         if top == self.top {
             return false;
         }
-        (self.top, self.stale) = (top, true);
+        (self.top, self.exact, self.stale) = (top, top as f32, true);
         self.unmoved.clear();
         true
+    }
+
+    /// The page's end doesn't come up past the window's bottom: a taller window, a shorter page.
+    fn hold(&mut self) {
+        let limit = self.limit();
+        if self.top > limit {
+            (self.top, self.exact, self.stale) = (limit, limit as f32, true);
+        }
     }
 
     /// `j` and `k`: so many steps down, or up if it's negative.
@@ -460,7 +522,7 @@ impl State {
 
     /// `<Tab>` and `<S-Tab>`: ring the `count`th link on, or back, and scroll it into view. With
     /// none ringed in view it starts from the first one the window shows, or the last, going
-    /// back; past the last link is the first.
+    /// back; past the last link is the first, so a count is taken round the links, not walked.
     pub fn link(&mut self, forward: bool, count: usize) -> Result {
         let Some(page) = self.page() else {
             return Ok(());
@@ -473,25 +535,31 @@ impl State {
         let (top, bottom) = (self.top as f32, self.top as f32 + height);
         let first = |l: &LinkBox| l.rects.first().copied();
         let seen = |l: &LinkBox| first(l).is_some_and(|r| r.y + r.h > top && r.y < bottom);
+        let under = |l: &LinkBox| first(l).is_some_and(|r| r.y + r.h > top);
+        let over = |l: &LinkBox| first(l).is_some_and(|r| r.y < bottom);
         let n = links.len();
-        let mut at = self.ring.filter(|i| links.get(*i).is_some_and(seen));
-        for _ in 0..count {
-            let under = |l: &LinkBox| first(l).is_some_and(|r| r.y + r.h > top);
-            let over = |l: &LinkBox| first(l).is_some_and(|r| r.y < bottom);
-            at = Some(match at {
-                Some(i) if forward => (i + 1) % n,
-                Some(i) => (i + n - 1) % n,
-                None if forward => links.iter().position(under).unwrap_or(0),
-                None => links.iter().rposition(over).unwrap_or(n - 1),
-            });
-        }
+        let from = self.ring().filter(|i| links.get(*i).is_some_and(seen));
+        // From a ringed link every step is a move; from none the first step picks where to
+        // start, and the rest move.
+        let (start, steps) = match (from, forward) {
+            (Some(i), _) => (i, count.max(1)),
+            (None, true) => (links.iter().position(under).unwrap_or(0), count.max(1) - 1),
+            (None, false) => (
+                links.iter().rposition(over).unwrap_or(n - 1),
+                count.max(1) - 1,
+            ),
+        };
+        let at = match forward {
+            true => (start + steps % n) % n,
+            false => (start + n - steps % n) % n,
+        };
         let gap = GAP * self.scale();
-        let to = at.and_then(|i| first(&links[i])).and_then(|r| match r {
+        let to = first(&links[at]).and_then(|r| match r {
             r if r.y < top => Some(r.y - gap),
             r if r.y + r.h > bottom => Some(r.y + r.h + gap - height),
             _ => None,
         });
-        (self.ring, self.stale) = (at, true);
+        (self.ring, self.stale) = (Some((at, links[at].dest.clone())), true);
         if let Some(to) = to {
             self.scroll_to(to);
         }
@@ -502,6 +570,17 @@ impl State {
     pub fn unring(&mut self) {
         if self.ring.take().is_some() {
             self.stale = true;
+        }
+    }
+
+    /// A `<details>` was followed: open if it was closed, closed if it was open. The next
+    /// refresh lays the page out again with the place kept.
+    pub fn toggle_details(&mut self, offset: usize) {
+        match self.opened.binary_search(&offset) {
+            Ok(i) => {
+                self.opened.remove(i);
+            }
+            Err(i) => self.opened.insert(i, offset),
         }
     }
 
@@ -523,11 +602,12 @@ impl State {
     // -------------------------------------------------------------- layout and paint
 
     /// Bring the picture up to date: lay out again if the text, the width, the scale, the
-    /// colours or the pictures have changed since the layout was made, and paint if anything is
-    /// owed. There's no theme hook, so the colours are read and compared each time. A page no
-    /// window shows has no pixel buffer, and nothing is done for it.
+    /// colours, the pictures or the opened details have changed since the layout was made, and
+    /// paint if anything is owed. There's no theme hook, so the colours are read and compared
+    /// each time. A page no window shows has no area and no pixel buffer, and nothing is done
+    /// for it.
     pub fn refresh(&mut self, ctx: &mut Ctx) {
-        if self.producer.is_none() {
+        if self.producer.is_none() || self.areas.is_empty() {
             return;
         }
         let (width, scale) = (self.area().0, self.scale());
@@ -539,7 +619,9 @@ impl State {
             return;
         };
         let current = |l: &Laid| {
-            (l.width, l.scale, l.arrivals) == (width, scale, arrivals) && l.palette == palette
+            (l.width, l.scale, l.arrivals) == (width, scale, arrivals)
+                && l.palette == palette
+                && l.opened == self.opened
         };
         if rev != self.rev || !self.laid.as_ref().is_some_and(current) {
             self.lay_out(ctx, palette);
@@ -554,7 +636,6 @@ impl State {
     fn lay_out(&mut self, ctx: &mut Ctx, palette: Palette) {
         let (width, scale) = (self.area().0, self.scale());
         let dir = ctx.directory(self.file).map(Path::to_path_buf);
-        let ringed = self.ringed().map(|l| l.dest.clone());
         let kit = self.kit.clone();
         let mut kit = kit.borrow_mut();
         let Kit {
@@ -569,25 +650,21 @@ impl State {
             return;
         };
         let Ok(t) = ctx.text(self.file) else { return };
-        // The places kept count bytes of the text the last layout was made for.
+        // The place kept counts bytes of the text the last layout was made for, and its offset
+        // is in that layout's pixels.
         let was = self.rev;
         let keep = match self.wait.take() {
-            Some((Target::Line(source), since)) => Some(Target::Line(carried(t, since, source))),
-            Some((Target::Place { source, offset }, since)) => Some(Target::Place {
-                source: carried(t, since, source),
-                offset,
-            }),
-            Some((to, _)) => Some(to),
-            None => self.mark().map(|m| Target::Place {
-                source: carried(t, was, m.source),
-                offset: m.offset * scale / self.laid.as_ref().map_or(scale, |l| l.scale),
+            Some((to, since)) => Some(carry(t, since, to)),
+            None => self.place().map(|to| match carry(t, was, to) {
+                Target::Place { source, offset } => Target::Place {
+                    source,
+                    offset: offset * scale / self.laid.as_ref().map_or(scale, |l| l.scale),
+                },
+                to => to,
             }),
         };
-        let own = self.file;
-        let marks = self.back.iter_mut().chain(&mut self.forward);
-        for m in marks.filter(|m| m.file == own) {
-            m.source = carried(t, was, m.source);
-        }
+        // The one place a layout is asked for. The engine's `opened: &self.opened` goes here
+        // when it arrives.
         let env = Env {
             width,
             scale,
@@ -612,18 +689,27 @@ impl State {
             }
             None => 0.0,
         };
-        // The same link stays ringed if it's still where it was among the links.
-        let still = |i: &usize| page.links().get(*i).map(|l| &l.dest) == ringed.as_ref();
-        self.ring = self.ring.filter(still);
+        // The same link stays ringed: where it was among the links if it still leads there,
+        // or wherever it has moved to; and a page brought back rings the link it had.
+        let ringed = self.ring.take().map(|(i, dest)| (Some(i), dest));
+        let ringed = ringed.or_else(|| self.pending.take().map(|dest| (None, dest)));
+        self.ring = ringed.and_then(|(i, dest)| {
+            let links = page.links();
+            let same = |l: &LinkBox| l.dest == dest;
+            let kept = i.filter(|i| links.get(*i).is_some_and(same));
+            Some((kept.or_else(|| links.iter().position(same))?, dest))
+        });
         self.laid = Some(Laid {
             page,
             width,
             scale,
             palette,
             arrivals,
+            opened: self.opened.clone(),
         });
         self.rev = rev;
-        self.top = (top.round() as i32).clamp(0, self.limit());
+        self.exact = top.clamp(0.0, self.limit() as f32);
+        self.top = self.exact.round() as i32;
         self.stale = true;
         if !wanted.is_empty() {
             let work = move || -> Read {
@@ -640,14 +726,19 @@ impl State {
         }
     }
 
-    /// Paint the part of the page the window shows, and present the area. The buffer may be
+    /// Paint the part of the page the windows show, and present the area. The buffer may be
     /// larger than the area, having grown for a wider window once, and the rest of it is out of
     /// sight.
     fn paint(&mut self) {
         let (width, height) = self.area();
-        let (top, marks) = (self.top, Marks { focus: self.ring });
+        let top = self.top;
         let (Some(laid), Some(producer)) = (&self.laid, &mut self.producer) else {
             return;
+        };
+        // An index the layout hasn't got never reaches the typesetter.
+        let focus = self.ring.as_ref().map(|r| r.0);
+        let marks = Marks {
+            focus: focus.filter(|i| *i < laid.page.links().len()),
         };
         let mut kit = self.kit.borrow_mut();
         let Kit {
@@ -666,35 +757,49 @@ impl State {
         self.stale = false;
     }
 
-    /// No window shows the page any more: its pixel buffer and its layout go, and its place
-    /// stays, for the `Resize` that comes when a window shows it again.
-    pub fn rest(&mut self) {
-        if self.producer.is_none() && self.laid.is_none() {
-            return;
-        }
-        if let Some(m) = self.mark() {
-            self.wait = Some((m.target(), self.rev));
-        }
-        (self.laid, self.producer) = (None, None);
-        (self.stale, self.refused, self.pressed) = (false, false, None);
-    }
-
     // -------------------------------------------------------------- events
+
+    /// The windows that have left the page are forgotten: the picture is for those that show
+    /// it, and a page none shows is about to go.
+    pub fn prune(&mut self, ctx: &Ctx) {
+        let was = self.area();
+        self.areas.retain(|w, _| ctx.window_buffer(*w) == self.buf);
+        if self.area() != was {
+            self.stale = true;
+            self.hold();
+        }
+    }
 
     /// A window showing the page has an area this size. The pixel buffer is made the first time
     /// the cells have a size in pixels, and grown when the area outgrows it.
-    fn resized(&mut self, ctx: &mut Ctx, cols: usize, rows: usize, cell: CellPixels) {
+    fn resized(
+        &mut self,
+        ctx: &mut Ctx,
+        window: WindowId,
+        cols: usize,
+        rows: usize,
+        cell: CellPixels,
+    ) {
         let (width, height) = (cols as u32 * cell.width, rows as u32 * cell.height);
         // The host hasn't said what a cell is yet, and its next `Resize` will; or it shows no
         // pixels, and the view in place is on its way.
         if width == 0 || height == 0 || self.leaving {
             return;
         }
+        let was = (self.cell, self.area());
+        self.prune(ctx);
+        if ctx.window_buffer(window) == self.buf {
+            self.areas.insert(window, (width, height));
+        }
+        let (width, height) = self.area();
+        if width == 0 || height == 0 {
+            return;
+        }
         // A taller area shows rows of the buffer that were last painted for another place, and
         // the page's end may have come up past the window's bottom.
-        self.stale |= (self.cell, self.area) != (cell, (cols, rows));
-        (self.cell, self.area) = (cell, (cols, rows));
-        self.top = self.top.min(self.limit());
+        self.cell = cell;
+        self.stale |= was != (cell, (width, height));
+        self.hold();
         let Some(producer) = &mut self.producer else {
             // A page a restart remade was made on your option alone, before the host could say
             // whether it shows pixels: this is where it says, and where the fonts are read.
@@ -734,9 +839,10 @@ impl State {
         match p.kind {
             PointerKind::Scroll { dy, .. } if dy.is_finite() => {
                 // In cells, and a trackpad's are fractions of one: what isn't a whole pixel
-                // waits for the next.
+                // waits for the next. A delta past any number goes to the end and carries
+                // nothing, since infinity has no fraction.
                 let by = dy * self.cell.height as f32 + self.carry;
-                self.carry = by.fract();
+                self.carry = if by.is_finite() { by.fract() } else { 0.0 };
                 self.scroll_to(self.top as f32 + by.trunc());
             }
             PointerKind::Press(Button::Left) => {
@@ -751,7 +857,8 @@ impl State {
                 if over.is_none() || over != pressed {
                     return;
                 }
-                (self.ring, self.stale) = (over, true);
+                let dest = over.and_then(|i| self.page()?.links().get(i).map(|l| l.dest.clone()));
+                (self.ring, self.stale) = (over.zip(dest), true);
                 // From the top of the loop: where it leads may put another buffer in this
                 // window, and this surface is checked out until the event is over.
                 let args = Args {
@@ -805,16 +912,24 @@ impl Surface for PageSurface {
         Some(self.state.borrow().status())
     }
 
-    /// A size, the wheel and a click. Keys are the keymap's: one it doesn't bind is undefined
-    /// here, as on any surface.
+    /// A size, the focus, the wheel and a click. Keys are the keymap's: one it doesn't bind is
+    /// undefined here, as on any surface.
     fn event(&mut self, ev: &Event, ctx: &mut Ctx) -> bool {
         let mut st = self.state.borrow_mut();
         let taken = match ev {
             Event::Resize {
-                cols, rows, cell, ..
+                window,
+                cols,
+                rows,
+                cell,
             } => {
-                st.resized(ctx, *cols, *rows, *cell);
+                st.resized(ctx, *window, *cols, *rows, *cell);
                 true
+            }
+            // A window may have left the page for another buffer, which sends no `Resize`.
+            Event::Focus(_) => {
+                st.prune(ctx);
+                false
             }
             Event::Pointer(p) => {
                 st.pointer(ctx, p);
