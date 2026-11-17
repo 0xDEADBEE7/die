@@ -164,8 +164,8 @@ impl DialDraw<'_> {
             width: w,
             height: h,
         };
-        // Over the chip too: pushing straight out from a tool runs the pointer through its
-        // chip, and the needle and its dot mustn't hide there.
+        // Over the chip too: the pointer may go through it, and the needle and its dot
+        // mustn't hide there.
         target.dial_live(d, self.layout, map, self.colours);
         let drawn = parts.iter().fold(at, |a, p| a.union(*p));
         let present = old.iter().fold(drawn, |a, p| a.union(*p));
@@ -349,7 +349,7 @@ impl Pixels {
                 r
             } else if let Some(Thing::Dial(d)) = &thing {
                 let origin = scene.view.to_board(0.0, 0.0, self.cell.scale);
-                let layout = d.layout(origin, scene.area);
+                let layout = d.layout(origin, scene.area, false);
                 let colours = DialColours {
                     look: &scene.dial_look,
                     inks: &look.inks,
@@ -658,7 +658,8 @@ impl Renderer for Pixels {
 
     /// The pixels, then the labels as cells over them, a selected one in reverse video, and the
     /// dial's text over those: its names, the hovered one a chip, stage two's labels and the
-    /// readout. A label under the dial's scrim is dimmed with the ink there.
+    /// readout. A label under the dial's scrim is dimmed with the ink there, the whole of it,
+    /// so none is cut mid-word.
     fn render(&mut self, frame: &mut Frame, scene: &Scene<'_>, _: &RenderInfo) {
         self.sync(scene);
         frame.clear();
@@ -670,7 +671,7 @@ impl Renderer for Pixels {
         };
         let origin = scene.view.to_board(0.0, 0.0, self.cell.scale);
         let dial = scene.dial.map(|d| {
-            let layout = d.layout(origin, scene.area);
+            let layout = d.layout(origin, scene.area, false);
             (d, layout)
         });
         // Whether the cell at (row, col) is under the dial's scrim, well inside its fade.
@@ -692,7 +693,11 @@ impl Renderer for Pixels {
             let (c0, r0) = ((x / cw).floor() as i64, (y / ch).floor() as i64);
             let fg = scene.inks[usize::from(el.ink.clamp(1, 6)) - 1];
             let reverse = scene.selection.contains(&el.id);
-            for (i, line) in label_lines(text).iter().enumerate() {
+            let lines = label_lines(text);
+            let faint = lines.iter().enumerate().any(|(i, line)| {
+                (0..line.chars().count()).any(|j| under(r0 + i as i64, c0 + j as i64))
+            });
+            for (i, line) in lines.iter().enumerate() {
                 let row = r0 + i as i64;
                 if row < 0 {
                     continue;
@@ -704,7 +709,7 @@ impl Renderer for Pixels {
                     }
                     let mut cell = FrameCell::new(Glyph::Char(ch), fg, Color::Default);
                     cell.reverse = reverse;
-                    cell.faint = under(row, col);
+                    cell.faint = faint;
                     frame.put(row as usize, col as usize, cell);
                 }
             }

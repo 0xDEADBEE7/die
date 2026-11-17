@@ -487,14 +487,15 @@ impl BoardState {
 
     /// Close the dial, arming the tool of the sector under the pointer (`p`, or where it was
     /// last seen) as its key would: the pen, select, a one-shot shape or label, or the eraser
-    /// on or off; in stage two, the ink and width under the pointer too, as `1`..`6` and `[`
-    /// `]` would. In the dead zone, nothing changes. False with none open.
+    /// on or off; past stage two's first band, the ink and width under the pointer too, as
+    /// `1`..`6` and `[` `]` would. The release doesn't open stage two, so a flick let go where
+    /// it landed is stage one's. In the dead zone, nothing changes. False with none open.
     pub fn pick_dial(&mut self, p: Option<Point>, now: Duration) -> bool {
         let Some(mut dial) = self.dial.take() else {
             return false;
         };
         if let Some(p) = p.or_else(|| self.pointer_board()) {
-            dial.hover(p);
+            dial.settle(p);
         }
         match (dial.tool(), dial.stage) {
             (Some(tool), Stage::Ink { ink, width }) => {
