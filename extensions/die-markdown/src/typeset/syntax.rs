@@ -6,9 +6,9 @@
 //! as nothing known here, is drawn plain, as GitHub draws it.
 //!
 //! It reads a block a line at a time, carrying what's open (a block comment, a string, a tag, a
-//! heredoc) from one line to the next. It never goes back, and never looks further ahead than
-//! the end of the line it's on, and no look ahead covers bytes a later one covers again: its
-//! time is the text's length. Nothing it's given makes it panic.
+//! heredoc, JSX) from one line to the next. It never goes back, and never looks further ahead
+//! than the end of the line it's on, and no more than a fixed few look aheads cover the same
+//! bytes: its time is the text's length. Nothing it's given makes it panic.
 
 use super::{Rgb, Syntax};
 
@@ -70,6 +70,8 @@ pub(super) struct Highlighter {
     depth: u32,
     stmt: bool,
     sel: bool,
+    /// JSX: what's open where a tag is, innermost last.
+    jsx: Vec<Jsx>,
 }
 
 /// What a language's table can start with, worked out once a block, so that most bytes and
@@ -106,6 +108,7 @@ impl Glance {
             (lang.chars, b'\''),
             (lang.regex, b'/'),
             (lang.symbols, b':'),
+            (lang.heredocs || lang.jsx, b'<'),
         ];
         for (on, c) in flags {
             if on {
@@ -174,6 +177,17 @@ enum Open {
     Fence(u8, u32),
 }
 
+/// What's open in JSX.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Jsx {
+    /// An element's children: text, tags and `{…}`.
+    Text,
+    /// A tag's attributes, to its `>`; a closing tag's if `close`.
+    Tag { close: bool },
+    /// Code in `{…}`, with this many braces of its own open.
+    Code(u32),
+}
+
 impl Highlighter {
     /// The highlighter for a fence's info string, or none for a language not known here.
     pub(super) fn new(info: &str) -> Option<Highlighter> {
@@ -187,6 +201,7 @@ impl Highlighter {
             depth: 0,
             stmt: true,
             sel: true,
+            jsx: Vec::new(),
         })
     }
 
@@ -206,8 +221,14 @@ impl Highlighter {
         match self.lang.kind {
             Kind::Code | Kind::Shell | Kind::Json | Kind::Conf => self.code(b, 0, &mut out),
             Kind::Console => self.console(b, &mut out),
-            Kind::Make => self.make(b, &mut out),
-            Kind::Docker => self.docker(b, &mut out),
+            Kind::Make => {
+                self.make(b, &mut out);
+                self.line_ends(b);
+            }
+            Kind::Docker => {
+                self.docker(b, &mut out);
+                self.line_ends(b);
+            }
             Kind::Yaml => self.yaml(b, &mut out),
             Kind::Lisp => self.lisp(b, &mut out),
             Kind::Markup => self.markup(b, &mut out),
@@ -232,11 +253,54 @@ impl Highlighter {
         let lead = skip_space(b, 0);
         // A shell word here would be a command's name.
         let mut command = true;
+        // A shell's parentheses open, and how many were when `((` opened arithmetic, plus one.
+        let (mut parens, mut arith) = (0u32, 0u32);
         while i < b.len() {
+            match self.jsx.last_mut() {
+                Some(Jsx::Text) => {
+                    i = self.jsx_text(b, i, out);
+                    operand = self.jsx.is_empty();
+                    continue;
+                }
+                Some(Jsx::Tag { .. }) => {
+                    i = self.jsx_tag(b, i, out);
+                    operand = self.jsx.is_empty();
+                    continue;
+                }
+                Some(Jsx::Code(depth)) if matches!(b[i], b'{' | b'}') => {
+                    if b[i] == b'{' {
+                        *depth += 1;
+                    } else if *depth > 0 {
+                        *depth -= 1;
+                    } else {
+                        self.jsx.pop();
+                        i += 1;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
             let c = b[i];
             if is_space(c) {
                 i += 1;
                 continue;
+            }
+            if shell {
+                match c {
+                    b'(' => {
+                        if arith == 0 && b.get(i + 1) == Some(&b'(') {
+                            arith = parens + 1;
+                        }
+                        parens = parens.saturating_add(1);
+                    }
+                    b')' => {
+                        parens = parens.saturating_sub(1);
+                        if parens < arith {
+                            arith = 0;
+                        }
+                    }
+                    _ => {}
+                }
             }
             if key {
                 key = false;
@@ -252,7 +316,10 @@ impl Highlighter {
             if !wordy {
                 pending = None;
             }
-            if shell && let Some(end) = self.shell_token(b, i, out, &mut pending, &mut command) {
+            if shell
+                && let Some(end) =
+                    self.shell_token(b, i, arith > 0, out, &mut pending, &mut command)
+            {
                 i = end;
                 continue;
             }
@@ -347,6 +414,22 @@ impl Highlighter {
                         }
                     }
                 }
+                continue;
+            }
+            if c == b'<'
+                && lang.heredocs
+                && let Some(end) = self.ruby_heredoc(b, i)
+            {
+                i = end;
+                operand = true;
+                continue;
+            }
+            if c == b'<'
+                && lang.jsx
+                && !operand
+                && let Some(end) = self.jsx_open(b, i, out)
+            {
+                i = end;
                 continue;
             }
             if let Some(which) = quote_at(lang, b, i) {
@@ -696,15 +779,24 @@ impl Highlighter {
                 },
                 _ => None,
             },
+            // PostgreSQL's E'…' takes a backslash's escapes.
+            Prefixes::Sql => {
+                if !matches!(w, b"E" | b"e") || b.get(j) != Some(&b'\'') {
+                    return None;
+                }
+                let which = self.lang.quotes.iter().position(|q| q.open == "E'")?;
+                Some(self.string(b, i, j + 1, which as u8, false, out))
+            }
             Prefixes::Python | Prefixes::C => {
                 if !matches!(b.get(j), Some(b'"' | b'\'')) || w.len() > 3 {
                     return None;
                 }
                 let low = w.to_ascii_lowercase();
                 let raw = match self.lang.prefixes {
+                    // A raw string keeps its backslashes, but one still keeps a quote from
+                    // closing it: it's read as any string is.
                     Prefixes::Python => match low.as_slice() {
-                        b"r" | b"br" | b"rb" | b"fr" | b"rf" => true,
-                        b"u" | b"b" | b"f" => false,
+                        b"r" | b"br" | b"rb" | b"fr" | b"rf" | b"u" | b"b" | b"f" => false,
                         _ => return None,
                     },
                     _ => match w {
@@ -760,11 +852,12 @@ impl Highlighter {
     // ------------------------------------------------------------ shells and the files like them
 
     /// A shell's own token at `i`: where it ends, or none for what any code has (a quote, a
-    /// mark).
+    /// mark). In `arith`metic, `<<` shifts.
     fn shell_token(
         &mut self,
         b: &[u8],
         i: usize,
+        arith: bool,
         out: &mut Out,
         pending: &mut Option<Role>,
         command: &mut bool,
@@ -786,7 +879,7 @@ impl Highlighter {
                 }
                 Some(end)
             }
-            b'<' if at(b, i, "<<") && !at(b, i, "<<<") => {
+            b'<' if at(b, i, "<<") && !at(b, i, "<<<") && !arith => {
                 *command = false;
                 Some(self.heredoc_start(b, i))
             }
@@ -826,8 +919,8 @@ impl Highlighter {
         }
     }
 
-    /// `<<WORD`, `<<-'WORD'` and the like at `i`: the lines after this one are a heredoc's body,
-    /// up to WORD's own line. Where the token ends.
+    /// `<<WORD`, `<<-'WORD'`, `<<\WORD` and the like at `i`: the lines after this one are a
+    /// heredoc's body, up to WORD's own line. Where the token ends.
     fn heredoc_start(&mut self, b: &[u8], i: usize) -> usize {
         let mut j = i + 2;
         if matches!(b.get(j), Some(b'-' | b'~')) {
@@ -835,7 +928,7 @@ impl Highlighter {
         }
         j = skip_space(b, j);
         let quote = b.get(j).copied().filter(|&c| c == b'\'' || c == b'"');
-        if quote.is_some() {
+        if quote.is_some() || b.get(j) == Some(&b'\\') {
             j += 1;
         }
         let w0 = j;
@@ -851,6 +944,139 @@ impl Highlighter {
         self.heredoc = b[w0..j].to_vec();
         if quote.is_some() && b.get(j).copied() == quote {
             j += 1;
+        }
+        j
+    }
+
+    /// Ruby's `<<~WORD`, `<<-WORD`, `<<WORD` and their quoted words at `i`: where the token
+    /// ends, with the word kept for the line that ends the body; none for a `<<` that appends
+    /// or shifts, with a space or a number after it, or a lowercase word with no `~` or `-`.
+    fn ruby_heredoc(&mut self, b: &[u8], i: usize) -> Option<usize> {
+        if !at(b, i, "<<") {
+            return None;
+        }
+        let mut j = i + 2;
+        let marked = matches!(b.get(j), Some(b'~' | b'-'));
+        j += usize::from(marked);
+        let quote = b
+            .get(j)
+            .copied()
+            .filter(|&c| matches!(c, b'\'' | b'"' | b'`'));
+        j += usize::from(quote.is_some());
+        let w0 = j;
+        while b
+            .get(j)
+            .is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_')
+        {
+            j += 1;
+        }
+        let first = *b.get(w0).filter(|_| j > w0)?;
+        if first.is_ascii_digit() || !(marked || quote.is_some() || first.is_ascii_uppercase()) {
+            return None;
+        }
+        let word = w0..j;
+        if let Some(q) = quote {
+            j += usize::from(b.get(j) == Some(&q));
+        }
+        self.heredoc = b[word].to_vec();
+        Some(j)
+    }
+
+    /// A JSX element's start at the `<` at `i`, where an operand goes: its tag's name, or the
+    /// `<>` of a fragment. None for what's no tag, as a generic function's `<T,>`.
+    fn jsx_open(&mut self, b: &[u8], i: usize, out: &mut Out) -> Option<usize> {
+        match *b.get(i + 1)? {
+            b'>' => {
+                self.jsx.push(Jsx::Text);
+                Some(i + 2)
+            }
+            c if c.is_ascii_alphabetic() => {
+                let end = jsx_name(b, i + 1);
+                let k = skip_space(b, end);
+                if b.get(k) == Some(&b',') || at(b, k, "extends ") {
+                    return None;
+                }
+                out.span(i + 1, end, Role::Tag);
+                self.jsx.push(Jsx::Tag { close: false });
+                Some(end)
+            }
+            _ => None,
+        }
+    }
+
+    /// An element's text from `i`, plain, to a tag, a `{` or the line's end: where it stops.
+    fn jsx_text(&mut self, b: &[u8], i: usize, out: &mut Out) -> usize {
+        let mut j = i;
+        while j < b.len() {
+            match (b[j], b.get(j + 1).copied()) {
+                (b'{', _) => {
+                    self.jsx.push(Jsx::Code(0));
+                    return j + 1;
+                }
+                // A closing tag ends the element this is the text of.
+                (b'<', Some(b'/')) => {
+                    self.jsx.pop();
+                    if b.get(j + 2) == Some(&b'>') {
+                        return j + 3;
+                    }
+                    let end = jsx_name(b, j + 2);
+                    out.span(j + 2, end, Role::Tag);
+                    self.jsx.push(Jsx::Tag { close: true });
+                    return end;
+                }
+                (b'<', Some(b'>')) => {
+                    self.jsx.push(Jsx::Text);
+                    return j + 2;
+                }
+                (b'<', Some(c)) if c.is_ascii_alphabetic() => {
+                    let end = jsx_name(b, j + 1);
+                    out.span(j + 1, end, Role::Tag);
+                    self.jsx.push(Jsx::Tag { close: false });
+                    return end;
+                }
+                _ => j += 1,
+            }
+        }
+        j
+    }
+
+    /// A tag's attributes from `i`, to its `>`, a `{` or the line's end: where it stops.
+    fn jsx_tag(&mut self, b: &[u8], i: usize, out: &mut Out) -> usize {
+        let close = self.jsx.last() == Some(&Jsx::Tag { close: true });
+        let mut j = i;
+        while j < b.len() {
+            let c = b[j];
+            match c {
+                b'>' => {
+                    self.jsx.pop();
+                    if !close {
+                        self.jsx.push(Jsx::Text);
+                    }
+                    return j + 1;
+                }
+                b'/' if b.get(j + 1) == Some(&b'>') => {
+                    self.jsx.pop();
+                    return j + 2;
+                }
+                b'{' => {
+                    self.jsx.push(Jsx::Code(0));
+                    return j + 1;
+                }
+                b'"' | b'\'' => {
+                    let end = b[j + 1..]
+                        .iter()
+                        .position(|&d| d == c)
+                        .map_or(b.len(), |p| j + p + 2);
+                    out.span(j, end, Role::String);
+                    j = end;
+                }
+                _ if c.is_ascii_alphabetic() || c == b'_' => {
+                    let end = jsx_name(b, j);
+                    out.span(j, end, Role::Attr);
+                    j = end;
+                }
+                _ => j += 1,
+            }
         }
         j
     }
@@ -914,8 +1140,10 @@ impl Highlighter {
             }
             end
         };
+        // What's after is text, not the shell's, but for a rule's recipe after a `;`.
         if b[k] == b'=' || at(b, k, ":=") || at(b, k, "::=") {
             out.span(i, trim(k), Role::Variable);
+            make_text(b, k + 1, false, out);
         } else {
             let role = if b[i] == b'.' {
                 Role::Keyword
@@ -923,8 +1151,18 @@ impl Highlighter {
                 Role::Function
             };
             out.span(i, trim(k), role);
+            if let Some(semi) = make_text(b, k + 1, true, out) {
+                self.code(b, semi + 1, out);
+            }
         }
-        self.code(b, k + 1, out);
+    }
+
+    /// A Makefile's line, or a Dockerfile's, is a command of its own unless a `\` goes on with
+    /// it: a quote it leaves open closes at its end.
+    fn line_ends(&mut self, b: &[u8]) {
+        if matches!(self.open, Open::Str { .. }) && !b.trim_ascii_end().ends_with(b"\\") {
+            self.open = Open::Nothing;
+        }
     }
 
     /// A Dockerfile: an instruction, then its arguments in the shell's colours.
@@ -939,6 +1177,10 @@ impl Highlighter {
         }
         if j > i && has(DOCKER_INSTRUCTIONS, &b[i..j], true) {
             out.span(i, j, Role::Keyword);
+            // A maintainer is a name, in no shell's quotes.
+            if b[i..j].eq_ignore_ascii_case(b"maintainer") {
+                return;
+            }
             return self.code(b, j, out);
         }
         self.code(b, i, out);
@@ -1478,20 +1720,22 @@ impl Highlighter {
             i = ind + marker;
         }
         // A code span, a link; each look ahead that finds nothing ends the looking for that
-        // kind on the line, as nothing after would be found either.
-        let (mut ticks, mut brackets) = (true, true);
+        // kind on the line, as nothing after would be found either: for a code span, for that
+        // many backticks, those of 63 or more counted as one length.
+        let (mut unmatched, mut brackets) = (0u64, true);
         while i < b.len() {
             match b[i] {
                 b'\\' => i += 2,
-                b'`' if ticks => {
+                b'`' => {
                     let n = b[i..].iter().take_while(|&&c| c == b'`').count();
-                    match tick_run(b, i + n, n) {
-                        Some(end) => {
+                    let bit = 1u64 << n.min(63);
+                    match ((unmatched & bit) == 0).then(|| tick_run(b, i + n, n)) {
+                        Some(Some(end)) => {
                             out.span(i, end, Role::String);
                             i = end;
                         }
-                        None => {
-                            ticks = false;
+                        _ => {
+                            unmatched |= bit;
                             i += n;
                         }
                     }
@@ -1842,9 +2086,58 @@ fn directive(b: &[u8], i: usize, out: &mut Out) -> usize {
     j
 }
 
-/// Whether the CSS statement from `i` is a nested rule's selector: a `{` comes before its end.
+/// Whether the CSS statement from `i` is a nested rule's selector: a `{` comes before its end;
+/// or, where nothing on the line ends it, it doesn't start as a declaration does, with a
+/// property's name and a colon, as a selector list over lines doesn't.
 fn nested(b: &[u8], i: usize) -> bool {
-    b[i..].iter().find(|&&c| matches!(c, b'{' | b';' | b'}')) == Some(&b'{')
+    match b[i..].iter().find(|&&c| matches!(c, b'{' | b';' | b'}')) {
+        Some(&c) => c == b'{',
+        None => {
+            let mut j = i;
+            while b
+                .get(j)
+                .is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            {
+                j += 1;
+            }
+            let k = skip_space(b, j);
+            let colon = b.get(k) == Some(&b':') && b.get(k + 1).is_none_or(|&c| is_space(c));
+            !(j > i && colon)
+        }
+    }
+}
+
+/// A Makefile's value or a rule's prerequisites from `i`: text, with its variables and its
+/// comment; in a `rule`, to a `;`, where the recipe starts, if one does.
+fn make_text(b: &[u8], mut i: usize, rule: bool, out: &mut Out) -> Option<usize> {
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'#' => {
+                out.span(i, b.len(), Role::Comment);
+                return None;
+            }
+            b';' if rule => return Some(i),
+            b'$' => {
+                let end = shell_var(b, i, true).unwrap_or(i + 1);
+                out.span(i, end, Role::Variable);
+                i = end;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Where a JSX name from `i` ends: a tag's, `Foo.Bar`, `svg:rect`, an attribute's.
+fn jsx_name(b: &[u8], mut i: usize) -> usize {
+    while b
+        .get(i)
+        .is_some_and(|&c| c.is_ascii_alphanumeric() || b"-_:.$".contains(&c))
+    {
+        i += 1;
+    }
+    i
 }
 
 /// Where the next run of exactly `n` backticks from `i` ends.
@@ -1950,6 +2243,8 @@ enum Prefixes {
     Python,
     /// `L"…"`, `u8"…"`, `R"(…)"`.
     C,
+    /// PostgreSQL's `E'…'`.
+    Sql,
 }
 
 /// A string's quotes.
@@ -2028,6 +2323,10 @@ struct Lang {
     macros: bool,
     /// A `/` where an operand goes starts a regular expression.
     regex: bool,
+    /// A `<` where an operand goes starts a JSX element.
+    jsx: bool,
+    /// Ruby's `<<~WORD` starts a heredoc.
+    heredocs: bool,
     /// Lua's long brackets: `[[…]]`, `--[==[…]==]`.
     long: bool,
     /// A word before `=` is an attribute's name: Nix's.
@@ -2073,6 +2372,8 @@ const BASE: Lang = Lang {
     at: false,
     macros: false,
     regex: false,
+    jsx: false,
+    heredocs: false,
     long: false,
     eq_keys: false,
     key_seps: &[],
@@ -2101,7 +2402,8 @@ fn language(info: &str) -> Option<&'static Lang> {
         "yaml" | "yml" => &YAML,
         "python" | "py" | "python3" | "py3" => &PYTHON,
         "javascript" | "js" | "jsx" | "mjs" | "cjs" | "node" => &JS,
-        "typescript" | "ts" | "tsx" | "mts" | "cts" => &TS,
+        "typescript" | "ts" | "mts" | "cts" => &TS,
+        "tsx" => &TSX,
         "c" | "h" => &C,
         "cpp" | "c++" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => &CPP,
         "go" | "golang" => &GO,
@@ -2112,7 +2414,8 @@ fn language(info: &str) -> Option<&'static Lang> {
         "lua" => &LUA,
         "elisp" | "emacs-lisp" | "el" | "lisp" | "common-lisp" | "scheme" | "scm" | "racket"
         | "rkt" | "clojure" | "clj" | "cljs" | "edn" => &LISP,
-        "sql" | "mysql" | "postgresql" | "postgres" | "psql" | "plsql" | "sqlite" => &SQL,
+        "sql" | "postgresql" | "postgres" | "psql" | "plsql" | "sqlite" => &SQL,
+        "mysql" | "mariadb" => &MYSQL,
         "html" | "htm" | "xhtml" | "xml" | "svg" | "plist" | "xsl" | "rss" | "atom" => &HTML,
         "css" => &CSS,
         "scss" | "less" => &SCSS,
@@ -2417,6 +2720,8 @@ const JS: Lang = Lang {
     caps: true,
     at: true,
     regex: true,
+    // Where an operand goes a `<` is no JavaScript, so it's JSX in any block.
+    jsx: true,
     ..BASE
 };
 
@@ -2485,8 +2790,12 @@ const TS: Lang = Lang {
     ],
     prims: Role::Constant,
     type_defs: &["class", "enum", "interface", "namespace", "type"],
+    // `<T>(x: T) => x` and `<T>value` are TypeScript's, with no JSX.
+    jsx: false,
     ..JS
 };
+
+const TSX: Lang = Lang { jsx: true, ..TS };
 
 const C_TYPES: &[&str] = &[
     "FILE",
@@ -2946,6 +3255,8 @@ const RUBY: Lang = Lang {
     caps: true,
     sigils: b"@$",
     symbols: true,
+    regex: true,
+    heredocs: true,
     ..BASE
 };
 
@@ -3132,7 +3443,14 @@ const SQL: Lang = Lang {
         quote("'", false, true),
         quote("\"", false, false),
         quote("`", false, false),
+        // Only after its `E`, which the word sees.
+        Quote {
+            open: "E'",
+            close: "'",
+            ..quote("'", true, true)
+        },
     ],
+    prefixes: Prefixes::Sql,
     keywords: &[
         "add",
         "all",
@@ -3231,6 +3549,17 @@ const SQL: Lang = Lang {
     constants: &["false", "null", "true"],
     fold: true,
     ..BASE
+};
+
+/// MySQL's strings take a backslash's escapes, and a `#` starts a comment.
+const MYSQL: Lang = Lang {
+    line: &["#", "--"],
+    quotes: &[
+        quote("'", true, true),
+        quote("\"", true, false),
+        quote("`", false, false),
+    ],
+    ..SQL
 };
 
 const HTML: Lang = Lang {
@@ -3444,6 +3773,7 @@ const ALL: &[(&str, &Lang)] = &[
     ("python", &PYTHON),
     ("js", &JS),
     ("ts", &TS),
+    ("tsx", &TSX),
     ("c", &C),
     ("cpp", &CPP),
     ("go", &GO),
@@ -3454,6 +3784,7 @@ const ALL: &[(&str, &Lang)] = &[
     ("lua", &LUA),
     ("elisp", &LISP),
     ("sql", &SQL),
+    ("mysql", &MYSQL),
     ("html", &HTML),
     ("css", &CSS),
     ("scss", &SCSS),
@@ -3961,6 +4292,206 @@ print(f"{len(xs)}", MAX)"#;
     }
 
     #[test]
+    fn a_quote_opens_no_string_where_the_language_reads_none() {
+        use Role::*;
+        // Ruby's regular expressions hold quotes and `#{…}`, and a `/` after an operand divides.
+        expect(
+            "ruby",
+            "parts = line.split(/\"/)\ncount = parts.size\nok = name =~ /#{prefix}-\\d+/ && 1\nhalf = total / 2 / n",
+            &[
+                ("/\"/", String),
+                ("count", Plain),
+                ("/#{prefix}-\\d+/", String),
+                ("&& ⟨1⟩", Number),
+                ("total /", Plain),
+                ("/ n", Plain),
+            ],
+        );
+        // Its heredocs are strings to their word's line, and `<<` with a space after appends.
+        expect(
+            "ruby",
+            "sql = <<~SQL\n  SELECT * FROM users WHERE name = 'Bob'\n  -- the user's rows\nSQL\nUser.find_by_sql(sql)\ntext = <<-'EOS'.strip\nDon't\n  EOS\nclass << self\n  items << value\nend\nputs text",
+            &[
+                ("the user's rows", String),
+                ("SELECT", String),
+                ("User", Type),
+                ("find_by_sql", Function),
+                ("strip", Plain),
+                ("Don't", String),
+                ("value", Plain),
+                ("end", Keyword),
+                ("puts", Constant),
+            ],
+        );
+        // JSX's text is text, its tags are tags, and `{…}` in it is code again.
+        let jsx = "const App = () => <p>Don't panic</p>;\n\
+                   const List = ({ items }) => <ul>{items.map(i => <li key={i}>{i}</li>)}</ul>;\n\
+                   const two = <><p>a</p><p>b</p></>;\n\
+                   const n = a < b ? 1 : 2;\n\
+                   function Card({ title }) {\n\
+                   \x20 return (\n\
+                   \x20   <div className=\"card\" onClick={() => go(title)}>\n\
+                   \x20     <h2>{title}</h2>\n\
+                   \x20     It's {count > 1 ? \"many\" : \"one\"} here.\n\
+                   \x20   </div>\n\
+                   \x20 );\n\
+                   }\n\
+                   const after = 'x';";
+        for lang in ["jsx", "js", "tsx"] {
+            expect(
+                lang,
+                jsx,
+                &[
+                    ("<⟨p⟩>Don't", Tag),
+                    ("Don't panic", Plain),
+                    ("</⟨p⟩>;", Tag),
+                    ("<⟨ul⟩>", Tag),
+                    ("map", Function),
+                    ("key", Attr),
+                    ("</⟨li⟩>", Tag),
+                    ("</⟨ul⟩>", Tag),
+                    ("<p>⟨b⟩", Plain),
+                    ("</⟨p⟩></>", Tag),
+                    ("a < b", Plain),
+                    ("? ⟨1⟩", Number),
+                    ("className", Attr),
+                    ("\"card\"", String),
+                    ("go", Function),
+                    ("h2", Tag),
+                    ("It's", Plain),
+                    ("\"many\"", String),
+                    ("here.", Plain),
+                    ("</⟨div⟩>", Tag),
+                    ("'x'", String),
+                ],
+            );
+        }
+        // A generic arrow function is no tag in TSX, and TypeScript has no JSX.
+        expect(
+            "tsx",
+            "const id = <T,>(x: T) => x;\nconst s = 'y';",
+            &[("'y'", String), ("=> ⟨x⟩", Plain)],
+        );
+        expect(
+            "ts",
+            "let s = <string>value;\nconst t = 'y';",
+            &[("string", Constant), ("'y'", String)],
+        );
+        // A shell's shift is no heredoc, and `<<\WORD` is one.
+        expect(
+            "sh",
+            "mask=$((1 << 4)); (( n <<= bits ))\necho \"mask is $mask\"\ncat <<\\EOF\nit's literal\nEOF\necho finished",
+            &[
+                ("\"mask is ", String),
+                ("$mask", Variable),
+                ("it's literal", String),
+                ("⟨echo⟩ finished", Constant),
+                ("finished", Plain),
+            ],
+        );
+        expect(
+            "console",
+            "$ echo $((1<<2))\nout\n$ ls",
+            &[("out", Plain), ("ls", Plain)],
+        );
+        // A Makefile's values are text, and a recipe's line or a Dockerfile's instruction ends
+        // where its line does, unless a `\` goes on with it.
+        expect(
+            "makefile",
+            "DESCRIPTION = It's a tool # what\nNAME := $(shell date)\nall: build ; @echo 'x'\n\t@echo it's ok\n\tcargo build --release",
+            &[
+                ("DESCRIPTION", Variable),
+                ("It's a tool", Plain),
+                ("# what", Comment),
+                ("$(shell date)", Variable),
+                ("all", Function),
+                ("build", Plain),
+                ("'x'", String),
+                ("cargo", Plain),
+                ("--release", Plain),
+            ],
+        );
+        expect(
+            "dockerfile",
+            "MAINTAINER Jane O'Brien\nRUN echo 'a \\\n    b' && echo it's\nCMD [\"run\"]",
+            &[
+                ("O'Brien", Plain),
+                ("RUN", Keyword),
+                ("b'", String),
+                ("CMD", Keyword),
+                ("\"run\"", String),
+            ],
+        );
+    }
+
+    #[test]
+    fn an_escape_is_where_the_dialect_has_one() {
+        use Role::*;
+        let text = "SELECT 'O\\'Brien' FROM authors; -- MySQL\nSELECT 1;";
+        expect(
+            "mysql",
+            text,
+            &[
+                ("'O\\'Brien'", String),
+                ("FROM", Keyword),
+                ("-- MySQL", Comment),
+                ("⟨SELECT⟩ 1", Keyword),
+            ],
+        );
+        // Standard SQL takes no backslash, but PostgreSQL's E'…' does.
+        expect(
+            "sql",
+            "SELECT 'C:\\' FROM t;\nSELECT E'O\\'Brien', e'\\n' FROM u;",
+            &[
+                ("'C:\\'", String),
+                ("FROM", Keyword),
+                ("E'O\\'Brien'", String),
+                ("e'\\n'", String),
+                ("⟨FROM⟩ u", Keyword),
+            ],
+        );
+        // A Python raw string's backslash keeps its quote from closing it, and stays.
+        expect(
+            "python",
+            "pat = re.compile(r\"\\\"(.*?)\\\"\")\ns = r\"\\\"\" + x",
+            &[
+                ("r\"\\\"(.*?)\\\"\"", String),
+                ("compile", Function),
+                ("r\"\\\"\"", String),
+                ("+ ⟨x⟩", Plain),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_markdown_code_span_or_a_css_selector_is_found_past_what_isnt_one() {
+        use Role::*;
+        // A run of backticks with no match is text, and a run of another length can still be
+        // a code span.
+        expect(
+            "markdown",
+            "Use `` for an empty span, and `code` here.\nAnd ``a`b`` too.",
+            &[("for an", Plain), ("`code`", String), ("``a`b``", String)],
+        );
+        // A selector list over lines, inside a block, is selectors; a value over lines is a
+        // value.
+        expect(
+            "css",
+            "@media (max-width: 600px) {\n  .a,\n  .b {\n    color: red;\n    font-family: Arial,\n      sans-serif;\n  }\n  h1,\n  h2 { margin: 0 }\n}",
+            &[
+                (".a", Function),
+                (".b", Function),
+                ("color", Constant),
+                ("font-family", Constant),
+                ("sans-serif", Plain),
+                ("h1", Tag),
+                ("h2", Tag),
+                ("margin", Constant),
+            ],
+        );
+    }
+
+    #[test]
     fn what_is_open_at_a_blocks_end_stays_in_its_block() {
         use Role::*;
         // An unterminated string goes to the block's end, and a block after starts afresh.
@@ -4037,6 +4568,7 @@ print(f"{len(xs)}", MAX)"#;
         for unit in [
             "[", "`", "\"", "'", "#", "/*", "{-", "#|", "<", "<!--", "$(", "${", "<<", "r#", "[=",
             "--[[", "/", "\\", ": ", "- ", "@", "?", "'a", "0x", ".5", "#[", "<a ", "&", "url(",
+            "<a>", "<a {", "{<a>", "</a>", "<<~E ", "$((", "`` `", "E'", ".a,",
         ] {
             texts.push(unit.repeat(20_000));
             texts.push(
