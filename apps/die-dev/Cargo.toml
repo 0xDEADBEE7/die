@@ -22,6 +22,8 @@ die-orchid-client.workspace = true
 die-whiteboard.workspace = true
 # Your ASCII jellyfish, the buffer DIE starts on (scope D14).
 die-jellyfish.workspace = true
+# A markdown file's rendered view, toggled by `\m` (scope D14).
+die-markdown.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true

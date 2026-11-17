@@ -180,6 +180,7 @@ type KeysFn = RefCell<Box<dyn FnMut(&KeyEvent, KeySource)>>;
 
 pub(crate) enum SubKind {
     Killed(KilledFn),
+    Edited(KilledFn),
     Job { id: u64, f: JobDone },
     Keys(KeysFn),
     Dropped(TimerFn),
@@ -378,6 +379,57 @@ impl Ctx {
     ) -> Sub {
         self.new_sub(SubKind::Killed(Rc::new(RefCell::new(f))))
     }
+    /// Run `f` with each text buffer whose text has changed, from the top of the loop (C3), once
+    /// the keys and calls that were ready have run: after the fact, and once however many edits
+    /// there were, a macro's or a paste's (contract §5). What changed is `edits_since`'s to say
+    /// (C15). A change `f` makes to the text brings it round again, and a buffer killed before
+    /// its turn isn't told of.
+    pub fn on_edited(&mut self, f: impl FnMut(&mut Ctx, BufferId) -> Result + 'static) -> Sub {
+        self.new_sub(SubKind::Edited(Rc::new(RefCell::new(f))))
+    }
+    /// Queue each live subscription `which` picks, with `buf`, to run if the buffer is still
+    /// `gone`, or still there, when its turn comes.
+    pub(crate) fn queue_buffer_hooks(
+        &mut self,
+        buf: BufferId,
+        gone: bool,
+        which: impl Fn(&SubKind) -> Option<&KilledFn>,
+    ) {
+        let live = self.subs.iter().filter(|e| e.inner.alive.get());
+        let hooks: Vec<_> = live
+            .filter_map(|e| which(&e.kind).map(|f| (e.inner.clone(), f.clone())))
+            .collect();
+        for (inner, f) in hooks {
+            self.queue.push_back(Queued {
+                ext: inner.ext,
+                alive: Some(inner),
+                keyed: false,
+                f: Box::new(move |ctx| match ctx.is_live(buf) == gone {
+                    true => Ok(()),
+                    false => (f.borrow_mut())(ctx, buf),
+                }),
+            });
+        }
+    }
+    /// With nothing else ready, tell `on_edited`'s subscribers which text buffers changed. True
+    /// if that queued anything.
+    fn edits_noticed(&mut self) -> bool {
+        let texts = self
+            .buffers
+            .iter_mut()
+            .filter_map(|(id, b)| match &mut b.content {
+                Content::Text(t) => t.take_edited().then_some(id),
+                Content::Custom { .. } => None,
+            });
+        let before = self.queue.len();
+        for buf in texts.collect::<Vec<_>>() {
+            self.queue_buffer_hooks(buf, false, |k| match k {
+                SubKind::Edited(f) => Some(f),
+                _ => None,
+            });
+        }
+        self.queue.len() > before
+    }
     /// `work` runs on a thread of its own; `done` runs on the main thread from the top of the
     /// loop. When `work` ends, the loop is woken. If it panics, the panic is logged for the
     /// extension that spawned it, and `done` doesn't run.
@@ -560,9 +612,15 @@ impl Ctx {
             }
             return true;
         }
+        // With no key waiting and no output with a batch still to come, say which texts changed.
+        // It's before timers and output are let have their next batch, so the calls this queues
+        // are still this turn's: a repeat that edits can't keep the frame waiting through them.
+        let no_key = self.fed.is_empty() && self.typed.is_empty();
+        if no_key && !self.ptys.more() && self.edits_noticed() {
+            return true;
+        }
         self.timers_ran = false;
         // While no key waits, a flood's next batch, until the turn's share for output is spent.
-        let no_key = self.fed.is_empty() && self.typed.is_empty();
         if no_key && self.ptys.more() && self.ptys_take() {
             return true;
         }

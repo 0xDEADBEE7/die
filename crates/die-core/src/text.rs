@@ -343,6 +343,8 @@ pub struct TextBuf {
     pub(crate) snapshot: bool,
     /// The lowest a window's top may scroll to, a line's start: a snapshot's live view.
     pub(crate) top_limit: Option<usize>,
+    /// The revision `Ctx::on_edited` last heard of.
+    noticed: u64,
 }
 
 /// Where a position goes when `[start, old_end)` is replaced by text ending at `new_end`.
@@ -429,6 +431,7 @@ impl TextBuf {
             flat: RefCell::default(),
             snapshot: false,
             top_limit: None,
+            noticed: 0,
         }
     }
 
@@ -444,6 +447,10 @@ impl TextBuf {
     /// Whether the text is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+    /// Whether the text has changed since this was last asked, for `Ctx::on_edited`.
+    pub(crate) fn take_edited(&mut self) -> bool {
+        self.rev != std::mem::replace(&mut self.noticed, self.rev)
     }
     /// The revision: it goes up by one per change, not per transaction.
     pub fn rev(&self) -> u64 {
@@ -872,38 +879,59 @@ impl TextBuf {
     /// Add a decoration over `range`. Text inserted at either edge stays outside it until
     /// `set_sticky` says otherwise. Every cursor moves out of text this hides. Errors: `BadRange`
     /// if the range is reversed, past the end or off a character boundary.
-    pub fn decorate(&mut self, range: Range<usize>, mut deco: Deco) -> Result<DecorationId> {
-        if range.start > range.end || !self.is_boundary(range.start) || !self.is_boundary(range.end)
-        {
-            return Err(Error::BadRange {
-                start: range.start,
-                end: range.end,
-            });
+    pub fn decorate(&mut self, range: Range<usize>, deco: Deco) -> Result<DecorationId> {
+        Ok(self.redecorate(&[], vec![(range, deco)])?[0])
+    }
+    /// Remove `old` and add `new` as one change: rows are laid out again and cursors moved out
+    /// of hidden text once, after all of it, where [`TextBuf::decorate`] and
+    /// [`TextBuf::undecorate`] do so each time, so a view of a whole file's markup costs one
+    /// pass and not one for each mark. A dead id in `old` is skipped. Errors, with nothing
+    /// changed: `BadRange` for a range of `new`, as `decorate` gives it.
+    pub fn redecorate(
+        &mut self,
+        old: &[DecorationId],
+        new: Vec<(Range<usize>, Deco)>,
+    ) -> Result<Vec<DecorationId>> {
+        let bad = |r: &Range<usize>| {
+            r.start > r.end || !self.is_boundary(r.start) || !self.is_boundary(r.end)
+        };
+        if let Some((r, _)) = new.iter().find(|(r, _)| bad(r)) {
+            let (start, end) = (r.start, r.end);
+            return Err(Error::BadRange { start, end });
         }
-        if let Deco::Hide { replacement, .. } = &mut deco {
-            // Layout text is single-line; an empty replacement is no replacement.
-            *replacement = replacement.take().filter(|r| !r.text.is_empty());
-            if let Some(r) = replacement {
-                r.text = r.text.replace(['\n', '\t'], " ");
+        let shapes_rows = |d: &Deco| matches!(d, Deco::Hide { .. } | Deco::Virtual(_));
+        let mut rows = false;
+        for id in old {
+            rows |= self.decos.remove(*id).is_some_and(|d| shapes_rows(&d.deco));
+        }
+        let mut ids = Vec::with_capacity(new.len());
+        for (range, mut deco) in new {
+            if let Deco::Hide { replacement, .. } = &mut deco {
+                // Layout text is single-line; an empty replacement is no replacement.
+                *replacement = replacement.take().filter(|r| !r.text.is_empty());
+                if let Some(r) = replacement {
+                    r.text = r.text.replace(['\n', '\t'], " ");
+                }
             }
+            if let Deco::Virtual(t) = &mut deco {
+                t.text = t.text.replace(['\n', '\t'], " ");
+            }
+            rows |= shapes_rows(&deco);
+            let seq = self.next_seq;
+            self.next_seq += 1;
+            let sticky = (Gravity::Right, Gravity::Left);
+            ids.push(self.decos.insert(Decoration {
+                range,
+                deco,
+                sticky,
+                seq,
+            }));
         }
-        if let Deco::Virtual(t) = &mut deco {
-            t.text = t.text.replace(['\n', '\t'], " ");
-        }
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        let shapes_rows = matches!(deco, Deco::Hide { .. } | Deco::Virtual(_));
-        let id = self.decos.insert(Decoration {
-            range,
-            deco,
-            sticky: (Gravity::Right, Gravity::Left),
-            seq,
-        });
-        if shapes_rows {
+        if rows {
             self.cache.get_mut().clear();
             self.normalize_views();
         }
-        Ok(id)
+        Ok(ids)
     }
     /// Remove a decoration and return it, or None if `id` was already dead.
     pub fn undecorate(&mut self, id: DecorationId) -> Option<Decoration> {

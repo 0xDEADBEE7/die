@@ -14,7 +14,7 @@ fn harness() -> Harness {
     let names: Vec<&str> = config.extensions.iter().map(|e| e.name()).collect();
     assert_eq!(
         names,
-        ["orchid", "whiteboard", "jellyfish"],
+        ["orchid", "whiteboard", "jellyfish", "markdown"],
         "your config's extensions"
     );
     let mut exts = die::built_in();

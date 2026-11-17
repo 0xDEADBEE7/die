@@ -26,7 +26,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind, set_hook, take_hook};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Once, mpsc};
 
@@ -36,6 +36,8 @@ pub(crate) const CORE: ExtIdx = usize::MAX;
 pub(crate) const CONFIG: ExtIdx = usize::MAX - 1;
 
 type ConfigRegisterFn = Box<dyn FnOnce(&mut Registry)>;
+/// Which files a file-type mode is for ([`ModeSpec::files`]).
+type FilesFn = Rc<dyn Fn(&Path) -> bool>;
 type StartupFn = Box<dyn FnOnce(&mut Ctx) -> Result>;
 
 /// Your config, as core applies it at startup (contract §4). It comes after every extension's
@@ -216,6 +218,7 @@ pub struct ModeSpec {
     /// Its keymap, looked up before the surface kind's.
     pub keymap: Keymap,
     new: Rc<dyn Fn() -> Box<dyn Mode>>,
+    files: Option<FilesFn>,
 }
 
 impl ModeSpec {
@@ -227,6 +230,13 @@ impl ModeSpec {
     /// Set the state a buffer enters when the mode is enabled.
     pub fn initial_state(&mut self, s: State) -> &mut Self {
         self.initial_state = Some(s);
+        self
+    }
+    /// Make it the file-type mode of the files `matches` says yes to (contract §8): a buffer has
+    /// it from when it comes to visit one, opened, restored or saved under that name, and loses it
+    /// when it comes to visit a file that doesn't match.
+    pub fn files(&mut self, matches: impl Fn(&Path) -> bool + 'static) -> &mut Self {
+        self.files = Some(Rc::new(matches));
         self
     }
 }
@@ -292,6 +302,7 @@ impl Registry {
             initial_state: None,
             keymap: Keymap::default(),
             new: Rc::new(move || Box::new(new())),
+            files: None,
         });
         self.modes.last_mut().unwrap()
     }
@@ -963,11 +974,14 @@ impl Ctx {
     /// Enabling it again does nothing.
     pub fn enable_mode<M: Mode>(&mut self, buf: BufferId) -> Result {
         let tid = TypeId::of::<M>();
-        let spec = self
-            .modes
-            .iter()
-            .position(|s| s.type_id == tid)
-            .ok_or_else(|| Error::Msg("mode not registered".into()))?;
+        let spec = self.modes.iter().position(|s| s.type_id == tid);
+        self.enable_spec(
+            spec.ok_or_else(|| Error::Msg("mode not registered".into()))?,
+            buf,
+        )
+    }
+    fn enable_spec(&mut self, spec: usize, buf: BufferId) -> Result {
+        let tid = self.modes[spec].type_id;
         let b = self.buffers.get(buf).ok_or(Checkout::Gone)?;
         if !matches!(b.content, Content::Text(_)) {
             return Err(Error::NotText); // C17
@@ -990,14 +1004,37 @@ impl Ctx {
         if let Some(s) = init {
             b.state = s;
         }
+        // A buffer killed before this runs took its mode with it: there's none to tell.
         self.defer_as(owner, move |ctx| {
-            ctx.checkout_mode(buf, tid, |m, ctx| m.on_enable(buf, ctx))?
+            match ctx.checkout_mode(buf, tid, |m, ctx| m.on_enable(buf, ctx)) {
+                Err(Checkout::Gone) => Ok(()),
+                told => told?,
+            }
         });
         Ok(())
     }
+    /// `buf` visits `path` now: it takes the file-type modes that ask for it, and loses those
+    /// that don't (contract §8). A matcher's panic is its extension's, and leaves the mode as it
+    /// was.
+    pub(crate) fn file_modes(&mut self, buf: BufferId, path: &Path) {
+        for spec in 0..self.modes.len() {
+            let Some(f) = self.modes[spec].files.clone() else {
+                continue;
+            };
+            let (owner, tid) = (self.modes[spec].owner, self.modes[spec].type_id);
+            let r = match self.guarded(owner, |_| Ok(f(path))) {
+                Ok(true) => self.enable_spec(spec, buf),
+                Ok(false) => self.disable_tid(tid, buf).or(Ok(())),
+                Err(e) => Err(e),
+            };
+            self.report(r);
+        }
+    }
     /// Disable a mode. Its `on_disable` is queued (C3), and it drops after that.
     pub fn disable_mode<M: Mode>(&mut self, buf: BufferId) -> Result {
-        let tid = TypeId::of::<M>();
+        self.disable_tid(TypeId::of::<M>(), buf)
+    }
+    fn disable_tid(&mut self, tid: TypeId, buf: BufferId) -> Result {
         let b = self.buffers.get_mut(buf).ok_or(Checkout::Gone)?;
         let i = b
             .modes

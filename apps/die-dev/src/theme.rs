@@ -21,8 +21,9 @@ const ANSI: [&str; 16] = [
     "#444444", "#dd6666", "#77cc77", "#ccaa55", "#7799bb", "#aa88aa", "#66aaaa", "#eeeeee",
 ];
 
-/// mono-dark: every base and UI face, styled as your Emacs draws it, and the orchid faces whose
-/// Emacs faces no base face matches.
+/// mono-dark: every base and UI face, styled as your Emacs draws it, the orchid faces whose
+/// Emacs faces no base face matches, and the markdown view's, from the stylesheet your preview
+/// uses (`~/.emacs.d/lisp/markdown-xwidget/resources/mono-dark.css`).
 pub fn mono_dark() -> Theme {
     let s = Style::new;
     Theme::new("mono-dark", ANSI.map(Rgb::hex))
@@ -69,4 +70,47 @@ pub fn mono_dark() -> Theme {
         // seek's search line, `(:background "#3a3a3a")`, which the session browser draws while
         // you type a query.
         .face("orchid-seek-search", s().bg(BORDER))
+        // h1 and h2: bright and bold over a border-coloured line. A cell has one size of
+        // letter, so the two lines stand in for 2em, and one for 1.5em.
+        .face(
+            "markdown-h1",
+            heading(FG_BRIGHT).underline(Underline::Double),
+        )
+        .face(
+            "markdown-h2",
+            heading(FG_BRIGHT).underline(Underline::Single),
+        )
+        // h3 to h6 are bright and bold there too, each smaller: here each is dimmer.
+        .face("markdown-h3", heading(FG_BRIGHT))
+        .face("markdown-h4", heading(FG))
+        .face("markdown-h5", heading(FG_MID))
+        .face("markdown-h6", s().fg(FG_MID))
+        // strong, em and del
+        .face("markdown-bold", s().fg(FG_BRIGHT).bold())
+        .face("markdown-italic", s().fg(FG_MID).italic())
+        .face("markdown-strike", s().fg(FG_DIM).strike())
+        // code, and pre with its own text colour
+        .face("markdown-code", s().fg(FG_MID).bg(BG_SUBTLE))
+        .face("markdown-code-block", s().bg(BG_SUBTLE))
+        // a
+        .face(
+            "markdown-link",
+            s().fg(RED).bold().underline(Underline::Single),
+        )
+        // blockquote's text; its bar, hr and a table's borders are the border colour
+        .face("markdown-quote", s().fg(FG_MID).italic())
+        .face("markdown-rule", s().fg(BORDER))
+        // th, without its background: a row's padding is drawn by its borders
+        .face("markdown-table-header", s().fg(FG_BRIGHT).bold())
+        // What a browser draws in the text's colour, dimmed here so the text leads: bullets,
+        // numbers and checkboxes; and what it doesn't draw at all: HTML, a fence's language.
+        .face("markdown-marker", s().fg(FG_MID))
+        .face("markdown-meta", s().fg(FG_DIM))
+        .face("markdown-alert", s().fg(FG_BRIGHT).bold())
+}
+
+/// A heading: bold in `fg`, and any underline in the border's colour, as the stylesheet's
+/// `border-bottom` is.
+fn heading(fg: Rgb) -> Style {
+    Style::new().fg(fg).bold().underline_color(BORDER)
 }

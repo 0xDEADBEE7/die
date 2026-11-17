@@ -147,12 +147,16 @@ pub fn greeted(mut config: die::Config, launch: &Launch) -> die::Config {
 /// has `~/.local/bin`, as `init.el` adds it to `exec-path`. And the whiteboard, with its defaults:
 /// PNGs at 2x on the theme's background, the fonts where DIE's are. And your jellyfish, with its
 /// defaults: the water's dust and twinkles but no shoal, the window's whole width, and at rest
-/// after five minutes without a key. Registering it shows nothing: `greeted` does that.
+/// after five minutes without a key. Registering it shows nothing: `greeted` does that. And the
+/// markdown view, with its defaults: the mode on `.md` files and markdown-mode's other
+/// extensions, front matter hidden as your preview's export strips it, and links that aren't
+/// files DIE opens going to `open`. A file opens raw, as it always has: `\m` renders it.
 pub fn extensions() -> Vec<Box<dyn die::core::Extension>> {
     vec![
         Box::new(die_orchid_client::Orchid::default()),
         Box::new(die_whiteboard::Whiteboard::default()),
         Box::new(die_jellyfish::Jellyfish::default()),
+        Box::new(die_markdown::Markdown::default()),
     ]
 }
 
@@ -179,6 +183,11 @@ fn bindings(reg: &mut Registry) {
     keys.bind(State::Normal, "<leader>o", "orchid");
     // The whiteboard: a board in this window, or the one used last.
     keys.bind(State::Normal, "<leader>w", "whiteboard");
+    // A markdown file's two views, rendered and raw. It's in the mode's keymap, so `\m` is a key
+    // only where there's markdown to render.
+    if let Some(keys) = reg.mode_keymap(die_markdown::MODE) {
+        keys.bind(State::Normal, "<leader>m", "markdown-toggle");
+    }
 }
 
 /// `init.el`'s `ghostel-shell` and `vterm-shell`: `term` starts `/bin/bash`, interactive and not

@@ -28,7 +28,8 @@ path = "crates/die-core"
 # 15,755 until M3a's review: a union that saturates, and dropped buffers forgotten at the next one made.
 # 15,765 until the whiteboard's tool dial: a press a surface takes in normal state brings its release (15,763).
 # 15,770 until the dial's review: no focus pair between two windows on one buffer, and the pointer held by its button (15,775).
-limit = 15780
+# 15,780 until the markdown view's three pieces of the contract: file-type modes (§8), decorations swapped as one change (§9) and a call after the text has changed (§5), told within the turn that changed it (15,859).
+limit = 15860
 
 [[crate]]
 name = "die-render"
@@ -113,6 +114,12 @@ extension = true
 note = "an extension, outside guard 7: your ASCII jellyfish, the buffer DIE starts on"
 
 [[crate]]
+name = "die-markdown"
+path = "extensions/die-markdown"
+extension = true
+note = "an extension, outside guard 7: a markdown file's rendered view, markup hidden and text styled"
+
+[[crate]]
 name = "xtask"
 path = "xtask"
 dev = true
@@ -136,7 +143,8 @@ name = "text and undo"
 # 1,300 until V3: thousands of changes go in one pass, undo too, and a line of megabytes is searched near what's asked.
 # 1,420 until the macro review: `:s` copies only its lines, and `:g` searches each line bounded at its end.
 # 1,425 until copy state: a snapshot's flag and scroll limit, and its splice, which no log or undo sees.
-limit = 1450
+# 1,450 until the markdown view: `redecorate`, a file's worth of hidden markup in one pass, and the revision `on_edited` last heard of (1,469).
+limit = 1470
 files = ["text.rs", "undo.rs", "text/", "undo/"]
 
 [[module]]
@@ -171,7 +179,8 @@ name = "ext, dispatch, rt"
 # 1,635 until a surface buffer's own settings in `Content`.
 # 1,640 until the alternate screen's Esc review: a release goes where its press went, and `Surface::takes_wheel`.
 # 1,650 until the whiteboard's tool dial: a press a surface takes in normal state brings its release, as in passthrough (1,649).
-limit = 1655
+# 1,655 until the markdown view: `ModeSpec::files` and the modes a visited file gives and takes, and `on_edited`, told once the ready keys and calls have run, before timers and output get another batch (1,722).
+limit = 1725
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
@@ -189,7 +198,8 @@ name = "files"
 # 650 until U1's `die file:line`: the name parser `gf` shares, and opening at a position.
 # 760 until V2: a cursor on a line `cargo fmt` rewrote stays on that line.
 # 780 until X1: `:w path` and `:saveas` write elsewhere, and a buffer starts visiting the file.
-limit = 833
+# 833 until the markdown view: a buffer that comes to visit a file takes its file-type modes (834).
+limit = 835
 files = ["files.rs", "files/"]
 
 # 1,300 until `<S-Tab>` went up a directory in the file prompt.
