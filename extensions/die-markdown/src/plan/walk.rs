@@ -560,6 +560,11 @@ impl<'a> Walk<'a> {
             let at = faces.min(self.out.faces.len());
             self.out.faces.insert(at, (text.clone(), LINK));
         }
+        // `<you@example.com>` is mail to it: the parser gives the address alone.
+        let dest = match kind {
+            LinkType::Email if !dest.starts_with("mailto:") => format!("mailto:{dest}"),
+            _ => dest,
+        };
         self.out.links.push(Link {
             range: whole,
             text,

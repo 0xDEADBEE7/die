@@ -1004,8 +1004,12 @@ impl Ctx {
         if let Some(s) = init {
             b.state = s;
         }
+        // A buffer killed before this runs took its mode with it: there's none to tell.
         self.defer_as(owner, move |ctx| {
-            ctx.checkout_mode(buf, tid, |m, ctx| m.on_enable(buf, ctx))?
+            match ctx.checkout_mode(buf, tid, |m, ctx| m.on_enable(buf, ctx)) {
+                Err(Checkout::Gone) => Ok(()),
+                told => told?,
+            }
         });
         Ok(())
     }

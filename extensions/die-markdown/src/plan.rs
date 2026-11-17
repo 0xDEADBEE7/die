@@ -97,7 +97,8 @@ pub struct Link {
     /// The part of it that stays visible when rendered: the link's text. For an image, which is
     /// replaced whole, the same as `range`.
     pub text: Range<usize>,
-    /// Where it goes, as written, a reference resolved through its definition.
+    /// Where it goes, as written, a reference resolved through its definition, and an address
+    /// in angle brackets (`<you@example.com>`) as `mailto:`.
     pub dest: String,
     /// Whether it's an image rather than a link.
     pub image: bool,

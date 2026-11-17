@@ -129,7 +129,7 @@ fn the_key_shows_a_markdown_file_rendered_and_raw_again_over_the_same_text() {
 }
 
 #[test]
-fn the_view_follows_the_text_and_the_width() {
+fn the_view_is_for_reading_and_follows_the_file_and_the_width() {
     let dir = tree("follows");
     let path = dir.join("notes.md");
     fs::write(&path, SAMPLE).unwrap();
@@ -138,29 +138,46 @@ fn the_view_follows_the_text_and_the_width() {
     keys(&mut h, "\\m");
 
     // The file changes on disk under a buffer with nothing unsaved: reloaded, and rendered.
-    fs::write(&path, "## Changed *on disk*\n\n1. first\n").unwrap();
+    fs::write(&path, "## Changed *on disk*\n\n1. a [link](x.md)\n").unwrap();
     // A moment old, so the look doesn't take it for a write still going on.
     let written = fs::File::options().write(true).open(&path).unwrap();
     let a_while_ago = SystemTime::now() - Duration::from_secs(10);
     written.set_modified(a_while_ago).unwrap();
     h.check_files();
     h.run_until_idle();
-    assert_eq!(rows(&mut h), ["Changed on disk", "", "1. first"]);
+    assert_eq!(rows(&mut h), ["Changed on disk", "", "1. a link"]);
 
-    // Your own edit, in the rendered view: the new line is rendered at the next frame.
-    keys(&mut h, "Go<CR>and `more` **text**<Esc>");
-    assert_eq!(
-        rows(&mut h),
-        ["Changed on disk", "", "1. first", "", "and more text"]
+    // No key of yours changes the text while it's rendered: `x` on a link's last letter would
+    // take the address you can't see with it.
+    let before = text(&h, buf);
+    for edit in ["/link<CR>ex", "~", "dd", "ihello<Esc>", "u"] {
+        let typed = h.type_keys(edit).unwrap();
+        let refused = typed.iter().flat_map(|k| &k.errors);
+        assert!(
+            refused.clone().any(|e| e.contains("read-only")),
+            "{edit}: {typed:?}"
+        );
+        assert_eq!(text(&h, buf), before, "{edit}");
+    }
+    // Raw is where you edit, and what you wrote there is rendered when you come back.
+    keys(
+        &mut h,
+        "<Esc>\\mGo<CR>and `more` **text**<CR><CR>---<Esc>\\m",
     );
-    assert!(text(&h, buf).ends_with("\nand `more` **text**\n"));
-    // Undo is an edit like any other.
-    keys(&mut h, "u");
-    assert_eq!(rows(&mut h), ["Changed on disk", "", "1. first"]);
+    let rule = "─".repeat(40);
+    let shown = [
+        "Changed on disk",
+        "",
+        "1. a link",
+        "",
+        "and more text",
+        "",
+        rule.as_str(),
+    ];
+    assert_eq!(rows(&mut h), shown);
+    assert!(text(&h, buf).ends_with("\nand `more` **text**\n\n---\n"));
 
     // A rule is as wide as the text: a narrower window shortens it.
-    keys(&mut h, "Go<CR>---<Esc>");
-    assert_eq!(rows(&mut h).last().unwrap(), &"─".repeat(40));
     h.set_window_size(30, 20);
     h.run_until_idle();
     assert_eq!(rows(&mut h).last().unwrap(), &"─".repeat(30));
@@ -188,6 +205,10 @@ fn a_restart_brings_the_rendered_view_back() {
     let b = again.find_buffer("b.md").unwrap();
     assert!(!rendered(&mut again, b));
     assert_eq!(again.session_json(), json, "and keeps as the same session");
+    // Read-only was the view's, not the buffer's: raw again, it takes your edits.
+    // The cursor came back on the `T` the view had moved it to, off the hidden `# `.
+    keys(&mut again, "\\mx");
+    assert_eq!(text(&again, a), SAMPLE.replacen('T', "", 1));
 }
 
 #[test]
@@ -198,7 +219,7 @@ fn a_link_goes_to_a_heading_a_file_or_the_opener() {
     let script = format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", said.display());
     fs::write(&opener, script).unwrap();
     fs::set_permissions(&opener, fs::Permissions::from_mode(0o755)).unwrap();
-    let a = "# A\n\nSee [the notes](b.md#second-part), [the site](https://example.com/x) and [below](#end).\n\n## End\n";
+    let a = "# A\n\nSee [the notes](b.md#second-part), [the site](https://example.com/x) and [below](#end).\n\n## End\n\nMail <me@example.com>, [gone](b.md#nope) or [line](b.md:3).\n";
     fs::write(dir.join("a.md"), a).unwrap();
     fs::write(dir.join("b.md"), "# B\n\ntext\n\n## Second part\n\nmore\n").unwrap();
     let options = Options {
@@ -230,6 +251,27 @@ fn a_link_goes_to_a_heading_a_file_or_the_opener() {
     keys(&mut h, "gg/site<CR><CR>");
     h.run_until_idle();
     assert_eq!(fs::read_to_string(&said).unwrap(), "https://example.com/x");
+    assert_eq!(h.focused_buffer(), Some(first));
+
+    // An address in angle brackets is mail to it.
+    keys(&mut h, "/me@<CR><CR>");
+    h.run_until_idle();
+    assert_eq!(fs::read_to_string(&said).unwrap(), "mailto:me@example.com");
+
+    // A heading the file hasn't got: the file at its top, and a word about it.
+    keys(&mut h, "/gone<CR><CR>");
+    assert_eq!(h.focused_buffer(), Some(second));
+    assert_eq!(
+        h.text(second).unwrap().cursor(w),
+        Some(2),
+        "on the B of `# B`"
+    );
+    assert!(h.messages.iter().any(|m| m == "No heading #nope"));
+    // And a line, as `die b.md:3` reads it.
+    keys(&mut h, "<C-o>/line<CR><CR>");
+    let at = h.text(second).unwrap().cursor(w).unwrap();
+    assert_eq!(h.text(second).unwrap().line_of(at), 2);
+    keys(&mut h, "<C-o>");
     assert_eq!(h.focused_buffer(), Some(first));
 
     // Off a link, the key is die-vim's own, and by name the command says there's none.

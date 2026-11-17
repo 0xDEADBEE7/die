@@ -28,8 +28,8 @@ path = "crates/die-core"
 # 15,755 until M3a's review: a union that saturates, and dropped buffers forgotten at the next one made.
 # 15,765 until the whiteboard's tool dial: a press a surface takes in normal state brings its release (15,763).
 # 15,770 until the dial's review: no focus pair between two windows on one buffer, and the pointer held by its button (15,775).
-# 15,780 until the markdown view's three pieces of the contract: file-type modes (§8), decorations swapped as one change (§9) and a call after the text has changed (§5) (15,848).
-limit = 15850
+# 15,780 until the markdown view's three pieces of the contract: file-type modes (§8), decorations swapped as one change (§9) and a call after the text has changed (§5), told within the turn that changed it (15,859).
+limit = 15860
 
 [[crate]]
 name = "die-render"
@@ -179,8 +179,8 @@ name = "ext, dispatch, rt"
 # 1,635 until a surface buffer's own settings in `Content`.
 # 1,640 until the alternate screen's Esc review: a release goes where its press went, and `Surface::takes_wheel`.
 # 1,650 until the whiteboard's tool dial: a press a surface takes in normal state brings its release, as in passthrough (1,649).
-# 1,655 until the markdown view: `ModeSpec::files` and the modes a visited file gives and takes, and `on_edited`, told once the ready keys and calls have run (1,711).
-limit = 1715
+# 1,655 until the markdown view: `ModeSpec::files` and the modes a visited file gives and takes, and `on_edited`, told once the ready keys and calls have run, before timers and output get another batch (1,722).
+limit = 1725
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
