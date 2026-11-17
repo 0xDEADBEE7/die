@@ -203,12 +203,13 @@ fn heading(h: &mut Harness, file: BufferId, slug: &str) -> f32 {
     })
 }
 
-/// Whether the heading is the gap under the window's top, or the page is at its bottom, where
-/// a heading near the end can't go higher.
+/// Whether the heading is the gap under the window's top, or the page is at an end: at its top
+/// a heading nearer than the gap can't come lower, and at its bottom one near the end can't
+/// go higher.
 fn at_heading(h: &mut Harness, file: BufferId, slug: &str) -> bool {
     let (y, top) = (heading(h, file, slug), top(h, file));
     let under = y - top as f32;
-    (under - GAP * CELL.scale as f32).abs() <= 0.5 || top == limit(h, file)
+    (under - GAP * CELL.scale as f32).abs() <= 0.5 || top == 0 || top == limit(h, file)
 }
 
 /// The pixels the focused window's page shows, as last presented.
