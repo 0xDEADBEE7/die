@@ -1057,6 +1057,17 @@ These stand with the entry below's list, which no one has worked through.
 1143. Left for later (**for veto**): search, selection and yank on a page (it would need its own, since copy state draws cells); editing on the page; formats other than PNG, and remote pictures; colour emoji (Apple Color Emoji is 192 MB of PNGs); a shaper for right-to-left text, combining marks and ligatures; math and mermaid; a soft hyphen as a break; the page on Linux (the wgpu ring); a restart that brings back every window on a page (core's surface restorer, M1); a pointer that becomes a hand over a link (no cursor-shape API); the exact position in a page window's status line while a prompt's list is open over two windows on one page (core redraws the status lines then without telling a surface's `status()` which window it's for, so the line says what every window on the page has if they agree, and only the page's name if they don't).
 1144. **For veto:** nobody has seen the page on screen. It was checked as the pixels the harness's sink was handed, as PNG files looked at slice by slice, and against CoreText's drawing of the same lines off screen. No browser capture of github.com was made: every "as GitHub" is the stylesheet's numbers and the critics' memory. What only a look tells: whether the weight reads right beside the editor's own text, whether mono-dark's grey code colours are the ones you want on a page, and whether scrolling by trackpad feels smooth. Every OS scroll event is a frame, and nothing coalesces them.
 1145. **For veto:** the rule of two (scope §9, D11) has its second user: die-markdown and die-whiteboard both wrap tiny-skia now, and both find DIE's font directory the same way. I didn't lift a shared `die-draw` crate. The lint's D14 rule lets an extension depend on die-core alone, so a shared crate is a change to that rule first. And the two share less than the rule supposes. The whiteboard strokes paths and keeps a canvas it shifts; the page fills glyph masks, rounded panels and scaled pictures into a viewport. The shared part would be the font-directory rule, a premultiplied blit and the PNG decode, about 150 lines. Say if you want it lifted anyway.
+1146. The gate on this tree:
+- `cargo fmt --all --check`.
+- `cargo xtask lint` (14 crates).
+- `cargo xtask budget`: die-core 15,859 of 15,860 and die-render untouched; die-markdown 13,385, uncapped; die-dev 298.
+- `cargo xtask sources` (311 files).
+- `cargo clippy --workspace --all-targets -D warnings`.
+- `cargo xtask cross-check` (both Linux targets).
+- `cargo xtask clean-build` (locked, offline, no C compiler; on the tree before the last pass's fixes, which added no dependency).
+- Under `DIE_UNSEEN=1`, `cargo test --workspace --no-fail-fast`: every test binary it had run passed, 89 of them, die-core's, die-vim's, die-markdown's, die-dev's and die-whiteboard's among them. die-render's input tests were still running when you asked to see the page, and I merged then.
+
+Not run: the ignored tests of `ci --full`, `ci --linux`, `mutate`, and S1's on-screen checks.
 
 ## 2026-11-07: 28 packages on `m0/integration`, and none of them on `main`
 
