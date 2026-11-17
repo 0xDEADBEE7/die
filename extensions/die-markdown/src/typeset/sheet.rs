@@ -92,11 +92,18 @@ pub(super) const RING_RADIUS: f32 = 4.0;
 /// How far under the baseline a link's underline starts.
 pub(super) const UNDERLINE: f32 = 3.2;
 
-/// How far each glyph's outline grows a side, in CSS pixels. A Mac browser draws GitHub with
-/// font smoothing on, which lays down about a quarter more ink than plain coverage; growing the
-/// outline by this much reproduces that weight for every face. Zero is DIE's own unsmoothed
-/// weight, the editor's beside the page.
-pub(super) const GROW: f32 = 0.15;
+/// How far each glyph's outline grows a side, in physical pixels for each physical pixel of its
+/// size: a Mac browser draws GitHub with font smoothing on, and CoreText's smoothing grows a
+/// glyph in proportion to its size, the more the lighter its colour, up to a limit. Dark text
+/// (a luminance of [`GROW_DARK_UNDER`] or less) grows the least, light text (from
+/// [`GROW_LIGHT_FROM`]) the most, and what's between in proportion. Measured against CoreText
+/// drawing the same text in the three palettes at scales 1, 1.5 and 2.
+pub(super) const GROW_DARK: f32 = 0.0068;
+pub(super) const GROW_LIGHT: f32 = 0.0145;
+pub(super) const GROW_DARK_UNDER: f32 = 0.1;
+pub(super) const GROW_LIGHT_FROM: f32 = 0.585;
+/// The most a glyph grows a side, in physical pixels.
+pub(super) const GROW_MOST: f32 = 0.345;
 
 /// A hairline's thickness in physical pixels: one CSS pixel, as a browser draws GitHub's rules,
 /// grid and borders, in whole pixels so it's never blurred, and never under one.
@@ -105,7 +112,9 @@ pub(super) fn hairline(scale: f32) -> f32 {
 }
 
 /// A line that's a CSS pixel thick, in whole physical pixels: a checkbox's outline, a ring
-/// bullet, an underline.
+/// bullet. A browser snaps a border so, down to the whole pixel and never under one (CSS's
+/// "snap as a border width"): at a scale of 1.5 it's one pixel, and a rule never pushes what's
+/// under it off the sheet's rhythm by more than a fraction.
 pub(super) fn stroke(scale: f32) -> f32 {
-    scale.round().max(1.0)
+    scale.floor().max(1.0)
 }

@@ -15,7 +15,8 @@ use super::doc::{self, Alert, Align, Block, Doc, Fit, Inline, Item, Length, Note
 use super::fonts::{Inst, Pass, Style as Face, Weight};
 use super::sheet;
 use super::{Env, HeadingPos, LinkBox, Palette, Pictures, Rect, Rgb};
-use std::path::PathBuf;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 /// The page's rows a band of the index covers.
 pub(super) const BAND: i32 = 256;
@@ -153,8 +154,23 @@ pub(super) struct Laid {
     pub headings: Vec<HeadingPos>,
     pub spans: Vec<Span>,
     pub wants: Vec<PathBuf>,
-    /// Places with names that aren't headings: footnotes and their references.
+    /// Places with names that aren't headings: footnotes and their references, and what HTML
+    /// names with `id` or `name`.
     pub anchors: Vec<(String, f32)>,
+    /// The names a closed `<details>` keeps from the page: each at the top of the summary line
+    /// that's shown for it, with the closed blocks round it by their tags' offsets, outermost
+    /// first.
+    pub hidden: Vec<(String, f32, Vec<usize>)>,
+}
+
+impl Laid {
+    /// Where a byte of the source is: the top of the line that shows it, or of the nearest
+    /// thing shown after it.
+    pub(super) fn y_of(&self, source: usize) -> f32 {
+        let spans = &self.spans;
+        let at = spans.partition_point(|s| s.end <= source && s.src < source);
+        spans.get(at).or(spans.last()).map_or(0.0, |s| s.y0)
+    }
 }
 
 /// Where the next block goes, and the margin waiting above it.
@@ -233,6 +249,9 @@ struct Look {
     ink: Rgb,
     underline: bool,
     strike: bool,
+    /// The colour of the line through struck text: the struck element's own, whatever is
+    /// inside it.
+    strike_ink: Rgb,
     /// How far above the line's baseline its own is.
     rise: f32,
     boxed: Boxed,
@@ -283,8 +302,11 @@ enum Inset {
     Absent {
         from: u32,
         to: u32,
-        /// The whole box's width.
+        /// The whole box's width, and its words'.
         width: f32,
+        words: f32,
+        /// An ellipsis, at the end of the words a box too narrow for them keeps.
+        dots: (Glyph, f32),
         ink: Rgb,
         mark: bool,
         size: f32,
@@ -297,6 +319,8 @@ enum Inset {
 struct Prepared {
     pieces: Vec<Piece>,
     glyphs: Vec<Glyph>,
+    /// The source byte of each glyph.
+    srcs: Vec<usize>,
     looks: Vec<Look>,
     insets: Vec<Inset>,
 }
@@ -375,6 +399,10 @@ struct Lay<'a, 'f> {
     /// Each of the document's links' rectangles, and the links in the order they first showed.
     rects: Vec<Vec<Rect>>,
     order: Vec<u32>,
+    /// The names HTML gives places in the text that's shown, each with its source byte.
+    named: Vec<(String, usize)>,
+    /// The directory a picture's path from `/` is read against, once it's been looked for.
+    root: Option<PathBuf>,
 }
 
 /// Lays a document out.
@@ -412,6 +440,7 @@ pub(super) fn lay(doc: &Doc, env: &Env<'_>, pass: Pass<'_>, pictures: &Pictures)
             spans: Vec::new(),
             wants: Vec::new(),
             anchors: Vec::new(),
+            hidden: Vec::new(),
         },
         flow: Flow {
             y: 0.0,
@@ -422,6 +451,8 @@ pub(super) fn lay(doc: &Doc, env: &Env<'_>, pass: Pass<'_>, pictures: &Pictures)
         markers: Vec::new(),
         rects: vec![Vec::new(); doc.links.len()],
         order: Vec::new(),
+        named: Vec::new(),
+        root: None,
     };
     // The column: centred, at most the sheet's width, never laid out narrower than its least,
     // however narrow the area (what's past the area's edge isn't painted).
@@ -633,8 +664,8 @@ impl Lay<'_, '_> {
         let broken = break_lines(&prepared, w, &base, true);
         let y = self.flow.open(self.px(sheet::HEADING_ABOVE));
         self.emit(&prepared, &broken, x, y, w, para.align, para.src.end);
-        // A heading with no text still takes its line.
-        let mut bottom = y + broken.height.max(base.height);
+        // A heading with no text has no line, as in a browser: only its padding and its rule.
+        let mut bottom = y + broken.height;
         if level <= 2 {
             bottom += self.px(size * sheet::HEADING_RULE_PAD);
             self.hairline(x, x + w, bottom, self.pal.hairline);
@@ -946,8 +977,70 @@ impl Lay<'_, '_> {
         self.flow.close(y + height, 0.0);
         if open {
             self.blocks(blocks, x, w, ctx);
+        } else {
+            self.hide(blocks, &mut vec![at], y.round());
         }
         self.flow.join(self.px(sheet::GAP));
+    }
+
+    /// The names in what a closed `<details>` holds, which the page doesn't show: each is at
+    /// `y`, its summary line, behind the closed blocks in `shut`.
+    fn hide(&mut self, blocks: &[Block], shut: &mut Vec<usize>, y: f32) {
+        for block in blocks {
+            match block {
+                Block::Para(para) => self.hide_text(&para.inlines, shut, y),
+                Block::Heading { slug, para, .. } => {
+                    self.out.hidden.push((slug.clone(), y, shut.clone()));
+                    self.hide_text(&para.inlines, shut, y);
+                }
+                Block::Quote { blocks, .. } => self.hide(blocks, shut, y),
+                Block::List { items, .. } => {
+                    for item in items {
+                        self.hide(&item.blocks, shut, y);
+                    }
+                }
+                Block::Table(table) => {
+                    for cell in table.head.iter().chain(table.rows.iter().flatten()) {
+                        self.hide_text(&cell.inlines, shut, y);
+                    }
+                }
+                Block::Details {
+                    summary,
+                    blocks,
+                    open,
+                    at,
+                    ..
+                } => {
+                    self.hide_text(&summary.inlines, shut, y);
+                    let closed = *open == self.env.opened.contains(at);
+                    if closed {
+                        shut.push(*at);
+                    }
+                    self.hide(blocks, shut, y);
+                    if closed {
+                        shut.pop();
+                    }
+                }
+                Block::Code { .. } | Block::Rule { .. } | Block::Notes(_) => {}
+            }
+        }
+    }
+
+    fn hide_text(&mut self, inlines: &[Inline], shut: &[usize], y: f32) {
+        for inline in inlines {
+            let name = match inline {
+                Inline::Anchor { name, .. } => Some(name),
+                Inline::Text { style, .. } => style
+                    .link
+                    .and_then(|l| self.doc.links.get(l as usize)?.anchor.as_ref()),
+                _ => None,
+            };
+            if let Some(name) = name
+                && !self.out.hidden.iter().any(|(n, ..)| n == name)
+            {
+                self.out.hidden.push((name.clone(), y, shut.to_vec()));
+            }
+        }
     }
 
     fn notes(&mut self, notes: &[Note], x: f32, w: f32, ctx: &Ctx) {
@@ -1044,16 +1137,21 @@ impl Lay<'_, '_> {
             pad_x = fits.clamp(self.px(sheet::CELL_X_LEAST).round(), pad_x);
         }
         let beyond = (furthest - 2.0 * pad_x * columns as f32).max(room);
-        let widths: Vec<f32> = if all <= room {
+        // A table made narrower than it would be is as wide as it may be, to the pixel: what
+        // flooring its columns leaves over goes to the widest.
+        let mut fill = None;
+        let mut widths: Vec<f32> = if all <= room {
             widest.clone()
         } else if tight <= room {
             // Each column gives up the same share of what it could spare.
             let spare = (room - tight) / (all - tight).max(1.0);
             let between = |(most, least): (&f32, &f32)| (least + (most - least) * spare).floor();
+            fill = Some(room);
             widest.iter().zip(&least).map(between).collect()
         } else if tight <= beyond {
             least.clone()
         } else {
+            fill = Some(beyond);
             // Words break in the column with the longest, and only as far as needed, the
             // others whole; if every column is down to its floor, all shrink alike.
             let mut widths = least.clone();
@@ -1079,12 +1177,26 @@ impl Lay<'_, '_> {
             }
             widths
         };
+        if let Some(fill) = fill {
+            let left_over = fill - widths.iter().sum::<f32>();
+            let wide = (0..columns).max_by(|a, b| widths[*a].total_cmp(&widths[*b]));
+            if let Some(c) = wide.filter(|_| left_over > 0.0) {
+                widths[c] += left_over;
+            }
+        }
         let y = self.flow.open(0.0);
         let top = y.round();
-        let left = x.round();
-        let right = left
-            + hair * (columns + 1) as f32
-            + widths.iter().map(|c| c + 2.0 * pad_x).sum::<f32>();
+        let across =
+            hair * (columns + 1) as f32 + widths.iter().map(|c| c + 2.0 * pad_x).sum::<f32>();
+        // A table narrower than its column stands where the HTML round it sets it.
+        let spare = (w - across).max(0.0);
+        let left = (x + match table.align {
+            Align::Center => spare / 2.0,
+            Align::Right => spare,
+            Align::Start | Align::Left => 0.0,
+        })
+        .round();
+        let right = left + across;
         let mut edges = vec![top];
         let mut row_top = top;
         for (r, row) in rows.iter().enumerate() {
@@ -1102,9 +1214,11 @@ impl Lay<'_, '_> {
             }
             let mut cell_x = left + hair;
             for (c, cell) in row.iter().enumerate() {
-                // A header cell with no alignment is centred, as a browser centres one.
+                // A header cell with no alignment is centred, as a browser centres one; a body
+                // cell's is the table's.
                 let align = match table.aligns.get(c).copied().unwrap_or_default() {
                     Align::Start if r == 0 => Align::Center,
+                    Align::Start => table.align,
                     align => align,
                 };
                 let end = if r == 0 {
@@ -1282,21 +1396,32 @@ impl Lay<'_, '_> {
         }
         // A link is the link's colour whatever it holds; otherwise the nearest element with a
         // colour of its own gives it, and with none the block's does.
-        let mut ink = ctx.ink;
-        let mut roles = style.roles;
-        while roles != 0 {
-            let role = match roles & 15 {
-                doc::STRONG => self.pal.strong,
-                doc::EM => self.pal.em,
-                doc::STRIKE => self.pal.del,
-                _ => self.pal.code,
-            };
-            if role != self.pal.text {
-                ink = role;
-                break;
+        let colour = |roles: u32, link: bool| {
+            let mut roles = roles;
+            while roles != 0 {
+                let role = match roles & 15 {
+                    doc::STRONG => self.pal.strong,
+                    doc::EM => self.pal.em,
+                    doc::STRIKE => self.pal.del,
+                    doc::LINK if link => self.pal.link,
+                    doc::LINK => self.pal.text,
+                    _ => self.pal.code,
+                };
+                if role != self.pal.text {
+                    return role;
+                }
+                roles >>= 4;
             }
-            roles >>= 4;
+            ctx.ink
+        };
+        let mut ink = colour(style.roles, false);
+        // A line through is the struck element's colour, which it has of its own or from
+        // round it, a link that holds it included; never from what it holds.
+        let mut struck = style.roles;
+        while struck != 0 && struck & 15 != doc::STRIKE {
+            struck >>= 4;
         }
+        let strike_ink = colour(struck, true);
         if style.kbd {
             ink = ctx.ink;
         }
@@ -1309,6 +1434,7 @@ impl Lay<'_, '_> {
             ink,
             underline: style.link.is_some() && self.pal.link_underline,
             strike: style.strike,
+            strike_ink,
             rise,
             boxed,
             span: style.span,
@@ -1351,6 +1477,7 @@ impl Lay<'_, '_> {
                     } as u32;
                     open = self.words(&mut out, text, *src, look, at, open);
                 }
+                Inline::Anchor { name, src } => self.named.push((name.clone(), *src)),
                 Inline::Image {
                     dest,
                     alt,
@@ -1360,6 +1487,8 @@ impl Lay<'_, '_> {
                     src,
                 } => {
                     let inset = self.inset(&mut out, dest, alt, *link, *width, *height, ctx);
+                    // Its words, if it shows them, are where the picture is in the source.
+                    out.srcs.resize(out.glyphs.len(), *src);
                     out.insets.push(inset);
                     out.pieces.push(Piece {
                         kind: Kind::Inset(out.insets.len() as u32 - 1),
@@ -1399,12 +1528,15 @@ impl Lay<'_, '_> {
         let code = look.boxed == Boxed::Pill;
         let mut chars = text.char_indices().peekable();
         let mut before = None;
+        // Whether what's gone since the last space is more than hyphens: a hyphen that starts
+        // a word, as in `-v`, keeps it whole.
+        let mut begun = open;
         while let Some((offset, c)) = chars.next() {
             if c.is_whitespace() && c != '\u{a0}' {
                 if let Some(word) = word.take() {
                     word_piece(out, at, word, joined);
                 }
-                joined = false;
+                (joined, begun) = (false, false);
                 // Spaces collapse to one, but in code, which keeps its own.
                 let again = matches!(out.pieces.last(), Some(p) if p.kind == Kind::Space);
                 if code || !again {
@@ -1421,6 +1553,14 @@ impl Lay<'_, '_> {
                     });
                 }
                 before = Some(c);
+                continue;
+            }
+            // A zero-width space is a place a line may end, and nothing else.
+            if c == '\u{200b}' {
+                if let Some(word) = word.take() {
+                    word_piece(out, at, word, joined);
+                }
+                (joined, begun) = (false, false);
                 continue;
             }
             if c.is_control() || unseen(c) {
@@ -1446,14 +1586,15 @@ impl Lay<'_, '_> {
                 inst: shaped.inst,
                 id: shaped.id,
             });
+            out.srcs.push(src + offset);
             *pen += shaped.advance;
-            // A line may end after a hyphen, a slash or a question mark inside a word, as in a
-            // long address, and after an East Asian character that may end one.
+            // A line may end after a hyphen inside a word whatever comes before it, unless a
+            // digit follows, as Unicode's rules and a browser have it (`aarch64-|apple-|darwin`,
+            // but `-5` and `1-2` whole); after a slash or a question mark inside a word, as in
+            // a long address; and after an East Asian character that may end one.
             let next = chars.peek().map(|(_, c)| *c);
             let breaks = match c {
-                '-' => {
-                    before.is_some_and(char::is_alphabetic) && next.is_some_and(char::is_alphabetic)
-                }
+                '-' => begun && next.is_some_and(char::is_alphabetic),
                 '/' | '?' => {
                     before.is_some_and(|b| b != '/' && b != ':')
                         && next.is_some_and(char::is_alphanumeric)
@@ -1466,6 +1607,7 @@ impl Lay<'_, '_> {
                 joined = false;
             }
             before = Some(c);
+            begun |= c != '-';
         }
         match word {
             Some(word) => {
@@ -1549,10 +1691,21 @@ impl Lay<'_, '_> {
         } else {
             0.0
         };
+        let dots = self.pass.next(&mut run, '…');
+        let dots = (
+            Glyph {
+                x: dots.kern,
+                inst: dots.inst,
+                id: dots.id,
+            },
+            dots.kern + dots.advance,
+        );
         Inset::Absent {
             from,
             to: out.glyphs.len() as u32,
             width: 2.0 * self.px(sheet::ABSENT_PAD) + icon + pen,
+            words: pen,
+            dots,
             ink,
             mark: never,
             size: ctx.size,
@@ -1563,7 +1716,8 @@ impl Lay<'_, '_> {
     /// Whether a picture's file is here, coming or never will be.
     fn picture(&mut self, dest: &str) -> Pic {
         let plain = dest.split(['?', '#']).next().unwrap_or("");
-        let local = plain.strip_prefix("file://").unwrap_or(plain);
+        let file = plain.strip_prefix("file://");
+        let local = file.unwrap_or(plain);
         // Anything else with a scheme is somewhere a page doesn't fetch from.
         let scheme = local.split_once(':').is_some_and(|(s, _)| {
             s.len() > 1
@@ -1573,11 +1727,16 @@ impl Lay<'_, '_> {
         if local.is_empty() || scheme || local.starts_with("//") {
             return Pic::Never;
         }
-        let local = PathBuf::from(decoded(local));
-        let path = match (local.is_absolute(), self.env.dir) {
-            (true, _) => local,
-            (false, Some(dir)) => dir.join(local),
-            (false, None) => return Pic::Never,
+        // A path from `/` is from the repository's top, as GitHub reads one; a `file:` address
+        // is the file it names.
+        let path = match (file, local.strip_prefix('/'), self.env.dir) {
+            (Some(_), _, _) => PathBuf::from(decoded(local)),
+            (None, Some(rooted), Some(_)) => match self.root() {
+                Some(root) => root.join(decoded(rooted)),
+                None => return Pic::Never,
+            },
+            (None, None, Some(dir)) => dir.join(decoded(local)),
+            (None, _, None) => return Pic::Never,
         };
         match self.pictures.known.get(&path) {
             Some(Some(picture)) if picture.width > 0 && picture.height > 0 => {
@@ -1606,6 +1765,25 @@ impl Lay<'_, '_> {
                 Pic::Coming
             }
         }
+    }
+
+    /// The directory a picture's path from `/` is read against: the nearest above the file
+    /// with a `.git` in it, the repository's top, or else the file's own. Looked for once.
+    fn root(&mut self) -> Option<PathBuf> {
+        let dir = self.env.dir?;
+        let root = self.root.get_or_insert_with(|| {
+            // The directory of a file named alone is the working one.
+            let here = if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            };
+            let whole = std::fs::canonicalize(here).ok();
+            let from = whole.as_deref().unwrap_or(dir);
+            let top = from.ancestors().find(|d| d.join(".git").exists());
+            top.map_or_else(|| dir.to_path_buf(), Path::to_path_buf)
+        });
+        Some(root.clone())
     }
 
     /// Puts a paragraph's lines on the page, its top at `y`.
@@ -1713,56 +1891,47 @@ impl Lay<'_, '_> {
             }
             self.end_run(run.take());
             drawn.push(self.out.glyphs.len());
-            // Lines under links and through struck text: one stretch for each link and each
-            // struck run, straight through a pill inside it, padding and all, as a browser
-            // draws one line; its place and weight are the text's where the stretch has any.
-            let deco = |f: &Frag| {
+            // Lines under links and through struck text: one stretch for each link and for
+            // each run of struck text in one colour, straight through a pill inside it,
+            // padding and all, as a browser draws one line; its place and weight are the
+            // text's where the stretch has any. A line through keeps the struck element's
+            // colour across a link inside it.
+            let deco = |f: &Frag, through: bool| {
                 let l = look(f);
-                let drawn = !is_inset(f) && (l.underline || l.strike);
-                drawn.then_some((l.link.filter(|_| l.underline), l.strike))
+                match through {
+                    _ if is_inset(f) => None,
+                    false => l.underline.then_some((l.link, l.ink)),
+                    true => l.strike.then_some((None, l.strike_ink)),
+                }
             };
-            let mut at = 0;
-            while at < frags.len() {
-                let Some(key) = deco(&frags[at]) else {
-                    at += 1;
-                    continue;
-                };
-                let mut last = at;
-                while last + 1 < frags.len() && deco(&frags[last + 1]) == Some(key) {
-                    last += 1;
-                }
-                let stretch = &frags[at..=last];
-                let plain = stretch.iter().map(look).find(|l| l.boxed == Boxed::No);
-                let first = *plain.unwrap_or(look(&frags[at]));
-                let (x0, x1) = (
-                    lx + frags[at].x - look(&frags[at]).pad,
-                    lx + frags[last].x + frags[last].width + look(&frags[last]).pad,
-                );
-                let thick = (self.px(first.size) / 16.0).round().max(1.0);
-                let own = baseline - first.rise;
-                if first.underline {
-                    // GitHub's offset under the baseline, whatever the text's size.
-                    let y0 = (own + self.px(sheet::UNDERLINE)).round();
-                    let (x0, x1) = (x0.round() as i32, x1.round() as i32);
-                    if x1 > x0 {
-                        self.out.ops.push(Op::Under {
-                            x0,
-                            y0: y0 as i32,
-                            x1,
-                            y1: (y0 + thick) as i32,
-                            ink: first.ink,
-                            from: drawn[at] as u32,
-                            to: drawn[last + 1] as u32,
-                            baseline: own.round() as i32,
-                            px: self.px(first.size),
-                        });
+            for through in [false, true] {
+                let mut at = 0;
+                while at < frags.len() {
+                    let Some(key) = deco(&frags[at], through) else {
+                        at += 1;
+                        continue;
+                    };
+                    let mut last = at;
+                    while last + 1 < frags.len() && deco(&frags[last + 1], through) == Some(key) {
+                        last += 1;
                     }
+                    let stretch = &frags[at..=last];
+                    let plain = stretch.iter().map(look).find(|l| l.boxed == Boxed::No);
+                    let first = *plain.unwrap_or(look(&frags[at]));
+                    let (x0, x1) = (
+                        lx + frags[at].x - look(&frags[at]).pad,
+                        lx + frags[last].x + frags[last].width + look(&frags[last]).pad,
+                    );
+                    self.decorate(
+                        through,
+                        &first,
+                        key.1,
+                        (x0, x1),
+                        baseline,
+                        drawn[at]..drawn[last + 1],
+                    );
+                    at = last + 1;
                 }
-                if first.strike {
-                    let y0 = (own - self.px(first.size * 0.26) - thick / 2.0).round();
-                    self.fill(x0, y0, x1, y0 + thick, first.ink);
-                }
-                at = last + 1;
             }
             // The links' rectangles: one for each link's stretch of this line.
             let link_of = |f: &Frag| match piece(f).kind {
@@ -1814,10 +1983,12 @@ impl Lay<'_, '_> {
             }
             // The source this line shows: from its first piece to the next line's.
             let first_src = |l: &Line| {
-                // A word cut over two lines is at its letters' places, a byte a letter.
+                // A word cut over two lines goes on from the letter it's cut at.
                 let first = broken.frags[l.from..l.to].first()?;
                 let p = piece(first);
-                Some(p.src + first.from.saturating_sub(p.from) as usize)
+                let cut = p.kind == Kind::Word && first.from > p.from;
+                let letter = cut.then(|| text.srcs.get(first.from as usize).copied());
+                Some(letter.flatten().unwrap_or(p.src))
             };
             let src = first_src(line).unwrap_or(end);
             let next = broken.lines[n + 1..]
@@ -1825,6 +1996,43 @@ impl Lay<'_, '_> {
                 .find_map(first_src)
                 .unwrap_or(end);
             self.span(src, next, top, top + line.height);
+        }
+    }
+
+    /// A line under a link (`through` false) or through struck text, from `x0` to `x1`, in
+    /// `ink`, placed and weighted for the text `first` looks like; an underline steps round
+    /// what hangs through it of the glyphs `glyphs`.
+    fn decorate(
+        &mut self,
+        through: bool,
+        first: &Look,
+        ink: Rgb,
+        (x0, x1): (f32, f32),
+        baseline: f32,
+        glyphs: Range<usize>,
+    ) {
+        let thick = (self.px(first.size) / 16.0).round().max(1.0);
+        let own = baseline - first.rise;
+        if through {
+            let y0 = (own - self.px(first.size * 0.26) - thick / 2.0).round();
+            self.fill(x0, y0, x1, y0 + thick, ink);
+            return;
+        }
+        // GitHub's offset under the baseline, whatever the text's size.
+        let y0 = (own + self.px(sheet::UNDERLINE)).round();
+        let (x0, x1) = (x0.round() as i32, x1.round() as i32);
+        if x1 > x0 {
+            self.out.ops.push(Op::Under {
+                x0,
+                y0: y0 as i32,
+                x1,
+                y1: (y0 + thick) as i32,
+                ink,
+                from: glyphs.start as u32,
+                to: glyphs.end as u32,
+                baseline: own.round() as i32,
+                px: self.px(first.size),
+            });
         }
     }
 
@@ -1880,6 +2088,8 @@ impl Lay<'_, '_> {
                 ink,
                 mark,
                 size,
+                words,
+                dots,
                 ..
             } => {
                 // A bordered box round a small picture mark and the words.
@@ -1908,18 +2118,29 @@ impl Lay<'_, '_> {
                     });
                     left += icon + self.px(sheet::ABSENT_GAP);
                 }
-                // The words that fit: a box too wide for its line loses its end.
+                // The words that fit: a box too wide for its line loses its end, and says so
+                // with an ellipsis.
                 let room = x + frag.width - pad - left;
                 let glyphs = &text.glyphs[from as usize..to as usize];
                 let start = self.out.glyphs.len();
+                let cut = words > room + SLACK;
+                let room = if cut { room - dots.1 } else { f32::MAX };
+                let mut end = 0.0;
                 for (i, glyph) in glyphs.iter().enumerate() {
-                    let end = glyphs.get(i + 1).map_or(f32::MAX, |g| g.x);
-                    if end > room + SLACK && i + 1 < glyphs.len() {
+                    let next = glyphs.get(i + 1).map_or(words, |g| g.x);
+                    if next > room + SLACK {
                         break;
                     }
                     self.out.glyphs.push(Glyph {
                         x: left + glyph.x,
                         ..*glyph
+                    });
+                    end = next;
+                }
+                if cut && room > 0.0 {
+                    self.out.glyphs.push(Glyph {
+                        x: left + end + dots.0.x,
+                        ..dots.0
                     });
                 }
                 self.end_run(Some((ink, self.px(size), baseline as i32, start)));
@@ -1958,8 +2179,18 @@ impl Lay<'_, '_> {
                     h: y1 - y0,
                 }
             };
+            // What the area doesn't show of a link isn't the link's; a link it shows none of
+            // isn't on the page, so the keyboard never rings nothing.
+            let rects: Vec<Rect> = rects
+                .into_iter()
+                .map(inside)
+                .filter(|r| r.w > 0.0 && r.h > 0.0)
+                .collect();
+            if rects.is_empty() {
+                continue;
+            }
             self.out.links.push(LinkBox {
-                rects: rects.into_iter().map(inside).collect(),
+                rects,
                 dest: from.dest.clone(),
                 title: from.title.clone(),
                 image: from.image,
@@ -1982,6 +2213,11 @@ impl Lay<'_, '_> {
             }
         }
         self.out.spans = spans;
+        // What HTML names is where the line that shows its tag is.
+        for (name, source) in std::mem::take(&mut self.named) {
+            let y = self.out.y_of(source);
+            self.out.anchors.push((name, y));
+        }
         // The index: which ops touch each band of rows.
         let bands = (height as i32 / BAND + 1).max(1) as usize;
         self.out.bands = vec![Vec::new(); bands];
@@ -2097,7 +2333,7 @@ fn no_end(c: char) -> bool {
 
 /// Characters that take no room and draw nothing: joiners, selectors, marks of direction.
 fn unseen(c: char) -> bool {
-    matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}')
+    matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}')
 }
 
 /// A path with its percent escapes read.
