@@ -11,8 +11,9 @@
 //! font has them. Each shot opens the dial, moves the pointer, and composites the frame as the
 //! host does: each cell's background, the board's pixel buffer over it, then each cell's glyph
 //! in DIE's IoskeleyMonoTerm. It writes the whole frame and a crop around the dial at 1:1, for
-//! stage one with nothing hovered and hovering arrow, stage two on the pen (ink 2, thick) and on
-//! text, and the cell renderer's stage one and two; and prints what a move with the dial open
+//! stage one with nothing hovered and hovering arrow, stage two on the pen (its first band, then
+//! ink 2 thick and thin), on text and on the ellipse, and the cell renderer's stage one and two;
+//! and prints what a move with the dial open
 //! costs, and what drawing its line art alone does, which a change of what's hovered pays.
 
 use die_test_cap as _;
@@ -101,15 +102,18 @@ fn run() -> Result<(), String> {
     s.write("stage1-arrow", centre)?;
     s.to(centre + toward(0.0) * (1.6 * CH));
     s.write("stage1-pen", centre)?;
-    // Out past the ring: ink 1 is armed, so straight out keeps it; then round to ink 2's
-    // segment (10° to 30°) and out to the thick band.
-    s.to(centre + toward(0.0) * (4.0 * CH));
+    // Out past the ring, in the first band: the arc open, nothing picked. Then on past the
+    // guide marked 2: ink 1 is armed, so straight out keeps it; then round to ink 2's segment
+    // (10° to 30°) and out to the thick band.
+    s.to(centre + toward(0.0) * (3.6 * CH));
+    s.write("stage2-pen-first-band", centre)?;
+    s.to(centre + toward(0.0) * (4.8 * CH));
     s.write("stage2-pen-straight", centre)?;
     s.to(centre + toward(20.0) * (7.0 * CH));
     s.write("stage2-pen-ink2-thick", centre)?;
-    s.to(centre + toward(20.0) * (3.6 * CH));
+    s.to(centre + toward(20.0) * (4.8 * CH));
     s.write("stage2-pen-ink2-thin", centre)?;
-    s.space(KeyKind::Release, centre + toward(20.0) * (3.6 * CH));
+    s.space(KeyKind::Release, centre + toward(20.0) * (4.8 * CH));
     s.space(KeyKind::Press, centre);
     s.to(centre + toward(225.0) * (1.8 * CH));
     s.to(centre + toward(225.0) * (4.5 * CH));
@@ -117,6 +121,12 @@ fn run() -> Result<(), String> {
     s.to(centre + toward(285.0) * (5.0 * CH));
     s.write("stage2-text", centre)?;
     s.space(KeyKind::Release, centre + toward(285.0) * (5.0 * CH));
+    // East, the ellipse: its chip runs out along the centre's row past the arc.
+    s.space(KeyKind::Press, centre);
+    s.to(centre + toward(90.0) * (1.8 * CH));
+    s.to(centre + toward(100.0) * (6.0 * CH));
+    s.write("stage2-ellipse", centre)?;
+    s.space(KeyKind::Release, centre);
     // Near the area's edge: the dial is cut there as the area is.
     let corner = Point::new(60.0, 60.0);
     s.space(KeyKind::Press, corner);
@@ -444,14 +454,15 @@ fn draw_cost(centre: Point) {
         inks: &inks,
         fg: Rgb(0xcc, 0xcc, 0xcc),
     };
-    for (stage, at) in [
-        ("one", centre + toward(20.0) * (1.8 * CH)),
-        ("two", centre + toward(20.0) * (6.5 * CH)),
+    for (stage, deg, r) in [
+        ("one", 20.0, 1.8),
+        ("two", 20.0, 6.5),
+        ("two, east, the chip out along the row", 100.0, 6.5),
     ] {
         let mut d = Dial::open(centre, Opener::Space, cell, 1.0, Armed::default());
-        d.hover(centre + toward(20.0) * (1.8 * CH));
-        d.hover(at);
-        let layout = d.layout(Point::new(0.0, 0.0), (110, 32));
+        d.hover(centre + toward(deg) * (1.8 * CH));
+        d.hover(centre + toward(deg) * (r * CH));
+        let layout = d.layout(Point::new(0.0, 0.0), (110, 32), false);
         let n = 100;
         let t = Instant::now();
         for _ in 0..n {

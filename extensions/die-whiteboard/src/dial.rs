@@ -7,13 +7,16 @@
 //!
 //! **Stage one** is a ring of [`RING`] cell heights with the names outside it, on whole cells.
 //! **Stage two** opens when the pointer goes [`OPENS`] past the ring with an inky tool hovered
-//! (not the eraser or select): an arc [`ARC`] beyond the ring, six segments in ink order
-//! clockwise, [`SEGMENT`]° each, placed so the ink armed now is centred on the tool's
-//! direction, so pushing straight out keeps it. The pointer's angle picks the ink (clamped to
-//! the arc's ends past them) and, for a tool with a width (not text), its distance picks the
-//! width, thin from the stage's start, then medium, then thick, in bands [`BAND`] deep. Going
-//! back inside the ring is stage one again. Letting go in stage two arms the tool and sets the
-//! ink and width; letting go in stage one never changes them.
+//! (not the eraser or select) on a move after the one that hovered it, so a flick that hovers a
+//! tool and lands past the ring at once is stage one's: an arc [`ARC`] beyond the ring, six
+//! segments in ink order clockwise, [`SEGMENT`]° each, placed so the ink armed now is centred
+//! on the tool's direction, so pushing straight out keeps it, and the tool's chip beyond it.
+//! Its first band, [`BAND`] deep, picks nothing ([`Stage::Arc`]), so a flick that overshoots
+//! the ring changes nothing. Past that band the pointer's angle picks the ink (clamped to the
+//! arc's ends past them) and, for a tool with a width (not text), its distance picks the
+//! width, thin, then medium, then thick, a band each. Going back inside the ring is stage one
+//! again. Letting go past the first band arms the tool and sets the ink and width; letting go
+//! before it never changes them.
 //!
 //! The geometry is in board units, as the marquee's is, sized from the cell at the view's zoom,
 //! so on screen it's always the same. Both renderers lay the names, the readout and stage
@@ -44,8 +47,9 @@ pub const RING: f32 = 2.5;
 pub const OPENS: f32 = 0.5;
 /// How far beyond the ring the ink arc is, in cell heights.
 pub const ARC: f32 = 5.0;
-/// How deep each width band is, in cell heights.
-pub const BAND: f32 = 1.5;
+/// How deep each band of stage two is, in cell heights: the first, which picks nothing, then
+/// thin, medium and thick.
+pub const BAND: f32 = 1.25;
 /// Each ink's share of the arc, in degrees.
 pub const SEGMENT: f32 = 20.0;
 
@@ -81,8 +85,12 @@ pub enum Opener {
 pub enum Stage {
     /// The tools, by direction.
     Tools,
-    /// The ink arc of the hovered tool: the ink under the pointer's angle, `1`..=6, and the
-    /// width its distance picks, an index into [`WIDTHS`], or None for a tool without one.
+    /// The ink arc of the hovered tool open, the pointer in its first band: nothing picked
+    /// yet, so letting go here is stage one's.
+    Arc,
+    /// The ink arc of the hovered tool, the pointer past its first band: the ink under the
+    /// pointer's angle, `1`..=6, and the width its distance picks, an index into [`WIDTHS`],
+    /// or None for a tool without one.
     Ink {
         /// The ink.
         ink: u8,
@@ -193,7 +201,7 @@ pub struct Dial {
 
 /// A name, a label or a readout's place on the area's cells: its row, its first column and
 /// how many cells it takes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Span {
     /// The row.
     pub row: i64,
@@ -213,21 +221,25 @@ impl Span {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Layout {
     /// Each sector's name with a cell either side, where a chip's ends go: the name is from the
-    /// second cell.
+    /// second cell. In stage two the hovered one's is beyond the ink arc.
     pub names: [Span; 8],
-    /// Which names show: all in stage one; in stage two the chip, and the others its arcs don't
-    /// cross and its labels and swatches leave clear.
+    /// Which names show: all in stage one; in stage two the chip, and the others nothing drawn
+    /// crosses or sits beside: the arc and its guides, a width label or a swatch.
     pub shown: [bool; 8],
     /// The readout, centred under everything else.
     pub readout: Option<Span>,
-    /// Stage two's width labels, `2` `4` `8`, at the counter-clockwise end of their guide
-    /// arcs: the band edge's radius, and the label's cell, where one fits.
+    /// Stage two's width labels for the pixel renderer, `2` `4` `8`, past the counter-clockwise
+    /// end of their guide arcs, clear of the line art: the band edge's radius, and the label's
+    /// cell, where one fits.
     pub guides: Vec<(f32, Span, &'static str)>,
     /// Stage two's swatches for the cell renderer, one an ink, with a cell either side for the
     /// hovered one's marks.
     pub swatches: Vec<Span>,
-    /// The farthest anything is drawn from the centre, cells included, in board units.
+    /// The farthest the scrim must reach, in board units: everything drawn, cells included,
+    /// but stage two's chip, whose cells are solid.
     pub reach: f32,
+    /// The hovered name's chip, in board units: in the drawn square, scrim or not.
+    pub chip: Option<Rect>,
 }
 
 /// One run of the dial's text on the area's cells.
@@ -321,32 +333,60 @@ impl Dial {
         self.radius + ARC * self.cell.h
     }
 
-    /// The width bands' inner edges: thin from the first, medium from the second, thick from
-    /// the third.
+    /// The width bands' inner edges, past stage two's first band, which picks nothing: thin
+    /// from the first, medium from the second, thick from the third.
     pub fn bands(&self) -> [f32; 3] {
-        let (o, b) = (self.opens(), BAND * self.cell.h);
+        let b = BAND * self.cell.h;
+        let o = self.opens() + b;
         [o, o + b, o + 2.0 * b]
+    }
+
+    /// The guide arcs stage two draws for the hovered tool: each width band's inner edge for
+    /// a tool with a width, and for text the first, where the angle starts to pick.
+    pub fn guides(&self) -> Vec<f32> {
+        match self.tool() {
+            Some(t) if has_width(t) => self.bands().to_vec(),
+            Some(t) if inky(t) => vec![self.bands()[0]],
+            _ => vec![],
+        }
     }
 
     /// The pointer is at `p`: the sector in its direction is hovered, or stage two's ink and
     /// width under it. Whether what the dial says changed (the pointer moves the needle
     /// whatever this says).
     pub fn hover(&mut self, p: Point) -> bool {
+        self.track(p, true)
+    }
+
+    /// The pointer let go at `p`: as [`Dial::hover`], but stage two doesn't open on it, so a
+    /// flick let go where it landed is stage one's.
+    pub fn settle(&mut self, p: Point) -> bool {
+        self.track(p, false)
+    }
+
+    fn track(&mut self, p: Point, may_open: bool) -> bool {
         let was = (self.hovered, self.stage);
         self.pointer = p;
         let r = p.dist(self.centre);
-        let held = matches!(self.stage, Stage::Ink { .. }) && r >= self.radius;
+        let held = self.stage != Stage::Tools && r >= self.radius;
         if !held {
             self.hovered = self.sector_at(p);
             self.stage = Stage::Tools;
         }
+        // Stage two opens from stage one on the tool an earlier move hovered: a move that
+        // hovers a tool and lands past the ring at once is a flick, and stage one's.
+        let opens = may_open && was == (self.hovered, Stage::Tools) && r >= self.opens();
         if let Some(tool) = self.tool()
             && inky(tool)
-            && (held || r >= self.opens())
+            && (held || opens)
         {
-            self.stage = Stage::Ink {
-                ink: self.ink_at(p),
-                width: has_width(tool).then(|| self.width_at(r)),
+            self.stage = if r < self.bands()[0] {
+                Stage::Arc
+            } else {
+                Stage::Ink {
+                    ink: self.ink_at(p),
+                    width: has_width(tool).then(|| self.width_at(r)),
+                }
             };
         }
         was != (self.hovered, self.stage)
@@ -376,9 +416,9 @@ impl Dial {
         k as u8 + 1
     }
 
-    /// The width a distance `r` from the centre picks.
+    /// The width a distance `r` from the centre picks, past the first band.
     pub fn width_at(&self, r: f32) -> u8 {
-        let k = ((r - self.opens()) / (BAND * self.cell.h)).floor();
+        let k = ((r - self.bands()[0]) / (BAND * self.cell.h)).floor();
         k.clamp(0.0, (WIDTHS.len() - 1) as f32) as u8
     }
 
@@ -461,133 +501,205 @@ impl Dial {
         dx.hypot(dy)
     }
 
+    /// Whether `r` comes within `reach` of the circle of `radius` about the centre, between
+    /// `from` and `to` degrees clockwise from north, or anywhere on it with None. Conservative:
+    /// the rectangle's span of distances meets the band and its span of angles the stretch,
+    /// which one across a corner of both may do without touching.
+    fn meets_circle(&self, r: &Rect, radius: f32, reach: f32, along: Option<(f32, f32)>) -> bool {
+        if self.near(r) >= radius + reach || self.far(r) <= radius - reach {
+            return false;
+        }
+        let Some((from, to)) = along else {
+            return true;
+        };
+        if r.contains(self.centre) {
+            return true;
+        }
+        // A rectangle clear of the centre spans less than half a turn from it: its corners'
+        // angles about its own middle's bound it.
+        let mid = (from + to) / 2.0;
+        let half = (to - from) / 2.0 + (reach / radius).to_degrees();
+        let towards = angle_of(r.center() - self.centre);
+        let corners = [
+            r.min,
+            Point::new(r.max.x, r.min.y),
+            r.max,
+            Point::new(r.min.x, r.max.y),
+        ];
+        let (lo, hi) = corners
+            .iter()
+            .map(|p| wrap(angle_of(*p - self.centre) - towards))
+            .fold((f32::MAX, f32::MIN), |(lo, hi), a| (lo.min(a), hi.max(a)));
+        let o = wrap(towards - mid);
+        o + hi > -half && o + lo < half
+    }
+
+    /// Whether a width label's cells at `r` keep clear of the line art by a little: the ring
+    /// and its ticks, the ink arc between `start` and `end` with its ticks and caps, and the
+    /// guides.
+    fn clear_of_art(&self, r: &Rect, start: f32, end: f32) -> bool {
+        let (px, clear) = (self.px, art::CLEAR * self.px);
+        let along = Some((start, end));
+        !self.meets_circle(r, self.radius, art::TICK * px + clear, None)
+            && !self.meets_circle(r, self.arc_radius(), art::CAP * px + clear, along)
+            && self
+                .guides()
+                .iter()
+                .all(|g| !self.meets_circle(r, *g, art::HAIR * px + clear, along))
+    }
+
+    /// Sector `i`'s name with a cell either side, hung off a circle `clear` about the centre by
+    /// the end that faces it: north and south centred on the centre's column, east and west on
+    /// its row, the diagonals on the row about 45° out. It moves out a cell at a time until no
+    /// cell of it is within `clear` of the centre and it meets nothing in `taken`.
+    fn place(&self, origin: Point, i: usize, clear: f32, taken: &[Span]) -> Span {
+        let (cr, cc) = self.cell_of(origin, self.centre);
+        let len = SECTORS[i].name().chars().count() as i64 + 2;
+        let diagonal_row = {
+            let at = self.centre + Dial::direction(i as f32) * (clear + self.cell.h * 0.5);
+            self.cell_of(origin, at).0
+        };
+        let at = |k: i64| -> Span {
+            let (row, col) = match i {
+                0 => (cr - k, cc - len / 2),
+                4 => (cr + k, cc - len / 2),
+                2 => (cr, cc + k),
+                6 => (cr, cc - k - len + 1),
+                1 | 3 => (diagonal_row, cc + k),
+                _ => (diagonal_row, cc - k - len + 1),
+            };
+            Span { row, col, len }
+        };
+        let mut k = 1;
+        loop {
+            let s = at(k);
+            let clear_of_ring = self.near(&self.rect_of(origin, &s)) >= clear;
+            if (clear_of_ring && taken.iter().all(|o| !o.meets(&s))) || k > 128 {
+                return s;
+            }
+            k += 1;
+        }
+    }
+
     /// Where the names, the readout and stage two's labels go, on a grid of the dial's cells
     /// whose cell (0, 0) has its top left at `origin` (the area's, in board units), in an area
-    /// of `area` columns and rows.
+    /// of `area` columns and rows, for the cell renderer if `cells`, else for the pixel
+    /// renderer: each lays out only what it draws.
     ///
     /// Each name keeps a cell either side for a chip's ends and hangs off the ring by the end
-    /// that faces the centre: north and south centred on the centre's column, east and west on
-    /// its row, the diagonals on the row about 45° out. It moves out a cell at a time until no
-    /// cell of it is within a tick and a little of the ring, and none meets a name placed
-    /// before it. So on whole cells, wherever in a cell the centre falls, none overlaps the
-    /// ring, its ticks or another name. The readout goes two rows under everything, or two
-    /// over it when the area ends first, and inside the area's sides.
-    pub fn layout(&self, origin: Point, area: (usize, usize)) -> Layout {
+    /// that faces the centre ([`Dial::place`]), clear of a tick and a little of the ring and of
+    /// the names placed before it. So on whole cells, wherever in a cell the centre falls, none
+    /// overlaps the ring, its ticks or another name. In stage two the chip goes beyond the ink
+    /// arc the same way, clear of its caps (and of the swatches in cells), so between the ring
+    /// and the arc there's only the needle and the guides; each width label goes a step past
+    /// its guide's counter-clockwise end, or further, or past the other end, where it's clear
+    /// of the ring, the arc, the guides, the chip and the other labels, or nowhere. The names
+    /// the line art crosses give way, and those a label is beside or a swatch sits on. The
+    /// readout goes two rows under everything, or two over it when the area ends first, and
+    /// inside the area's sides.
+    pub fn layout(&self, origin: Point, area: (usize, usize), cells: bool) -> Layout {
         let (cr, cc) = self.cell_of(origin, self.centre);
-        let clear = self.radius + (art::TICK + art::CLEAR) * self.px;
-        let mut names = [Span {
-            row: 0,
-            col: 0,
-            len: 0,
-        }; 8];
-        for (i, tool) in SECTORS.iter().enumerate() {
-            let len = tool.name().chars().count() as i64 + 2;
-            let diagonal_row = {
-                let at = self.centre + Dial::direction(i as f32) * (clear + self.cell.h * 0.5);
-                self.cell_of(origin, at).0
-            };
-            let place = |k: i64| -> Span {
-                let (row, col) = match i {
-                    0 => (cr - k, cc - len / 2),
-                    4 => (cr + k, cc - len / 2),
-                    2 => (cr, cc + k),
-                    6 => (cr, cc - k - len + 1),
-                    1 | 3 => (diagonal_row, cc + k),
-                    _ => (diagonal_row, cc - k - len + 1),
-                };
-                Span { row, col, len }
-            };
-            let mut k = 1;
-            let span = loop {
-                let s = place(k);
-                let clear_of_ring = self.near(&self.rect_of(origin, &s)) >= clear;
-                let clear_of_names = names[..i].iter().all(|o| !o.meets(&s));
-                if (clear_of_ring && clear_of_names) || k > 64 {
-                    break s;
-                }
-                k += 1;
-            };
-            names[i] = span;
+        let ring = self.radius + (art::TICK + art::CLEAR) * self.px;
+        let mut names = [Span::default(); 8];
+        for i in 0..SECTORS.len() {
+            names[i] = self.place(origin, i, ring, &names[..i]);
         }
         let mut shown = [true; 8];
+        // A label beside a name or another label would read as part of it: within three
+        // blank cells on its row.
+        let beside = |s: &Span| Span {
+            col: s.col - 3,
+            len: s.len + 6,
+            ..*s
+        };
         let mut guides = vec![];
         let mut swatches = vec![];
-        let mut lowest = names.iter().map(|s| s.row).max().unwrap_or(cr);
-        let mut highest = names.iter().map(|s| s.row).min().unwrap_or(cr);
-        let mut reach = names
-            .iter()
-            .map(|s| self.far(&self.rect_of(origin, s)))
-            .fold(self.radius, f32::max);
-        if let (Stage::Ink { .. }, Some((start, end)), Some(tool)) =
-            (self.stage, self.span(), self.tool())
+        // The rows of what's drawn, for the readout under or over it.
+        let mut rows = vec![cr];
+        let mut reach = self.radius + art::TICK * self.px;
+        let open = self.stage != Stage::Tools;
+        if let (true, Some((start, end)), Some(tool), Some(hovered)) =
+            (open, self.span(), self.tool(), self.hovered)
         {
             let arc = self.arc_radius() + art::CAP * self.px;
             reach = reach.max(arc);
-            // The arc's lowest and highest points, for the readout under or over it.
             let mut deg = start;
             while deg <= end + 0.01 {
-                let row = self.cell_of(origin, self.centre + toward(deg) * arc).0;
-                (lowest, highest) = (lowest.max(row), highest.min(row));
+                rows.push(self.cell_of(origin, self.centre + toward(deg) * arc).0);
                 deg += 5.0;
             }
-            let chip = names[self.hovered.unwrap_or(0)];
-            let mut taken = vec![chip];
-            if has_width(tool) {
-                for (r, label) in self.bands().into_iter().zip(["2", "4", "8"]) {
-                    // A cell and a half past the guide's end, along it: the start's end, else
-                    // the other.
-                    let step = (1.5 * self.cell.w / r).to_degrees();
-                    let fits = [start - step, end + step].into_iter().find_map(|deg| {
-                        let (row, col) = self.cell_of(origin, self.centre + toward(deg) * r);
-                        let s = Span { row, col, len: 1 };
-                        taken.iter().all(|t| !t.meets(&s)).then_some(s)
+            if cells {
+                for k in 0..INKS {
+                    let deg = start + (f32::from(k) + 0.5) * SEGMENT;
+                    let at = self.centre + toward(deg) * self.arc_radius();
+                    let (row, col) = self.cell_of(origin, at);
+                    swatches.push(Span {
+                        row,
+                        col: col - 1,
+                        len: 4,
                     });
+                }
+            }
+            let beyond = self.arc_radius() + (art::CAP + art::CLEAR) * self.px;
+            names[hovered] = self.place(origin, hovered, beyond, &swatches);
+            if !cells && has_width(tool) {
+                let mut taken = vec![names[hovered]];
+                for (r, label) in self.bands().into_iter().zip(["2", "4", "8"]) {
+                    // A cell and a half past the guide's end, along it, or on half a cell at a
+                    // time: the start's end, else the other. Not beside the chip or another
+                    // label on its row, where they'd read as one.
+                    let past = |k: usize| ((1.5 + 0.5 * k as f32) * self.cell.w / r).to_degrees();
+                    let fits = (0..10)
+                        .map(|k| start - past(k))
+                        .chain((0..10).map(|k| end + past(k)))
+                        .map(|deg| {
+                            let (row, col) = self.cell_of(origin, self.centre + toward(deg) * r);
+                            Span { row, col, len: 1 }
+                        })
+                        .find(|s| {
+                            taken.iter().all(|t| !beside(t).meets(s))
+                                && self.clear_of_art(&self.rect_of(origin, s), start, end)
+                        });
                     if let Some(s) = fits {
                         taken.push(s);
-                        (lowest, highest) = (lowest.max(s.row), highest.min(s.row));
                         guides.push((r, s, label));
                     }
                 }
             }
-            for k in 0..INKS {
-                let deg = start + (f32::from(k) + 0.5) * SEGMENT;
-                let at = self.centre + toward(deg) * self.arc_radius();
-                let (row, col) = self.cell_of(origin, at);
-                let s = Span {
-                    row,
-                    col: col - 1,
-                    len: 4,
-                };
-                (lowest, highest) = (lowest.max(row), highest.min(row));
-                reach = reach.max(self.far(&self.rect_of(origin, &s)));
-                swatches.push(s);
-            }
-            // A name stage two's arcs cross, or its labels or swatches sit on, gives way.
+            // What the pixel renderer draws across the names: the arc and its guides.
             let mut radii = vec![self.arc_radius()];
-            if has_width(tool) {
-                radii.extend(self.bands());
-            }
+            radii.extend(self.guides());
             for (i, name) in names.iter().enumerate() {
+                if i == hovered {
+                    continue;
+                }
                 let r = self.rect_of(origin, name).inflate(2.0 * self.px);
-                let crossed = radii.iter().any(|radius| {
-                    let steps = ((end - start) / 2.0).ceil() as usize;
-                    (0..=steps).any(|k| {
-                        let deg = start + (end - start) * k as f32 / steps as f32;
-                        r.contains(self.centre + toward(deg) * *radius)
-                    })
-                });
-                // A label beside a name would read as part of it: within three blank cells.
-                let beside = |s: &Span| Span {
-                    col: s.col - 3,
-                    len: s.len + 6,
-                    ..*s
-                };
-                let crowded = crossed
+                let crossed = !cells
+                    && radii.iter().any(|radius| {
+                        let steps = ((end - start) / 2.0).ceil() as usize;
+                        (0..=steps).any(|k| {
+                            let deg = start + (end - start) * k as f32 / steps as f32;
+                            r.contains(self.centre + toward(deg) * *radius)
+                        })
+                    });
+                shown[i] = !(crossed
                     || guides.iter().any(|(_, g, _)| beside(g).meets(name))
-                    || swatches.iter().any(|w| w.meets(name));
-                shown[i] = Some(i) == self.hovered || !crowded;
+                    || swatches.iter().any(|w| w.meets(name)));
             }
         }
+        for (i, s) in names.iter().enumerate().filter(|(i, _)| shown[*i]) {
+            rows.push(s.row);
+            // Stage two's chip needs no scrim: its cells are solid.
+            if !(open && self.hovered == Some(i)) {
+                reach = reach.max(self.far(&self.rect_of(origin, s)));
+            }
+        }
+        for s in guides.iter().map(|(_, s, _)| s).chain(&swatches) {
+            rows.push(s.row);
+            reach = reach.max(self.far(&self.rect_of(origin, s)));
+        }
+        let lowest = rows.iter().copied().max().unwrap_or(cr);
+        let highest = rows.iter().copied().min().unwrap_or(cr);
         let line = self.readout().line();
         let len = line.chars().count() as i64;
         let (cols, rows) = (area.0 as i64, area.1 as i64);
@@ -604,6 +716,7 @@ impl Dial {
         if let Some(s) = &readout {
             reach = reach.max(self.far(&self.rect_of(origin, s)));
         }
+        let chip = self.hovered.map(|i| self.rect_of(origin, &names[i]));
         Layout {
             names,
             shown,
@@ -611,6 +724,7 @@ impl Dial {
             guides,
             swatches,
             reach,
+            chip,
         }
     }
 
@@ -619,9 +733,14 @@ impl Dial {
         layout.reach + self.cell.h
     }
 
-    /// The scrim's square: what [`crate::canvas::Target::dial_base`] draws in.
+    /// The scrim's square, and the chip's cells where stage two puts them past it: what
+    /// [`crate::canvas::Target::dial_base`] draws in.
     pub fn base_bounds(&self, layout: &Layout) -> Rect {
-        Rect::from_points(self.centre, self.centre).inflate(self.scrim(layout))
+        let square = Rect::from_points(self.centre, self.centre).inflate(self.scrim(layout));
+        match &layout.chip {
+            Some(chip) => square.union(chip),
+            None => square,
+        }
     }
 
     /// What the pixel renderer draws and presents: the scrim's square, and the pointer's dot
@@ -674,7 +793,7 @@ impl Dial {
     /// two), the hovered one a chip, the accent behind the theme's background; stage two's
     /// width labels dimmed; and the readout. `cells` adds what only the cell renderer draws: a
     /// `+` at the centre and stage two's swatches, `██` in each ink, the hovered one between
-    /// marks.
+    /// marks once one is picked. Each draws what its `layout` holds.
     pub fn texts(
         &self,
         layout: &Layout,
@@ -683,7 +802,7 @@ impl Dial {
         cells: Option<(i64, i64)>,
     ) -> Vec<Text> {
         let face = Color::Rgb(look.face);
-        let two = matches!(self.stage, Stage::Ink { .. });
+        let two = self.stage != Stage::Tools;
         let mut out = vec![];
         let text = |row, col, s: &str, fg, bg, faint| Text {
             row,
@@ -707,21 +826,23 @@ impl Dial {
                 out.push(text(s.row, s.col + 1, name, face, Color::Default, two));
             }
         }
-        // The width labels name the pixel renderer's guides; the cell renderer has none.
-        for (_, s, label) in layout.guides.iter().filter(|_| cells.is_none()) {
+        // The width labels name the pixel renderer's guides, and only its layout has them.
+        for (_, s, label) in &layout.guides {
             out.push(text(s.row, s.col, label, face, Color::Default, true));
         }
         if let Some((row, col)) = cells {
             out.push(text(row, col, "+", face, Color::Default, false));
-            if let Stage::Ink { ink, .. } = self.stage {
-                for (k, s) in layout.swatches.iter().enumerate() {
-                    let fg = inks[k];
-                    out.push(text(s.row, s.col + 1, "██", fg, Color::Default, false));
-                    if usize::from(ink) == k + 1 {
-                        let accent = Color::Rgb(look.accent);
-                        out.push(text(s.row, s.col, "[", accent, Color::Default, false));
-                        out.push(text(s.row, s.col + 3, "]", accent, Color::Default, false));
-                    }
+            let picked = match self.stage {
+                Stage::Ink { ink, .. } => usize::from(ink),
+                _ => 0,
+            };
+            for (k, s) in layout.swatches.iter().enumerate() {
+                let fg = inks[k];
+                out.push(text(s.row, s.col + 1, "██", fg, Color::Default, false));
+                if picked == k + 1 {
+                    let accent = Color::Rgb(look.accent);
+                    out.push(text(s.row, s.col, "[", accent, Color::Default, false));
+                    out.push(text(s.row, s.col + 3, "]", accent, Color::Default, false));
                 }
             }
         }
@@ -794,23 +915,31 @@ mod tests {
     }
 
     #[test]
-    fn half_a_cell_past_the_ring_an_inky_tool_opens_its_ink_arc_and_inside_the_ring_closes_it() {
+    fn past_the_ring_an_inky_tool_opens_its_ink_arc_whose_first_band_picks_nothing() {
         let mut d = dial();
-        // The ring at 25, stage two from 30, bands of 15: thin to 45, medium to 60, thick on.
-        assert_eq!((d.opens(), d.bands()), (30.0, [30.0, 45.0, 60.0]));
+        // The ring at 25, stage two from 30, its first band to 42.5, then bands of 12.5: thin
+        // to 55, medium to 67.5, thick on; the arc at 75.
+        assert_eq!((d.opens(), d.bands()), (30.0, [42.5, 55.0, 67.5]));
         assert_eq!(d.arc_radius(), 75.0);
         d.hover(Point::new(100.0, 72.0));
         assert_eq!((d.tool(), d.stage), (Some(Tool::Pen), Stage::Tools));
-        assert!(d.hover(Point::new(100.0, 69.0)), "past 30: stage two");
+        assert!(d.hover(Point::new(100.0, 65.0)), "past 30: stage two");
+        assert_eq!(d.stage, Stage::Arc, "its first band: nothing picked");
+        assert_eq!(
+            d.readout().line(),
+            "pen: ink 1 · medium",
+            "as stage one says"
+        );
+        d.hover(Point::new(100.0, 50.0));
         assert_eq!(
             d.stage,
             Stage::Ink {
                 ink: 1,
                 width: Some(0)
             },
-            "straight out keeps ink 1; thin"
+            "past it, straight out keeps ink 1; thin"
         );
-        d.hover(Point::new(100.0, 50.0));
+        d.hover(Point::new(100.0, 40.0));
         assert_eq!(
             d.stage,
             Stage::Ink {
@@ -829,7 +958,7 @@ mod tests {
         );
         // The arc runs clockwise from ink 1 centred north: 20° a segment, so ink 3 is at 40°.
         assert_eq!(d.span(), Some((-10.0, 110.0)));
-        let p = d.centre + toward(45.0) * 50.0;
+        let p = d.centre + toward(45.0) * 60.0;
         d.hover(p);
         assert_eq!(
             d.tool(),
@@ -843,7 +972,7 @@ mod tests {
                 width: Some(1)
             }
         );
-        d.hover(d.centre + toward(200.0) * 50.0);
+        d.hover(d.centre + toward(200.0) * 60.0);
         assert_eq!(
             d.stage,
             Stage::Ink {
@@ -852,7 +981,7 @@ mod tests {
             },
             "past the clockwise end: the last"
         );
-        d.hover(d.centre + toward(-60.0) * 50.0);
+        d.hover(d.centre + toward(-60.0) * 60.0);
         assert_eq!(
             d.stage,
             Stage::Ink {
@@ -861,13 +990,17 @@ mod tests {
             },
             "past the other: the first"
         );
-        // Between the ring and stage two's start it stays open; inside the ring it closes.
+        // Back in the first band, nothing is picked again; between the ring and stage two's
+        // start it stays open; inside the ring it closes.
+        d.hover(d.centre + toward(45.0) * 35.0);
+        assert_eq!((d.tool(), d.stage), (Some(Tool::Pen), Stage::Arc));
         d.hover(d.centre + toward(10.0) * 27.0);
-        assert!(matches!(d.stage, Stage::Ink { .. }));
+        assert_eq!(d.stage, Stage::Arc);
         d.hover(d.centre + toward(90.0) * 20.0);
         assert_eq!((d.tool(), d.stage), (Some(Tool::Ellipse), Stage::Tools));
         // Text has no width; the eraser and select no second stage.
-        d.hover(d.centre + toward(225.0) * 40.0);
+        d.hover(d.centre + toward(225.0) * 20.0);
+        d.hover(d.centre + toward(225.0) * 50.0);
         assert_eq!(
             (d.tool(), d.stage),
             (
@@ -878,19 +1011,75 @@ mod tests {
                 }
             )
         );
+        assert_eq!(
+            d.guides(),
+            [42.5],
+            "text's guide: where the angle starts to pick"
+        );
         d.hover(d.centre);
+        d.hover(d.centre + toward(270.0) * 20.0);
         d.hover(d.centre + toward(270.0) * 80.0);
         assert_eq!((d.tool(), d.stage), (Some(Tool::Eraser), Stage::Tools));
+        assert!(d.guides().is_empty());
         // The arc is placed by the armed ink: with ink 4, its segment is centred on the tool.
         let mut d = dial();
         d.armed.ink = 4;
-        d.hover(d.centre + toward(90.0) * 50.0);
+        d.hover(d.centre + toward(90.0) * 20.0);
+        d.hover(d.centre + toward(90.0) * 60.0);
         assert_eq!(d.span(), Some((20.0, 140.0)));
         assert_eq!(
             d.stage,
             Stage::Ink {
                 ink: 4,
                 width: Some(1)
+            }
+        );
+    }
+
+    #[test]
+    fn a_flick_that_hovers_a_tool_and_lands_past_the_ring_at_once_is_stage_ones() {
+        let at = |d: &Dial, deg: f32, r: f32| d.centre + toward(deg) * r;
+        // One move 35 out at 60°: rect's sector, past where stage two opens, and in ink 2's
+        // segment of rect's arc. It hovers rect, and letting go there doesn't open it either.
+        let mut d = dial();
+        assert!(d.hover(at(&d, 60.0, 35.0)));
+        assert_eq!((d.tool(), d.stage), (Some(Tool::Rect), Stage::Tools));
+        d.settle(at(&d, 60.0, 35.0));
+        assert_eq!((d.tool(), d.stage), (Some(Tool::Rect), Stage::Tools));
+        assert_eq!(d.readout().line(), "rect: once");
+        // However far it lands.
+        let mut d = dial();
+        d.hover(at(&d, 60.0, 90.0));
+        d.settle(at(&d, 60.0, 90.0));
+        assert_eq!((d.tool(), d.stage), (Some(Tool::Rect), Stage::Tools));
+        // A move into another tool's sector past the ring hovers it; only the next opens it.
+        let mut d = dial();
+        d.hover(at(&d, 45.0, 20.0));
+        d.hover(at(&d, 0.0, 50.0));
+        assert_eq!((d.tool(), d.stage), (Some(Tool::Pen), Stage::Tools));
+        d.hover(at(&d, 0.0, 51.0));
+        assert_eq!(
+            d.stage,
+            Stage::Ink {
+                ink: 1,
+                width: Some(0)
+            }
+        );
+        // A flick of a few moves that overshoots into the first band picks nothing, 15° off the
+        // axis where ink 2's segment is.
+        let mut d = dial();
+        for r in [15.0, 28.0, 38.0] {
+            d.hover(at(&d, 60.0, r));
+        }
+        assert_eq!((d.tool(), d.stage), (Some(Tool::Rect), Stage::Arc));
+        assert_eq!(d.readout().line(), "rect: once");
+        // Once it's open, letting go elsewhere moves in it as any move does.
+        d.settle(at(&d, 60.0, 50.0));
+        assert_eq!(
+            d.stage,
+            Stage::Ink {
+                ink: 2,
+                width: Some(0)
             }
         );
     }
@@ -919,7 +1108,7 @@ mod tests {
             "pen: ink 1 · thick",
             "stage one: as armed"
         );
-        d.hover(Point::new(100.0, 50.0));
+        d.hover(Point::new(100.0, 40.0));
         assert_eq!(
             d.readout().line(),
             "pen: ink 1 · medium",
@@ -927,6 +1116,7 @@ mod tests {
         );
         // Text's arc from 215°, ink 1 first: ink 5 is 80° on.
         d.hover(d.centre);
+        d.hover(d.centre + toward(225.0) * 20.0);
         d.hover(d.centre + toward(225.0) * 50.0);
         d.hover(d.centre + toward(305.0) * 50.0);
         assert_eq!(d.readout().line(), "text: ink 5");
@@ -938,7 +1128,12 @@ mod tests {
         for fx in [0.0, 0.3, 0.6, 0.99] {
             for fy in [0.0, 0.25, 0.5, 0.75, 0.99] {
                 d.centre = Point::new(100.0 + fx * 5.0, 100.0 + fy * 10.0);
-                let l = d.layout(Point::new(0.0, 0.0), (100, 30));
+                let l = d.layout(Point::new(0.0, 0.0), (100, 30), false);
+                assert_eq!(
+                    l,
+                    d.layout(Point::new(0.0, 0.0), (100, 30), true),
+                    "stage one is the same in cells"
+                );
                 let clear = d.radius + art::TICK + art::CLEAR;
                 for (i, s) in l.names.iter().enumerate() {
                     let r = d.rect_of(Point::new(0.0, 0.0), s);
@@ -966,5 +1161,122 @@ mod tests {
             Armed::default(),
         );
         assert_eq!((zoomed.radius, zoomed.dead, zoomed.px), (12.5, 5.0, 0.5));
+    }
+
+    /// Points on everything the pixel renderer draws of the dial but the needle: the ring and
+    /// its ticks, and in stage two the ink arc, its ticks and caps, and the guides.
+    fn line_art(d: &Dial) -> Vec<Point> {
+        let c = d.centre;
+        let mut out: Vec<Point> = (0..1440)
+            .map(|k| c + toward(k as f32 / 4.0) * d.radius)
+            .collect();
+        let tick = |deg: f32, r: f32, reach: f32| {
+            (-8..=8).map(move |t| c + toward(deg) * (r + reach * t as f32 / 8.0))
+        };
+        for k in 0..8 {
+            out.extend(tick((k as f32 - 0.5) * 45.0, d.radius, art::TICK * d.px));
+        }
+        if let (Some((start, end)), true) = (d.span(), d.stage != Stage::Tools) {
+            for r in std::iter::once(d.arc_radius()).chain(d.guides()) {
+                let n = ((end - start) * 8.0) as usize;
+                out.extend((0..=n).map(|k| c + toward(start + k as f32 / 8.0) * r));
+            }
+            for k in 0..=INKS {
+                let reach = if k == 0 || k == INKS {
+                    art::CAP
+                } else {
+                    art::TICK
+                };
+                let deg = start + f32::from(k) * SEGMENT;
+                out.extend(tick(deg, d.arc_radius(), reach * d.px));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn stage_twos_chip_goes_past_the_arc_and_its_labels_clear_the_line_art_wherever_the_centre_falls()
+     {
+        let origin = Point::new(0.0, 0.0);
+        // The test's cells and your 16 pt cells, in board units at 1:1.
+        for cell in [CellSize { w: 5.0, h: 10.0 }, CellSize { w: 9.5, h: 20.0 }] {
+            for (i, tool) in SECTORS.iter().enumerate().filter(|(_, t)| inky(**t)) {
+                for ink in [1, 4, 6] {
+                    for fx in [0.0, 0.3, 0.6, 0.99] {
+                        for fy in [0.0, 0.25, 0.5, 0.75, 0.99] {
+                            let centre = Point::new(400.0 + fx * cell.w, 300.0 + fy * cell.h);
+                            let armed = Armed {
+                                ink,
+                                ..Armed::default()
+                            };
+                            let mut d = Dial::open(centre, Opener::Space, cell, 1.0, armed);
+                            let dir = i as f32 * 45.0;
+                            d.hover(centre + toward(dir) * (d.radius * 0.8));
+                            d.hover(centre + toward(dir) * (d.bands()[1] + 1.0));
+                            assert!(matches!(d.stage, Stage::Ink { .. }));
+                            let art = line_art(&d);
+                            let at = format!("{tool:?} ink {ink} at ({fx}, {fy}), {cell:?}");
+                            for cells in [false, true] {
+                                let l = d.layout(origin, (200, 100), cells);
+                                let chip = d.rect_of(origin, &l.names[i]);
+                                let beyond = d.arc_radius() + art::CAP + art::CLEAR;
+                                assert!(d.near(&chip) >= beyond, "the chip past the arc: {at}");
+                                assert!(l.shown[i], "{at}");
+                                assert_eq!(l.chip, Some(chip));
+                                assert_eq!(l.swatches.len(), if cells { 6 } else { 0 });
+                                for w in &l.swatches {
+                                    assert!(!w.meets(&l.names[i]), "a swatch on the chip: {at}");
+                                }
+                                let labels = if cells || !has_width(*tool) { 0 } else { 3 };
+                                assert_eq!(l.guides.len(), labels, "{at}: {:?}", l.guides);
+                                for (k, (_, s, label)) in l.guides.iter().enumerate() {
+                                    let r = d.rect_of(origin, s).inflate(art::CLEAR);
+                                    let on = art.iter().find(|p| r.contains(**p));
+                                    assert_eq!(on, None, "{label} on the line art: {at}");
+                                    assert!(!s.meets(&l.names[i]), "{label} on the chip: {at}");
+                                    for (_, o, _) in &l.guides[..k] {
+                                        let near = o.row == s.row && (o.col - s.col).abs() < 4;
+                                        assert!(!near, "{label} beside {o:?}: {at}");
+                                    }
+                                }
+                                let readout = l.readout.unwrap();
+                                for (j, s) in
+                                    l.names.iter().enumerate().filter(|(j, _)| l.shown[*j])
+                                {
+                                    assert!(readout.row > s.row, "{j} under the readout: {at}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_renderer_lays_out_what_it_draws_and_a_name_gives_way_only_to_that() {
+        let mut d = dial();
+        d.hover(Point::new(100.0, 80.0));
+        d.hover(Point::new(100.0, 30.0));
+        let origin = Point::new(0.0, 0.0);
+        let (pixels, cells) = (
+            d.layout(origin, (100, 30), false),
+            d.layout(origin, (100, 30), true),
+        );
+        assert_eq!((pixels.guides.len(), pixels.swatches.len()), (3, 0));
+        assert_eq!((cells.guides.len(), cells.swatches.len()), (0, 6));
+        // The guides and the arc cross rect and the ellipse, which give way in pixels; cells
+        // draw neither, so there they stay, dimmed.
+        assert_eq!((pixels.shown[1], pixels.shown[2]), (false, false));
+        assert_eq!((cells.shown[1], cells.shown[2]), (true, true));
+        assert_eq!(
+            pixels.names[1..],
+            cells.names[1..],
+            "the same cells but the chip's"
+        );
+        assert!(
+            cells.shown.iter().all(|s| *s),
+            "no swatch sits on a name here"
+        );
     }
 }

@@ -3,7 +3,7 @@
 //! ([`rasterize`]), and the pixel renderer draws with the same calls at the view's scale into a
 //! [`Canvas`] it keeps and into the pixel buffer it shows ([`Target`]).
 
-use crate::dial::{Dial, DialLook, Layout, SEGMENT, Stage, art, has_width, toward};
+use crate::dial::{Dial, DialLook, Layout, SEGMENT, Stage, art, toward};
 use crate::fonts::Fonts;
 use crate::model::{
     Board, Element, HIGHLIGHTER_ALPHA, Point, Rect, Shape, WIDTHS, head_length, label_lines,
@@ -35,6 +35,8 @@ mod alpha {
     pub const CROSS: f32 = 0.25;
     /// The needle and the reticle.
     pub const NEEDLE: f32 = 0.9;
+    /// The disc under a preview narrower than stage one's dot, in its ink.
+    pub const HALO: f32 = 0.35;
 }
 /// A dotted line's dots and gaps, in logical pixels: a dot is the line's width across.
 const DOT_ON: f32 = 0.1;
@@ -454,8 +456,8 @@ impl Target<'_> {
     /// drawn, so the lines and the cells over them read over ink; the tool ring dotted in the
     /// dial's grey with a tick at each sector's edge, the hovered sector's stretch thick in the
     /// accent; the dead zone a fainter dotted circle, and a reticle at the centre. In stage
-    /// two the ring dims, and over it go the guides at the width bands' edges and the ink arc:
-    /// a segment in each ink, ticks between them, a T at each end, the hovered ink thick. `fg`
+    /// two the ring dims, and over it go the guides ([`Dial::guides`]) and the ink arc: a
+    /// segment in each ink, ticks between them, a T at each end, the picked ink thick. `fg`
     /// is the bright grey: the reticle, the arc's ticks and caps. The names and the readout
     /// are the frame's cells.
     pub fn dial_base(&mut self, d: &Dial, layout: &Layout, map: Map, colours: DialColours) {
@@ -470,9 +472,10 @@ impl Target<'_> {
             line_cap: LineCap::Butt,
             ..stroke(1.0)
         };
-        let ink = match d.stage {
+        let open = d.stage != Stage::Tools;
+        let picked = match d.stage {
             Stage::Ink { ink, .. } => Some(ink),
-            Stage::Tools => None,
+            _ => None,
         };
         let scrim = d.scrim(layout);
         let tick = |pb: &mut PathBuilder, deg: f32, r: f32, half: f32| {
@@ -493,11 +496,9 @@ impl Target<'_> {
         self.scrim(at, scrim * map.scale, look.bg, &stops);
         self.with(|pm| {
             // Stage two's guides, under the rest of it.
-            if let (Some(_), Some((start, end)), Some(tool)) = (ink, d.span(), d.tool())
-                && has_width(tool)
-            {
+            if let (true, Some((start, end))) = (open, d.span()) {
                 let mut pb = PathBuilder::new();
-                for r in d.bands() {
+                for r in d.guides() {
                     arc(&mut pb, c, r, start, end);
                 }
                 if let Some(path) = pb.finish() {
@@ -505,7 +506,7 @@ impl Target<'_> {
                 }
             }
             // The ring and the dead zone, dotted, and the ring's ticks.
-            let dim = ink.is_some();
+            let dim = open;
             for (r, a) in [
                 (d.radius, if dim { alpha::RING_DIM } else { alpha::RING }),
                 (d.dead, alpha::DEAD),
@@ -533,14 +534,15 @@ impl Target<'_> {
                     pm.stroke_path(&path, &paint(look.accent, 1.0), &butt(art::THICK), t, None);
                 }
             }
-            // The ink arc: a segment in each ink, ticks between, a T at each end.
-            if let (Some(ink), Some((start, end))) = (ink, d.span()) {
+            // The ink arc: a segment in each ink, ticks between, a T at each end, the picked
+            // one thick once the pointer is past the first band.
+            if let (true, Some((start, end))) = (open, d.span()) {
                 let r = d.arc_radius();
                 for (k, colour) in inks.iter().enumerate() {
                     let from = start + k as f32 * SEGMENT;
                     let mut pb = PathBuilder::new();
                     arc(&mut pb, c, r, from, from + SEGMENT);
-                    let width = if usize::from(ink) == k + 1 {
+                    let width = if picked.is_some_and(|ink| usize::from(ink) == k + 1) {
                         art::THICK
                     } else {
                         art::HAIR * 1.5
@@ -572,10 +574,11 @@ impl Target<'_> {
     }
 
     /// What of the dial follows the pointer: the crosshair through it, faint, within the
-    /// dial's bounds; the needle from the reticle's edge, dotted in stage one and solid in
-    /// stage two with a tick at each band edge it passes; and its dot, the accent's in stage
-    /// one, in stage two the chosen ink at the chosen width, ringed out to the accent dot's
-    /// size when it's smaller. All of it within [`Dial::live_rects`].
+    /// dial's bounds; the needle from the reticle's edge, dotted until stage two picks and then
+    /// solid with a tick at each guide it passes; and its dot, the accent's until stage two
+    /// picks, then the chosen ink at the chosen width, on a faint disc of that ink the accent
+    /// dot's size when it's smaller, so it's never less than stage one's and never a ring like
+    /// the reticle. All of it within [`Dial::live_rects`].
     pub fn dial_live(&mut self, d: &Dial, layout: &Layout, map: Map, colours: DialColours) {
         let DialColours { look, inks, fg } = colours;
         let t = map.transform();
@@ -591,7 +594,7 @@ impl Target<'_> {
                 let w = width.map_or(0.0, |w| WIDTHS[usize::from(w).min(WIDTHS.len() - 1)]);
                 Some((inks[usize::from(ink.clamp(1, 6)) - 1], w / 2.0))
             }
-            Stage::Tools => None,
+            _ => None,
         };
         self.with(|pm| {
             let mut pb = PathBuilder::new();
@@ -610,9 +613,9 @@ impl Target<'_> {
                 let mut pb = PathBuilder::new();
                 pb.move_to(a.x, a.y);
                 pb.line_to(b.x, b.y);
-                if preview.is_some() && d.tool().is_some_and(has_width) {
+                if preview.is_some() {
                     let n = Point::new(-u.y, u.x) * (art::TICK * 0.75 * px);
-                    for r in d.bands().into_iter().filter(|r| *r < len - dot) {
+                    for r in d.guides().into_iter().filter(|r| *r < len - dot) {
                         let m = c + u * r;
                         pb.move_to(m.x - n.x, m.y - n.y);
                         pb.line_to(m.x + n.x, m.y + n.y);
@@ -628,15 +631,19 @@ impl Target<'_> {
             }
             let (colour, r) = preview.unwrap_or((look.accent, dot));
             let r = if r > 0.0 { r } else { dot };
+            if r < dot
+                && let Some(path) = PathBuilder::from_circle(p.x, p.y, dot)
+            {
+                pm.fill_path(
+                    &path,
+                    &paint(colour, alpha::HALO),
+                    FillRule::Winding,
+                    t,
+                    None,
+                );
+            }
             if let Some(path) = PathBuilder::from_circle(p.x, p.y, r) {
                 pm.fill_path(&path, &paint(colour, 1.0), FillRule::Winding, t, None);
-            }
-            if r < dot {
-                let mut pb = PathBuilder::new();
-                pb.push_circle(p.x, p.y, dot + art::HAIR * px);
-                if let Some(path) = pb.finish() {
-                    pm.stroke_path(&path, &paint(colour, 1.0), &hair, t, None);
-                }
             }
         });
     }

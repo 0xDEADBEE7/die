@@ -9,14 +9,16 @@
 //! draws the gesture's live element, the marquee and the tool dial over the copy, and writes the
 //! frame. The dial is its cells alone, laid out as the pixel renderer lays them: the names
 //! around a `+`, the hovered one a chip in the accent, the readout under them; in stage two the
-//! names dimmed but the chip, and the six inks as swatches along the ink arc, the hovered one
-//! between marks, the width in the readout.
+//! names dimmed, the chip beyond the ink arc, and the six inks as swatches along the arc, the
+//! picked one between marks, the width in the readout. A name gives way only to a swatch:
+//! cells draw no arc or guides to cross it.
 
 use crate::dial::Text;
 use crate::model::{CellSize, Element, Id, LIVE, Point, Rect, Shape, label_lines};
 use crate::render::{Damage, Renderer, Scene};
 use crate::view::View;
 use die_core::{CellPixels, Color, Ctx, Frame, FrameCell, Glyph, RenderInfo};
+use std::collections::HashSet;
 use std::f32::consts::TAU;
 
 const UP: u8 = 1;
@@ -407,15 +409,37 @@ impl Renderer for Cells {
             grid.vline(c1, r0, r1, &pen);
         }
         if let Some(d) = scene.dial {
-            // What's under the dial dims, as the pixel renderer's scrim dims it.
+            // What's under the dial dims, as the pixel renderer's scrim dims it: a label the
+            // whole of it, so none is cut mid-word, and the rest cell by cell.
             let origin = scene.view.to_board(0.0, 0.0, info.cell.scale);
-            let layout = d.layout(origin, scene.area);
+            let layout = d.layout(origin, scene.area, true);
             let near = d.scrim(&layout) * 0.75;
+            let labels: HashSet<Id> = scene
+                .board
+                .elements
+                .iter()
+                .filter(|e| matches!(e.shape, Shape::Label { .. }))
+                .map(|e| e.id)
+                .collect();
+            let mut dimmed = HashSet::new();
             for (i, c) in grid.cells.iter_mut().enumerate() {
                 let (row, col) = ((i / cols) as f32, (i % cols) as f32);
                 let p = origin + Point::new((col + 0.5) * d.cell.w, (row + 0.5) * d.cell.h);
-                if p.dist(d.centre) < near {
-                    c.faint = true;
+                if p.dist(d.centre) >= near {
+                    continue;
+                }
+                match c.owner {
+                    Some(o) if labels.contains(&o) => {
+                        dimmed.insert(o);
+                    }
+                    _ => c.faint = true,
+                }
+            }
+            if !dimmed.is_empty() {
+                for c in &mut grid.cells {
+                    if c.owner.is_some_and(|o| dimmed.contains(&o)) {
+                        c.faint = true;
+                    }
                 }
             }
             let centre = map.cell(d.centre);
