@@ -1,6 +1,6 @@
-//! The rendered view through the editor: a markdown file's key shows it rendered and raw again
+//! The view in place through the editor: a markdown file's key shows it rendered and raw again
 //! over the same text, the view follows the text and the width, a restart brings it back, and a
-//! link goes where it leads. Nothing is written outside a temporary directory, and nothing is
+//! link goes where it leads. `tests/page.rs` has the page. Nothing is written outside a temporary directory, and nothing is
 //! opened outside DIE: the opener is a script that writes down what it was given.
 
 use die_test_cap as _;
@@ -25,8 +25,13 @@ fn tree(name: &str) -> PathBuf {
 }
 
 /// die-vim and the extension, with the toggle on `\m` in the mode's keymap as your config has
-/// it, 40 columns of text in a window of 60 by 20, on an empty buffer.
+/// it, 40 columns of text in a window of 60 by 20, on an empty buffer. The view is the one in
+/// place, as on a host that shows no pixels: the harness shows them, so the option says so.
 fn harness(options: Options) -> Harness {
+    let options = Options {
+        page: false,
+        ..options
+    };
     let exts: Vec<Box<dyn Extension>> =
         vec![Box::new(Vim::default()), Box::new(Markdown::new(options))];
     let config = Config {
