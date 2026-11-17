@@ -117,7 +117,7 @@ An extension's global state is the extension struct itself. A command reaches it
 | Modes | enable, disable, `with_mode::<M>` |
 | Modal state | read and set the state, which is per buffer: of the focused buffer, or of any buffer by id; read and set the prefix argument (count and register) |
 | Async | `spawn`, `process`, `pty`, `watch`, `after`, `every`, `idle`, `prompt` (§12) |
-| Hooks | subscribe to buffer lifecycle, edits (after the fact), saves, modes, focus and idle, returning a handle (C4). A save runs its write as a queued step after the before-save hooks. |
+| Hooks | subscribe to buffer lifecycle, edits (after the fact), saves, modes, focus and idle, returning a handle (C4). A save runs its write as a queued step after the before-save hooks. `on_edited(f)` is the edits' one: `f(ctx, buffer)` runs from the top of the loop for each text buffer whose text has changed, once the keys and calls that were ready have run and no key waits, so once for a macro's or a paste's edits, and before the frame that follows, unless the host stopped a long run of keys for a frame of its own. Its calls belong to the turn that made the edits: timers and output get no further batch until they've run. It says that the text changed, and `edits_since` says how (C15). A decoration isn't a change; a change `f` makes brings it round again, so an `f` that always edits never rests; and a buffer killed before its turn isn't told of. Core's own edits count: `*messages*` changes when a message is logged, at a frame, and is told of on the next turn. |
 | Pixels | create a pixel buffer and present into it, from any thread (§11); images come with M3 |
 | Registers | read and write typed registers (char, line or block) and the system clipboard |
 | Messages | message and error, shown in the command line and logged to a `*messages*` buffer; a note that stays at the command line's right end until it's cleared (`set_note`, die-vim's `recording @a`); a desktop notification |
@@ -217,7 +217,7 @@ Mode (one instance per buffer)
 
 - **The mode object is its per-buffer state.** It replaces `defvar-local`. manifold's fold cache lives in the `Fold` mode instance attached to that buffer.
 - **Reading changes.** A mode remembers the revision it last processed and calls `text.edits_since(rev)` when it needs to catch up: in `decorate`, in a command, or from an idle hook. The result is every change since that revision, or nothing if the revision is too old for the bounded log, in which case the mode resyncs fully (C15).
-- **File-type modes.** Extensions associate extensions or file names with a mode (`.md` → markdown). The first mode on a text buffer is its file-type mode, and it sets defaults such as soft wrap and indentation.
+- **File-type modes.** Extensions associate extensions or file names with a mode (`.md` → markdown). The first mode on a text buffer is its file-type mode, and it sets defaults such as soft wrap and indentation. `ModeSpec::files(matches)` is the association: a buffer has the mode from when it comes to visit a file `matches` says yes to, opened, restored with the session or saved under that name, and loses it when it comes to visit one that doesn't match (`:saveas notes.txt`). A buffer with no file has it only if enabled by hand. The defaults a file-type mode sets wait for M1; until then they're your config's settings by path.
 - **Reaching a mode from a command:** `ctx.with_mode::<Fold>(buffer, |fold, ctx| …)`.
 
 ## 9. Text buffers: the extension API
@@ -243,7 +243,7 @@ The text surface belongs to core. This section covers what extensions can do wit
 
 **Cursors and selections.** Each window has its own cursor and selection (C10). A selection has a shape (char, line or block) and a goal column for vertical motion. Extensions can read and set them in a given window, or in the focused one. Text inserted at a window's cursor goes after it in the acting window and before it in every other window, as Emacs's window points do. The acting window is the one a command was run for (`args.window`), and otherwise the focused one: in a callback, in a command run with no window, and in code between commands. A command that moves the focus goes on acting for the window it moved to. An extension that wants a window to follow its output sets that window's cursor.
 
-**Anchored decorations.** Decorations are added and removed by id, and their ranges move with edits, the way markers do. Each end has a gravity. By default, text inserted at either edge stays outside the range.
+**Anchored decorations.** Decorations are added and removed by id, and their ranges move with edits, the way markers do. Each end has a gravity. By default, text inserted at either edge stays outside the range. `redecorate(old, new)` removes some and adds others as one change: rows are laid out again and cursors moved out of hidden text once, after all of it, where adding or removing a Hide or virtual text one at a time does so each time. A markup view that hides a whole file's marks uses it, since thousands of them one by one cost their number squared.
 
 | Kind | Effect | Used by |
 |---|---|---|

@@ -279,6 +279,7 @@ impl Ctx {
         if let Some(dir) = path.parent() {
             self.set_directory(buf, dir);
         }
+        self.file_modes(buf, &path);
         self.files.by_buffer.insert(
             buf,
             FileInfo {
