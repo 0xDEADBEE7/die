@@ -16,7 +16,7 @@ use die_test_cap as _;
 use die_core::{
     Args, BufferId, Button, CellPixels, Config, Ctx, Extension, Harness, Input, Key, KeyEvent,
     Mods, Origin, PixelBufferId, PixelRect, PixelSinkCall, PointerEvent, PointerKind, Registry,
-    ShowIn, State,
+    ShowIn, State, WindowId,
 };
 use die_markdown::typeset::{Page, Rect};
 use die_markdown::{MODE, Markdown, Options, PAGE, View};
@@ -143,10 +143,17 @@ struct Seen {
     pixels: Option<PixelBufferId>,
 }
 
-/// The file's page, if it has one.
+/// The file's page as the focused window has it, or the window the reader was in last, if the
+/// file has a page.
 fn seen(h: &mut Harness, file: BufferId) -> Option<Seen> {
+    let w = h.focused();
+    seen_in(h, file, w)
+}
+
+/// The file's page as a window has it.
+fn seen_in(h: &mut Harness, file: BufferId, w: Option<WindowId>) -> Option<Seen> {
     let read = |m: &mut Markdown, _: &mut Ctx| {
-        m.page(file, |p| Seen {
+        m.page(file, w, |p| Seen {
             buffer: p.buffer,
             top: p.top,
             area: p.area,
@@ -163,9 +170,20 @@ fn top(h: &mut Harness, file: BufferId) -> i32 {
     seen(h, file).expect("a page").top
 }
 
-/// Ask the file's layout something.
+/// Ask the file's layout something, as the focused window has it.
 fn ask<R>(h: &mut Harness, file: BufferId, f: impl FnOnce(&Page) -> R) -> R {
-    let read = |m: &mut Markdown, _: &mut Ctx| m.page(file, |p| f(p.page.expect("a layout")));
+    let w = h.focused();
+    ask_in(h, file, w, f)
+}
+
+/// Ask the file's layout something, as a window has it.
+fn ask_in<R>(
+    h: &mut Harness,
+    file: BufferId,
+    w: Option<WindowId>,
+    f: impl FnOnce(&Page) -> R,
+) -> R {
+    let read = |m: &mut Markdown, _: &mut Ctx| m.page(file, w, |p| f(p.page.expect("a layout")));
     h.with_ext(read).unwrap().expect("a page")
 }
 
@@ -203,19 +221,25 @@ fn heading(h: &mut Harness, file: BufferId, slug: &str) -> f32 {
     })
 }
 
-/// Whether the heading is the gap under the window's top, or the page is at an end: at its top
-/// a heading nearer than the gap can't come lower, and at its bottom one near the end can't
-/// go higher.
+/// Whether the heading is the gap under the window's top, or as near to it as the page's ends
+/// let it come: at its top a heading nearer than the gap can't come lower, and at its bottom
+/// one near the end can't go higher.
 fn at_heading(h: &mut Harness, file: BufferId, slug: &str) -> bool {
     let (y, top) = (heading(h, file, slug), top(h, file));
-    let under = y - top as f32;
-    (under - GAP * CELL.scale as f32).abs() <= 0.5 || top == 0 || top == limit(h, file)
+    let want = (y - GAP * CELL.scale as f32).round() as i32;
+    (top - want.clamp(0, limit(h, file))).abs() <= 1
 }
 
 /// The pixels the focused window's page shows, as last presented.
 fn pixels(h: &mut Harness) -> (PixelBufferId, u32, u32, Vec<u8>) {
+    let w = h.focused().unwrap();
+    let at = h.placements().into_iter().find(|p| p.window == w).unwrap();
+    let col = at.col + h.surface_area(w).unwrap().text_x;
     let scene = h.scene();
-    let placed = scene.placements.first();
+    let placed = scene
+        .placements
+        .iter()
+        .find(|p| (p.row, p.col) == (at.row, col));
     let placed = placed.unwrap_or_else(|| panic!("a placement: {}", scene.snapshot()));
     let (w, h, px) = h.pixels(placed.buffer).expect("the sink has the buffer");
     (placed.buffer, w, h, px)
@@ -523,54 +547,483 @@ fn a_short_page_a_taller_window_a_new_scale_and_a_shrinking_text() {
     assert_eq!(page.top, limit(&mut h, file));
 }
 
+/// A window's pixels of its own area, cut from a buffer that may be larger.
+fn cut(h: &mut Harness, id: PixelBufferId, (w, t): (u32, u32)) -> Vec<u8> {
+    let (wide, _, px) = h.pixels(id).expect("the sink has the buffer");
+    let row = |y: u32| &px[(y * wide * 4) as usize..((y * wide + w) * 4) as usize];
+    (0..t).flat_map(row).copied().collect()
+}
+
+/// The windows showing a file's page, and their areas, the smallest first.
+fn windows(h: &mut Harness, file: BufferId) -> Vec<(WindowId, (u32, u32))> {
+    let page = seen(h, file).unwrap().buffer;
+    let mut shown: Vec<(WindowId, (u32, u32))> = (h.window_list().into_iter())
+        .filter(|w| h.window_buffer(*w) == Some(page))
+        .map(|w| {
+            let g = h.surface_area(w).unwrap();
+            (
+                w,
+                (g.text_w as u32 * CELL.width, g.rows as u32 * CELL.height),
+            )
+        })
+        .collect();
+    shown.sort_by_key(|(_, (w, t))| w * t);
+    shown
+}
+
 #[test]
-fn two_windows_of_unequal_size_show_one_picture_as_large_as_the_largest() {
+fn each_window_shows_the_page_set_for_its_own_size_and_keys_scroll_the_one_they_are_typed_in() {
     let dir = tree("two");
     fs::write(dir.join("a.md"), document()).unwrap();
     let mut h = harness(Options::default());
+    h.set_window_size(160, 30);
+    h.run_until_idle();
     let file = open(&mut h, &dir.join("a.md"));
-    keys(&mut h, "\\m<C-w>s");
-    let page = seen(&mut h, file).unwrap();
-    let rows: Vec<usize> = h.scene().placements.iter().map(|p| p.rows).collect();
-    assert_eq!(rows.len(), 2);
-    assert_ne!(rows[0], rows[1], "the rows split unevenly");
-    let tallest = *rows.iter().max().unwrap();
-    let tall = tallest as u32 * CELL.height;
-    assert_eq!(page.area, (AREA.0, tall));
 
-    // A step paints and presents the largest area, so neither window shows stale rows.
-    let id = pixels(&mut h).0;
-    h.fake_pixels().take_calls();
-    keys(&mut h, "5j");
-    assert_eq!(top(&mut h, file), 600);
-    assert_eq!(
-        h.fake_pixels().take_calls(),
-        [PixelSinkCall::Present(
-            id,
-            PixelRect::new(0, 0, AREA.0, tall)
-        )]
+    // Side by side, a narrow window and a wide one: each is laid out and painted as a window of
+    // its size alone, so neither shows lines cut off at its edge, and each has its own buffer.
+    keys(&mut h, "\\m40<C-w>v");
+    let shown = windows(&mut h, file);
+    assert_eq!(shown.len(), 2);
+    let (narrow, wide) = (shown[0], shown[1]);
+    assert!(narrow.1.0 * 2 < wide.1.0, "{shown:?}");
+    let mut buffers = vec![];
+    for (w, area) in [narrow, wide] {
+        let page = seen_in(&mut h, file, Some(w)).unwrap();
+        assert_eq!((page.area, page.top), (area, 0));
+        buffers.push(page.pixels.unwrap());
+        let px = cut(&mut h, page.pixels.unwrap(), area);
+        let mut alone = harness(Options::default());
+        alone.set_window_size(
+            (area.0 / CELL.width) as usize,
+            (area.1 / CELL.height) as usize,
+        );
+        alone.run_until_idle();
+        let same = open(&mut alone, &dir.join("a.md"));
+        keys(&mut alone, "\\m");
+        let one = seen(&mut alone, same).unwrap();
+        assert_eq!(
+            (one.area, one.height),
+            (area, page.height),
+            "laid out for its width"
+        );
+        let reference = cut(&mut alone, one.pixels.unwrap(), area);
+        assert!(px == reference, "the picture is the one window's, {area:?}");
+    }
+    assert_ne!(buffers[0], buffers[1]);
+    // A key scrolls the window it's typed in, and the other stays.
+    h.focus(narrow.0);
+    keys(&mut h, "3j");
+    assert_eq!(seen_in(&mut h, file, Some(narrow.0)).unwrap().top, 360);
+    assert_eq!(seen_in(&mut h, file, Some(wide.0)).unwrap().top, 0);
+
+    // One over the other, a short window and a tall one, split off where the reader was: the
+    // keys go by the short one's height when they're typed in it.
+    keys(&mut h, "<C-w>o5j8<C-w>s");
+    let shown: [_; 2] = windows(&mut h, file).try_into().unwrap();
+    let (short, tall) = (shown[0], shown[1]);
+    assert!(short.1.1 * 3 < tall.1.1, "{shown:?}");
+    let tops = shown.map(|(w, _)| seen_in(&mut h, file, Some(w)).unwrap().top);
+    assert!(
+        tops[0] > 0 && tops[0] == tops[1],
+        "a split starts where it was: {tops:?}"
     );
-    // What the taller window shows is what a window of its size alone shows at that place.
-    let (_, wide, _, px) = pixels(&mut h);
-    let shown = &px[..(wide * tall * 4) as usize];
-    let mut alone = harness(Options::default());
-    alone.set_window_size(60, tallest);
-    alone.run_until_idle();
-    let same = open(&mut alone, &dir.join("a.md"));
-    keys(&mut alone, "\\m5j");
-    assert_eq!(seen(&mut alone, same).unwrap().area, (AREA.0, tall));
-    let (_, w, t, reference) = pixels(&mut alone);
-    assert_eq!((w, t), (wide, tall));
-    assert!(shown == reference, "the picture is the one window's");
+    h.focus(short.0);
+    let height = seen_in(&mut h, file, Some(short.0)).unwrap().height;
+    let parked = seen_in(&mut h, file, Some(tall.0)).unwrap().top;
+    keys(&mut h, "G");
+    let end = height.ceil() as i32 - short.1.1 as i32;
+    assert_eq!(seen_in(&mut h, file, Some(short.0)).unwrap().top, end);
+    assert!(status(&mut h).ends_with("Bot"), "{}", status(&mut h));
+    keys(&mut h, "gg<C-d>");
+    assert_eq!(top(&mut h, file), short.1.1 as i32 / 2);
+    keys(&mut h, "<C-f>");
+    let page = short.1.1 as f32 * 0.875;
+    assert_eq!(
+        top(&mut h, file),
+        (short.1.1 as f32 / 2.0 + page).round() as i32
+    );
+    assert_eq!(seen_in(&mut h, file, Some(tall.0)).unwrap().top, parked);
+    // `<Tab>` brings the link it rings into the short window's view.
+    keys(&mut h, "gg");
+    for _ in 0..4 {
+        keys(&mut h, "<Tab>");
+        let page = seen(&mut h, file).unwrap();
+        let r = ask(&mut h, file, |p| p.links()[page.ring.unwrap()].rects[0]);
+        let shows = r.y >= page.top as f32 && r.y + r.h <= (page.top + short.1.1 as i32) as f32;
+        assert!(shows, "{r:?} at {}", page.top);
+    }
+    assert_eq!(seen_in(&mut h, file, Some(tall.0)).unwrap().ring, None);
 
-    // The taller window leaves the page: at the command's end the picture is the other's size.
-    let w = h.focused().unwrap();
-    let focused_rows = h.surface_area(w).unwrap().rows;
-    assert_eq!(focused_rows, tallest, "the split focused the taller window");
+    // The short window leaves the page: its buffer goes, and the other's stays.
+    let gone = seen_in(&mut h, file, Some(short.0))
+        .unwrap()
+        .pixels
+        .unwrap();
+    let kept = seen_in(&mut h, file, Some(tall.0)).unwrap().pixels.unwrap();
     keys(&mut h, "\\m");
-    let shorter = (tallest.min(rows[0]).min(rows[1])) as u32 * CELL.height;
-    assert_eq!(seen(&mut h, file).unwrap().area, (AREA.0, shorter));
+    assert!(h.pixels(gone).is_none());
+    assert!(h.pixels(kept).is_some());
+    assert_eq!(seen(&mut h, file).unwrap().pixels, Some(kept));
+}
+
+/// A file with a closed `<details>` block holding a link and paragraphs enough to scroll in,
+/// a footnote, and parts after it.
+fn details_doc() -> String {
+    let mut s = String::from(
+        "# Title\n\nThe intro, with a note.[^x]\n\n<details>\n<summary>More</summary>\n\n",
+    );
+    for i in 1..=12 {
+        s += &format!("Hidden paragraph {i}, with words enough to be a line of text.\n\n");
+    }
+    s += "See [the notes](b.md#second-part).\n\n";
+    for i in 13..=24 {
+        s += &format!("Hidden paragraph {i}, with words enough to be a line of text.\n\n");
+    }
+    s += "</details>\n\n";
+    for i in 1..=12 {
+        s += &format!("## Part {i}\n\nParagraph {i}, with words enough to be a line of text.\n\n");
+    }
+    s + "[^x]: The note.\n"
+}
+
+/// Whether the page has a link to `dest`: one in a closed `<details>` isn't on it.
+fn has_link(h: &mut Harness, file: BufferId, dest: &str) -> bool {
+    ask(h, file, |p| p.links().iter().any(|l| l.dest == dest))
+}
+
+/// The summary of the page's `<details>`.
+fn summary(h: &mut Harness, file: BufferId) -> String {
+    let dest = ask(h, file, |p| {
+        let found = p.links().iter().find(|l| l.dest.starts_with("details:"));
+        found.map(|l| l.dest.clone())
+    });
+    dest.expect("a summary")
+}
+
+#[test]
+fn a_details_block_the_reader_opened_stays_open_while_the_file_has_it() {
+    let dir = tree("details");
+    fs::write(dir.join("a.md"), details_doc()).unwrap();
+    fs::write(dir.join("b.md"), second()).unwrap();
+    let mut h = harness(Options::default());
+    let a = open(&mut h, &dir.join("a.md"));
+    keys(&mut h, "\\m");
+    let closed = seen(&mut h, a).unwrap().height;
+    assert!(!has_link(&mut h, a, "b.md#second-part"));
+
+    // `<CR>` on the summary opens it, in place, leaving nothing to come back to.
+    let dest = summary(&mut h, a);
+    ring(&mut h, a, &dest);
+    assert!(
+        status(&mut h).ends_with("opens or closes the details"),
+        "{}",
+        status(&mut h)
+    );
+    let at = top(&mut h, a);
+    keys(&mut h, "<CR>");
+    let open = seen(&mut h, a).unwrap();
+    assert!(open.height > closed && has_link(&mut h, a, "b.md#second-part"));
+    assert_eq!(open.top, at);
+    assert_eq!(fails(&mut h, "<C-o>"), "No older place");
+
+    // Text typed above it moves it, and it stays open; and so it does across the toggle.
+    let t = h.text_mut(a).unwrap();
+    t.tx(Origin::User)
+        .insert(0, "A line.\n\n")
+        .commit()
+        .unwrap();
+    h.run_until_idle();
+    assert!(
+        has_link(&mut h, a, "b.md#second-part"),
+        "open after an edit"
+    );
+    assert_ne!(summary(&mut h, a), dest);
+    keys(&mut h, "\\m\\m");
+    assert!(
+        has_link(&mut h, a, "b.md#second-part"),
+        "open after the toggle"
+    );
+
+    // A link inside it to another page, and `C-o` back: the block is open, the place inside it
+    // and the link ringed.
+    ring(&mut h, a, "b.md#second-part");
+    let (inner, _) = link(&mut h, a, "b.md#second-part");
+    let left = top(&mut h, a);
+    keys(&mut h, "<CR>");
+    assert_eq!(seen(&mut h, a), None);
+    keys(&mut h, "<C-o>");
+    let back = seen(&mut h, a).unwrap();
+    assert_eq!((back.top, back.ring), (left, Some(inner)));
+
+    // Toggled again, it closes.
+    let dest = summary(&mut h, a);
+    ring(&mut h, a, &dest);
+    keys(&mut h, "<CR>");
+    assert!(!has_link(&mut h, a, "b.md#second-part"));
+}
+
+#[test]
+fn anchors_are_a_headings_in_any_case_and_a_footnotes() {
+    let dir = tree("anchors");
+    let mut doc = details_doc();
+    doc += "\nTo [part 9](#Part-9), [PART 11](#PART-11) and [the note](#fn-x).\n";
+    fs::write(dir.join("a.md"), doc).unwrap();
+    let mut h = harness(Options::default());
+    let a = open(&mut h, &dir.join("a.md"));
+    keys(&mut h, "\\m");
+    for (dest, slug) in [("#Part-9", "part-9"), ("#PART-11", "part-11")] {
+        keys(&mut h, "G");
+        ring(&mut h, a, dest);
+        keys(&mut h, "<CR>");
+        assert!(at_heading(&mut h, a, slug), "{dest}: {}", top(&mut h, a));
+        assert!(top(&mut h, a) < limit(&mut h, a), "{dest}");
+    }
+    // The note's anchor and the way back up to where it's called.
+    keys(&mut h, "gg");
+    let note = ask(&mut h, a, |p| p.anchor("fn-x").expect("a footnote anchor"));
+    keys(&mut h, "G");
+    ring(&mut h, a, "#fn-x");
+    keys(&mut h, "<CR>");
+    let want = (note - GAP * CELL.scale as f32).round() as i32;
+    assert_eq!(top(&mut h, a), want.clamp(0, limit(&mut h, a)));
+}
+
+#[test]
+fn a_link_from_the_root_is_the_repositorys() {
+    let dir = tree("root");
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    fs::create_dir_all(dir.join("docs")).unwrap();
+    fs::write(
+        dir.join("docs/a.md"),
+        "# A\n\nSee [the guide](/docs/guide.md).\n",
+    )
+    .unwrap();
+    fs::write(dir.join("docs/guide.md"), "# Guide\n\nThe guide.\n").unwrap();
+    let mut h = harness(Options::default());
+    let a = open(&mut h, &dir.join("docs/a.md"));
+    keys(&mut h, "\\m");
+    ring(&mut h, a, "/docs/guide.md");
+    keys(&mut h, "<CR>");
+    let guide = h.find_buffer("guide.md").expect("the guide");
+    assert_eq!(h.focused_buffer(), seen(&mut h, guide).map(|p| p.buffer));
+    // Raw, the same link goes to the same file.
+    keys(&mut h, "<C-o>\\m");
+    keys(&mut h, "G0f[");
+    keys(&mut h, ":markdown-follow-link<CR>");
+    assert_eq!(h.focused_buffer(), Some(guide));
+}
+
+#[test]
+fn leaving_a_page_for_its_file_by_another_way_is_leaving_it_by_the_toggle() {
+    let dir = tree("leave");
+    let state = tree("leave-state");
+    fs::write(dir.join("a.md"), document()).unwrap();
+    let mut h = up(&state);
+    let file = open(&mut h, &dir.join("a.md"));
+    let w = h.focused().unwrap();
+
+    // `C-^` from a scrolled page to its file: the cursor is on the line the page's top showed,
+    // and the next toggle goes by the cursor.
+    keys(&mut h, "\\m10j");
+    let line = line_at_top(&mut h, file);
+    keys(&mut h, "<C-^>");
+    assert_eq!(h.focused_buffer(), Some(file));
+    let t = h.text(file).unwrap();
+    assert_eq!(t.cursor(w).map(|c| t.line_of(c)), Some(t.line_of(line)));
+    assert_eq!(seen(&mut h, file), None);
+    keys(&mut h, "gg\\m");
+    assert_eq!(top(&mut h, file), 0);
+
+    // `:bd` on a page: the window goes to the file, and no place is kept for the next page.
+    keys(&mut h, "10j:bd<CR>");
+    assert_eq!(h.focused_buffer(), Some(file));
+    assert_eq!(seen(&mut h, file), None);
+    assert!(kept(&mut h).is_empty(), "{:?}", kept(&mut h));
+    keys(&mut h, "gg\\m");
+    assert_eq!(top(&mut h, file), 0);
+}
+
+#[test]
+fn the_toggle_back_comes_to_the_pixel_and_a_link_brings_no_old_ring() {
+    let dir = tree("pixel");
+    fs::write(dir.join("a.md"), document()).unwrap();
+    fs::write(dir.join("c.md"), "# C\n\nTo [part 20](a.md#part-20).\n").unwrap();
+    fs::write(dir.join("notes.txt"), "plain\ntext\n").unwrap();
+    let mut h = harness(Options::default());
+    let a = open(&mut h, &dir.join("a.md"));
+
+    // Scrolled to just past a heading, so that only its foot shows: the toggle there and back
+    // comes back to the same pixel, time and again.
+    keys(&mut h, "\\m");
+    let y = heading(&mut h, a, "part-3");
+    wheel(&mut h, (y + 30.0) / CELL.height as f32);
+    let was = top(&mut h, a);
+    for i in 0..3 {
+        keys(&mut h, "\\m\\m");
+        assert_eq!(top(&mut h, a), was, "round trip {i}");
+    }
+
+    // A page put away with a link ringed: a link to a heading of it arrives with nothing
+    // ringed, though the toggle would bring the ring back.
+    ring(&mut h, a, "notes.txt");
+    keys(&mut h, "<CR>");
+    let c = open(&mut h, &dir.join("c.md"));
+    keys(&mut h, "\\m");
+    ring(&mut h, c, "a.md#part-20");
+    keys(&mut h, "<CR>");
+    let page = seen(&mut h, a).unwrap();
+    assert!(at_heading(&mut h, a, "part-20"));
+    assert_eq!(page.ring, None);
+    assert!(status(&mut h).ends_with('%') || status(&mut h).ends_with("Bot"));
+}
+
+#[test]
+fn a_session_kept_with_a_page_put_away_restores_raw_with_the_page_off() {
+    let dir = tree("off");
+    let state = tree("off-state");
+    fs::write(dir.join("a.md"), document()).unwrap();
+    fs::write(dir.join("notes.txt"), "plain\ntext\n").unwrap();
+    let mut h = up(&state);
+    let file = open(&mut h, &dir.join("a.md"));
+    keys(&mut h, "\\m3j");
+    ring(&mut h, file, "notes.txt");
+    keys(&mut h, "<CR>");
+    assert_eq!(kept(&mut h).len(), 1);
+    h.show(file, ShowIn::Current).unwrap();
+    h.run_until_idle();
+    h.hand_over_session().unwrap();
+    drop(h);
+    let config = Config {
+        register: Some(Box::new(bindings)),
+        session: Some(state.clone()),
+        ..Config::default()
+    };
+    let off = Options {
+        page: false,
+        ..Options::default()
+    };
+    let mut h = Harness::with_config(extensions(off), config).unwrap();
+    h.resume_session();
+    h.run_until_idle();
+    let file = h.find_buffer("a.md").unwrap();
+    assert!(
+        !h.with_ext(|_: &mut Markdown, ctx| rendered_in_place(ctx, file))
+            .unwrap()
+    );
+    assert!(!h.text(file).unwrap().settings().read_only);
+}
+
+#[test]
+fn wrapped_lines_keep_their_place_across_widths() {
+    let dir = tree("wrapped");
+    let mut doc = String::from("# Long\n\n");
+    for i in 0..12 {
+        let words: Vec<String> = (0..60).map(|n| format!("word{n}")).collect();
+        doc += &format!("Paragraph {i}: {}\n\n", words.join(" "));
+    }
+    fs::write(dir.join("a.md"), doc).unwrap();
+    let mut h = harness(Options::default());
+    h.set_window_size(100, 20);
+    h.run_until_idle();
+    let file = open(&mut h, &dir.join("a.md"));
+    keys(&mut h, "\\m8j");
+    let was = top(&mut h, file);
+    for cols in [59, 100, 61, 100, 45, 100] {
+        h.set_window_size(cols, 20);
+        h.run_until_idle();
+    }
+    assert_eq!(top(&mut h, file), was);
+    // And at the end, the end.
+    keys(&mut h, "G");
+    for cols in [70, 100] {
+        h.set_window_size(cols, 20);
+        h.run_until_idle();
+    }
+    assert_eq!(top(&mut h, file), limit(&mut h, file));
+}
+
+#[test]
+fn a_page_follows_its_files_new_name_and_directory() {
+    let dir = tree("saveas");
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(dir.join("a.md"), document()).unwrap();
+    let mut h = harness(Options::default());
+    let file = open(&mut h, &dir.join("a.md"));
+    keys(&mut h, "\\m<C-w>v");
+    let page = seen(&mut h, file).unwrap().buffer;
+    keys(&mut h, "\\m:saveas sub/renamed.md<CR><C-w>l");
+    assert_eq!(h.focused_buffer(), Some(page));
+    // The row has both windows' status lines, the page's at its right.
+    assert!(
+        status(&mut h).ends_with("renamed.md *page*  Top"),
+        "{}",
+        status(&mut h)
+    );
+    assert_eq!(h.directory(page), Some(dir.join("sub").as_path()));
+}
+
+#[test]
+fn a_theme_that_colours_no_link_underlines_one() {
+    let mut h = harness(Options::default());
+    h.set_theme(die_core::Theme::default());
+    let palette = die_markdown::theme_palette(&h);
+    assert!(palette.link != palette.text || palette.link_underline);
+}
+
+#[test]
+fn counts_the_title_at_full_width_and_the_keys_every_buffer_has() {
+    let dir = tree("counts");
+    fs::write(dir.join("a.md"), document()).unwrap();
+    fs::write(dir.join("b.md"), second()).unwrap();
+    let mut h = harness(Options::default());
+    h.set_window_size(160, 20);
+    h.run_until_idle();
+    let a = open(&mut h, &dir.join("a.md"));
+    keys(&mut h, "\\m");
+
+    // At full width the padding over the title is the widest: `]]` from the top still goes to
+    // the first heading after it.
+    keys(&mut h, "]]");
+    assert!(at_heading(&mut h, a, "part-1"), "{}", top(&mut h, a));
+    // A count on `<Space>` goes that many windows.
+    keys(&mut h, "gg2<Space>");
+    assert_eq!(top(&mut h, a), (2.0 * 0.875 * AREA.1 as f32).round() as i32);
+
+    // A count on `C-o` and `L` goes that many places back and forward.
+    keys(&mut h, "gg");
+    ring(&mut h, a, "#part-15");
+    keys(&mut h, "<CR>3j");
+    // The ring scrolls to the last link, and that's the place left.
+    ring(&mut h, a, "#title");
+    let third = top(&mut h, a);
+    keys(&mut h, "<CR>");
+    let title = top(&mut h, a);
+    assert!(title != 0 && title != third, "{title}");
+    keys(&mut h, "2<C-o>");
+    assert_eq!(top(&mut h, a), 0);
+    keys(&mut h, "L");
+    assert_eq!(top(&mut h, a), third);
+    keys(&mut h, "<C-o>2L");
+    assert_eq!(top(&mut h, a), title);
+    assert_eq!(fails(&mut h, "L"), "No newer place");
+
+    // A click on a link to another file opens its page.
+    keys(&mut h, "gg");
+    let (_, r) = link(&mut h, a, "b.md#second-part");
+    click(&mut h, a, r);
+    h.run_until_idle();
+    let b = h.find_buffer("b.md").unwrap();
+    assert_eq!(h.focused_buffer(), seen(&mut h, b).map(|p| p.buffer));
+    assert_eq!(seen(&mut h, a), None, "the page left is put away");
+
+    // `ZZ` and `ZQ` close a page's window, as `:q` does.
+    keys(&mut h, "<C-w>v<C-w>v");
+    assert_eq!(h.window_list().len(), 3);
+    keys(&mut h, "ZZ");
     assert_eq!(h.window_list().len(), 2);
+    keys(&mut h, "ZQ");
+    assert_eq!(h.window_list().len(), 1);
 }
 
 #[test]
