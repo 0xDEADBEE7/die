@@ -7,13 +7,30 @@
 //! out for, y from the page's top. The display's scale ([`Env::scale`]) turns the sheet's CSS
 //! pixels into them.
 //!
-//! THE STAND-IN. What is below draws a bar for each line of the source: it holds the interface
-//! in place while the real engine is built, so nothing outside this file may lean on what it
-//! draws or where, only on what [`Page`] says.
+//! Its parts, none of which is seen from outside:
+//!
+//! - `doc`: the text as blocks and runs, built on the parser's events, with `html` for the
+//!   tags a README uses;
+//! - `sheet`: GitHub's geometry as numbers;
+//! - `fonts` and `kern`: the system's faces read from their files and set as CoreText sets
+//!   them, and the glyphs drawn and kept;
+//! - `layout`: the document set for a width, as a list of things to draw;
+//! - `paint`: the rows a buffer shows, drawn;
+//! - `picture`: PNG files, and pictures at other sizes.
+
+mod doc;
+mod fonts;
+mod html;
+mod kern;
+mod layout;
+mod paint;
+mod picture;
+mod sheet;
 
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 // ------------------------------------------------------------------ colours
 
@@ -256,7 +273,7 @@ pub struct Env<'a> {
 /// The fonts a page is set in, with the glyphs already drawn. One serves every page.
 #[derive(Debug)]
 pub struct Fonts {
-    _own: Option<PathBuf>,
+    book: fonts::Book,
 }
 
 impl Fonts {
@@ -265,9 +282,26 @@ impl Fonts {
     /// own fonts are in, the last resort where the system has none we know. An error says no
     /// font could be read at all, and a page can't be drawn.
     pub fn load(own: Option<&Path>) -> Result<Fonts, String> {
-        Ok(Fonts {
-            _own: own.map(Path::to_path_buf),
-        })
+        fonts::Book::load(own).map(|book| Fonts { book })
+    }
+
+    /// The families found: the text's, then the code's.
+    pub fn found(&self) -> &str {
+        self.book.found()
+    }
+
+    /// How far the pen moves over `text` set as body text at `scale`, in physical pixels, and
+    /// the same with no kerning between its letters: what a test of the kerning compares.
+    pub fn measure(&mut self, text: &str, scale: f32) -> (f32, f32) {
+        let mut pass = self.book.pass();
+        let mut run = pass.run(fonts::Style::default(), sheet::TEXT, scale);
+        let (mut kerned, mut plain) = (0.0, 0.0);
+        for c in text.chars() {
+            let shaped = pass.next(&mut run, c);
+            kerned += shaped.advance + shaped.kern;
+            plain += shaped.advance;
+        }
+        (kerned, plain)
     }
 }
 
@@ -285,11 +319,16 @@ pub struct Picture {
 impl Picture {
     /// Reads and decodes a picture file. It touches nothing shared, so a job's thread can run it.
     pub fn load(path: &Path) -> Result<Picture, String> {
-        Err(format!(
-            "{}: the stand-in reads no pictures",
-            path.display()
-        ))
+        picture::load(path)
     }
+}
+
+/// A picture's pixels at a size a page drew it at.
+#[derive(Debug)]
+struct Sized {
+    width: u32,
+    height: u32,
+    pixels: Arc<Vec<u8>>,
 }
 
 /// The pictures pages show, by the file they came from. A layout asks it for a picture's size,
@@ -298,6 +337,9 @@ impl Picture {
 #[derive(Debug, Default)]
 pub struct Pictures {
     known: HashMap<PathBuf, Option<Picture>>,
+    /// Pictures at the sizes they were last painted at: a paint only reads the pictures, so
+    /// what it makes is kept behind a lock. Two sizes a picture, for two windows on one file.
+    sized: Mutex<HashMap<PathBuf, Vec<Sized>>>,
 }
 
 impl Pictures {
@@ -308,11 +350,13 @@ impl Pictures {
 
     /// A picture arrived.
     pub fn insert(&mut self, path: PathBuf, picture: Picture) {
+        self.unsize(&path);
         self.known.insert(path, Some(picture));
     }
 
     /// A picture can't be had: the page shows its alternative text, and stops wanting it.
     pub fn fail(&mut self, path: PathBuf) {
+        self.unsize(&path);
         self.known.insert(path, None);
     }
 
@@ -323,7 +367,37 @@ impl Pictures {
 
     /// Forgets a picture, as when its file changed: the next layout wants it again.
     pub fn forget(&mut self, path: &Path) {
+        self.unsize(path);
         self.known.remove(path);
+    }
+
+    fn unsize(&mut self, path: &Path) {
+        let sized = self.sized.get_mut().unwrap_or_else(|e| e.into_inner());
+        sized.remove(path);
+    }
+
+    /// A picture's pixels at `width` by `height`, made the first time and kept.
+    fn at_size(&self, path: &Path, width: u32, height: u32) -> Option<Arc<Vec<u8>>> {
+        let picture = self.known.get(path)?.as_ref()?;
+        let mut sized = self.sized.lock().unwrap_or_else(|e| e.into_inner());
+        let kept = sized.entry(path.to_path_buf()).or_default();
+        if let Some(found) = kept.iter().find(|s| s.width == width && s.height == height) {
+            return Some(found.pixels.clone());
+        }
+        let pixels = Arc::new(if (width, height) == (picture.width, picture.height) {
+            picture.pixels.clone()
+        } else {
+            picture::scaled(picture, width, height)
+        });
+        if kept.len() >= 2 {
+            kept.remove(0);
+        }
+        kept.push(Sized {
+            width,
+            height,
+            pixels: pixels.clone(),
+        });
+        Some(pixels)
     }
 }
 
@@ -389,163 +463,67 @@ pub struct Marks {
 /// A document laid out for one width, scale and palette.
 #[derive(Debug)]
 pub struct Page {
-    height: f32,
-    canvas: Rgb,
-    bars: Vec<Bar>,
-    link_bars: Vec<Bar>,
-    links: Vec<LinkBox>,
-    headings: Vec<HeadingPos>,
-    wants: Vec<PathBuf>,
-}
-
-/// The stand-in's line: a bar.
-#[derive(Debug)]
-struct Bar {
-    rect: Rect,
-    colour: Rgb,
-    source: Range<usize>,
+    laid: layout::Laid,
 }
 
 impl Page {
     /// Lays the document out.
-    pub fn new(text: &str, env: &Env<'_>, _fonts: &mut Fonts, _pictures: &Pictures) -> Page {
-        let scale = env.scale.max(0.5);
-        let (line, letter) = ((24.0 * scale).round(), 8.0 * scale);
-        let pad = (45.0 * scale).round().min(env.width as f32 / 8.0);
-        let room = (env.width as f32 - 2.0 * pad).max(letter);
-        let mut page = Page {
-            height: 0.0,
-            canvas: env.palette.canvas,
-            bars: Vec::new(),
-            link_bars: Vec::new(),
-            links: Vec::new(),
-            headings: Vec::new(),
-            wants: Vec::new(),
-        };
-        let (mut y, mut at) = (pad, 0);
-        for whole in text.split_inclusive('\n') {
-            let body = whole.trim_end();
-            let source = at..at + body.len();
-            at += whole.len();
-            let level = body.bytes().take_while(|b| *b == b'#').count();
-            let heading = (1..=6).contains(&level) && body[level..].starts_with(' ');
-            if !body.is_empty() {
-                let rect = Rect {
-                    x: pad,
-                    y: y + line * 0.3,
-                    w: (body.chars().count() as f32 * letter).min(room),
-                    h: line * 0.4,
-                };
-                let colour = if heading {
-                    env.palette.headings[level - 1]
-                } else {
-                    env.palette.text
-                };
-                page.bars.push(Bar {
-                    rect,
-                    colour,
-                    source: source.clone(),
-                });
-            }
-            if heading {
-                let slug: String = body[level + 1..]
-                    .to_lowercase()
-                    .chars()
-                    .filter_map(|c| match c {
-                        ' ' => Some('-'),
-                        c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
-                        _ => None,
-                    })
-                    .collect();
-                page.headings.push(HeadingPos {
-                    y,
-                    level: level as u8,
-                    slug,
-                    source: source.clone(),
-                });
-            }
-            let mut from = 0;
-            while let Some(mid) = body[from..].find("](").map(|i| i + from) {
-                let (Some(open), Some(close)) = (
-                    body[..mid].rfind('['),
-                    body[mid..].find(')').map(|i| i + mid),
-                ) else {
-                    break;
-                };
-                let x = pad + (body[..open].chars().count() as f32 * letter).min(room - letter);
-                let w = (body[open..=close].chars().count() as f32 * letter).min(pad + room - x);
-                let rect = Rect { x, y, w, h: line };
-                page.link_bars.push(Bar {
-                    rect: Rect {
-                        y: y + line * 0.3,
-                        h: line * 0.4,
-                        ..rect
-                    },
-                    colour: env.palette.link,
-                    source: source.start + open..source.start + close + 1,
-                });
-                page.links.push(LinkBox {
-                    rects: vec![rect],
-                    dest: body[mid + 2..close].to_owned(),
-                    title: String::new(),
-                    image: open > 0 && body.as_bytes()[open - 1] == b'!',
-                    source: source.start + open..source.start + close + 1,
-                });
-                from = close + 1;
-            }
-            y += line;
+    pub fn new(text: &str, env: &Env<'_>, fonts: &mut Fonts, pictures: &Pictures) -> Page {
+        let doc = doc::parse(text, env.front_matter);
+        Page {
+            laid: layout::lay(&doc, env, fonts.book.pass(), pictures),
         }
-        page.height = y + pad;
-        page
     }
 
     /// The page's height: its last block's bottom and the padding under it.
     pub fn height(&self) -> f32 {
-        self.height
+        self.laid.height
     }
 
     /// The links, in reading order.
     pub fn links(&self) -> &[LinkBox] {
-        &self.links
+        &self.laid.links
     }
 
     /// The link at a point of the page, as an index into [`Page::links`].
     pub fn link_at(&self, x: f32, y: f32) -> Option<usize> {
-        self.links
-            .iter()
-            .position(|l| l.rects.iter().any(|r| r.contains(x, y)))
+        let mut links = self.laid.links.iter();
+        links.position(|l| l.rects.iter().any(|r| r.contains(x, y)))
     }
 
     /// The headings, in reading order.
     pub fn headings(&self) -> &[HeadingPos] {
-        &self.headings
+        &self.laid.headings
+    }
+
+    /// Where the place a link's `#name` names is on the page: a heading by its anchor, or what
+    /// the page itself links to, a footnote (`fn-` and its label) and the first reference to
+    /// one (`fnref-` and its label).
+    pub fn anchor(&self, name: &str) -> Option<f32> {
+        let heading = self.laid.headings.iter().find(|h| h.slug == name);
+        let other = || self.laid.anchors.iter().find(|(n, _)| n == name);
+        heading.map(|h| h.y).or_else(|| other().map(|(_, y)| *y))
     }
 
     /// Where a byte of the source is on the page: the top of the line that shows it, or of the
     /// nearest thing shown after it, as for a byte in hidden markup or between blocks.
     pub fn y_of(&self, source: usize) -> f32 {
-        let found = self
-            .bars
-            .iter()
-            .find(|b| b.source.end > source)
-            .or(self.bars.last());
-        found.map_or(0.0, |b| b.rect.y)
+        let spans = &self.laid.spans;
+        let at = spans.partition_point(|s| s.end <= source && s.src < source);
+        spans.get(at).or(spans.last()).map_or(0.0, |s| s.y0)
     }
 
     /// The source byte shown at a height of the page: the start of what the line there, or the
     /// first line under it, was made from.
     pub fn source_at(&self, y: f32) -> usize {
-        let found = self
-            .bars
-            .iter()
-            .find(|b| b.rect.y + b.rect.h > y)
-            .or(self.bars.last());
-        found.map_or(0, |b| b.source.start)
+        let spans = &self.laid.spans;
+        let at = spans.partition_point(|s| s.y1 <= y && s.y0 < y);
+        spans.get(at).or(spans.last()).map_or(0, |s| s.src)
     }
 
     /// The picture files this layout wanted and `pictures` had no answer for.
     pub fn wants(&self) -> &[PathBuf] {
-        &self.wants
+        &self.laid.wants
     }
 
     /// Paints the part of the page a pixel buffer shows. `out` is premultiplied RGBA8, `width`
@@ -555,8 +533,8 @@ impl Page {
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &self,
-        _fonts: &mut Fonts,
-        _pictures: &Pictures,
+        fonts: &mut Fonts,
+        pictures: &Pictures,
         out: &mut [u8],
         width: u32,
         height: u32,
@@ -564,30 +542,11 @@ impl Page {
         rows: Range<u32>,
         marks: &Marks,
     ) {
-        let rows = rows.start.min(height)..rows.end.min(height);
-        let stride = width as usize * 4;
-        let mut fill = |x0: f32, y0: f32, x1: f32, y1: f32, c: Rgb| {
-            let (x0, x1) = (
-                x0.max(0.0) as usize,
-                (x1.max(0.0) as usize).min(width as usize),
-            );
-            let y0 = ((y0 - top as f32).round().max(rows.start as f32)) as usize;
-            let y1 = ((y1 - top as f32).round().max(0.0) as usize).min(rows.end as usize);
-            for row in y0..y1 {
-                for px in out[row * stride..][x0 * 4..x1.max(x0) * 4].chunks_exact_mut(4) {
-                    px.copy_from_slice(&[c.0, c.1, c.2, 255]);
-                }
-            }
-        };
-        fill(0.0, f32::MIN, width as f32, f32::MAX, self.canvas);
-        for bar in self.bars.iter().chain(&self.link_bars) {
-            let r = bar.rect;
-            fill(r.x, r.y, r.x + r.w, r.y + r.h, bar.colour);
-        }
-        if let Some(link) = marks.focus.and_then(|i| self.links.get(i)) {
-            for r in &link.rects {
-                fill(r.x, r.y, r.x + r.w, r.y + r.h, Rgb(255, 255, 255));
-            }
-        }
+        let focus = marks.focus.and_then(|i| self.laid.links.get(i));
+        let rects = focus.map(|l| l.rects.as_slice());
+        let pass = fonts.book.pass();
+        paint::paint(
+            &self.laid, pass, pictures, out, width, height, top, rows, rects,
+        );
     }
 }
