@@ -24,6 +24,7 @@ fn env<'a>(width: u32, scale: f32, palette: &'a Palette, dir: Option<&'a Path>) 
         dir,
         front_matter: false,
         tab_width: 8,
+        opened: &[],
     }
 }
 
@@ -388,4 +389,161 @@ fn odd_scales_and_cut_off_text_make_a_page_all_the_same() {
             &mut fonts,
         );
     }
+}
+
+#[test]
+fn hairlines_are_a_css_pixel_at_every_scale() {
+    let Some(mut fonts) = fonts() else { return };
+    let palette = Palette::mono_dark();
+    // A table at scale 2: 36 CSS pixels a row and a two pixel line, so 74 a row and two more.
+    for rows in [1usize, 3] {
+        let text = format!("| a | b |\n|---|---|\n{}", "| 1 | 2 |\n".repeat(rows));
+        let page = Page::new(
+            &text,
+            &env(2400, 2.0, &palette, None),
+            &mut fonts,
+            &Pictures::new(),
+        );
+        assert_eq!(
+            page.height() - 180.0,
+            74.0 * (rows + 1) as f32 + 2.0,
+            "{rows} rows at scale 2"
+        );
+    }
+    // A first heading's rule is two pixels at scale 2, one and a half rounded to two at 1.5.
+    for (scale, pad, rule) in [(2.0f32, 90.0f32, 2.0f32), (1.5, 68.0, 2.0)] {
+        let text = "# T\n\nunder\n";
+        let page = Page::new(
+            text,
+            &env(2400, scale, &palette, None),
+            &mut fonts,
+            &Pictures::new(),
+        );
+        let line = (40.0 * scale).round();
+        near(
+            top_of(&page, text, "under"),
+            pad + line + 9.6 * scale + rule + 16.0 * scale,
+            "under an h1",
+        );
+    }
+}
+
+#[test]
+fn details_are_closed_until_opened_and_their_summary_is_a_toggle() {
+    let Some(mut fonts) = fonts() else { return };
+    let palette = Palette::mono_dark();
+    let text = "<details>\n<summary>Sum</summary>\n\nHidden [in](u) here.\n\n</details>\n\n<details open>\n<summary>Open</summary>\n\nShown [out](v) here.\n\n</details>\n";
+    let at = |page: &Page| -> Vec<String> { page.links().iter().map(|l| l.dest.clone()).collect() };
+    let second = text.rfind("<details").expect("the second tag");
+    let closed = Page::new(
+        text,
+        &env(1200, 1.0, &palette, None),
+        &mut fonts,
+        &Pictures::new(),
+    );
+    // Closed, the first shows its summary alone; the second, open by its tag, its content.
+    assert_eq!(
+        at(&closed),
+        ["details:0", &format!("details:{second}"), "v"]
+    );
+    assert!(closed.links().iter().all(|l| !l.image));
+    near(
+        closed.height(),
+        45.0 + 24.0 + 16.0 + 24.0 + 24.0 + 45.0,
+        "one line, then two",
+    );
+    // The summary line is the toggle: a click anywhere along it finds the link.
+    assert_eq!(closed.link_at(600.0, 50.0), Some(0));
+    // Opened by the reader, the first shows its content; so turned, the second hides its own.
+    let opened = [0usize, second];
+    let mut env = env(1200, 1.0, &palette, None);
+    env.opened = &opened;
+    let turned = Page::new(text, &env, &mut fonts, &Pictures::new());
+    assert_eq!(
+        at(&turned),
+        ["details:0", "u", &format!("details:{second}")]
+    );
+    near(
+        turned.height(),
+        closed.height(),
+        "the same two lines the other way round",
+    );
+}
+
+#[test]
+fn spacers_nested_alerts_and_back_links_are_as_a_browser_has_them() {
+    let Some(mut fonts) = fonts() else { return };
+    // A lone <br> block is an empty line with the usual margin under it; two are two lines; a
+    // paragraph of only a no-break space is a line.
+    let plain = page("a\n\nb\n", &mut fonts).height();
+    let one = page("a\n\n<br>\n\nb\n", &mut fonts).height();
+    let two = page("a\n\n<br>\n<br>\n\nb\n", &mut fonts).height();
+    let nbsp = page("a\n\n&nbsp;\n\nb\n", &mut fonts).height();
+    near(one - plain, 40.0, "a line and a gap for one <br>");
+    near(two - plain, 64.0, "two lines and a gap for two");
+    near(nbsp - plain, 40.0, "a line and a gap for a no-break space");
+    // An alert's marker in a list item is a quote's text: the same page as writing it plain.
+    let nested = page("- > [!TIP]\n  > x\n", &mut fonts).height();
+    let written = page("- > [!TIP] x\n", &mut fonts).height();
+    let alert = page("> [!TIP]\n> x\n", &mut fonts).height();
+    assert_eq!(nested, written, "a nested alert is a quote");
+    assert!(alert > nested + 30.0, "a top-level one is an alert");
+    // A note referred to twice has two ways back, each to its own reference.
+    let text = "a[^n] b[^n]\n\n[^n]: c\n";
+    let page = page(text, &mut fonts);
+    let dests: Vec<&str> = page.links().iter().map(|l| l.dest.as_str()).collect();
+    assert_eq!(dests, ["#fn-n", "#fn-n", "#fnref-n", "#fnref-n-2"]);
+    assert_eq!(page.anchor("fnref-n"), page.anchor("fnref-n-2"));
+    assert!(
+        page.anchor("fnref-n-2")
+            .is_some_and(|y| y < page.anchor("fn-n").unwrap_or(0.0))
+    );
+}
+
+#[test]
+fn ideographs_break_between_and_wide_tables_keep_their_words() {
+    let Some(mut fonts) = fonts() else { return };
+    let palette = Palette::mono_dark();
+    // Sixty ideographs as one link, in a narrow column: several lines, all inside it.
+    let han: String = "漢".repeat(60);
+    let text = format!("[{han}](u)\n");
+    let page = Page::new(
+        &text,
+        &env(300, 1.0, &palette, None),
+        &mut fonts,
+        &Pictures::new(),
+    );
+    let rects = &page.links()[0].rects;
+    assert!(rects.len() > 2, "{} lines of ideographs", rects.len());
+    assert!(rects.iter().all(|r| r.x + r.w <= 300.0 - 15.0 + 1.0));
+    // A table whose longest word is wider than the column runs past it, into the margin, the
+    // word whole; one that can't fit the area either way breaks the word.
+    let word: String = "W".repeat(64);
+    let text = format!("| a | b |\n|---|---|\n| 1 | [{word}](u) |\n");
+    let page = Page::new(
+        &text,
+        &env(1200, 1.0, &palette, None),
+        &mut fonts,
+        &Pictures::new(),
+    );
+    let rects = &page.links()[0].rects;
+    assert_eq!(rects.len(), 1, "the word is whole");
+    assert!(
+        rects[0].x + rects[0].w > 155.0 + 890.0,
+        "past the column's edge"
+    );
+    assert!(
+        rects[0].x + rects[0].w <= 1200.0 - 45.0,
+        "inside the page's padding"
+    );
+    let page = Page::new(
+        &text,
+        &env(800, 1.0, &palette, None),
+        &mut fonts,
+        &Pictures::new(),
+    );
+    assert!(
+        page.links()[0].rects.len() > 1,
+        "broken where there's no room"
+    );
 }
