@@ -4,8 +4,8 @@
 use die_test_cap as _;
 
 use die_markdown::plan::{
-    ALERT, BOLD, CODE, CODE_BLOCK, H, ITALIC, LINK, MARKER, META, Options, PLAIN, Plan, QUOTE,
-    RULE, STRIKE, TABLE_HEADER, plan,
+    ALERT, BOLD, CODE, CODE_BLOCK, H, ITALIC, LINK, MARKER, META, Options, PAPER, PLAIN, Plan,
+    QUOTE, RULE, STRIKE, TABLE_HEADER, plan,
 };
 use std::path::{Path, PathBuf};
 
@@ -490,6 +490,15 @@ fn indented_code() {
         ["indented\n", "code\n", "\n", "more\n"]
     );
     assert!(p.hides.is_empty());
+    // The blank line hasn't the indentation the box starts after: the paper stands in for it,
+    // then the box, so its left edge is straight.
+    let blank: Vec<(&str, &str)> = p
+        .virtuals
+        .iter()
+        .filter(|v| v.at == text.find("\n\n    more").unwrap() + 1)
+        .map(|v| (v.shown.text.as_str(), v.shown.face))
+        .collect();
+    assert_eq!(blank, [("    ", PAPER), ("         ", CODE_BLOCK)]);
 }
 
 #[test]

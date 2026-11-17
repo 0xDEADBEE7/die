@@ -127,12 +127,28 @@ impl View {
             what == wanted && t.decoration(*id).is_some_and(|d| d.range == *range)
         };
         let head = self.pieces.iter().zip(&new);
-        let head = head.take_while(|(p, n)| same(p, n)).count();
+        let mut head = head.take_while(|(p, n)| same(p, n)).count();
         let tail = self.pieces[head..]
             .iter()
             .rev()
             .zip(new[head..].iter().rev());
-        let tail = tail.take_while(|(p, n)| same(p, n)).count();
+        let mut tail = tail.take_while(|(p, n)| same(p, n)).count();
+        // Virtual text at one position shows in the order it was added, and a piece swapped in
+        // is added last. So the pieces of one position go together: a kept one that shares its
+        // position with a swapped one beside it is swapped too.
+        let together = |a: usize, b: usize| {
+            let at = |i: usize| matches!(new[i].1, What::Virtual(_)).then_some(new[i].0.start);
+            at(a).is_some() && at(a) == at(b)
+        };
+        while head > 0 && head < new.len() - tail && together(head - 1, head) {
+            head -= 1;
+        }
+        while tail > 0
+            && head < new.len() - tail
+            && together(new.len() - tail - 1, new.len() - tail)
+        {
+            tail -= 1;
+        }
         let stale = head..self.pieces.len() - tail;
         let fresh: Vec<(Range<usize>, What)> = new.drain(head..new.len() - tail).collect();
         if !stale.is_empty() || !fresh.is_empty() {

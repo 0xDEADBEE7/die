@@ -55,9 +55,12 @@ pub const TABLE_HEADER: &str = "markdown-table-header";
 pub const META: &str = "markdown-meta";
 /// The face of an alert's title: the `Note` of `> [!NOTE]`.
 pub const ALERT: &str = "markdown-alert";
-/// The editor's base face, which sets nothing over what's under it: the face of a decoded
-/// entity, which is only text.
-pub const PLAIN: &str = "default";
+/// No face of its own: what's shown draws as the text under it does. A decoded entity's, which
+/// is only text.
+pub const PLAIN: &str = "";
+/// The editor's base face, drawn over what's under it: the paper, where a code block's box
+/// mustn't reach.
+pub const PAPER: &str = "default";
 
 /// Text shown that isn't in the buffer, and the face it draws in.
 #[derive(Clone, Debug, PartialEq, Eq)]
