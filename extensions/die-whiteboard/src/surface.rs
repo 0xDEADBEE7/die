@@ -1,5 +1,6 @@
-//! A board's surface: the state a board buffer carries (its file, model, view, tool, selection,
-//! undo log and what's unsaved), the tools as the pointer works them, and the [`Surface`] core
+//! A board's surface: the state a board buffer carries (its file, or none for a scratch board,
+//! model, view, tool, selection, undo log and what's unsaved), the tools as the pointer works
+//! them, and the [`Surface`] core
 //! draws and sends events to. The state is shared between the surface and the extension
 //! ([`Shared`]), so the session's save, which has `&Ctx` alone, and a buffer's kill, which comes
 //! after the surface is gone, can still write the file.
@@ -162,8 +163,12 @@ const FOCUS_GRACE: Duration = Duration::from_millis(150);
 
 /// A board as a buffer holds it.
 pub struct BoardState {
-    /// Its file.
-    pub path: PathBuf,
+    /// Its file; None for a scratch board, which has none until it's saved as one.
+    pub path: Option<PathBuf>,
+    /// A scratch board's number: 1 is `scratch`, 2 `scratch 2`.
+    pub scratch: u32,
+    /// Where it was last exported to, which an export there again needn't ask to overwrite.
+    pub exported: Option<PathBuf>,
     /// Its elements.
     pub board: Board,
     /// Where it is in the area.
@@ -178,7 +183,7 @@ pub struct BoardState {
     pub selection: Vec<Id>,
     /// The undo log.
     pub history: History,
-    /// Changed since the file was written.
+    /// Changed since the file was written. Never on a scratch board, which no file is behind.
     pub dirty: bool,
     /// When it last changed, on the workspace's clock.
     pub changed_at: Duration,
@@ -251,7 +256,17 @@ impl BoardState {
     /// A board from `path`, with its elements, the pen, ink 1 and the medium width.
     pub fn new(path: PathBuf, board: Board) -> BoardState {
         BoardState {
-            path,
+            path: Some(path),
+            ..BoardState::scratch(0, board)
+        }
+    }
+
+    /// Scratch board `n`, with these elements, as [`BoardState::new`] has a file's.
+    pub fn scratch(n: u32, board: Board) -> BoardState {
+        BoardState {
+            path: None,
+            scratch: n,
+            exported: None,
             board,
             view: View::default(),
             tool: Tool::Pen,
@@ -290,13 +305,16 @@ impl BoardState {
         cell_size(self.cell)
     }
 
-    /// The file's name.
+    /// The file's name, or a scratch board's: `scratch 2`.
     pub fn name(&self) -> String {
-        crate::file::name_of(&self.path)
+        match &self.path {
+            Some(path) => crate::file::name_of(path),
+            None => crate::file::scratch_name(self.scratch),
+        }
     }
 
     /// The status line: `arch.svg  pen·2  medium  12 elements`, ` *` while unsaved, and why a
-    /// save or export failed.
+    /// save or export failed. A scratch board's starts `scratch`, and is never unsaved.
     pub fn status(&self) -> String {
         let n = self.board.len();
         let noun = if n == 1 { "element" } else { "elements" };
@@ -373,9 +391,9 @@ impl BoardState {
         }
     }
 
-    /// The board changed: the file is behind.
+    /// The board changed: the file is behind, if it has one.
     pub fn changed(&mut self, now: Duration, damage: Damage) {
-        self.dirty = true;
+        self.dirty = self.path.is_some();
         self.changed_at = now;
         self.board_rev += 1;
         self.rev += 1;

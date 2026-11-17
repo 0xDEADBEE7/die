@@ -1,7 +1,7 @@
 //! The whiteboard through your config: it comes in through `die::Config.extensions`, `\w` opens
-//! its prompt in normal state, `\hk` describes its keys, its inks take mono-dark's colours, and a
-//! board drawn with your text defaults is 80 columns centred until `\z`. Nothing is written
-//! outside a temporary directory.
+//! a scratch board in normal state, with no prompt and no file until `S` asks where, `\hk`
+//! describes its keys, its inks take mono-dark's colours, and a board drawn with your text
+//! defaults is 80 columns centred until `\z`. Nothing is written outside a temporary directory.
 
 use die_test_cap as _;
 
@@ -39,7 +39,7 @@ fn tree(name: &str) -> PathBuf {
 }
 
 #[test]
-fn leader_w_opens_the_prompt_and_a_board_has_your_keys_and_colours() {
+fn leader_w_opens_a_scratch_board_and_a_board_has_your_keys_and_colours() {
     let dir = tree("leader");
     let mut h = harness();
     let notes = h.find_buffer("notes").unwrap();
@@ -49,7 +49,13 @@ fn leader_w_opens_the_prompt_and_a_board_has_your_keys_and_colours() {
         None,
         "nothing of the whiteboard's runs before \\w"
     );
-    for name in ["whiteboard", "whiteboard-export", "whiteboard-copy-image"] {
+    for name in [
+        "whiteboard",
+        "whiteboard-new",
+        "whiteboard-find",
+        "whiteboard-export",
+        "whiteboard-copy-image",
+    ] {
         assert_eq!(
             h.command_doc(name).map(|d| d.1),
             Some("whiteboard"),
@@ -57,15 +63,11 @@ fn leader_w_opens_the_prompt_and_a_board_has_your_keys_and_colours() {
         );
     }
     keys(&mut h, "\\w");
-    assert!(
-        h.prompt_text().unwrap().ends_with('/'),
-        "{:?}",
-        h.prompt_text()
-    );
-    keys(&mut h, "arch<CR>");
+    assert_eq!(h.prompt_text(), None, "no prompt");
     let w = h.focused().unwrap();
     let buf = h.window_buffer(w).unwrap();
-    assert_eq!(h.buffer_name(buf), Some("*whiteboard: arch.svg*"));
+    assert_eq!(h.buffer_name(buf), Some("*whiteboard: scratch*"));
+    assert_eq!(h.directory(buf), Some(dir.as_path()));
     let g = h.surface_area(w).unwrap();
     assert_eq!(
         (g.text_x, g.text_w),
@@ -98,14 +100,22 @@ fn leader_w_opens_the_prompt_and_a_board_has_your_keys_and_colours() {
         die::core::Rgb::hex("#cccccc"),
         "ink 1 is the default foreground"
     );
-    // Nothing was written: no stroke, no file.
-    assert!(!dir.join("arch.svg").exists());
+    // Nothing was written: a scratch board has no file.
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     let wb = h
         .with_ext(|wb: &mut Whiteboard, _| wb.boards().len())
         .unwrap();
     assert_eq!(wb, 1);
+    // `S` asks where, from the directory `\w` was typed in.
     h.run("whiteboard-save", &Args::default()).unwrap();
+    assert!(
+        h.prompt_text().unwrap().ends_with('/'),
+        "{:?}",
+        h.prompt_text()
+    );
+    keys(&mut h, "arch<CR>");
     assert!(dir.join("arch.svg").exists());
+    assert_eq!(h.buffer_name(buf), Some("*whiteboard: arch.svg*"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -186,8 +196,7 @@ fn a_board_drawn_in_pixels_through_your_config_exports_splits_and_survives_two_r
     h.open_text("notes", "my notes\n").unwrap();
     let notes = h.find_buffer("notes").unwrap();
     h.set_directory(notes, &dir);
-    keys(&mut h, "\\w");
-    keys(&mut h, "talk<CR>");
+    keys(&mut h, ":whiteboard talk<CR>");
     let w = h.focused().unwrap();
     let buf = h.window_buffer(w).unwrap();
     assert_eq!(h.buffer_name(buf), Some("*whiteboard: talk.svg*"));
@@ -230,8 +239,8 @@ fn a_board_drawn_in_pixels_through_your_config_exports_splits_and_survives_two_r
         .with_ext(|wb: &mut Whiteboard, _| wb.boards().len())
         .unwrap();
     assert_eq!(wb, 1);
-    // Export: the PNG beside the file, from the model, at your 2x.
-    keys(&mut h, "Epng<CR>");
+    // Export: the PNG beside the file, from the model, at your 2x, where `E` asks first.
+    keys(&mut h, "E<CR>");
     h.run_until_idle();
     let png = dir.join("talk.png");
     assert!(png.exists(), "{:?}", h.messages);

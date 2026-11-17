@@ -1,6 +1,6 @@
 //! Board files on disk: reading one (a missing or empty file is a new board, a foreign one is
 //! refused), writing one atomically, the names a board buffer and its exports get, and the
-//! `Board: ` prompt's directory listing.
+//! prompts' directory listings.
 
 use crate::model::Board;
 use crate::svg::{self, Look};
@@ -26,7 +26,20 @@ pub fn name_of(path: &Path) -> String {
 
 /// The buffer's name: `*whiteboard: arch.svg*`.
 pub fn buffer_name(path: &Path) -> String {
-    format!("*whiteboard: {}*", name_of(path))
+    titled(&name_of(path))
+}
+
+/// A board buffer's name from the board's: `*whiteboard: scratch 2*`.
+pub fn titled(name: &str) -> String {
+    format!("*whiteboard: {name}*")
+}
+
+/// Scratch board `n`'s name: `scratch`, then `scratch 2`.
+pub fn scratch_name(n: u32) -> String {
+    match n {
+        0 | 1 => "scratch".into(),
+        n => format!("scratch {n}"),
+    }
 }
 
 /// `arch.svg` beside the file as `arch.png`, or `arch.export.svg`.
@@ -36,6 +49,18 @@ pub fn sibling(path: &Path, suffix: &str) -> PathBuf {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "board".into());
     path.with_file_name(format!("{stem}{suffix}"))
+}
+
+/// The first of `board.png`, `board-2.png` and on that `dir` has no file of: where a scratch
+/// board's export goes unless you say otherwise. `suffix` is `.png` or `.export.svg`.
+pub fn free_export(dir: &Path, suffix: &str) -> PathBuf {
+    (1..)
+        .map(|n| match n {
+            1 => dir.join(format!("board{suffix}")),
+            n => dir.join(format!("board-{n}{suffix}")),
+        })
+        .find(|p| !p.exists())
+        .unwrap()
 }
 
 /// The board in `path`: a new one if the file is missing or empty.
@@ -74,8 +99,22 @@ pub fn save(path: &Path, board: &Board, look: &Look) -> Result<(), String> {
 }
 
 /// A directory's boards and subdirectories by name, hidden ones last, each directory ending in
-/// `/`: what the `Board: ` prompt lists. A name that isn't UTF-8 can't go on the line.
+/// `/`: what the `Board: ` and `Save board as: ` prompts list. A name that isn't UTF-8 can't go
+/// on the line.
 pub fn entries(dir: &Path) -> Vec<String> {
+    // Not a board's own export, which it would refuse as not a whiteboard file.
+    listed(dir, |name| {
+        name.ends_with(".svg") && !name.ends_with(".export.svg")
+    })
+}
+
+/// A directory's PNG and SVG files and subdirectories, as [`entries`] lists boards: what the
+/// `Export to: ` prompt lists.
+pub fn exports(dir: &Path) -> Vec<String> {
+    listed(dir, |name| name.ends_with(".png") || name.ends_with(".svg"))
+}
+
+fn listed(dir: &Path, keep: fn(&str) -> bool) -> Vec<String> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return vec![];
     };
@@ -88,8 +127,7 @@ pub fn entries(dir: &Path) -> Vec<String> {
             if is_dir {
                 Some(name + "/")
             } else {
-                // Not a board's own export, which it would refuse as not a whiteboard file.
-                (name.ends_with(".svg") && !name.ends_with(".export.svg")).then_some(name)
+                keep(&name).then_some(name)
             }
         })
         .collect();
@@ -100,11 +138,20 @@ pub fn entries(dir: &Path) -> Vec<String> {
 /// The prompt's starting line for a directory: ending in `/`, with `~` for the home directory
 /// as Emacs abbreviates it.
 pub fn line_for(dir: &Path, home: Option<&Path>) -> String {
+    format!("{}/", abbreviate(dir, home).trim_end_matches('/'))
+}
+
+/// A path with `~` for the home directory, as Emacs abbreviates it: on a prompt's line, or in
+/// one's question.
+pub fn abbreviate(path: &Path, home: Option<&Path>) -> String {
     let shown = home
-        .and_then(|h| dir.strip_prefix(h).ok())
+        .and_then(|h| path.strip_prefix(h).ok())
         .map(|rest| Path::new("~").join(rest));
-    let line = shown.as_deref().unwrap_or(dir).to_string_lossy();
-    format!("{}/", line.trim_end_matches('/'))
+    shown
+        .as_deref()
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// What a line means: from where it last starts again (`//` or `/~`), `~` is the home
@@ -168,6 +215,12 @@ mod tests {
             sibling(Path::new("/a/arch.svg"), ".export.svg"),
             PathBuf::from("/a/arch.export.svg")
         );
+        assert_eq!(titled(&scratch_name(1)), "*whiteboard: scratch*");
+        assert_eq!(titled(&scratch_name(2)), "*whiteboard: scratch 2*");
+        assert_eq!(
+            abbreviate(Path::new("/Users/me/n/b.png"), Some(Path::new("/Users/me"))),
+            "~/n/b.png"
+        );
         let home = Path::new("/Users/me");
         assert_eq!(
             line_for(Path::new("/Users/me/notes"), Some(home)),
@@ -216,6 +269,25 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("notes.txt"), "").unwrap();
         assert_eq!(entries(&dir), ["new.svg", "other.svg", "sub/"]);
+        // Exports: PNGs and SVGs, the next `board.png` free.
+        assert_eq!(free_export(&dir, ".png"), dir.join("board.png"));
+        std::fs::write(dir.join("board.png"), "").unwrap();
+        std::fs::write(dir.join("board.export.svg"), "").unwrap();
+        assert_eq!(free_export(&dir, ".png"), dir.join("board-2.png"));
+        assert_eq!(
+            free_export(&dir, ".export.svg"),
+            dir.join("board-2.export.svg")
+        );
+        assert_eq!(
+            exports(&dir),
+            [
+                "board.export.svg",
+                "board.png",
+                "new.svg",
+                "other.svg",
+                "sub/"
+            ]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
