@@ -11,7 +11,7 @@
 use super::html::{self, Token};
 use crate::plan::walk::{Slugs, syntax};
 use pulldown_cmark::{
-    Alignment, BlockQuoteKind, CodeBlockKind, Event, LinkType, Parser, Tag, TagEnd,
+    Alignment, BlockQuoteKind, CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd,
 };
 use std::collections::HashMap;
 use std::ops::Range;
@@ -234,8 +234,28 @@ pub(super) fn parse(text: &str, front_matter: bool) -> Doc {
         unopened: 0,
         marker: None,
     };
-    for (event, range) in Parser::new_ext(text, syntax()).into_offset_iter() {
-        builder.event(event, range);
+    // Front matter is a metadata block at the top and nowhere else: further down the same
+    // lines are what CommonMark makes of them, a rule and, where `---` closes them, a heading
+    // (GitHub's reading). So the parser is asked for one only at the top, and the text after
+    // is read with none.
+    let mut rest = 0;
+    if text.starts_with("---") {
+        let mut events = Parser::new_ext(text, syntax()).into_offset_iter();
+        if let Some((event @ Event::Start(Tag::MetadataBlock(_)), range)) = events.next() {
+            builder.event(event, range);
+            for (event, range) in events {
+                let end = matches!(event, Event::End(TagEnd::MetadataBlock(_)));
+                rest = range.end;
+                builder.event(event, range);
+                if end {
+                    break;
+                }
+            }
+        }
+    }
+    let after = syntax().difference(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    for (event, range) in Parser::new_ext(&text[rest..], after).into_offset_iter() {
+        builder.event(event, range.start + rest..range.end + rest);
     }
     builder.finish(text.len())
 }
@@ -1013,9 +1033,8 @@ impl Builder<'_> {
         self.push(Inline::Text { text, style, src }, &range);
     }
 
-    /// Front matter. At the top of the text it's left out, or shown as GitHub shows it, a
-    /// table of its keys over their values; anywhere else it isn't front matter, and shows as
-    /// what it is there, text between two rules.
+    /// Front matter, at the top of the text: left out, or shown as GitHub shows it, a table of
+    /// its keys over their values.
     fn end_meta(&mut self) {
         let Some((text, src)) = self.meta.take() else {
             return;
@@ -1030,16 +1049,6 @@ impl Builder<'_> {
             fit: Fit::Block,
             src: at..at,
         };
-        if src.start != 0 {
-            self.block(Block::Rule {
-                src: src.start..src.start,
-            });
-            self.block(Block::Para(cell(&text, src.start)));
-            self.block(Block::Rule {
-                src: src.end..src.end,
-            });
-            return;
-        }
         if !self.front_matter {
             return;
         }
@@ -1691,6 +1700,44 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         assert_eq!(read, want);
+    }
+
+    #[test]
+    fn front_matter_is_only_at_the_top() {
+        let kinds = |doc: &Doc| -> Vec<String> {
+            doc.blocks
+                .iter()
+                .map(|b| match b {
+                    Block::Para(_) => "para".to_owned(),
+                    Block::Heading { level, .. } => format!("h{level}"),
+                    Block::Rule { .. } => "rule".to_owned(),
+                    Block::Table(_) => "table".to_owned(),
+                    Block::Quote { .. } => "quote".to_owned(),
+                    other => format!("{other:?}"),
+                })
+                .collect()
+        };
+        // At the top, a table if it's shown.
+        let top = "---\nkey: value\n---\n\nAfter.\n";
+        assert_eq!(kinds(&parse(top, true)), ["table", "para"]);
+        assert_eq!(kinds(&parse(top, false)), ["para"]);
+        // Anywhere else, what CommonMark makes of it: a rule, then `---` underlines a heading.
+        let text = "Intro.\n\n---\nkey: value\nother: thing\n---\n\nAfter.\n";
+        let doc = parse(text, true);
+        assert_eq!(kinds(&doc), ["para", "rule", "h2", "para"]);
+        let Block::Heading { para, .. } = &doc.blocks[2] else {
+            unreachable!()
+        };
+        let Some(Inline::Text { src, .. }) = para.inlines.first() else {
+            panic!("{:?}", para.inlines)
+        };
+        assert_eq!(*src, text.find("key").unwrap());
+        // And one under front matter too, in a quote as well.
+        let both = format!("{top}\n{text}\n> ---\n> a: b\n> ---\n");
+        assert_eq!(
+            kinds(&parse(&both, true)),
+            ["table", "para", "para", "rule", "h2", "para", "quote"]
+        );
     }
 
     #[test]
