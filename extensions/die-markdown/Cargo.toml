@@ -1,0 +1,23 @@
+[package]
+name = "die-markdown"
+description = "A rendered view of markdown in a DIE text buffer: markup hidden, text styled, toggled by a key (scope D14)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# An extension, outside the product: it depends on die-core only (`cargo xtask lint` checks).
+# pulldown-cmark stays behind plan.rs, which knows nothing of the editor.
+[dependencies]
+die-core.workspace = true
+pulldown-cmark.workspace = true
+unicode-width.workspace = true
+unicode-segmentation.workspace = true
+
+[dev-dependencies]
+die-test-cap.workspace = true
+die-vim.workspace = true
+
+[lints]
+workspace = true

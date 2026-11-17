@@ -367,8 +367,47 @@ Your leader's keys and DIE's own work as anywhere, so `\f`, `\p`, `\]`, `\e` or 
 
 **Options**, as your config sets them (it sets none): `water` (true: the dust and the four-point twinkles in the water around it), `shoal` (false: the far-off little jellyfish), `full_width` (true, where a board's is false), `rest_after` (five minutes; `None` never rests). **What it costs:** nothing until it's shown. While it swims, one timer at 30 a second, a covered or minimized DIE's too, until the five minutes are up. At rest or with no window on it, nothing: no timer runs.
 
+## markdown
+
+`\m` in a markdown file shows it rendered, and `\m` again shows it raw: die-markdown, an extension DIE builds beside itself, outside the product (scope D14), which your config registers. A file opens raw, as it always has. The rendered view is the same buffer and the same text: the markup is hidden under decorations and never removed, so the cursor stays where it was, nothing is modified, and every key of yours works in either view, editing included.
+
+**Where.** A buffer visiting a file named `.md`, `.markdown`, `.mkd`, `.mdown`, `.mkdn` or `.mdwn` has the `markdown` mode, and `\m` is a key of that mode's keymap, so it's a key only there: in any other buffer `\m` is undefined. `:markdown-toggle`, or `M-x markdown-toggle`, does the same on any text buffer, a `*scratch*` with markdown in it too. A buffer saved under a name that isn't markdown's (`:saveas notes.txt`) loses the mode and goes back to raw.
+
+**What rendered shows.** A cell grid has one size of letter, so nothing is larger: headings differ by weight, underline and brightness.
+
+| Markdown | Rendered |
+|---|---|
+| `# Heading` to `###### Heading`, and `Heading` over `===` or `---` | The text without its `#`s: h1 bold over a double underline, h2 over a single one, h3 bold, h4 to h6 each dimmer. A setext heading's underline becomes a line of `═` or `─`. |
+| `*em*` `_em_`, `**strong**` `__strong__`, `~~del~~` | Italic, bold, struck through, without the marks. |
+| `` `code` `` | Without the backticks, on the code background. |
+| `[text](address)`, `[text][ref]`, `<https://…>` | The text alone, as a link. `<CR>` on it follows it (below). |
+| `![alt](picture.png)` | `‹image: alt›`. DIE draws no pictures in text yet (M3); `<CR>` on it opens the picture. |
+| `- item` `* item` `+ item` | `•`, then `◦` and `▪` for the lists inside it. Numbered items keep their numbers. |
+| `- [ ] todo`, `- [x] done` | `☐ todo`, `☑ done`. |
+| `> quote` | A bar, `▎`, and the text dimmed and italic. `> [!NOTE]` and GitHub's other four alerts show their title. |
+| `---` `***` `___` | A line across the text's width. |
+| A fenced code block | A filled box: the opening fence's row shows the language, the closing one's is blank, and each row is padded to the longest line, or to the text's width. An indented block is a box with no such rows. Code is one colour, as source is everywhere in DIE. |
+| A pipe table | Columns aligned, whatever the source's spacing, with `│` between them and a ruled line under the header, which is bold. `:--`, `:-:` and `--:` align left, centre and right. |
+| Front matter (`---` … `---` at the very top) | Hidden, as your preview's export strips it. |
+| `\*`, `&amp;`, `&copy;` | `*`, `&`, `©`. |
+| HTML, comments, footnote labels | As written, dimmed. |
+
+Everything else is as written: paragraphs keep their line breaks, blank lines stay, and a long line wraps as it does raw.
+
+**Keys.** All of die-vim's, on what's shown: `j` and `k` move by the rows you see, `w` skips hidden marks, `/` finds text, `yy` yanks the line as it's written in the file, markup included. Typing works where the cursor can go, which is everywhere but inside a hidden mark, and what you type is rendered at the next frame: `**bold**` turns bold when its last `*` lands. To edit the marks themselves, `\m`.
+
+| Key | What it does |
+|---|---|
+| `\m` | The other view (`markdown-toggle`). |
+| `<CR>` on a link, rendered | Follow it (`markdown-follow-link`): `#heading` goes to that heading here; a file opens in this window, at its heading if the link names one, rendered too if it's markdown, and `C-o` comes back; a web address, a picture, a PDF or an HTML file goes to `open`, so a page is your browser's. Raw, `<CR>` is die-vim's, and `:markdown-follow-link` follows the link the cursor is in. |
+
+**What it follows.** The view is planned again whenever the buffer's text changes, whoever changed it: your keys, undo, `:e!`, or the file changing on disk under a buffer with nothing unsaved, as when something else is writing the file you're reading. It's planned again when the text's width changes too (`\z`, a split, a resized window), since rules and code boxes are as wide as the text. **Kept:** which buffers are rendered, so `:rebuild` and a restart show them as they were.
+
+**Options**, as your config sets them (it sets none): `extensions` (the six above), `front_matter` (false: hidden; true shows it dimmed), `opener` (none: `xdg-open` where there is one, else `open`). **Faces:** `markdown-h1` to `markdown-h6`, `markdown-bold`, `markdown-italic`, `markdown-strike`, `markdown-code`, `markdown-code-block`, `markdown-link`, `markdown-quote`, `markdown-marker`, `markdown-rule`, `markdown-table-header`, `markdown-meta` and `markdown-alert`, which mono-dark styles from your preview's stylesheet (`mono-dark.css`): links red, bold and underlined, code on `#252525`, lines in the border's colour. **What it costs:** nothing for a buffer that's raw. Rendered, each change of the text plans the whole file again.
+
 ## What isn't there yet
 
+- **markdown:** nobody has seen it on screen: it was checked as cells and faces, and the first look is yours, `\m` in any `.md` file after your `:rebuild`. Pictures (M3: an image shows as `‹image: alt›`). Larger headings (scaled text runs, scope's open question 2). Colours in a code block (there's no highlighter). Math, mermaid and anything else your browser preview draws. The marks on the cursor's line stay hidden, where Vim's conceal would show them: `\m` shows them all. A table wider than the text wraps, as its rows do raw. Link reference definitions (`[ref]: address`) show as written. A buffer rendered in two windows of different widths is planned for the narrower. Following a link with the pointer.
 - **jellyfish:** nobody has seen it on screen: it was checked as cells, inks and timers, and the first look is yours: `:jellyfish` after your `:rebuild`, which as a restart comes back on what was on screen, or the next launch with no file named, unless the session brings back splits. A light theme's inks are measured, not seen. It doesn't come back after a restart (M1's surface restorer), and it has no key of its own. A start that gets its file after the launch (Finder, `open -a`, `die --wait` with no DIE running) shows a frame of it before the file. In a window under about 49 columns or 30 rows the animal is cut rather than drawn smaller.
 - **whiteboard:** pixels on Linux (cells until the wgpu ring). On the tool dial: inks and widths (a second dial, Shift-Space), a key of your own for it, and `\hk` naming what the surface does with Space rather than that it handles it. The wheel waits while the dial is open, and a key another extension binds (`:`, `C-w …`) runs under it without closing it. Labels don't zoom (they're cells; their outline does). Two windows on one board share one buffer, sized to the largest area it has had, so a smaller window shows its top-left part. Pressure and tilt (winit has no tablet events on macOS), pinch, a crosshair cursor, images. Labels are typed at their end only: no caret, no `<Left>`, `<C-w>` or `<C-u>` in one; a typo earlier means retyping (a double click re-edits, appending). While typing a label, a double click on another label ends this one and leaves a dot where the second click lands (the first ends the label, the second is the pen's). `:w` on a board says it has no text. The vim-like grammar over shapes (counts, operators, cursor-placed shapes) is later and experimental. A board's own window position across a restart (M1's surface restorer). Opening a `.svg` through `\f` gives its text, as the web-content rule has it.
 - **orchid:** in the session browser, insert and visual state have die-vim's keys, where your Emacs's browser keymap worked in insert state too. In a chat, Emacs's hover hints ("Press TAB to toggle"), and `M-p` and `M-n`, which did nothing there. DIE's session file keeps a chat's whole text, as it keeps any buffer's that has no file, though a restart rebuilds the chat from `events.jsonl`: about 250 KB for 250 events, written about every 5 s while a turn runs.
