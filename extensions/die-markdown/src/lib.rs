@@ -36,9 +36,9 @@ pub use view::View;
 use die_core::session::{Kept, Value, json};
 use die_core::{
     Args, BufferId, Checkout, Ctx, Error, Extension, FileTarget, Key, KeyEvent, PixelBufferId,
-    Prefix, Registry, Result, ShowIn, State, Style, Underline,
+    Prefix, Registry, Result, ShowIn, State, Style, Underline, WindowId,
 };
-use page::{Mark, Target};
+use page::{Left, Mark, Target};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -111,24 +111,24 @@ impl Default for Options {
     }
 }
 
-/// A file's page as it stands, for a test to read ([`Markdown::page`]): where it is, what it
-/// shows, and the layout, which says where its links and headings are and where a byte of the
-/// source is, so a test asks the page where to click and what to expect.
+/// A file's page as one window has it, for a test to read ([`Markdown::page`]): where it is,
+/// what it shows, and the layout, which says where its links and headings are and where a byte
+/// of the source is, so a test asks the page where to click and what to expect.
 pub struct Probe<'a> {
     /// The page's own buffer.
     pub buffer: BufferId,
     /// The page's row at the window's top, in physical pixels.
     pub top: i32,
-    /// The area the picture covers, in physical pixels: the widest and the tallest of the
-    /// windows showing the page, each way.
+    /// The window's area, which its picture covers, in physical pixels.
     pub area: (u32, u32),
-    /// The page's height in physical pixels, 0 while there's no layout.
+    /// The page's height in physical pixels as the window has it laid out, 0 while there's no
+    /// layout.
     pub height: f32,
-    /// The link the keyboard is on, as an index into the page's links.
+    /// The link the keyboard is on in the window, as an index into the page's links.
     pub ring: Option<usize>,
-    /// The pixel buffer, while a window shows the page.
+    /// The window's pixel buffer, once it has one.
     pub pixels: Option<PixelBufferId>,
-    /// The layout, while a window shows the page.
+    /// The window's layout, once it has one.
     pub page: Option<&'a typeset::Page>,
 }
 
@@ -154,6 +154,17 @@ struct Away {
     ring: Option<String>,
 }
 
+/// Where a window left a file's page for the file: the cursor there, its row in the window, the
+/// text's revision then, and the page's place to the pixel, which the toggle back goes to while
+/// the cursor is still there, at that row.
+struct Return {
+    window: WindowId,
+    cursor: usize,
+    row: usize,
+    rev: u64,
+    mark: Mark,
+}
+
 /// The extension: your options, which buffers' view in place is on, the pages, and what a file
 /// keeps of a page that's gone.
 #[derive(Default)]
@@ -168,6 +179,12 @@ pub struct Markdown {
     trails: BTreeMap<BufferId, Trail>,
     /// Where a page that was put away was, by its file. The file's next page starts there.
     places: BTreeMap<BufferId, Away>,
+    /// The `<details>` a file's last page had opened, and the text's revision their offsets
+    /// count in: the file's next page opens them again, as a browser keeps them for as long as
+    /// the page lives.
+    opened: BTreeMap<BufferId, (Vec<usize>, u64)>,
+    /// Where a window left a file's page for the file, by file.
+    returns: BTreeMap<BufferId, Return>,
     /// The fonts and the pictures, which the pages share.
     kit: page::SharedKit,
 }
@@ -181,17 +198,25 @@ impl Markdown {
         }
     }
 
-    /// A file's page as it stands, read by `read`, or None if the buffer has no page. For tests.
-    pub fn page<R>(&self, file: BufferId, read: impl FnOnce(&Probe<'_>) -> R) -> Option<R> {
+    /// A file's page as `window` has it, read by `read`, or None if the buffer has no page.
+    /// A window that doesn't show the page, or None, reads the window the reader was in last.
+    /// For tests.
+    pub fn page<R>(
+        &self,
+        file: BufferId,
+        window: Option<WindowId>,
+        read: impl FnOnce(&Probe<'_>) -> R,
+    ) -> Option<R> {
         let st = self.pages.get(&file)?.borrow();
+        let w = window;
         Some(read(&Probe {
             buffer: st.buf?,
-            top: st.top(),
-            area: st.area(),
-            height: st.page().map_or(0.0, typeset::Page::height),
-            ring: st.ring(),
-            pixels: st.pixels(),
-            page: st.page(),
+            top: st.top(w),
+            area: st.area(w),
+            height: st.page(w).map_or(0.0, typeset::Page::height),
+            ring: st.ring(w),
+            pixels: st.pixels(w),
+            page: st.page(w),
         }))
     }
 
@@ -258,10 +283,13 @@ impl Markdown {
         let title = ctx.buffer_name(buf).unwrap_or_default().to_owned();
         {
             let mut st = state.borrow_mut();
-            (st.buf, st.title) = (Some(buf), title);
+            (st.buf, st.title, st.named) = (Some(buf), title, named(ctx, file));
             if let Some(away) = self.places.remove(&file) {
-                st.go(ctx, Target::Line(away.at));
+                st.go(ctx, None, Target::Line(away.at));
                 st.ring_later(away.ring);
+            }
+            if let Some((opened, rev)) = self.opened.remove(&file) {
+                st.reopen(opened, rev);
             }
         }
         self.pages.insert(file, state.clone());
@@ -269,34 +297,43 @@ impl Markdown {
     }
 
     /// From text to its page, in this window: the line the cursor is on stays at the height it
-    /// was, so the eye finds its place; a page that was put away comes back where it was, since
+    /// was, so the eye finds its place, and where the toggle from the page left the cursor, the
+    /// page comes back to the pixel; a page that was put away comes back where it was, since
     /// the reader left it by a link and not by the cursor. A second window on the same file
-    /// shows the same page, which has one place for them both (C10).
+    /// shows the same page, with a place of its own (C10).
     fn show_page(&mut self, ctx: &mut Ctx, a: &Args, file: BufferId) -> Result {
         // Read while the window still shows the text: core parks its view when it leaves.
+        let back = self.returns.remove(&file);
+        let cell = ctx.cell_pixels().height as f32;
         let t = ctx.text(file)?;
         let at = a.window.or(ctx.focused()).and_then(|w| {
             let cursor = t.cursor(w)?;
             let row = t.screen_pos(w, cursor).map_or(0, |(row, _)| row);
-            Some((t.line_start(t.line_of(cursor)), row))
+            let stayed = |r: &Return| {
+                r.window == w && r.row == row && page::carried(t, r.rev, r.cursor) == cursor
+            };
+            if let Some(r) = back.filter(stayed) {
+                return Some(r.mark.now(t));
+            }
+            let source = t.line_start(t.line_of(cursor));
+            Some(match row {
+                // On the top row, the file's first line is the page's top, its padding and all.
+                0 => Target::Line(source),
+                row => Target::Place {
+                    source,
+                    offset: -(row as f32 * cell),
+                },
+            })
         });
         let at = at.filter(|_| !self.places.contains_key(&file));
         let state = self.page_for(ctx, file)?;
         let buf = state.borrow().buf.ok_or(Checkout::Gone)?;
         let shown = ctx.show(buf, ShowIn::Current)?;
         let mut st = state.borrow_mut();
-        match at {
-            // On the top row, the file's first line is the page's top, its padding and all.
-            Some((source, 0)) => st.go(ctx, Target::Line(source)),
-            Some((source, row)) => {
-                let offset = -(row as f32 * ctx.cell_pixels().height as f32);
-                st.go(ctx, Target::Place { source, offset });
-            }
-            None => {}
-        }
         // A page brought back where a link left it was put there by no cursor, so leaving it
         // moves the cursor to its top line, as leaving a scrolled page does.
-        if at.is_some() {
+        if let Some(to) = at {
+            st.go(ctx, shown, to);
             st.unmoved.extend(shown);
         }
         st.refresh(ctx);
@@ -309,22 +346,25 @@ impl Markdown {
     /// shows it any more.
     fn leave_page(&mut self, ctx: &mut Ctx, a: &Args, state: &page::Shared) -> Result {
         let win = a.window.or(ctx.focused());
-        let (file, buf, moved, top) = {
+        let (file, buf, left) = {
             let st = state.borrow();
-            let moved = win.is_none_or(|w| !st.unmoved.contains(&w));
-            let top = st.page().map(|p| p.source_at(st.top() as f32));
-            (st.file, st.buf, moved, top)
+            (st.file, st.buf, win.and_then(|w| st.left(w)))
         };
         let shown = ctx.show(file, ShowIn::Current)?;
-        if let (true, Some(source), Some(w)) = (moved, top, shown) {
-            let t = ctx.text_mut(file)?;
-            let line = t.line_start(t.line_of(source.min(t.len())));
-            t.set_cursor(w, line);
-            t.set_scroll(w, line, 0);
+        {
+            // The window's view goes now, so the command's end doesn't take it for a window
+            // that left by `C-^`.
+            let mut st = state.borrow_mut();
+            st.unmoved.retain(|w| Some(*w) != shown);
+            st.forget(win);
         }
-        state.borrow_mut().unmoved.retain(|w| Some(*w) != shown);
+        if let (Some(mut left), Some(w)) = (left, shown) {
+            left.window = w;
+            self.landed(ctx, file, left)?;
+        }
         if let Some(buf) = buf.filter(|b| !shows(ctx, *b)) {
             self.pages.remove(&file);
+            self.keep_opened(file, &state.borrow());
             // The window has left it, and core has queued telling it so. It goes after that, in
             // the same turn: told when already gone, core would report an error.
             ctx.defer(move |ctx| {
@@ -335,11 +375,54 @@ impl Markdown {
         Ok(())
     }
 
-    /// A key of the page that only moves it: done, then painted in the same turn.
+    /// A window left a file's page for the file, by the toggle or by `C-^`, `:b` or `:e`. If
+    /// the page was scrolled there since the toggle showed it, the cursor goes to the line at
+    /// the page's top, at the window's top; otherwise the cursor and the scroll are as they were
+    /// left. The page's place is kept for the toggle back either way.
+    fn landed(&mut self, ctx: &mut Ctx, file: BufferId, left: Left) -> Result {
+        let w = left.window;
+        let t = ctx.text_mut(file)?;
+        let row = match (left.source, left.moved) {
+            (Some(source), true) => {
+                let line = t.line_start(t.line_of(source.min(t.len())));
+                t.set_cursor(w, line);
+                t.set_scroll(w, line, 0);
+                Some(0)
+            }
+            _ => t
+                .cursor(w)
+                .and_then(|c| t.screen_pos(w, c))
+                .map(|(row, _)| row),
+        };
+        if let (Some(cursor), Some(row), Some(mark)) = (t.cursor(w), row, left.mark) {
+            let rev = t.rev();
+            let back = Return {
+                window: w,
+                cursor,
+                row,
+                rev,
+                mark,
+            };
+            self.returns.insert(file, back);
+        }
+        Ok(())
+    }
+
+    /// A file's page is going: the `<details>` it opened stay with the file.
+    fn keep_opened(&mut self, file: BufferId, st: &page::State) {
+        match st.opened() {
+            (opened, _) if opened.is_empty() => self.opened.remove(&file),
+            kept => self.opened.insert(file, kept),
+        };
+    }
+
+    /// A key of the page that only moves it, in the window it was typed in: done, then painted
+    /// in the same turn.
     fn on_page(&mut self, ctx: &mut Ctx, a: &Args, act: Move) -> Result {
         let state = self.page_here(ctx, a)?;
         let mut st = state.borrow_mut();
-        let done = act(&mut st, a.count.unwrap_or(1).max(1));
+        let w = a.window.or(ctx.focused());
+        let done = act(&mut st, w, a.count.unwrap_or(1).max(1));
         st.refresh(ctx);
         done
     }
@@ -356,7 +439,8 @@ impl Markdown {
         };
         let state = self.page_here(ctx, a)?;
         let mut st = state.borrow_mut();
-        st.windows(part * a.count.unwrap_or(1).max(1) as f32);
+        let w = a.window.or(ctx.focused());
+        st.windows(w, part * a.count.unwrap_or(1).max(1) as f32);
         st.refresh(ctx);
         Ok(())
     }
@@ -372,12 +456,15 @@ impl Markdown {
     ) -> Result {
         let state = self.page_for(ctx, file)?;
         let buf = state.borrow().buf.ok_or(Checkout::Gone)?;
-        ctx.show(buf, ShowIn::Current)?;
+        let shown = ctx.show(buf, ShowIn::Current)?;
         if let Some(from) = from {
             self.left(file, from);
         }
         let mut st = state.borrow_mut();
-        st.go(ctx, to);
+        // A link arrives at a place of its own, and rings nothing: what was ringed when the page
+        // was put away comes back with the toggle or `C-o`.
+        st.ring_later(None);
+        st.go(ctx, shown, to);
         st.refresh(ctx);
         Ok(())
     }
@@ -396,10 +483,11 @@ impl Markdown {
     /// at. A place in a file whose buffer has gone is stepped over.
     fn travel(&mut self, ctx: &mut Ctx, a: &Args, back: bool) -> Result {
         let mut state = self.page_here(ctx, a)?;
+        let mut win = a.window.or(ctx.focused());
         for _ in 0..a.count.unwrap_or(1).max(1) {
             let (file, here) = {
                 let st = state.borrow();
-                (st.file, st.mark())
+                (st.file, st.mark(win))
             };
             let to = loop {
                 let trail = self.trails.entry(file).or_default();
@@ -420,7 +508,7 @@ impl Markdown {
             };
             let there = self.page_for(ctx, to.file)?;
             let buf = there.borrow().buf.ok_or(Checkout::Gone)?;
-            ctx.show(buf, ShowIn::Current)?;
+            win = ctx.show(buf, ShowIn::Current)?.or(win);
             let trail = self.trails.entry(to.file).or_default();
             let list = if back {
                 &mut trail.forward
@@ -430,7 +518,7 @@ impl Markdown {
             list.extend(here);
             let target = to.now(ctx.text(to.file)?);
             let mut st = there.borrow_mut();
-            st.go(ctx, target);
+            st.go(ctx, win, target);
             st.refresh(ctx);
             drop(st);
             state = there;
@@ -440,40 +528,63 @@ impl Markdown {
     }
 
     /// After a command, and after anything else that may have changed which windows show what:
-    /// a page a window shows is brought up to date, the windows that left it and the theme's
-    /// colours included, and one no window shows is put away.
+    /// a page a window shows is brought up to date, the windows that left it, its file's name
+    /// and the theme's colours included, and one no window shows is put away. A window that
+    /// left a page for the page's own file, by `C-^`, `:b` or `:e`, left it as the toggle does.
     fn settle(&mut self, ctx: &mut Ctx) {
         if self.pages.is_empty() {
             return;
         }
-        let mut away = vec![];
+        let (mut away, mut home) = (vec![], vec![]);
         for (file, state) in &self.pages {
             let mut st = state.borrow_mut();
-            st.prune(ctx);
+            let left = st.departed(ctx).into_iter();
+            let left: Vec<Left> = left
+                .filter(|l| ctx.window_buffer(l.window) == Some(*file))
+                .collect();
             match st.buf.is_some_and(|b| shows(ctx, b)) {
-                true => st.refresh(ctx),
-                false => away.push(*file),
+                true => {
+                    st.prune(ctx);
+                    follow_name(ctx, &mut st);
+                    st.refresh(ctx);
+                }
+                // Left for its own file, or killed itself, as by `:bd` on it: its place isn't
+                // kept, so the file's next page starts at the cursor.
+                false => {
+                    let gone = !st.buf.is_some_and(|b| ctx.is_live(b));
+                    away.push((*file, left.is_empty() && !gone));
+                }
+            }
+            home.extend(left.into_iter().map(|l| (*file, l)));
+        }
+        for (file, left) in home {
+            if let Err(e) = self.landed(ctx, file, left) {
+                ctx.messages.push(format!("markdown: {e}"));
             }
         }
-        for file in away {
-            self.put_away(ctx, file);
+        for (file, keep) in away {
+            self.put_away(ctx, file, keep);
         }
     }
 
     /// No window shows a file's page any more, a link, `C-^` or `:e` having taken its window:
-    /// it goes, as it does on the toggle, and its place stays with the file, so the file's next
-    /// page, by the toggle or by `C-o`, starts there.
-    fn put_away(&mut self, ctx: &mut Ctx, file: BufferId) {
+    /// it goes, as it does on the toggle, and if `keep`, its place stays with the file, so the
+    /// file's next page, by the toggle or by `C-o`, starts there. The `<details>` it opened
+    /// stay with the file either way.
+    fn put_away(&mut self, ctx: &mut Ctx, file: BufferId, keep: bool) {
         let Some(state) = self.pages.remove(&file) else {
             return;
         };
         let st = state.borrow();
-        let away = Away {
-            at: st.kept(),
-            ring: st.ring_dest(),
-        };
-        self.places.insert(file, away);
-        if let Some(buf) = st.buf {
+        self.keep_opened(file, &st);
+        if keep {
+            let away = Away {
+                at: st.kept(),
+                ring: st.ring_dest(),
+            };
+            self.places.insert(file, away);
+        }
+        if let Some(buf) = st.buf.filter(|b| ctx.is_live(*b)) {
             // Core may have queued telling it a window left; it goes after that, in the same
             // turn: told when already gone, core would report an error.
             ctx.defer(move |ctx| {
@@ -488,6 +599,8 @@ impl Markdown {
     fn killed(&mut self, ctx: &mut Ctx, buf: BufferId) {
         self.trails.remove(&buf);
         self.places.remove(&buf);
+        self.opened.remove(&buf);
+        self.returns.remove(&buf);
         match self.pages.remove(&buf) {
             Some(state) => {
                 let page = state.borrow().buf;
@@ -553,7 +666,7 @@ impl Markdown {
         let buf = a.buffer.or(ctx.focused_buffer()).ok_or_else(none)?;
         let win = a.window.or(ctx.focused()).ok_or_else(none)?;
         if let Some(state) = self.page_at(buf) {
-            let followed = self.follow_on_page(ctx, &state);
+            let followed = self.follow_on_page(ctx, &state, win);
             // A click isn't a command, so nothing else looks at what the windows show now.
             self.settle(ctx);
             return followed;
@@ -564,7 +677,8 @@ impl Markdown {
         let link = planned.links.iter().find(|l| l.range.contains(&at));
         let link = link.ok_or_else(none)?;
         let rendered = ctx.with_mode(buf, |v: &mut View, _| v.is_rendered());
-        match Dest::read(&link.dest) {
+        let dir = ctx.directory(buf).unwrap_or(Path::new("/"));
+        match Dest::read(&link.dest).rooted(dir) {
             Dest::Anchor(anchor) => {
                 let pos = heading(&planned, &anchor)?;
                 // A file's buffer goes by its name, which keeps the place left, for `C-o`.
@@ -580,7 +694,8 @@ impl Markdown {
                 self.outside(ctx, address);
                 Ok(())
             }
-            Dest::File(path, anchor) => {
+            // A path from the root is the file it names by now.
+            Dest::File(path, anchor) | Dest::Root(path, anchor) => {
                 let image = link.image;
                 let Some(target) = self.file_target(ctx, buf, &path, image)? else {
                     return Ok(());
@@ -654,10 +769,10 @@ impl Markdown {
     /// or the line the link names, and any other file opens as text; this page is put away
     /// either way, and comes back where it was. The rest is your opener's. Where the reader
     /// leaves a place for another, the place is kept for `C-o`.
-    fn follow_on_page(&mut self, ctx: &mut Ctx, state: &page::Shared) -> Result {
+    fn follow_on_page(&mut self, ctx: &mut Ctx, state: &page::Shared, w: WindowId) -> Result {
         let (file, link, here) = {
             let st = state.borrow();
-            (st.file, st.ringed().cloned(), st.mark())
+            (st.file, st.ringed(Some(w)).cloned(), st.mark(Some(w)))
         };
         let none = || Error::Msg("No link is ringed: <Tab> rings one".into());
         let link = link.ok_or_else(none)?;
@@ -670,10 +785,11 @@ impl Markdown {
             st.refresh(ctx);
             return Ok(());
         }
-        match Dest::read(&link.dest) {
+        let dir = ctx.directory(file).unwrap_or(Path::new("/"));
+        match Dest::read(&link.dest).rooted(dir) {
             Dest::Anchor(anchor) => {
                 let mut st = state.borrow_mut();
-                st.anchor(&anchor)?;
+                st.anchor(Some(w), &anchor)?;
                 st.refresh(ctx);
                 drop(st);
                 if let Some(here) = here {
@@ -685,7 +801,8 @@ impl Markdown {
                 self.outside(ctx, address);
                 Ok(())
             }
-            Dest::File(path, anchor) => {
+            // A path from the root is the file it names by now.
+            Dest::File(path, anchor) | Dest::Root(path, anchor) => {
                 let Some(target) = self.file_target(ctx, file, &path, link.image)? else {
                     return Ok(());
                 };
@@ -777,6 +894,8 @@ enum Dest {
     Outside(String),
     /// A file, absolute or relative to this buffer's directory, and a heading in it.
     File(PathBuf, Option<String>),
+    /// A path from the repository's root, as GitHub reads `/docs/guide.md`, and a heading in it.
+    Root(PathBuf, Option<String>),
 }
 
 impl Dest {
@@ -790,19 +909,59 @@ impl Dest {
             let rest = |c: char| c.is_ascii_alphanumeric() || "+-".contains(c);
             s.len() > 1 && s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(rest)
         });
-        let path = match scheme {
+        let (path, rooted) = match scheme {
             Some(s) if s.eq_ignore_ascii_case("file") => {
-                written[s.len() + 1..].trim_start_matches("//")
+                (written[s.len() + 1..].trim_start_matches("//"), false)
             }
             Some(_) => return Dest::Outside(written.into()),
-            None => written,
+            None => (written, written.starts_with('/')),
         };
         let (path, anchor) = match path.split_once('#') {
             Some((path, anchor)) => (path, Some(decoded(anchor))),
             None => (path, None),
         };
-        Dest::File(PathBuf::from(decoded(path)), anchor)
+        let path = PathBuf::from(decoded(path));
+        match rooted {
+            true => Dest::Root(path, anchor),
+            false => Dest::File(path, anchor),
+        }
     }
+
+    /// A path from the repository's root as the file it names, read from `dir`, the directory
+    /// of the buffer the link is in: the repository's, where `dir` is in one that has the file,
+    /// and the system's otherwise.
+    fn rooted(self, dir: &Path) -> Dest {
+        let Dest::Root(path, anchor) = self else {
+            return self;
+        };
+        let root = die_core::project_root(dir);
+        let inside = root.join(path.strip_prefix("/").unwrap_or(&path));
+        let found = FileTarget::parse(inside.as_os_str(), dir).path.exists();
+        match root.join(".git").exists() && found {
+            true => Dest::File(inside, anchor),
+            false => Dest::File(path, anchor),
+        }
+    }
+}
+
+/// A file's buffer's name and directory, which its page's name and directory follow.
+fn named(ctx: &Ctx, file: BufferId) -> (String, Option<PathBuf>) {
+    let name = ctx.buffer_name(file).unwrap_or_default().to_owned();
+    (name, ctx.directory(file).map(Path::to_path_buf))
+}
+
+/// A page's status line and directory follow its file's name and directory, which `:saveas`
+/// changes. Core has no way to rename a buffer, so the page's buffer keeps its first name.
+fn follow_name(ctx: &mut Ctx, st: &mut page::State) {
+    let now = named(ctx, st.file);
+    if now == st.named {
+        return;
+    }
+    st.title = format!("{} *page*", now.0);
+    if let (Some(buf), Some(dir)) = (st.buf, &now.1) {
+        ctx.set_directory(buf, dir.clone());
+    }
+    st.named = now;
 }
 
 /// `%20` and the like as the characters they stand for.
@@ -868,8 +1027,9 @@ pub fn faces() -> [(&'static str, Option<&'static str>, Style); 18] {
     ]
 }
 
-/// What a key of the page that only moves it does, with the count.
-type Move = fn(&mut page::State, usize) -> Result;
+/// What a key of the page that only moves it does, in the window it was typed in, with the
+/// count.
+type Move = fn(&mut page::State, Option<WindowId>, usize) -> Result;
 
 /// The page's own keys that only move it: each command's name, what it says of itself, its keys
 /// and what it does. A page has no text, so none of die-vim's keys are its own, and these are
@@ -879,8 +1039,8 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-down",
         "Scroll the page down a little, two lines and a half of text. A count repeats.",
         "j <Down> <C-e>",
-        |p, n| {
-            p.step(n as f32);
+        |p, w, n| {
+            p.step(w, n as f32);
             Ok(())
         },
     ),
@@ -888,8 +1048,8 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-up",
         "Scroll the page up a little, two lines and a half of text. A count repeats.",
         "k <Up> <C-y>",
-        |p, n| {
-            p.step(-(n as f32));
+        |p, w, n| {
+            p.step(w, -(n as f32));
             Ok(())
         },
     ),
@@ -897,8 +1057,8 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-half-down",
         "Scroll the page down half a window. A count repeats.",
         "<C-d>",
-        |p, n| {
-            p.windows(0.5 * n as f32);
+        |p, w, n| {
+            p.windows(w, 0.5 * n as f32);
             Ok(())
         },
     ),
@@ -906,8 +1066,8 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-half-up",
         "Scroll the page up half a window. A count repeats.",
         "<C-u>",
-        |p, n| {
-            p.windows(-0.5 * n as f32);
+        |p, w, n| {
+            p.windows(w, -0.5 * n as f32);
             Ok(())
         },
     ),
@@ -915,8 +1075,8 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-backward",
         "Scroll the page up a window, less an eighth to keep your place. A count repeats.",
         "<C-b> <PageUp>",
-        |p, n| {
-            p.windows(-0.875 * n as f32);
+        |p, w, n| {
+            p.windows(w, -0.875 * n as f32);
             Ok(())
         },
     ),
@@ -924,8 +1084,8 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-top",
         "Go to the page's top.",
         "gg <Home>",
-        |p, _| {
-            p.end(false);
+        |p, w, _| {
+            p.end(w, false);
             Ok(())
         },
     ),
@@ -933,8 +1093,8 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-bottom",
         "Go to the page's bottom.",
         "G <End>",
-        |p, _| {
-            p.end(true);
+        |p, w, _| {
+            p.end(w, true);
             Ok(())
         },
     ),
@@ -942,8 +1102,8 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-next-heading",
         "Go to the next heading, or the count's.",
         "]]",
-        |p, n| {
-            p.heading(true, n);
+        |p, w, n| {
+            p.heading(w, true, n);
             Ok(())
         },
     ),
@@ -951,8 +1111,8 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-previous-heading",
         "Go to the heading before, or the count's.",
         "[[",
-        |p, n| {
-            p.heading(false, n);
+        |p, w, n| {
+            p.heading(w, false, n);
             Ok(())
         },
     ),
@@ -960,20 +1120,20 @@ const MOVES: [(&str, &str, &str, Move); 12] = [
         "markdown-page-next-link",
         "Ring the next link, starting from the first one in view, and scroll to it: <CR> follows the ringed link.",
         "<Tab>",
-        |p, n| p.link(true, n),
+        |p, w, n| p.link(w, true, n),
     ),
     (
         "markdown-page-previous-link",
         "Ring the link before, starting from the last one in view, and scroll to it.",
         "<S-Tab>",
-        |p, n| p.link(false, n),
+        |p, w, n| p.link(w, false, n),
     ),
     (
         "markdown-page-no-link",
         "Take the ring off the ringed link.",
         "<Esc>",
-        |p, _| {
-            p.unring();
+        |p, w, _| {
+            p.unring(w);
             Ok(())
         },
     ),
@@ -1182,19 +1342,23 @@ impl Extension for Markdown {
     fn restore_session(&mut self, ctx: &mut Ctx, kept: Kept) -> Result {
         let mut show = None;
         for (buf, kept) in kept.buffers {
-            if let Some(at) = kept.as_u64().filter(|_| self.options.page) {
+            // A page put away: with `page` off there's none to start there, and the file was
+            // raw.
+            if let Some(at) = kept.as_u64() {
                 let away = Away {
                     at: at as usize,
                     ring: None,
                 };
-                self.places.insert(buf, away);
+                if self.options.page {
+                    self.places.insert(buf, away);
+                }
                 continue;
             }
             let place = kept.get("page").and_then(Value::as_u64);
             let back = match place.filter(|_| self.options.page) {
                 Some(at) => self.page_for(ctx, buf).map(|state| {
                     let mut st = state.borrow_mut();
-                    st.go(ctx, Target::Line(at as usize));
+                    st.go(ctx, None, Target::Line(at as usize));
                     if kept.get("shown") == Some(&Value::Bool(true)) {
                         show = st.buf;
                     }
@@ -1235,6 +1399,8 @@ mod tests {
         assert_eq!(Dest::read("file:///tmp/a.md"), file("/tmp/a.md", None));
         assert_eq!(Dest::read("C:notes.md"), file("C:notes.md", None));
         assert_eq!(Dest::read("notes.md:12"), file("notes.md:12", None));
+        let root = Dest::Root("/docs/a.md".into(), Some("x".into()));
+        assert_eq!(Dest::read("/docs/a.md#x"), root);
         for outside in ["https://example.com/a#b", "mailto:you@example.com"] {
             assert_eq!(Dest::read(outside), Dest::Outside(outside.into()));
         }
