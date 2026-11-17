@@ -96,8 +96,8 @@ pub(super) enum Block {
         text: String,
         /// Where each line of `text` starts in the source.
         lines: Vec<usize>,
-        /// The fence's language, kept for a highlighter: GitHub shows none, and nor does the page.
-        #[allow(dead_code)]
+        /// The fence's language, for the colours of its words: GitHub shows none, and nor does
+        /// the page.
         lang: String,
         src: Range<usize>,
     },
