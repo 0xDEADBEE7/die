@@ -167,8 +167,11 @@ pub struct BoardState {
     pub path: Option<PathBuf>,
     /// A scratch board's number: 1 is `scratch`, 2 `scratch 2`.
     pub scratch: u32,
-    /// Where it was last exported to, which an export there again needn't ask to overwrite.
+    /// Where it was last exported to, which `E` offers first.
     pub exported: Option<PathBuf>,
+    /// That export's file as it was written: an export there again needn't ask to overwrite it
+    /// while nothing else has written it since.
+    pub exported_as: Option<crate::file::Stamp>,
     /// Its elements.
     pub board: Board,
     /// Where it is in the area.
@@ -267,6 +270,7 @@ impl BoardState {
             path: None,
             scratch: n,
             exported: None,
+            exported_as: None,
             board,
             view: View::default(),
             tool: Tool::Pen,
