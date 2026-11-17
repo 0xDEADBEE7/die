@@ -369,45 +369,76 @@ Your leader's keys and DIE's own work as anywhere, so `\f`, `\p`, `\]`, `\e` or 
 
 ## markdown
 
-`\m` in a markdown file shows it rendered, and `\m` again shows it raw: die-markdown, an extension DIE builds beside itself, outside the product (scope D14), which your config registers. A file opens raw, as it always has. The rendered view is the same buffer and the same text: the markup is hidden under decorations and never removed, so nothing is modified, the cursor stays on its text (from a mark that gets hidden it moves to the text after it), and raw is exactly what it was. Rendered is for reading and raw is for editing: while a buffer is rendered it's read-only to you.
+`\m` in a markdown file shows it as a page, drawn as GitHub draws a README, and `\m` on the page shows the file again: die-markdown, an extension DIE builds beside itself, outside the product (scope D14), which your config registers. A file opens raw, as it always has. The page is a buffer of its own, `NAME *page*`, shown in the file's window and drawn in pixels across the window's whole width. It uses the system's proportional font (San Francisco on a Mac, at the sizes, weights, kerning and spacing GitHub's stylesheet asks of it), in a centred column at most 980 CSS px wide, in your theme's colours. The file is never touched: the page reads it and follows it, and raw is where you edit.
 
-**Where.** A buffer visiting a file named `.md`, `.markdown`, `.mkd`, `.mdown`, `.mkdn` or `.mdwn` has the `markdown` mode, and `\m` is a key of that mode's keymap, so it's a key only there: in any other buffer `\m is undefined`. `:markdown-toggle`, or `M-x markdown-toggle`, does the same on any text buffer, a `*scratch*` with markdown in it too. A buffer saved under a name that isn't markdown's (`:saveas notes.txt`) loses the mode and goes back to raw.
+**Where.** A buffer visiting a file named `.md`, `.markdown`, `.mkd`, `.mdown`, `.mkdn` or `.mdwn` has the `markdown` mode. `\m` is a key of that mode's keymap and of the page's, so it's a key only there: in any other buffer `\m is undefined`. `:markdown-toggle`, or `M-x markdown-toggle`, does the same on any text buffer, a `*scratch*` with markdown in it too.
 
-**What rendered shows.** A cell grid has one size of letter, so nothing is larger: headings differ by weight, underline and brightness.
+**Where there's no page.** Where the host shows no pixels (Linux, until the wgpu ring), where the system has no font the page knows, or with `page` off, `\m` gives the view in place instead (below).
 
-| Markdown | Rendered |
-|---|---|
-| `# Heading` to `###### Heading`, and `Heading` over `===` or `---` | The text without its `#`s: h1 bold over a double underline, h2 over a single one, h3 bold, h4 to h6 each dimmer. A setext heading's underline becomes a line of `═` or `─`. |
-| `*em*` `_em_`, `**strong**` `__strong__`, `~~del~~` | Italic, bold, struck through, without the marks. |
-| `` `code` `` | Without the backticks, on the code background. |
-| `[text](address)`, `[text][ref]`, `<https://…>`, `<you@example.com>` | The text alone, as a link. `<CR>` on it follows it (below). |
-| `![alt](picture.png)` | `‹image: alt›`. DIE draws no pictures in text yet (M3); `<CR>` on it opens the picture. |
-| `- item` `* item` `+ item` | `•`, then `◦` and `▪` for the lists inside it. Numbered items keep their numbers. |
-| `- [ ] todo`, `- [x] done` | `☐ todo`, `☑ done`. |
-| `> quote` | A bar, `▎`, and the text dimmed and italic. `> [!NOTE]` and GitHub's other four alerts show their title. |
-| `---` `***` `___` | A line across the text's width. |
-| A fenced code block | A filled box: the opening fence's row shows the language, the closing one's is blank, and each row is padded to the longest line, or to the text's width. An indented block is a box with no such rows. Code is one colour, as source is everywhere in DIE. |
-| A pipe table | Columns aligned, whatever the source's spacing, with `│` between them and a ruled line under the header, which is bold. `:--`, `:-:` and `--:` align left, centre and right. A table wider than the text narrows its widest columns until the header fits. |
-| Front matter (`---` … `---` at the very top) | Hidden, as your preview's export strips it. |
-| `\*`, `&amp;`, `&copy;` | `*`, `&`, `©`. |
-| HTML, comments, footnote labels, link definitions | As written, dimmed. |
+**What the page shows.** GitHub-flavoured markdown at GitHub's geometry: 16 px text on 24 px lines, 16 px between blocks, 45 px of padding (15 in a window under 768 CSS px).
+- Headings: 32, 24, 20, 16, 14 and 13.6 px semibold; h1 and h2 over a hairline, h6 muted.
+- Inline text: emphasis, strong, struck text, inline code as a pill, links underlined in the link face's colour, footnote references as raised numbers with the notes gathered at the foot and a way back to each reference.
+- Lists: bullets as disc, ring and square by depth, numbers right-aligned, tight and loose lists, and task boxes drawn (checked in the theme's green).
+- Quotes and alerts: quotes with a 4 px bar and muted text; GitHub's five alerts (`> [!NOTE]` and its kin) with a coloured bar, icon and title.
+- Code blocks: rounded panels, coloured by language (below), long lines wrapped with a mark.
+- Tables: sized to their content, with a 1 px grid, a semibold header, every second row shaded, and cells that wrap. A table too wide for the column runs into the right margin, and then gives up its cells' padding, before any word is cut.
+- Rules and pictures: a rule is a 4 px bar. Pictures are PNG, scaled to the column; a path from `/` is from the repository's top, as on GitHub. A missing or remote picture, or another format, shows its alternative text behind a small picture mark, and `<CR>` on it opens it.
+- HTML: `<br>`, `<kbd>`, `<sub>`, `<sup>`, `<b>`, `<i>`, `<code>`, `<a href>`, `<a id>` and `<a name>` as anchors, `<img>`, `align="center"`, and `<details>`, closed unless it says `open`. `<CR>` or a click on a summary opens and closes it, and it stays as you left it while the file has it. Comments and other tags vanish, their text kept.
+- Front matter is left out; with `front_matter` on it's a table of its keys.
 
-Everything else is as written: paragraphs keep their line breaks, blank lines stay, and a long line wraps as it does raw.
+**Code colours.** A fenced block is in its language's colours, by the fence's first word: Rust, shell and console sessions, TOML, INI, JSON, YAML, Python, JavaScript and TypeScript, C and C++, Go, Java, Kotlin, Swift, Ruby, Lua, Emacs Lisp and the other Lisps, SQL, HTML and XML, CSS, diffs, Markdown, Dockerfiles, makefiles, Nix, Zig and Haskell. A block with no language, or one it doesn't know, is plain, as GitHub draws it. In mono-dark the colours are the greys of highlight.js's grayscale-dark, which your preview colours code with; in the GitHub palettes they're GitHub's.
 
-**Keys.** die-vim's keys that move, search, select and yank work on what's shown: `j` and `k` by lines and `gj` and `gk` by rows, as raw; `w` and `e` skip hidden marks; `/` finds text, hidden text too, where the cursor lands on the text after it; `yy` yanks the line as it's written in the file, markup included. Front matter hidden at the top is out of the cursor's reach, so `gg` is the first line shown and `ggyG` leaves it out. A key that would change the text is refused (`the text at 30 is read-only`), `u` among them, because a hidden mark has no cursor position: a key that works on a character works on the marks beside it too, and `x` on a link's last letter would take the address you can't see with it. To edit, `\m`.
+**Keys on a page.** A page is for reading: it has no cursor, and these keys are its own (`markdown-page-*`). A key it hasn't got is undefined there, `/` and `y` among them.
 
 | Key | What it does |
 |---|---|
-| `\m` | The other view (`markdown-toggle`). |
-| `<CR>` on a link, rendered | Follow it (`markdown-follow-link`). `#heading` goes to that heading here, by GitHub's rule for anchors. A file opens in this window, as `:e` would, at its top, at the heading the link names (`notes.md#set-up`) or at a line (`notes.md:12`), rendered too if it's markdown, and `C-o` comes back; a heading it hasn't got is said, and it opens at its top; a file that isn't there is said, and nothing opens. A web address, a mail address, a picture, a PDF or an HTML file goes to `open`, so a page is your browser's. In a buffer with no file, `#heading` moves the cursor and keeps no place for `C-o`. Raw, `<CR>` is die-vim's, and `:markdown-follow-link` follows the link the cursor is in. |
+| `\m` | The file again, in this window (`markdown-toggle`). If you scrolled, the cursor goes to the line at the page's top; if you didn't, it's where you left it, and `\m` from there comes back to the same pixel. |
+| `j` `k`, `<Down>` `<Up>`, `<C-e>` `<C-y>` | Scroll a step, 60 CSS px, two lines and a half of text. A count repeats, as for the rest. |
+| `<C-d>` `<C-u>` | Half a window. |
+| `<C-f>` `<Space>` `<PageDown>`, `<C-b>` `<S-Space>` `<PageUp>` | A window less an eighth. |
+| `gg` `<Home>`, `G` `<End>` | The top, the bottom. |
+| `]]` `[[` | The next heading, the one before. |
+| The wheel, the trackpad | By pixels. |
+| `<Tab>` `<S-Tab>` | Ring the next link, or the one before, starting from what's in view, and scroll to it. The status line says where it leads. `<Esc>` takes the ring off. |
+| `<CR>`, a click | Follow the ringed link, or the one clicked (`markdown-follow-link`). |
+| `<C-o>` `H`, `L` | Back to where a link was followed from in this window, and forward again, across pages. `<C-i>` is `<Tab>` to DIE, so forward is `L`. |
+| `:`, `<C-w>…`, `ZZ` `ZQ`, `<C-^>`, `\z` | As everywhere. `\z` narrows the area the page is centred in. |
 
-**What it follows.** The view is planned again when the buffer's text changes under it: `:e!`, or the file changing on disk, as when something else is writing the file you're reading. It's planned again when the text's width changes too (`\z`, a split, a resized window, another window leaving the buffer), since rules and code boxes are as wide as the text. **Kept:** which buffers are rendered, so `:rebuild` and a restart show them as they were.
+**Links.** `#heading` scrolls to the heading, by GitHub's rule for anchors and in any case. `#fn-1` and the like go to a footnote, `#name` goes to an `<a id>` or `<a name>`, and a place inside a closed `<details>` opens it. A markdown file opens as its page in this window, at the heading or the line the link names (`notes.md#set-up`, `notes.md:12`). Another file opens as text, as `:e` would; `<C-o>` or `<C-^>` there goes back to the markdown file at the line the page showed, where `\m` brings the page back as it was. A path from `/` is from the repository's top (the nearest directory with a `.git`). A web or mail address, a picture, a PDF or an HTML file goes to `open`, so a web page is your browser's.
 
-**Options**, as your config sets them (it sets none): `extensions` (the six above), `front_matter` (false: hidden; true shows it dimmed), `opener` (none: `xdg-open` where there is one, else `open`). **Faces:** `markdown-h1` to `markdown-h6`, `markdown-bold`, `markdown-italic`, `markdown-strike`, `markdown-code`, `markdown-code-block`, `markdown-link`, `markdown-quote`, `markdown-marker`, `markdown-rule`, `markdown-table-header`, `markdown-meta` and `markdown-alert`, which mono-dark styles from your preview's stylesheet (`mono-dark.css`): links red, bold and underlined, code on `#252525`, lines in the border's colour. **What it costs:** nothing for a buffer that's raw. Rendered, a change of the text plans the whole file again, about 4 ms for a file of 480 KB; a file rewritten in thousands of places while it's rendered takes longer to follow, a second or two at 40,000.
+**Two windows.** A page in two windows is a view in each, as two browser windows on one page are: each is laid out for its own width, with its own place, its own ringed link and its own way back. A window that leaves a page another window still shows comes back to it where it was.
+
+**What it follows.** A page is laid out again when the file's text changes (an edit in another window, `:e!`, the file changing on disk), when its window's width or the display's scale changes, when the theme's colours change, and when a picture it was waiting for arrives. It keeps your place through all of these. A page no window shows is put away when the command ends: its file remembers where you were, and its next page starts there. **Kept:** the page the focused window showed comes back after `:rebuild` and a restart, in that window and at the same place; a file whose page you'd left remembers where you were.
+
+**Options**, as your config sets them (it sets none):
+- `extensions`: the six above.
+- `front_matter`: false leaves it out; true shows it, as a table on a page and dimmed in place.
+- `opener`: none means `xdg-open` where there is one, else `open`.
+- `page`: true.
+- `palette`: `Theme` (the default), your `markdown-*` faces; or `GithubDark` and `GithubLight`, GitHub's own colours.
+- `fonts`: none means DIE's own fonts are found as DIE finds them; they're the last resort on a system with no sans the page knows, and fill in symbols the sans lacks.
+
+**Faces.** A page reads its colours from the faces the view in place draws in:
+- text and background from `default`;
+- headings from `markdown-h1` to `-h6`;
+- links from `markdown-link`, underlined if the face is;
+- inline code and code blocks from `markdown-code` and `-code-block`;
+- quotes and footnotes from `markdown-quote`;
+- the grid, bars and rules from `markdown-rule`;
+- code colours from `markdown-code-keyword`, `-string`, `-comment`, `-number`, `-function`, `-type`, `-constant`, `-meta`, `-variable`, `-tag`, `-attr`, `-inserted`, `-deleted` and `-heading`;
+- the alerts from the theme's ANSI colours.
+
+mono-dark styles them from your preview's stylesheet (`mono-dark.css`) and its code theme (`grayscale-dark`). A theme that styles none of the code faces draws code plain.
+
+**What it costs.** Nothing for a file that's raw. On this Mac, in a Retina window: `\m` shows this guide (80 KB) in about 18 ms and the M0 log (480 KB) in about 29; a scroll step takes about 2 ms, and following an edit about 4 ms here and 13 ms there, twice that with the page in two windows of different widths.
+
+### The view in place
+
+Where there's no page, `\m` shows the file rendered in its own buffer: the markup hidden under decorations and never removed, the text styled in the cell grid's one size of letter, so headings differ by weight, underline and brightness. A code block is a filled box, a table is aligned with `│` between its columns, `•` `◦` `▪` and `☐` `☑` stand for bullets and task boxes, a quote has a `▎` bar, a picture is `‹image: alt›`, and HTML and footnote labels show dimmed as written. Everything else is as written: nothing is reflowed. die-vim's keys that move, search, select and yank work on what's shown, and the buffer is read-only while rendered, since a key at the edge of hidden markup would change what you can't see: `\m` again to edit. `<CR>` on a link follows it as on a page. It's planned again when the text or its width changes, and the session keeps which buffers have it.
 
 ## What isn't there yet
 
-- **markdown:** nobody has seen it on screen: it was checked as cells and faces, and the first look is yours, `\m` in any `.md` file after your `:rebuild`. Editing in the rendered view: it's read-only, and the way to an editable one is showing the cursor's line raw, as Vim's conceal does. Pictures (M3: an image shows as `‹image: alt›`). Larger headings (scaled text runs, scope's open question 2). Colours in a code block (there's no highlighter). Math, mermaid and anything else your browser preview draws. A table with a cell too many in a row (an unescaped `|` in a code span) or a tab in a cell shows as written; one still wider than the text after narrowing wraps the rows that run over. A buffer rendered in two windows of different widths is planned for the narrower. Following a link with the pointer.
+- **markdown:** nobody has seen the page on screen: it was checked as pixels the harness was handed and as PNG files, and the first look is yours, `\m` in any `.md` after your `:rebuild`. Editing on the page (it's a picture of the file; raw is where you edit). Search, selection and yank on a page. Pictures other than PNG, pictures at a web address (badges among them), and colour emoji, which show as small boxes. Right-to-left text, combining marks placed by a shaper, and ligatures: there's no shaper, so one glyph is drawn for each character. Math, mermaid and anything else your browser preview draws. A page on Linux, where the view in place stands in. The page's own windows after a restart beyond the focused one, which come back on another buffer (core keeps no window on a surface yet). A soft hyphen breaks nothing. A first look at a large picture takes a moment on the main thread while it's scaled, about 30 ms for 4000 by 3000.
 - **jellyfish:** nobody has seen it on screen: it was checked as cells, inks and timers, and the first look is yours: `:jellyfish` after your `:rebuild`, which as a restart comes back on what was on screen, or the next launch with no file named, unless the session brings back splits. A light theme's inks are measured, not seen. It doesn't come back after a restart (M1's surface restorer), and it has no key of its own. A start that gets its file after the launch (Finder, `open -a`, `die --wait` with no DIE running) shows a frame of it before the file. In a window under about 49 columns or 30 rows the animal is cut rather than drawn smaller.
 - **whiteboard:** pixels on Linux (cells until the wgpu ring). On the tool dial: inks and widths (a second dial, Shift-Space), a key of your own for it, and `\hk` naming what the surface does with Space rather than that it handles it. The wheel waits while the dial is open, and a key another extension binds (`:`, `C-w …`) runs under it without closing it. Labels don't zoom (they're cells; their outline does). Two windows on one board share one buffer, sized to the largest area it has had, so a smaller window shows its top-left part. Pressure and tilt (winit has no tablet events on macOS), pinch, a crosshair cursor, images. Labels are typed at their end only: no caret, no `<Left>`, `<C-w>` or `<C-u>` in one; a typo earlier means retyping (a double click re-edits, appending). While typing a label, a double click on another label ends this one and leaves a dot where the second click lands (the first ends the label, the second is the pen's). `:w` on a board says it has no text. The vim-like grammar over shapes (counts, operators, cursor-placed shapes) is later and experimental. A board's own window position across a restart (M1's surface restorer). Opening a `.svg` through `\f` gives its text, as the web-content rule has it.
 - **orchid:** in the session browser, insert and visual state have die-vim's keys, where your Emacs's browser keymap worked in insert state too. In a chat, Emacs's hover hints ("Press TAB to toggle"), and `M-p` and `M-n`, which did nothing there. DIE's session file keeps a chat's whole text, as it keeps any buffer's that has no file, though a restart rebuilds the chat from `events.jsonl`: about 250 KB for 250 events, written about every 5 s while a turn runs.

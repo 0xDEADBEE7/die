@@ -117,7 +117,7 @@ note = "an extension, outside guard 7: your ASCII jellyfish, the buffer DIE star
 name = "die-markdown"
 path = "extensions/die-markdown"
 extension = true
-note = "an extension, outside guard 7: a markdown file's rendered view, markup hidden and text styled"
+note = "an extension, outside guard 7: a markdown file's rendered view, a page drawn as GitHub draws a README (its typesetter is most of it), or the markup hidden in place"
 
 [[crate]]
 name = "xtask"
