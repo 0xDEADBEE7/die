@@ -43,6 +43,7 @@ pub(super) enum Mark {
     Caution,
     Picture,
     Open,
+    Closed,
     Wrap,
 }
 
@@ -365,6 +366,9 @@ struct Lay<'a, 'f> {
     /// Physical pixels to a CSS pixel.
     s: f32,
     hair: f32,
+    /// The furthest right anything may reach: the area's edge less the page's padding, or the
+    /// column's edge where the area is narrower than that.
+    edge: f32,
     out: Laid,
     flow: Flow,
     markers: Vec<Marker>,
@@ -390,6 +394,7 @@ pub(super) fn lay(doc: &Doc, env: &Env<'_>, pass: Pass<'_>, pictures: &Pictures)
         doc,
         s,
         hair: sheet::hairline(s),
+        edge: width,
         out: Laid {
             width,
             height: 0.0,
@@ -430,6 +435,7 @@ pub(super) fn lay(doc: &Doc, env: &Env<'_>, pass: Pass<'_>, pictures: &Pictures)
     let pad = (pad * s).round();
     let left = ((width - column) / 2.0).max(0.0).round();
     let (x, w) = (left + pad, (column - 2.0 * pad).max(s));
+    lay.edge = (width - pad).max(x + w);
     lay.flow.y = pad;
     let ctx = Ctx {
         size: sheet::TEXT,
@@ -584,7 +590,13 @@ impl Lay<'_, '_> {
                     self.flow
                         .close(y + self.px(sheet::RULE), self.px(sheet::RULE_GAP));
                 }
-                Block::Details { summary, blocks } => self.details(summary, blocks, x, w, ctx),
+                Block::Details {
+                    summary,
+                    blocks,
+                    open,
+                    at,
+                    link,
+                } => self.details(summary, blocks, (*open, *at, *link), x, w, ctx),
                 Block::Notes(notes) => self.notes(notes, x, w, ctx),
             }
         }
@@ -882,21 +894,30 @@ impl Lay<'_, '_> {
         self.flow.close(y + base.height, 0.0);
     }
 
-    fn details(&mut self, summary: &Para, blocks: &[Block], x: f32, w: f32, ctx: &Ctx) {
-        // Drawn open: the summary behind its triangle, then what it holds, with nothing between
-        // but the blocks' own margins.
-        let bold = Ctx {
-            weight: Weight::Semibold,
-            ..*ctx
-        };
-        let base = self.base(&bold);
-        let prepared = self.prepare(&summary.inlines, &bold, &base);
+    /// A `<details>` block: `state` is whether its tag says open, where the tag is, and the
+    /// link its summary line is. Closed, as a browser shows one unless the tag says otherwise,
+    /// it's the summary line alone behind a triangle pointing right; open, the triangle points
+    /// down and what it holds follows, with nothing between but the blocks' own margins. The
+    /// reader turns one by listing it in the environment.
+    fn details(
+        &mut self,
+        summary: &Para,
+        blocks: &[Block],
+        state: (bool, usize, u32),
+        x: f32,
+        w: f32,
+        ctx: &Ctx,
+    ) {
+        let (open, at, link) = state;
+        let open = open != self.env.opened.contains(&at);
+        let base = self.base(ctx);
+        let prepared = self.prepare(&summary.inlines, ctx, &base);
         let indent = self.px(18.0);
         let broken = break_lines(&prepared, (w - indent).max(indent), &base, true);
         let y = self.flow.open(0.0);
         let icon = self.px(sheet::ICON);
         self.out.ops.push(Op::Mark {
-            kind: Mark::Open,
+            kind: if open { Mark::Open } else { Mark::Closed },
             x: x.round() as i32,
             y: (y.round() + (base.height - icon) / 2.0).round() as i32,
             px: icon,
@@ -911,8 +932,21 @@ impl Lay<'_, '_> {
             summary.align,
             summary.src.end,
         );
-        self.flow.close(y + broken.height.max(base.height), 0.0);
-        self.blocks(blocks, x, w, ctx);
+        // The whole summary line is the toggle, as in a browser.
+        let height = broken.height.max(base.height);
+        self.link_rect(
+            link,
+            Rect {
+                x: x.round(),
+                y: y.round(),
+                w: w.ceil(),
+                h: height.ceil(),
+            },
+        );
+        self.flow.close(y + height, 0.0);
+        if open {
+            self.blocks(blocks, x, w, ctx);
+        }
         self.flow.join(self.px(sheet::GAP));
     }
 
@@ -967,7 +1001,7 @@ impl Lay<'_, '_> {
         // A table of so many columns that their padding alone would fill the column gives
         // some of it up: at most half the width goes to padding.
         let spare = (w / 2.0 / (2.0 * columns as f32)).floor().max(1.0);
-        let (pad_x, pad_y) = (
+        let (mut pad_x, pad_y) = (
             self.px(sheet::CELL_X).round().min(spare),
             self.px(sheet::CELL_Y).round(),
         );
@@ -996,9 +1030,20 @@ impl Lay<'_, '_> {
                 least[c] = least[c].max(break_lines(cell, 0.0, base, false).width.ceil());
             }
         }
-        let frame = hair * (columns + 1) as f32 + 2.0 * pad_x * columns as f32;
+        let lines = hair * (columns + 1) as f32;
+        let frame = lines + 2.0 * pad_x * columns as f32;
         let room = (w - frame).max(0.0);
+        // A table whose longest words don't fit the column may run past its edge, as far as
+        // the area's less the page's padding: what GitHub's sideways scroll shows on a wide
+        // screen. Past that it gives up its cells' padding, down to a little, before a word
+        // is cut: that happens only when there's no room anywhere.
         let (all, tight): (f32, f32) = (widest.iter().sum(), least.iter().sum());
+        let furthest = (self.edge - x).max(w) - lines;
+        if tight + 2.0 * pad_x * columns as f32 > furthest {
+            let fits = ((furthest - tight) / (2.0 * columns as f32)).floor();
+            pad_x = fits.clamp(self.px(sheet::CELL_X_LEAST).round(), pad_x);
+        }
+        let beyond = (furthest - 2.0 * pad_x * columns as f32).max(room);
         let widths: Vec<f32> = if all <= room {
             widest.clone()
         } else if tight <= room {
@@ -1006,18 +1051,33 @@ impl Lay<'_, '_> {
             let spare = (room - tight) / (all - tight).max(1.0);
             let between = |(most, least): (&f32, &f32)| (least + (most - least) * spare).floor();
             widest.iter().zip(&least).map(between).collect()
+        } else if tight <= beyond {
+            least.clone()
         } else {
-            // Even the longest words don't fit: columns by their share, none under a floor
-            // while there's room for one, and the words break where they must.
-            let floor = self
-                .px(sheet::CELL_FLOOR * ctx.size)
-                .min(room / columns as f32);
-            let shared: Vec<f32> = widest
-                .iter()
-                .map(|m| (room * m / all.max(1.0)).max(floor))
-                .collect();
-            let over = (shared.iter().sum::<f32>() / room.max(1.0)).max(1.0);
-            shared.iter().map(|s| (s / over).floor().max(1.0)).collect()
+            // Words break in the column with the longest, and only as far as needed, the
+            // others whole; if every column is down to its floor, all shrink alike.
+            let mut widths = least.clone();
+            let mut over = tight - beyond;
+            let floor = self.px(sheet::CELL_FLOOR * ctx.size);
+            let mut by_least: Vec<usize> = (0..columns).collect();
+            by_least.sort_by(|a, b| least[*b].total_cmp(&least[*a]));
+            for c in by_least {
+                if over <= 0.0 {
+                    break;
+                }
+                let take = over.min((widths[c] - floor).max(0.0)).ceil();
+                widths[c] -= take;
+                over -= take;
+            }
+            if over > 0.0 {
+                let sum: f32 = widths.iter().sum();
+                let share = (beyond / sum.max(1.0)).min(1.0);
+                widths = widths
+                    .iter()
+                    .map(|w| (w * share).floor().max(1.0))
+                    .collect();
+            }
+            widths
         };
         let y = self.flow.open(0.0);
         let top = y.round();
@@ -1366,6 +1426,15 @@ impl Lay<'_, '_> {
             if c.is_control() || unseen(c) {
                 continue;
             }
+            // East Asian text has no spaces to break at: a line may end before an ideograph,
+            // a kana or a hangul, unless it's a mark that can't start a line.
+            if wide(c)
+                && !no_start(c)
+                && let Some(word) = word.take()
+            {
+                word_piece(out, at, word, joined);
+                joined = false;
+            }
             let shaped = self.pass.next(&mut run, c);
             let (_, pen, _, _) =
                 word.get_or_insert((out.glyphs.len() as u32, 0.0, shaped.kern, src + offset));
@@ -1378,18 +1447,19 @@ impl Lay<'_, '_> {
                 id: shaped.id,
             });
             *pen += shaped.advance;
-            // A line may end after a hyphen or a slash inside a word, as in a long address.
+            // A line may end after a hyphen, a slash or a question mark inside a word, as in a
+            // long address, and after an East Asian character that may end one.
             let next = chars.peek().map(|(_, c)| *c);
             let breaks = match c {
                 '-' => {
                     before.is_some_and(char::is_alphabetic) && next.is_some_and(char::is_alphabetic)
                 }
-                '/' => {
+                '/' | '?' => {
                     before.is_some_and(|b| b != '/' && b != ':')
                         && next.is_some_and(char::is_alphanumeric)
                 }
                 '—' => next.is_some_and(char::is_alphanumeric),
-                _ => false,
+                _ => wide(c) && !no_end(c) && next.is_some_and(|n| !no_start(n)),
             };
             if breaks && let Some(word) = word.take() {
                 word_piece(out, at, word, joined);
@@ -1643,22 +1713,31 @@ impl Lay<'_, '_> {
             }
             self.end_run(run.take());
             drawn.push(self.out.glyphs.len());
-            // Lines under links and through struck text, a stretch for each look.
+            // Lines under links and through struck text: one stretch for each link and each
+            // struck run, straight through a pill inside it, padding and all, as a browser
+            // draws one line; its place and weight are the text's where the stretch has any.
+            let deco = |f: &Frag| {
+                let l = look(f);
+                let drawn = !is_inset(f) && (l.underline || l.strike);
+                drawn.then_some((l.link.filter(|_| l.underline), l.strike))
+            };
             let mut at = 0;
             while at < frags.len() {
-                let first = *look(&frags[at]);
-                if is_inset(&frags[at]) || !(first.underline || first.strike) {
+                let Some(key) = deco(&frags[at]) else {
                     at += 1;
                     continue;
-                }
+                };
                 let mut last = at;
-                while last + 1 < frags.len()
-                    && !is_inset(&frags[last + 1])
-                    && *look(&frags[last + 1]) == first
-                {
+                while last + 1 < frags.len() && deco(&frags[last + 1]) == Some(key) {
                     last += 1;
                 }
-                let (x0, x1) = (lx + frags[at].x, lx + frags[last].x + frags[last].width);
+                let stretch = &frags[at..=last];
+                let plain = stretch.iter().map(look).find(|l| l.boxed == Boxed::No);
+                let first = *plain.unwrap_or(look(&frags[at]));
+                let (x0, x1) = (
+                    lx + frags[at].x - look(&frags[at]).pad,
+                    lx + frags[last].x + frags[last].width + look(&frags[last]).pad,
+                );
                 let thick = (self.px(first.size) / 16.0).round().max(1.0);
                 let own = baseline - first.rise;
                 if first.underline {
@@ -1731,15 +1810,7 @@ impl Lay<'_, '_> {
                     w: (x1.ceil() - x0.floor()).max(0.0),
                     h: (y1.ceil() - y0.floor()).max(0.0),
                 };
-                if let Some(rects) = self.rects.get_mut(link as usize) {
-                    if rects.is_empty() {
-                        self.order.push(link);
-                        if let Some(name) = &self.doc.links[link as usize].anchor {
-                            self.out.anchors.push((name.clone(), top));
-                        }
-                    }
-                    rects.push(rect);
-                }
+                self.link_rect(link, rect);
             }
             // The source this line shows: from its first piece to the next line's.
             let first_src = |l: &Line| {
@@ -1755,6 +1826,21 @@ impl Lay<'_, '_> {
                 .unwrap_or(end);
             self.span(src, next, top, top + line.height);
         }
+    }
+
+    /// A rectangle a link covers. Its first is where the link enters the reading order, and
+    /// where a name the link gives its place points.
+    fn link_rect(&mut self, link: u32, rect: Rect) {
+        let Some(rects) = self.rects.get_mut(link as usize) else {
+            return;
+        };
+        if rects.is_empty() {
+            self.order.push(link);
+            if let Some(name) = &self.doc.links[link as usize].anchor {
+                self.out.anchors.push((name.clone(), rect.y));
+            }
+        }
+        rects.push(rect);
     }
 
     fn end_run(&mut self, run: Option<(Rgb, f32, i32, usize)>) {
@@ -1929,6 +2015,86 @@ fn word_piece(out: &mut Prepared, look: u32, word: (u32, f32, f32, usize), joine
     });
 }
 
+/// An ideograph, a kana, a hangul or the punctuation set with them: text a line may break
+/// anywhere in, having no spaces.
+fn wide(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x1100..=0x11ff
+            | 0x2e80..=0x2fff
+            | 0x3001..=0x303f
+            | 0x3040..=0x30ff
+            | 0x3100..=0x31ff
+            | 0x3400..=0x4dbf
+            | 0x4e00..=0x9fff
+            | 0xa960..=0xa97f
+            | 0xac00..=0xd7ff
+            | 0xf900..=0xfaff
+            | 0xfe30..=0xfe4f
+            | 0xff01..=0xff60
+            | 0xffe0..=0xffe6
+            | 0x20000..=0x3134f
+    )
+}
+
+/// East Asian marks a line can't start with: closing punctuation, small kana, the long vowel.
+fn no_start(c: char) -> bool {
+    matches!(
+        c,
+        '、' | '。'
+            | '，'
+            | '．'
+            | '：'
+            | '；'
+            | '！'
+            | '？'
+            | '」'
+            | '』'
+            | '）'
+            | '】'
+            | '〉'
+            | '》'
+            | '〕'
+            | '〗'
+            | '〙'
+            | '〛'
+            | '］'
+            | '｝'
+            | 'ー'
+            | '々'
+            | 'ぁ'
+            | 'ぃ'
+            | 'ぅ'
+            | 'ぇ'
+            | 'ぉ'
+            | 'っ'
+            | 'ゃ'
+            | 'ゅ'
+            | 'ょ'
+            | 'ゎ'
+            | 'ァ'
+            | 'ィ'
+            | 'ゥ'
+            | 'ェ'
+            | 'ォ'
+            | 'ッ'
+            | 'ャ'
+            | 'ュ'
+            | 'ョ'
+            | 'ヮ'
+            | 'ヵ'
+            | 'ヶ'
+    )
+}
+
+/// East Asian marks a line can't end with: opening brackets.
+fn no_end(c: char) -> bool {
+    matches!(
+        c,
+        '「' | '『' | '（' | '【' | '〈' | '《' | '〔' | '〖' | '〘' | '〚' | '［' | '｛'
+    )
+}
+
 /// Characters that take no room and draw nothing: joiners, selectors, marks of direction.
 fn unseen(c: char) -> bool {
     matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}')
@@ -2048,6 +2214,10 @@ fn break_lines(text: &Prepared, width: f32, base: &Base, split: bool) -> Broken 
             && pill(&text.pieces[at]).is_none()
         {
             at += 1;
+        }
+        // Spaces after the last break make no line of their own.
+        if at >= count && !out.lines.is_empty() {
+            break;
         }
         let (mut x, mut inside, mut stop) = (0.0f32, None::<(u32, f32)>, None::<Stop>);
         while at < count {

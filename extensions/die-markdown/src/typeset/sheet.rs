@@ -61,8 +61,10 @@ pub(super) const CHECK: f32 = 13.0;
 pub(super) const CHECK_GAP: f32 = 8.0;
 pub(super) const CHECK_RADIUS: f32 = 3.0;
 
-/// A table cell's padding: across, and up and down.
+/// A table cell's padding: across, and up and down; and the least across, which a table too
+/// wide for the page keeps rather than cut a word.
 pub(super) const CELL_X: f32 = 13.0;
+pub(super) const CELL_X_LEAST: f32 = 4.0;
 pub(super) const CELL_Y: f32 = 6.0;
 /// The narrowest a column's text gets when a table can't fit, in ems.
 pub(super) const CELL_FLOOR: f32 = 3.0;
@@ -78,7 +80,8 @@ pub(super) const NOTE_INDENT: f32 = 16.0;
 /// A picture that can't be shown: its box's padding across, its height, and the space between
 /// its mark and its words.
 pub(super) const ABSENT_PAD: f32 = 8.0;
-pub(super) const ABSENT_HEIGHT: f32 = 24.0;
+/// Shorter than the line by a couple of pixels, so a row of boxes doesn't touch the next.
+pub(super) const ABSENT_HEIGHT: f32 = 22.0;
 pub(super) const ABSENT_GAP: f32 = 6.0;
 
 /// The ring round the link the keyboard is on: its thickness, how far out it stands, its radius.
@@ -89,10 +92,16 @@ pub(super) const RING_RADIUS: f32 = 4.0;
 /// How far under the baseline a link's underline starts.
 pub(super) const UNDERLINE: f32 = 3.2;
 
-/// A hairline's thickness in physical pixels: one, at any scale, so the rule under a heading
-/// and a table's grid are as fine as the display can draw and never blurred.
-pub(super) fn hairline(_scale: f32) -> f32 {
-    1.0
+/// How far each glyph's outline grows a side, in CSS pixels. A Mac browser draws GitHub with
+/// font smoothing on, which lays down about a quarter more ink than plain coverage; growing the
+/// outline by this much reproduces that weight for every face. Zero is DIE's own unsmoothed
+/// weight, the editor's beside the page.
+pub(super) const GROW: f32 = 0.15;
+
+/// A hairline's thickness in physical pixels: one CSS pixel, as a browser draws GitHub's rules,
+/// grid and borders, in whole pixels so it's never blurred, and never under one.
+pub(super) fn hairline(scale: f32) -> f32 {
+    stroke(scale)
 }
 
 /// A line that's a CSS pixel thick, in whole physical pixels: a checkbox's outline, a ring
