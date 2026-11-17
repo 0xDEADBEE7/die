@@ -23,7 +23,7 @@
 //! **Files from Finder**, the Dock or `open -a` reach an instance as AppKit events, which it sends
 //! to the lock's holder as `die --background file` would, itself or not.
 
-use crate::{Config, launch, rebuild, started_dir};
+use crate::{Config, home_from_root, launch, rebuild, started_dir};
 use die_core::instance::{
     Asked, Handover, Instance, OPEN_SOCKET, OpenListener, OpenRequest, Sent, Successor, send_again,
     send_open,
@@ -83,6 +83,52 @@ pub struct Launch {
     pub background: bool,
     /// `--wait`: return once you're done with the files.
     pub wait: bool,
+}
+
+impl Launch {
+    /// Whether this is a launch of yours, from the Dock, Finder, `open` or `die`, rather than a
+    /// restart's new instance (`:restart`, `:rebuild`) or one of xtask's two.
+    pub fn fresh(&self) -> bool {
+        self.handover.is_none() && !self.restart_loop && !self.restart_after_frame
+    }
+}
+
+/// The buffer DIE makes when there's no other.
+const SCRATCH: &str = "*scratch*";
+
+/// DIE.app starts in your home directory, as Emacs.app does. LaunchServices starts an app in
+/// `/`, and from there this goes home, so that home is where DIE started ([`started_dir`]): for
+/// your status line, `*scratch*`, the first `find-file`, and the programs DIE runs. Started
+/// anywhere else it stays there. Your config's `main` calls this before it builds the config it
+/// gives [`run`], and a restart's new instance, which LaunchServices starts too, goes home again.
+pub fn start_at_home() {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    if let Some(home) = home_from_root(&cwd, std::env::home_dir())
+        && let Err(e) = std::env::set_current_dir(&home)
+    {
+        eprintln!("die: {}: {e}", home.display());
+    }
+}
+
+/// `config` for this launch. A [fresh](Launch::fresh) one puts `*scratch*` in `here`, where DIE
+/// started, before your startup hook runs, whatever directory the session kept for it: it's
+/// DIE's own buffer, made wherever you were when the last other buffer went, and in Emacs a
+/// launch has it where Emacs started. Its text comes back as it was, a `*scratch*` that visits a
+/// file is that file's, and every other buffer keeps its directory. A restart isn't a launch:
+/// everything comes back where it was.
+pub fn at_launch(mut config: Config, asked: &Launch, here: PathBuf) -> Config {
+    if !asked.fresh() {
+        return config;
+    }
+    let before = config.core.startup.take();
+    config.core.startup = Some(Box::new(move |ctx| {
+        let scratch = ctx.find_buffer(SCRATCH);
+        if let Some(buf) = scratch.filter(|b| ctx.file(*b).is_none()) {
+            ctx.set_directory(buf, here);
+        }
+        before.map_or(Ok(()), |hook| hook(ctx))
+    }));
+    config
 }
 
 /// The app bundle this process runs from, if it does, seen through a link such as
@@ -214,11 +260,12 @@ fn start_instance(bundle: &Path, request: &OpenRequest) -> Result<(), String> {
 /// Run as DIE.app until the window closes or a restart hands over. If another instance has the
 /// lock, this one sends it any files and exits, or says so and exits if it has none. The exit
 /// code is `die::run`'s, or 1 if an instance holds the lock and nobody answered.
-pub fn run(mut config: Config, bundle: PathBuf, asked: Launch) -> i32 {
+pub fn run(config: Config, bundle: PathBuf, asked: Launch) -> i32 {
     let Some(dir) = state_dir() else {
         eprintln!("die: no place for DIE's state: HOME isn't set");
         return 2;
     };
+    let mut config = at_launch(config, &asked, started_dir());
     let names = config.files.drain(..).map(PathBuf::into_os_string);
     let targets = match FileTarget::parse_args(names, &started_dir()) {
         Ok(targets) => targets,
