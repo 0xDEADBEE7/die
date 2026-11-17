@@ -11,7 +11,7 @@
 //! `handles()`, whose release core brings back to it (contract §7).
 
 use crate::cells::{Cells, cell_size};
-use crate::dial::{Dial, Opener};
+use crate::dial::{Armed, Dial, DialLook, Opener, Stage};
 use crate::ink::{SIMPLIFY, Streamline, simplify};
 use crate::model::{
     Board, CellSize, Element, INKS, Id, LIVE, Point, Rect, Shape, WIDTH_NAMES, WIDTHS, label_lines,
@@ -216,6 +216,8 @@ pub struct BoardState {
     /// it. Pixels, not a board point, since the wheel and the zoom keys move the board under a
     /// pointer that sends nothing.
     pointer_px: Option<(f32, f32)>,
+    /// The dial's colours, as the theme has them.
+    pub dial_look: DialLook,
 }
 
 /// A board's state, shared by its surface and the extension.
@@ -277,6 +279,7 @@ impl BoardState {
             focused_at: None,
             dial: None,
             pointer_px: None,
+            dial_look: DialLook::default(),
         }
     }
 
@@ -440,7 +443,18 @@ impl BoardState {
             let (x, y) = self.pointer_px.unwrap_or_else(|| self.area_centre_px());
             self.view.to_board(x, y, self.cell.scale)
         });
-        self.dial = Some(Dial::open(centre, by, self.cell_size(), self.view.zoom));
+        let armed = Armed {
+            tool: self.tool,
+            ink: self.ink,
+            width: self.width,
+        };
+        self.dial = Some(Dial::open(
+            centre,
+            by,
+            self.cell_size(),
+            self.view.zoom,
+            armed,
+        ));
         self.touch();
         true
     }
@@ -451,7 +465,9 @@ impl BoardState {
         Some(self.view.to_board(x, y, self.cell.scale))
     }
 
-    /// The pointer is at `p` with the dial open: the sector in its direction is hovered.
+    /// The pointer is at `p` with the dial open: the sector in its direction is hovered, or
+    /// stage two's ink and width under it. The needle follows it whatever changed, through the
+    /// renderer's `update`; the frame's cells are drawn again only when what the dial says did.
     fn hover_dial(&mut self, p: Point) {
         if let Some(d) = &mut self.dial
             && d.hover(p)
@@ -471,7 +487,8 @@ impl BoardState {
 
     /// Close the dial, arming the tool of the sector under the pointer (`p`, or where it was
     /// last seen) as its key would: the pen, select, a one-shot shape or label, or the eraser
-    /// on or off. In the dead zone, nothing changes. False with none open.
+    /// on or off; in stage two, the ink and width under the pointer too, as `1`..`6` and `[`
+    /// `]` would. In the dead zone, nothing changes. False with none open.
     pub fn pick_dial(&mut self, p: Option<Point>, now: Duration) -> bool {
         let Some(mut dial) = self.dial.take() else {
             return false;
@@ -479,12 +496,24 @@ impl BoardState {
         if let Some(p) = p.or_else(|| self.pointer_board()) {
             dial.hover(p);
         }
-        match dial.tool() {
-            Some(Tool::Eraser) => self.toggle_tool(Tool::Eraser, now),
-            Some(tool) => self.set_tool(tool, now),
-            None => self.touch(),
+        match (dial.tool(), dial.stage) {
+            (Some(tool), Stage::Ink { ink, width }) => {
+                self.set_tool(tool, now);
+                self.set_style(ink, width, now);
+            }
+            (Some(Tool::Eraser), _) => self.toggle_tool(Tool::Eraser, now),
+            (Some(tool), _) => self.set_tool(tool, now),
+            (None, _) => self.touch(),
         }
         true
+    }
+
+    /// The theme's colours for the dial, as resolved now: a change draws the dial again.
+    pub fn set_dial_look(&mut self, look: DialLook) {
+        if self.dial_look != look {
+            self.dial_look = look;
+            self.redraw();
+        }
     }
 
     /// The area's centre, in physical pixels.
@@ -1056,6 +1085,32 @@ impl BoardState {
         self.restyle(now, |e, ink, _| e.ink = ink);
     }
 
+    /// Choose an ink and, if given, a width, as `1`..`6` and `[` `]` would, for what's drawn
+    /// next and for the selection: the dial's stage two. One entry for both, and none when the
+    /// selection has them already.
+    pub fn set_style(&mut self, ink: u8, width: Option<u8>, now: Duration) {
+        self.ink = ink.clamp(1, INKS);
+        if let Some(w) = width {
+            self.width = w.min((WIDTHS.len() - 1) as u8);
+        }
+        let (ink, w) = (self.ink, self.width);
+        let unchanged = self
+            .selection
+            .iter()
+            .filter_map(|id| self.board.get(*id))
+            .all(|e| e.ink == ink && (width.is_none() || e.width == w));
+        if unchanged {
+            self.touch();
+            return;
+        }
+        self.restyle(now, |e, ink, w| {
+            e.ink = ink;
+            if width.is_some() {
+                e.width = w;
+            }
+        });
+    }
+
     /// Step the width `by` in [`WIDTHS`], for what's drawn next and for the selection.
     pub fn step_width(&mut self, by: i8, now: Duration) {
         let last = (WIDTHS.len() - 1) as i8;
@@ -1265,6 +1320,8 @@ fn scene_of(st: &BoardState) -> Scene<'_> {
         live: st.live(),
         marquee: st.marquee(),
         dial: st.dial(),
+        dial_look: st.dial_look,
+        area: st.area,
         cell: st.cell_size(),
     }
 }
@@ -1441,6 +1498,7 @@ impl Surface for BoardSurface {
         self.state
             .borrow_mut()
             .set_look(crate::ink_colors(ctx), crate::default_fg(ctx));
+        self.state.borrow_mut().set_dial_look(crate::dial_look(ctx));
         match ev {
             Event::Pointer(p) => {
                 self.pointer(p, ctx);

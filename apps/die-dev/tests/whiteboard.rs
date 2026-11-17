@@ -300,3 +300,46 @@ fn a_board_drawn_in_pixels_through_your_config_exports_splits_and_survives_two_r
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&state);
 }
+
+#[test]
+fn the_tool_dial_is_in_mono_darks_grey_and_red() {
+    use die::core::{Input, Key, KeyEvent, KeyKind, PointerKind, Rgb};
+    let dir = tree("dial");
+    let mut h = harness();
+    h.set_cell_pixels(CELL);
+    let look = die_whiteboard::dial_look(&h);
+    let hex = Rgb::hex;
+    assert_eq!(
+        (look.face, look.accent, look.bg),
+        (hex("#888888"), hex("#cc4444"), hex("#1a1a1a"))
+    );
+    let args = Args {
+        text: Some(dir.join("dial.svg").display().to_string()),
+        ..Args::default()
+    };
+    h.run("whiteboard", &args).unwrap();
+    h.run_until_idle();
+    // Space held, the pointer north-east inside the ring: rect's chip, the red behind the
+    // background; the other names in the mid grey.
+    point(&mut h, PointerKind::Move, (300.0, 200.0), 0);
+    let space = KeyEvent::press(Key::Char(' '));
+    assert!(h.send(Input::Key(space.clone())).is_empty());
+    point(&mut h, PointerKind::Move, (320.0, 180.0), 0);
+    let scene = h.scene();
+    let chip: Vec<_> = scene
+        .cells
+        .iter()
+        .filter(|c| c.bg == hex("#cc4444"))
+        .collect();
+    let text: String = chip.iter().map(|c| c.glyph.to_string()).collect();
+    assert_eq!(text, " rect ", "{}", scene.snapshot());
+    assert!(chip.iter().all(|c| c.fg == hex("#1a1a1a")));
+    let names = scene
+        .cells
+        .iter()
+        .filter(|c| c.fg == hex("#888888"))
+        .count();
+    assert!(names > 20, "the other names: {}", scene.snapshot());
+    assert!(h.send(Input::Key(space.kind(KeyKind::Release))).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}

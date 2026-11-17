@@ -34,7 +34,7 @@ const ANSI: [&str; 16] = [
 ];
 
 /// mono-dark: every base and UI face, styled as your Emacs draws it, the orchid faces whose
-/// Emacs faces no base face matches, and the markdown view's, from the stylesheet your preview
+/// Emacs faces no base face matches, the whiteboard dial's two, and the markdown view's, from the stylesheet your preview
 /// uses (`mono-dark.css`). A markdown page takes its
 /// colours from the same faces, and `tests/markdown.rs` holds them to the stylesheet's.
 pub fn mono_dark() -> Theme {
@@ -83,6 +83,11 @@ pub fn mono_dark() -> Theme {
         // seek's search line, `(:background "#3a3a3a")`, which the session browser draws while
         // you type a query.
         .face("orchid-seek-search", s().bg(BORDER))
+        // The whiteboard's tool dial, in the grey and the one accent your theme already has:
+        // its names, readout keys and line art in the mid grey; the hovered name's chip, the
+        // hovered stretch of its ring, the needle's dot and the readout's value in the red.
+        .face("whiteboard-dial", s().fg(FG_MID))
+        .face("whiteboard-dial-accent", s().fg(RED))
         // h1 and h2: bright and bold over a border-coloured line. In the view in place a cell
         // has one size of letter, so the two lines stand in for 2em, and one for 1.5em.
         .face(

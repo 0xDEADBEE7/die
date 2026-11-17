@@ -11,7 +11,7 @@
 //! while something's changed, with a [`Scene`] that also carries the gesture's live element,
 //! which isn't on the board yet, and the tool dial while it's open.
 
-use crate::dial::Dial;
+use crate::dial::{Dial, DialLook};
 use crate::model::{Board, CellSize, Element, Id, Rect};
 use crate::view::View;
 use die_core::{CellPixels, Color, Ctx, Frame, RenderInfo, Rgb};
@@ -35,6 +35,10 @@ pub struct Scene<'a> {
     /// The tool dial while it's open, in board units: drawn over the committed picture as the
     /// marquee is, never through [`Damage`], since the picture doesn't change under it.
     pub dial: Option<Dial>,
+    /// The dial's colours, as the theme has them now.
+    pub dial_look: DialLook,
+    /// The area, in cells: where the dial's readout has to fit.
+    pub area: (usize, usize),
     /// A cell in board units, for labels.
     pub cell: CellSize,
 }

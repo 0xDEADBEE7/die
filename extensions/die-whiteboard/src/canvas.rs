@@ -3,29 +3,44 @@
 //! ([`rasterize`]), and the pixel renderer draws with the same calls at the view's scale into a
 //! [`Canvas`] it keeps and into the pixel buffer it shows ([`Target`]).
 
-use crate::dial::Dial;
+use crate::dial::{Dial, DialLook, Layout, SEGMENT, Stage, art, has_width, toward};
 use crate::fonts::Fonts;
 use crate::model::{
-    Board, Element, HIGHLIGHTER_ALPHA, Point, Rect, Shape, head_length, label_lines,
+    Board, Element, HIGHLIGHTER_ALPHA, Point, Rect, Shape, WIDTHS, head_length, label_lines,
 };
 use crate::svg::{Look, picture};
 use die_core::{PixelRect, Rgb};
 use tiny_skia::{
-    FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapMut, PremultipliedColorU8,
+    FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapMut, PremultipliedColorU8,
     Stroke, StrokeDash, Transform,
 };
 
 /// The longest side a raster may have: Metal's texture cap, and sanity for an export.
 pub const MAX_SIDE: u32 = 16_384;
 
-/// The tool dial's disc's opacity.
-const DIAL_ALPHA: f32 = 0.12;
-/// The hovered sector's.
-const SECTOR_ALPHA: f32 = 0.35;
-/// The spokes' and the dead zone's circle's.
-const SPOKE_ALPHA: f32 = 0.5;
-/// The straight steps a sector's arc is drawn in.
-const ARC_STEPS: usize = 6;
+/// The tool dial's opacities.
+mod alpha {
+    /// The scrim from the centre most of the way to the names' farthest; there; and nothing a
+    /// cell past them.
+    pub const SCRIM: f32 = 0.88;
+    pub const SCRIM_MID: f32 = 0.7;
+    /// The ring in stage one and dimmed in stage two; its ticks; the dead zone.
+    pub const RING: f32 = 0.6;
+    pub const RING_DIM: f32 = 0.25;
+    pub const TICK: f32 = 0.8;
+    pub const DEAD: f32 = 0.3;
+    /// Stage two's guides at the width bands' edges.
+    pub const GUIDE: f32 = 0.3;
+    /// The crosshair, in the accent.
+    pub const CROSS: f32 = 0.25;
+    /// The needle and the reticle.
+    pub const NEEDLE: f32 = 0.9;
+}
+/// A dotted line's dots and gaps, in logical pixels: a dot is the line's width across.
+const DOT_ON: f32 = 0.1;
+const DOT_OFF: f32 = 3.0;
+/// The most degrees an arc's straight step turns.
+const ARC_STEP: f32 = 2.0;
 
 /// Pixels, straight (not premultiplied) RGBA, rows top first.
 #[derive(Clone, PartialEq, Debug)]
@@ -271,6 +286,16 @@ impl Map {
     }
 }
 
+/// Where two pixel rectangles overlap, if they do.
+fn meet(a: PixelRect, b: PixelRect) -> Option<PixelRect> {
+    let (x0, y0) = (a.x.max(b.x), a.y.max(b.y));
+    let (x1, y1) = (
+        (a.x + a.width).min(b.x + b.width),
+        (a.y + a.height).min(b.y + b.height),
+    );
+    (x1 > x0 && y1 > y0).then(|| PixelRect::new(x0, y0, x1 - x0, y1 - y0))
+}
+
 /// The `width × 4` bytes of row `y` from `x` for `w` pixels.
 fn span(width: u32, x: u32, y: u32, w: u32) -> std::ops::Range<usize> {
     let start = (y as usize * width as usize + x as usize) * 4;
@@ -325,60 +350,329 @@ impl Target<'_> {
         }
         self.with(|pm| pm.stroke_path(&path, &paint(color, alpha), &st, map.transform(), None));
     }
-    /// The tool dial in `color`: a translucent disc, the hovered sector filled, eight spokes
-    /// from the dead zone to the rim, and the dead zone's circle. Its names are the frame's cells.
-    pub fn dial(&mut self, d: &Dial, map: Map, color: Rgb) {
-        let t = map.transform();
-        let (c, r) = (d.centre, d.radius);
-        let hair = stroke(1.0 / map.scale.max(0.01));
-        let mut spokes = PathBuilder::new();
-        for k in 0..8 {
-            let dir = Dial::direction(k as f32 - 0.5);
-            spokes.move_to(c.x + dir.x * d.dead, c.y + dir.y * d.dead);
-            spokes.line_to(c.x + dir.x * r, c.y + dir.y * r);
+    /// Its bytes, premultiplied RGBA8, and their width and height.
+    fn bytes(&mut self) -> (&mut [u8], u32, u32) {
+        match self {
+            Target::Canvas(c) => {
+                let (w, h) = (c.width(), c.height());
+                (c.pm.data_mut(), w, h)
+            }
+            Target::Bytes {
+                bytes,
+                width,
+                height,
+            } => (bytes, *width, *height),
         }
-        spokes.push_circle(c.x, c.y, d.dead);
-        let spokes = spokes.finish();
-        let wedge = d.hovered.and_then(|i| sector(c, d.dead, r, i));
+    }
+
+    /// `bg` over the picture in a disc about `c` of radius `r`, in this target's pixels, at the
+    /// alpha `stops` give for each distance out (0 at the centre, 1 at the edge, straight
+    /// between them). A loop of its own rather than tiny-skia's radial gradient, which costs
+    /// three times as much for a disc this size: an alpha a distance, from a table by the
+    /// squared distance, and the blend, `bg × a + under × (1 − a)`.
+    fn scrim(&mut self, c: (f32, f32), r: f32, bg: Rgb, stops: &[(f32, f32)]) {
+        const STEPS: usize = 1024;
+        if r < 1.0 {
+            return;
+        }
+        let alpha_at = |t: f32| {
+            let mut last = stops[0];
+            for &s in stops {
+                if t <= s.0 {
+                    let span = (s.0 - last.0).max(1e-6);
+                    return last.1 + (s.1 - last.1) * ((t - last.0) / span).clamp(0.0, 1.0);
+                }
+                last = s;
+            }
+            last.1
+        };
+        // By the squared distance, so no square root a pixel.
+        let table: Vec<u32> = (0..=STEPS)
+            .map(|i| (alpha_at((i as f32 / STEPS as f32).sqrt()) * 255.0).round() as u32)
+            .collect();
+        let (bytes, width, height) = self.bytes();
+        let (x0, x1) = (
+            (c.0 - r).floor().max(0.0),
+            (c.0 + r).ceil().min(width as f32),
+        );
+        let (y0, y1) = (
+            (c.1 - r).floor().max(0.0),
+            (c.1 + r).ceil().min(height as f32),
+        );
+        let k = STEPS as f32 / (r * r);
+        let Rgb(br, bgr, bb) = bg;
+        for y in y0 as u32..y1 as u32 {
+            let dy = y as f32 + 0.5 - c.1;
+            let row = span(width, 0, y, width);
+            let px = &mut bytes[row];
+            for x in x0 as u32..x1 as u32 {
+                let dx = x as f32 + 0.5 - c.0;
+                let i = ((dx * dx + dy * dy) * k) as usize;
+                let Some(&a) = table.get(i) else { continue };
+                if a == 0 {
+                    continue;
+                }
+                let at = x as usize * 4;
+                let p = &mut px[at..at + 4];
+                let keep = 255 - a;
+                let mix =
+                    |s: u8, d: u8| ((u32::from(s) * a + u32::from(d) * keep + 127) / 255) as u8;
+                p[0] = mix(br, p[0]);
+                p[1] = mix(bgr, p[1]);
+                p[2] = mix(bb, p[2]);
+                p[3] = (a + (u32::from(p[3]) * keep + 127) / 255) as u8;
+            }
+        }
+    }
+
+    /// Make `r` transparent: under the dial's chip, whose cells' background shows there.
+    pub fn clear(&mut self, r: PixelRect) {
+        match self {
+            Target::Canvas(c) => c.clear_rect(r),
+            Target::Bytes {
+                bytes,
+                width,
+                height,
+            } => {
+                let r = r.clipped_to(*width, *height);
+                for y in r.y..r.y + r.height {
+                    bytes[span(*width, r.x, y, r.width)].fill(0);
+                }
+            }
+        }
+    }
+
+    /// The tool dial's line art, as the reel draws its picker: [`Target::dial_base`], what stays
+    /// while the pointer moves, then [`Target::dial_live`], what follows it.
+    pub fn dial(&mut self, d: &Dial, layout: &Layout, map: Map, colours: DialColours) {
+        self.dial_base(d, layout, map, colours);
+        self.dial_live(d, layout, map, colours);
+    }
+
+    /// What of the dial stays while the pointer moves within a stage. No panel, but a scrim of
+    /// the theme's background, held through the names and gone a cell past the farthest thing
+    /// drawn, so the lines and the cells over them read over ink; the tool ring dotted in the
+    /// dial's grey with a tick at each sector's edge, the hovered sector's stretch thick in the
+    /// accent; the dead zone a fainter dotted circle, and a reticle at the centre. In stage
+    /// two the ring dims, and over it go the guides at the width bands' edges and the ink arc:
+    /// a segment in each ink, ticks between them, a T at each end, the hovered ink thick. `fg`
+    /// is the bright grey: the reticle, the arc's ticks and caps. The names and the readout
+    /// are the frame's cells.
+    pub fn dial_base(&mut self, d: &Dial, layout: &Layout, map: Map, colours: DialColours) {
+        let DialColours { look, inks, fg } = colours;
+        let t = map.transform();
+        let px = d.px;
+        let c = d.centre;
+        let hair = stroke(art::HAIR * px);
+        let dotted = dotted(px);
+        let butt = |width: f32| Stroke {
+            width: width * px,
+            line_cap: LineCap::Butt,
+            ..stroke(1.0)
+        };
+        let ink = match d.stage {
+            Stage::Ink { ink, .. } => Some(ink),
+            Stage::Tools => None,
+        };
+        let scrim = d.scrim(layout);
+        let tick = |pb: &mut PathBuilder, deg: f32, r: f32, half: f32| {
+            let (a, b) = (c + toward(deg) * (r - half), c + toward(deg) * (r + half));
+            pb.move_to(a.x, a.y);
+            pb.line_to(b.x, b.y);
+        };
+        // The scrim: held through the names, which reach to a cell inside its edge, and gone
+        // at the edge.
+        let names = 1.0 - d.cell.h / scrim;
+        let stops = [
+            (0.0, alpha::SCRIM),
+            (names * 0.7, alpha::SCRIM),
+            (names, alpha::SCRIM_MID),
+            (1.0, 0.0),
+        ];
+        let at = (c.x * map.scale + map.tx, c.y * map.scale + map.ty);
+        self.scrim(at, scrim * map.scale, look.bg, &stops);
         self.with(|pm| {
-            if let Some(disc) = PathBuilder::from_circle(c.x, c.y, r) {
-                pm.fill_path(&disc, &paint(color, DIAL_ALPHA), FillRule::Winding, t, None);
+            // Stage two's guides, under the rest of it.
+            if let (Some(_), Some((start, end)), Some(tool)) = (ink, d.span(), d.tool())
+                && has_width(tool)
+            {
+                let mut pb = PathBuilder::new();
+                for r in d.bands() {
+                    arc(&mut pb, c, r, start, end);
+                }
+                if let Some(path) = pb.finish() {
+                    pm.stroke_path(&path, &paint(look.face, alpha::GUIDE), &hair, t, None);
+                }
             }
-            if let Some(wedge) = wedge {
-                pm.fill_path(
-                    &wedge,
-                    &paint(color, SECTOR_ALPHA),
-                    FillRule::Winding,
-                    t,
-                    None,
-                );
+            // The ring and the dead zone, dotted, and the ring's ticks.
+            let dim = ink.is_some();
+            for (r, a) in [
+                (d.radius, if dim { alpha::RING_DIM } else { alpha::RING }),
+                (d.dead, alpha::DEAD),
+            ] {
+                let mut pb = PathBuilder::new();
+                pb.push_circle(c.x, c.y, r);
+                if let Some(path) = pb.finish() {
+                    pm.stroke_path(&path, &paint(look.face, a), &dotted, t, None);
+                }
             }
-            if let Some(spokes) = spokes {
-                pm.stroke_path(&spokes, &paint(color, SPOKE_ALPHA), &hair, t, None);
+            let mut pb = PathBuilder::new();
+            for k in 0..8 {
+                tick(&mut pb, (k as f32 - 0.5) * 45.0, d.radius, art::TICK * px);
+            }
+            if let Some(path) = pb.finish() {
+                let a = if dim { alpha::RING_DIM } else { alpha::TICK };
+                pm.stroke_path(&path, &paint(look.face, a), &hair, t, None);
+            }
+            // The hovered stretch, tick to tick.
+            if let Some(i) = d.hovered {
+                let mid = i as f32 * 45.0;
+                let mut pb = PathBuilder::new();
+                arc(&mut pb, c, d.radius, mid - 22.5, mid + 22.5);
+                if let Some(path) = pb.finish() {
+                    pm.stroke_path(&path, &paint(look.accent, 1.0), &butt(art::THICK), t, None);
+                }
+            }
+            // The ink arc: a segment in each ink, ticks between, a T at each end.
+            if let (Some(ink), Some((start, end))) = (ink, d.span()) {
+                let r = d.arc_radius();
+                for (k, colour) in inks.iter().enumerate() {
+                    let from = start + k as f32 * SEGMENT;
+                    let mut pb = PathBuilder::new();
+                    arc(&mut pb, c, r, from, from + SEGMENT);
+                    let width = if usize::from(ink) == k + 1 {
+                        art::THICK
+                    } else {
+                        art::HAIR * 1.5
+                    };
+                    if let Some(path) = pb.finish() {
+                        pm.stroke_path(&path, &paint(*colour, 1.0), &butt(width), t, None);
+                    }
+                }
+                let mut pb = PathBuilder::new();
+                for k in 1..inks.len() {
+                    tick(&mut pb, start + k as f32 * SEGMENT, r, art::TICK * px);
+                }
+                tick(&mut pb, start, r, art::CAP * px);
+                tick(&mut pb, end, r, art::CAP * px);
+                if let Some(path) = pb.finish() {
+                    pm.stroke_path(&path, &paint(fg, alpha::TICK), &hair, t, None);
+                }
+            }
+            // The reticle.
+            let mut pb = PathBuilder::new();
+            pb.push_circle(c.x, c.y, art::RETICLE * px);
+            if let Some(path) = pb.finish() {
+                pm.stroke_path(&path, &paint(fg, alpha::NEEDLE), &hair, t, None);
+            }
+            if let Some(path) = PathBuilder::from_circle(c.x, c.y, art::HAIR * px) {
+                pm.fill_path(&path, &paint(fg, 1.0), FillRule::Winding, t, None);
+            }
+        });
+    }
+
+    /// What of the dial follows the pointer: the crosshair through it, faint, within the
+    /// dial's bounds; the needle from the reticle's edge, dotted in stage one and solid in
+    /// stage two with a tick at each band edge it passes; and its dot, the accent's in stage
+    /// one, in stage two the chosen ink at the chosen width, ringed out to the accent dot's
+    /// size when it's smaller. All of it within [`Dial::live_rects`].
+    pub fn dial_live(&mut self, d: &Dial, layout: &Layout, map: Map, colours: DialColours) {
+        let DialColours { look, inks, fg } = colours;
+        let t = map.transform();
+        let px = d.px;
+        let c = d.centre;
+        let p = d.pointer;
+        let hair = stroke(art::HAIR * px);
+        let dotted = dotted(px);
+        let bounds = d.bounds(layout);
+        let dot = art::DOT * px;
+        let preview = match d.stage {
+            Stage::Ink { ink, width } => {
+                let w = width.map_or(0.0, |w| WIDTHS[usize::from(w).min(WIDTHS.len() - 1)]);
+                Some((inks[usize::from(ink.clamp(1, 6)) - 1], w / 2.0))
+            }
+            Stage::Tools => None,
+        };
+        self.with(|pm| {
+            let mut pb = PathBuilder::new();
+            pb.move_to(bounds.min.x, p.y);
+            pb.line_to(bounds.max.x, p.y);
+            pb.move_to(p.x, bounds.min.y);
+            pb.line_to(p.x, bounds.max.y);
+            if let Some(path) = pb.finish() {
+                pm.stroke_path(&path, &paint(look.accent, alpha::CROSS), &hair, t, None);
+            }
+            let len = p.dist(c);
+            let from = art::RETICLE * px;
+            if len > from + dot {
+                let u = (p - c) * (1.0 / len);
+                let (a, b) = (c + u * from, p - u * dot);
+                let mut pb = PathBuilder::new();
+                pb.move_to(a.x, a.y);
+                pb.line_to(b.x, b.y);
+                if preview.is_some() && d.tool().is_some_and(has_width) {
+                    let n = Point::new(-u.y, u.x) * (art::TICK * 0.75 * px);
+                    for r in d.bands().into_iter().filter(|r| *r < len - dot) {
+                        let m = c + u * r;
+                        pb.move_to(m.x - n.x, m.y - n.y);
+                        pb.line_to(m.x + n.x, m.y + n.y);
+                    }
+                }
+                if let Some(path) = pb.finish() {
+                    let (colour, st) = match preview {
+                        Some(_) => (fg, &hair),
+                        None => (look.face, &dotted),
+                    };
+                    pm.stroke_path(&path, &paint(colour, alpha::NEEDLE), st, t, None);
+                }
+            }
+            let (colour, r) = preview.unwrap_or((look.accent, dot));
+            let r = if r > 0.0 { r } else { dot };
+            if let Some(path) = PathBuilder::from_circle(p.x, p.y, r) {
+                pm.fill_path(&path, &paint(colour, 1.0), FillRule::Winding, t, None);
+            }
+            if r < dot {
+                let mut pb = PathBuilder::new();
+                pb.push_circle(p.x, p.y, dot + art::HAIR * px);
+                if let Some(path) = pb.finish() {
+                    pm.stroke_path(&path, &paint(colour, 1.0), &hair, t, None);
+                }
             }
         });
     }
 }
 
-/// Sector `i` of a dial about `c`, from `inner` to `outer`, its arcs in straight steps.
-fn sector(c: Point, inner: f32, outer: f32, i: usize) -> Option<Path> {
-    let at = |k: usize, r: f32| {
-        let dir = Dial::direction(i as f32 - 0.5 + k as f32 / ARC_STEPS as f32);
-        (c.x + dir.x * r, c.y + dir.y * r)
-    };
-    let mut pb = PathBuilder::new();
-    let (x, y) = at(0, inner);
-    pb.move_to(x, y);
-    for k in 0..=ARC_STEPS {
-        let (x, y) = at(k, outer);
-        pb.line_to(x, y);
+/// A dotted line's stroke at `px` board units a logical pixel: round dots a little wider than
+/// a hairline.
+fn dotted(px: f32) -> Stroke {
+    let mut st = stroke(art::HAIR * 1.3 * px);
+    st.dash = StrokeDash::new(vec![DOT_ON * px, DOT_OFF * px], 0.0);
+    st
+}
+
+/// What the dial is drawn in: the theme's dial colours, the inks, the bright grey.
+#[derive(Clone, Copy, Debug)]
+pub struct DialColours<'a> {
+    /// The dial's grey, its accent, the background.
+    pub look: &'a DialLook,
+    /// Each ink's colour, ink `1` first.
+    pub inks: &'a [Rgb; 6],
+    /// The `default` face's foreground.
+    pub fg: Rgb,
+}
+
+/// An arc about `c` of radius `r` from `from` to `to` degrees clockwise from north, in straight
+/// steps, onto `pb`.
+fn arc(pb: &mut PathBuilder, c: Point, r: f32, from: f32, to: f32) {
+    let steps = ((to - from).abs() / ARC_STEP).ceil().max(1.0) as usize;
+    for k in 0..=steps {
+        let p = c + toward(from + (to - from) * k as f32 / steps as f32) * r;
+        if k == 0 {
+            pb.move_to(p.x, p.y);
+        } else {
+            pb.line_to(p.x, p.y);
+        }
     }
-    for k in (0..=ARC_STEPS).rev() {
-        let (x, y) = at(k, inner);
-        pb.line_to(x, y);
-    }
-    pb.close();
-    pb.finish()
 }
 
 /// A picture the renderer keeps: premultiplied RGBA8, `width × 4` bytes a row, transparent to
@@ -439,6 +733,36 @@ impl Canvas {
         for y in r.y..r.y + r.height {
             let at = span(self.width(), r.x, y, r.width);
             bytes[at.clone()].copy_from_slice(&self.pm.data()[at]);
+        }
+    }
+    /// A canvas of `r` of this one, or None for an empty `r`.
+    pub fn cut(&self, r: PixelRect) -> Option<Canvas> {
+        let r = r.clipped_to(self.width(), self.height());
+        let mut out = Canvas::new(r.width, r.height)?;
+        for row in 0..r.height {
+            let from = span(self.width(), r.x, r.y + row, r.width);
+            let to = span(r.width, 0, row, r.width);
+            out.pm.data_mut()[to].copy_from_slice(&self.pm.data()[from]);
+        }
+        Some(out)
+    }
+    /// Copy the part of `r` it covers, standing at `at` in a `width` × `height` picture, into
+    /// `bytes`, that picture's.
+    pub fn copy_to_at(
+        &self,
+        bytes: &mut [u8],
+        width: u32,
+        height: u32,
+        at: PixelRect,
+        r: PixelRect,
+    ) {
+        let here = PixelRect::new(at.x, at.y, self.width(), self.height());
+        let Some(r) = meet(r.clipped_to(width, height), here) else {
+            return;
+        };
+        for y in r.y..r.y + r.height {
+            let from = span(self.width(), r.x - at.x, y - at.y, r.width);
+            bytes[span(width, r.x, y, r.width)].copy_from_slice(&self.pm.data()[from]);
         }
     }
     /// Move the picture by `dx`, `dy` pixels, leaving what it uncovers transparent: the strips
