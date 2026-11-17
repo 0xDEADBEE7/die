@@ -21,6 +21,7 @@
 use die_test_cap as _;
 
 pub mod plan;
+pub mod typeset;
 mod view;
 
 pub use view::View;

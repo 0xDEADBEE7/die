@@ -356,7 +356,10 @@ dependencies = [
  "die-core",
  "die-test-cap",
  "die-vim",
+ "png",
  "pulldown-cmark",
+ "tiny-skia",
+ "ttf-parser",
  "unicode-segmentation",
  "unicode-width",
 ]
