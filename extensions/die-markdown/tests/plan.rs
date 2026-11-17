@@ -189,7 +189,8 @@ text t e ] ] x col short https://x.y a@b.c a [b] c [un]
             ("[col][]", "col", "http://c"),
             ("[short]", "short", "/s"),
             ("<https://x.y>", "https://x.y", "https://x.y"),
-            ("<a@b.c>", "a@b.c", "a@b.c"),
+            // Mail to it, though the parser gives the address alone.
+            ("<a@b.c>", "a@b.c", "mailto:a@b.c"),
             ("[a [b] c](u)", "a [b] c", "u"),
         ]
     );

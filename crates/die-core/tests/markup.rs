@@ -4,10 +4,12 @@
 use die_test_cap as _;
 
 use die_core::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::thread::sleep;
+use std::time::Duration;
 
 /// A fresh directory for one test, removed when dropped.
 struct Dir(PathBuf);
@@ -115,6 +117,58 @@ fn on_edited_says_each_changed_buffer_once_after_what_was_ready() {
         .unwrap();
     c.run_until_idle();
     assert_eq!(heard.borrow().len(), 1);
+
+    // A buffer killed before a subscriber's turn isn't told of to it.
+    let _killer = c.on_edited(|ctx, buf| {
+        ctx.kill(buf);
+        Ok(())
+    });
+    let after = Rc::new(Cell::new(0));
+    let n = after.clone();
+    let _after = c.on_edited(move |_, _| {
+        n.set(n.get() + 1);
+        Ok(())
+    });
+    let t = c.text_mut(a).unwrap();
+    t.tx(Origin::User).insert(0, "w").commit().unwrap();
+    c.run_until_idle();
+    assert!(!c.is_live(a));
+    assert_eq!(after.get(), 0);
+}
+
+/// A repeat slower than its period is due again whenever the loop looks. The edit it makes is
+/// told of in the turn that made it, and then the loop hands back for a frame: telling isn't a
+/// way round "no second batch of timers until this has returned false".
+#[test]
+fn a_slow_repeat_that_edits_still_hands_the_loop_back_once_its_edit_is_told_of() {
+    const MS: Duration = Duration::from_millis(1);
+    let config = Config {
+        clock: Clock::real(),
+        ..Config::default()
+    };
+    let mut c = Ctx::with_config(vec![], config).unwrap();
+    let b = c.create_text("a", "");
+    let heard = Rc::new(Cell::new(0));
+    let n = heard.clone();
+    c.on_edited(move |_, _| {
+        n.set(n.get() + 1);
+        Ok(())
+    })
+    .detach();
+    let repeat = c.every(MS, move |ctx| {
+        sleep(3 * MS);
+        let t = ctx.text_mut(b)?;
+        t.tx(Origin::Extension).insert(0, "x").commit()?;
+        Ok(())
+    });
+    sleep(2 * MS);
+    let mut turns = 0;
+    while c.step() && turns < 100 {
+        turns += 1;
+    }
+    assert!(turns < 100, "the loop never handed back");
+    assert_eq!(heard.get(), 1, "one firing, and its edit told of");
+    drop(repeat);
 }
 
 #[test]

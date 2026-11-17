@@ -187,7 +187,7 @@ impl Ctx {
             let next = self.other_buffer();
             self.set_window_buffer(w, next);
         }
-        self.queue_buffer_hooks(buf, |k| match k {
+        self.queue_buffer_hooks(buf, true, |k| match k {
             SubKind::Killed(f) => Some(f),
             _ => None,
         });

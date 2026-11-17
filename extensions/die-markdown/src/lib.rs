@@ -11,9 +11,10 @@
 //! - `view`: the mode, one buffer's view: it puts a plan on the buffer and takes it off.
 //!
 //! The rendered view is the same buffer and the same text: markup is hidden under decorations,
-//! never removed, so the cursor, the file and undo are what they were, and every key works in
-//! either view. A cell grid has one size of letter, so a heading is bold and underlined, not
-//! large. Nothing runs for a buffer whose view is raw.
+//! never removed, so the cursor, the file and undo are what they were, and every key that moves,
+//! searches or yanks works in either view. The rendered view is for reading, and read-only: raw
+//! is where you edit. A cell grid has one size of letter, so a heading is bold and underlined,
+//! not large. Nothing runs for a buffer whose view is raw.
 #![warn(missing_docs)]
 
 #[cfg(test)]
@@ -127,7 +128,11 @@ impl Markdown {
                 Ok(())
             }
             Dest::File(path, anchor) => {
-                let path = ctx.directory(buf).unwrap_or(Path::new("/")).join(path);
+                // `notes.md:12` is line 12 of `notes.md`, as `die notes.md:12` reads it, unless
+                // a file has the whole name.
+                let dir = ctx.directory(buf).unwrap_or(Path::new("/"));
+                let mut target = FileTarget::parse(path.as_os_str(), dir);
+                let path = &target.path;
                 if !path.exists() {
                     return Err(Error::Msg(format!("No file {}", path.display())));
                 }
@@ -138,23 +143,28 @@ impl Markdown {
                     self.outside(ctx, path.display().to_string());
                     return Ok(());
                 }
-                let to = ctx.open_file(&path)?;
+                let to = ctx.open_file(path)?;
                 // From a rendered view the file it leads to is rendered too, if it's markdown.
-                if rendered == Ok(true) {
-                    ctx.with_mode(to, |v: &mut View, ctx| match v.is_rendered() {
+                if matches!(rendered, Ok(true)) {
+                    let render = |v: &mut View, ctx: &mut Ctx| match v.is_rendered() {
                         true => Ok(()),
                         false => v.render(to, ctx),
-                    })
-                    .unwrap_or(Ok(()))?;
+                    };
+                    ctx.with_mode(to, render).unwrap_or(Ok(()))?;
                 }
-                let pos = match anchor {
-                    Some(anchor) => {
-                        let text = ctx.text(to)?.rope().to_string();
-                        heading(&plan::plan(&text, &LINKS), &anchor)?
+                // A heading the file hasn't got is said, and the file opens at its top, as a
+                // browser opens a page whose anchor is gone.
+                if let Some(anchor) = anchor {
+                    let text = ctx.text(to)?.rope().to_string();
+                    match heading(&plan::plan(&text, &LINKS), &anchor) {
+                        Ok(pos) => target.line = Some(ctx.text(to)?.line_of(pos) + 1),
+                        Err(e) => ctx.messages.push(e.to_string()),
                     }
-                    None => 0,
-                };
-                self.go(ctx, path, to, pos)
+                }
+                // With no line of its own it's the top, which keeps the place left, for `C-o`.
+                target.line = target.line.or(Some(1));
+                ctx.open_target(&target)?;
+                Ok(())
             }
         }
     }
@@ -235,9 +245,10 @@ impl Dest {
         if let Some(anchor) = written.strip_prefix('#') {
             return Dest::Anchor(decoded(anchor));
         }
-        // A scheme is two characters or more, so `C:` isn't one.
+        // A scheme is two characters or more, so `C:` isn't one, and has no dot in it, though
+        // it may by the book: `notes.md:12` is a file and a line.
         let scheme = written.split_once(':').map(|(s, _)| s).filter(|s| {
-            let rest = |c: char| c.is_ascii_alphanumeric() || "+.-".contains(c);
+            let rest = |c: char| c.is_ascii_alphanumeric() || "+-".contains(c);
             s.len() > 1 && s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(rest)
         });
         let path = match scheme {
@@ -330,7 +341,7 @@ impl Extension for Markdown {
             });
         reg.ext_command(
             "markdown-toggle",
-            "Show this buffer's markdown rendered, or raw again: the markup hidden and the text styled, over the same text.",
+            "Show this buffer's markdown rendered, or raw again: the markup hidden and the text styled, over the same text. Rendered is for reading, and read-only.",
             Markdown::toggle,
         );
         reg.ext_command(
@@ -344,33 +355,41 @@ impl Extension for Markdown {
             .bind(State::Normal, "<CR>", "markdown-follow-link");
     }
 
-    /// The two things a rendered view follows: its text, whoever changes it (your keys, undo, a
-    /// file reloaded from disk), and its width, which a command can change with no window
-    /// changing size (`\z`). Neither costs more than a comparison while nothing changed.
+    /// The two things a rendered view follows: its text, which a reload from disk changes under
+    /// it, and its width, which a command can change with no window of its own changing size
+    /// (`\z`, or another window leaving the buffer). Each rendered buffer costs a comparison
+    /// after a command, and a raw one nothing.
     fn init(&mut self, ctx: &mut Ctx) -> Result {
         ctx.on_edited(refresh).detach();
-        ctx.on_command_ended(|ctx| match ctx.focused_buffer() {
-            Some(buf) => refresh(ctx, buf),
-            None => Ok(()),
+        let rendered = self.rendered.clone();
+        ctx.on_command_ended(move |ctx| {
+            let bufs: Vec<BufferId> = rendered.borrow().iter().map(|b| b.0).collect();
+            bufs.into_iter().try_for_each(|buf| refresh(ctx, buf))
         })
         .detach();
         Ok(())
     }
 
-    /// Which buffers are rendered, so a restart shows them as they were.
+    /// Which buffers are rendered, so a restart shows them as they were, each with whether it
+    /// was read-only before the view made it so: core keeps the setting as the view has it.
     fn save_session(&self, ctx: &Ctx) -> Kept {
         let rendered = self.rendered.borrow();
-        let live = rendered.iter().filter(|b| ctx.is_live(**b));
+        let live = rendered.iter().filter(|b| ctx.is_live(b.0));
         Kept {
             state: Value::Null,
-            buffers: live.map(|b| (*b, Value::Bool(true))).collect(),
+            buffers: live.map(|b| (b.0, Value::Bool(b.1))).collect(),
         }
     }
 
     fn restore_session(&mut self, ctx: &mut Ctx, kept: Kept) -> Result {
-        for (buf, _) in kept.buffers {
-            ctx.enable_mode::<View>(buf)?;
-            ctx.with_mode(buf, |v: &mut View, ctx| v.render(buf, ctx))??;
+        for (buf, read_only) in kept.buffers {
+            let read_only = read_only.as_bool().unwrap_or(false);
+            let shown = ctx.enable_mode::<View>(buf).and_then(|()| {
+                ctx.with_mode(buf, |v: &mut View, ctx| v.restore(buf, read_only, ctx))?
+            });
+            if let Err(e) = shown {
+                ctx.messages.push(format!("markdown: {e}"));
+            }
         }
         Ok(())
     }
@@ -391,6 +410,7 @@ mod tests {
         );
         assert_eq!(Dest::read("file:///tmp/a.md"), file("/tmp/a.md", None));
         assert_eq!(Dest::read("C:notes.md"), file("C:notes.md", None));
+        assert_eq!(Dest::read("notes.md:12"), file("notes.md:12", None));
         for outside in ["https://example.com/a#b", "mailto:you@example.com"] {
             assert_eq!(Dest::read(outside), Dest::Outside(outside.into()));
         }
