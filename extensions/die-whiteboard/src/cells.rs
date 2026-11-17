@@ -6,14 +6,19 @@
 //! The newest element wins a cell. Honest as annotation, not as handwriting.
 //!
 //! The committed picture is drawn into a grid once per change and kept; each frame copies it,
-//! draws the gesture's live element, the marquee and the tool dial (its names, the hovered one
-//! reversed, and a `+` at its centre) over the copy, and writes the frame.
+//! draws the gesture's live element, the marquee and the tool dial over the copy, and writes the
+//! frame. The dial is its cells alone, laid out as the pixel renderer lays them: the names
+//! around a `+`, the hovered one a chip in the accent, the readout under them; in stage two the
+//! names dimmed, the chip beyond the ink arc, and the six inks as swatches along the arc, the
+//! picked one between marks, the width in the readout. A name gives way only to a swatch:
+//! cells draw no arc or guides to cross it.
 
-use crate::dial::SECTORS;
+use crate::dial::Text;
 use crate::model::{CellSize, Element, Id, LIVE, Point, Rect, Shape, label_lines};
 use crate::render::{Damage, Renderer, Scene};
 use crate::view::View;
 use die_core::{CellPixels, Color, Ctx, Frame, FrameCell, Glyph, RenderInfo};
+use std::collections::HashSet;
 use std::f32::consts::TAU;
 
 const UP: u8 = 1;
@@ -44,6 +49,7 @@ struct CellBuf {
     owner: Option<Id>,
     kind: Kind,
     fg: Color,
+    bg: Color,
     faint: bool,
     reverse: bool,
 }
@@ -105,13 +111,21 @@ impl Grid {
         }
     }
 
-    /// `text` along `row` from `col`, in reverse video if asked.
-    fn text(&mut self, col: i64, row: i64, text: &str, pen: &Pen, reverse: bool) {
-        for (j, ch) in text.chars().enumerate() {
-            if let Some(c) = self.claim(col + j as i64, row, pen.owner, pen.fg, pen.faint) {
-                c.kind = Kind::Glyph(ch);
-                c.reverse = reverse;
+    /// A run of the dial's text, over whatever is there.
+    fn text(&mut self, t: &Text) {
+        for (j, ch) in t.text.chars().enumerate() {
+            let (col, row) = (t.col + j as i64, t.row);
+            if col < 0 || row < 0 || col >= self.cols as i64 || row >= self.rows as i64 {
+                continue;
             }
+            self.cells[row as usize * self.cols + col as usize] = CellBuf {
+                owner: Some(LIVE),
+                kind: Kind::Glyph(ch),
+                fg: t.fg,
+                bg: t.bg,
+                faint: t.faint,
+                reverse: false,
+            };
         }
     }
 
@@ -395,19 +409,47 @@ impl Renderer for Cells {
             grid.vline(c1, r0, r1, &pen);
         }
         if let Some(d) = scene.dial {
-            let pen = Pen {
-                owner: LIVE,
-                fg: Color::Default,
-                faint: false,
-            };
-            let (c, r) = map.cell(d.centre);
-            grid.glyph(c, r, '+', &pen);
-            for (i, tool) in SECTORS.iter().enumerate() {
-                let (p, align) = d.name_at(i);
-                let (c0, r0) = map.cell(p);
-                let name = tool.name();
-                let col = align.start(c0, name.chars().count() as i64);
-                grid.text(col, r0, name, &pen, d.hovered == Some(i));
+            // What's under the dial dims, as the pixel renderer's scrim dims it: a label the
+            // whole of it, so none is cut mid-word, and the rest cell by cell.
+            let origin = scene.view.to_board(0.0, 0.0, info.cell.scale);
+            let layout = d.layout(origin, scene.area, true);
+            let near = d.scrim(&layout) * 0.75;
+            let labels: HashSet<Id> = scene
+                .board
+                .elements
+                .iter()
+                .filter(|e| matches!(e.shape, Shape::Label { .. }))
+                .map(|e| e.id)
+                .collect();
+            let mut dimmed = HashSet::new();
+            for (i, c) in grid.cells.iter_mut().enumerate() {
+                let (row, col) = ((i / cols) as f32, (i % cols) as f32);
+                let p = origin + Point::new((col + 0.5) * d.cell.w, (row + 0.5) * d.cell.h);
+                if p.dist(d.centre) >= near {
+                    continue;
+                }
+                match c.owner {
+                    Some(o) if labels.contains(&o) => {
+                        dimmed.insert(o);
+                    }
+                    _ => c.faint = true,
+                }
+            }
+            if !dimmed.is_empty() {
+                for c in &mut grid.cells {
+                    if c.owner.is_some_and(|o| dimmed.contains(&o)) {
+                        c.faint = true;
+                    }
+                }
+            }
+            let centre = map.cell(d.centre);
+            for t in d.texts(
+                &layout,
+                &scene.dial_look,
+                scene.inks,
+                Some((centre.1, centre.0)),
+            ) {
+                grid.text(&t);
             }
         }
         frame.clear();
@@ -418,7 +460,7 @@ impl Renderer for Cells {
                 Kind::Braille(bits) => char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' '),
                 Kind::Glyph(g) => g,
             };
-            let mut cell = FrameCell::new(Glyph::Char(ch), c.fg, Color::Default);
+            let mut cell = FrameCell::new(Glyph::Char(ch), c.fg, c.bg);
             cell.faint = c.faint;
             cell.reverse = c.reverse;
             frame.put(i / cols, i % cols, cell);
