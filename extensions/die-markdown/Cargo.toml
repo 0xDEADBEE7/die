@@ -12,6 +12,9 @@ publish.workspace = true
 [dependencies]
 die-core.workspace = true
 pulldown-cmark.workspace = true
+tiny-skia.workspace = true
+png.workspace = true
+ttf-parser.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
 
