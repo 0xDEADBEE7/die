@@ -4,10 +4,11 @@
 
 use die_test_cap as _;
 
+use die::app::Launch;
 use die::core::{Clock, Ctx, Registry, State, WindowPlacement};
 use die::{Config, start};
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 struct Dir(PathBuf);
@@ -218,6 +219,69 @@ fn where_die_started_is_pwd_when_that_names_the_real_directory() {
     assert_eq!(from(Some(other.as_os_str())), real, "a stale $PWD");
     assert_eq!(from(Some(OsStr::new("real"))), real, "a relative one");
     assert_eq!(from(Some(OsStr::new("/no/such/dir"))), real);
+}
+
+#[test]
+fn die_app_started_in_the_root_starts_at_home_and_started_anywhere_else_stays() {
+    let d = Dir::new("home");
+    let home = d.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let from = |cwd: &Path, home: Option<&Path>| die::home_from_root(cwd, home.map(PathBuf::from));
+    let root = Path::new("/");
+    assert_eq!(from(root, Some(&home)), Some(home.clone()));
+    assert_eq!(from(&d.0, Some(&home)), None, "from a terminal");
+    assert_eq!(from(root, None), None, "with no HOME");
+    assert_eq!(
+        from(root, Some(&d.0.join("gone"))),
+        None,
+        "a HOME that's gone"
+    );
+}
+
+#[test]
+fn a_launch_puts_scratch_where_die_started_and_a_restart_brings_it_back_where_it_was() {
+    let d = Dir::new("scratch");
+    let (state, notes, here) = (d.0.join("state"), d.0.join("notes"), d.0.join("here"));
+    for dir in [&state, &notes, &here] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let kept = || {
+        let mut config = Config::default();
+        config.core.session = Some(state.clone());
+        config
+    };
+    // A DIE you quit with `*scratch*` in your notes' directory, where it was made when the last
+    // other buffer went, and a buffer of your own made from it.
+    let mut ctx = start(kept()).unwrap();
+    let scratch = ctx.find_buffer("*scratch*").unwrap();
+    ctx.set_directory(scratch, &notes);
+    ctx.type_keys("ikept<Esc>");
+    ctx.create_text("mine", "words");
+    ctx.save_session().unwrap();
+    drop(ctx);
+
+    let dir_of = |ctx: &Ctx, name: &str| {
+        let buf = ctx.find_buffer(name).unwrap();
+        ctx.directory(buf).map(Path::to_path_buf)
+    };
+    let restart = Launch {
+        handover: Some("/nowhere/handover.sock".into()),
+        ..Launch::default()
+    };
+    let ctx = start(die::app::at_launch(kept(), &restart, here.clone())).unwrap();
+    assert_eq!(dir_of(&ctx, "*scratch*"), Some(notes.clone()));
+    drop(ctx);
+
+    let ctx = start(die::app::at_launch(
+        kept(),
+        &Launch::default(),
+        here.clone(),
+    ))
+    .unwrap();
+    assert_eq!(dir_of(&ctx, "*scratch*"), Some(here.clone()));
+    let scratch = ctx.find_buffer("*scratch*").unwrap();
+    assert_eq!(ctx.text(scratch).unwrap().rope().to_string(), "kept");
+    assert_eq!(dir_of(&ctx, "mine"), Some(notes.clone()), "yours stays");
 }
 
 #[test]
