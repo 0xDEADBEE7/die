@@ -1,4 +1,4 @@
-//! Export: `E` asks png or svg; the PNG beside the file decodes to the picture's size with ink
+//! Export: `E` asks where, `NAME.png` beside the file first; the PNG decodes to the picture's size with ink
 //! where the stroke is, in the theme's colours, at the scale and on the background the options
 //! say; the SVG export carries no dialect.
 
@@ -27,11 +27,15 @@ fn png_export_decodes_to_the_picture_with_ink_where_the_stroke_is() {
     keys(&mut s.h, "2");
     gesture(&mut s, &[(0.0, 0.0), (100.0, 0.0)]);
     keys(&mut s.h, "E");
-    assert_eq!(s.h.prompt_text(), Some(""));
-    assert_eq!(s.h.prompt_candidates(), ["png", "svg"]);
-    keys(&mut s.h, "png<CR>");
-    s.h.run_until_idle();
     let out = s.dir.path().join("png.png");
+    let line = die_whiteboard::file::abbreviate(&out, std::env::home_dir().as_deref());
+    assert_eq!(
+        s.h.prompt_text(),
+        Some(line.as_str()),
+        "NAME.png beside the file"
+    );
+    keys(&mut s.h, "<CR>");
+    s.h.run_until_idle();
     assert!(out.exists(), "{:?}", s.h.messages);
     let said = s.h.messages.last().unwrap();
     assert!(
