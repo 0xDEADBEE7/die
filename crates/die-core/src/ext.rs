@@ -36,6 +36,8 @@ pub(crate) const CORE: ExtIdx = usize::MAX;
 pub(crate) const CONFIG: ExtIdx = usize::MAX - 1;
 
 type ConfigRegisterFn = Box<dyn FnOnce(&mut Registry)>;
+/// Which files a file-type mode is for ([`ModeSpec::files`]).
+type FilesFn = Rc<dyn Fn(&Path) -> bool>;
 type StartupFn = Box<dyn FnOnce(&mut Ctx) -> Result>;
 
 /// Your config, as core applies it at startup (contract §4). It comes after every extension's
@@ -216,7 +218,7 @@ pub struct ModeSpec {
     /// Its keymap, looked up before the surface kind's.
     pub keymap: Keymap,
     new: Rc<dyn Fn() -> Box<dyn Mode>>,
-    files: Option<Rc<dyn Fn(&Path) -> bool>>,
+    files: Option<FilesFn>,
 }
 
 impl ModeSpec {
@@ -973,7 +975,10 @@ impl Ctx {
     pub fn enable_mode<M: Mode>(&mut self, buf: BufferId) -> Result {
         let tid = TypeId::of::<M>();
         let spec = self.modes.iter().position(|s| s.type_id == tid);
-        self.enable_spec(spec.ok_or_else(|| Error::Msg("mode not registered".into()))?, buf)
+        self.enable_spec(
+            spec.ok_or_else(|| Error::Msg("mode not registered".into()))?,
+            buf,
+        )
     }
     fn enable_spec(&mut self, spec: usize, buf: BufferId) -> Result {
         let tid = self.modes[spec].type_id;

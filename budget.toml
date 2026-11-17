@@ -114,6 +114,12 @@ extension = true
 note = "an extension, outside guard 7: your ASCII jellyfish, the buffer DIE starts on"
 
 [[crate]]
+name = "die-markdown"
+path = "extensions/die-markdown"
+extension = true
+note = "an extension, outside guard 7: a markdown file's rendered view, markup hidden and text styled"
+
+[[crate]]
 name = "xtask"
 path = "xtask"
 dev = true

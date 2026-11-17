@@ -81,7 +81,8 @@ fn on_edited_says_each_changed_buffer_once_after_what_was_ready() {
     let heard = Rc::new(RefCell::new(vec![]));
     let h = heard.clone();
     let sub = c.on_edited(move |ctx, buf| {
-        h.borrow_mut().push((buf, ctx.text(buf)?.rope().to_string()));
+        h.borrow_mut()
+            .push((buf, ctx.text(buf)?.rope().to_string()));
         Ok(())
     });
     c.run_until_idle();
@@ -127,7 +128,10 @@ fn redecorate_swaps_decorations_as_one_change() {
     };
     let t = c.text_mut(b).unwrap();
     let first = t
-        .redecorate(&[], vec![(0..2, hide()), (6..8, hide()), (2..6, Deco::Face("bold"))])
+        .redecorate(
+            &[],
+            vec![(0..2, hide()), (6..8, hide()), (2..6, Deco::Face("bold"))],
+        )
         .unwrap();
     assert_eq!(first.len(), 3);
     assert_eq!(t.decorations().count(), 3);

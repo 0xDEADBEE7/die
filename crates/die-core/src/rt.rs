@@ -408,10 +408,13 @@ impl Ctx {
     /// With nothing else ready, tell `on_edited`'s subscribers which text buffers changed. True
     /// if that queued anything.
     fn edits_noticed(&mut self) -> bool {
-        let texts = self.buffers.iter_mut().filter_map(|(id, b)| match &mut b.content {
-            Content::Text(t) => t.take_edited().then_some(id),
-            Content::Custom { .. } => None,
-        });
+        let texts = self
+            .buffers
+            .iter_mut()
+            .filter_map(|(id, b)| match &mut b.content {
+                Content::Text(t) => t.take_edited().then_some(id),
+                Content::Custom { .. } => None,
+            });
         let before = self.queue.len();
         for buf in texts.collect::<Vec<_>>() {
             self.queue_buffer_hooks(buf, |k| match k {
