@@ -846,3 +846,76 @@ fn deep_lists_keep_their_text_and_an_empty_heading_has_no_line() {
         "under an empty h1",
     );
 }
+
+#[test]
+fn a_rust_block_is_in_its_languages_colours_and_an_unnamed_one_is_plain() {
+    let Some(mut fonts) = fonts() else { return };
+    let palette = Palette::github_dark();
+    let text = "```rust\nfn main() { // say hello\n    let n = 42;\n}\n```\n\n\
+                ```\nfn plain() { // none\n    let n = 42;\n}\n```\n";
+    let pictures = Pictures::new();
+    let page = Page::new(text, &env(800, 2.0, &palette, None), &mut fonts, &pictures);
+    let (w, h) = (800u32, page.height().ceil() as u32);
+    let mut pixels = vec![0u8; w as usize * h as usize * 4];
+    page.paint(
+        &mut fonts,
+        &pictures,
+        &mut pixels,
+        w,
+        h,
+        0,
+        0..h,
+        &Marks::default(),
+    );
+    // The second block's rows start where its first line is.
+    let split = page.y_of(text.find("fn plain").unwrap()) as usize;
+    let rows = pixels.chunks_exact(w as usize * 4).enumerate();
+    let (mut first, mut second) = (Vec::new(), Vec::new());
+    for (row, bytes) in rows {
+        let into = if row < split { &mut first } else { &mut second };
+        into.extend(bytes.chunks_exact(4).map(|p| (p[0], p[1], p[2])));
+    }
+    let count = |of: &[(u8, u8, u8)], c: die_markdown::typeset::Rgb| {
+        of.iter().filter(|p| **p == (c.0, c.1, c.2)).count()
+    };
+    let syntax = palette.syntax;
+    for (what, ink) in [
+        ("keyword", syntax.keyword),
+        ("comment", syntax.comment),
+        ("number", syntax.number),
+        ("function", syntax.function),
+    ] {
+        assert!(count(&first, ink) > 20, "the rust block's {what}s: {ink:?}");
+        assert_eq!(
+            count(&second, ink),
+            0,
+            "an unnamed block has no {what} colour"
+        );
+    }
+    assert!(
+        count(&second, palette.code_block) > 20,
+        "it's in the code's own colour"
+    );
+}
+
+#[test]
+fn colours_never_change_where_a_code_line_wraps() {
+    let Some(mut fonts) = fonts() else { return };
+    let palette = Palette::github_dark();
+    let pictures = Pictures::new();
+    // Lines whose every word is another colour, and long ones, so a wrap lands where the
+    // colour changes.
+    let body = "fn f(x: u32) -> u32 { let y = \"s\"; /* c */ x.max(1_000) + y.len() as u32 + 0x1F }\n\
+                pub const MAX: usize = 1; #[derive(Debug)] struct S { a: Vec<String>, b: Option<i64> }\n";
+    for width in [300, 420, 560, 700, 900] {
+        for scale in [1.0, 2.0] {
+            let mut height = |lang: &str| {
+                let text = format!("```{lang}\n{body}```\n");
+                let env = env(width, scale, &palette, None);
+                Page::new(&text, &env, &mut fonts, &pictures).height()
+            };
+            let (coloured, plain) = (height("rust"), height(""));
+            assert_eq!(coloured, plain, "{width} wide at {scale}");
+        }
+    }
+}
