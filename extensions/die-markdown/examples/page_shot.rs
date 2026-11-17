@@ -4,7 +4,7 @@
 //! ```sh
 //! cargo run --release --offline -p die-markdown --example page_shot -- in.md out.png \
 //!     [--width PX] [--scale S] [--top Y] [--height H] [--palette NAME] [--focus N] \
-//!     [--front-matter] [--zoom N] [--find TEXT]
+//!     [--front-matter] [--zoom N] [--find TEXT] [--open OFFSET]...
 //! ```
 //!
 //! The width is the area's, in physical pixels (1800 unless given), the scale the display's (2).
@@ -12,7 +12,8 @@
 //! than 16,000 rows. The palettes are `mono-dark`, `github-dark` and `github-light`. `--focus`
 //! rings a link, by its number in reading order. `--zoom` writes each pixel N times as large,
 //! for looking at edges, and `--find` starts the picture a little above the line that shows the
-//! first TEXT in the source. It prints the page's height, the links,
+//! first TEXT in the source. `--open` toggles the `<details>` block whose tag is at byte OFFSET,
+//! as a reader would; it may be given more than once. It prints the page's height, the links,
 //! headings and pictures it found, and how long the layout and the paint took.
 
 use die_test_cap as _;
@@ -34,19 +35,22 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let usage = "page_shot <in.md> <out.png> [--width PX] [--scale S] [--top Y] [--height H] \
-                 [--palette mono-dark|github-dark|github-light] [--focus N] [--front-matter] [--zoom N] [--find TEXT]";
+                 [--palette mono-dark|github-dark|github-light] [--focus N] [--front-matter] [--zoom N] [--find TEXT] \
+                 [--open OFFSET]...";
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage.to_owned());
     };
     let (mut width, mut scale, mut top, mut rows) = (1800u32, 2.0f32, 0i32, None::<u32>);
     let (mut palette, mut focus, mut front_matter) = (Palette::mono_dark(), None, false);
     let (mut zoom, mut find) = (1usize, None::<String>);
+    let mut opened = Vec::new();
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
         let number = |v: String| v.parse::<f64>().map_err(|_| format!("{v}: not a number"));
         match flag.as_str() {
             "--width" => width = number(value()?)? as u32,
             "--scale" => scale = number(value()?)? as f32,
+            "--open" => opened.push(number(value()?)? as usize),
             "--top" => top = number(value()?)? as i32,
             "--height" => rows = Some(number(value()?)? as u32),
             "--focus" => focus = Some(number(value()?)? as usize),
@@ -75,6 +79,7 @@ fn run() -> Result<(), String> {
         dir: Path::new(&input).parent(),
         front_matter,
         tab_width: 8,
+        opened: &opened,
     };
     // A first layout says which pictures the page wants; with those answered, the layout
     // that's drawn.

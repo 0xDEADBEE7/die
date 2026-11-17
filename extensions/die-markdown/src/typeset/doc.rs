@@ -114,10 +114,14 @@ pub(super) enum Block {
     Rule {
         src: Range<usize>,
     },
-    /// `<details>`, drawn open.
+    /// `<details>`: its summary line, what it holds, whether its tag says `open`, where its tag
+    /// is in the source, and the link its summary line is, for toggling it.
     Details {
         summary: Para,
         blocks: Vec<Block>,
+        open: bool,
+        at: usize,
+        link: u32,
     },
     /// The footnotes, in the order they were first referred to.
     Notes(Vec<Note>),
@@ -202,6 +206,7 @@ pub(super) struct Style {
 /// The document of a text.
 pub(super) fn parse(text: &str, front_matter: bool) -> Doc {
     let mut builder = Builder {
+        text,
         front_matter,
         frames: vec![Frame::new(Kind::Root, 0..text.len())],
         open: None,
@@ -218,6 +223,7 @@ pub(super) fn parse(text: &str, front_matter: bool) -> Doc {
         numbers: HashMap::new(),
         notes: Vec::new(),
         unopened: 0,
+        marker: None,
     };
     for (event, range) in Parser::new_ext(text, syntax()).into_offset_iter() {
         builder.event(event, range);
@@ -255,6 +261,9 @@ enum Kind {
     Note(String),
     Details {
         summary: Option<Para>,
+        open: bool,
+        at: usize,
+        link: u32,
     },
     Table {
         aligns: Vec<Align>,
@@ -313,7 +322,9 @@ struct CodeOpen {
     src: Range<usize>,
 }
 
-struct Builder {
+struct Builder<'t> {
+    /// The source, for what the parser reads and doesn't pass on.
+    text: &'t str,
     front_matter: bool,
     frames: Vec<Frame>,
     open: Option<Open>,
@@ -332,21 +343,26 @@ struct Builder {
     aligns: Vec<(String, Align)>,
     slugs: Slugs,
     spans: u32,
-    /// Footnotes' numbers by label, in order of first reference.
-    numbers: HashMap<String, usize>,
+    /// Footnotes by label: each one's number, in order of first reference, and how many times
+    /// it has been referred to.
+    numbers: HashMap<String, (usize, usize)>,
     notes: Vec<(String, Vec<Block>)>,
     /// Containers too deep to follow, which were never opened: their ends close nothing.
     unopened: usize,
+    /// An alert's marker line the parser took from a quote that isn't an alert, with where it
+    /// is: text again, at the quote's first paragraph or as one of its own.
+    marker: Option<(String, usize, bool)>,
 }
 
 /// How deep in quotes and lists a document is followed. What's deeper is set at this depth:
 /// nothing a person writes goes there, and a text made to can't run the layout out of stack.
 const DEEPEST: usize = 64;
 
-impl Builder {
+impl Builder<'_> {
     /// Opens a container, unless that's too deep.
     fn enter(&mut self, kind: Kind, src: Range<usize>) {
         self.close();
+        self.marker_para();
         if self.frames.len() >= DEEPEST {
             self.unopened += 1;
         } else {
@@ -454,21 +470,57 @@ impl Builder {
         match tag {
             Tag::Paragraph => {
                 self.close();
-                self.open_as(OpenKind::Para { implicit: false }, range);
+                // A quote's taken marker line goes on into its first paragraph, as the source
+                // had it, unless a blank quote line stood between them.
+                match self.marker.take() {
+                    Some((literal, at, true)) => {
+                        self.open_as(OpenKind::Para { implicit: false }, at..range.end);
+                        self.marker_text(literal, at);
+                        self.text(" ", at..at);
+                    }
+                    Some(marker) => {
+                        self.marker = Some(marker);
+                        self.marker_para();
+                        self.open_as(OpenKind::Para { implicit: false }, range);
+                    }
+                    None => self.open_as(OpenKind::Para { implicit: false }, range),
+                }
             }
             Tag::Heading { level, .. } => {
                 self.close();
                 self.open_as(OpenKind::Heading(level as u8), range);
             }
             Tag::BlockQuote(kind) => {
-                let alert = kind.map(|k| match k {
+                let mut alert = kind.map(|k| match k {
                     BlockQuoteKind::Note => Alert::Note,
                     BlockQuoteKind::Tip => Alert::Tip,
                     BlockQuoteKind::Important => Alert::Important,
                     BlockQuoteKind::Warning => Alert::Warning,
                     BlockQuoteKind::Caution => Alert::Caution,
                 });
-                self.enter(Kind::Quote(alert), range);
+                // GitHub makes an alert of a quote at the top level only: in a list item or
+                // another quote it's a plain quote whose first line reads as written. The
+                // parser took that line, so it's put back from the source.
+                let nested = self.frames[1..]
+                    .iter()
+                    .any(|f| !matches!(f.kind, Kind::Details { .. }));
+                if nested && alert.take().is_some() {
+                    let rest = self.text.get(range.start..).unwrap_or("");
+                    let line = rest.split('\n').next().unwrap_or("");
+                    let literal = line.find('[').and_then(|a| {
+                        let b = line[a..].find(']')?;
+                        Some((line[a..=a + b].to_owned(), range.start + a))
+                    });
+                    let (literal, at) =
+                        literal.unwrap_or_else(|| (format!("[!{}]", kind_name(kind)), range.start));
+                    // Whether the next quote line has text: then it's the same paragraph.
+                    let next = rest.split('\n').nth(1).unwrap_or("");
+                    let joined = !next.trim_start_matches([' ', '\t', '>']).trim().is_empty();
+                    self.enter(Kind::Quote(None), range);
+                    self.marker = Some((literal, at, joined));
+                } else {
+                    self.enter(Kind::Quote(alert), range);
+                }
             }
             Tag::CodeBlock(kind) => {
                 self.close();
@@ -606,9 +658,24 @@ impl Builder {
 
     /// A finished block goes in the innermost container.
     fn block(&mut self, block: Block) {
+        self.marker_para();
         if let Some(top) = self.frames.last_mut() {
             top.blocks.push(block);
         }
+    }
+
+    /// A taken marker line as a paragraph of its own, where something else comes first.
+    fn marker_para(&mut self) {
+        if let Some((literal, at, _)) = self.marker.take() {
+            self.open_as(OpenKind::Para { implicit: false }, at..at + literal.len());
+            self.marker_text(literal, at);
+            self.close();
+        }
+    }
+
+    fn marker_text(&mut self, literal: String, at: usize) {
+        let range = at..at + literal.len();
+        self.text(&literal, range);
     }
 
     /// Ends the innermost container `is` says yes to, and those inside it.
@@ -623,6 +690,7 @@ impl Builder {
     }
 
     fn pop(&mut self) {
+        self.marker_para();
         let Some(frame) = self.frames.pop() else {
             return;
         };
@@ -640,14 +708,30 @@ impl Builder {
                 None => {}
             },
             Kind::Note(label) => self.notes.push((label, blocks)),
-            Kind::Details { summary } => {
+            Kind::Details {
+                summary,
+                open,
+                at,
+                link,
+            } => {
+                // With no summary of its own a browser writes "Details".
                 let summary = summary.unwrap_or(Para {
-                    inlines: Vec::new(),
+                    inlines: vec![Inline::Text {
+                        text: "Details".to_owned(),
+                        style: Style::default(),
+                        src: src.start,
+                    }],
                     align: Align::Start,
                     fit: Fit::Tight,
                     src: src.start..src.start,
                 });
-                self.block(Block::Details { summary, blocks });
+                self.block(Block::Details {
+                    summary,
+                    blocks,
+                    open,
+                    at,
+                    link,
+                });
             }
             Kind::Table {
                 aligns, head, rows, ..
@@ -711,10 +795,12 @@ impl Builder {
             return;
         };
         autolink(&mut open.inlines, &mut self.links);
+        // Nothing but white space is no paragraph. Line breaks alone are one, of that many
+        // empty lines, and so is a no-break space: a browser gives each its line, and README
+        // authors open space with them.
         let blank = open.inlines.iter().all(|i| match i {
-            Inline::Text { text, .. } => text.trim().is_empty(),
-            Inline::Break => true,
-            Inline::Image { .. } => false,
+            Inline::Text { text, .. } => text.chars().all(|c| c.is_whitespace() && c != '\u{a0}'),
+            Inline::Break | Inline::Image { .. } => false,
         });
         let in_item = matches!(
             self.frames.last().map(|f| &f.kind),
@@ -754,7 +840,7 @@ impl Builder {
                 }
             }
             OpenKind::Summary => match self.frames.last_mut().map(|f| &mut f.kind) {
-                Some(Kind::Details { summary }) if summary.is_none() => *summary = Some(para),
+                Some(Kind::Details { summary, .. }) if summary.is_none() => *summary = Some(para),
                 _ if blank => {}
                 _ => self.block(Block::Para(para)),
             },
@@ -849,15 +935,17 @@ impl Builder {
         self.push(image, &range);
     }
 
-    /// A footnote's reference: its number in brackets, raised, leading to the note.
+    /// A footnote's reference: its number in brackets, raised, leading to the note. Each
+    /// reference is a place the note's back links name, the second and later by their count.
     fn reference(&mut self, label: &str, range: Range<usize>) {
         let next = self.numbers.len() + 1;
-        let first = !self.numbers.contains_key(label);
-        let number = *self.numbers.entry(label.to_owned()).or_insert(next);
+        let (number, count) = self.numbers.entry(label.to_owned()).or_insert((next, 0));
+        let (number, count) = (*number, {
+            *count += 1;
+            *count
+        });
         let link = self.link(format!("#fn-{label}"), String::new(), false, range.clone());
-        if first {
-            self.links[link as usize].anchor = Some(format!("fnref-{label}"));
-        }
+        self.links[link as usize].anchor = Some(back_anchor(label, count));
         let mut style = self.style();
         (style.script, style.link) = (1, Some(link));
         let text = format!("[{number}]");
@@ -1028,8 +1116,17 @@ impl Builder {
             "details" => {
                 self.close();
                 if self.frames.len() < DEEPEST {
-                    self.frames
-                        .push(Frame::new(Kind::Details { summary: None }, range));
+                    // Its summary line is a link the reader toggles it by, named for the tag.
+                    let at = range.start;
+                    let link =
+                        self.link(format!("details:{at}"), String::new(), false, range.clone());
+                    let kind = Kind::Details {
+                        summary: None,
+                        open: attr("open").is_some(),
+                        at,
+                        link,
+                    };
+                    self.frames.push(Frame::new(kind, range));
                 }
             }
             "summary" => {
@@ -1099,31 +1196,40 @@ impl Builder {
         while self.frames.len() > 1 {
             self.pop();
         }
-        // The notes that were referred to, by number, each ending in a way back.
+        // The notes that were referred to, by number, each ending in a way back to each of
+        // its references: an arrow, the second and later with a raised count, as GitHub.
         let mut notes: Vec<Note> = Vec::new();
         for (label, mut blocks) in std::mem::take(&mut self.notes) {
-            let Some(&number) = self.numbers.get(&label) else {
+            let Some(&(number, count)) = self.numbers.get(&label) else {
                 continue;
             };
             if notes.iter().any(|n| n.number == number) {
                 continue;
             }
-            let back = self.link(format!("#fnref-{label}"), String::new(), false, end..end);
-            let style = Style {
-                link: Some(back),
-                ..Style::default()
-            };
-            let (text, src) = ("↩".to_owned(), end);
-            let arrow = Inline::Text { text, style, src };
-            let space = Inline::Text {
-                text: " ".to_owned(),
-                style: Style::default(),
-                src: end,
-            };
+            let mut ways = Vec::new();
+            for n in 1..=count {
+                let dest = format!("#{}", back_anchor(&label, n));
+                let back = self.link(dest, String::new(), false, end..end);
+                let style = Style {
+                    link: Some(back),
+                    ..Style::default()
+                };
+                let plain = Style::default();
+                let text = |text: &str, style| Inline::Text {
+                    text: text.to_owned(),
+                    style,
+                    src: end,
+                };
+                ways.extend([text(" ", plain), text("↩", style)]);
+                if n > 1 {
+                    let raised = Style { script: 1, ..style };
+                    ways.push(text(&n.to_string(), raised));
+                }
+            }
             match blocks.last_mut() {
-                Some(Block::Para(para)) => para.inlines.extend([space, arrow]),
+                Some(Block::Para(para)) => para.inlines.extend(ways),
                 _ => blocks.push(Block::Para(Para {
-                    inlines: vec![arrow],
+                    inlines: ways,
                     align: Align::Start,
                     fit: Fit::Loose,
                     src: end..end,
@@ -1144,6 +1250,26 @@ impl Builder {
             blocks,
             links: self.links,
         }
+    }
+}
+
+/// The name a footnote's `n`th reference goes by, as GitHub names it: the label alone for the
+/// first, the count after it for the rest.
+fn back_anchor(label: &str, n: usize) -> String {
+    match n {
+        1 => format!("fnref-{label}"),
+        n => format!("fnref-{label}-{n}"),
+    }
+}
+
+/// An alert's word, for a marker line the source can't be read back from.
+fn kind_name(kind: Option<BlockQuoteKind>) -> &'static str {
+    match kind {
+        Some(BlockQuoteKind::Tip) => "TIP",
+        Some(BlockQuoteKind::Important) => "IMPORTANT",
+        Some(BlockQuoteKind::Warning) => "WARNING",
+        Some(BlockQuoteKind::Caution) => "CAUTION",
+        _ => "NOTE",
     }
 }
 

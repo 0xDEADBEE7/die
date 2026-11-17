@@ -268,6 +268,10 @@ pub struct Env<'a> {
     pub front_matter: bool,
     /// The columns a tab in a code block takes.
     pub tab_width: usize,
+    /// The `<details>` blocks the reader has toggled, each by the byte offset of its tag: one is
+    /// drawn open when its tag says `open` or its offset is here, and closed when both or
+    /// neither. The summary line of each is a link whose `dest` is `details:` and that offset.
+    pub opened: &'a [usize],
 }
 
 /// The fonts a page is set in, with the glyphs already drawn. One serves every page.
@@ -428,7 +432,9 @@ impl Rect {
 pub struct LinkBox {
     /// Where it is: one rectangle for each line it runs over, in reading order.
     pub rects: Vec<Rect>,
-    /// Where it leads, as the source has it.
+    /// Where it leads, as the source has it. One of the form `details:N` leads nowhere: it's
+    /// the summary line of the `<details>` block whose tag is at byte `N`, which opening or
+    /// closing the block means listing in [`Env::opened`] and laying out again.
     pub dest: String,
     /// Its title, if the source gives one.
     pub title: String,
@@ -497,8 +503,8 @@ impl Page {
     }
 
     /// Where the place a link's `#name` names is on the page: a heading by its anchor, or what
-    /// the page itself links to, a footnote (`fn-` and its label) and the first reference to
-    /// one (`fnref-` and its label).
+    /// the page itself links to, a footnote (`fn-` and its label) and the references to one
+    /// (`fnref-` and its label; `-2`, `-3` and so on after it for the second and later).
     pub fn anchor(&self, name: &str) -> Option<f32> {
         let heading = self.laid.headings.iter().find(|h| h.slug == name);
         let other = || self.laid.anchors.iter().find(|(n, _)| n == name);

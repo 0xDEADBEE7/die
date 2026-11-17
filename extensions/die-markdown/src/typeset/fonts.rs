@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use tiny_skia::{FillRule, Mask as SkMask, PathBuilder, Transform};
+use tiny_skia::{FillRule, LineCap, LineJoin, Mask as SkMask, PathBuilder, Stroke, Transform};
 use ttf_parser::{Face, GlyphId, Tag};
 
 /// A face at fixed settings, as a number: what a placed glyph names its face by.
@@ -182,7 +182,9 @@ struct Instance {
     kerns: FxMap<(u16, u16), f32>,
 }
 
-type MaskKey = (Inst, u16, u32, u8);
+/// A face, a glyph, its size and its fraction of a pixel in 64ths, and how far it's grown in
+/// 64ths of a pixel.
+type MaskKey = (Inst, u16, u32, u8, u16);
 
 /// What a fallback face is for.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -1007,8 +1009,8 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// A glyph's coverage at `px` pixels an em, starting `bin` of `bins` parts of a pixel in.
-    /// None for a glyph with nothing to draw, as a space.
+    /// A glyph's coverage at `px` pixels an em, starting `bin` of `bins` parts of a pixel in,
+    /// its outline grown `grow` pixels a side. None for a glyph with nothing to draw, as a space.
     pub(super) fn mask(
         &mut self,
         inst: Inst,
@@ -1016,10 +1018,13 @@ impl<'a> Pass<'a> {
         px: f32,
         bin: u8,
         bins: u8,
+        grow: f32,
     ) -> Option<&Mask> {
-        let key = (inst, glyph, (px * 64.0).round() as u32, bin);
+        let grown = (grow.max(0.0) * 64.0).round().min(f32::from(u16::MAX)) as u16;
+        let key = (inst, glyph, (px * 64.0).round() as u32, bin, grown);
         if !self.st.masks.contains_key(&key) {
             let sub_x = f32::from(bin) / f32::from(bins.max(1));
+            let grow = f32::from(grown) / 64.0;
             let made = if glyph == TOFU {
                 tofu(px, sub_x)
             } else {
@@ -1029,7 +1034,7 @@ impl<'a> Pass<'a> {
                     .face(inst)
                     .and_then(|f| f.outline_glyph(GlyphId(glyph), &mut sink));
                 let path = drawn.and_then(|_| sink.0.finish());
-                path.and_then(|p| fill(&p, px / upem, sub_x, FillRule::Winding))
+                path.and_then(|p| fill(&p, px / upem, sub_x, grow, FillRule::Winding))
             };
             self.keep(key, made);
         }
@@ -1044,7 +1049,7 @@ impl<'a> Pass<'a> {
         px: f32,
         make: impl FnOnce() -> Option<Mask>,
     ) -> Option<&Mask> {
-        let key = (SHAPES, kind, (px * 64.0).round() as u32, 0);
+        let key = (SHAPES, kind, (px * 64.0).round() as u32, 0, 0);
         if !self.st.masks.contains_key(&key) {
             self.keep(key, make());
         }
@@ -1085,14 +1090,21 @@ impl ttf_parser::OutlineBuilder for Outline {
 /// A path (y down, the origin on the baseline at the pen) at `scale` pixels a unit and `sub_x`
 /// of a pixel to the right, filled by tiny-skia at twice the size and averaged down: eight
 /// samples a pixel each way, where its own fill has four, and overlapping contours stay right
-/// since each fill is by winding.
-pub(super) fn fill(path: &tiny_skia::Path, scale: f32, sub_x: f32, rule: FillRule) -> Option<Mask> {
+/// since each fill is by winding. With `grow` above zero the shape is that much wider a side:
+/// its outline is stroked that thick into the same coverage, over the fill.
+pub(super) fn fill(
+    path: &tiny_skia::Path,
+    scale: f32,
+    sub_x: f32,
+    grow: f32,
+    rule: FillRule,
+) -> Option<Mask> {
     const N: u32 = 2;
     let b = path.bounds();
-    let left = (b.left() * scale + sub_x).floor() as i32;
-    let top = (b.top() * scale).floor() as i32;
-    let right = (b.right() * scale + sub_x).ceil() as i32;
-    let bottom = (b.bottom() * scale).ceil() as i32;
+    let left = (b.left() * scale + sub_x - grow).floor() as i32;
+    let top = (b.top() * scale - grow).floor() as i32;
+    let right = (b.right() * scale + sub_x + grow).ceil() as i32;
+    let bottom = (b.bottom() * scale + grow).ceil() as i32;
     let (w, h) = (right - left, bottom - top);
     if w <= 0 || h <= 0 || w >= 2048 || h >= 2048 {
         return None;
@@ -1101,12 +1113,21 @@ pub(super) fn fill(path: &tiny_skia::Path, scale: f32, sub_x: f32, rule: FillRul
     let mut mask = SkMask::new(width * N, height * N)?;
     let big = scale * N as f32;
     let (dx, dy) = ((sub_x - left as f32) * N as f32, -(top as f32) * N as f32);
-    mask.fill_path(
-        path,
-        rule,
-        true,
-        Transform::from_row(big, 0.0, 0.0, big, dx, dy),
-    );
+    let transform = Transform::from_row(big, 0.0, 0.0, big, dx, dy);
+    mask.fill_path(path, rule, true, transform);
+    if grow > 0.0 {
+        // The band along the outline, half of it outside: tiny-skia lays coverage over
+        // coverage, so the two fills join and nothing is carved from either.
+        let band = Stroke {
+            width: 2.0 * grow / scale,
+            line_cap: LineCap::Round,
+            line_join: LineJoin::Round,
+            ..Stroke::default()
+        };
+        if let Some(outline) = path.stroke(&band, big) {
+            mask.fill_path(&outline, FillRule::Winding, true, transform);
+        }
+    }
     let fine = mask.data();
     let (w, fw, n) = (width as usize, (width * N) as usize, N as usize);
     let mut cov = vec![0u8; w * height as usize];
@@ -1143,7 +1164,7 @@ fn tofu(px: f32, sub_x: f32) -> Option<Mask> {
         x1 - line,
         y1 - line,
     )?);
-    fill(&b.finish()?, 1.0, sub_x, FillRule::EvenOdd)
+    fill(&b.finish()?, 1.0, sub_x, 0.0, FillRule::EvenOdd)
 }
 
 #[cfg(test)]
@@ -1202,14 +1223,26 @@ mod tests {
                         let ok = shaped.advance.is_finite() && shaped.advance + shaped.kern >= 0.0;
                         assert!(ok, "{text}/{mono} {style:?} at {size}: {c:?} is {shaped:?}");
                         if c == 'a' {
-                            let mask = pass.mask(shaped.inst, shaped.id, size * 2.0, 1, 2);
-                            let inked = mask.is_some_and(|m| m.cov.iter().any(|v| *v > 200));
-                            assert!(inked, "{text}/{mono} {style:?} at {size}: no ink in an a");
+                            // Grown, the letter has more ink than plain, and not much more.
+                            let (inst, id, px) = (shaped.inst, shaped.id, size * 2.0);
+                            let ink = |m: Option<&Mask>| -> usize {
+                                m.map_or(0, |m| m.cov.iter().map(|v| usize::from(*v)).sum())
+                            };
+                            let plain = ink(pass.mask(inst, id, px, 1, 2, 0.0));
+                            let grown = ink(pass.mask(inst, id, px, 1, 2, 0.3));
+                            assert!(
+                                plain > 200,
+                                "{text}/{mono} {style:?} at {size}: no ink in an a"
+                            );
+                            assert!(
+                                grown > plain && grown < plain * 2,
+                                "{text}/{mono} {style:?} at {size}: {plain} plain, {grown} grown"
+                            );
                         }
                     }
                     let tofu = pass.next(&mut run, '\u{10ffff}');
                     assert_eq!(tofu.id, TOFU, "{text}/{mono}: a character no face has");
-                    assert!(pass.mask(tofu.inst, TOFU, size * 2.0, 0, 2).is_some());
+                    assert!(pass.mask(tofu.inst, TOFU, size * 2.0, 0, 2, 0.3).is_some());
                 }
             }
             // The system's face is set as CoreText sets it: these are its advances for body

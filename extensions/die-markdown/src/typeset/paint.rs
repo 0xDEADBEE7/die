@@ -207,6 +207,8 @@ pub(super) fn paint(
     ops.sort_unstable();
     ops.dedup();
     let bins = laid.bins.max(1);
+    // Each glyph grown by the sheet's share of a CSS pixel a side, in this display's pixels.
+    let grow = sheet::GROW * laid.scale;
     let place = |x: f32| {
         let parts = (x * f32::from(bins)).round() as i32;
         (
@@ -247,7 +249,7 @@ pub(super) fn paint(
                 let glyphs = laid.glyphs.get(from as usize..to as usize).unwrap_or(&[]);
                 for glyph in glyphs {
                     let (x, bin) = place(glyph.x);
-                    if let Some(mask) = pass.mask(glyph.inst, glyph.id, px, bin, bins) {
+                    if let Some(mask) = pass.mask(glyph.inst, glyph.id, px, bin, bins, grow) {
                         target.mask(x, baseline, mask, ink);
                     }
                 }
@@ -271,7 +273,7 @@ pub(super) fn paint(
                 let glyphs = laid.glyphs.get(from as usize..to as usize).unwrap_or(&[]);
                 for glyph in glyphs {
                     let (x, bin) = place(glyph.x);
-                    let Some(mask) = pass.mask(glyph.inst, glyph.id, px, bin, bins) else {
+                    let Some(mask) = pass.mask(glyph.inst, glyph.id, px, bin, bins, grow) else {
                         continue;
                     };
                     let (w, h) = (mask.width as i32, mask.height as i32);
@@ -417,7 +419,7 @@ fn mark(kind: Mark, px: f32) -> Option<Mask> {
             width = 1.25;
             path(&[(10.0, 7.5), (12.5, 10.0), (10.0, 12.5)], false);
         }
-        Mark::Open => {}
+        Mark::Open | Mark::Closed => {}
     }
     match kind {
         Mark::Note => lines.push_circle(8.0, 8.0, 7.0),
@@ -445,10 +447,17 @@ fn mark(kind: Mark, px: f32) -> Option<Mask> {
             lines.line_to(12.5, 10.0);
         }
         Mark::Open => {
-            // The triangle of an open `<details>`.
+            // The triangle of an open `<details>`, pointing down.
             solid.move_to(3.5, 5.75);
             solid.line_to(12.0, 5.75);
             solid.line_to(7.75, 11.25);
+            solid.close();
+        }
+        Mark::Closed => {
+            // The same triangle turned to point right: the block is closed.
+            solid.move_to(5.75, 3.5);
+            solid.line_to(11.25, 7.75);
+            solid.line_to(5.75, 12.0);
             solid.close();
         }
         _ => {}
@@ -466,5 +475,5 @@ fn mark(kind: Mark, px: f32) -> Option<Mask> {
     {
         solid.push_path(&stroked);
     }
-    fonts::fill(&solid.finish()?, scale, 0.0, FillRule::Winding)
+    fonts::fill(&solid.finish()?, scale, 0.0, 0.0, FillRule::Winding)
 }
