@@ -783,6 +783,46 @@ fn a_directory_on_the_line_is_chosen_until_a_row_is() {
     assert_eq!(ctx.scene().row_text(27), "1/2    Find: src/");
 }
 
+/// A prompt for a file to write: `<CR>` answers with the name typed, never with the file it
+/// flex matches, unless a row is moved to; `<Tab>` still completes, and a directory still descends.
+#[test]
+fn a_line_first_prompt_answers_with_the_line_until_a_row_is_chosen() {
+    let spec = || {
+        PromptSpec::new("Export to: ")
+            .initial("x/plan.png")
+            .descends()
+            .line_first()
+            .candidates_from(|text| {
+                let base = text.rfind('/').map_or(0, |i| i + 1);
+                let items = match &text[..base] {
+                    "x/" => vec!["board.png", "plan-v1.png", "sub/"],
+                    _ => vec![],
+                };
+                (base, items.into_iter().map(String::from).collect())
+            })
+    };
+    for (keys, want) in [
+        ("<CR>", "x/plan.png"),
+        ("<C-u>x/b.png<CR>", "x/b.png"),
+        ("<Down><CR>", "x/plan-v1.png"),
+        ("<Down><Up><CR>", "x/plan.png"),
+        ("<C-u>x/b.png<Tab><CR>", "x/board.png"),
+        ("<C-u>x/su<Tab>a.png<CR>", "x/sub/a.png"),
+        ("<C-u>x/su<Down><CR>a.png<CR>", "x/sub/a.png"),
+    ] {
+        let mut ctx = ctx();
+        let answers = ask(&mut ctx, spec());
+        ctx.type_keys(keys);
+        assert_eq!(*answers.borrow(), [Some(want.to_string())], "{keys}");
+    }
+    let mut ctx = ctx();
+    ctx.set_frame_size(40, 30);
+    ask(&mut ctx, spec());
+    assert_eq!(ctx.prompt_candidates(), ["plan-v1.png"], "it matches");
+    assert_eq!(ctx.prompt_chosen(), None, "but isn't chosen");
+    assert_eq!(ctx.scene().row_text(28), "*/1    Export to: x/plan.png");
+}
+
 /// Candidates for the word after a leading `%`, while nothing follows it, as `:` has its names.
 fn part_spec() -> PromptSpec {
     PromptSpec::new(":")
