@@ -1,7 +1,8 @@
 //! Restarts, as `:rebuild` makes them: the session handed over to a file, DIE gone, and a new DIE
 //! started on the same file, twice in a row. Each board comes back as a working board from its
 //! file (written at the hand-over), with its view, tool, ink, width and selection, the one used
-//! last in a window.
+//! last in a window. A scratch board comes back from the session itself, with its name and
+//! directory, and an empty one doesn't.
 
 use die_test_cap as _;
 
@@ -151,6 +152,127 @@ fn boards_come_back_working_after_two_restarts() {
     let scene = s.h.scene();
     assert_eq!(scene.placements.len(), 1, "{}", scene.snapshot());
     assert!(inked(&mut s, (10.0, 20.0)), "the nudged rectangle's corner");
+}
+
+#[test]
+fn scratch_boards_come_back_whole_with_their_names_and_an_empty_one_doesnt() {
+    let state = TempDir::new("session-scratch-state");
+    let dir = TempDir::new("session-scratch-boards");
+    let mut h = up(&state);
+    h.open_text("notes", "notes\n").unwrap();
+    let notes = h.find_buffer("notes").unwrap();
+    h.set_directory(notes, dir.path());
+    let new = |h: &mut Harness| {
+        h.run("whiteboard-new", &die_core::Args::default()).unwrap();
+        h.run_until_idle();
+        h.focused_buffer().unwrap()
+    };
+    let first = new(&mut h);
+    let second = new(&mut h);
+    let _empty = new(&mut h);
+    assert_eq!(h.buffer_name(second), Some("*whiteboard: scratch 2*"));
+    h.show(second, die_core::ShowIn::Current).unwrap();
+    // Past the grace in which a press after the focus came is the one that activated the app.
+    h.advance(Duration::from_millis(200));
+    let win = h.focused().unwrap();
+    let mut s = Setup {
+        h,
+        dir,
+        buf: second,
+        win,
+        path: std::path::PathBuf::new(),
+    };
+    s.h.scene();
+    keys(&mut s.h, "3]r");
+    gesture(&mut s, &[(10.0, 10.0), (50.0, 50.0)]);
+    gesture(&mut s, &[(10.0, 100.0), (60.0, 100.0)]);
+    keys(&mut s.h, "v");
+    click(&mut s, (30.0, 30.0));
+    keys(&mut s.h, "+");
+    // The first goes: `scratch 2` keeps its number through the restart.
+    assert!(s.h.kill(first));
+    s.h.run_until_idle();
+    let zoom = board(&mut s.h, second).borrow().view.zoom;
+    let dir = s.dir;
+    let mut h = restart(s.h, &state);
+    assert_eq!(
+        boards(&mut h),
+        ["*whiteboard: scratch 2*"],
+        "not the empty one"
+    );
+    let two = h.find_buffer("*whiteboard: scratch 2*").unwrap();
+    assert_eq!(h.focused_buffer(), Some(two), "shown, as it was");
+    assert_eq!(h.directory(two), Some(dir.path()), "its directory");
+    {
+        let shared = board(&mut h, two);
+        let st = shared.borrow();
+        assert_eq!(st.path, None, "a scratch board still");
+        assert_eq!(st.board.len(), 2);
+        assert_eq!((st.tool, st.ink, st.width), (Tool::Select, 3, 2));
+        assert_eq!(st.selection, [st.board.elements[0].id]);
+        assert_eq!(st.view.zoom, zoom);
+        assert!(!st.dirty);
+        assert_eq!(st.status(), "scratch 2  select·3  thick  2 elements");
+    }
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+        "nothing written beside it"
+    );
+    // It works, survives another restart, and saves as a file.
+    let win = h.focused().unwrap();
+    let mut s = Setup {
+        h,
+        dir,
+        buf: two,
+        win,
+        path: std::path::PathBuf::new(),
+    };
+    keys(&mut s.h, "0p");
+    gesture(&mut s, &[(10.0, 150.0), (60.0, 150.0)]);
+    // Its last export is kept too: `E` offers it again and writes it again without asking.
+    let png = s.dir.path().join("board.png");
+    keys(&mut s.h, "E<CR>");
+    s.h.run_until_idle();
+    assert!(png.exists());
+    let dir = s.dir;
+    let mut h = restart(s.h, &state);
+    let two = h.find_buffer("*whiteboard: scratch 2*").unwrap();
+    assert_eq!(h.focused_buffer(), Some(two));
+    assert_eq!(h.directory(two), Some(dir.path()));
+    {
+        let shared = board(&mut h, two);
+        let st = shared.borrow();
+        assert_eq!(st.board.len(), 3);
+        assert_eq!((st.tool, st.ink, st.width), (Tool::Pen, 3, 2));
+        assert_eq!(st.view.zoom, 1.0);
+        assert_eq!(st.exported.as_deref(), Some(png.as_path()));
+    }
+    let home = std::env::home_dir();
+    keys(&mut h, "E");
+    let offered = die_whiteboard::file::abbreviate(&png, home.as_deref());
+    assert_eq!(h.prompt_text(), Some(offered.as_str()));
+    keys(&mut h, "<CR>");
+    assert_eq!(h.prompt_text(), None, "not asked to overwrite");
+    h.run_until_idle();
+    let wrote = format!("Wrote {}", png.display());
+    assert!(h.messages.last().unwrap().starts_with(&wrote));
+    keys(&mut h, "Skept<CR>");
+    let kept = dir.path().join("kept.svg");
+    assert_eq!(
+        svg::read(&std::fs::read_to_string(&kept).unwrap())
+            .unwrap()
+            .len(),
+        3
+    );
+    // A file board from then on: it comes back from its file.
+    let h = restart(h, &state);
+    let mut h = h;
+    assert_eq!(boards(&mut h), ["*whiteboard: kept.svg*"]);
+    let back = h.find_buffer("*whiteboard: kept.svg*").unwrap();
+    assert_eq!(
+        board(&mut h, back).borrow().path.as_deref(),
+        Some(kept.as_path())
+    );
 }
 
 #[test]

@@ -154,6 +154,18 @@ impl Ctx {
     pub fn buffer_name(&self, buf: BufferId) -> Option<&str> {
         self.buffers.get(buf).map(|b| b.name.as_str())
     }
+    /// Rename a buffer, as Emacs's `rename-buffer` with its unique flag: the name made unique
+    /// as a new buffer's is (`a<2>`), unless the buffer has it already. What it's called now; a
+    /// dead buffer is ignored, and called "".
+    pub fn rename_buffer(&mut self, buf: BufferId, name: &str) -> String {
+        if !self.is_live(buf) {
+            return String::new();
+        }
+        // Its own name out of the way first, so it can keep it.
+        self.buffers[buf].name.clear();
+        self.buffers[buf].name = self.unique_name(name);
+        self.buffers[buf].name.clone()
+    }
     /// The directory a buffer's relative paths start from, Emacs's `default-directory`: the
     /// directory of the file it visits, or else the one the focused buffer had when it was made.
     pub fn directory(&self, buf: BufferId) -> Option<&Path> {

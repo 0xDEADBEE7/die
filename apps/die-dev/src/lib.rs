@@ -182,7 +182,8 @@ fn bindings(reg: &mut Registry) {
     keys.bind(State::Normal, "<leader>g", "term-switch");
     // emacs-orchid-client's session browser, in normal state, as `init.el` binds it.
     keys.bind(State::Normal, "<leader>o", "orchid");
-    // The whiteboard: a board in this window, or the one used last.
+    // The whiteboard: the board used last, or a scratch board in this window; from a board, a
+    // new scratch board.
     keys.bind(State::Normal, "<leader>w", "whiteboard");
     // A markdown file's two views, rendered and raw. It's in the mode's keymap, so `\m` is a key
     // only where there's markdown to render, and in the page's, which is a buffer of its own
