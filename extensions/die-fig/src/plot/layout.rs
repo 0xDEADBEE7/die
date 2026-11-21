@@ -321,7 +321,7 @@ impl ChartLayout {
 }
 
 /// The area's paddings: across, at the top and at the bottom.
-fn paddings(w: f32, h: f32) -> (f32, f32, f32) {
+pub(crate) fn paddings(w: f32, h: f32) -> (f32, f32, f32) {
     (
         (w * 0.032).clamp(10.0, 28.0),
         (h * 0.05).clamp(8.0, 24.0),

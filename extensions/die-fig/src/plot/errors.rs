@@ -728,32 +728,33 @@ pub fn glyph(scene: &mut Scene, kind: ErrorKind, r: Rect, theme: &Theme) {
             );
         }
         ErrorKind::Empty => {
-            // Axes, and bars that aren't there: dashed outlines.
+            // Axes, and bars that aren't there: faint outlines where they'd stand.
             scene.push(Item::Path {
                 path: line(&[(11.5, 11.0), (11.5, 36.5), (37.5, 36.5)]),
                 fill: None,
                 stroke: Some(stroke(width)),
             });
-            let dashed = Stroke {
-                dash: Some((3.0 * s, 2.4 * s)),
-                cap: Cap::Butt,
-                join: Join::Miter,
-                ..stroke(1.5)
+            let ghost = Stroke {
+                paint: Paint::solid(ink, 0.45),
+                ..stroke(1.6)
             };
             for (x, top) in [(15.5, 25.0), (23.0, 17.0), (30.5, 28.0)] {
                 let (a, b) = p(x, top);
-                let (c, d) = p(x + 5.5, 36.5);
+                let (c, d) = p(x + 5.0, 33.5);
+                let r = 1.2 * s;
                 scene.push(Item::Path {
                     path: PathData {
                         verbs: vec![
-                            Verb::Move(a, d - 2.0 * s),
-                            Verb::Line(a, b),
-                            Verb::Line(c, b),
-                            Verb::Line(c, d - 2.0 * s),
+                            Verb::Move(a, d),
+                            Verb::Line(a, b + r),
+                            Verb::Quad(a, b, a + r, b),
+                            Verb::Line(c - r, b),
+                            Verb::Quad(c, b, c, b + r),
+                            Verb::Line(c, d),
                         ],
                     },
                     fill: None,
-                    stroke: Some(dashed.clone()),
+                    stroke: Some(ghost.clone()),
                 });
             }
         }
@@ -784,9 +785,15 @@ pub fn badge_text(first: &FigError) -> String {
 /// areas get the word alone, then the icon alone.
 pub fn stale_badge(scene: &mut Scene, first: &FigError, theme: &Theme, m: &mut dyn Measure) {
     let w = scene.width;
-    let inset = 8.0f32.min(w / 10.0);
     let spec = TextSpec::new(12.0);
     let h = 24.0;
+    // On the chart's own lines: its right edge where the end labels end, its middle on the
+    // first row's, the title's or the legend's.
+    let (pad, pad_top, _) = super::layout::paddings(w, scene.height);
+    let inset = pad.min(w / 10.0);
+    let title = TextSpec::new(super::layout::TITLE).weight(Weight::Semibold);
+    let mid = pad_top + m.ascent(title) - m.cap(title) / 2.0;
+    let top = (mid - h / 2.0).max(4.0).round();
     let icon = 12.0;
     let full = badge_text(first);
     let word = full.split(" · ").next().unwrap_or("").to_string();
@@ -813,7 +820,7 @@ pub fn stale_badge(scene: &mut Scene, first: &FigError, theme: &Theme, m: &mut d
         text.clear();
     }
     let bw = width(&text, m).min(room.max(h));
-    let r = Rect::new((w - inset - bw).round(), inset, bw, h);
+    let r = Rect::new((w - inset - bw).round(), top, bw, h);
     scene.push(Item::Shadow {
         rect: r,
         radius: h / 2.0,
@@ -881,7 +888,7 @@ pub enum LogInk {
     Text,
     /// The gutter: `-->`, `|`, line numbers, `=`.
     Muted,
-    /// What was tried: text, cut in its middle where it's too long, so a path keeps its file.
+    /// What was tried: text, a path in it cut from the left where it's too long, so it keeps its file.
     Note,
 }
 
@@ -1161,6 +1168,12 @@ fn log(
         TextSpec::new(12.0),
         (name_room - ic - 8.0).max(0.0),
     );
+    // A name cut to nothing but its dots says nothing: none, then.
+    let named = if named.chars().count() < 8 && named != in_name {
+        String::new()
+    } else {
+        named
+    };
     scene.push(text_item(
         &named,
         x + cw,
@@ -1315,6 +1328,28 @@ fn keep_caret(e: &Entry, chars: usize) -> Vec<Vec<Span>> {
     lines
 }
 
+/// `note` in `room` chars by cutting its path's leading directories to '…/', its file kept:
+/// None if it has no path, or not even its file and the rest fit.
+fn shorten_path(note: &str, room: usize) -> Option<String> {
+    let words: Vec<&str> = note.split(' ').collect();
+    let (i, path) = words
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.contains('/'))
+        .max_by_key(|(_, w)| w.chars().count())?;
+    let n = note.chars().count();
+    let over = n.checked_sub(room)?;
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let keep = path.chars().count().checked_sub(over + 2)?;
+    if keep < file.chars().count() {
+        return None;
+    }
+    let tail: String = path.chars().skip(path.chars().count() - keep).collect();
+    let mut words: Vec<String> = words.iter().map(|w| w.to_string()).collect();
+    words[i] = format!("…/{}", tail.trim_start_matches('/'));
+    Some(words.join(" "))
+}
+
 /// A line's spans cut to `chars` cells: the ends of what doesn't fit become '…'. A caret line
 /// and the source line above it are cut alike, so the caret stays under its column: where the
 /// caret is past the width, both start further in.
@@ -1323,19 +1358,13 @@ fn clip_line(spans: &[Span], chars: usize) -> Vec<Span> {
     if len <= chars {
         return spans.to_vec();
     }
-    // A note loses its middle: a path keeps its start and its file.
+    // A note loses a path's leading directories first, so its file stays; else its end.
     if let Some((last, before)) = spans.split_last()
         && last.ink == LogInk::Note
     {
         let used: usize = before.iter().map(|s| s.text.chars().count()).sum();
         let room = chars.saturating_sub(used);
-        let n = last.text.chars().count();
-        if room >= 16 {
-            let head = (room - 1) * 2 / 5;
-            let tail = room - 1 - head;
-            let text: String = last.text.chars().take(head).collect::<String>()
-                + "…"
-                + &last.text.chars().skip(n - tail).collect::<String>();
+        if let Some(text) = shorten_path(&last.text, room) {
             let mut out = before.to_vec();
             out.push(Span {
                 text,
