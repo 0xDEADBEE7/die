@@ -9,8 +9,11 @@
 //! through: drawn straight, a long edge can run through nodes in the layers it crosses. Each layer
 //! is then ordered by its nodes' barycentres, the mean place of their neighbours in the layer
 //! before: four sweeps, down, up, down, up, keeping the order with the fewest crossings seen
-//! (the first of equals). Places are one unit apart, dummies included, each layer centred on
-//! x = 0.
+//! (the first of equals). Places start one unit apart, dummies included, each layer centred on
+//! x = 0; then [`BALANCE`] sweeps move each node towards the median of its neighbours in the
+//! layers either side, keeping its layer's order and a unit between neighbours (the nearest
+//! such places, by pooling adjacent violators), so a parent sits over its children and a long
+//! edge runs straight rather than in a long sweep.
 //!
 //! Dummies cost time and memory with the layers each edge spans, so at most [`DUMMY_BUDGET`] are
 //! made: the edges spanning the fewest layers get theirs first, and an edge past the budget has
@@ -18,6 +21,8 @@
 
 /// The most dummy nodes one layout makes (a few megabytes).
 pub const DUMMY_BUDGET: usize = 250_000;
+/// How many sweeps, down and up in turn, move nodes towards their neighbours.
+pub const BALANCE: usize = 6;
 
 /// Each of `n` nodes' position, laid out in layers by `edges` (node indices, from → to;
 /// self-loops, duplicates and ends past `n` are ignored): x in units, each layer centred on 0,
@@ -56,6 +61,7 @@ pub fn layered_routes(n: usize, edges: &[(usize, usize)]) -> Routed {
     let mut g = Layered::new(n, &kept, &layer);
     g.order();
     let mut pos = g.positions();
+    g.balance(&mut pos);
     for (route, &(a, b)) in bends.iter_mut().zip(edges) {
         if a >= n || b >= n || a == b {
             continue;
@@ -308,6 +314,82 @@ impl Layered {
         }
         pos
     }
+}
+
+impl Layered {
+    /// [`BALANCE`] sweeps, down and up in turn: each layer's nodes go as near as they can to the
+    /// median of their neighbours' places (above and below), in their order and a unit apart.
+    fn balance(&self, pos: &mut [(f64, f64)]) {
+        let depth = self.rows.len();
+        if depth < 2 {
+            return;
+        }
+        let mut want: Vec<f64> = Vec::new();
+        let mut near: Vec<f64> = Vec::new();
+        for sweep in 0..BALANCE {
+            let ks: Vec<usize> = if sweep % 2 == 0 {
+                (0..depth).collect()
+            } else {
+                (0..depth).rev().collect()
+            };
+            for k in ks {
+                let row = &self.rows[k];
+                want.clear();
+                for &v in row {
+                    near.clear();
+                    near.extend(self.above(v).iter().map(|&u| pos[u].0));
+                    near.extend(self.below(v).iter().map(|&u| pos[u].0));
+                    want.push(match near.len() {
+                        0 => pos[v].0,
+                        _ => median(&mut near),
+                    });
+                }
+                for (&v, x) in row.iter().zip(spaced(&want)) {
+                    pos[v].0 = x;
+                }
+            }
+        }
+    }
+}
+
+/// The median of some places (the mean of the middle two of an even count).
+fn median(xs: &mut [f64]) -> f64 {
+    xs.sort_by(f64::total_cmp);
+    let m = xs.len() / 2;
+    match xs.len() % 2 {
+        1 => xs[m],
+        _ => (xs[m - 1] + xs[m]) / 2.0,
+    }
+}
+
+/// The places nearest `want` (least squares) in their order and at least a unit apart: pool
+/// adjacent violators over `want[i] - i`, which must not fall.
+fn spaced(want: &[f64]) -> Vec<f64> {
+    // Each block: its total and its count.
+    let mut blocks: Vec<(f64, usize)> = Vec::with_capacity(want.len());
+    for (i, &w) in want.iter().enumerate() {
+        blocks.push((w - i as f64, 1));
+        while blocks.len() > 1 {
+            let (b, c) = blocks[blocks.len() - 1];
+            let (a, d) = blocks[blocks.len() - 2];
+            if a / d as f64 <= b / c as f64 {
+                break;
+            }
+            blocks.pop();
+            let last = blocks.len() - 1;
+            blocks[last] = (a + b, c + d);
+        }
+    }
+    // On a grid of 1/1024, where adding whole units is exact: neighbours stay a unit apart
+    // to the last bit, and rounding keeps the blocks' order.
+    let mut out = Vec::with_capacity(want.len());
+    for (total, count) in blocks {
+        let mean = (total / count as f64 * 1024.0).round() / 1024.0;
+        for _ in 0..count {
+            out.push(mean + out.len() as f64);
+        }
+    }
+    out
 }
 
 /// The most dummies an edge may have within [`DUMMY_BUDGET`], given each edge's count: every

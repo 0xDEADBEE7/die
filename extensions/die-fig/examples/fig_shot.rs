@@ -90,6 +90,8 @@ struct Ask {
     stale: Option<String>,
     detail: Option<DetailAsk>,
     search: Option<String>,
+    /// The whole area's width, where the figure is drawn beside the detail panel: its paddings.
+    area_w: Option<f32>,
 }
 
 /// What the detail flags ask for.
@@ -146,6 +148,7 @@ fn run() -> Result<(), String> {
         stale: None,
         detail: None,
         search: None,
+        area_w: None,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
@@ -388,7 +391,7 @@ fn graph_shot(
     let fsize = split.map_or(ask.size, |(f, _, _)| (f.w, f.h));
     let lay = |view: &View, scale: f32, book: &mut Book| -> (Scene, GraphLayout) {
         let mut m = BookMeasure { book, scale };
-        graph::base(&model, view, fsize, scale, theme, &mut m)
+        graph::base_beside(&model, view, fsize, ask.size.0, scale, theme, &mut m)
     };
     let mut ghost = None;
     for (id, x, y) in &ask.pins {
@@ -605,12 +608,14 @@ fn beside(
     let (fig, rect, _) = detail::split(ask.size);
     let small = Ask {
         size: (fig.w, fig.h),
+        area_w: Some(ask.size.0),
         ..ask.clone()
     };
     let chart = draw(model, view, &small, theme, scale, book, cursor_at, say)?;
     let target = ask.cursor.and_then(cursor_at).or_else(|| {
         let mut m = BookMeasure { book, scale };
-        let (_, layout, hits) = plot::base(model, view, small.size, scale, theme, &mut m);
+        let (_, layout, hits) =
+            plot::base_beside(model, view, small.size, ask.size.0, scale, theme, &mut m);
         ask.hover
             .and_then(|(x, y)| plot::hover(model, &layout, &hits, view, x, y))
     });
@@ -734,7 +739,9 @@ fn draw(
     say: bool,
 ) -> Result<Scene, String> {
     let mut m = BookMeasure { book, scale };
-    let (mut scene, layout, hits) = plot::base(model, view, ask.size, scale, theme, &mut m);
+    let area_w = ask.area_w.unwrap_or(ask.size.0);
+    let (mut scene, layout, hits) =
+        plot::base_beside(model, view, ask.size, area_w, scale, theme, &mut m);
     let hover = ask
         .hover
         .and_then(|(x, y)| plot::hover(model, &layout, &hits, view, x, y));
@@ -763,7 +770,12 @@ fn draw(
         brush,
         emphasis: emphasis.clone(),
     };
-    let over = plot::overlay(model, &layout, view, &st, theme, &mut m);
+    // Beside the detail panel, the cursor's card goes, as the surface has it.
+    let lit = plot::overlay::Lit {
+        cursor_card: ask.detail.is_none(),
+        ..plot::overlay::Lit::default()
+    };
+    let over = plot::overlay::overlay_lit(model, &layout, view, &st, &lit, theme, &mut m);
     if say {
         let p = layout.plot;
         println!(

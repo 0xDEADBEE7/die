@@ -608,10 +608,14 @@ fn layered_routes_a_long_edge_round_the_nodes_it_passes() {
     assert_eq!(p, layered(14, &edges));
     assert_layered(14, &edges, &p);
     assert_eq!(assert_routes(14, &edges, &p, &routes), 0);
-    assert_eq!((p[12].0, p[9].0, p[13].0), (0.0, 0.0, 0.0));
     assert_eq!(routes[3].len(), 3, "12 -> 13 spans four layers");
     assert_eq!(routes[5], routes[3], "a duplicate takes the first's bends");
-    assert!(routes[3].iter().all(|q| q.0 != 0.0));
+    // It passes node 9's layer a unit or more from it, wherever balancing put them.
+    let at9 = routes[3]
+        .iter()
+        .find(|q| q.1 == p[9].1)
+        .expect("a bend on 9's layer");
+    assert!((at9.0 - p[9].0).abs() >= 1.0, "{at9:?} by 9 at {:?}", p[9]);
 }
 
 #[test]

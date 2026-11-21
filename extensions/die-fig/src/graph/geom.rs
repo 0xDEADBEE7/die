@@ -223,12 +223,22 @@ struct Keep {
     legend_rows: usize,
 }
 
+/// The padding across a figure `w` wide in an area `pad_w` wide (the whole window's, beside the
+/// detail panel): the area's, so nothing moves as the panel opens, but never more than a
+/// sliver of the figure's own width.
+fn side_pad(w: f32, h: f32, pad_w: f32) -> f32 {
+    let own = paddings(w, h).0;
+    paddings(pad_w.max(w), h).0.min(w * 0.06).max(own)
+}
+
 /// The layout of `model` under `view` at `size`: the header, the frame, the nodes and the
-/// edges (labels are placed after, by [`super::label::place`]).
+/// edges (labels are placed after, by [`super::label::place`]); its paddings across those of an
+/// area `pad_w` wide.
 pub(crate) fn lay_out(
     model: &GraphModel,
     view: &View,
     size: (f32, f32),
+    pad_w: f32,
     scale: f32,
     theme: &Theme,
     m: &mut dyn Measure,
@@ -258,7 +268,7 @@ pub(crate) fn lay_out(
     let (w, h) = size;
     let mut chosen = None;
     for keep in levels {
-        let hd = header(model, view, size, keep, m);
+        let hd = header(model, view, size, pad_w, keep, m);
         if hd.region.h >= (0.6 * h).max(90.0).min(h * 0.85) {
             chosen = Some(hd);
             break;
@@ -266,7 +276,8 @@ pub(crate) fn lay_out(
         chosen = Some(hd);
     }
     let hd = chosen.expect("there are levels");
-    let (pad, _, pad_bottom) = paddings(w, h);
+    let (_, _, pad_bottom) = paddings(w, h);
+    let pad = side_pad(w, h, pad_w);
     let region = hd.region;
     let plot = Rect::new(
         pad,
@@ -420,11 +431,13 @@ fn header(
     model: &GraphModel,
     view: &View,
     size: (f32, f32),
+    pad_w: f32,
     keep: Keep,
     m: &mut dyn Measure,
 ) -> Header {
     let (w, h) = size;
-    let (pad, pad_top, _) = paddings(w, h);
+    let (_, pad_top, _) = paddings(w, h);
+    let pad = side_pad(w, h, pad_w);
     let title_spec = TextSpec::new(TITLE).weight(Weight::Semibold);
     let body = TextSpec::new(BODY);
     let wide = (w - 2.0 * pad).max(0.0);
@@ -685,9 +698,9 @@ fn edge_geom(
     let width = model.widths[k];
     let directed = model.spec.edges[k].directed;
     let mut pts = if a == b {
-        self_loop(na.at, na.r)
+        self_loop(na.at, na.r, loop_angle(model, nodes, a as usize))
     } else {
-        route(model, view, frame, k, na.at, nb.at)
+        route(model, view, frame, nodes, k, na.at, nb.at)
     };
     let mut arrow = None;
     if directed {
@@ -723,6 +736,7 @@ fn route(
     model: &GraphModel,
     view: &View,
     frame: &Frame,
+    nodes: &[Option<NodeGeom>],
     k: usize,
     pa: (f32, f32),
     pb: (f32, f32),
@@ -747,6 +761,10 @@ fn route(
                 pts.reverse();
             }
             pts
+        }
+        // Two nodes on one rank: an arc bowing off it, never a line through the nodes between.
+        Layout::Tree { .. } | Layout::Layered if lanes == 1 && (pa.1 - pb.1).abs() < 1.0 => {
+            rank_arc(model, frame, nodes, (a as usize, b as usize), pa, pb)
         }
         Layout::Tree { .. } | Layout::Layered if lanes == 1 => s_curve(pa, pb),
         _ if lanes > 1 => {
@@ -806,10 +824,92 @@ fn s_curve(a: (f32, f32), b: (f32, f32)) -> Vec<(f32, f32)> {
     cubic(a, (a.0, my), (b.0, my), b, 20)
 }
 
-/// A loop on a node's upper right, leaving and coming back to its centre.
-fn self_loop(c: (f32, f32), r: f32) -> Vec<(f32, f32)> {
+/// An arc between two nodes on one rank, bowing above it or below it, whichever side the
+/// nodes between have fewer edges leaving to (so it crosses fewer), above where they tie; high
+/// enough to clear the nodes it passes and at most two fifths of the way to the next rank.
+fn rank_arc(
+    model: &GraphModel,
+    frame: &Frame,
+    nodes: &[Option<NodeGeom>],
+    (a, b): (usize, usize),
+    pa: (f32, f32),
+    pb: (f32, f32),
+) -> Vec<(f32, f32)> {
+    let (lo, hi) = (pa.0.min(pb.0), pa.0.max(pb.0));
+    let (mut up, mut down) = (0usize, 0usize);
+    let mut tallest = 0.0f32;
+    for (i, g) in nodes.iter().enumerate() {
+        let Some(g) = g else { continue };
+        let between = g.at.0 > lo + 0.5 && g.at.0 < hi - 0.5 && (g.at.1 - pa.1).abs() < 1.0;
+        if !(between || i == a || i == b) {
+            continue;
+        }
+        if between {
+            tallest = tallest.max(g.r);
+        }
+        for &(j, k) in &model.adjacency[i] {
+            let (x, y) = model.ends[k as usize];
+            let pair = (x as usize, y as usize);
+            if pair == (a, b) || pair == (b, a) {
+                continue;
+            }
+            match nodes.get(j as usize).copied().flatten() {
+                Some(o) if o.at.1 < pa.1 - 1.0 => up += 1,
+                Some(o) if o.at.1 > pa.1 + 1.0 => down += 1,
+                _ => {}
+            }
+        }
+    }
+    let sign = if down < up { 1.0 } else { -1.0 };
+    let rank = (frame.k.1 as f32).max(1.0);
+    let dx = hi - lo;
+    let clear = tallest + RING + 8.0;
+    let h = (dx * 0.18).max(clear * 1.6).max(14.0).min(rank * 0.4);
+    // A cubic whose handles rise straight off each end a little in: it leaves the rank at
+    // once, so it clears a node next to an end, and its top is at three quarters of `lift`.
+    let lift = h / 0.75;
+    let inset = (pb.0 - pa.0) * 0.12;
+    cubic(
+        pa,
+        (pa.0 + inset, pa.1 + sign * lift),
+        (pb.0 - inset, pb.1 + sign * lift),
+        pb,
+        24,
+    )
+}
+
+/// The direction a node's self-loop goes: the middle of the widest gap between the edges it
+/// has to other nodes (up and to the right where it has none), so the loop reads as a loop and
+/// not a kink on another edge.
+fn loop_angle(model: &GraphModel, nodes: &[Option<NodeGeom>], i: usize) -> f32 {
+    let Some(c) = nodes.get(i).copied().flatten() else {
+        return -std::f32::consts::FRAC_PI_4;
+    };
+    let mut angles: Vec<f32> = (model.adjacency[i].iter())
+        .filter_map(|&(j, _)| nodes.get(j as usize).copied().flatten())
+        .map(|o| (o.at.1 - c.at.1).atan2(o.at.0 - c.at.0))
+        .collect();
+    if angles.is_empty() {
+        return -std::f32::consts::FRAC_PI_4;
+    }
+    angles.sort_by(f32::total_cmp);
+    let tau = std::f32::consts::TAU;
+    let mut best = (0.0f32, -std::f32::consts::FRAC_PI_4);
+    for (n, &t) in angles.iter().enumerate() {
+        let next = angles.get(n + 1).copied().unwrap_or(angles[0] + tau);
+        let gap = next - t;
+        // The first of equal gaps, to the hundredth of a radian, so a mirror image picks alike.
+        if gap > best.0 + 1e-2 {
+            best = (gap, t + gap / 2.0);
+        }
+    }
+    best.1
+}
+
+/// A loop at angle `th` off a node (screen angle, y down), leaving and coming back to its
+/// centre.
+fn self_loop(c: (f32, f32), r: f32, th: f32) -> Vec<(f32, f32)> {
     let reach = r + 40.0;
-    let th = -std::f32::consts::FRAC_PI_4;
     let p1 = (
         c.0 + reach * (th - 0.6).cos(),
         c.1 + reach * (th - 0.6).sin(),

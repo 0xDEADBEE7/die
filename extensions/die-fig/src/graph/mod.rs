@@ -44,7 +44,7 @@ pub mod label;
 pub mod nav;
 pub mod overlay;
 
-pub use draw::base;
+pub use draw::{base, base_beside};
 pub use geom::{EdgeGeom, Frame, GraphLayout, NodeGeom};
 pub use hover::{Target, hover};
 pub use label::NodeLabel;

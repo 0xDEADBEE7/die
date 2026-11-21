@@ -1,16 +1,20 @@
 //! Label placement: each node's name beside it, on the first free side.
 //!
 //! The sides are tried in order: right, left, below, above, then the four corners between
-//! them. A side is free when its label crosses no other label, no node (its ring included) and
-//! no edge, stays inside the graph's region, and is nearer its own node than any other (so it
-//! never reads as another's). Labels are placed busiest node first (degree,
-//! then node order), so where there's room for only some, the hubs keep theirs; one with no
-//! free side but a side that only crosses a few edges (two, or a hub's own count up to six)
-//! goes there on a ground of the surface's colour, which parts the edges under it; one that
-//! would cover a label or a node is culled. As the
-//! view zooms in, nodes spread and more labels find room. `show-label: true` labels go first
-//! and are never culled (on the least crowded side where none is free); `false` ones never
-//! show.
+//! them, and for a hub or a label that must show two rings further out. A side is free when its
+//! label crosses no other label (and keeps a space's width from one level with it), no node
+//! (its ring included) and no edge, stays inside the graph's region, and is clearly nearer its
+//! own node than any other, a dimmed one too (by [`OWN_MARGIN`], so it never reads as
+//! another's). Each spot is scored: a label or a node it covers, or a node nearer it than its
+//! own, blocks it; each edge it crosses (a bright one more) costs a little, a corner a little
+//! more than a side, and a further ring more again, so a label crosses an edge on its ground
+//! beside its node before it goes out to float on a far ring. Labels are placed busiest node
+//! first (degree, then node order), so where there's room for only some, the hubs keep theirs;
+//! one with no free side but a side that only crosses a few edges (two, or a hub's own count up
+//! to six) goes there on a ground of the surface's colour, which parts the edges under it; one
+//! that would cover a label or a node is culled. As the view zooms in, nodes spread and more
+//! labels find room. `show-label: true` labels go first and are never culled (on the least bad
+//! side where none is free); `false` ones never show.
 
 use super::GraphModel;
 use super::geom::{GraphLayout, RING};
@@ -23,8 +27,25 @@ pub const LABEL: f32 = 11.5;
 pub const LABEL_FOCUS: f32 = 12.5;
 /// From a node's ring to its label beside it.
 pub const LABEL_GAP: f32 = 5.0;
-/// The least room kept between two labels.
+/// The least room kept between two labels, above and below each other.
 const LABEL_CLEAR: f32 = 2.0;
+/// The least room kept between two labels level with each other: a space's width, so two
+/// names never run together as one phrase.
+const LABEL_CLEAR_X: f32 = 7.0;
+/// How much nearer a label must be to its own node's ring than to any other's: this many px,
+/// or this share of its own distance, whichever is more.
+pub const OWN_MARGIN: (f32, f32) = (4.0, 0.3);
+/// What going out to the first and second further ring costs, in edges crossed: more than a
+/// few edges or a dimmed node near, less than a bright one.
+const RING_COST: [f32; 3] = [0.0, 15.0, 30.0];
+/// What a node nearer a label than the margin allows costs: at the margin, and more right
+/// against it; a bright node, then a dimmed one.
+const BRIGHT_NEAR: (f32, f32) = (50.0, 50.0);
+const DIM_NEAR: (f32, f32) = (12.0, 24.0);
+/// What a corner costs over a side, in edges crossed.
+const CORNER_COST: f32 = 0.4;
+/// What crossing an edge drawn bright costs: it cuts the edge, on its ground.
+const HARD_EDGE_COST: f32 = 2.5;
 /// The grid's cell, in px.
 const CELL: f32 = 32.0;
 /// The most edges a label at rest crosses (on its ground) rather than be culled; a hub's may
@@ -64,15 +85,37 @@ pub struct NodeLabel {
     pub backed: bool,
     /// Which side of its node it's on, from 0: right, left, below, above, then the corners.
     pub side: u8,
+    /// How far out: 0 beside its node, 1 and 2 the further rings.
+    pub ring: u8,
 }
 
-/// How bad a spot is: free, over edges only (how many), or over a label or a node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Clash {
-    Free,
-    Edges(u32),
-    /// Over a label or a node (100 each) or an edge drawn bright (1 each).
-    Blocked(u32),
+/// How bad a spot is: how many things block it (a label or a node covered, a node nearer it
+/// than its own; out of the region far more) and what they cost (100 a label or a bright node
+/// covered; a node too near, by how near, a dimmed one less), and what it only crosses (edges,
+/// a bright one more; dimmed labels and nodes it lies over on its ground).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Clash {
+    blocked: u32,
+    cost: f32,
+    crossed: f32,
+}
+
+impl Clash {
+    const OUT: u32 = 1_000_000;
+}
+
+/// Whether two rectangles overlap with labels' room kept between them: a space's width across,
+/// a little above and below.
+fn crowds(r: &Rect, other: &Rect) -> bool {
+    overlaps(
+        &Rect::new(
+            r.x - LABEL_CLEAR_X,
+            r.y - LABEL_CLEAR,
+            r.w + 2.0 * LABEL_CLEAR_X,
+            r.h + 2.0 * LABEL_CLEAR,
+        ),
+        other,
+    )
 }
 
 /// What labels must keep clear of, in a grid over the area.
@@ -216,13 +259,31 @@ impl Field {
 
     /// The soft labels a box overlaps, to clear under it.
     pub(crate) fn soft_under(&self, r: Rect) -> Vec<Rect> {
-        let spaced = r.inflate(LABEL_CLEAR);
         let mut out: Vec<Rect> = Vec::new();
-        for c in self.cells(r) {
+        for c in self.cells(r.inflate(LABEL_CLEAR_X)) {
             for &l in &self.cell_soft[c] {
                 let s = self.soft[l as usize];
-                if overlaps(&spaced, &s) && !out.contains(&s) {
+                if crowds(&r, &s) && !out.contains(&s) {
                     out.push(s);
+                }
+            }
+        }
+        out
+    }
+
+    /// The dimmed nodes a label's ground at `r` meets, each as its disc and ring (centre and
+    /// radius): what the ground hides with it, so no part of one peeks out beside the label.
+    pub(crate) fn soft_nodes_under(&self, r: Rect) -> Vec<((f32, f32), f32)> {
+        let ground = r.inflate(2.0);
+        let mut out: Vec<((f32, f32), f32)> = Vec::new();
+        for c in self.cells(ground) {
+            for &k in &self.cell_nodes[c] {
+                let (at, reach, i) = self.nodes[k as usize];
+                if self.soft_nodes[i as usize]
+                    && circle_meets(at, reach, &ground)
+                    && !out.contains(&(at, reach))
+                {
+                    out.push((at, reach));
                 }
             }
         }
@@ -237,62 +298,85 @@ impl Field {
             || r.y < b.y.max(self.header)
             || r.bottom() > b.bottom()
         {
-            return Clash::Blocked(u32::MAX);
+            return Clash {
+                blocked: Clash::OUT,
+                cost: 1e9,
+                crossed: 0.0,
+            };
         }
-        let cells = self.cells(r);
-        let spaced = r.inflate(LABEL_CLEAR);
-        let mut blocked = 0u32;
+        let cells = self.cells(r.inflate(LABEL_CLEAR_X));
+        let (mut blocked, mut cost) = (0u32, 0.0f32);
+        let (mut labels, mut nodes): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
         for &c in &cells {
             for &l in &self.cell_labels[c] {
-                if overlaps(&spaced, &self.labels[l as usize]) {
-                    blocked += 100;
+                if !labels.contains(&l) && crowds(&r, &self.labels[l as usize]) {
+                    labels.push(l);
+                    (blocked, cost) = (blocked + 1, cost + 100.0);
                 }
             }
             for &k in &self.cell_nodes[c] {
                 let (at, reach, i) = self.nodes[k as usize];
-                if self.soft_nodes[i as usize] {
+                if self.soft_nodes[i as usize] || nodes.contains(&k) {
                     continue;
                 }
                 if circle_meets(at, reach, &r)
                     && (i as usize != own || circle_meets(at, reach - 1.0, &r))
                 {
-                    blocked += 100;
+                    nodes.push(k);
+                    (blocked, cost) = (blocked + 1, cost + 100.0);
                 }
             }
         }
-        // A label must read as its own node's: no other node nearer it.
+        // A label must read as its own node's: every other node, a dimmed one too (it still
+        // shows), clearly further from it than its own.
         if let Some(Some((own_at, own_reach))) = self.node_at.get(own) {
-            let mine = rect_distance(*own_at, &r) - own_reach;
-            for c in self.cells(r.inflate(ASSOCIATION)) {
+            let mine = (rect_distance(*own_at, &r) - own_reach).max(0.0);
+            let clear = mine + OWN_MARGIN.0.max(mine * OWN_MARGIN.1);
+            let mut seen: Vec<u32> = Vec::new();
+            for c in self.cells(r.inflate(clear + ASSOCIATION)) {
                 for &k in &self.cell_nodes[c] {
                     let (at, reach, i) = self.nodes[k as usize];
-                    // A dimmed node doesn't compete with a bright one for its label.
-                    if i as usize != own
-                        && !self.soft_nodes[i as usize]
-                        && rect_distance(at, &r) - reach + 1.0 < mine
-                    {
-                        blocked += 100;
+                    let gap = rect_distance(at, &r) - reach;
+                    // A dimmed node the label's ground meets is hidden under it, not beside it:
+                    // what it costs is what it crosses.
+                    let under =
+                        self.soft_nodes[i as usize] && circle_meets(at, reach, &r.inflate(2.0));
+                    if i as usize != own && !seen.contains(&k) && gap < clear && !under {
+                        seen.push(k);
+                        // The nearer, the worse; a dimmed node, showing at a quarter, far less:
+                        // a label beside its own node over dimmed ones beats one out on a far
+                        // ring, which reads as no one's.
+                        let near = 1.0 - (gap.max(0.0) / clear.max(1.0)).min(1.0);
+                        // Only a bright one blocks it outright: beside a dimmed dot a bright
+                        // label still reads as the bright node's, so that only costs.
+                        let soft = self.soft_nodes[i as usize];
+                        let (base, weight) = if soft { DIM_NEAR } else { BRIGHT_NEAR };
+                        blocked += u32::from(!soft);
+                        cost += base + weight * near;
                     }
                 }
             }
         }
         let near = r.inflate(1.5);
+        self.query = self.query.wrapping_add(1);
+        let most = self.segs.len().max(self.soft.len()).max(self.hard.len());
+        if self.stamp.len() < most {
+            self.stamp.resize(most, 0);
+        }
+        let mut crossed = 0.0f32;
         for &c in &cells {
             for &k in &self.cell_hard[c] {
+                if self.stamp[k as usize] == self.query {
+                    continue;
+                }
+                self.stamp[k as usize] = self.query;
                 let (a, z) = self.hard[k as usize];
                 if seg_meets(a, z, &near) {
-                    blocked += 1;
+                    crossed += HARD_EDGE_COST - 1.0;
                 }
             }
         }
-        if blocked > 0 {
-            return Clash::Blocked(blocked);
-        }
         self.query = self.query.wrapping_add(1);
-        if self.stamp.len() < self.segs.len().max(self.soft.len()) {
-            self.stamp.resize(self.segs.len().max(self.soft.len()), 0);
-        }
-        let mut crossed = 0u32;
         for &c in &cells {
             for &s in &self.cell_segs[c] {
                 if self.stamp[s as usize] == self.query {
@@ -301,7 +385,7 @@ impl Field {
                 self.stamp[s as usize] = self.query;
                 let (a, z) = self.segs[s as usize];
                 if seg_meets(a, z, &near) {
-                    crossed += 1;
+                    crossed += 1.0;
                 }
             }
         }
@@ -312,8 +396,8 @@ impl Field {
                     continue;
                 }
                 self.stamp[l as usize] = self.query;
-                if overlaps(&spaced, &self.soft[l as usize]) {
-                    crossed += 1;
+                if crowds(&r, &self.soft[l as usize]) {
+                    crossed += 1.0;
                 }
             }
         }
@@ -322,6 +406,7 @@ impl Field {
             for &k in &self.cell_nodes[c] {
                 let (at, reach, i) = self.nodes[k as usize];
                 if self.soft_nodes[i as usize]
+                    && i as usize != own
                     && !nodes_under.contains(&k)
                     && circle_meets(at, reach, &r)
                 {
@@ -329,11 +414,11 @@ impl Field {
                 }
             }
         }
-        crossed += nodes_under.len() as u32;
-        if crossed > 0 {
-            Clash::Edges(crossed)
-        } else {
-            Clash::Free
+        crossed += nodes_under.len() as f32;
+        Clash {
+            blocked,
+            cost,
+            crossed,
         }
     }
 }
@@ -421,6 +506,7 @@ pub(crate) fn spots(
             rect: Rect::new(left, y - cap - 2.0, w, cap + 2.0 + d),
             backed: false,
             side,
+            ring: 0,
         }
     };
     let mid = c.1 + cap / 2.0;
@@ -446,15 +532,28 @@ pub(crate) fn further(
     m: &mut dyn Measure,
 ) -> Vec<NodeLabel> {
     let mut out = spots(text, c, r, gap + 10.0, spec, m);
-    out.extend(spots(text, c, r, gap + 24.0, spec, m));
+    out.extend(
+        spots(text, c, r, gap + 24.0, spec, m)
+            .into_iter()
+            .map(|mut l| {
+                l.ring = 2;
+                l
+            }),
+    );
+    for l in out.iter_mut().filter(|l| l.ring == 0) {
+        l.ring = 1;
+    }
     out
 }
 
-/// The best of `spots` for node `own`: the first free; else the one crossing fewest edges
-/// (backed), when that's at most `edges_ok` or the label is forced (`block_ok` above 0); else
-/// the least blocked (backed), when its score is at most `block_ok` (100 a label or a node
-/// covered, 1 an edge drawn bright; `u32::MAX` takes the least bad, even outside the region).
-/// None to cull it.
+/// The best of `spots` for node `own`, by score: what it crosses (an edge 1, a bright edge
+/// [`HARD_EDGE_COST`], a dimmed label or node it lies over 1), a corner [`CORNER_COST`] more,
+/// a further ring [`RING_COST`] more, and what blocks it (100 for each label or bright node it
+/// covers, 20 to 100 for a node nearer it than its own by how near, less for a dimmed one). A
+/// free spot (nothing crossed) goes as it is; one crossing edges goes on a ground (backed)
+/// when they're at most `edges_ok` or the label is forced (`block_ok` above 0); a blocked one
+/// only when its blocks, at 100 each, come to at most `block_ok` (`u32::MAX` takes the least
+/// bad, even outside the region). None to cull it.
 pub(crate) fn choose(
     field: &mut Field,
     spots: Vec<NodeLabel>,
@@ -463,23 +562,28 @@ pub(crate) fn choose(
     block_ok: u32,
 ) -> Option<NodeLabel> {
     let forced = block_ok > 0;
-    let mut best: Option<(Clash, NodeLabel)> = None;
-    for s in spots {
+    let mut best: Option<(f32, Clash, NodeLabel)> = None;
+    for (n, s) in spots.into_iter().enumerate() {
         let c = field.clash(s.rect, own);
-        if c == Clash::Free {
+        let corner = if s.side >= 4 { CORNER_COST } else { 0.0 };
+        let cost =
+            c.cost + c.crossed + corner + RING_COST[usize::from(s.ring.min(2))] + n as f32 * 1e-3;
+        if c.blocked == 0 && c.crossed == 0.0 && s.ring == 0 && s.side < 4 {
+            // The first free side: nothing does better.
             return Some(s);
         }
-        if best.as_ref().is_none_or(|(b, _)| c < *b) {
-            best = Some((c, s));
+        if best.as_ref().is_none_or(|(b, _, _)| cost < *b) {
+            best = Some((cost, c, s));
         }
     }
-    let (c, mut s) = best?;
-    match c {
-        Clash::Edges(n) if n <= edges_ok || forced => {
+    let (_, c, mut s) = best?;
+    match c.blocked {
+        0 if c.crossed == 0.0 => Some(s),
+        0 if c.crossed <= edges_ok as f32 || forced => {
             s.backed = true;
             Some(s)
         }
-        Clash::Blocked(n) if n <= block_ok => {
+        n if n > 0 && n.saturating_mul(100) <= block_ok => {
             s.backed = true;
             Some(s)
         }

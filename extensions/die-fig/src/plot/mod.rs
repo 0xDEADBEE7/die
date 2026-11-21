@@ -1784,7 +1784,21 @@ pub fn base(
     theme: &Theme,
     m: &mut dyn Measure,
 ) -> (Scene, ChartLayout, HitIndex) {
-    let mut layout = layout::lay_out(model, view, size, scale, m);
+    base_beside(model, view, size, size.0, scale, theme, m)
+}
+
+/// [`base`] in part of an area `area_w` wide (beside the detail panel): its paddings are the
+/// whole area's, so the title and the plot stay where they were as the panel opens.
+pub fn base_beside(
+    model: &ChartModel,
+    view: &View,
+    size: (f32, f32),
+    area_w: f32,
+    scale: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> (Scene, ChartLayout, HitIndex) {
+    let mut layout = layout::lay_out(model, view, size, area_w, scale, m);
     layout.bars = marks::bars(model, view, &layout);
     layout.totals = marks::bar_totals(model, view, &layout, theme, m)
         .into_iter()

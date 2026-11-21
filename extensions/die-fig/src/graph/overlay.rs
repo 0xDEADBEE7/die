@@ -52,6 +52,8 @@ const PAD: f32 = 12.0;
 const GAP: f32 = 12.0;
 const KEY_W: f32 = 10.0;
 const INSET: f32 = 4.0;
+/// How far a card may stray from what it's about before that costs steeply, in px.
+const STRAY: f32 = 60.0;
 /// The widest a card's value and name columns grow before their text is cut.
 const VALUE_MAX: f32 = 180.0;
 const NAME_MAX: f32 = 140.0;
@@ -180,7 +182,7 @@ pub fn overlay(
     let dimmed: Option<Vec<bool>> = emph
         .as_ref()
         .map(|(ne, _)| ne.iter().map(|e| *e == Emphasis::Dimmed).collect());
-    let (shown_labels, under) = labels(
+    let (shown_labels, under, hidden) = labels(
         model,
         layout,
         &want,
@@ -209,6 +211,17 @@ pub fn overlay(
             stroke: None,
         });
     }
+    // The dimmed nodes a label's ground lies over, hidden with it.
+    for (c, r) in hidden {
+        scene.push(Item::Path {
+            path: PathData::circle(c.0, c.1, r + 0.5),
+            fill: Some(Paint::solid(theme.surface, 1.0)),
+            stroke: None,
+        });
+    }
+    // Where what the overlay draws again over the base starts: the base's labels the card
+    // cuts are cleared here, under it.
+    let redrawn_at = scene.items.len();
     if let Some((_, edges_e)) = &emph {
         let on_path = path.is_some();
         for (k, e) in layout.edges.iter().enumerate() {
@@ -338,20 +351,13 @@ pub fn overlay(
         }
     }
 
-    for (l, focus, _) in &shown_labels {
-        let color = if *focus { theme.strong } else { theme.text };
-        label(&mut scene, l, color, 1.0, theme);
-    }
-    if !layout.contained {
-        scene.push(Item::PopClip);
-    }
-
     // The card: the hover's, else the cursor's.
     let card_of = hover.or(if st.cursor_card {
         cursor.map(|i| Target::Node(i as u32))
     } else {
         None
     });
+    let mut card_spot: Option<(Card, Rect)> = None;
     if let Some(t) = card_of {
         let hops = path
             .as_ref()
@@ -376,7 +382,7 @@ pub fn overlay(
         // What the card should keep off, by how much it matters: the node in focus and the
         // cursor's most, the emphasised next, and their labels; the rest a little.
         let (nodes_e, _) = emph.clone().unwrap_or_else(|| model.emphasis(None));
-        let mut avoid: Vec<(Rect, f32)> = Vec::new();
+        let mut avoid: Vec<(Keep, f32)> = Vec::new();
         // An edge's ends are what its card is about.
         let ends = hover_edge.map(|k| model.ends[k]);
         let is_end = |i: usize| ends.is_some_and(|(a, b)| a as usize == i || b as usize == i);
@@ -388,15 +394,13 @@ pub fn overlay(
                 match nodes_e[i] {
                     Emphasis::Focused => 24.0,
                     Emphasis::Related => 12.0,
-                    Emphasis::Normal => 3.0,
+                    Emphasis::Normal => 6.0,
                     Emphasis::Dimmed => 1.0,
                 }
             };
-            let reach = g.r + RING + 2.0;
-            avoid.push((
-                Rect::new(g.at.0 - reach, g.at.1 - reach, 2.0 * reach, 2.0 * reach),
-                w,
-            ));
+            // Its disc and ring, not the square about them: a card beside a node by its
+            // corner covers nothing of it.
+            avoid.push((Keep::Disc(g.at, g.r + RING + 2.0), w));
             // The base's label, unless the overlay showed it again elsewhere.
             if let Some(l) = &layout.labels[i]
                 && !shown_labels.iter().any(|(_, _, e)| *e == Some(l.rect))
@@ -407,14 +411,20 @@ pub fn overlay(
                     Emphasis::Normal => 1.5,
                     Emphasis::Dimmed => 0.5,
                 };
-                avoid.push((l.rect, lw));
+                avoid.push((Keep::Rect(l.rect), lw));
             }
         }
         for (l, _, _) in &shown_labels {
-            avoid.push((l.rect, 10.0));
+            avoid.push((Keep::Rect(l.rect), 10.0));
         }
-        // The edges drawn bright: a path's most, a neighbour's less.
+        // The edges drawn bright: the hovered one, which its card is about, most, then a
+        // path's, then a neighbour's.
         let mut lines: Vec<(Vec<(f32, f32)>, f32)> = Vec::new();
+        if let Some(k) = hover_edge
+            && let Some(e) = &layout.edges[k]
+        {
+            lines.push((e.pts.clone(), 10.0));
+        }
         if let Some((_, edges_e)) = &emph {
             for (k, e) in layout.edges.iter().enumerate() {
                 if let Some(e) = e
@@ -426,15 +436,73 @@ pub fn overlay(
         }
         // The header: the title and the legend cost more to cover than the graph's space.
         if !layout.title.is_empty() {
-            avoid.push((layout.title.inflate(4.0), 12.0));
+            avoid.push((Keep::Rect(layout.title.inflate(4.0)), 12.0));
         }
         for (_, r) in &layout.legend {
-            avoid.push((*r, 6.0));
+            avoid.push((Keep::Rect(*r), 6.0));
         }
-        card.place(layout, &mut scene, anchor, reach, &avoid, &lines, theme, m);
+        let (card, r) = card.place(layout, anchor, reach, &avoid, &lines, m);
+        card_spot = Some((card, r));
     }
+    // A label the card would cut goes whole, so no piece of it peeks out at the card's edge:
+    // a base one (dimmed, or at rest) is cleared under the overlay's own redrawing, a shown one
+    // isn't drawn.
+    let card_rect = card_spot.as_ref().map(|(_, r)| *r);
+    let cuts = |l: &Rect| {
+        card_rect.is_some_and(|r| l.intersect(&r).is_some_and(|o| o.w > 0.5 && o.h > 0.5))
+    };
+    let mut covers: Vec<Item> = Vec::new();
+    for (i, l) in layout.labels.iter().enumerate() {
+        let Some(l) = l else { continue };
+        let again = shown_labels
+            .iter()
+            .any(|(s, _, e)| *e == Some(l.rect) || s.rect == l.rect);
+        if !again && hover_node != Some(i) && cuts(&l.rect) {
+            covers.push(Item::Path {
+                path: PathData::rect(l.rect.inflate(1.0)),
+                fill: Some(Paint::solid(theme.surface, 1.0)),
+                stroke: None,
+            });
+        }
+    }
+    for (l, focus, _) in &shown_labels {
+        if cuts(&l.rect) {
+            continue;
+        }
+        let color = if *focus { theme.strong } else { theme.text };
+        label(&mut scene, l, color, 1.0, theme);
+    }
+    if !layout.contained {
+        scene.push(Item::PopClip);
+    }
+    scene.items.splice(redrawn_at..redrawn_at, covers);
+    if let Some((card, r)) = card_spot {
+        card.draw(&mut scene, r, theme, m);
+    }
+
     scene
 }
+
+/// What a card keeps off: a rectangle (a label, the header) or a node's disc.
+#[derive(Clone, Copy, Debug)]
+enum Keep {
+    Rect(Rect),
+    Disc((f32, f32), f32),
+}
+
+impl Keep {
+    /// Whether a card at `r` covers some of it.
+    fn covered(&self, r: &Rect) -> bool {
+        match self {
+            Keep::Rect(a) => a.intersect(r).is_some_and(|i| i.w > 0.5 && i.h > 0.5),
+            Keep::Disc(c, rad) => circle_meets(*c, *rad, r),
+        }
+    }
+}
+
+/// What a row the card leaves out to stay clear costs, against what covering costs: less than
+/// a neighbour's node or the title, more than a few dimmed ones.
+const ROW_DROP: f32 = 4.0;
 
 /// The emphasis wash: the surface at [`WASH`] over what the graph inks, within the region.
 fn wash(scene: &mut Scene, layout: &GraphLayout, theme: &Theme) {
@@ -471,7 +539,7 @@ fn labels(
     hard: &[Seg],
     dimmed: Option<&[bool]>,
     m: &mut dyn Measure,
-) -> (Vec<Shown>, Vec<Rect>) {
+) -> (Vec<Shown>, Vec<Rect>, Vec<((f32, f32), f32)>) {
     let mut order: Vec<(usize, bool)> = want
         .iter()
         .copied()
@@ -492,6 +560,7 @@ fn labels(
     };
     let mut shown: Vec<Shown> = Vec::new();
     let mut erase: Vec<Rect> = Vec::new();
+    let mut hidden: Vec<((f32, f32), f32)> = Vec::new();
     if order.iter().any(|&(i, f)| fresh(i, f)) {
         let mut field = Field::of(layout);
         for &(a, b) in hard {
@@ -539,8 +608,9 @@ fn labels(
             let block_ok = if focus { u32::MAX } else { 99 };
             if let Some(l) = choose(&mut field, cands, i, u32::MAX, block_ok) {
                 field.add_label(l.rect);
-                // The dimmed labels it lies over, cleared with its own old place.
+                // The dimmed labels and nodes it lies over, cleared with its own old place.
                 erase.extend(field.soft_under(l.rect));
+                hidden.extend(field.soft_nodes_under(l.rect));
                 shown.push((l, focus, layout.labels[i].as_ref().map(|b| b.rect)));
             }
         }
@@ -552,7 +622,7 @@ fn labels(
             shown.push((b.clone(), false, None));
         }
     }
-    (shown, erase)
+    (shown, erase, hidden)
 }
 
 /// A card's row: a key dot, a value, a name.
@@ -568,6 +638,9 @@ struct Row {
 struct Card {
     title: String,
     rows: Vec<Row>,
+    /// The rows it keeps however small it gets: a node's group and degree (and hops), an
+    /// edge's label or weight.
+    keep: usize,
     title_w: f32,
     val_w: f32,
     name_w: f32,
@@ -600,6 +673,7 @@ impl Card {
     ) -> Card {
         let _ = view;
         let mut rows = Vec::new();
+        let keep;
         let title = match t {
             Target::Node(i) => {
                 let i = i as usize;
@@ -631,6 +705,7 @@ impl Card {
                         name: format!("from {}", model.label(from)),
                     });
                 }
+                keep = rows.len();
                 for (k, v) in model.fields(i).into_iter().take(CARD_FIELDS) {
                     rows.push(Row {
                         key: None,
@@ -658,6 +733,7 @@ impl Card {
                         name: "weight".into(),
                     });
                 }
+                keep = rows.len().max(1);
                 let room = CARD_FIELDS.saturating_sub(rows.len());
                 for (f, v) in model.edge_fields(k).into_iter().take(room) {
                     rows.push(Row {
@@ -699,6 +775,7 @@ impl Card {
         let h = Card::height(rows.len());
         Card {
             title,
+            keep,
             rows,
             title_w,
             val_w,
@@ -749,9 +826,9 @@ impl Card {
         layout: &GraphLayout,
         anchor: (f32, f32),
         reach: f32,
-        avoid: &[(Rect, f32)],
+        avoid: &[(Keep, f32)],
         lines: &[(Vec<(f32, f32)>, f32)],
-    ) -> Option<(Rect, bool)> {
+    ) -> Option<(f32, Rect, bool, f32)> {
         let (aw, ah) = layout.size;
         let w = self.w.min(aw - 2.0 * INSET).max(1.0);
         let h = self.h;
@@ -771,6 +848,20 @@ impl Card {
                 ax < aw / 2.0,
             ),
         ];
+        // A step or three further out beside, under and over: clear of what's by the anchor
+        // (an edge's ends, a node's neighbours) while still by it.
+        for out in [14.0, 28.0, 44.0] {
+            tries.push((Rect::new(ax + side_gap + out, ay - h / 2.0, w, h), false));
+            tries.push((Rect::new(ax - side_gap - out - w, ay - h / 2.0, w, h), true));
+            tries.push((Rect::new(ax + g + out, ay + g, w, h), false));
+            tries.push((Rect::new(ax - g - out - w, ay + g, w, h), true));
+            tries.push((Rect::new(ax + g + out, ay - g - h, w, h), false));
+            tries.push((Rect::new(ax - g - out - w, ay - g - h, w, h), true));
+            let under = Rect::new(ax - w / 2.0, ay + side_gap + out, w, h);
+            tries.push((under, ax < aw / 2.0));
+            let over = Rect::new(ax - w / 2.0, ay - side_gap - out - h, w, h);
+            tries.push((over, ax < aw / 2.0));
+        }
         for k in 0..=4 {
             let t = k as f32 / 4.0;
             let y = INSET + (ah - 2.0 * INSET - h).max(0.0) * t;
@@ -787,7 +878,7 @@ impl Card {
                 && r.right() + spare <= aw - INSET
                 && r.bottom() <= ah - INSET
         };
-        let mut best: Option<(f32, Rect, bool)> = None;
+        let mut best: Option<(f32, Rect, bool, f32)> = None;
         for (n, &(r, left)) in tries.iter().enumerate() {
             let spare = if flipped && !left {
                 layout.cell_width
@@ -799,7 +890,7 @@ impl Card {
             }
             let covered: f32 = avoid
                 .iter()
-                .filter(|(a, _)| a.intersect(&r).is_some_and(|i| i.w > 0.5 && i.h > 0.5))
+                .filter(|(a, _)| a.covered(&r))
                 .map(|(_, c)| c)
                 .sum::<f32>()
                 + lines
@@ -807,39 +898,68 @@ impl Card {
                     .filter(|(pts, _)| pts.windows(2).any(|w| seg_meets(w[0], w[1], &r)))
                     .map(|(_, c)| c)
                     .sum::<f32>();
-            // A card strays from what it's about at a cost: 4 for every 100 px.
+            // A card strays from what it's about at a cost: 4 for every 100 px, and steeply past
+            // [`STRAY`], where it no longer reads as the anchor's.
             let nx = ax.clamp(r.x, r.right());
             let ny = ay.clamp(r.y, r.bottom());
-            let far = ((ax - nx).hypot(ay - ny) - reach).max(0.0) * 0.04;
+            let d = ((ax - nx).hypot(ay - ny) - reach).max(0.0);
+            let far = d * 0.04 + (d - STRAY).max(0.0) * 0.3;
             let cost =
                 covered + far + (n as f32).min(8.0) * 0.6 + if left != flipped { 2.0 } else { 0.0 };
-            if best.is_none_or(|(b, _, _)| cost < b) {
-                best = Some((cost, r, left));
+            if best.is_none_or(|(b, _, _, _)| cost < b) {
+                best = Some((cost, r, left, covered));
             }
         }
-        best.map(|(_, r, l)| (r, l))
+        best
     }
 
-    /// Draws the card where [`Card::best_place`] puts it; where it can't fit whole, cut to fit
-    /// beside the anchor or above or below it (whichever keeps more rows) and placed again;
-    /// where even that fails, slid into the area off the anchor.
-    #[allow(clippy::too_many_arguments)]
+    /// Where the card goes, as [`Card::best_place`] puts it, whole or with its last rows left
+    /// out (its own fields first, [`ROW_DROP`] a row), whichever costs least: so a small area's
+    /// card says less rather than cover the neighbours, the title or the legend. Where it can't
+    /// fit at all, cut to fit beside the anchor or above or below it (whichever keeps more
+    /// rows) and placed again; where even that fails, slid into the area off the anchor. The
+    /// card as it's drawn, and where.
     fn place(
         &self,
         layout: &GraphLayout,
-        scene: &mut Scene,
         anchor: (f32, f32),
         reach: f32,
-        avoid: &[(Rect, f32)],
+        avoid: &[(Keep, f32)],
         lines: &[(Vec<(f32, f32)>, f32)],
-        theme: &Theme,
         m: &mut dyn Measure,
-    ) {
+    ) -> (Card, Rect) {
         let (aw, ah) = layout.size;
         let (ax, ay) = anchor;
         let side_gap = CARD_GAP * 0.5 + reach;
         let mut card = self.clone();
-        let mut spot = card.best_place(layout, anchor, reach, avoid, lines);
+        let least = self.rows.len().min(self.keep);
+        let mut best: Option<(f32, Card, (Rect, bool))> = None;
+        for n in (least..=self.rows.len()).rev() {
+            let mut c = self.clone();
+            c.rows.truncate(n);
+            c.h = Card::height(n);
+            let dropped = (self.rows.len() - n) as f32 * ROW_DROP;
+            if best.as_ref().is_some_and(|(b, _, _)| dropped >= *b) {
+                // Shorter still can only cost more than the best so far.
+                break;
+            }
+            if let Some((cost, r, left, covered)) =
+                c.best_place(layout, anchor, reach, avoid, lines)
+            {
+                let cost = cost + dropped;
+                if best.as_ref().is_none_or(|(b, _, _)| cost < *b) {
+                    best = Some((cost, c, (r, left)));
+                }
+                if covered < ROW_DROP && n == self.rows.len() {
+                    // Whole and clear of everything that matters: no row to drop.
+                    break;
+                }
+            }
+        }
+        let mut spot = None;
+        if let Some((_, c, p)) = best {
+            (card, spot) = (c, Some(p));
+        }
         if spot.is_none() {
             let beside = card.shrunk(
                 (ax - side_gap).max(aw - ax - side_gap) - 2.0 * INSET,
@@ -852,8 +972,8 @@ impl Card {
             let mut cuts = [beside, over];
             cuts.sort_by_key(|c| std::cmp::Reverse(c.rows.len()));
             for c in cuts {
-                if let Some(p) = c.best_place(layout, anchor, reach, avoid, lines) {
-                    spot = Some(p);
+                if let Some((_, r, left, _)) = c.best_place(layout, anchor, reach, avoid, lines) {
+                    spot = Some((r, left));
                     card = c;
                     break;
                 }
@@ -892,8 +1012,8 @@ impl Card {
             }
         };
         layout.flipped.set(left_side);
-        let r = Rect::new(r.x.round(), r.y.round(), r.w, r.h);
-        card.draw(scene, r, theme, m);
+        let _ = m;
+        (card, Rect::new(r.x.round(), r.y.round(), r.w, r.h))
     }
 
     fn draw(&self, scene: &mut Scene, r: Rect, theme: &Theme, m: &mut dyn Measure) {

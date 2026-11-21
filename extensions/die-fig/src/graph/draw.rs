@@ -27,7 +27,21 @@ pub fn base(
     theme: &Theme,
     m: &mut dyn Measure,
 ) -> (Scene, GraphLayout) {
-    let mut layout = lay_out(model, view, size, scale, theme, m);
+    base_beside(model, view, size, size.0, scale, theme, m)
+}
+
+/// [`base`] in part of an area `area_w` wide (beside the detail panel): its paddings are the
+/// whole area's, so the title and the graph stay where they were as the panel opens.
+pub fn base_beside(
+    model: &GraphModel,
+    view: &View,
+    size: (f32, f32),
+    area_w: f32,
+    scale: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> (Scene, GraphLayout) {
+    let mut layout = lay_out(model, view, size, area_w, scale, theme, m);
     layout.labels = place(model, view, &layout, m);
     layout.ink = layout.inked();
     let mut scene = Scene::new(size.0, size.1, scale);

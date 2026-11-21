@@ -3148,7 +3148,7 @@ fn draw_base(
                 (figure(why.log, ErrorView::Log { top, mark }, m), None, None)
             }
             (None, Shows::Graph(g), failed) => {
-                let (mut s, l) = crate::graph::base(g, view, fsize, scale, theme, m);
+                let (mut s, l) = crate::graph::base_beside(g, view, fsize, size.0, scale, theme, m);
                 if let Some(f) = failed {
                     plot::stale_badge(&mut s, f.first(), theme, m);
                 }
@@ -3156,7 +3156,7 @@ fn draw_base(
                 (s, None, None)
             }
             (None, Shows::Chart(model), failed) => {
-                let (mut s, l, h) = plot::base(model, view, fsize, scale, theme, m);
+                let (mut s, l, h) = plot::base_beside(model, view, fsize, size.0, scale, theme, m);
                 if let Some(f) = failed {
                     plot::stale_badge(&mut s, f.first(), theme, m);
                 }
