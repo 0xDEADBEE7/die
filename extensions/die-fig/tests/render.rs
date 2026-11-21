@@ -1655,7 +1655,6 @@ fn the_theme_comes_from_the_faces_of_cores_own() {
     assert_eq!(t.surface, Color(0x10, 0x10, 0x10), "default's ground");
     assert_eq!(t.text, Color(0xd0, 0xd0, 0xd0), "fig-text is default's");
     assert_eq!(t.muted, Color(0x70, 0x70, 0x70), "fig-tick is shadow's");
-    assert_eq!(t.dial, Color(0x70, 0x70, 0x70), "and fig-dial");
     assert_eq!(t.chip_text, t.surface);
     assert_eq!(t.series, dark.series);
     assert_eq!(t.status, dark.status);
@@ -1683,8 +1682,7 @@ fn a_light_ground_takes_the_light_set_and_a_styled_face_wins() {
             .face("fig-series-2", Style::new().fg(h6("#123456")))
             .face("fig-grid", Style::new().fg(h6("#abcdef")))
             .face("fig-good", Style::new().fg(h6("#00ff00")))
-            .face("fig-cursor", Style::new().fg(h6("#202020")))
-            .face("fig-dial-accent", Style::new().fg(h6("#ff8800"))),
+            .face("fig-cursor", Style::new().fg(h6("#202020"))),
     );
     assert!(
         h.messages.iter().all(|m| !m.contains("no one declared")),
@@ -1704,7 +1702,6 @@ fn a_light_ground_takes_the_light_set_and_a_styled_face_wins() {
     assert_eq!(t.status[0], Color(0, 0xff, 0));
     assert_eq!(t.status[1..], light.status[1..]);
     assert_eq!(t.chip, Color(0x20, 0x20, 0x20));
-    assert_eq!(t.dial_accent, Color(0xff, 0x88, 0x00));
     assert_eq!(
         t.muted, light.muted,
         "shadow unstyled here: the light default"

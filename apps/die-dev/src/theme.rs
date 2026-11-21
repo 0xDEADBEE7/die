@@ -93,7 +93,7 @@ pub fn mono_dark() -> Theme {
         // fig's chrome, quiet so the data is the only loud thing: gridlines a step off the
         // ground, the zero line and the hovered point's ring in the border's grey, ticks in the
         // mid grey, labels and titles as text and bold text are, the card on the subtle ground,
-        // the cursor's chip in the brightest grey, and its dial as the whiteboard's.
+        // and the cursor's chip in the brightest grey.
         .face("fig-grid", s().fg(Rgb::hex("#2a2a2a")))
         .face("fig-baseline", s().fg(BORDER))
         .face("fig-tick", s().fg(FG_MID))
@@ -102,8 +102,6 @@ pub fn mono_dark() -> Theme {
         .face("fig-tooltip", s().fg(BG_SUBTLE))
         .face("fig-ring", s().fg(BORDER))
         .face("fig-cursor", s().fg(FG_BRIGHT))
-        .face("fig-dial", s().fg(FG_MID))
-        .face("fig-dial-accent", s().fg(RED))
         // h1 and h2: bright and bold over a border-coloured line. In the view in place a cell
         // has one size of letter, so the two lines stand in for 2em, and one for 1.5em.
         .face(

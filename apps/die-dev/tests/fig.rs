@@ -71,7 +71,7 @@ fn mono_dark_styles_figs_chrome_and_leaves_its_data_to_fig() {
     assert_eq!(fg("fig-grid"), Some(die::core::Rgb::hex("#2a2a2a")));
     assert_eq!(fg("fig-tick"), Some(die::core::Rgb::hex("#888888")));
     assert_eq!(fg("fig-tooltip"), Some(die::core::Rgb::hex("#252525")));
-    assert_eq!(fg("fig-dial-accent"), Some(die::core::Rgb::hex("#cc4444")));
+    assert_eq!(fg("fig-cursor"), Some(die::core::Rgb::hex("#eeeeee")));
     // The theme styles nothing fig didn't declare.
     let h = harness();
     assert!(

@@ -3,7 +3,6 @@
 
 use super::{ChartLayout, ChartModel};
 use crate::data::SeriesKey;
-use crate::dial::DialState;
 use crate::interact::{BrushKind, Cursor, View};
 use crate::scene::{Measure, Scene};
 use crate::theme::Theme;
@@ -21,8 +20,6 @@ pub struct OverlayState {
     pub brush: Option<(BrushKind, (f32, f32), (f32, f32))>,
     /// The series emphasised.
     pub emphasis: Option<SeriesKey>,
-    /// The dial, open.
-    pub dial: Option<DialState>,
 }
 
 /// The overlay's scene.

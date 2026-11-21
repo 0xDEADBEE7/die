@@ -2,7 +2,7 @@
 //!
 //! Chrome comes from the theme and stays quiet; the data is the only loud thing. Each face's
 //! colour is its foreground, whatever it paints (the grid's lines, the card's ground, the
-//! cursor's chip), as the whiteboard's dial faces are. A face the theme leaves unstyled takes the
+//! cursor's chip), as the whiteboard's ink faces are. A face the theme leaves unstyled takes the
 //! defaults below: the dark set when `default`'s background is dark (its Rec. 601 luma under
 //! 0.5, see [`is_dark`]), else the light. The series and status faces are declared unstyled so the validated sets apply, and
 //! a theme that styles `fig-series-N` wins.
@@ -19,8 +19,6 @@
 //! | `fig-tooltip` | `tooltip` | `#252525` | `#ffffff` |
 //! | `fig-ring` | `ring` | `#3a3a3a` | `#e1e0d9` |
 //! | `fig-cursor` | `chip` | `#eeeeee` | `#0b0b0b` |
-//! | `fig-dial` (on `shadow`) | `dial` | `#888888` | `#898781` |
-//! | `fig-dial-accent` | `dial_accent` | `#cc4444` | `#cc4444` |
 //!
 //! `surface` is `default`'s background, `chip_text` the surface, and `accent` and `other` have
 //! no face of their own.
@@ -69,10 +67,6 @@ pub struct Theme {
     pub chip_text: Color,
     /// The one accent: a focus, a selection's edge.
     pub accent: Color,
-    /// The dial's names and line art.
-    pub dial: Color,
-    /// The dial's hovered sector, chip and needle.
-    pub dial_accent: Color,
     /// The eight series slots.
     pub series: [Color; 8],
     /// Good, warning, serious and critical.
@@ -103,16 +97,14 @@ pub const FACES: &[&str] = &[
     "fig-tooltip",
     "fig-ring",
     "fig-cursor",
-    "fig-dial",
-    "fig-dial-accent",
 ];
 
-/// The face a face inherits from: `fig-text` from `default`, `fig-tick` and `fig-dial` from
-/// `shadow`, the rest from none.
+/// The face a face inherits from: `fig-text` from `default`, `fig-tick` from `shadow`, the rest
+/// from none.
 fn parent(face: &str) -> Option<&'static str> {
     match face {
         "fig-text" => Some("default"),
-        "fig-tick" | "fig-dial" => Some("shadow"),
+        "fig-tick" => Some("shadow"),
         _ => None,
     }
 }
@@ -169,8 +161,6 @@ pub fn resolve(ctx: &die_core::Ctx) -> Theme {
         chip: or("fig-cursor", base.chip),
         chip_text: surface,
         accent: base.accent,
-        dial: or("fig-dial", base.dial),
-        dial_accent: or("fig-dial-accent", base.dial_accent),
         series,
         status,
         other: base.other,
@@ -222,8 +212,6 @@ impl Theme {
             chip: hex("#eeeeee"),
             chip_text: surface,
             accent: hex("#cc4444"),
-            dial: hex("#888888"),
-            dial_accent: hex("#cc4444"),
             series: [
                 hex("#3987e5"),
                 hex("#d95926"),
@@ -257,8 +245,6 @@ impl Theme {
             chip: hex("#0b0b0b"),
             chip_text: surface,
             accent,
-            dial: muted,
-            dial_accent: accent,
             series: [
                 hex("#2a78d6"),
                 hex("#eb6834"),
@@ -298,10 +284,9 @@ mod tests {
         let fg = |ctx: &die_core::Ctx, name: &str| ctx.face_style(name).unwrap().fg;
         assert_eq!(fg(&ctx, "fig-text"), Some(die_core::Rgb::hex("#123456")));
         assert_eq!(fg(&ctx, "fig-tick"), Some(die_core::Rgb::hex("#654321")));
-        assert_eq!(fg(&ctx, "fig-dial"), Some(die_core::Rgb::hex("#654321")));
         assert_eq!(fg(&ctx, "fig-grid"), None);
         assert_eq!(fg(&ctx, "fig-series-1"), None);
-        assert_eq!(FACES.len(), 22);
+        assert_eq!(FACES.len(), 20);
         assert_eq!(crate::faces(), FACES);
     }
 

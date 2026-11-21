@@ -12,8 +12,7 @@
 //! - [`scene`], [`theme`], [`raster`] and [`svg`]: the display list, its colours, and its pixels,
 //!   PNG and SVG;
 //! - [`algo`]: layouts, downsampling, envelopes, search and the hit index;
-//! - [`plot`], [`interact`] and [`dial`]: a chart drawn, and the keyboard's and pointer's ways
-//!   with it;
+//! - [`plot`] and [`interact`]: a chart drawn, and the keyboard's and pointer's ways with it;
 //! - [`detail`], [`graph`], [`figure`], [`dashboard`], [`source`], [`surface`] and [`cells`]:
 //!   the detail panel, the network figure, tiles, dashboards, where data comes from, the DIE
 //!   surface, and the braille fallback.
@@ -29,7 +28,6 @@ pub mod cells;
 pub mod dashboard;
 pub mod data;
 pub mod detail;
-pub mod dial;
 pub mod error;
 pub mod figure;
 pub mod graph;

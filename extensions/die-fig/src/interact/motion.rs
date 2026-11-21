@@ -1,5 +1,6 @@
-//! Easing for discrete changes: keys, dial picks and a double-click reset ease over
-//! [`super::consts::MOTION_MS`]; the wheel and trackpad follow the hand and never ease.
+//! Easing for discrete changes: keys, legend clicks, a brush's release, undo and a double-click
+//! reset ease over [`super::consts::MOTION_MS`]; the wheel, the trackpad and a drag follow the
+//! hand and never ease.
 
 /// Ease-out cubic: fast, then settling. `t` from 0 to 1.
 pub fn ease_out_cubic(_t: f32) -> f32 {

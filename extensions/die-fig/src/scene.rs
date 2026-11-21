@@ -249,7 +249,7 @@ impl PathData {
     }
 
     /// An open arc of radius `r` about (cx, cy), clockwise from `from` to `to` degrees, both
-    /// measured clockwise from north (up, negative y) as the dial measures them. A `to` at or
+    /// measured clockwise from north (up, negative y), as a compass does. A `to` at or
     /// before `from` goes round past north (350 to 10 is 20°); equal angles are a whole turn.
     /// Each quarter turn or less is one cubic.
     pub fn arc(cx: f32, cy: f32, r: f32, from: f32, to: f32) -> PathData {
@@ -453,12 +453,6 @@ pub enum Item {
 /// What a place on screen is, for the pointer. Precedence is the order the surface asks.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
-    /// One of the dial's eight sectors, north first then clockwise.
-    DialSector(u8),
-    /// One of the open sector's stage-two choices.
-    DialStage2(u8),
-    /// The dial's dead centre.
-    DialCentre,
     /// The parse error's banner.
     Banner,
     /// A row of the detail panel.
