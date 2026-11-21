@@ -13,6 +13,7 @@ members = [
     "extensions/die-jellyfish",
     "extensions/die-markdown",
     "extensions/die-draw",
+    "extensions/die-fig",
     "tools/evil-oracle",
     "tools/test-cap",
     "xtask",
@@ -30,6 +31,7 @@ default-members = [
     "extensions/die-jellyfish",
     "extensions/die-markdown",
     "extensions/die-draw",
+    "extensions/die-fig",
 ]
 
 [workspace.package]
@@ -54,6 +56,8 @@ die-markdown = { path = "extensions/die-markdown" }
 # The extensions' shared drawing crate: fonts, text runs, PNG and the premultiplied blit, lifted
 # from die-markdown under the rule of two. It depends on none of DIE's crates (scope D14).
 die-draw = { path = "extensions/die-draw" }
+# Figures from data: charts, network graphs and dashboards drawn in pixels, in fig's ethos (scope D14).
+die-fig = { path = "extensions/die-fig" }
 evil-oracle = { path = "tools/evil-oracle" }
 die-test-cap = { path = "tools/test-cap" }
 

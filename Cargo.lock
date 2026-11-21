@@ -351,6 +351,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "die-fig"
+version = "0.0.0"
+dependencies = [
+ "die-core",
+ "die-draw",
+ "die-test-cap",
+ "die-vim",
+ "jiff",
+ "serde_json",
+ "tiny-skia",
+]
+
+[[package]]
 name = "die-jellyfish"
 version = "0.0.0"
 dependencies = [
