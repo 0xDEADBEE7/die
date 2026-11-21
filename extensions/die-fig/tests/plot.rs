@@ -3620,3 +3620,34 @@ fn the_log_of_nothing_to_draw_says_so_not_one_error_and_its_entry_says_it_once()
     let s = logged(&[bad, e], (880.0, 470.0), 0, 0);
     assert!(has_text(&s, "2 errors"), "{:?}", texts(&s));
 }
+
+#[test]
+fn the_log_s_keys_give_way_from_the_right_before_the_figure_s_name_is_cut() {
+    let e = FigError::new("expected ',' or '}'");
+    let keys = |s: &Scene| -> Vec<String> {
+        let ts: Vec<String> = texts(s).into_iter().map(|t| t.0).collect();
+        ["figure", "go to", "move"]
+            .iter()
+            .filter(|k| ts.iter().any(|t| t == *k))
+            .map(|k| k.to_string())
+            .collect()
+    };
+    // Wide: every key, the name whole.
+    let s = logged(std::slice::from_ref(&e), (880.0, 470.0), 0, 0);
+    assert!(has_text(&s, " in requests.fig"), "{:?}", texts(&s));
+    assert_eq!(keys(&s), ["figure", "go to", "move"]);
+    // Narrower: move goes first, then go to, and the name stays whole while ! figure fits.
+    let mut seen = vec![];
+    for w in (240..=880).rev().step_by(8) {
+        let s = logged(std::slice::from_ref(&e), (w as f32, 240.0), 0, 0);
+        let k = keys(&s);
+        if !k.is_empty() {
+            assert!(has_text(&s, " in requests.fig"), "at {w}: {:?}", texts(&s));
+            assert_eq!(k[0], "figure", "at {w}: ! figure is the last to go");
+        }
+        if seen.last() != Some(&k.len()) {
+            seen.push(k.len());
+        }
+    }
+    assert!(seen.starts_with(&[3, 2, 1]), "{seen:?}");
+}

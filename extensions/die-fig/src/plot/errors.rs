@@ -1420,7 +1420,7 @@ fn log(
     let head_spec = TextSpec::new(12.0).weight(Weight::Semibold);
     let base = LOG_HEADER / 2.0 + m.cap(head_spec) / 2.0;
     let counts = said.join(" · ");
-    let keys: Vec<(bool, String)> = vec![
+    let all_keys: [(bool, String); 6] = [
         (true, "!".into()),
         (false, "figure".into()),
         (true, "⏎".into()),
@@ -1428,21 +1428,33 @@ fn log(
         (true, "j k".into()),
         (false, "move".into()),
     ];
-    let keys_w = hint_width(&keys, m);
     let cw = m.width(&counts, head_spec);
     let in_name = if name.is_empty() {
         String::new()
     } else {
         format!(" in {name}")
     };
-    let show_keys = pad + cw + 24.0 + keys_w + pad <= w;
-    let name_room = if show_keys {
-        w - 2.0 * pad - cw - 24.0 - keys_w
-    } else {
-        w - 2.0 * pad - cw
-    };
-    let first = lead(errors);
     let ic = 12.0;
+    // The keys give way from the right (move, then go to) before the figure's name is cut;
+    // a name too long to fit whole keeps every key that fits.
+    let name_w = m.width(&in_name, TextSpec::new(12.0));
+    let room_with = |n: usize, m: &mut dyn Measure| {
+        let keys_w = match n {
+            0 => 0.0,
+            n => 24.0 + hint_width(&all_keys[..2 * n], m),
+        };
+        w - 2.0 * pad - cw - keys_w
+    };
+    let shown = (0..=3)
+        .rev()
+        .find(|&n| room_with(n, m) - ic - 8.0 >= name_w)
+        .or_else(|| (1..=3).rev().find(|&n| room_with(n, m) >= 0.0))
+        .unwrap_or(0);
+    let keys = &all_keys[..2 * shown];
+    let keys_w = hint_width(keys, m);
+    let show_keys = shown > 0;
+    let name_room = room_with(shown, m);
+    let first = lead(errors);
     let mut x = pad;
     if let Some(f) = first
         && pad + ic + 8.0 + cw <= w
@@ -1487,7 +1499,7 @@ fn log(
     if show_keys {
         draw_hint(
             scene,
-            &keys,
+            keys,
             w - pad - keys_w,
             (LOG_HEADER - HINT_H) / 2.0,
             theme,
