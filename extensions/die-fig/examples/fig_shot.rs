@@ -4,7 +4,8 @@
 //! ```sh
 //! cargo run --release -p die-fig --example fig_shot -- <file> <out.png> [--size 880x470] \
 //!     [--scale 2] [--light] [--cursor <n>] [--hover <x>,<y>] [--brush <x0>,<x1>[,<y0>,<y1>]] \
-//!     [--reference <n>] [--svg <out.svg>]
+//!     [--reference <n>] [--svg <out.svg>] [--log] [--log-top <n>] [--log-mark <n>] \
+//!     [--stale <bad file>]
 //! ```
 //!
 //! The size is the area's in logical px, the scale the display's. `--cursor` puts the keyboard's
@@ -14,16 +15,22 @@
 //! from x0 to x1 makes (with y0 and y1 for a box). `--svg` writes the 1× layout as SVG too.
 //! Times without an offset are in the system's zone. It prints where the plot landed and what
 //! the overlay shows.
+//!
+//! The file is built by the job `\v` runs (`source::build`), so a file that can't be drawn
+//! draws the error figure: symbolic, or with `--log` its log (`--log-top` its first line shown,
+//! `--log-mark` the entry lit). A file that draws, with `--log`, shows its warnings' log. With
+//! `--stale BAD`, the file's figure is drawn with BAD's stale badge, as a figure kept while its
+//! source fails to parse.
 
 use die_test_cap as _;
 
 use die_draw::Book;
-use die_fig::data::ReadOptions;
-use die_fig::interact::{BrushKind, Cursor, View};
-use die_fig::plot::{self, ChartModel, OverlayState};
+use die_fig::FigError;
+use die_fig::interact::{BrushKind, Cursor, Toggles, View};
+use die_fig::plot::{self, ChartModel, ErrorView, OverlayState};
 use die_fig::raster::{self, BookMeasure};
 use die_fig::scene::Scene;
-use die_fig::spec::{self, Figure};
+use die_fig::source::{self, Built, Failed, Job, Text};
 use die_fig::theme::Theme;
 use jiff::tz::TimeZone;
 use std::path::Path;
@@ -36,6 +43,7 @@ fn main() {
 }
 
 /// What the flags ask for.
+#[derive(Clone)]
 struct Ask {
     size: (f32, f32),
     scale: f32,
@@ -45,6 +53,10 @@ struct Ask {
     hover: Option<(f32, f32)>,
     brush: Option<Vec<f32>>,
     svg: Option<String>,
+    log: bool,
+    log_top: usize,
+    log_mark: usize,
+    stale: Option<String>,
 }
 
 fn pair(v: &str, sep: char) -> Result<Vec<f32>, String> {
@@ -60,7 +72,8 @@ fn pair(v: &str, sep: char) -> Result<Vec<f32>, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let usage = "fig_shot <file> <out.png> [--size WxH] [--scale S] [--light] [--cursor N] \
-                 [--hover X,Y] [--brush X0,X1[,Y0,Y1]] [--reference N] [--svg OUT.svg]";
+                 [--hover X,Y] [--brush X0,X1[,Y0,Y1]] [--reference N] [--svg OUT.svg] [--log] \
+                 [--log-top N] [--log-mark N] [--stale BAD]";
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage.to_owned());
     };
@@ -73,6 +86,10 @@ fn run() -> Result<(), String> {
         hover: None,
         brush: None,
         svg: None,
+        log: false,
+        log_top: 0,
+        log_mark: 0,
+        stale: None,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
@@ -97,28 +114,98 @@ fn run() -> Result<(), String> {
             }
             "--brush" => ask.brush = Some(pair(&value()?, ',')?),
             "--svg" => ask.svg = Some(value()?),
+            "--log" => ask.log = true,
+            "--log-top" => ask.log_top = pair(&value()?, ',')?[0] as usize,
+            "--log-mark" => ask.log_mark = pair(&value()?, ',')?[0] as usize,
+            "--stale" => ask.stale = Some(value()?),
             other => return Err(format!("{other}: no such flag\n{usage}")),
         }
     }
     let path = Path::new(&input);
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{input}: {e}"))?;
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
     let zone = TimeZone::system();
-    let opt = ReadOptions::new(zone.clone());
-    let parsed = spec::parse(&text, name, dir, &opt).map_err(|e| e.to_string())?;
-    for w in &parsed.warnings {
-        eprintln!("fig_shot: warning: {w}");
-    }
-    let Figure::Chart(chart) = parsed.figure else {
-        return Err("fig_shot draws charts; this is another kind of figure".into());
-    };
-    let tables = plot::read_tables(&chart, Some(&text), &opt).map_err(|e| e.to_string())?;
-    let model = ChartModel::build(chart, tables, &zone).map_err(|e| e.to_string())?;
     let theme = if ask.light {
         Theme::light()
     } else {
         Theme::mono_dark()
+    };
+    let mut book = Book::load(None)?;
+    let state = match ask.log {
+        true => ErrorView::Log {
+            top: ask.log_top,
+            mark: ask.log_mark,
+        },
+        false => ErrorView::Symbolic,
+    };
+    let built = match build(path, &zone) {
+        Ok(b) => b,
+        Err(f) => {
+            for e in f.all() {
+                eprintln!(
+                    "fig_shot: {}: {e}",
+                    if e.warning { "warning" } else { e.kind.name() }
+                );
+            }
+            let errors = f.all();
+            let scene = failure(&errors, &f.text, &name, state, &ask, &theme, &mut book);
+            return write(&scene, &output, &ask, &theme, &mut book, |scale, book| {
+                failure(
+                    &errors,
+                    &f.text,
+                    &name,
+                    state,
+                    &Ask {
+                        scale,
+                        ..ask.clone()
+                    },
+                    &theme,
+                    book,
+                )
+            });
+        }
+    };
+    for w in &built.warnings {
+        eprintln!("fig_shot: warning: {w}");
+    }
+    if ask.log {
+        let warnings: Vec<FigError> = built.warnings.iter().map(|w| w.clone().warn()).collect();
+        let scene = failure(
+            &warnings,
+            &built.text,
+            &name,
+            state,
+            &ask,
+            &theme,
+            &mut book,
+        );
+        return write(&scene, &output, &ask, &theme, &mut book, |scale, book| {
+            failure(
+                &warnings,
+                &built.text,
+                &name,
+                state,
+                &Ask {
+                    scale,
+                    ..ask.clone()
+                },
+                &theme,
+                book,
+            )
+        });
+    }
+    let stale: Option<FigError> = match &ask.stale {
+        Some(bad) => match build(Path::new(bad), &zone) {
+            Ok(_) => return Err(format!("{bad} builds: it has no error for a badge")),
+            Err(f) => Some(f.first().clone()),
+        },
+        None => None,
+    };
+    let Some(model) = built.model else {
+        return Err("fig_shot draws charts; this is another kind of figure".into());
     };
     let mut view = model.initial_view();
     let first = model.keys().into_iter().next();
@@ -138,16 +225,73 @@ fn run() -> Result<(), String> {
         })
     };
     view.reference = ask.reference.and_then(cursor_at);
-    let mut book = Book::load(None)?;
-    let scene = draw(
+    let badge = |scene: &mut Scene, scale: f32, book: &mut Book| {
+        if let Some(e) = &stale {
+            let mut m = BookMeasure { book, scale };
+            plot::stale_badge(scene, e, &theme, &mut m);
+        }
+    };
+    let mut scene = draw(
         &model, &view, &ask, &theme, ask.scale, &mut book, &cursor_at, true,
     )?;
-    let bytes = raster::png(&scene, theme.surface, Some(&mut book))?;
-    std::fs::write(&output, bytes).map_err(|e| format!("{output}: {e}"))?;
+    badge(&mut scene, ask.scale, &mut book);
+    write(&scene, &output, &ask, &theme, &mut book, |scale, book| {
+        let mut s =
+            draw(&model, &view, &ask, &theme, scale, book, &cursor_at, false).unwrap_or_default();
+        badge(&mut s, scale, book);
+        s
+    })
+}
+
+/// A file built by the job `\v` runs, its data read from disk, times in `zone`.
+fn build(path: &Path, zone: &TimeZone) -> Result<Built, Failed> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    source::build(Job {
+        text: Text::File(std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())),
+        name: name.to_string(),
+        dir,
+        zone: zone.clone(),
+        open: vec![],
+        toggles: Toggles::default(),
+    })
+}
+
+/// The error figure for `errors` at the ask's size and scale.
+fn failure(
+    errors: &[FigError],
+    text: &str,
+    name: &str,
+    state: ErrorView,
+    ask: &Ask,
+    theme: &Theme,
+    book: &mut Book,
+) -> Scene {
+    let mut m = BookMeasure {
+        book,
+        scale: ask.scale,
+    };
+    let scene = plot::error_figure(
+        errors, text, name, state, ask.size, ask.scale, theme, &mut m,
+    );
+    println!("error figure {:?}; {} entries", state, errors.len());
+    scene
+}
+
+/// The scene as a PNG at `output`, and at 1× as SVG where asked (`again` draws it at a scale).
+fn write(
+    scene: &Scene,
+    output: &str,
+    ask: &Ask,
+    theme: &Theme,
+    book: &mut Book,
+    again: impl FnOnce(f32, &mut Book) -> Scene,
+) -> Result<(), String> {
+    let bytes = raster::png(scene, theme.surface, Some(book))?;
+    std::fs::write(output, bytes).map_err(|e| format!("{output}: {e}"))?;
     if let Some(svg) = &ask.svg {
-        let scene = draw(
-            &model, &view, &ask, &theme, 1.0, &mut book, &cursor_at, false,
-        )?;
+        let scene = again(1.0, book);
         std::fs::write(svg, die_fig::svg::write(&scene)).map_err(|e| format!("{svg}: {e}"))?;
     }
     Ok(())

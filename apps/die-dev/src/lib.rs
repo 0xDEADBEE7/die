@@ -153,14 +153,18 @@ pub fn greeted(mut config: die::Config, launch: &Launch) -> die::Config {
 /// files DIE opens going to `open`, and the rendered view a page drawn as GitHub draws one, in
 /// mono-dark's colours. A file opens raw, as it always has: `\m` renders it. And fig, with its
 /// defaults: times in the system's zone, the fonts where DIE's are, the chrome in mono-dark's
-/// greys. Nothing of it runs until `\v`.
+/// greys, and a `.fig` or `.fig.json` file opening as its figure (`\v` flips it to its text and
+/// back). Nothing of it runs until `\v` or a figure's file.
 pub fn extensions() -> Vec<Box<dyn die::core::Extension>> {
     vec![
         Box::new(die_orchid_client::Orchid::default()),
         Box::new(die_whiteboard::Whiteboard::default()),
         Box::new(die_jellyfish::Jellyfish::default()),
         Box::new(die_markdown::Markdown::default()),
-        Box::new(die_fig::Fig::default()),
+        Box::new(die_fig::Fig::new(die_fig::Options {
+            open_fig_as: die_fig::OpenAs::Figure,
+            ..die_fig::Options::default()
+        })),
     ]
 }
 

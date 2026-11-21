@@ -14,14 +14,16 @@
 //! and a [`View`]'s `x` and `y` are the model's, not the screen's. [`ChartLayout`]'s scales are
 //! the screen's.
 
+pub mod errors;
 pub mod hover;
 pub mod layout;
 pub mod marks;
 pub mod nav;
 pub mod overlay;
 
+pub use errors::{ErrorView, LogLayout, error_figure, log_layout, log_page, stale_badge};
 pub use hover::{hover, nearest_series};
-pub use layout::{ChartLayout, banner, empty};
+pub use layout::ChartLayout;
 pub use nav::{brush, brush_bands, brush_kind, centre, motion, pan, reset, reveal, tween, zoom};
 pub use overlay::{OverlayState, overlay};
 
@@ -568,11 +570,8 @@ impl ChartModel {
                 hi = hi.max(r.value);
             }
         }
-        let (lo, hi) = settle(lo, hi, self.x.kind);
-        if self.is_scatter() {
-            return nice_domain(lo, hi, self.x.kind, &self.zone, 5);
-        }
-        (lo, hi)
+        // A scatter's x is the data's own: the layout pads it by its dots' reach, not a tick.
+        settle(lo, hi, self.x.kind)
     }
 
     /// y's fit over the visible series inside `window` on x (anywhere with None).
@@ -673,6 +672,10 @@ impl ChartModel {
             hi = hi.max(0.0);
         }
         let (lo, hi) = settle(lo, hi, self.y.kind);
+        if self.is_scatter() {
+            // As x: the data's own, padded by the dots' reach in the layout.
+            return (lo, hi);
+        }
         nice_domain(lo, hi, self.y.kind, &self.zone, count)
     }
 
@@ -883,8 +886,9 @@ impl ChartModel {
                 Some(f) => format_with(x, f, &self.zone),
                 None => {
                     let v = self.x_value(x);
+                    // As quiet as a time's header: the axis's name, then the value.
                     match self.x.title.as_deref().filter(|t| !t.is_empty()) {
-                        Some(t) => format!("{t}: {v}"),
+                        Some(t) => format!("{t} {v}"),
                         None => v,
                     }
                 }
@@ -1167,6 +1171,16 @@ impl Builder {
             Some(at) => FigError::at(format!("no column \"{f}\" in the data"), at),
             None => FigError::new(format!("no column \"{f}\" in the data")),
         })?;
+        if ch.kind == Some(ColumnKind::Number)
+            && let Some((row, v)) = not_a_number(col, self.opt.thousands)
+        {
+            let msg = format!("\"{v}\" in \"{f}\" is not a number");
+            let e = match ch.at {
+                Some(at) => FigError::at(msg, at),
+                None => FigError::new(msg),
+            };
+            return Err(e.note(format!("row {} of the data", row + 1)));
+        }
         let wants_time = ch.kind == Some(ColumnKind::Time) || ch.scale == Some(ScaleKind::Time);
         let col = if wants_time && col.kind() != ColumnKind::Time {
             crate::data::time::as_time(col, ch.unit.as_deref(), &self.opt)?
@@ -1672,6 +1686,20 @@ pub fn read_data(d: &DataSpec, source: Option<&str>, opt: &ReadOptions) -> Resul
             "\"{n}\" names a dashboard's data, which a chart alone can't read"
         ))),
     }
+}
+
+/// The first cell of a column read as text that isn't a number, by its row, when a spec says
+/// the column is numbers: what makes the column text.
+pub fn not_a_number(col: &Column, thousands: Option<char>) -> Option<(usize, String)> {
+    if !matches!(col.values, Values::Category { .. } | Values::Text(_)) {
+        return None;
+    }
+    (0..col.len()).find_map(|r| {
+        let s = col.str_at(r)?;
+        let bad = !crate::data::infer::is_missing(s)
+            && crate::data::infer::parse_number(s, thousands).is_none();
+        bad.then(|| (r, s.to_string()))
+    })
 }
 
 /// Whether a path is a file a chart could read as data, by its name.

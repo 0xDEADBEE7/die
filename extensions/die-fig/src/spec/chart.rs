@@ -855,7 +855,7 @@ fn values(n: &Node, spec: &DataSpec, opt: &ReadOptions) -> Result<crate::data::T
             ),
             None => format!("in \"values\": {}", e.msg),
         };
-        FigError::at(msg, n.at)
+        FigError::at(msg, n.at).with_kind(e.kind)
     })
 }
 
