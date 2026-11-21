@@ -10,8 +10,8 @@ use die_core::{Button, Mods};
 pub enum Gesture {
     /// Nothing.
     None,
-    /// The press that focused the window, or one that picked on the dial: its drags and its
-    /// release do nothing.
+    /// The press that focused the window, a double click's second press (which acted at once),
+    /// or a gesture `Esc` cut short: its drags and its release do nothing.
     Swallowed,
     /// A press still inside [`super::consts::CLICK_SLOP`].
     Pressed {
