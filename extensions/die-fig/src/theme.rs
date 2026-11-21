@@ -267,7 +267,12 @@ mod tests {
 
     #[test]
     fn the_faces_are_declared_on_their_parents() {
-        let mut ctx = die_core::Ctx::new(vec![Box::new(crate::Fig::default())]).unwrap();
+        // die-vim, for the vim-* names fig's keymap binds (a startup error without them).
+        let exts: Vec<Box<dyn die_core::Extension>> = vec![
+            Box::new(die_vim::Vim::default()),
+            Box::new(crate::Fig::default()),
+        ];
+        let mut ctx = die_core::Ctx::new(exts).unwrap();
         for name in FACES {
             assert!(ctx.face_style(name).is_some(), "{name} is declared");
         }

@@ -1639,7 +1639,12 @@ fn svg_groups_nest_whatever_order_they_pop_in() {
 // ------------------------------------------------------------------ the theme
 
 fn harness() -> Harness {
-    Harness::new(vec![Box::new(die_fig::Fig::default())]).unwrap()
+    // die-vim, for the vim-* names fig's keymap binds (a startup error without them).
+    let exts: Vec<Box<dyn die_core::Extension>> = vec![
+        Box::new(die_vim::Vim::default()),
+        Box::new(die_fig::Fig::default()),
+    ];
+    Harness::new(exts).unwrap()
 }
 
 fn ansi() -> [Rgb; 16] {

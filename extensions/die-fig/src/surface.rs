@@ -1,2 +1,2353 @@
-//! `FigSurface`: a figure as a DIE surface: a base buffer at z −2 and an overlay at z −1 per
-//! window (ruling 11), its keys, its pointer, its view per window.
+//! `FigSurface`: a figure as a DIE surface, and the state its buffer carries ([`FigState`]),
+//! shared with the extension ([`Shared`]) so its commands, timers and jobs reach it without
+//! checking the surface out.
+//!
+//! Each window showing a figure is a [`Pane`]: a base buffer at z −2 (opaque, the chart) and an
+//! overlay at z −1 (transparent: the crosshair, the card, the brush), sized to the window's area
+//! and grown, never shrunk (ruling 11), with its own view, cursor, hover, gesture and undo. The
+//! base is drawn again when the data, the view, the size, the scale or the theme change; the
+//! overlay when the hover, the cursor, the brush or the emphasis do, and presents only the union
+//! of what it drew before and draws now, so a hover costs what the card covers.
+//!
+//! The pointer, as a dashboard's (briefs/mouse-ux.md, contract-p2 §0): hover needs no click and
+//! no focus and has no delay; the crosshair follows every sample ([`Surface::fine_motion`]) and
+//! snaps to the nearest sample, the card lists every series there and the nearest one comes
+//! forward; a legend key under the pointer brings its series forward; the pointer leaving
+//! clears it all. A click puts the cursor there, ⇧-click sets the reference, a drag brushes, ⌥-
+//! or middle-drag pans, a drag on an axis pans that axis, the wheel pans and ⌘-wheel zooms about
+//! the pointer, a double-click resets, and the legend's keys toggle and solo. The press that
+//! focuses the window only focuses it ([`FOCUS_GRACE_MS`]). The right button, Space and
+//! Ctrl-click open nothing: there is no dial (the owner, 2026-11-22).
+
+use crate::algo::HitIndex;
+use crate::data::{ColumnKind, SeriesKey, Table};
+use crate::error::FigError;
+use crate::interact::consts::{CLICK_SLOP, FOCUS_GRACE_MS, MOTION_MS, SCROLL_BURST_MS, ZOOM_STEP};
+use crate::interact::{Axis, BrushKind, Cursor, Gesture, Steps, Toggles, Tween, View};
+use crate::plot::{self, ChartLayout, ChartModel, OverlayState};
+use crate::raster::{self, BookMeasure, PixelBox};
+use crate::scene::{
+    Anchor, FixedMeasure, Hit, Item, Measure, Paint, PathData, Rect, Scene, Stroke, TextSpec,
+    Weight,
+};
+use crate::source::{self, Failed, Job, Snapshot, Source, Text};
+use crate::spec::{Chart, Figure};
+use crate::theme::{self, Theme};
+use die_core::{
+    BufferId, Button, CellPixels, Ctx, Event, Frame, KeyEvent, KeyKind, Mods, PixelProducer,
+    PixelRect, PointerKind, RenderInfo, Sub, Surface, SurfacePointer, WindowId,
+};
+use die_draw::Book;
+use jiff::tz::TimeZone;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::rc::{Rc, Weak};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+/// The surface kind, which names the keymap.
+pub const KIND: &str = "fig";
+
+/// How often an ease draws a frame.
+const FRAME: Duration = Duration::from_millis(16);
+/// How long the source buffer is quiet before an edit is charted.
+const QUIET: Duration = Duration::from_millis(150);
+/// How often a file a figure reads from disk is looked at while a window shows the figure.
+const POLL: Duration = Duration::from_secs(1);
+
+/// The time on the workspace's clock, in ms.
+fn ms(d: Duration) -> u64 {
+    d.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+// ------------------------------------------------------------------ the fonts every figure shares
+
+/// What every figure draws its text with: one [`Book`], loaded on the main thread the first time
+/// a figure needs pixels (ruling 12), shared by every figure of the extension.
+#[derive(Default)]
+pub struct Kit {
+    /// Your `fonts` option.
+    pub fonts: Option<PathBuf>,
+    book: Option<Book>,
+    tried: bool,
+}
+
+/// The kit, shared.
+pub type SharedKit = Rc<RefCell<Kit>>;
+
+impl Kit {
+    /// The kit for your fonts option.
+    pub fn new(fonts: Option<PathBuf>) -> SharedKit {
+        Rc::new(RefCell::new(Kit {
+            fonts,
+            book: None,
+            tried: false,
+        }))
+    }
+
+    /// Whether there are fonts: loaded at the first ask, and a failure said once, after which
+    /// figures are drawn without their text.
+    pub fn ensure(&mut self, ctx: &mut Ctx) -> bool {
+        if !self.tried {
+            self.tried = true;
+            match Book::load(self.fonts.as_deref()) {
+                Ok(book) => self.book = Some(book),
+                Err(why) => ctx.messages.push(format!(
+                    "fig: no fonts, so figures are drawn without text: {why}"
+                )),
+            }
+        }
+        self.book.is_some()
+    }
+}
+
+/// Run `f` with a measure at `scale`: the fonts' if they're loaded, else the fixed one.
+fn measured<R>(book: Option<&mut Book>, scale: f32, f: impl FnOnce(&mut dyn Measure) -> R) -> R {
+    match book {
+        Some(book) => f(&mut BookMeasure { book, scale }),
+        None => f(&mut FixedMeasure),
+    }
+}
+
+// ------------------------------------------------------------------ the view's undo
+
+/// What an undo step puts back: a window's view and the figure's settings.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Snap {
+    /// The view.
+    pub view: View,
+    /// The settings `s` turned.
+    pub toggles: Toggles,
+}
+
+/// How a view change is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// A discrete change: eased, one undo step.
+    Step,
+    /// A key's zoom or scroll: eased, one undo step with those before it within
+    /// [`SCROLL_BURST_MS`].
+    Keyed,
+    /// Following the hand (a pan, a wheel's zoom, a drag): never eased; the gesture or the
+    /// burst makes the undo step.
+    Live,
+    /// The view following the cursor or live data: eased, no undo step.
+    Follow,
+}
+
+/// A scroll burst: scroll events less than [`SCROLL_BURST_MS`] apart, which keep the meaning
+/// their first gave them and are one undo step (mouse-ux §3.2).
+struct Burst {
+    /// Zooming, or panning.
+    zoom: bool,
+    /// One axis only: the burst began over its strip.
+    axis: Option<Axis>,
+    /// On an x-chart, which of the wheel's components pans x: across (true) or up (false).
+    across: Option<bool>,
+    /// The view before it, for its undo step.
+    before: View,
+    /// Ends it when the wheel is quiet.
+    _timer: Sub,
+}
+
+/// An ease from one view to another, with both domains made explicit so they can be tweened.
+struct Ease {
+    tween: Tween<View>,
+}
+
+// ------------------------------------------------------------------ a window's pane
+
+/// What the base shows: redrawn when this changes.
+#[derive(Clone, Debug, PartialEq)]
+struct BaseKey {
+    model: u64,
+    view: View,
+    size: (u32, u32),
+    scale: u32,
+    theme: u64,
+    banner: Option<String>,
+}
+
+/// What the overlay shows: redrawn when this changes.
+#[derive(Clone, Debug, PartialEq)]
+struct OverKey {
+    base: u64,
+    hover: Option<Cursor>,
+    cursor: Option<Cursor>,
+    pointer: Option<(f32, f32)>,
+    #[allow(clippy::type_complexity)]
+    brush: Option<(BrushKind, (f32, f32), (f32, f32))>,
+    emphasis: Option<SeriesKey>,
+    reference: Option<Cursor>,
+    help: bool,
+}
+
+/// One window's figure: its pixels, its layout, its view and what the pointer is doing there.
+pub struct Pane {
+    /// The area, in cells.
+    pub cols: usize,
+    /// Its rows.
+    pub rows: usize,
+    /// A cell in physical pixels, and the scale.
+    pub cell: CellPixels,
+    base: Option<PixelProducer>,
+    over: Option<PixelProducer>,
+    /// The base's scene as last drawn, its regions only: what the pointer asks first.
+    scene: Option<Scene>,
+    /// Where the chart landed, as last drawn.
+    pub layout: Option<ChartLayout>,
+    hits: Option<HitIndex>,
+    drawn: Option<BaseKey>,
+    /// Goes up each time the base is drawn.
+    pub base_gen: u64,
+    over_key: Option<OverKey>,
+    over_bounds: Option<Rect>,
+    /// What the overlay drew last: the next draws only where it differs.
+    over_items: Vec<Item>,
+    /// The view, as the last change left it (an ease shows its way there).
+    pub view: View,
+    ease: Option<Ease>,
+    /// The undo history of the view and the settings.
+    pub undo: Steps<Snap>,
+    /// The keyboard's cursor on the data.
+    pub cursor: Option<Cursor>,
+    /// Where the pointer is over the area, in logical px; None once it has left.
+    pub pointer: Option<(f32, f32)>,
+    /// Whether the pointer was the last to move: a key moving the cursor hides the hover until
+    /// the next move.
+    hovering: bool,
+    /// What the pointer is on, as a cursor.
+    pub hover: Option<Cursor>,
+    /// The series nearest the pointer, brought forward.
+    pub near: Option<SeriesKey>,
+    /// The legend key under the pointer.
+    pub legend: Option<SeriesKey>,
+    /// What the pointer is doing.
+    pub gesture: Gesture,
+    /// Where a pan's last sample was.
+    drag_last: (f32, f32),
+    /// The button whose press the gesture is: only its release ends it.
+    held: Option<Button>,
+    burst: Option<Burst>,
+    /// What a scroll pan hasn't moved yet, in physical px: less than one.
+    carry: (f32, f32),
+    /// When a key last zoomed or scrolled: the next within the burst is the same undo step.
+    keyed: Option<Duration>,
+    /// The last legend click: a double click's second press takes its toggle back.
+    last_click: Option<SeriesKey>,
+    /// The key card, shown until any key.
+    pub help: bool,
+    /// The series a search found, brought forward until `Esc`.
+    pub found: Option<SeriesKey>,
+    /// The hover is to be worked out again: the view moved under a still pointer.
+    rehover: bool,
+}
+
+impl Pane {
+    fn new(view: View, cursor: Option<Cursor>, undo: Steps<Snap>) -> Pane {
+        Pane {
+            cols: 0,
+            rows: 0,
+            cell: CellPixels::default(),
+            base: None,
+            over: None,
+            scene: None,
+            layout: None,
+            hits: None,
+            drawn: None,
+            base_gen: 0,
+            over_key: None,
+            over_bounds: None,
+            over_items: vec![],
+            view,
+            ease: None,
+            undo,
+            cursor,
+            pointer: None,
+            hovering: false,
+            hover: None,
+            near: None,
+            legend: None,
+            gesture: Gesture::None,
+            drag_last: (0.0, 0.0),
+            held: None,
+            burst: None,
+            carry: (0.0, 0.0),
+            keyed: None,
+            last_click: None,
+            help: false,
+            found: None,
+            rehover: false,
+        }
+    }
+
+    /// Physical pixels to a logical one: 1 while unknown.
+    pub fn scale(&self) -> f32 {
+        let s = self.cell.scale as f32;
+        if s.is_finite() && s > 0.0 { s } else { 1.0 }
+    }
+
+    /// The area in physical pixels.
+    pub fn area_px(&self) -> (u32, u32) {
+        (
+            self.cols as u32 * self.cell.width,
+            self.rows as u32 * self.cell.height,
+        )
+    }
+
+    /// The area in logical px.
+    pub fn size(&self) -> (f32, f32) {
+        let (w, h) = self.area_px();
+        let s = self.scale();
+        (w as f32 / s, h as f32 / s)
+    }
+
+    /// The base and overlay buffers' ids, once made.
+    pub fn buffers(&self) -> Option<(die_core::PixelBufferId, die_core::PixelBufferId)> {
+        Some((self.base.as_ref()?.id(), self.over.as_ref()?.id()))
+    }
+
+    /// The view as shown now: on its way there while it eases.
+    pub fn shown(&self, now: u64) -> View {
+        match &self.ease {
+            Some(e) => plot::nav::tween(&e.tween.from, &e.tween.to, e.tween.progress(now)),
+            None => self.view.clone(),
+        }
+    }
+
+    /// Whether it's easing.
+    pub fn easing(&self) -> bool {
+        self.ease.is_some()
+    }
+
+    /// Where the overlay last drew, in logical px: what its next present clears.
+    pub fn overlay_bounds(&self) -> Option<Rect> {
+        self.over_bounds
+    }
+
+    /// What the overlay is showing, as plot draws it.
+    pub fn overlay(&self) -> OverlayState {
+        self.overlay_state()
+    }
+
+    /// The ease stops where it is now: what a hand takes over from (mouse-ux §10).
+    fn settle(&mut self, now: u64) {
+        if let Some(e) = self.ease.take() {
+            let reached = e.tween.done(now);
+            let at = plot::nav::tween(&e.tween.from, &e.tween.to, e.tween.progress(now));
+            if !reached {
+                self.view = View {
+                    x: at.x,
+                    y: at.y,
+                    ..self.view.clone()
+                };
+            }
+        }
+    }
+
+    /// What's under a point: the base's regions, last pushed first.
+    fn hit_at(&self, (x, y): (f32, f32)) -> Hit {
+        let hit = self.scene.as_ref().and_then(|s| s.hit(x, y));
+        hit.cloned().unwrap_or(Hit::Chrome)
+    }
+
+    /// Whether a press is under way that its drags and release act on.
+    fn gesturing(&self) -> bool {
+        !matches!(self.gesture, Gesture::None | Gesture::Swallowed)
+    }
+
+    /// Change the view, as `how` says: `model` makes `None` domains explicit for an ease.
+    fn set_view(
+        &mut self,
+        v: View,
+        how: Change,
+        toggles: Toggles,
+        model: &ChartModel,
+        motion: bool,
+        now: Duration,
+    ) -> bool {
+        if v == self.view {
+            return false;
+        }
+        let before = Snap {
+            view: self.view.clone(),
+            toggles,
+        };
+        match how {
+            Change::Step => self.undo.push(before),
+            Change::Keyed => {
+                let within = self
+                    .keyed
+                    .is_some_and(|t| now < t + Duration::from_millis(SCROLL_BURST_MS));
+                if !within {
+                    self.undo.push(before);
+                }
+                self.keyed = Some(now);
+            }
+            Change::Live | Change::Follow => {}
+        }
+        let t = ms(now);
+        if how == Change::Live || !motion {
+            self.ease = None;
+        } else {
+            let from = explicit(model, &self.shown(t));
+            let to = explicit(model, &v);
+            self.ease = Some(Ease {
+                tween: Tween::new(from, to, t, MOTION_MS),
+            });
+        }
+        self.view = v;
+        self.rehover = true;
+        true
+    }
+
+    /// The hover worked out again from where the pointer is: hidden during a gesture, and
+    /// after a key moved the cursor until the pointer moves.
+    fn hover_again(&mut self, model: Option<&ChartModel>) {
+        self.rehover = false;
+        let (hover, near, legend) = match (self.pointer, self.hovering && !self.gesturing()) {
+            (Some(p), true) => {
+                let hit = self.hit_at(p);
+                match (hit, model, &self.layout, &self.hits) {
+                    (Hit::LegendKey(k), ..) => (None, None, Some(k)),
+                    (
+                        Hit::Plot(_) | Hit::Bar { .. } | Hit::Cell { .. },
+                        Some(m),
+                        Some(l),
+                        Some(h),
+                    ) => (
+                        plot::hover::hover(m, l, h, &self.view, p.0, p.1),
+                        plot::hover::nearest_series(m, l, h, &self.view, p.0, p.1),
+                        None,
+                    ),
+                    _ => (None, None, None),
+                }
+            }
+            _ => (None, None, None),
+        };
+        (self.hover, self.near, self.legend) = (hover, near, legend);
+    }
+
+    /// The overlay's state as it stands.
+    fn overlay_state(&self) -> OverlayState {
+        let brush = match &self.gesture {
+            Gesture::Brush { kind, from, to, .. } => Some((*kind, *from, *to)),
+            _ => None,
+        };
+        OverlayState {
+            hover: self.hover.clone(),
+            cursor: self.cursor.clone(),
+            pointer: self.hover.as_ref().and(self.pointer),
+            brush,
+            emphasis: (self.legend.clone())
+                .or_else(|| self.near.clone())
+                .or_else(|| self.found.clone()),
+        }
+    }
+
+    /// Make or grow the two buffers for the area. False if the host gave none.
+    fn buffers_for(&mut self, ctx: &mut Ctx) -> std::result::Result<(), String> {
+        let (w, h) = self.area_px();
+        for slot in [&mut self.base, &mut self.over] {
+            match slot {
+                None => {
+                    let (_, p) = ctx.pixel_buffer(w, h).map_err(|e| e.to_string())?;
+                    *slot = Some(p);
+                }
+                Some(p) => {
+                    let (bw, bh) = p.size();
+                    if w > bw || h > bh {
+                        p.resize(w.max(bw), h.max(bh)).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A view with its domains spelled out: what fits where it says None.
+fn explicit(model: &ChartModel, v: &View) -> View {
+    let (fx, fy) = model.fit(v);
+    View {
+        x: Some(v.x.unwrap_or(fx)),
+        y: Some(v.y.unwrap_or(fy)),
+        ..v.clone()
+    }
+}
+
+/// A pane's pixels for drawing into: the buffer's bytes, size and stride.
+fn target(p: &mut PixelProducer) -> (u32, u32, usize, &mut [u8]) {
+    let (w, h) = p.size();
+    let stride = p.stride();
+    (w, h, stride, p.pixels_mut())
+}
+
+// ------------------------------------------------------------------ a figure's state
+
+/// A figure: where its text comes from, what it parsed to, its model, and its panes.
+pub struct FigState {
+    /// Its buffer, once made.
+    pub buf: Option<BufferId>,
+    /// Where its text comes from.
+    pub source: Source,
+    /// Its name: the file's, `selection`, or the command.
+    pub name: String,
+    /// Where relative paths start.
+    pub dir: PathBuf,
+    /// The buffer it was opened from, which `\v` goes back to when its source is no buffer.
+    pub from: Option<BufferId>,
+    /// The file its text came from, if any: `fig-spec` names it in place of inline data.
+    pub file: Option<PathBuf>,
+    kit: SharedKit,
+    zone: TimeZone,
+    me: Weak<RefCell<FigState>>,
+    /// The figure as last parsed.
+    pub figure: Option<Figure>,
+    /// Whether it was guessed from bare data.
+    pub inferred: bool,
+    /// Its chart as parsed, before the settings.
+    pub chart: Option<Chart>,
+    /// The chart's tables.
+    pub tables: Vec<Arc<Table>>,
+    /// The chart's model, as last built.
+    pub model: Option<Arc<ChartModel>>,
+    /// Goes up with each model.
+    pub model_gen: u64,
+    /// Why the last build failed, while the last figure stays.
+    pub error: Option<Failed>,
+    /// Why there's no chart though the text parsed: a later build's.
+    pub later: Option<String>,
+    /// The warnings last said, so a build says them once.
+    warned: Vec<FigError>,
+    /// The files read from disk, polled while shown.
+    files: Vec<(PathBuf, Option<SystemTime>)>,
+    /// The data files read from their buffers, followed as edited.
+    pub followed: Vec<PathBuf>,
+    /// The settings `s` turned.
+    pub toggles: Toggles,
+    building: Option<Sub>,
+    /// How many builds have been started.
+    pub builds: u64,
+    /// Waiting to be built again when a window shows it.
+    pub behind: bool,
+    debounce: Option<Sub>,
+    poll: Option<Sub>,
+    motion: Option<Sub>,
+    /// The colours, as last resolved.
+    pub theme: Theme,
+    theme_gen: u64,
+    /// Each window's pane.
+    pub panes: BTreeMap<WindowId, Pane>,
+    /// The window that last had a pane: a new window starts from its view.
+    pub last: Option<WindowId>,
+    /// What the last pane left, for the next window to show it.
+    parked: Option<(View, Option<Cursor>, Steps<Snap>)>,
+    /// A window showing it has the focus.
+    pub focused: bool,
+    focused_at: Option<Duration>,
+    /// Said once: the host shows no pixels.
+    refused: bool,
+    /// The last search: its text, for `n` and `N`.
+    pub query: Option<String>,
+    /// Goes up with what a restart keeps: the session's cache key.
+    pub rev: u64,
+}
+
+/// A figure's state, shared by its surface, the extension and its timers.
+pub type Shared = Rc<RefCell<FigState>>;
+
+impl FigState {
+    /// A figure from `source`, named `name`, paths from `dir`, times in `zone`, shown with
+    /// `view` and `cursor` when its first window opens.
+    pub fn new(
+        source: Source,
+        name: String,
+        dir: PathBuf,
+        kit: SharedKit,
+        zone: TimeZone,
+        seed: Option<(View, Option<Cursor>)>,
+    ) -> Shared {
+        Rc::new_cyclic(|me| {
+            RefCell::new(FigState {
+                buf: None,
+                source,
+                name,
+                dir,
+                from: None,
+                file: None,
+                kit,
+                zone,
+                me: me.clone(),
+                figure: None,
+                inferred: false,
+                chart: None,
+                tables: vec![],
+                model: None,
+                model_gen: 0,
+                error: None,
+                later: None,
+                warned: vec![],
+                files: vec![],
+                followed: vec![],
+                toggles: Toggles::default(),
+                building: None,
+                builds: 0,
+                behind: false,
+                debounce: None,
+                poll: None,
+                motion: None,
+                theme: Theme::mono_dark(),
+                theme_gen: 0,
+                panes: BTreeMap::new(),
+                last: None,
+                parked: seed.map(|(v, c)| (v, c, Steps::default())),
+                focused: true,
+                focused_at: None,
+                refused: false,
+                query: None,
+                rev: 1,
+            })
+        })
+    }
+
+    /// Whether a window shows it.
+    pub fn shown(&self, ctx: &Ctx) -> bool {
+        let Some(buf) = self.buf else { return false };
+        ctx.window_list()
+            .into_iter()
+            .any(|w| ctx.window_buffer(w) == Some(buf))
+    }
+
+    /// The pane of the window a command came from, or the last one.
+    pub fn pane_of(&self, w: Option<WindowId>) -> Option<WindowId> {
+        w.filter(|w| self.panes.contains_key(w))
+            .or(self.last.filter(|w| self.panes.contains_key(w)))
+            .or_else(|| self.panes.keys().next().copied())
+    }
+
+    /// The view a restart keeps, and the cursor: the last window's.
+    pub fn kept_view(&self) -> (View, Option<Cursor>) {
+        if let Some(p) = self.last.and_then(|w| self.panes.get(&w)) {
+            return (p.view.clone(), p.cursor.clone());
+        }
+        match &self.parked {
+            Some((v, c, _)) => (v.clone(), c.clone()),
+            None => (View::default(), None),
+        }
+    }
+
+    /// The colours as the theme has them now: a change draws every base again.
+    pub fn look(&mut self, ctx: &Ctx) {
+        let theme = theme::resolve(ctx);
+        if theme != self.theme {
+            self.theme = theme;
+            self.theme_gen += 1;
+        }
+    }
+
+    /// Whether discrete changes ease: the spec's `motion`.
+    fn motion(&self) -> bool {
+        self.chart.as_ref().is_none_or(|c| c.view.motion)
+    }
+
+    /// What the banner says, if anything: why the last build failed, or what a later build
+    /// will draw.
+    pub fn banner(&self) -> Option<String> {
+        if let Some(f) = &self.error {
+            let name = f.file.as_ref().and_then(|p| p.file_name());
+            return Some(match name {
+                Some(n) => format!("{}: {}", n.to_string_lossy(), f.error),
+                None => f.error.to_string(),
+            });
+        }
+        self.later.clone()
+    }
+
+    /// The status line: the name, how many series, how many hidden, whether it follows live
+    /// data, and why the last build failed.
+    pub fn status(&self) -> String {
+        let mut s = self.name.clone();
+        if let Some(m) = &self.model {
+            let n = m.keys().len();
+            s.push_str(&format!("  {n} series"));
+            if let Some(p) = self.last.and_then(|w| self.panes.get(&w)) {
+                let hidden = m.keys().iter().filter(|k| !p.view.shows(k)).count();
+                if hidden > 0 {
+                    s.push_str(&format!("  {hidden} hidden"));
+                }
+                if p.view.follow {
+                    s.push_str("  following");
+                }
+            }
+        }
+        if let Some(b) = self.banner() {
+            s.push_str("  ");
+            s.push_str(&b);
+        }
+        s
+    }
+
+    // -------------------------------------------------------------- building
+
+    /// Build the figure again, off the main thread, from its text as it is now: a buffer's
+    /// snapshot, a file, a command's output. A build started later wins.
+    pub fn build(&mut self, ctx: &mut Ctx) {
+        self.behind = false;
+        self.debounce = None;
+        let text = match &self.source {
+            Source::Buffer(b) => match ctx.text(*b) {
+                Ok(t) => Text::Of(Box::new(t.rope().clone())),
+                Err(_) => return,
+            },
+            Source::File(p) => Text::File(p.clone()),
+            Source::Text(s) => Text::Given(s.clone()),
+            Source::Command { out: Some(s), .. } => Text::Given(s.clone()),
+            Source::Command { out: None, .. } => return self.run_command(ctx),
+        };
+        let mut open: Vec<(PathBuf, Snapshot)> = vec![];
+        for b in ctx.buffer_list() {
+            let Some(path) = ctx.file(b).map(|f| f.path.clone()) else {
+                continue;
+            };
+            if let Ok(t) = ctx.text(b) {
+                open.push((path, Box::new(t.rope().clone())));
+            }
+        }
+        let job = Job {
+            text,
+            name: self.format_name(ctx),
+            dir: self.dir.clone(),
+            zone: self.zone.clone(),
+            open,
+            toggles: self.toggles,
+        };
+        self.builds += 1;
+        let me = self.me.clone();
+        self.building = Some(ctx.spawn(
+            move || source::build(job),
+            move |ctx, out| {
+                if let Some(s) = me.upgrade() {
+                    let mut st = s.borrow_mut();
+                    st.built(ctx, out);
+                    st.refresh(ctx);
+                }
+                Ok(())
+            },
+        ));
+    }
+
+    /// The name a build reads the format from: the source file's, else the buffer's.
+    fn format_name(&self, ctx: &Ctx) -> String {
+        if let Some(name) = self.file.as_ref().and_then(|p| p.file_name()) {
+            return name.to_string_lossy().into_owned();
+        }
+        match &self.source {
+            Source::Buffer(b) => ctx.buffer_name(*b).unwrap_or_default().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    /// `:fig !cmd`'s command, run once in a job: its standard output is the figure's text.
+    fn run_command(&mut self, ctx: &mut Ctx) {
+        let Source::Command { cmd, dir, .. } = &self.source else {
+            return;
+        };
+        let (cmd, dir) = (cmd.clone(), dir.clone());
+        let me = self.me.clone();
+        self.builds += 1;
+        self.building = Some(ctx.spawn(
+            move || -> std::result::Result<String, String> {
+                let mut c = die_core::process::shell(&cmd, &dir);
+                c.env("PATH", die_core::process::path())
+                    .stdin(std::process::Stdio::null());
+                let out = c.output().map_err(|e| format!("{cmd}: {e}"))?;
+                if !out.status.success() && out.stdout.is_empty() {
+                    let err = String::from_utf8_lossy(&out.stderr);
+                    return Err(format!("{cmd}: {} {}", out.status, err.trim()));
+                }
+                Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+            },
+            move |ctx, out| {
+                if let Some(s) = me.upgrade() {
+                    let mut st = s.borrow_mut();
+                    match out {
+                        Ok(text) => {
+                            if let Source::Command { out, .. } = &mut st.source {
+                                *out = Some(text.into());
+                            }
+                            st.build(ctx);
+                        }
+                        Err(e) => {
+                            st.error = Some(Failed {
+                                error: FigError::new(e),
+                                file: None,
+                                files: vec![],
+                            });
+                            st.rev += 1;
+                        }
+                    }
+                    st.refresh(ctx);
+                }
+                Ok(())
+            },
+        ));
+    }
+
+    /// Build the model again from the chart and tables already read: the settings changed.
+    fn rebuild(&mut self, ctx: &mut Ctx) {
+        let Some(chart) = self.chart.clone() else {
+            return;
+        };
+        let (tables, toggles, zone) = (self.tables.clone(), self.toggles, self.zone.clone());
+        let me = self.me.clone();
+        self.building = Some(ctx.spawn(
+            move || source::rebuild(&chart, tables, toggles, &zone),
+            move |ctx, out| {
+                if let Some(s) = me.upgrade() {
+                    let mut st = s.borrow_mut();
+                    match out {
+                        Ok(model) => st.new_model(model, ctx.now()),
+                        Err(error) => {
+                            st.error = Some(Failed {
+                                error,
+                                file: None,
+                                files: vec![],
+                            })
+                        }
+                    }
+                    st.refresh(ctx);
+                }
+                Ok(())
+            },
+        ));
+    }
+
+    /// A build's outcome: the new figure, or the last one kept with the banner saying why not.
+    fn built(&mut self, ctx: &mut Ctx, out: std::result::Result<source::Built, Failed>) {
+        self.rev += 1;
+        match out {
+            Ok(b) => {
+                if b.warnings != self.warned {
+                    for w in &b.warnings {
+                        ctx.messages.push(format!("fig: {w}"));
+                    }
+                    self.warned = b.warnings.clone();
+                }
+                self.figure = Some(b.figure);
+                self.inferred = b.inferred;
+                self.chart = b.chart;
+                self.tables = b.tables;
+                self.files = b.files;
+                self.followed = b.followed;
+                self.later = b.later;
+                self.error = None;
+                match b.model {
+                    Some(m) => self.new_model(m, ctx.now()),
+                    None => {
+                        self.model = None;
+                        self.model_gen += 1;
+                    }
+                }
+            }
+            Err(f) => {
+                // The figure stays; the files it read before failing are polled, so a fix to
+                // one of them brings it back.
+                for (p, t) in &f.files {
+                    if !self.files.iter().any(|(q, _)| q == p) {
+                        self.files.push((p.clone(), *t));
+                    }
+                }
+                self.error = Some(f);
+            }
+        }
+        self.keep_polling(ctx);
+    }
+
+    /// A model to draw: the cursors and references that no longer name a sample let go, and a
+    /// view that follows live data slides to its newest.
+    fn new_model(&mut self, model: ChartModel, now: Duration) {
+        let keys = model.keys();
+        let len = |key: &SeriesKey| {
+            let s = model.series.iter().find(|s| &s.key == key);
+            s.map_or(0, |s| s.xs.len())
+        };
+        let fits = |c: &Option<Cursor>| match c {
+            Some(Cursor::Point { series, row }) => {
+                keys.contains(series) && (*row as usize) < len(series)
+            }
+            _ => true,
+        };
+        let newest = model.newest();
+        let motion = self.motion();
+        let toggles = self.toggles;
+        for p in self.panes.values_mut() {
+            if !fits(&p.cursor) {
+                p.cursor = None;
+            }
+            if !fits(&p.view.reference) {
+                p.view.reference = None;
+            }
+            if let (true, Some((a, b)), Some(n), false) =
+                (p.view.follow, p.view.x, newest, p.gesturing())
+                && n > b
+            {
+                let v = View {
+                    x: Some((n - (b - a), n)),
+                    ..p.view.clone()
+                };
+                p.set_view(v, Change::Follow, toggles, &model, motion, now);
+            }
+            p.rehover = true;
+        }
+        self.model = Some(Arc::new(model));
+        self.model_gen += 1;
+        self.rev += 1;
+    }
+
+    /// An edit to the buffer it follows: charted once the buffer has been quiet a while, and
+    /// only while a window shows the figure; otherwise when one does again.
+    pub fn edited(&mut self, ctx: &mut Ctx) {
+        if !self.shown(ctx) {
+            self.behind = true;
+            return;
+        }
+        let me = self.me.clone();
+        self.debounce = Some(ctx.after(QUIET, move |ctx| {
+            if let Some(s) = me.upgrade() {
+                s.borrow_mut().build(ctx);
+            }
+            Ok(())
+        }));
+    }
+
+    /// Whether the figure follows this file's buffer: its own text, or a data file it reads.
+    pub fn follows(&self, buf: BufferId, path: Option<&std::path::Path>) -> bool {
+        if self.source == Source::Buffer(buf) {
+            return true;
+        }
+        path.is_some_and(|p| self.followed.iter().any(|f| source::same_path(f, p)))
+    }
+
+    /// Whether it polls files on disk now.
+    pub fn polling(&self) -> bool {
+        self.poll.is_some()
+    }
+
+    /// The files it reads from disk.
+    pub fn files(&self) -> Vec<PathBuf> {
+        self.files.iter().map(|f| f.0.clone()).collect()
+    }
+
+    /// The poll of the files it reads from disk runs only while a window shows it.
+    pub fn keep_polling(&mut self, ctx: &mut Ctx) {
+        let wanted = self.shown(ctx) && !self.files.is_empty();
+        if !wanted {
+            self.poll = None;
+            return;
+        }
+        if self.poll.is_some() {
+            return;
+        }
+        let me = self.me.clone();
+        self.poll = Some(ctx.every(POLL, move |ctx| {
+            if let Some(s) = me.upgrade() {
+                let mut st = s.borrow_mut();
+                let changed = st.files.iter().any(|(p, t)| source::modified(p) != *t);
+                if changed {
+                    // Taken as seen, so a file that keeps failing isn't read every second.
+                    for (p, t) in &mut st.files {
+                        *t = source::modified(p);
+                    }
+                    st.build(ctx);
+                }
+            }
+            Ok(())
+        }));
+    }
+
+    // -------------------------------------------------------------- windows
+
+    /// After a command, and anything else that may have changed what windows show: the panes of
+    /// windows that are gone or show something else are freed (ruling 11), the poll runs only
+    /// while shown, a figure behind its source is built when shown, and the theme is compared.
+    pub fn settle(&mut self, ctx: &mut Ctx) {
+        let Some(buf) = self.buf else { return };
+        let gone: Vec<WindowId> = (self.panes.keys())
+            .filter(|w| ctx.window_buffer(**w) != Some(buf))
+            .copied()
+            .collect();
+        for w in gone {
+            if let Some(p) = self.panes.remove(&w)
+                && self.panes.is_empty()
+            {
+                self.parked = Some((p.view, p.cursor, p.undo));
+            }
+            if self.last == Some(w) {
+                self.last = self.panes.keys().next().copied();
+            }
+        }
+        let shown = self.shown(ctx);
+        if shown && self.behind {
+            self.build(ctx);
+        }
+        self.keep_polling(ctx);
+        self.refresh(ctx);
+    }
+
+    /// A window showing it has an area this size: its pane is made the first time the cells
+    /// have a size in pixels, with its two buffers, and grown when the area outgrows them.
+    fn resized(&mut self, ctx: &mut Ctx, w: WindowId, cols: usize, rows: usize, cell: CellPixels) {
+        if cell.width == 0 || cell.height == 0 || ctx.window_buffer(w) != self.buf {
+            return;
+        }
+        if !ctx.pixels_supported() {
+            if !self.refused {
+                self.refused = true;
+                ctx.messages.push(crate::NO_PIXELS.into());
+            }
+            return;
+        }
+        self.kit.borrow_mut().ensure(ctx);
+        if !self.panes.contains_key(&w) {
+            let seed = self.last.and_then(|l| self.panes.get(&l));
+            let pane = match (seed, self.parked.take()) {
+                (Some(p), _) => Pane::new(p.view.clone(), p.cursor.clone(), Steps::default()),
+                (None, Some((v, c, u))) => Pane::new(v, c, u),
+                (None, None) => Pane::new(View::default(), None, Steps::default()),
+            };
+            self.panes.insert(w, pane);
+        }
+        self.last = Some(w);
+        let Some(p) = self.panes.get_mut(&w) else {
+            return;
+        };
+        if (p.cols, p.rows, p.cell) != (cols, rows, cell) {
+            (p.cols, p.rows, p.cell) = (cols, rows, cell);
+            p.drawn = None;
+            p.over_key = None;
+            p.over_bounds = None;
+            p.over_items.clear();
+        }
+        if let Err(e) = p.buffers_for(ctx)
+            && !self.refused
+        {
+            self.refused = true;
+            ctx.messages
+                .push(format!("fig: no pixel buffer for the figure: {e}"));
+        }
+        if self.behind {
+            self.build(ctx);
+        }
+        self.keep_polling(ctx);
+    }
+
+    // -------------------------------------------------------------- drawing
+
+    /// Bring every shown pane's pictures up to date: the base where what it shows changed, the
+    /// hover where the view moved under a still pointer, and the overlay where what it shows
+    /// changed. The ease's frames run on a timer only while something eases.
+    pub fn refresh(&mut self, ctx: &mut Ctx) {
+        self.look(ctx);
+        let now = ms(ctx.now());
+        let Some(buf) = self.buf else { return };
+        let banner = self.banner();
+        let empty = match (&self.error, &self.later) {
+            (Some(_), _) => format!("No chart in {}", self.name),
+            (None, Some(later)) => later.clone(),
+            (None, None) => String::new(),
+        };
+        let model = self.model.clone();
+        let mut kit = self.kit.borrow_mut();
+        let mut easing = false;
+        for (w, p) in &mut self.panes {
+            if ctx.window_buffer(*w) != Some(buf) || p.base.is_none() {
+                continue;
+            }
+            if let Some(e) = &p.ease
+                && e.tween.done(now)
+            {
+                p.ease = None;
+                p.rehover = true;
+            }
+            easing |= p.ease.is_some();
+            let shown = p.shown(now);
+            let key = BaseKey {
+                model: self.model_gen,
+                view: View {
+                    reference: None,
+                    ..shown.clone()
+                },
+                size: p.area_px(),
+                scale: p.scale().to_bits(),
+                theme: self.theme_gen,
+                banner: banner.clone(),
+            };
+            if p.drawn.as_ref() != Some(&key) {
+                let words = (banner.as_deref(), empty.as_str());
+                draw_base(p, model.as_deref(), &shown, &self.theme, words, &mut kit);
+                p.drawn = Some(key);
+                p.rehover = true;
+            }
+            if p.rehover {
+                p.hover_again(model.as_deref());
+            }
+            draw_overlay(p, model.as_deref(), &shown, &self.theme, &mut kit);
+        }
+        drop(kit);
+        match (easing, self.motion.is_some()) {
+            (true, false) => {
+                let me = self.me.clone();
+                self.motion = Some(ctx.every(FRAME, move |ctx| {
+                    if let Some(s) = me.upgrade() {
+                        s.borrow_mut().refresh(ctx);
+                    }
+                    Ok(())
+                }));
+            }
+            (false, true) => self.motion = None,
+            _ => {}
+        }
+    }
+
+    // -------------------------------------------------------------- the pointer
+
+    /// Whether this press is the one that activated the app: the focus came within
+    /// [`FOCUS_GRACE_MS`] with no press having brought it. Once.
+    fn activating(&mut self, now: Duration) -> bool {
+        self.focused_at
+            .take()
+            .is_some_and(|at| now < at + Duration::from_millis(FOCUS_GRACE_MS))
+    }
+
+    /// A pointer event over (or dragging from) a window's area.
+    fn pointer(&mut self, ctx: &mut Ctx, p: &SurfacePointer) {
+        let now = ctx.now();
+        let press = matches!(p.kind, PointerKind::Press(Button::Left | Button::Middle));
+        let swallow = press && (!self.focused || self.activating(now));
+        let model = self.model.clone();
+        let (toggles, motion) = (self.toggles, self.motion());
+        let me = self.me.clone();
+        let buf = self.buf;
+        let Some(pane) = self.panes.get_mut(&p.window) else {
+            return;
+        };
+        let s = pane.scale();
+        let at = (p.x / s, p.y / s);
+        pane.pointer = Some(at);
+        let Some(model) = model else {
+            return;
+        };
+        let mut cx = Act {
+            pane,
+            model: &model,
+            toggles,
+            motion,
+            now,
+        };
+        match p.kind {
+            PointerKind::Move => {
+                cx.pane.hovering = true;
+                cx.pane.rehover = true;
+            }
+            PointerKind::Press(b @ (Button::Left | Button::Middle)) => {
+                cx.pane.help = false;
+                if cx.pane.gesturing() && cx.pane.held != Some(b) {
+                    // A second button mid-drag: it ends nothing and starts nothing.
+                    return;
+                }
+                if cx.pane.gesturing() {
+                    // The same button again: its release was lost. What it did stays.
+                    cx.finish();
+                }
+                cx.pane.held = Some(b);
+                if swallow {
+                    cx.pane.gesture = Gesture::Swallowed;
+                    return;
+                }
+                let hit = cx.pane.hit_at(at);
+                if p.clicks >= 2 && b == Button::Left {
+                    cx.double(&hit);
+                    cx.pane.gesture = Gesture::Swallowed;
+                    return;
+                }
+                cx.pane.gesture = Gesture::Pressed {
+                    at,
+                    hit,
+                    button: b,
+                    mods: p.mods,
+                    clicks: p.clicks,
+                };
+                cx.pane.drag_last = at;
+            }
+            // The right button opens nothing: there is no dial.
+            PointerKind::Press(Button::Right) => {}
+            PointerKind::Drag(_) => cx.drag(at),
+            PointerKind::Release(b) => {
+                if let Some(banner) = cx.release(b, at)
+                    && banner
+                {
+                    let args = die_core::Args {
+                        window: Some(p.window),
+                        buffer: buf,
+                        ..die_core::Args::default()
+                    };
+                    ctx.defer(move |ctx| ctx.run("fig-goto-error", &args));
+                }
+            }
+            PointerKind::Scroll { dx, dy } => {
+                let w = p.window;
+                cx.scroll(dx, dy, at, p.mods, || {
+                    let me = me.clone();
+                    ctx.after(Duration::from_millis(SCROLL_BURST_MS), move |ctx| {
+                        if let Some(s) = me.upgrade() {
+                            let mut st = s.borrow_mut();
+                            st.end_burst(w);
+                            st.refresh(ctx);
+                        }
+                        Ok(())
+                    })
+                });
+            }
+        }
+    }
+
+    /// The scroll burst in a window ends: one undo step for what it did.
+    pub fn end_burst(&mut self, w: WindowId) {
+        let toggles = self.toggles;
+        if let Some(p) = self.panes.get_mut(&w)
+            && let Some(b) = p.burst.take()
+            && b.before != p.view
+        {
+            p.undo.push(Snap {
+                view: b.before,
+                toggles,
+            });
+            self.rev += 1;
+        }
+    }
+
+    /// The focus came or went. Gained with no press having brought it (the press that focuses
+    /// a window from another of DIE's comes first): the app was activated, and the press that
+    /// did it is on its way, to do nothing. Lost mid-gesture: the gesture ends where it stands.
+    fn focus(&mut self, ctx: &mut Ctx, gained: bool) {
+        let now = ctx.now();
+        let gesturing = self.panes.values().any(Pane::gesturing);
+        self.focused_at = (gained && !self.focused && !gesturing).then_some(now);
+        self.focused = gained;
+        if !gained {
+            let ws: Vec<WindowId> = self.panes.keys().copied().collect();
+            for w in ws {
+                self.finish(w, now);
+            }
+        }
+    }
+
+    /// End whatever the pointer is in the middle of in a window, as a key or the focus going
+    /// does (mouse-ux §8): a brush's preview goes, a pan stays as one undo step, a scroll burst
+    /// ends.
+    pub fn finish(&mut self, w: WindowId, now: Duration) {
+        self.end_burst(w);
+        let (Some(model), toggles, motion) = (self.model.clone(), self.toggles, self.motion())
+        else {
+            return;
+        };
+        if let Some(pane) = self.panes.get_mut(&w) {
+            Act {
+                pane,
+                model: &model,
+                toggles,
+                motion,
+                now,
+            }
+            .finish();
+        }
+    }
+
+    /// `Esc` in a window (mouse-ux §8): a brush is dropped and its release does nothing; a pan
+    /// goes back where it started; a scroll burst ends. With nothing under way, the first of the
+    /// key card, the search's emphasis and the reference goes. False if there was nothing.
+    pub fn cancel(&mut self, w: WindowId) -> bool {
+        self.end_burst(w);
+        let Some(p) = self.panes.get_mut(&w) else {
+            return false;
+        };
+        match std::mem::replace(&mut p.gesture, Gesture::None) {
+            Gesture::Brush { .. } => p.gesture = Gesture::Swallowed,
+            Gesture::Pan { before, .. } | Gesture::AxisPan { before, .. } => {
+                p.view = before;
+                p.ease = None;
+                p.gesture = Gesture::Swallowed;
+            }
+            Gesture::Pressed { .. } => p.gesture = Gesture::Swallowed,
+            Gesture::None | Gesture::Swallowed | Gesture::NodeDrag { .. } => {
+                if p.help {
+                    p.help = false;
+                } else if p.found.is_some() {
+                    p.found = None;
+                } else if p.view.reference.is_some() {
+                    p.view.reference = None;
+                } else {
+                    return false;
+                }
+            }
+        }
+        p.rehover = true;
+        self.rev += 1;
+        true
+    }
+
+    /// The pointer left a window's area: its hover, card and emphasis go.
+    fn left(&mut self, w: WindowId) {
+        if let Some(p) = self.panes.get_mut(&w) {
+            p.pointer = None;
+            p.hovering = false;
+            p.rehover = true;
+        }
+    }
+
+    /// A key no keymap took: with the key card up, any key closes it and is taken for that;
+    /// otherwise it isn't the figure's, Space included, which does nothing here.
+    fn key(&mut self, k: &KeyEvent) -> bool {
+        let open = self.panes.values().any(|p| p.help);
+        if k.kind == KeyKind::Press && open {
+            for p in self.panes.values_mut() {
+                p.help = false;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Act on a window's pane with the model, as the keys and the pointer do. None without a
+    /// model or a pane.
+    pub fn act<R>(
+        &mut self,
+        w: WindowId,
+        now: Duration,
+        f: impl FnOnce(&mut Act) -> R,
+    ) -> Option<R> {
+        let model = self.model.clone()?;
+        let (toggles, motion) = (self.toggles, self.motion());
+        let pane = self.panes.get_mut(&w)?;
+        let mut a = Act {
+            pane,
+            model: &model,
+            toggles,
+            motion,
+            now,
+        };
+        let r = f(&mut a);
+        self.rev += 1;
+        Some(r)
+    }
+
+    /// `u` or `C-r` in a window: the view (and the settings) of the change before or after,
+    /// eased; the reference stays as it is, being no part of undo (mouse-ux §9). False with
+    /// nothing to undo or redo.
+    pub fn undo(&mut self, ctx: &mut Ctx, w: WindowId, redo: bool) -> bool {
+        let now = ctx.now();
+        let toggles = self.toggles;
+        let Some(snap) = self
+            .act(w, now, |a| {
+                let current = Snap {
+                    view: a.pane.view.clone(),
+                    toggles,
+                };
+                let snap = match redo {
+                    true => a.pane.undo.redo(&current),
+                    false => a.pane.undo.undo(&current),
+                }?;
+                let v = View {
+                    reference: a.pane.view.reference.clone(),
+                    ..snap.view.clone()
+                };
+                a.set(v, Change::Follow);
+                Some(snap)
+            })
+            .flatten()
+        else {
+            return false;
+        };
+        if snap.toggles != self.toggles {
+            self.toggles = snap.toggles;
+            self.rebuild(ctx);
+        }
+        true
+    }
+
+    /// `s`'s answer: a setting turned over, one undo step, the model built again.
+    pub fn flip(&mut self, ctx: &mut Ctx, w: WindowId, setting: crate::interact::Setting) {
+        let Some(chart) = &self.chart else { return };
+        let before = self.toggles;
+        self.toggles.flip(chart, setting);
+        if let Some(p) = self.panes.get_mut(&w) {
+            p.undo.push(Snap {
+                view: p.view.clone(),
+                toggles: before,
+            });
+        }
+        self.rev += 1;
+        self.rebuild(ctx);
+    }
+}
+
+/// A pane with what acting on it needs.
+pub struct Act<'a> {
+    /// The pane.
+    pub pane: &'a mut Pane,
+    /// The figure's model.
+    pub model: &'a ChartModel,
+    /// The figure's settings.
+    pub toggles: Toggles,
+    /// Whether changes ease.
+    pub motion: bool,
+    /// The clock.
+    pub now: Duration,
+}
+
+impl Act<'_> {
+    /// Change the view, as `how` says.
+    pub fn set(&mut self, v: View, how: Change) -> bool {
+        self.pane
+            .set_view(v, how, self.toggles, self.model, self.motion, self.now)
+    }
+
+    /// The layout, once drawn.
+    pub fn layout(&self) -> Option<&ChartLayout> {
+        self.pane.layout.as_ref()
+    }
+
+    /// The view follows live data's end when its right edge is within a pixel of the newest
+    /// sample, and stops when a change leaves the newest off screen (mouse-ux §3.2). A view
+    /// that fits the data follows it anyway.
+    pub fn follow_check(&mut self) {
+        let (Some((a, b)), Some(n), Some(l)) = (
+            self.pane.view.x,
+            self.model.newest(),
+            self.pane.layout.as_ref(),
+        ) else {
+            self.pane.view.follow = false;
+            return;
+        };
+        let px = (b - a) / f64::from(l.plot.w.max(1.0));
+        self.pane.view.follow = (n - b).abs() <= px;
+    }
+
+    fn finish(&mut self) {
+        match std::mem::replace(&mut self.pane.gesture, Gesture::None) {
+            Gesture::Brush { .. } | Gesture::Pressed { .. } => {
+                self.pane.gesture = Gesture::Swallowed;
+            }
+            Gesture::Pan { before, .. } | Gesture::AxisPan { before, .. } => {
+                if before != self.pane.view {
+                    self.pane.undo.push(Snap {
+                        view: before,
+                        toggles: self.toggles,
+                    });
+                }
+                self.follow_check();
+                self.pane.gesture = Gesture::Swallowed;
+            }
+            other => self.pane.gesture = other,
+        }
+        self.pane.rehover = true;
+    }
+
+    /// A point held inside the plot.
+    fn in_plot(&self, (x, y): (f32, f32)) -> (f32, f32) {
+        match self.layout() {
+            Some(l) => (
+                x.clamp(l.plot.x, l.plot.right()),
+                y.clamp(l.plot.y, l.plot.bottom()),
+            ),
+            None => (x, y),
+        }
+    }
+
+    fn drag(&mut self, at: (f32, f32)) {
+        if let Gesture::Pressed {
+            at: from,
+            hit,
+            button,
+            mods,
+            ..
+        } = &self.pane.gesture
+        {
+            let (dx, dy) = (at.0 - from.0, at.1 - from.1);
+            if (dx * dx + dy * dy).sqrt() < CLICK_SLOP {
+                return;
+            }
+            let (from, hit, button, mods) = (*from, hit.clone(), *button, *mods);
+            self.start(from, hit, button, mods);
+        }
+        let held = self.in_plot(at);
+        match &mut self.pane.gesture {
+            Gesture::Brush { to, .. } => *to = held,
+            Gesture::Pan { .. } => self.pan_by(at, None),
+            Gesture::AxisPan { axis, .. } => {
+                let axis = *axis;
+                self.pan_by(at, Some(axis));
+            }
+            _ => {}
+        }
+    }
+
+    /// A press that travelled the slop becomes the gesture its button, modifiers and target
+    /// make it (mouse-ux §13 row 1).
+    fn start(&mut self, from: (f32, f32), hit: Hit, button: Button, mods: Mods) {
+        self.pane.settle(ms(self.now));
+        let before = self.pane.view.clone();
+        self.pane.drag_last = from;
+        self.pane.gesture = match hit {
+            _ if button == Button::Middle || mods.alt => Gesture::Pan {
+                panel: 0,
+                from,
+                before,
+            },
+            Hit::AxisX(panel) => Gesture::AxisPan {
+                panel,
+                axis: Axis::X,
+                from,
+                before,
+            },
+            Hit::AxisY(panel) => Gesture::AxisPan {
+                panel,
+                axis: Axis::Y,
+                from,
+                before,
+            },
+            Hit::Plot(panel) | Hit::Bar { panel, .. } | Hit::Cell { panel, .. } => {
+                let kind = match plot::nav::brush_kind(self.model) {
+                    // ⌘-drag on an x-chart: a box, which lets y leave the fit.
+                    BrushKind::X if mods.super_ => BrushKind::Box,
+                    kind => kind,
+                };
+                let from = self.in_plot(from);
+                Gesture::Brush {
+                    panel,
+                    kind,
+                    from,
+                    to: from,
+                }
+            }
+            _ => Gesture::Swallowed,
+        };
+        self.pane.rehover = true;
+    }
+
+    /// A pan follows the hand from the last sample, by whole pixels as they came.
+    fn pan_by(&mut self, at: (f32, f32), axis: Option<Axis>) {
+        let (dx, dy) = (at.0 - self.pane.drag_last.0, at.1 - self.pane.drag_last.1);
+        self.pane.drag_last = at;
+        let Some(l) = self.pane.layout.as_ref() else {
+            return;
+        };
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        // On an x-chart a drag pans x by its horizontal motion alone.
+        let dy = if self.model.is_x_chart() && axis.is_none() {
+            0.0
+        } else {
+            dy
+        };
+        let v = plot::nav::pan(self.model, l, &self.pane.view, dx, dy, axis);
+        self.set(v, Change::Live);
+    }
+
+    /// A release: of the gesture's button, the gesture's end; of another, nothing. Some(true)
+    /// when it was a click on the banner, for the caller to go to the error.
+    fn release(&mut self, b: Button, at: (f32, f32)) -> Option<bool> {
+        if self.pane.held.is_some_and(|h| h != b) {
+            return None;
+        }
+        self.pane.held = None;
+        let mut banner = false;
+        match std::mem::replace(&mut self.pane.gesture, Gesture::None) {
+            Gesture::Pressed {
+                hit,
+                mods,
+                button: Button::Left,
+                ..
+            } => banner = self.click(hit, mods, at),
+            Gesture::Brush { kind, from, to, .. } => {
+                let to = self.in_plot(to);
+                let v = self
+                    .layout()
+                    .and_then(|l| plot::nav::brush(self.model, l, &self.pane.view, kind, from, to));
+                if let Some(v) = v {
+                    self.set(v, Change::Step);
+                    self.follow_check();
+                }
+            }
+            g @ (Gesture::Pan { .. } | Gesture::AxisPan { .. }) => {
+                self.pane.gesture = g;
+                self.finish();
+                self.pane.gesture = Gesture::None;
+            }
+            _ => {}
+        }
+        self.pane.rehover = true;
+        Some(banner)
+    }
+
+    /// A click, on its release: by what's under it (mouse-ux §4). True for the banner.
+    fn click(&mut self, hit: Hit, mods: Mods, at: (f32, f32)) -> bool {
+        match hit {
+            Hit::LegendKey(k) => {
+                if mods.alt {
+                    self.solo(&k);
+                    self.pane.last_click = None;
+                } else {
+                    self.toggle_hidden(&k);
+                    self.pane.last_click = Some(k);
+                }
+            }
+            Hit::Plot(_) | Hit::Bar { .. } | Hit::Cell { .. } => {
+                let (Some(l), Some(h)) = (self.pane.layout.as_ref(), self.pane.hits.as_ref())
+                else {
+                    return false;
+                };
+                let c = plot::hover::hover(self.model, l, h, &self.pane.view, at.0, at.1);
+                let near =
+                    plot::hover::nearest_series(self.model, l, h, &self.pane.view, at.0, at.1);
+                if mods.shift {
+                    // The reference, A: set here, moved here, or cleared on itself. Not an
+                    // undo step (mouse-ux §9).
+                    let r = &mut self.pane.view.reference;
+                    *r = if *r == c { None } else { c };
+                } else if mods.alt {
+                    let key = near.or(match c {
+                        Some(Cursor::Point { series, .. }) => Some(series),
+                        Some(Cursor::Band { series, .. }) => series,
+                        _ => None,
+                    });
+                    if let Some(k) = key {
+                        self.solo(&k);
+                    }
+                } else if c.is_some() {
+                    self.pane.cursor = c;
+                }
+                self.pane.last_click = None;
+            }
+            Hit::Banner => return true,
+            _ => {}
+        }
+        false
+    }
+
+    /// A double click's second press, at once: on a legend key, only that series (the first
+    /// click's toggle taken back, so the two are one undo step); on an axis, that axis fits
+    /// again; on the plot, the whole view does.
+    fn double(&mut self, hit: &Hit) {
+        match hit {
+            Hit::LegendKey(k) => {
+                let mut v = self.pane.view.clone();
+                if self.pane.last_click.as_ref() == Some(k)
+                    && let Some(before) = self.pane.undo.retract()
+                {
+                    v = before.view;
+                    self.pane.view = v.clone();
+                }
+                v.only = Some(k.clone());
+                v.hidden.remove(k);
+                self.set(v, Change::Step);
+            }
+            Hit::AxisX(_) => self.reset(Some(Axis::X)),
+            Hit::AxisY(_) => self.reset(Some(Axis::Y)),
+            Hit::Plot(_) | Hit::Bar { .. } | Hit::Cell { .. } => self.reset(None),
+            _ => {}
+        }
+        self.pane.last_click = None;
+    }
+
+    /// Fit one axis or both, eased, one undo step.
+    pub fn reset(&mut self, axis: Option<Axis>) {
+        let mut v = plot::nav::reset(self.model, &self.pane.view, axis);
+        if v.x.is_none() {
+            v.follow = false;
+        }
+        self.set(v, Change::Step);
+    }
+
+    /// Only `k`, or every series again if it's shown alone.
+    pub fn solo(&mut self, k: &SeriesKey) {
+        let mut v = self.pane.view.clone();
+        if v.only.as_ref() == Some(k) {
+            v.only = None;
+        } else {
+            v.only = Some(k.clone());
+            v.hidden.remove(k);
+        }
+        self.set(v, Change::Step);
+    }
+
+    /// `k` hidden, or shown again. A series shown alone becomes the rest hidden first.
+    pub fn toggle_hidden(&mut self, k: &SeriesKey) {
+        let mut v = self.pane.view.clone();
+        if let Some(only) = v.only.take() {
+            v.hidden = self
+                .model
+                .keys()
+                .into_iter()
+                .filter(|s| *s != only)
+                .collect();
+        }
+        if !v.hidden.remove(k) {
+            v.hidden.insert(k.clone());
+        }
+        self.set(v, Change::Step);
+    }
+
+    /// The wheel (mouse-ux §3.2): a burst keeps the meaning of its first event; plain pans by
+    /// whole physical pixels with the rest carried, ⌘ (or Ctrl) zooms about the pointer, and
+    /// over an axis's strip either acts on that axis alone. `arm` re-arms the burst's end.
+    fn scroll(&mut self, dx: f32, dy: f32, at: (f32, f32), mods: Mods, arm: impl FnOnce() -> Sub) {
+        if self.pane.gesturing() || !dx.is_finite() || !dy.is_finite() {
+            return;
+        }
+        // Linux gives a mouse's Shift-wheel as up and down; macOS turns it across itself.
+        let (dx, dy) = if mods.shift && dx == 0.0 {
+            (dy, 0.0)
+        } else {
+            (dx, dy)
+        };
+        let timer = arm();
+        if self.pane.burst.is_none() {
+            self.pane.settle(ms(self.now));
+            let axis = match self.pane.hit_at(at) {
+                Hit::AxisX(_) => Some(Axis::X),
+                Hit::AxisY(_) => Some(Axis::Y),
+                _ => None,
+            };
+            let across = (self.model.is_x_chart() && axis.is_none()).then(|| dx.abs() >= dy.abs());
+            self.pane.burst = Some(Burst {
+                zoom: mods.super_ || mods.ctrl,
+                axis,
+                across,
+                before: self.pane.view.clone(),
+                _timer: timer,
+            });
+            self.pane.carry = (0.0, 0.0);
+        } else if let Some(b) = &mut self.pane.burst {
+            b._timer = timer;
+        }
+        let Some(b) = &self.pane.burst else { return };
+        let (zoom, axis, across) = (b.zoom, b.axis, b.across);
+        let Some(l) = self.pane.layout.as_ref() else {
+            return;
+        };
+        let v = if zoom {
+            let factor = ZOOM_STEP.powf(f64::from(-dy) / 4.0);
+            if factor == 1.0 {
+                return;
+            }
+            plot::nav::zoom(self.model, l, &self.pane.view, factor, Some(at), None, axis)
+        } else {
+            let (cw, ch) = (self.pane.cell.width as f32, self.pane.cell.height as f32);
+            let s = self.pane.scale();
+            let (tx, ty) = (dx * cw + self.pane.carry.0, dy * ch + self.pane.carry.1);
+            let (wx, wy) = (tx.trunc(), ty.trunc());
+            self.pane.carry = (tx - wx, ty - wy);
+            let (mut px, mut py) = (wx / s, wy / s);
+            match across {
+                Some(true) => py = 0.0,
+                Some(false) => px = 0.0,
+                None => {}
+            }
+            if px == 0.0 && py == 0.0 {
+                return;
+            }
+            // The wheel says how the view moves; a pan, how the content does.
+            plot::nav::pan(self.model, l, &self.pane.view, -px, -py, axis)
+        };
+        if self.set(v, Change::Live) {
+            self.follow_check();
+        }
+    }
+}
+
+/// The keys' actions on a pane (the design's Controls).
+impl Act<'_> {
+    /// `h l j k w b gg G H M L`: the cursor moved as `action` says, `count` times, the view
+    /// following it as a window follows the text cursor; the hover hides until the pointer
+    /// moves. `G` on live data follows the newest too. False if it didn't move.
+    pub fn move_cursor(&mut self, action: &crate::interact::Action, count: u32) -> bool {
+        let Some(l) = self.pane.layout.as_ref() else {
+            return false;
+        };
+        let cursor = self.pane.cursor.as_ref();
+        let Some(c) = plot::nav::motion(self.model, l, &self.pane.view, cursor, action, count)
+        else {
+            return false;
+        };
+        let v = plot::nav::reveal(self.model, l, &self.pane.view, &c);
+        self.pane.cursor = Some(c);
+        self.pane.hovering = false;
+        self.pane.rehover = true;
+        self.set(v, Change::Follow);
+        if *action == crate::interact::Action::Last {
+            self.follow_newest();
+        }
+        true
+    }
+
+    /// The view's right edge on the newest sample, following it from now on (`G`).
+    fn follow_newest(&mut self) {
+        if let (Some((a, b)), Some(n)) = (self.pane.view.x, self.model.newest()) {
+            let v = View {
+                x: Some((n - (b - a), n)),
+                follow: true,
+                ..self.pane.view.clone()
+            };
+            self.set(v, Change::Follow);
+        }
+    }
+
+    /// `+ - K J`: zoom by `factor` about the cursor (or the middle), eased; a run of them within
+    /// a scroll burst is one undo step.
+    pub fn zoom_keys(&mut self, factor: f64) {
+        let Some(l) = self.pane.layout.as_ref() else {
+            return;
+        };
+        let cursor = self.pane.cursor.as_ref();
+        let v = plot::nav::zoom(self.model, l, &self.pane.view, factor, None, cursor, None);
+        if self.set(v, Change::Keyed) {
+            self.follow_check();
+        }
+    }
+
+    /// `zh zl zH zL zj zk`: scroll the view by fractions of the plot, as Vim scrolls sideways:
+    /// right and down positive.
+    pub fn scroll_keys(&mut self, fx: f32, fy: f32) {
+        let Some(l) = self.pane.layout.as_ref() else {
+            return;
+        };
+        let axis = if fy != 0.0 { Axis::Y } else { Axis::X };
+        let (dx, dy) = (-fx * l.plot.w, -fy * l.plot.h);
+        let v = plot::nav::pan(self.model, l, &self.pane.view, dx, dy, Some(axis));
+        if self.set(v, Change::Keyed) {
+            self.follow_check();
+        }
+    }
+
+    /// `zz`: the view centred on the cursor.
+    pub fn centre(&mut self) {
+        let (Some(l), Some(c)) = (self.pane.layout.as_ref(), self.pane.cursor.as_ref()) else {
+            return;
+        };
+        let v = plot::nav::centre(self.model, l, &self.pane.view, c);
+        if self.set(v, Change::Keyed) {
+            self.follow_check();
+        }
+    }
+
+    /// The series the cursor is on.
+    pub fn cursor_series(&self) -> Option<SeriesKey> {
+        match &self.pane.cursor {
+            Some(Cursor::Point { series, .. }) => Some(series.clone()),
+            Some(Cursor::Band { series, .. }) => series.clone(),
+            _ => None,
+        }
+    }
+
+    /// `x`: the cursor's series hidden; the cursor goes with it.
+    pub fn hide(&mut self) -> bool {
+        let Some(k) = self.cursor_series() else {
+            return false;
+        };
+        let mut v = self.pane.view.clone();
+        if v.only.as_ref() == Some(&k) {
+            v.only = None;
+        }
+        v.hidden.insert(k);
+        self.pane.cursor = None;
+        self.set(v, Change::Step);
+        true
+    }
+
+    /// `o`: only the cursor's series, or all again.
+    pub fn only(&mut self) -> bool {
+        let Some(k) = self.cursor_series() else {
+            return false;
+        };
+        self.solo(&k);
+        true
+    }
+
+    /// `X`: every series shown.
+    pub fn show_all(&mut self) {
+        let mut v = self.pane.view.clone();
+        v.hidden.clear();
+        v.only = None;
+        self.set(v, Change::Step);
+    }
+
+    /// `m`: the reference set at the cursor, or cleared when it's there already. False with no
+    /// cursor.
+    pub fn reference(&mut self) -> bool {
+        let Some(c) = self.pane.cursor.clone() else {
+            return false;
+        };
+        let r = &mut self.pane.view.reference;
+        *r = if r.as_ref() == Some(&c) {
+            None
+        } else {
+            Some(c)
+        };
+        true
+    }
+
+    /// `` ` ``: the cursor to the reference. False with none.
+    pub fn to_reference(&mut self) -> bool {
+        let Some(r) = self.pane.view.reference.clone() else {
+            return false;
+        };
+        let v = match self.pane.layout.as_ref() {
+            Some(l) => plot::nav::reveal(self.model, l, &self.pane.view, &r),
+            None => self.pane.view.clone(),
+        };
+        self.pane.cursor = Some(r);
+        self.pane.hovering = false;
+        self.pane.rehover = true;
+        self.set(v, Change::Follow);
+        true
+    }
+
+    /// A search's find: the cursor there, its series brought forward until `Esc`.
+    pub fn found(&mut self, c: Cursor) {
+        self.pane.cursor = Some(c);
+        self.pane.found = self.cursor_series();
+        self.pane.hovering = false;
+        let v = match self.pane.layout.as_ref() {
+            Some(l) => plot::nav::reveal(
+                self.model,
+                l,
+                &self.pane.view,
+                self.pane.cursor.as_ref().unwrap(),
+            ),
+            None => self.pane.view.clone(),
+        };
+        self.set(v, Change::Follow);
+    }
+}
+
+/// What a job draws a figure's picture from: everything a model is built of, the view, the
+/// size and the colours, with fonts of its own (ruling 12).
+pub struct Picture {
+    chart: Chart,
+    tables: Vec<Arc<Table>>,
+    toggles: Toggles,
+    zone: TimeZone,
+    view: View,
+    size: (f32, f32),
+    theme: Theme,
+    fonts: Option<PathBuf>,
+}
+
+impl Picture {
+    /// The chart's base scene at `scale`, with the fonts loaded for it.
+    fn scene(&self, scale: f32) -> std::result::Result<(Scene, Option<Book>), String> {
+        let chart = self.toggles.apply(&self.chart);
+        let model =
+            ChartModel::build(chart, self.tables.clone(), &self.zone).map_err(|e| e.to_string())?;
+        let mut book = Book::load(self.fonts.as_deref()).ok();
+        let (scene, ..) = measured(book.as_mut(), scale, |m| {
+            plot::base(&model, &self.view, self.size, scale, &self.theme, m)
+        });
+        Ok((scene, book))
+    }
+
+    /// A PNG at `scale`, opaque on the theme's ground, and its size in pixels.
+    pub fn png(&self, scale: f32) -> std::result::Result<(Vec<u8>, u32, u32), String> {
+        let (scene, mut book) = self.scene(scale)?;
+        let bytes = raster::png(&scene, self.theme.surface, book.as_mut())?;
+        let (w, h) = (
+            (self.size.0 * scale).ceil() as u32,
+            (self.size.1 * scale).ceil() as u32,
+        );
+        Ok((bytes, w, h))
+    }
+
+    /// An SVG at 1×.
+    pub fn svg(&self) -> std::result::Result<String, String> {
+        let (scene, _) = self.scene(1.0)?;
+        Ok(crate::svg::write(&scene))
+    }
+}
+
+impl FigState {
+    /// What a job needs to draw the figure as a window shows it (or at 880 × 470 with no window).
+    pub fn picture(&self, w: Option<WindowId>) -> Option<Picture> {
+        let chart = self.chart.clone()?;
+        self.model.as_ref()?;
+        let pane = w.and_then(|w| self.panes.get(&w));
+        let view = pane.map_or_else(View::default, |p| View {
+            reference: None,
+            ..p.view.clone()
+        });
+        let size = pane.map_or((880.0, 470.0), Pane::size);
+        Some(Picture {
+            chart,
+            tables: self.tables.clone(),
+            toggles: self.toggles,
+            zone: self.zone.clone(),
+            view,
+            size,
+            theme: self.theme.clone(),
+            fonts: self.kit.borrow().fonts.clone(),
+        })
+    }
+
+    /// `<CR>`'s message for now (the detail panel is phase 3's): what the cursor is on and its
+    /// values.
+    pub fn detail(&self, w: WindowId) -> String {
+        let (Some(model), Some(p)) = (&self.model, self.panes.get(&w)) else {
+            return "fig: nothing is drawn yet".into();
+        };
+        match &p.cursor {
+            Some(Cursor::Point { series, row }) => {
+                let Some(s) = model.series.iter().find(|s| &s.key == series) else {
+                    return "fig: the cursor's series is gone".into();
+                };
+                let i = *row as usize;
+                let (x, y) = (s.xs.get(i).copied(), s.ys.get(i).copied());
+                let field = (self.chart.as_ref())
+                    .and_then(|c| c.layers.first())
+                    .and_then(|l| l.enc.x.as_ref())
+                    .and_then(|c| c.field.clone());
+                let time = field.is_some_and(|f| column_kind(model, &f) == Some(ColumnKind::Time));
+                let x = x.map_or_else(String::new, |x| match time {
+                    true => crate::scale::format_time_full(x, 1.0, &self.zone),
+                    false => crate::scale::format_value(x),
+                });
+                let y = y.map_or_else(String::new, crate::scale::format_value);
+                format!("{} · {x} · {y}", series.name)
+            }
+            Some(c @ Cursor::Band { .. }) => {
+                let labels = model.labels();
+                let name = labels.into_iter().find(|l| &l.1 == c).map(|l| l.0);
+                name.unwrap_or_else(|| "a band".into())
+            }
+            Some(_) => "fig: the detail panel arrives in a later build".into(),
+            None => "fig: no cursor yet: h l j k or a click puts it on the data".into(),
+        }
+    }
+}
+
+/// Draw a pane's base: the chart (or what stands in for one), the banner over it, opaque on the
+/// surface's colour, presented whole.
+/// `empty` is what stands in for a chart there's no model of: nothing while the first build
+/// runs.
+fn draw_base(
+    p: &mut Pane,
+    model: Option<&ChartModel>,
+    view: &View,
+    theme: &Theme,
+    (banner, empty): (Option<&str>, &str),
+    kit: &mut Kit,
+) {
+    let scale = p.scale();
+    let size = p.size();
+    let (mut scene, layout, hits) = measured(kit.book.as_mut(), scale, |m| match model {
+        Some(model) => {
+            let (s, l, h) = plot::base(model, view, size, scale, theme, m);
+            (s, Some(l), Some(h))
+        }
+        None => (
+            plot::layout::empty(size, scale, empty, theme, m),
+            None,
+            None,
+        ),
+    });
+    if let Some(b) = banner {
+        measured(kit.book.as_mut(), scale, |m| {
+            plot::layout::banner(&mut scene, b, theme, m)
+        });
+    }
+    let (aw, ah) = p.area_px();
+    let Some(producer) = p.base.as_mut() else {
+        return;
+    };
+    let (w, h, stride, px) = target(producer);
+    let damage = PixelBox {
+        x: 0,
+        y: 0,
+        w: aw.min(w),
+        h: ah.min(h),
+    };
+    raster::draw(
+        &scene,
+        px,
+        w,
+        h,
+        stride,
+        Some(damage),
+        Some(theme.surface),
+        kit.book.as_mut(),
+    );
+    producer.present(PixelRect::new(0, 0, damage.w, damage.h));
+    scene.items.clear();
+    p.scene = Some(scene);
+    p.layout = layout;
+    p.hits = hits;
+    p.base_gen += 1;
+}
+
+/// Draw a pane's overlay where what it shows changed: it clears and draws the union of what it
+/// drew last and draws now, and presents that alone.
+fn draw_overlay(
+    p: &mut Pane,
+    model: Option<&ChartModel>,
+    view: &View,
+    theme: &Theme,
+    kit: &mut Kit,
+) {
+    let st = p.overlay_state();
+    let key = OverKey {
+        base: p.base_gen,
+        hover: st.hover.clone(),
+        cursor: st.cursor.clone(),
+        pointer: st.pointer,
+        brush: st.brush,
+        emphasis: st.emphasis.clone(),
+        reference: view.reference.clone(),
+        help: p.help,
+    };
+    if p.over_key.as_ref() == Some(&key) {
+        return;
+    }
+    let scale = p.scale();
+    let size = p.size();
+    let mut scene = measured(kit.book.as_mut(), scale, |m| match (model, &p.layout) {
+        (Some(model), Some(l)) => plot::overlay(model, l, view, &st, theme, m),
+        _ => Scene::default(),
+    });
+    (scene.width, scene.height, scene.scale) = (size.0, size.1, scale);
+    if p.help {
+        measured(kit.book.as_mut(), scale, |m| key_card(&mut scene, theme, m));
+    }
+    let now = scene.bounds();
+    let damage = changed(&p.over_items, &scene.items, p.over_bounds, now);
+    p.over_bounds = now;
+    p.over_key = Some(key);
+    let drawn = scene.items.clone();
+    let (aw, ah) = p.area_px();
+    let (Some(damage), Some(producer)) = (damage, p.over.as_mut()) else {
+        return;
+    };
+    let (w, h, stride, px) = target(producer);
+    let b = raster::to_physical(damage, scale, aw.min(w), ah.min(h));
+    if b.is_empty() {
+        return;
+    }
+    raster::draw(&scene, px, w, h, stride, Some(b), None, kit.book.as_mut());
+    producer.present(b.into());
+    p.over_items = drawn;
+}
+
+/// Where an overlay must be drawn again: where its items differ from those it drew last. Items
+/// drawn in both, as they were, needn't be (the emphasis wash, its series, under a crosshair that
+/// moved), since drawing a rectangle again draws everything in it. If the clips or opacity groups
+/// differ, the union of the two scenes' bounds, as ruling 10 has it. None when nothing changed.
+fn changed(old: &[Item], new: &[Item], was: Option<Rect>, now: Option<Rect>) -> Option<Rect> {
+    let frame = |i: &&Item| {
+        matches!(
+            i,
+            Item::PushClip(_) | Item::PopClip | Item::PushOpacity(_) | Item::PopOpacity
+        )
+    };
+    let union = |a: Option<Rect>, b: Option<Rect>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.union(&b)),
+        (a, b) => a.or(b),
+    };
+    if !old.iter().filter(frame).eq(new.iter().filter(frame)) {
+        return union(was, now);
+    }
+    let mut used = vec![false; old.len()];
+    let mut fresh = Scene::default();
+    for item in new {
+        let same = (!frame(&item))
+            .then(|| (0..old.len()).find(|&i| !used[i] && old[i] == *item))
+            .flatten();
+        match same {
+            Some(i) => used[i] = true,
+            None => fresh.push(item.clone()),
+        }
+    }
+    let mut gone = Scene::default();
+    for (i, item) in old.iter().enumerate() {
+        if frame(&item) || !used[i] {
+            gone.push(item.clone());
+        }
+    }
+    union(fresh.bounds(), gone.bounds())
+}
+
+/// The keys `?` shows, a pair a row.
+pub const KEY_CARD: [(&str, &str); 20] = [
+    ("h l", "previous, next point"),
+    ("j k", "series below, above"),
+    ("w b", "next, previous peak"),
+    ("gg G", "first, last point; G follows"),
+    ("H M L", "to the view's left, middle, right"),
+    ("+ - 0", "zoom in, out, reset"),
+    ("zh zl zz", "scroll left, right; centre"),
+    ("x o X", "hide, only, show all"),
+    ("u C-r", "undo, redo a view change"),
+    ("/ n N", "find a series, next, previous"),
+    ("t", "the data as TSV beside"),
+    ("s", "settings"),
+    ("E C", "export, copy the picture"),
+    ("m `", "reference here, cursor to it"),
+    ("⏎", "the cursor's values"),
+    ("Esc", "cancel, clear"),
+    ("drag", "zoom to the brush"),
+    ("⌥-drag", "pan"),
+    ("scroll ⌘-scroll", "pan, zoom about the pointer"),
+    ("click ⇧-click", "cursor, reference"),
+];
+
+/// The key card, centred over the area.
+fn key_card(scene: &mut Scene, theme: &Theme, m: &mut dyn Measure) {
+    let (keys, what) = (
+        TextSpec::new(12.0).weight(Weight::Semibold),
+        TextSpec::new(12.0),
+    );
+    let kw = KEY_CARD
+        .iter()
+        .map(|k| m.width(k.0, keys))
+        .fold(0.0, f32::max);
+    let ww = KEY_CARD
+        .iter()
+        .map(|k| m.width(k.1, what))
+        .fold(0.0, f32::max);
+    let row = 18.0;
+    let (w, h) = (kw + ww + 40.0, KEY_CARD.len() as f32 * row + 16.0);
+    let x = ((scene.width - w) / 2.0).max(4.0).round();
+    let y = ((scene.height - h) / 2.0).max(4.0).round();
+    let card = Rect::new(x, y, w.min(scene.width - 8.0), h.min(scene.height - 8.0));
+    scene.push(Item::Shadow {
+        rect: card,
+        radius: 6.0,
+        blur: 8.0,
+        dy: 2.0,
+        alpha: 0.3,
+    });
+    scene.push(Item::Path {
+        path: PathData::rounded(card, [6.0; 4]),
+        fill: Some(Paint::solid(theme.tooltip, 1.0)),
+        stroke: Some(Stroke::hairline(theme.ring, 1.0)),
+    });
+    scene.push(Item::PushClip(card));
+    for (i, (k, d)) in KEY_CARD.iter().enumerate() {
+        let base = y + 8.0 + row * (i as f32 + 1.0) - 5.0;
+        for (text, at, spec, color) in [
+            (*k, x + 12.0, keys, theme.strong),
+            (*d, x + 28.0 + kw, what, theme.text),
+        ] {
+            scene.push(Item::Text {
+                text: text.into(),
+                x: at,
+                y: base,
+                spec,
+                anchor: Anchor::Start,
+                color,
+                alpha: 1.0,
+                max_width: None,
+            });
+        }
+    }
+    scene.push(Item::PopClip);
+}
+
+/// What's in a column of the chart's first table: for writing the cursor's x.
+pub fn column_kind(model: &ChartModel, field: &str) -> Option<ColumnKind> {
+    model.tables.first()?.column(field).map(|c| c.kind())
+}
+
+// ------------------------------------------------------------------ the surface
+
+/// A figure's buffer: a surface that shows each window's two pixel buffers over its whole area
+/// and writes no cells. It gives no text, so there's no copy state: the pointer is the figure's.
+pub struct FigSurface {
+    /// The figure.
+    pub state: Shared,
+}
+
+impl FigSurface {
+    /// The surface of a figure.
+    pub fn new(state: Shared) -> FigSurface {
+        FigSurface { state }
+    }
+}
+
+impl Surface for FigSurface {
+    fn kind(&self) -> &'static str {
+        KIND
+    }
+
+    /// The window's base at z −2 and its overlay at z −1, at every render: a frame keeps its
+    /// cells, not its placements. They were drawn and presented in the turn that changed them.
+    fn render(&mut self, frame: &mut Frame, info: &RenderInfo) {
+        let mut st = self.state.borrow_mut();
+        if info.focused {
+            st.last = Some(info.window);
+        }
+        if let Some(p) = st.panes.get(&info.window) {
+            if let Some(b) = &p.base {
+                frame.place(b.id(), -2);
+            }
+            if let Some(o) = &p.over {
+                frame.place(o.id(), -1);
+            }
+        }
+    }
+
+    fn status(&self) -> Option<String> {
+        Some(self.state.borrow().status())
+    }
+
+    /// A size, the pointer and its leaving, the focus, and a key no keymap took.
+    fn event(&mut self, ev: &Event, ctx: &mut Ctx) -> bool {
+        let mut st = self.state.borrow_mut();
+        let took = match ev {
+            Event::Resize {
+                window,
+                cols,
+                rows,
+                cell,
+            } => {
+                st.resized(ctx, *window, *cols, *rows, *cell);
+                true
+            }
+            Event::Pointer(p) => {
+                st.pointer(ctx, p);
+                true
+            }
+            Event::PointerLeft { window } => {
+                st.left(*window);
+                true
+            }
+            Event::Focus(gained) => {
+                st.focus(ctx, *gained);
+                true
+            }
+            Event::Key(k) => st.key(k),
+            _ => false,
+        };
+        st.refresh(ctx);
+        took
+    }
+
+    /// Every pointer sample, not one a cell: the crosshair follows the hand.
+    fn fine_motion(&self) -> bool {
+        true
+    }
+
+    fn takes_wheel(&self) -> bool {
+        true
+    }
+}
