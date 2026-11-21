@@ -854,13 +854,8 @@ impl ApplicationHandler<Wake> for Shell {
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(live) = &self.live else { return };
                 let px = (position.x, position.y);
-                let cell = live.renderer.cell();
-                // Asked first, so a sample no surface wants runs no turn.
-                let (row, col) = self.pointer.at;
-                let fine = self.host.ctx.fine_motion_at(row, col);
-                let event = self
-                    .pointer
-                    .moved(px, cell, self.host.grid, self.held.mods(), fine);
+                let (cell, grid, mods) = (live.renderer.cell(), self.host.grid, self.held.mods());
+                let event = self.pointer.moved(px, cell, grid, mods, &self.host.ctx);
                 return self.point(event);
             }
             WindowEvent::MouseWheel { delta, .. } => {
