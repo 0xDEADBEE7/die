@@ -7,21 +7,22 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# An extension, outside the product: it depends on die-core only (`cargo xtask lint` checks).
-# pulldown-cmark stays behind plan.rs and typeset/doc.rs; tiny-skia, png and ttf-parser behind
-# typeset/, the page's typesetter. Neither knows anything of the editor.
+# An extension, outside the product: it depends on die-core and die-draw only (`cargo xtask
+# lint` checks). pulldown-cmark stays behind plan.rs and typeset/doc.rs; die-draw's fonts, blit
+# and PNG reader and tiny-skia's paths behind typeset/, the page's typesetter. Neither knows
+# anything of the editor. png writes the pictures page_shot and the tests make.
 [dependencies]
 die-core.workspace = true
+die-draw.workspace = true
 pulldown-cmark.workspace = true
 tiny-skia.workspace = true
-png.workspace = true
-ttf-parser.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true
 die-vim.workspace = true
+png.workspace = true
 
 [lints]
 workspace = true

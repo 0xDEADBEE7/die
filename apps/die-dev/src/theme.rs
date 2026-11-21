@@ -34,9 +34,11 @@ const ANSI: [&str; 16] = [
 ];
 
 /// mono-dark: every base and UI face, styled as your Emacs draws it, the orchid faces whose
-/// Emacs faces no base face matches, the whiteboard dial's two, and the markdown view's, from the stylesheet your preview
-/// uses (`mono-dark.css`). A markdown page takes its
-/// colours from the same faces, and `tests/markdown.rs` holds them to the stylesheet's.
+/// Emacs faces no base face matches, the whiteboard dial's two, the markdown view's, from the
+/// stylesheet your preview uses (`mono-dark.css`),
+/// and fig's chrome. A markdown page takes its colours from the same faces, and
+/// `tests/markdown.rs` holds them to the stylesheet's. fig's series and status faces are left
+/// unstyled, so a figure's data takes fig's validated colours for a dark ground.
 pub fn mono_dark() -> Theme {
     let s = Style::new;
     Theme::new("mono-dark", ANSI.map(Rgb::hex))
@@ -88,6 +90,18 @@ pub fn mono_dark() -> Theme {
         // hovered stretch of its ring, the needle's dot and the readout's value in the red.
         .face("whiteboard-dial", s().fg(FG_MID))
         .face("whiteboard-dial-accent", s().fg(RED))
+        // fig's chrome, quiet so the data is the only loud thing: gridlines a step off the
+        // ground, the zero line and the hovered point's ring in the border's grey, ticks in the
+        // mid grey, labels and titles as text and bold text are, the card on the subtle ground,
+        // and the cursor's chip in the brightest grey.
+        .face("fig-grid", s().fg(Rgb::hex("#2a2a2a")))
+        .face("fig-baseline", s().fg(BORDER))
+        .face("fig-tick", s().fg(FG_MID))
+        .face("fig-text", s().fg(FG))
+        .face("fig-strong", s().fg(FG_BRIGHT))
+        .face("fig-tooltip", s().fg(BG_SUBTLE))
+        .face("fig-ring", s().fg(BORDER))
+        .face("fig-cursor", s().fg(FG_BRIGHT))
         // h1 and h2: bright and bold over a border-coloured line. In the view in place a cell
         // has one size of letter, so the two lines stand in for 2em, and one for 1.5em.
         .face(

@@ -12,10 +12,10 @@
 //! first and last child's margins through.
 
 use super::doc::{self, Alert, Align, Block, Doc, Fit, Inline, Item, Length, Note, Para, Table};
-use super::fonts::{Inst, Pass, Style as Face, Weight};
 use super::sheet;
 use super::syntax::Highlighter;
 use super::{Env, HeadingPos, LinkBox, Palette, Pictures, Rect, Rgb};
+use die_draw::{FontStyle as Face, Inst, Pass, Weight};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -429,7 +429,7 @@ pub(super) fn lay(doc: &Doc, env: &Env<'_>, pass: Pass<'_>, pictures: &Pictures)
             height: 0.0,
             scale: s,
             // Quarter pixels where a pixel is a CSS pixel; halves where it's half of one.
-            bins: if s < 1.5 { 4 } else { 2 },
+            bins: die_draw::bins(s),
             canvas: pal.canvas,
             ring: pal.link,
             ops: Vec::new(),

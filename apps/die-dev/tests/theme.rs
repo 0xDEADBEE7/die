@@ -1,5 +1,5 @@
-//! mono-dark styles every base and UI face and the markdown view's, and only faces core or an
-//! extension of yours declares, and draws as your Emacs does.
+//! mono-dark styles every base and UI face, the markdown view's and fig's chrome, and only faces
+//! core or an extension of yours declares, and draws as your Emacs does.
 
 use die_test_cap as _;
 
@@ -22,15 +22,17 @@ fn mono_dark_styles_every_core_face() {
         die_whiteboard::face::DIAL,
         die_whiteboard::face::DIAL_ACCENT,
     ];
+    let fig = die_fig::faces().iter().copied();
     let known: Vec<&str> = core
         .chain(orchid)
         .chain(markdown.map(|f| f.0))
         .chain(whiteboard)
+        .chain(fig)
         .collect();
     for name in t.faces.keys() {
         assert!(
             known.contains(&name.as_str()),
-            "{name} is no core, orchid, markdown or whiteboard face"
+            "{name} is no core, orchid, markdown, whiteboard or fig face"
         );
     }
     // The markdown view draws in your stylesheet's colours: each of its faces is styled here.

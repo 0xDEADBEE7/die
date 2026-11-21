@@ -563,6 +563,7 @@ impl Ctx {
         });
         // Open first, so a terminal asking from insert state stays live under it (copy_sync).
         self.set_state(State::CommandLine);
+        self.defer(Ctx::unhover);
         self.prompt_refilter();
     }
     /// A prompt is open over `buf` from passthrough: a terminal asking from insert state.

@@ -12,6 +12,8 @@ members = [
     "extensions/die-whiteboard",
     "extensions/die-jellyfish",
     "extensions/die-markdown",
+    "extensions/die-draw",
+    "extensions/die-fig",
     "tools/evil-oracle",
     "tools/test-cap",
     "xtask",
@@ -28,6 +30,8 @@ default-members = [
     "extensions/die-whiteboard",
     "extensions/die-jellyfish",
     "extensions/die-markdown",
+    "extensions/die-draw",
+    "extensions/die-fig",
 ]
 
 [workspace.package]
@@ -49,6 +53,11 @@ die-orchid-client = { path = "extensions/die-orchid-client" }
 die-whiteboard = { path = "extensions/die-whiteboard" }
 die-jellyfish = { path = "extensions/die-jellyfish" }
 die-markdown = { path = "extensions/die-markdown" }
+# The extensions' shared drawing crate: fonts, text runs, PNG and the premultiplied blit, lifted
+# from die-markdown under the rule of two. It depends on none of DIE's crates (scope D14).
+die-draw = { path = "extensions/die-draw" }
+# Figures from data: charts, network graphs and dashboards drawn in pixels, in fig's ethos (scope D14).
+die-fig = { path = "extensions/die-fig" }
 evil-oracle = { path = "tools/evil-oracle" }
 die-test-cap = { path = "tools/test-cap" }
 
@@ -63,23 +72,27 @@ regex-syntax = { version = "=0.8.11", default-features = false }
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
-# Local time for die-orchid-client's stubs, from the system's zoneinfo (no bundled database).
+# Local time for die-orchid-client's stubs and die-fig's times and calendar ticks, from the
+# system's zoneinfo (no bundled database).
 jiff = { version = "=0.2.41", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 # The terminal engine's Rust API, pinned at the rev crates/die-term-sys/ghostty-vt.lock names,
 # without its PNG decoder (D10, docs/records/s2-term-engine.md). Its sys crate is die-term-sys,
 # through the `[patch]` below.
 libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", default-features = false, features = ["kitty-graphics"] }
-# die-whiteboard's rasterizer, PNG encoder and the exporter's font reader: pure Rust, no build
-# scripts, behind the extension's canvas.rs and fonts.rs (scope §9's rule of two for a shared crate).
+# The rasterizer, the PNG codec and the whiteboard's exporter's font reader: pure Rust, no build
+# scripts. tiny-skia is behind die-whiteboard's canvas.rs, die-draw's fonts.rs, die-markdown's
+# typeset/ and die-fig's raster.rs; png behind die-whiteboard's export.rs and die-draw's image.rs;
+# fontdue behind die-whiteboard's fonts.rs (scope §9's rule of two for a shared crate).
 tiny-skia = { version = "=0.12.0", default-features = false, features = ["std", "simd"] }
 png = "=0.18.1"
 fontdue = { version = "=0.9.5", default-features = false, features = ["std"] }
 # die-markdown's CommonMark and GFM parser, without its HTML renderer: pure Rust, and its build
 # script does nothing but under a feature that makes its own tests.
 pulldown-cmark = { version = "=0.13.6", default-features = false }
-# die-markdown's font reader for the page it draws: the system's variable fonts at their weight
-# and optical size, with kerning and tracking. Pure Rust, no unsafe, no build script, and already
-# here as fontdue's own reader. "gvar-alloc" is what gives a variable font's outlines.
+# die-draw's font reader, for the text die-markdown and die-fig draw: the system's variable fonts
+# at their weight and optical size, with kerning and tracking; die-draw is its only user. Pure
+# Rust, no unsafe, no build script, and already here as fontdue's own reader. "gvar-alloc" is
+# what gives a variable font's outlines.
 ttf-parser = { version = "=0.25.1", default-features = false, features = ["std", "opentype-layout", "apple-layout", "variable-fonts", "gvar-alloc"] }
 # PTYs and their processes, safely (die-core's `pty`). Pure Rust: libc on macOS, syscalls on Linux.
 rustix = { version = "=1.1.5", default-features = false, features = ["std", "event", "fs", "pipe", "process", "pty", "termios"] }

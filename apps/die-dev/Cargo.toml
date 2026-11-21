@@ -24,6 +24,8 @@ die-whiteboard.workspace = true
 die-jellyfish.workspace = true
 # A markdown file's rendered view, toggled by `\m` (scope D14).
 die-markdown.workspace = true
+# Figures from data, charts, graphs and dashboards, toggled by `\v` (scope D14).
+die-fig.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true

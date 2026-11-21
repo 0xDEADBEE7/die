@@ -333,11 +333,35 @@ name = "die-dev"
 version = "0.0.0"
 dependencies = [
  "die",
+ "die-fig",
  "die-jellyfish",
  "die-markdown",
  "die-orchid-client",
  "die-test-cap",
  "die-whiteboard",
+]
+
+[[package]]
+name = "die-draw"
+version = "0.0.0"
+dependencies = [
+ "die-test-cap",
+ "png",
+ "tiny-skia",
+ "ttf-parser",
+]
+
+[[package]]
+name = "die-fig"
+version = "0.0.0"
+dependencies = [
+ "die-core",
+ "die-draw",
+ "die-test-cap",
+ "die-vim",
+ "jiff",
+ "serde_json",
+ "tiny-skia",
 ]
 
 [[package]]
@@ -354,12 +378,12 @@ name = "die-markdown"
 version = "0.0.0"
 dependencies = [
  "die-core",
+ "die-draw",
  "die-test-cap",
  "die-vim",
  "png",
  "pulldown-cmark",
  "tiny-skia",
- "ttf-parser",
  "unicode-segmentation",
  "unicode-width",
 ]

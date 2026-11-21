@@ -151,13 +151,16 @@ pub fn greeted(mut config: die::Config, launch: &Launch) -> die::Config {
 /// markdown view, with its defaults: the mode on `.md` files and markdown-mode's other
 /// extensions, front matter hidden as your preview's export strips it, links that aren't
 /// files DIE opens going to `open`, and the rendered view a page drawn as GitHub draws one, in
-/// mono-dark's colours. A file opens raw, as it always has: `\m` renders it.
+/// mono-dark's colours. A file opens raw, as it always has: `\m` renders it. And fig, with its
+/// defaults: times in the system's zone, the fonts where DIE's are, the chrome in mono-dark's
+/// greys. Nothing of it runs until `\v`.
 pub fn extensions() -> Vec<Box<dyn die::core::Extension>> {
     vec![
         Box::new(die_orchid_client::Orchid::default()),
         Box::new(die_whiteboard::Whiteboard::default()),
         Box::new(die_jellyfish::Jellyfish::default()),
         Box::new(die_markdown::Markdown::default()),
+        Box::new(die_fig::Fig::default()),
     ]
 }
 
@@ -185,6 +188,10 @@ fn bindings(reg: &mut Registry) {
     // The whiteboard: the board used last, or a scratch board in this window; from a board, a
     // new scratch board.
     keys.bind(State::Normal, "<leader>w", "whiteboard");
+    // fig: this buffer's data as a figure, or from a figure its buffer again; in visual state,
+    // the selection's. `\g`, `\d`, `\s` and `\t` are taken in init.el.
+    keys.bind(State::Normal, "<leader>v", "fig-toggle");
+    keys.bind(State::Visual, "<leader>v", "fig-toggle");
     // A markdown file's two views, rendered and raw. It's in the mode's keymap, so `\m` is a key
     // only where there's markdown to render, and in the page's, which is a buffer of its own
     // with no mode: `\m` there goes back to the file. Both only where the extension is.
