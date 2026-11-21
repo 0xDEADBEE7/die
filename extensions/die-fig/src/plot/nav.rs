@@ -230,25 +230,60 @@ fn point_motion(
     }
 }
 
-/// A series' peaks: samples greater than every present sample within a neighbourhood of about
-/// a fortieth of the series on each side (at least two), the first of a plateau.
+/// A series' peaks: samples that stand out over the lowest ground between them and the nearest
+/// higher sample on each side (their topographic prominence) by at least
+/// [`PEAK_PROMINENCE`] of the series' range, the first of a plateau. Found in `O(n)` with a
+/// stack from each side, so `w` over a long series costs one pass.
 pub(crate) fn peaks(model: &ChartModel, si: usize) -> Vec<usize> {
     let s = &model.series[si];
     let all: Vec<usize> = present(model, si).collect();
-    let w = (all.len() / 40).max(2);
-    let mut out = Vec::new();
-    for (k, &i) in all.iter().enumerate() {
-        let y = s.ys[i];
-        let lo = k.saturating_sub(w);
-        let hi = (k + w + 1).min(all.len());
-        let before = all[lo..k].iter().all(|&j| s.ys[j] < y);
-        let after = all[k + 1..hi].iter().all(|&j| s.ys[j] <= y);
-        if before && after && hi - lo > 1 {
-            out.push(i);
-        }
+    let ys: Vec<f64> = all.iter().map(|&i| s.ys[i]).collect();
+    let n = ys.len();
+    if n < 3 {
+        return Vec::new();
     }
-    out
+    let (lo, hi) = ys
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &y| {
+            (a.min(y), b.max(y))
+        });
+    let need = (hi - lo) * PEAK_PROMINENCE;
+    if need <= 0.0 {
+        return Vec::new();
+    }
+    // The lowest ground between each sample and the nearest higher one on a side (the whole
+    // side where there's none), the sample itself included: a stack of (y, lowest since the
+    // entry under it) that pops what isn't higher.
+    let ground = |order: &mut dyn Iterator<Item = usize>, strict: bool| -> Vec<f64> {
+        let mut out = vec![0.0; n];
+        let mut stack: Vec<(f64, f64)> = Vec::new();
+        for k in order {
+            let y = ys[k];
+            let mut low = y;
+            while let Some(&(ty, tlow)) = stack.last() {
+                let lower = if strict { ty < y } else { ty <= y };
+                if !lower {
+                    break;
+                }
+                low = low.min(ty).min(tlow);
+                stack.pop();
+            }
+            out[k] = if stack.is_empty() && low == y { y } else { low };
+            stack.push((y, low));
+        }
+        out
+    };
+    let left = ground(&mut (0..n), false);
+    let right = ground(&mut (0..n).rev(), true);
+    (0..n)
+        .filter(|&k| k > 0 && k + 1 < n && ys[k - 1] != ys[k])
+        .filter(|&k| ys[k] - left[k].max(right[k]) >= need)
+        .map(|k| all[k])
+        .collect()
 }
+
+/// How far a peak stands out over its ground, as a share of its series' range.
+pub const PEAK_PROMINENCE: f64 = 0.15;
 
 fn band_motion(
     model: &ChartModel,
@@ -501,6 +536,18 @@ fn axes_of(model: &ChartModel, view: &View, axis: Option<Axis>) -> (bool, bool) 
     }
 }
 
+/// The domains on screen: the view's, or the fit, y as the layout niced it for its ticks when
+/// the layout is of this x.
+fn shown(model: &ChartModel, layout: &ChartLayout, view: &View) -> ((f64, f64), (f64, f64)) {
+    let (x, y) = model.fit(view);
+    let y = if view.y.is_none() && same(layout.domain.0, x) {
+        layout.domain.1
+    } else {
+        y
+    };
+    (x, y)
+}
+
 /// The fit's domains with nothing zoomed: what x and y show with None.
 fn fit_of(model: &ChartModel, view: &View) -> ((f64, f64), (f64, f64)) {
     let mut v = view.clone();
@@ -630,7 +677,7 @@ pub fn zoom(
         return view.clone();
     }
     let (zx, zy) = axes_of(model, view, axis);
-    let ((x0, x1), (y0, y1)) = model.fit(view);
+    let ((x0, x1), (y0, y1)) = shown(model, layout, view);
     let anchor = match at {
         Some((px, py)) => Some((layout.data_x(px, py), layout.data_y(px, py))),
         None => cursor.and_then(|c| cursor_data(model, c)),
@@ -683,7 +730,7 @@ pub fn pan(
     dy: f32,
     axis: Option<Axis>,
 ) -> View {
-    let ((x0, x1), (y0, y1)) = model.fit(view);
+    let ((x0, x1), (y0, y1)) = shown(model, layout, view);
     let (ext_x, ext_y) = model.extent();
     let free = two_d(model) || view.y.is_some();
     // In px along each model axis's screen direction, as the content moves: x across the
@@ -721,6 +768,9 @@ pub fn pan(
         if !same(moved, (y0, y1)) {
             set_y(model, view, &mut v, moved);
         }
+    }
+    if v.x == view.x && v.y == view.y {
+        return view.clone();
     }
     follow(model, layout, &mut v, true);
     v
@@ -843,7 +893,7 @@ pub fn reveal(model: &ChartModel, layout: &ChartLayout, view: &View, cursor: &Cu
     let Some((cx, cy)) = cursor_data(model, cursor) else {
         return view.clone();
     };
-    let ((x0, x1), (y0, y1)) = model.fit(view);
+    let ((x0, x1), (y0, y1)) = shown(model, layout, view);
     let (ext_x, ext_y) = model.extent();
     let mut v = view.clone();
     let inside = |d: (f64, f64), c: f64, ext: (f64, f64), k: AxisKind| -> Option<(f64, f64)> {
@@ -880,7 +930,7 @@ pub fn centre(model: &ChartModel, layout: &ChartLayout, view: &View, cursor: &Cu
     let Some((cx, cy)) = cursor_data(model, cursor) else {
         return view.clone();
     };
-    let ((x0, x1), (y0, y1)) = model.fit(view);
+    let ((x0, x1), (y0, y1)) = shown(model, layout, view);
     let (ext_x, ext_y) = model.extent();
     let mut v = view.clone();
     let centred = |d: (f64, f64), c: f64, ext: (f64, f64), k: AxisKind| -> Option<(f64, f64)> {

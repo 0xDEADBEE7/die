@@ -497,7 +497,7 @@ impl ChartModel {
         let y = if self.y.kind == AxisKind::Band {
             (0.0, self.y.bands.len().max(1) as f64)
         } else {
-            self.y_fit(&all, None, true)
+            self.y_fit(&all, None, true, 5)
         };
         if self.is_scatter() || self.is_heatmap() {
             let pad = |(a, b): (f64, f64)| {
@@ -514,6 +514,13 @@ impl ChartModel {
     /// domain stands where it has one. Number domains are widened to nice numbers, but x on an
     /// x-chart, which runs edge to edge.
     pub fn fit(&self, view: &View) -> ((f64, f64), (f64, f64)) {
+        self.fit_ticks(view, 5)
+    }
+
+    /// As [`ChartModel::fit`], y's number domain widened to nice numbers for about `count`
+    /// ticks: the layout fits y to the ticks its plot's height has room for, so the top tick is
+    /// the plot's top.
+    pub fn fit_ticks(&self, view: &View, count: usize) -> ((f64, f64), (f64, f64)) {
         let x = match view.x {
             Some(x) => x,
             None if self.is_band() => (0.0, self.x.bands.len().max(1) as f64),
@@ -524,7 +531,7 @@ impl ChartModel {
             None if self.y.kind == AxisKind::Band => (0.0, self.y.bands.len().max(1) as f64),
             None => {
                 let window = (self.is_x_chart() || self.is_band()).then_some(x);
-                self.y_fit(view, window, false)
+                self.y_fit(view, window, false, count)
             }
         };
         (x, y)
@@ -555,13 +562,19 @@ impl ChartModel {
         }
         let (lo, hi) = settle(lo, hi, self.x.kind);
         if self.is_scatter() {
-            return nice_domain(lo, hi, self.x.kind, &self.zone);
+            return nice_domain(lo, hi, self.x.kind, &self.zone, 5);
         }
         (lo, hi)
     }
 
     /// y's fit over the visible series inside `window` on x (anywhere with None).
-    fn y_fit(&self, view: &View, window: Option<(f64, f64)>, all: bool) -> (f64, f64) {
+    fn y_fit(
+        &self,
+        view: &View,
+        window: Option<(f64, f64)>,
+        all: bool,
+        count: usize,
+    ) -> (f64, f64) {
         if let Some(d) = self.y.domain {
             return d;
         }
@@ -650,7 +663,7 @@ impl ChartModel {
             hi = hi.max(0.0);
         }
         let (lo, hi) = settle(lo, hi, self.y.kind);
-        nice_domain(lo, hi, self.y.kind, &self.zone)
+        nice_domain(lo, hi, self.y.kind, &self.zone, count)
     }
 
     /// Labels a search can find: each series by display name (duplicates as `name ‹2›`) and each
@@ -938,7 +951,7 @@ fn settle(lo: f64, hi: f64, kind: AxisKind) -> (f64, f64) {
 
 /// A number domain widened to nice numbers for about five ticks; a time's to its calendar
 /// unit; a log's to powers.
-fn nice_domain(lo: f64, hi: f64, kind: AxisKind, zone: &TimeZone) -> (f64, f64) {
+fn nice_domain(lo: f64, hi: f64, kind: AxisKind, zone: &TimeZone, count: usize) -> (f64, f64) {
     use crate::scale::Scale;
     let s = match kind {
         AxisKind::Log if lo > 0.0 => Scale::Log {
@@ -956,7 +969,7 @@ fn nice_domain(lo: f64, hi: f64, kind: AxisKind, zone: &TimeZone) -> (f64, f64) 
             range: (0.0, 1.0),
         },
     };
-    let d = s.nice(5).domain();
+    let d = s.nice(count.max(2)).domain();
     if d.0.is_finite() && d.1.is_finite() && d.0 < d.1 {
         d
     } else {

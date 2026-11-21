@@ -959,6 +959,15 @@ fn readout(
                 } else {
                     (hi - lo) / 100.0
                 };
+                // At the data's own step, rounded to it, so a brush from 06:05 reads 06:05.
+                let round = |v: f64| {
+                    if step > 0.0 {
+                        (v / step).round() * step
+                    } else {
+                        v
+                    }
+                };
+                let (lo, hi) = (round(lo), round(hi));
                 format!(
                     "{} – {} · {}",
                     format_time_point(lo, step, &model.zone),

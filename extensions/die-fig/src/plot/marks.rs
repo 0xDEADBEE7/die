@@ -722,16 +722,17 @@ pub(crate) fn bars(model: &ChartModel, view: &View, l: &ChartLayout) -> Vec<BarG
                 }
                 let negative = s.ys[i] < 0.0;
                 // The end toward zero, and the end away from it.
-                let mut near = if lo == 0.0 { base } else { l.vy(lo) };
+                let near0 = if lo == 0.0 { base } else { l.vy(lo) };
                 let far = l.vy(hi);
-                if lo != 0.0 {
-                    // Something under it in the stack: the surface's gap.
-                    let toward = if far > near { 1.0 } else { -1.0 };
-                    near += toward * BAR_GAP;
-                }
-                let len = (far - near).abs();
-                let len = if len < 1.0 { 1.0 } else { len };
-                let (a, b) = if far >= near {
+                let toward = if far >= near0 { 1.0 } else { -1.0 };
+                // Something under it in the stack: the surface's gap, and at least a pixel past it.
+                let near = if lo != 0.0 {
+                    near0 + toward * BAR_GAP
+                } else {
+                    near0
+                };
+                let len = ((far - near) * toward).max(1.0);
+                let (a, b) = if toward > 0.0 {
                     (near, near + len)
                 } else {
                     (near - len, near)

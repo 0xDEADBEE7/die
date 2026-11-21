@@ -36,8 +36,9 @@ const KEY_GAP: f32 = 6.0;
 /// The least room between two x labels' centres, and between their ends.
 const X_SPACING: f32 = 64.0;
 const X_CLEAR: f32 = 12.0;
-/// About how far apart y ticks are.
+/// About how far apart y ticks are, and the least.
 const Y_SPACING: f32 = 48.0;
+const Y_MIN_GAP: f32 = 32.0;
 /// How far a mark may reach past the plot's edges at fit before it's clipped: a point's ring.
 pub const BLEED: f32 = 6.0;
 
@@ -599,7 +600,7 @@ fn attempt(
 
     // The y axis's title, above its ticks.
     let axes = model.chart.view.axes;
-    let (xd, yd) = domain;
+    let (xd, mut yd) = domain;
     let vertical_values = !model.horizontal;
     let value_title = if vertical_values {
         &model.y.title
@@ -652,6 +653,52 @@ fn attempt(
         .floor()
         .max(plot_top + 1.0);
     let plot_h = plot_bottom - plot_top;
+    // A fitted y is niced for the ticks the plot has room for, so its top is a tick: of the
+    // counts near the room's, the tightest nice domain whose ticks stay apart.
+    let mut y_count = ((plot_h / Y_SPACING).round() as usize).max(2);
+    if vertical_values
+        && view.y.is_none()
+        && model.y.domain.is_none()
+        && model.y.kind == AxisKind::Linear
+        && (model.is_x_chart() || model.is_band())
+    {
+        let mut best: Option<((f64, f64), usize, f32)> = None;
+        for c in 2..=y_count + 3 {
+            let d = model.fit_ticks(view, c).1;
+            let span = d.1 - d.0;
+            let s = Scale::Linear {
+                domain: d,
+                range: (plot_bottom, plot_top),
+            };
+            let ts = scale::ticks(&s, c);
+            if ts.len() < 2 || span.is_nan() || span <= 0.0 {
+                continue;
+            }
+            let gap = plot_h * ((ts[1].value - ts[0].value) / span).abs() as f32;
+            if gap < Y_MIN_GAP {
+                continue;
+            }
+            // Ticks no further apart than twice the spacing, where any are.
+            let sparse = gap > 2.0 * Y_SPACING;
+            let better = match best {
+                None => true,
+                Some((_, _, bg)) if (bg > 2.0 * Y_SPACING) != sparse => !sparse,
+                Some((bd, _, bg)) => {
+                    let bs = bd.1 - bd.0;
+                    span < bs * (1.0 - 1e-9)
+                        || ((span - bs).abs() <= bs * 1e-9
+                            && (gap - Y_SPACING).abs() < (bg - Y_SPACING).abs())
+                }
+            };
+            if better {
+                best = Some((d, c, gap));
+            }
+        }
+        if let Some((d, c, _)) = best {
+            yd = d;
+            y_count = c;
+        }
+    }
 
     // Up the screen: the values' ticks, or the bands'.
     let (up_kind, up_domain, up_bands, up_rect) = if vertical_values {
@@ -699,7 +746,11 @@ fn attempt(
             y_text.push((m.fit(b, tick_plain, max_w), py));
         }
     } else {
-        let count = ((plot_h / Y_SPACING).round() as usize).max(2);
+        let count = if vertical_values {
+            y_count
+        } else {
+            ((plot_h / Y_SPACING).round() as usize).max(2)
+        };
         for t in scale::ticks(&up_scale, count) {
             let py = up_scale.map(t.value);
             if py < plot_top - 0.5 || py > plot_bottom + 0.5 {
@@ -994,7 +1045,7 @@ fn attempt(
         title,
         size,
         scale,
-        domain,
+        domain: (xd, yd),
         horizontal: model.horizontal,
         x_ticks,
         y_ticks,
