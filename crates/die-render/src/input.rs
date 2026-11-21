@@ -7,7 +7,7 @@
 //! released while another app had the keyboard (docs/records/platforms.md).
 
 use crate::font::CellMetrics;
-use die_core::{Button, Key, KeyEvent, KeyKind, ModifierKey, Mods, PointerEvent, PointerKind};
+use die_core::{Button, Ctx, Key, KeyEvent, KeyKind, ModifierKey, Mods, PointerEvent, PointerKind};
 use std::time::{Duration, Instant};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key as WinitKey, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
@@ -240,15 +240,18 @@ impl Pointer {
     }
 
     /// It moved to `px` in a frame of `grid` (columns, rows). With a button held, every sample
-    /// is a `Drag`, since ink on a pixel buffer follows the hand (M3a); otherwise a `Move` only
-    /// when it's on another cell, since nothing else DIE does depends on where in a cell it is.
-    /// Each event says the pixel.
+    /// is a `Drag`, since ink on a pixel buffer follows the hand (M3a); otherwise a `Move` when
+    /// it's on another cell, and within the cell only if `ctx` says the surface there wants every
+    /// sample, as a chart's crosshair does (`Ctx::fine_motion_at`): nothing else DIE does depends
+    /// on where in a cell it is, and it's asked here, before the sample is dropped, so one no
+    /// surface wants runs no turn. Each event says the pixel.
     pub fn moved(
         &mut self,
         px: (f64, f64),
         cell: &CellMetrics,
         grid: (usize, usize),
         mods: Mods,
+        ctx: &Ctx,
     ) -> Option<PointerEvent> {
         let along = |p: f64, size: u32, cells: usize| {
             ((p.max(0.0) / f64::from(size.max(1))) as usize).min(cells.saturating_sub(1))
@@ -256,7 +259,7 @@ impl Pointer {
         let at = (along(px.1, cell.h, grid.1), along(px.0, cell.w, grid.0));
         self.px = Some((px.0 as f32, px.1 as f32));
         let dragging = self.held.first().map(|&(button, _)| button);
-        if at == self.at && dragging.is_none() {
+        if at == self.at && dragging.is_none() && !ctx.fine_motion_at(at.0, at.1) {
             return None;
         }
         self.at = at;

@@ -31,7 +31,9 @@ path = "crates/die-core"
 # 15,780 until the markdown view's three pieces of the contract: file-type modes (§8), decorations swapped as one change (§9) and a call after the text has changed (§5), told within the turn that changed it (15,859).
 # 15,860 until the whiteboard's scratch boards: `Ctx::rename_buffer`, made unique as a new buffer's name, for a scratch board saved as a file (15,867).
 # 15,870 until their review: `PromptSpec::line_first`, a prompt for a file to write answering with the name typed, not the file it flex matches (15,875).
-limit = 15880
+# 15,880 until die-fig's pointer slice: `Surface::fine_motion`, every sample over a chart with no button held, which the host asks `Ctx::fine_motion_at` of, and `Event::PointerLeft`, a surface told once the pointer has left its area, not while it holds a press, and when a prompt opens over it or the host says it left DIE's window (15,918).
+# 15,920 until its review: the surface hovered kept with its window, so one whose window shows another buffer hears the leave, a drag's pixel back inside the frame, and a release no surface took ending its press (15,926).
+limit = 15930
 
 [[crate]]
 name = "die-render"
@@ -196,7 +198,8 @@ name = "ext, dispatch, rt"
 # 1,640 until the alternate screen's Esc review: a release goes where its press went, and `Surface::takes_wheel`.
 # 1,650 until the whiteboard's tool dial: a press a surface takes in normal state brings its release, as in passthrough (1,649).
 # 1,655 until the markdown view: `ModeSpec::files` and the modes a visited file gives and takes, and `on_edited`, told once the ready keys and calls have run, before timers and output get another batch (1,722).
-limit = 1725
+# 1,725 until die-fig's pointer slice: `Surface::fine_motion` and `Event::PointerLeft` (1,728).
+limit = 1730
 files = ["ext.rs", "dispatch.rs", "rt.rs", "ext/", "dispatch/", "rt/"]
 
 [[module]]
@@ -279,7 +282,9 @@ name = "surfaces and PTYs"
 # 1,380 until the alternate screen's Esc review: `surface_says`, the wheel `takes_wheel` takes, and `renumbered`.
 # 1,385 until the margins review: `SurfaceText::wrapped`, kept a line at a time, and each window's place in its line of output through a resize.
 # 1,425 until M3a: `Frame::place`, and `draw_surface` composing each placement at the area's offset, a destroyed buffer's dropped.
-limit = 1445
+# 1,445 until die-fig's pointer slice: `fine_motion_at` for the host, and the surface window hovered, which hears that the pointer left it once, after its release if it held a press, out of DIE's window by the host's word, and from the top of the loop when a prompt opens (1,476).
+# 1,480 until its review: the surface hovered kept with its window, so one whose window shows another buffer hears the leave there, a drag back in DIE's window by its pixel, and a release no surface took ending its press (1,484).
+limit = 1485
 files = ["surface.rs", "pty.rs", "surface/", "pty/"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.
@@ -307,10 +312,11 @@ limit = 1520
 files = ["session.rs", "session/", "instance.rs", "sys/"]
 
 # 800 until M3a: the harness's fake pixel sink, which keeps each buffer's latest pixels and logs each call, and `Harness::pixels`.
+# 810 until die-fig's pointer slice: `Input::PointerLeft`, and the pointer's turn telling the surface it left before the next hears it, or after a release (811).
 [[module]]
 crate = "die-core"
 name = "harness, app interface, messages, ids, errors"
-limit = 810
+limit = 815
 files = ["lib.rs", "ids.rs", "error.rs", "harness.rs", "app.rs", "messages.rs"]
 
 # New with M3a, the whiteboard's pixel slice: the producer an extension draws into, the sink the

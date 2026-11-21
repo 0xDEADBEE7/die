@@ -854,10 +854,8 @@ impl ApplicationHandler<Wake> for Shell {
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(live) = &self.live else { return };
                 let px = (position.x, position.y);
-                let cell = live.renderer.cell();
-                let event = self
-                    .pointer
-                    .moved(px, cell, self.host.grid, self.held.mods());
+                let (cell, grid, mods) = (live.renderer.cell(), self.host.grid, self.held.mods());
+                let event = self.pointer.moved(px, cell, grid, mods, &self.host.ctx);
                 return self.point(event);
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -866,6 +864,7 @@ impl ApplicationHandler<Wake> for Shell {
                 let event = self.pointer.wheel(delta, cell, self.held.mods());
                 return self.point(event);
             }
+            WindowEvent::CursorLeft { .. } => self.host.ctx.handle(Input::PointerLeft),
             _ => return,
         }
         self.settle();
