@@ -4,8 +4,11 @@
 //! [`MISSING`].
 //!
 //! - A column with no values at all is a Number column of NaN: it draws nothing and gaps.
-//! - With a [`ReadOptions::time_format`], a column whose every value matches the format is Time
-//!   even when its cells look like numbers (`"%Y%m%d"` over `20261121`): the format says so.
+//! - A column of numbers is Number even where a [`ReadOptions::time_format`] would read them
+//!   (`"%Y%m%d"` over `20261121`, `"%s"` over a count): the format is for every time column, and
+//!   can't tell which of a table's number columns is one. A channel that says `"type": "time"`
+//!   reads its column through the format ([`super::time::as_time`]); the format reads the cells
+//!   of a column that isn't numbers before the ISO forms do.
 //! - A number is ASCII digits with an optional sign, point and exponent (`-1.5`, `.5`, `1e3`);
 //!   `inf`, `12%` and `$5` are not numbers. A thousands separator only with
 //!   [`ReadOptions::thousands`], in whole groups of three (`1,234,567`); a `.` separator makes
@@ -13,7 +16,7 @@
 //! - A missing cell is NaN in a Number or Time column, `u32::MAX` in a Category and the empty
 //!   string in Text.
 
-use super::time::{parse_time, with_format};
+use super::time::parse_time;
 use super::{Column, ReadOptions, Values};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -131,12 +134,6 @@ pub fn infer(name: &str, cells: &[Option<&str>], opt: &ReadOptions) -> Column {
 pub(crate) fn infer_cells(name: &str, cells: &[Cell], opt: &ReadOptions) -> Column {
     if cells.iter().all(Cell::missing) {
         return Column::number(name, vec![f64::NAN; cells.len()]);
-    }
-    if let Some(fmt) = opt.time_format.as_deref() {
-        let read = |s: &str| with_format(s, fmt, &opt.zone);
-        if let Some(v) = all_times(cells, read) {
-            return Column::time(name, v);
-        }
     }
     if let Some(v) = all_numbers(cells, opt.thousands) {
         return Column::number(name, v);

@@ -211,6 +211,20 @@ fn without_a_header_columns_are_numbered_and_empty_names_too() {
         ["column 1", "column 2"]
     );
     same(&nums(&t, "column 1"), &[1.0, 3.0]);
+    // Without a header the widest row sets the columns, as JSON's arrays do, and a trailing
+    // delimiter's empty column is dropped.
+    let wide = read_csv("1\n2,3\n4,5,6\n", &o).unwrap();
+    assert_eq!(
+        kinds(&wide).iter().map(|k| k.0).collect::<Vec<_>>(),
+        ["column 1", "column 2", "column 3"]
+    );
+    same(&nums(&wide, "column 2"), &[NAN, 3.0, 5.0]);
+    same(&nums(&wide, "column 3"), &[NAN, NAN, 6.0]);
+    let trailing = read_csv("1,2,\n3,4,\n", &o).unwrap();
+    assert_eq!(
+        kinds(&trailing).iter().map(|k| k.0).collect::<Vec<_>>(),
+        ["column 1", "column 2"]
+    );
     let named = csv("a,,c\n1,2,3\n");
     same(&nums(&named, "column 2"), &[2.0]);
     // A trailing delimiter's empty column is dropped; an empty column with a name stays.
@@ -330,10 +344,36 @@ fn csv_errors_are_in_their_places() {
     let e = read_csv("\u{feff}a,a\n", &opt()).unwrap_err();
     assert_eq!(e.at, pos(1, 3, 5));
 
+    // A lone CR ends a line for a place as it does for a row; CRLF is one break.
+    let e = read_csv("a,b\r1,2\r3,4,5\r", &opt()).unwrap_err();
+    assert_eq!(e.at, pos(3, 5, 12));
+    let e = read_csv("a,b\r\n1,2\r\n3,4,5\r\n", &opt()).unwrap_err();
+    assert_eq!(e.at, pos(3, 5, 14));
+    let e = read_csv("a\r\"b\rc", &opt()).unwrap_err();
+    assert_eq!(e.at, pos(2, 1, 2));
+}
+
+#[test]
+fn a_delimiter_is_one_ascii_character_and_never_padding() {
     let mut o = opt();
-    o.header = false;
-    let e = read_csv("1,2\n3,4,5\n", &o).unwrap_err();
-    assert_eq!(e.msg, "a row of 3 fields where the first row has 2");
+    // The bytes of '§', and the bytes that can't delimit.
+    for d in [0xA7, 0xC2, b'"', b'\n', b'\r'] {
+        o.delimiter = Some(d);
+        let e = read_csv("a§b\n1§2\n", &o).unwrap_err();
+        assert_eq!(
+            e.msg, "a delimiter is one ASCII character, not a quote or a line break",
+            "{d:#x}"
+        );
+    }
+    // A space delimits, a quoted field keeps its spaces, and a tab still pads.
+    o.delimiter = Some(b' ');
+    let t = read_csv("name n\n\"x y\" 2\nz\t 3\n", &o).unwrap();
+    assert_eq!(strs(&t, "name"), [Some("x y"), Some("z")]);
+    same(&nums(&t, "n"), &[2.0, 3.0]);
+    // Two spaces are an empty field between them, as two tabs are with tab.
+    let t = read_csv("a b c\n1  3\n", &o).unwrap();
+    same(&nums(&t, "b"), &[NAN]);
+    same(&nums(&t, "c"), &[3.0]);
 }
 
 #[test]
@@ -617,8 +657,12 @@ fn a_time_format_reads_slashed_and_numeric_dates() {
         ColumnKind::Number
     );
 
+    // Cells that are numbers stay numbers even where the format takes them; a channel that
+    // says "type": "time" reads them through it (as_time).
     o.time_format = Some("%Y%m%d".into());
     let c = infer("d", &compact, &o);
+    assert_eq!(c.kind(), ColumnKind::Number);
+    let c = as_time(&c, None, &o).unwrap();
     assert_eq!(c.kind(), ColumnKind::Time);
     assert_eq!(c.f64_at(1), at("2026-11-30T14:00Z"));
 
@@ -633,6 +677,49 @@ fn a_time_format_reads_slashed_and_numeric_dates() {
         parse_time("21/07/2026 06:00 Europe/London", &o),
         Some(at("2026-07-21T05:00Z"))
     );
+}
+
+#[test]
+fn a_time_format_leaves_the_other_number_columns_numbers() {
+    let mut o = opt();
+    o.time_format = Some("%s".into());
+    let t = read_csv("ts,count\n1795240800,5\n1795240860,7\n", &o).unwrap();
+    use ColumnKind::*;
+    assert_eq!(kinds(&t), [("ts", Number), ("count", Number)]);
+    same(&nums(&t, "count"), &[5.0, 7.0]);
+    let ts = as_time(t.column("ts").unwrap(), None, &o).unwrap();
+    same(
+        &[ts.f64_at(0), ts.f64_at(1)],
+        &[at("2026-11-21T06:00Z"), at("2026-11-21T06:01Z")],
+    );
+
+    // An id beside a date column is an id.
+    o.time_format = Some("%Y%m%d".into());
+    let t = read_csv("d,id\n20261121,10000101\n20261201,10000102\n", &o).unwrap();
+    assert_eq!(kinds(&t), [("d", Number), ("id", Number)]);
+    same(&nums(&t, "id"), &[10_000_101.0, 10_000_102.0]);
+    let d = as_time(t.column("d").unwrap(), None, &o).unwrap();
+    let want = [at("2026-11-20T14:00Z"), at("2026-11-30T14:00Z")];
+    same(&[d.f64_at(0), d.f64_at(1)], &want);
+
+    // JSON's numbers, and its strings of digits, are read as CSV's cells are.
+    let j = read_json(
+        &json::parse(r#"[{"d": 20261121, "s": "20261121"}, {"d": 20261201, "s": null}]"#).unwrap(),
+        &o,
+    )
+    .unwrap();
+    assert_eq!(kinds(&j), [("d", Number), ("s", Number)]);
+    let jd = as_time(j.column("d").unwrap(), None, &o).unwrap();
+    same(&[jd.f64_at(0), jd.f64_at(1)], &want);
+
+    // A number the format doesn't take is an error that names it; a unit beats the format.
+    let half = Column::number("d", vec![20_261_121.5, NAN]);
+    assert_eq!(
+        as_time(&half, None, &o).unwrap_err().msg,
+        "\"20261121.5\" in \"d\" is not a time"
+    );
+    let secs = as_time(&half, Some("s"), &o).unwrap();
+    assert_eq!(secs.f64_at(0), 20_261_121.5);
 }
 
 // ------------------------------------------------------------------ times
@@ -666,6 +753,9 @@ fn times_in_a_fixed_zone_in_ruling_twos_order() {
     assert_eq!(t("2026-11-21"), Some(at("2026-11-20T14:00Z")));
     // A time part that isn't one is no date with the time dropped.
     assert_eq!(t("2026-11-21T25:00"), None);
+    // A zone that doesn't exist, or is misspelt, is no time, not one in the injected zone.
+    assert_eq!(t("2026-11-21T06:00[Foo/Bar]"), None);
+    assert_eq!(t("2026-11-21T06:00[America/New_Yrok]"), None);
     // Slashed and day-first dates need a format; epoch numbers need a unit.
     for s in [
         "2026/11/21 06:00",
@@ -1009,6 +1099,113 @@ fn bin_puts_values_in_nice_aligned_bins() {
     assert_eq!(e.msg, "bin: \"v\" holds categories, not numbers");
 }
 
+/// `v` binned into `lo` and `hi`, every value inside its bin: `lo <= x < hi`, or `x == hi` for
+/// the largest.
+#[track_caller]
+fn binned(v: &[f64], step: Option<f64>, max_bins: usize) -> Table {
+    let t = Table::new(vec![Column::number("v", v.to_vec())]).unwrap();
+    let b = apply(&t, &[bin(step, max_bins)]).unwrap();
+    let (lo, hi) = (nums(&b, "lo"), nums(&b, "hi"));
+    let max = v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    for (i, &x) in v.iter().enumerate() {
+        let inside = lo[i] <= x && (x < hi[i] || (x == max && x == hi[i]));
+        assert!(inside, "{x} is not in [{}, {})", lo[i], hi[i]);
+    }
+    b
+}
+
+#[test]
+fn bin_edges_hold_their_values_far_from_zero() {
+    // Near a billion by ones; the largest on an edge goes below.
+    let b = binned(&[1e9 + 0.95, 1e9 + 0.5, 1e9 + 5.0], Some(1.0), 10);
+    same(&nums(&b, "lo"), &[1e9, 1e9, 1e9 + 4.0]);
+
+    // Epoch milliseconds by the second, given and picked.
+    let ms = [
+        1_795_240_800_850.0,
+        1_795_240_801_900.0,
+        1_795_240_800_000.0,
+        1_795_240_803_999.0,
+    ];
+    let b = binned(&ms, Some(1000.0), 10);
+    let lo = [
+        1_795_240_800_000.0,
+        1_795_240_801_000.0,
+        1_795_240_800_000.0,
+        1_795_240_803_000.0,
+    ];
+    same(&nums(&b, "lo"), &lo);
+    let b = binned(&ms, None, 4);
+    same(&nums(&b, "lo"), &lo);
+
+    // Epoch seconds by the minute.
+    let secs = [
+        1_795_240_859.9,
+        1_795_240_800.0,
+        1_795_240_860.0,
+        1_795_240_919.0,
+    ];
+    let b = binned(&secs, Some(60.0), 10);
+    let lo = [
+        1_795_240_800.0,
+        1_795_240_800.0,
+        1_795_240_860.0,
+        1_795_240_860.0,
+    ];
+    same(&nums(&b, "lo"), &lo);
+
+    // Every 100 ms over two seconds, in at most ten bins: a step of 200, odd values too.
+    let every: Vec<f64> = (0..20).map(|i| 1.7e12 + 100.0 * f64::from(i)).collect();
+    let b = binned(&every, None, 10);
+    same(&nums(&b, "lo")[..3], &[1.7e12, 1.7e12, 1.7e12 + 200.0]);
+    same(&nums(&b, "hi")[..1], &[1.7e12 + 200.0]);
+
+    // Ten billion by twos; cents and tenths of large values.
+    let tens: Vec<f64> = (0..=10).map(|i| 1e10 + f64::from(i)).collect();
+    let b = binned(&tens, Some(2.0), 10);
+    same(&nums(&b, "lo")[..2], &[1e10, 1e10]);
+    let b = binned(&[1_234_567.899_9, 1_234_567.0], Some(0.01), 10);
+    same(&nums(&b, "lo")[..1], &[1_234_567.89]);
+    let b = binned(&[123_456_789.99, 123_456_789.0], Some(0.1), 10);
+    same(&nums(&b, "lo")[..1], &[123_456_789.9]);
+}
+
+#[test]
+fn bin_across_zero_takes_two_bins_at_least() {
+    // Bins sit on multiples of the step, so no one bin holds both signs: one bin asked for is
+    // two.
+    let b = binned(&[-1.0, 0.5, 1.0], None, 1);
+    same(&nums(&b, "lo"), &[-1.0, 0.0, 0.0]);
+    same(&nums(&b, "hi"), &[0.0, 1.0, 1.0]);
+    let b = binned(&[-0.5, 0.5], None, 1);
+    same(&nums(&b, "lo"), &[-0.5, 0.0]);
+    same(&nums(&b, "hi"), &[0.0, 0.5]);
+    // Up to zero, or from it, one bin is one bin.
+    let b = binned(&[-1.0, 0.0], None, 1);
+    same(&nums(&b, "lo"), &[-1.0, -1.0]);
+    let b = binned(&[2.0, 3.0], None, 1);
+    same(&nums(&b, "hi"), &[3.0, 3.0]);
+    // Zero's edge is +0, from -0.0 too, so no axis shows "-0".
+    let b = binned(&[-0.0, 1.5, -1e-20], Some(1.0), 10);
+    let (lo, hi) = (nums(&b, "lo"), nums(&b, "hi"));
+    assert!(
+        lo[0].is_sign_positive() && hi[2].is_sign_positive(),
+        "{lo:?} {hi:?}"
+    );
+}
+
+#[test]
+fn bin_steps_that_arent_decimals_keep_their_own_edges() {
+    let third = 1.0 / 3.0;
+    let b = binned(&[1.0, 0.5, 2.0, 0.999_999_999_5], Some(third), 10);
+    same(&nums(&b, "lo")[..2], &[3.0 * third, third]);
+    same(&nums(&b, "hi")[..2], &[4.0 * third, 2.0 * third]);
+    // A decimal step keeps decimal edges.
+    let b = binned(&[0.21, 0.3, 0.0], Some(0.07), 10);
+    same(&nums(&b, "lo"), &[0.21, 0.28, 0.0]);
+    same(&nums(&b, "hi"), &[0.28, 0.35, 0.07]);
+}
+
 fn agg(op: AggOp, field: Option<&str>, group: &[&str], out: &str) -> Transform {
     Transform::Aggregate {
         op,
@@ -1100,6 +1297,8 @@ fn aggregate_of_times_and_its_errors() {
     );
     let e = apply(&t, &[agg(AggOp::Count, None, &["host"], "host")]).unwrap_err();
     assert_eq!(e.msg, "aggregate: a column is already named \"host\"");
+    let e = apply(&t, &[agg(AggOp::Count, None, &["host", "host"], "n")]).unwrap_err();
+    assert_eq!(e.msg, "aggregate: \"host\" is listed twice in by");
 }
 
 #[test]
@@ -1172,6 +1371,66 @@ fn window_is_a_trailing_mean_within_each_group() {
         w(0, &[]).unwrap_err().msg,
         "window: a window is at least 1 row"
     );
+}
+
+#[test]
+fn window_keeps_a_running_sum_that_loses_nothing() {
+    // A huge value leaving the window takes the small ones with it in a plain running sum.
+    let t = Table::new(vec![Column::number("v", vec![1e17, 1.0, 1.0, 1.0])]).unwrap();
+    let tr = |size| Transform::Window {
+        field: "v".into(),
+        size,
+        by: vec![],
+        out: "m".into(),
+    };
+    same(
+        &nums(&apply(&t, &[tr(2)]).unwrap(), "m"),
+        &[1e17, 5e16, 1.0, 1.0],
+    );
+
+    // The same as each window's mean summed afresh, over gaps and three groups.
+    let mut seed = 7u64;
+    let mut v = Vec::new();
+    for i in 0..600 {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let x = (seed >> 11) as f64 / (1u64 << 53) as f64;
+        v.push(if i % 7 == 3 { NAN } else { (x - 0.5) * 1e4 });
+    }
+    let g: Vec<&str> = (0..600).map(|i| ["a", "b", "c"][i % 3]).collect();
+    let t = Table::new(vec![
+        Column::category("g", &g),
+        Column::number("v", v.clone()),
+    ])
+    .unwrap();
+    for size in [1, 5, 40, 1000] {
+        let got = nums(
+            &apply(
+                &t,
+                &[Transform::Window {
+                    field: "v".into(),
+                    size,
+                    by: by(&["g"]),
+                    out: "m".into(),
+                }],
+            )
+            .unwrap(),
+            "m",
+        );
+        for r in 0..600 {
+            let mine: Vec<f64> = (r % 3..=r).step_by(3).map(|q| v[q]).collect();
+            let last: Vec<f64> = mine[mine.len().saturating_sub(size)..]
+                .iter()
+                .copied()
+                .filter(|x| !x.is_nan())
+                .collect();
+            let want = match v[r].is_nan() {
+                true => NAN,
+                false => last.iter().sum::<f64>() / last.len() as f64,
+            };
+            let ok = (got[r].is_nan() && want.is_nan()) || (got[r] - want).abs() <= 1e-9;
+            assert!(ok, "size {size}, row {r}: got {}, want {want}", got[r]);
+        }
+    }
 }
 
 fn sort(field: &str, descending: bool) -> Transform {
@@ -1260,6 +1519,52 @@ fn top_keeps_the_largest_groups_and_sums_the_rest_into_other() {
     let none = apply(&services(), &[top(0)]).unwrap();
     assert_eq!(strs(&none, "service"), [Some(OTHER), Some(OTHER)]);
     same(&nums(&none, "rpm"), &[156.0, 156.0]);
+}
+
+#[test]
+fn top_makes_one_other_a_time_whatever_else_the_rows_hold() {
+    let t = Table::new(vec![
+        Column::time("time", vec![0.0, 0.0, 0.0, 60.0, 60.0, 60.0]),
+        Column::category("service", &["api", "small", "tiny", "api", "small", "tiny"]),
+        Column::number("rpm", vec![100.0, 5.0, 6.0, 110.0, 7.0, 8.0]),
+        Column::number("errors", vec![1.0, 2.0, 3.0, 4.0, NAN, NAN]),
+        Column::text("note", &["a", "b", "c", "d", "e", "f"]),
+    ])
+    .unwrap();
+    let k = apply(&t, &[top(1)]).unwrap();
+    // One Other at each time, every measure summed, text left out.
+    assert_eq!(strs(&k, "service"), ["api", "api", OTHER, OTHER].map(Some));
+    same(&nums(&k, "time"), &[0.0, 60.0, 0.0, 60.0]);
+    same(&nums(&k, "rpm"), &[100.0, 110.0, 11.0, 15.0]);
+    same(&nums(&k, "errors"), &[1.0, 4.0, 5.0, NAN]);
+    assert_eq!(strs(&k, "note"), [Some("a"), Some("d"), Some(""), Some("")]);
+    assert_eq!(
+        kinds(&k),
+        kinds(&t),
+        "every column keeps its kind and its place"
+    );
+
+    // Another category is a key as a time is: an Other for each region at each time.
+    let mut cols = t.columns.clone();
+    cols.push(Column::category(
+        "region",
+        &["eu", "eu", "us", "eu", "eu", "us"],
+    ));
+    let k = apply(&Table::new(cols).unwrap(), &[top(1)]).unwrap();
+    assert_eq!(strs(&k, "region")[2..], ["eu", "us", "eu", "us"].map(Some));
+    same(&nums(&k, "time")[2..], &[0.0, 0.0, 60.0, 60.0]);
+    same(&nums(&k, "rpm")[2..], &[5.0, 6.0, 7.0, 8.0]);
+
+    // With no time or category beside it, the x is a number column, and Other is one an x.
+    let n = Table::new(vec![
+        Column::number("x", vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0]),
+        Column::category("service", &["api", "small", "tiny", "api", "small", "tiny"]),
+        Column::number("rpm", vec![100.0, 5.0, 6.0, 110.0, 7.0, 8.0]),
+    ])
+    .unwrap();
+    let k = apply(&n, &[top(1)]).unwrap();
+    same(&nums(&k, "x"), &[1.0, 2.0, 1.0, 2.0]);
+    same(&nums(&k, "rpm"), &[100.0, 110.0, 11.0, 15.0]);
 }
 
 #[test]

@@ -16,16 +16,23 @@
 //! - `filter`'s `in` and `not-in` test strings, or numbers by value; `not-in` keeps missing
 //!   values. A range is inclusive and drops missing values.
 //! - `bin` takes a nice step (1, 2 or 5 times a power of ten) giving at most `max_bins` bins,
-//!   aligned on multiples of the step; the largest value, when it falls on a bin's edge, goes
-//!   in the bin below (the last bin is closed).
+//!   aligned on multiples of the step (two at least for values on both sides of zero, which no
+//!   one aligned bin holds); a decimal step's edges are exact decimals (0.3, not
+//!   0.30000000000000004). Every value is in its bin, `start <= x < end`, at any magnitude
+//!   (epoch milliseconds by the second); the largest, when it is a bin's edge, goes in the bin
+//!   below (the last bin is closed).
 //! - `aggregate` gives one row a group with the `by` columns and `out`; `count` without a field
 //!   counts rows, with one counts its values. Percentiles interpolate between the closest ranks.
 //! - `sort` is stable, missing values last either way; strings by code point.
 //! - `top` keeps the rows of the `n` groups with the largest totals (ties to the first met), and
-//!   sums the rest into rows named [`OTHER`], one for each combination of the other columns'
-//!   values, after every kept row so "Other" is the last series. A missing group or one already
-//!   named "Other" is never kept. With `n` groups or fewer the table is unchanged; the rows'
-//!   `fig` blocks and objects are dropped when rows merge, as `aggregate` drops them.
+//!   sums the rest into rows named [`OTHER`], after every kept row so "Other" is the last
+//!   series. The rest merge by the table's time and category columns, so a stacked mark gets
+//!   one Other at each time (and each region, say); every number column is summed into them,
+//!   and a text column (a note, an id) is empty there. A table with no time or category column
+//!   beside `by` merges by its other number columns instead, its x being one of them. A missing
+//!   group or one already named "Other" is never kept. With `n` groups or fewer the table is
+//!   unchanged; the rows' `fig` blocks and objects are dropped when rows merge, as `aggregate`
+//!   drops them.
 //!
 //! Errors name the transform and the column ("fold: no column \"apii\"; the columns are …").
 
@@ -382,6 +389,11 @@ fn bin(
 fn aggregate(t: &Table, op: AggOp, field: Option<&str>, by: &[String], out: &str) -> Result<Table> {
     const W: &str = "aggregate";
     let by_cols = by_columns(t, by, W)?;
+    if let Some((_, b)) = by.iter().enumerate().find(|(i, b)| by[..*i].contains(b)) {
+        return Err(FigError::new(format!(
+            "aggregate: \"{b}\" is listed twice in by"
+        )));
+    }
     if by.iter().any(|b| b == out) {
         return Err(FigError::new(format!(
             "aggregate: a column is already named \"{out}\""
@@ -454,20 +466,53 @@ fn window(t: &Table, field: &str, size: usize, by: &[String], out: &str) -> Resu
     }
     let mut res = vec![f64::NAN; t.rows];
     for g in groups(&by_cols, 0..t.rows) {
+        // The window's sum as it slides: the row coming in added, the one going out taken off.
+        let mut sum = Sum::default();
+        let mut count = 0usize;
         for (i, &r) in g.iter().enumerate() {
-            if v[r].is_nan() {
-                continue;
+            if !v[r].is_nan() {
+                sum.add(v[r]);
+                count += 1;
             }
-            let from = (i + 1).saturating_sub(size);
-            let (sum, count) = g[from..=i]
-                .iter()
-                .map(|&q| v[q])
-                .filter(|x| !x.is_nan())
-                .fold((0.0, 0usize), |(s, n), x| (s + x, n + 1));
-            res[r] = sum / count as f64;
+            if let Some(&gone) = i.checked_sub(size).map(|j| &g[j])
+                && !v[gone].is_nan()
+            {
+                sum.add(-v[gone]);
+                count -= 1;
+            }
+            if count == 0 {
+                sum = Sum::default();
+            }
+            if !v[r].is_nan() {
+                res[r] = sum.value() / count as f64;
+            }
         }
     }
     Ok(with(t, Column::number(out, res)))
+}
+
+/// A compensated running sum (Neumaier's): what each addition rounds away is kept apart, so a
+/// large value leaving a window takes no small ones with it.
+#[derive(Default)]
+struct Sum {
+    sum: f64,
+    lost: f64,
+}
+
+impl Sum {
+    fn add(&mut self, x: f64) {
+        let t = self.sum + x;
+        self.lost += if self.sum.abs() >= x.abs() {
+            (self.sum - t) + x
+        } else {
+            (x - t) + self.sum
+        };
+        self.sum = t;
+    }
+
+    fn value(&self) -> f64 {
+        self.sum + self.lost
+    }
 }
 
 fn sort(t: &Table, field: &str, descending: bool) -> Result<Table> {
@@ -530,23 +575,19 @@ fn top(t: &Table, n: usize, by: &str, field: &str) -> Result<Table> {
         }
     }
     let kept: Vec<usize> = (0..t.rows).filter(|&r| kept_group[group_of[r]]).collect();
-    let keys: Vec<&Column> = t
-        .columns
-        .iter()
-        .filter(|c| c.name != b.name && c.name != f.name)
-        .collect();
+    let keys = other_keys(t, b, f);
     let rest = groups_of(&keys, (0..t.rows).filter(|&r| !kept_group[group_of[r]]));
-    let rest: Vec<Vec<usize>> = rest.into_iter().filter(|g| !g.is_empty()).collect();
     let src: Vec<usize> = kept
         .iter()
         .copied()
         .chain(rest.iter().map(|g| g[0]))
         .collect();
+    let key = |c: &Column| keys.iter().any(|k| k.name == c.name);
     let columns = t
         .columns
         .iter()
-        .map(|c| {
-            if c.name == b.name {
+        .map(|c| match &c.values {
+            _ if c.name == b.name => {
                 let names: Vec<Option<&str>> = kept
                     .iter()
                     .map(|&r| b.str_at(r))
@@ -556,15 +597,47 @@ fn top(t: &Table, n: usize, by: &str, field: &str) -> Result<Table> {
                     Values::Text(_) => text(by, &names),
                     _ => category(by, &names),
                 }
-            } else if c.name == f.name {
-                let sums = rest.iter().map(|g| sum(g.iter().map(|&r| v[r])));
-                Column::number(field, kept.iter().map(|&r| v[r]).chain(sums).collect())
-            } else {
-                take_col(c, &src)
             }
+            // `field`, and any other measure, summed.
+            Values::Number(v) if !key(c) => {
+                let sums = rest.iter().map(|g| sum(g.iter().map(|&r| v[r])));
+                Column::number(&c.name, kept.iter().map(|&r| v[r]).chain(sums).collect())
+            }
+            // A note or an id belongs to one row, and an Other row is many.
+            Values::Text(v) => {
+                let cells: Vec<Option<&str>> = kept
+                    .iter()
+                    .map(|&r| Some(&*v[r]))
+                    .chain(rest.iter().map(|_| None))
+                    .collect();
+                text(&c.name, &cells)
+            }
+            // A key: its group's value.
+            _ => take_col(c, &src),
         })
         .collect();
     Table::new(columns)
+}
+
+/// The columns `top` merges the rest by, beside the ranked column `b` and the summed `f`: the
+/// time and category columns, so a stacked mark gets one Other at each time (and each region,
+/// say), the other number columns summed. A table with neither merges by its other number
+/// columns instead, as its x must be one of them.
+fn other_keys<'t>(t: &'t Table, b: &Column, f: &Column) -> Vec<&'t Column> {
+    let beside = || {
+        t.columns
+            .iter()
+            .filter(move |c| c.name != b.name && c.name != f.name)
+    };
+    let keys: Vec<&Column> = beside()
+        .filter(|c| matches!(c.values, Values::Time(_) | Values::Category { .. }))
+        .collect();
+    if !keys.is_empty() {
+        return keys;
+    }
+    beside()
+        .filter(|c| matches!(c.values, Values::Number(_)))
+        .collect()
 }
 
 // ------------------------------------------------------------------ helpers
@@ -866,7 +939,14 @@ fn decimal(f: f64, e: i32) -> f64 {
 }
 
 /// The smallest step of 1, 2 or 5 times a power of ten that bins `lo..=hi` in at most `bins`.
+/// Values on both sides of zero take two bins at least, as no bin on multiples of a step holds
+/// both signs, so fewer are asked for as two.
 fn nice_step(lo: f64, hi: f64, bins: usize) -> f64 {
+    let bins = if lo < 0.0 && hi > 0.0 {
+        bins.max(2)
+    } else {
+        bins
+    };
     let span = if hi > lo {
         hi - lo
     } else if hi != 0.0 {
@@ -879,6 +959,10 @@ fn nice_step(lo: f64, hi: f64, bins: usize) -> f64 {
     loop {
         for f in [1.0, 2.0, 5.0] {
             let step = decimal(f, e);
+            if !step.is_finite() {
+                // Only data near f64's limits gets here.
+                return span;
+            }
             if step < raw * (1.0 - 1e-9) {
                 continue;
             }
@@ -891,48 +975,60 @@ fn nice_step(lo: f64, hi: f64, bins: usize) -> f64 {
     }
 }
 
-/// Bins on multiples of a step, their edges computed as decimals where the step is one, so a
-/// step of 0.1 has an edge at 0.3 and not 0.30000000000000004.
+/// The powers of ten a decimal step is tried over: each exact in `f64`.
+const POW10: [f64; 16] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+];
+
+/// Bins on multiples of a step. Where the step is a short decimal (`m / 10^d` rounds to it
+/// exactly) the edges are those decimals, so a step of 0.1 has an edge at 0.3 and not
+/// 0.30000000000000004; another step's edges are its multiples.
 struct Grid {
     step: f64,
-    /// The step is `m / 10^d`.
+    /// The step is `m / p`, `p` a power of ten.
     m: f64,
-    d: i32,
+    p: f64,
 }
 
 impl Grid {
     fn new(step: f64) -> Grid {
-        for d in 0..=15 {
-            let s = step * 10f64.powi(d);
-            let r = s.round();
-            if r != 0.0 && (s - r).abs() <= 1e-9 * s.abs() {
-                return Grid { step, m: r, d };
+        for p in POW10 {
+            let m = (step * p).round();
+            if m != 0.0 && m / p == step {
+                return Grid { step, m, p };
             }
         }
         Grid {
             step,
             m: step,
-            d: 0,
+            p: 1.0,
         }
     }
 
     /// The edge `k` steps from zero.
     fn at(&self, k: f64) -> f64 {
-        match self.d {
-            0 => k * self.m,
-            d => k * self.m / 10f64.powi(d),
+        k * self.m / self.p
+    }
+
+    /// The bin `x` is in, as steps from zero: `at(k) <= x < at(k + 1)`. `x / step` is a guess
+    /// that rounding can put a bin out, so it's checked against the edges themselves.
+    fn index(&self, x: f64) -> f64 {
+        // `+ 0.0` makes -0 (from -0.0 or a small negative / step) the zero edge's +0.
+        let k = (x / self.step).floor() + 0.0;
+        if self.at(k + 1.0) <= x {
+            k + 1.0
+        } else if self.at(k) > x {
+            k - 1.0
+        } else {
+            k
         }
     }
 
-    /// The bin `x` falls in, as steps from zero, over data from `lo` to `hi`: the largest value
-    /// on an edge goes in the bin below.
+    /// The bin `x` falls in over data from `lo` to `hi`: the largest value, when it is a bin's
+    /// edge, goes in the bin below.
     fn bin(&self, x: f64, lo: f64, hi: f64) -> f64 {
-        let edge = |x: f64| {
-            let q = x / self.step;
-            (q + q.abs().max(1.0) * 1e-10).floor()
-        };
-        let k = edge(x);
-        if x == hi && k > edge(lo) && (self.at(k) - x).abs() <= self.step * 1e-9 {
+        let k = self.index(x);
+        if x == hi && self.at(k) == x && k > self.index(lo) {
             return k - 1.0;
         }
         k

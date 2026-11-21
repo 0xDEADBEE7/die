@@ -1,15 +1,16 @@
 //! Times parsed in an injected zone (ruling 2), as `f64` seconds since the Unix epoch, UTC.
 //!
 //! A cell is tried as a `jiff::Timestamp` (it has an offset or `Z`), then, when it carries a
-//! `[zone]` annotation and no offset, as a `jiff::Zoned` in that zone, then as a
+//! `[zone]` annotation and no offset, as a `jiff::Zoned` in that zone and nothing else (a zone
+//! the database doesn't have is no time, rather than one in the injected zone), then as a
 //! `jiff::civil::DateTime` in [`ReadOptions::zone`], then as a `jiff::civil::Date` (midnight in
 //! the zone) only when it has no time part. A civil time that a change of clocks skips or repeats
 //! takes jiff's compatible reading: in a gap the later instant, in a fold the earlier.
 //!
 //! Slashed and day-first dates need an explicit [`ReadOptions::time_format`] (strtime), which
 //! is tried before the ISO forms; day and month are never guessed. A plain number is never a
-//! time here: epoch numbers stay numbers unless a spec says `"type": "time"` with a `"unit"`,
-//! which [`as_time`] applies.
+//! time here: epoch numbers stay numbers unless a spec says `"type": "time"`, with a `"unit"`
+//! or a format that reads their digits, which [`as_time`] applies.
 
 use super::infer::{is_missing, parse_number};
 use super::{Column, ReadOptions, Values};
@@ -56,10 +57,10 @@ fn iso(s: &str, zone: &TimeZone) -> Option<f64> {
     if let Ok(ts) = s.parse::<Timestamp>() {
         return Some(seconds(ts));
     }
-    if s.contains('[')
-        && let Ok(z) = s.parse::<Zoned>()
-    {
-        return Some(seconds(z.timestamp()));
+    if s.contains('[') {
+        // The civil reading would drop a zone it doesn't know, misspelt or not, and put the
+        // time in the injected zone hours away.
+        return s.parse::<Zoned>().ok().map(|z| seconds(z.timestamp()));
     }
     if let Ok(dt) = s.parse::<DateTime>() {
         return zone.to_timestamp(dt).ok().map(seconds);
@@ -89,8 +90,9 @@ pub fn epoch(v: f64, unit: &str) -> Option<f64> {
 }
 
 /// A column as times, for a channel whose spec says `"type": "time"`: a time column as it is;
-/// numbers as epoch seconds or milliseconds, only with a `unit`; strings parsed by
-/// [`parse_time`], every one that isn't missing.
+/// numbers as epoch seconds or milliseconds with a `unit`, or without one read as their digits
+/// by [`ReadOptions::time_format`] (`20261121` by `"%Y%m%d"`; a leading zero the cells had is
+/// gone by then); strings parsed by [`parse_time`]. Every value that isn't missing must read.
 pub fn as_time(col: &Column, unit: Option<&str>, opt: &ReadOptions) -> Result<Column> {
     let name = &*col.name;
     match (&col.values, unit) {
@@ -104,9 +106,27 @@ pub fn as_time(col: &Column, unit: Option<&str>, opt: &ReadOptions) -> Result<Co
             let out = v.iter().map(|&x| epoch(x, u).unwrap_or(f64::NAN));
             Ok(Column::time(name, out.collect()))
         }
-        (Values::Number(_), None) => Err(FigError::new(format!(
-            "\"{name}\" holds numbers: give \"unit\": \"s\" or \"ms\" to read them as epoch times"
-        ))),
+        (Values::Number(v), None) => {
+            let Some(fmt) = opt.time_format.as_deref() else {
+                return Err(FigError::new(format!(
+                    "\"{name}\" holds numbers: give \"unit\": \"s\" or \"ms\" to read them as \
+                     epoch times"
+                )));
+            };
+            let mut out = Vec::with_capacity(v.len());
+            for &x in v.iter() {
+                if x.is_nan() {
+                    out.push(f64::NAN);
+                    continue;
+                }
+                let digits = format!("{x}");
+                let t = with_format(&digits, fmt, &opt.zone).ok_or_else(|| {
+                    FigError::new(format!("\"{digits}\" in \"{name}\" is not a time"))
+                })?;
+                out.push(t);
+            }
+            Ok(Column::time(name, out))
+        }
         (Values::Category { .. } | Values::Text(_), _) => {
             let mut out = Vec::with_capacity(col.len());
             for row in 0..col.len() {

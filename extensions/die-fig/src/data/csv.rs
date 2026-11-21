@@ -6,16 +6,19 @@
 //!
 //! - a leading byte order mark is skipped; lines end in `\n`, `\r\n` or a lone `\r`;
 //! - the delimiter is the one of `,`, tab and `;` found most often outside quotes on the first
-//!   line, `,` first on a tie and when there is none;
-//! - spaces around a field are dropped (tabs too, unless tab is the delimiter), and a quoted
+//!   line, `,` first on a tie and when there is none; a given one is any ASCII character but a
+//!   quote or a line break;
+//! - spaces and tabs around a field are dropped unless they are the delimiter, and a quoted
 //!   field keeps everything between its quotes;
 //! - a line with nothing on it is skipped; a row shorter than the header is missing its last
-//!   cells; a longer one is an error at its first extra field;
+//!   cells; a longer one is an error at its first extra field; without a header the widest row
+//!   sets the columns, as JSON's arrays do, and the rows before it are missing the extra cells;
 //! - a header cell that's empty names its column `column N` (from 1), as every column is named
 //!   without a header row, and such a column with nothing in it (a trailing delimiter's) is
 //!   dropped; two columns of one name are an error at the second.
 //!
-//! Errors carry their place: line, column in chars and byte offset in `text`.
+//! Errors carry their place: line, column in chars and byte offset in `text`, a lone `\r`
+//! ending a line there as it does a row.
 
 use super::infer::infer;
 use super::{ReadOptions, Table};
@@ -24,6 +27,14 @@ use std::borrow::Cow;
 
 /// A table from CSV or TSV text.
 pub fn read_csv(text: &str, opt: &ReadOptions) -> Result<Table> {
+    if let Some(d) = opt.delimiter
+        && (!d.is_ascii() || matches!(d, b'"' | b'\n' | b'\r'))
+    {
+        // A byte inside a character would split it, and these three end fields of their own.
+        return Err(FigError::new(
+            "a delimiter is one ASCII character, not a quote or a line break",
+        ));
+    }
     let bom = if text.starts_with('\u{feff}') { 3 } else { 0 };
     let delim = opt.delimiter.unwrap_or_else(|| sniff(&text[bom..]));
     let mut p = Parser {
@@ -43,7 +54,7 @@ pub fn read_csv(text: &str, opt: &ReadOptions) -> Result<Table> {
             continue;
         }
         let rec = std::mem::take(&mut rec);
-        let Some(header) = &names else {
+        let Some(header) = names.as_mut() else {
             let (header, first) = start(text, rec, opt.header)?;
             cols = (0..header.len()).map(|_| Vec::new()).collect();
             names = Some(header);
@@ -53,16 +64,23 @@ pub fn read_csv(text: &str, opt: &ReadOptions) -> Result<Table> {
             continue;
         };
         if rec.len() > header.len() {
-            let extra = &rec[header.len()];
-            let what = if opt.header { "header" } else { "first row" };
-            return Err(FigError::at(
-                format!(
-                    "a row of {} fields where the {what} has {}",
-                    rec.len(),
-                    header.len()
-                ),
-                pos_at(text, extra.start),
-            ));
+            if opt.header {
+                let extra = &rec[header.len()];
+                return Err(FigError::at(
+                    format!(
+                        "a row of {} fields where the header has {}",
+                        rec.len(),
+                        header.len()
+                    ),
+                    pos_at(text, extra.start),
+                ));
+            }
+            // Without a header the widest row sets the columns.
+            let rows = cols.first().map_or(0, Vec::len);
+            for i in header.len()..rec.len() {
+                header.push((format!("column {}", i + 1), true));
+                cols.push(vec![None; rows]);
+            }
         }
         push(&mut cols, rec);
     }
@@ -82,7 +100,7 @@ pub fn read_csv(text: &str, opt: &ReadOptions) -> Result<Table> {
     Table::new(columns)
 }
 
-/// The columns' names, each with whether the header left it empty.
+/// The columns' names, each with whether it was made up rather than read from a header.
 type Names = Vec<(String, bool)>;
 
 /// One field and where it starts.
@@ -94,7 +112,7 @@ struct Field<'a> {
 
 /// The first record: the header's names and no row, or, without a header, `column N` names
 /// and the record as the first row.
-/// Each name says whether the header left it empty.
+/// Each name says whether it was made up (no header, or an empty cell in it).
 fn start<'a>(
     text: &str,
     rec: Vec<Field<'a>>,
@@ -102,7 +120,7 @@ fn start<'a>(
 ) -> Result<(Names, Option<Vec<Field<'a>>>)> {
     if !header {
         let names = (1..=rec.len())
-            .map(|i| (format!("column {i}"), false))
+            .map(|i| (format!("column {i}"), true))
             .collect();
         return Ok((names, Some(rec)));
     }
@@ -159,11 +177,17 @@ fn sniff(text: &str) -> u8 {
 }
 
 /// Where byte `at` of `text` is: its line, its column in chars (a byte order mark not counted)
-/// and the byte.
+/// and the byte. Lines end as rows do: at `\n`, `\r\n` or a lone `\r`.
 pub(crate) fn pos_at(text: &str, at: usize) -> Pos {
+    let bytes = text.as_bytes();
     let before = &text[..at.min(text.len())];
-    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
-    let line = before.bytes().filter(|&b| b == b'\n').count() + 1;
+    let (mut line, mut line_start) = (1usize, 0usize);
+    for (i, &b) in before.as_bytes().iter().enumerate() {
+        if b == b'\n' || (b == b'\r' && bytes.get(i + 1) != Some(&b'\n')) {
+            line += 1;
+            line_start = i + 1;
+        }
+    }
     let mut col = before[line_start..].chars().count() + 1;
     if line_start == 0 && before.starts_with('\u{feff}') {
         col -= 1;
@@ -205,8 +229,9 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether a byte pads a field: a space or a tab that isn't the delimiter.
     fn blank(&self, b: u8) -> bool {
-        b == b' ' || (b == b'\t' && self.delim != b'\t')
+        (b == b' ' || b == b'\t') && b != self.delim
     }
 
     fn skip_blanks(&mut self) {
