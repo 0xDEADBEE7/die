@@ -29,6 +29,7 @@ pub fn base(
 ) -> (Scene, GraphLayout) {
     let mut layout = lay_out(model, view, size, scale, theme, m);
     layout.labels = place(model, view, &layout, m);
+    layout.ink = layout.inked();
     let mut scene = Scene::new(size.0, size.1, scale);
     scene.region(Rect::new(0.0, 0.0, size.0, size.1), Hit::Chrome);
     scene.region(layout.region, Hit::Plot(0));
@@ -44,7 +45,9 @@ pub fn base(
     for l in &layout.chrome {
         scene.push(l.item(theme));
     }
-    scene.push(Item::PushClip(layout.region));
+    if !layout.contained {
+        scene.push(Item::PushClip(layout.region));
+    }
     for e in layout.edges.iter().flatten() {
         edge(&mut scene, e, e.color, 1.0, 0.0);
     }
@@ -57,7 +60,9 @@ pub fn base(
     for l in layout.labels.iter().flatten() {
         label(&mut scene, l, theme.text, 1.0, theme);
     }
-    scene.push(Item::PopClip);
+    if !layout.contained {
+        scene.push(Item::PopClip);
+    }
     for (i, g) in layout.nodes.iter().enumerate() {
         if let Some(g) = g {
             let reach = (g.r + HIT_NODE_PAD).max(HIT_POINT);

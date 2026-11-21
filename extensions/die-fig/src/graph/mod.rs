@@ -592,10 +592,20 @@ impl GraphModel {
     /// its value as text: a number in full, a string as it is, an object as `{3}` and an array
     /// as `[2]`.
     pub fn fields(&self, i: usize) -> Vec<(String, String)> {
-        fields_of(
-            &self.spec.nodes[i].raw,
-            &["id", "label", "group", "size", "fig"],
-        )
+        let skip = ["id", "label", "group", "size", "fig"];
+        let mut out = fields_of(&self.spec.nodes[i].raw, &skip);
+        // A table's row repeats what the node already says: its name column is its label, and
+        // its parent column names the parent by id, which reads better as its label.
+        let label = self.label(i);
+        out.retain(|(k, v)| !(is_name_key(k) && v == label));
+        for (k, v) in &mut out {
+            if is_parent_key(k)
+                && let Some(p) = self.index_of(v)
+            {
+                *v = self.label(p).to_string();
+            }
+        }
+        out
     }
 
     /// An edge's own fields, as [`GraphModel::fields`] gives a node's.
@@ -987,6 +997,20 @@ fn acyclic(n: usize, links: &[(usize, usize)]) -> bool {
         }
     }
     done == n
+}
+
+/// Whether a field's key is one a table's label column goes by.
+fn is_name_key(k: &str) -> bool {
+    ["label", "name", "title"]
+        .iter()
+        .any(|n| k.trim().eq_ignore_ascii_case(n))
+}
+
+/// Whether a field's key is one a table's parent column goes by.
+fn is_parent_key(k: &str) -> bool {
+    ["parent", "parent_id", "parentid", "parent id", "parent-id"]
+        .iter()
+        .any(|n| k.trim().eq_ignore_ascii_case(n))
 }
 
 /// An object's fields but `skip`, a `metadata` object's in its place.

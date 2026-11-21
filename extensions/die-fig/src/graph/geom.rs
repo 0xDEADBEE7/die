@@ -168,6 +168,39 @@ pub struct GraphLayout {
     pub(crate) flipped: Cell<bool>,
     /// The edges' segments, for the pointer: each segment's id is its edge's index.
     pub hits: HitIndex,
+    /// Whether every node (with room for a focus ring and a pin) and every edge is inside the
+    /// region, so drawing needn't clip to it (a clip costs a mask the size of the area).
+    pub contained: bool,
+    /// What the graph's nodes, edges and labels cover, within the region: all the emphasis
+    /// wash need cover (it costs by the pixel).
+    pub ink: Rect,
+}
+
+impl GraphLayout {
+    /// What the nodes (with their rings), the edges and the labels cover, within the region.
+    pub(crate) fn inked(&self) -> Rect {
+        let mut ink: Option<Rect> = None;
+        let mut add = |r: Rect| ink = Some(ink.map_or(r, |i| i.union(&r)));
+        for g in self.nodes.iter().flatten() {
+            let reach = g.r + RING + 8.0;
+            add(Rect::new(
+                g.at.0 - reach,
+                g.at.1 - reach,
+                2.0 * reach,
+                2.0 * reach,
+            ));
+        }
+        for e in self.edges.iter().flatten() {
+            for p in e.pts.iter().chain(e.arrow.iter().flatten()) {
+                add(Rect::new(p.0, p.1, 0.0, 0.0).inflate(e.width + 2.0));
+            }
+        }
+        for l in self.labels.iter().flatten() {
+            add(l.rect.inflate(3.0));
+        }
+        ink.and_then(|i| i.intersect(&self.region))
+            .unwrap_or_default()
+    }
 }
 
 impl GraphLayout {
@@ -279,6 +312,17 @@ pub(crate) fn lay_out(
         })
         .collect();
     let bounds = Rect::new(2.0, region.y, (w - 4.0).max(1.0), (region.h - 2.0).max(1.0));
+    let inside = |p: (f32, f32), pad: f32| {
+        p.0 - pad >= region.x
+            && p.0 + pad <= region.right()
+            && p.1 - pad >= region.y
+            && p.1 + pad <= region.bottom()
+    };
+    let contained = nodes.iter().flatten().all(|g| inside(g.at, g.r + 10.0))
+        && edges.iter().flatten().all(|e| {
+            e.pts.iter().all(|&p| inside(p, e.width + 2.0))
+                && e.arrow.is_none_or(|a| a.iter().all(|&p| inside(p, 2.0)))
+        });
     GraphLayout {
         size,
         scale,
@@ -298,6 +342,8 @@ pub(crate) fn lay_out(
         cell_width: 10.0,
         flipped: Cell::new(false),
         hits,
+        contained,
+        ink: Rect::default(),
     }
 }
 
@@ -762,15 +808,15 @@ fn s_curve(a: (f32, f32), b: (f32, f32)) -> Vec<(f32, f32)> {
 
 /// A loop on a node's upper right, leaving and coming back to its centre.
 fn self_loop(c: (f32, f32), r: f32) -> Vec<(f32, f32)> {
-    let reach = r + 30.0;
+    let reach = r + 40.0;
     let th = -std::f32::consts::FRAC_PI_4;
     let p1 = (
-        c.0 + reach * (th - 0.55).cos(),
-        c.1 + reach * (th - 0.55).sin(),
+        c.0 + reach * (th - 0.6).cos(),
+        c.1 + reach * (th - 0.6).sin(),
     );
     let p2 = (
-        c.0 + reach * (th + 0.55).cos(),
-        c.1 + reach * (th + 0.55).sin(),
+        c.0 + reach * (th + 0.6).cos(),
+        c.1 + reach * (th + 0.6).sin(),
     );
     cubic(c, p1, p2, c, 20)
 }
