@@ -6,9 +6,9 @@
 //! draws its own text, so a page's letters weigh what the editor's beside it do. The buffer is
 //! filled with the canvas first, so it stays opaque whatever is drawn.
 
-use super::fonts::{self, Mask, Pass};
 use super::layout::{Laid, Mark, Op};
 use super::{Pictures, Rect, Rgb, sheet};
+use die_draw::{Clip, Mask, Pass, Pixels, blend, smoothing};
 use std::ops::Range;
 use tiny_skia::{FillRule, LineCap, LineJoin, PathBuilder, Stroke};
 
@@ -23,19 +23,27 @@ struct Target<'a> {
     rows: Range<i32>,
 }
 
-/// One pixel: `ink` over what's there, `a` of 255 of it.
-fn blend(px: &mut [u8], ink: Rgb, a: u32) {
-    let rest = 255 - a;
-    for (to, from) in px.iter_mut().zip([ink.0, ink.1, ink.2, 255]) {
-        *to = ((u32::from(from) * a + u32::from(*to) * rest + 127) / 255) as u8;
-    }
-}
-
 impl Target<'_> {
     /// The buffer's rows a span of the page's rows shows in.
     fn clip(&self, y0: i32, y1: i32) -> Range<i32> {
         let (a, b) = (y0.saturating_sub(self.top), y1.saturating_sub(self.top));
         a.max(self.rows.start)..b.min(self.rows.end)
+    }
+
+    /// The buffer's rows down to the last that may be written, as die-draw's pixels, and a clip
+    /// to the rows that may be.
+    fn pixels(&mut self) -> Option<(Pixels<'_>, Clip)> {
+        let clip = Clip {
+            x0: 0,
+            y0: self.rows.start,
+            x1: self.width,
+            y1: self.rows.end,
+        };
+        let (width, rows) = (self.width.max(0) as u32, self.rows.end.max(0) as u32);
+        Some((
+            Pixels::with_stride(self.out, width, rows, self.stride)?,
+            clip,
+        ))
     }
 
     /// A stretch of one of the buffer's rows.
@@ -110,63 +118,19 @@ impl Target<'_> {
 
     /// Coverage in a colour, its origin at a pixel of the page.
     fn mask(&mut self, x: i32, y: i32, mask: &Mask, ink: Rgb) {
-        let (x0, y0) = (x + mask.left, y + mask.top);
-        let (w, h) = (mask.width as i32, mask.height as i32);
-        let (c0, c1) = ((-x0).max(0), (self.width - x0).min(w));
-        if c0 >= c1 {
-            return;
-        }
-        for row in self.clip(y0, y0 + h) {
-            let line = (row + self.top - y0) * w;
-            let cov = &mask.cov[(line + c0) as usize..(line + c1) as usize];
-            let out = self.span(row, x0 + c0, x0 + c1);
-            for (px, a) in out.chunks_exact_mut(4).zip(cov) {
-                match *a {
-                    0 => {}
-                    255 => px.copy_from_slice(&[ink.0, ink.1, ink.2, 255]),
-                    a => blend(px, ink, u32::from(a)),
-                }
-            }
+        let top = self.top;
+        if let Some((mut to, clip)) = self.pixels() {
+            to.coverage(x, y.saturating_sub(top), mask, ink, 255, clip);
         }
     }
 
-    /// Premultiplied pixels, `w` a row, over what's there.
-    fn picture(&mut self, x0: i32, y0: i32, w: i32, h: i32, pixels: &[u8]) {
-        let (c0, c1) = ((-x0).max(0), (self.width - x0).min(w));
-        if c0 >= c1 || pixels.len() < (w * h) as usize * 4 {
-            return;
-        }
-        for row in self.clip(y0, y0 + h) {
-            let line = ((row + self.top - y0) * w) as usize * 4;
-            let source = &pixels[line + c0 as usize * 4..line + c1 as usize * 4];
-            let out = self.span(row, x0 + c0, x0 + c1);
-            for (px, from) in out.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
-                let rest = 255 - u32::from(from[3]);
-                for (to, value) in px.iter_mut().zip(from) {
-                    *to = (u32::from(*value) + (u32::from(*to) * rest + 127) / 255).min(255) as u8;
-                }
-                px[3] = 255;
-            }
+    /// Premultiplied pixels, `w` a row, over what's there. The buffer is opaque, so it stays so.
+    fn picture(&mut self, x0: i32, y0: i32, w: u32, h: u32, pixels: &[u8]) {
+        let top = self.top;
+        if let Some((mut to, clip)) = self.pixels() {
+            to.over(x0, y0.saturating_sub(top), w, h, pixels, clip);
         }
     }
-}
-
-/// How far a glyph `px` physical pixels an em drawn in `ink` grows a side, in physical pixels:
-/// as far as a Mac's font smoothing grows it, by its size and how light its colour is.
-pub(super) fn grow(px: f32, ink: Rgb) -> f32 {
-    let part = |v: u8| {
-        let v = f32::from(v) / 255.0;
-        if v <= 0.04045 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let light = 0.2126 * part(ink.0) + 0.7152 * part(ink.1) + 0.0722 * part(ink.2);
-    let span = sheet::GROW_LIGHT_FROM - sheet::GROW_DARK_UNDER;
-    let lighter = ((light - sheet::GROW_DARK_UNDER) / span).clamp(0.0, 1.0);
-    let per_px = sheet::GROW_DARK + (sheet::GROW_LIGHT - sheet::GROW_DARK) * lighter;
-    (per_px * px.max(0.0)).min(sheet::GROW_MOST)
 }
 
 /// Paints the rows `rows` of a buffer whose row 0 shows the page's row `top`.
@@ -263,7 +227,7 @@ pub(super) fn paint(
                 ink,
             } => {
                 let glyphs = laid.glyphs.get(from as usize..to as usize).unwrap_or(&[]);
-                let grown = grow(px, ink);
+                let grown = smoothing(px, ink);
                 for glyph in glyphs {
                     let (x, bin) = place(glyph.x);
                     if let Some(mask) = pass.mask(glyph.inst, glyph.id, px, bin, bins, grown) {
@@ -289,7 +253,7 @@ pub(super) fn paint(
                 let clear = (laid.scale * 0.75).round().max(1.0) as i32;
                 // The glyphs as they were drawn: a link's, in the line's own colour.
                 let glyphs = laid.glyphs.get(from as usize..to as usize).unwrap_or(&[]);
-                let grown = grow(px, ink);
+                let grown = smoothing(px, ink);
                 for glyph in glyphs {
                     let (x, bin) = place(glyph.x);
                     let Some(mask) = pass.mask(glyph.inst, glyph.id, px, bin, bins, grown) else {
@@ -332,7 +296,7 @@ pub(super) fn paint(
                 };
                 let (w, h) = ((x1 - x0).max(1) as u32, (y1 - y0).max(1) as u32);
                 if let Some(pixels) = pictures.at_size(path, w, h) {
-                    target.picture(x0, y0, w as i32, h as i32, &pixels);
+                    target.picture(x0, y0, w, h, &pixels);
                 }
             }
             Op::Mark {
@@ -494,5 +458,5 @@ fn mark(kind: Mark, px: f32) -> Option<Mask> {
     {
         solid.push_path(&stroked);
     }
-    fonts::fill(&solid.finish()?, scale, 0.0, 0.0, FillRule::Winding)
+    die_draw::fill(&solid.finish()?, scale, 0.0, 0.0, FillRule::Winding)
 }
