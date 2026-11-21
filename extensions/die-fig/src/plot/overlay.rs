@@ -284,6 +284,13 @@ fn moment(
                 theme,
                 m,
             );
+            // Where there's room, the card covers no bar, no total and not the pointer: over
+            // the shorter neighbours, beside the lower ones, or over the band's own empty head.
+            card.avoid = l.bars.iter().map(|b| b.rect).collect();
+            card.avoid.extend(l.totals.iter().map(|t| t.1));
+            if let Some((px, py)) = pointer {
+                card.avoid.push(Rect::new(px - 6.0, py - 6.0, 12.0, 12.0));
+            }
             // What the card keeps clear of: the band's bars, from their ends to the baseline.
             let bars = l
                 .bars
@@ -495,6 +502,15 @@ fn moment(
             // Beside the crosshair, clear of its dots (CARD_GAP is more than a dot's reach) and
             // of any bar it lifted.
             let reach = lifted_half(l, model, col.x, x);
+            if !l.bars.is_empty() {
+                // Over bars, as on a band chart: clear of every bar and of the crosshair's
+                // column where there's room.
+                card.avoid = l.bars.iter().map(|b| b.rect).collect();
+                card.avoid.extend(l.totals.iter().map(|t| t.1));
+                let r = reach + CARD_GAP - MARK_CLEAR;
+                card.avoid
+                    .push(Rect::new(x - r, p.y - 6.0, 2.0 * r, p.h + 6.0));
+            }
             card.place_beside(l, scene, x - reach, x + reach, ay, span, theme, m);
         }
         Cursor::Node(_) => {}
@@ -1519,8 +1535,11 @@ fn signed(d: f64, decimals: usize) -> String {
     }
 }
 
-/// A card: its header, rows and total, measured.
+/// A card: its header, rows and total, measured, and what it keeps clear of where it can.
 struct Card {
+    /// The marks it covers only where there's no room clear of them (a bar chart's bars, their
+    /// totals, the pointer): empty where it goes where it's put.
+    avoid: Vec<Rect>,
     header: String,
     rows: Vec<Row>,
     more: usize,
@@ -1535,6 +1554,8 @@ struct Card {
 }
 
 const PAD: f32 = 12.0;
+/// How far a card keeps from a mark it avoids.
+const MARK_CLEAR: f32 = 8.0;
 const KEY_W: f32 = 14.0;
 const GAP: f32 = 9.0;
 /// The least a card's name column narrows to, its names cut with '…', before the Δ column goes.
@@ -1637,6 +1658,7 @@ impl Card {
         let n = rows.len() + usize::from(more > 0);
         let h = CARD_CHROME + n as f32 * CARD_ROW + total_h;
         let mut card = Card {
+            avoid: Vec::new(),
             header,
             rows,
             more,
@@ -1759,7 +1781,7 @@ impl Card {
             ah - INSET
         };
         let y = (ay + CARD_GAP).min(floor - self.h).max(INSET);
-        let r = Rect::new(x.round(), y.round(), self.w, self.h);
+        let r = self.clear_of(l, Rect::new(x.round(), y.round(), self.w, self.h));
         clear_ticks(l, theme, scene, r, m);
         self.draw(scene, r, theme, m);
     }
@@ -1784,7 +1806,7 @@ impl Card {
         }
         let mid = (span.0 + span.1) / 2.0;
         let y = (mid - self.h / 2.0).min(ah - INSET - self.h).max(INSET);
-        let r = Rect::new(x.round(), y.round(), self.w, self.h);
+        let r = self.clear_of(l, Rect::new(x.round(), y.round(), self.w, self.h));
         clear_ticks(l, theme, scene, r, m);
         self.draw(scene, r, theme, m);
     }
@@ -1815,7 +1837,7 @@ impl Card {
             above.max(INSET)
         };
         let x = (ax + CARD_GAP).min(aw - INSET - self.w).max(INSET);
-        let r = Rect::new(x.round(), y.round(), self.w, self.h);
+        let r = self.clear_of(l, Rect::new(x.round(), y.round(), self.w, self.h));
         clear_ticks(l, theme, scene, r, m);
         self.draw(scene, r, theme, m);
     }
@@ -1849,9 +1871,67 @@ impl Card {
                 y.min(ah - INSET - self.h).max(INSET),
             )
         });
-        let rect = Rect::new(x.round(), y.round(), self.w, self.h);
+        let rect = self.clear_of(l, Rect::new(x.round(), y.round(), self.w, self.h));
         clear_ticks(l, theme, scene, rect, m);
         self.draw(scene, rect, theme, m);
+    }
+
+    /// `r` where it covers none of what the card avoids (kept `MARK_CLEAR` px from each);
+    /// else the nearest place that does, inside the area and over the plot where it fits, the
+    /// legend and the title costing a little to cover; else `r` after all.
+    fn clear_of(&self, l: &ChartLayout, r: Rect) -> Rect {
+        let covers = |c: &Rect| {
+            self.avoid.iter().any(|a| {
+                c.intersect(&a.inflate(MARK_CLEAR))
+                    .is_some_and(|i| i.w > 0.01 && i.h > 0.01)
+            })
+        };
+        if self.avoid.is_empty() || !covers(&r) {
+            return r;
+        }
+        let (aw, ah) = l.size;
+        let (w, h) = (r.w, r.h);
+        let floor = if h <= l.plot.bottom() - 2.0 * INSET {
+            l.plot.bottom() - INSET
+        } else {
+            ah - INSET
+        };
+        let (x0, x1, y0, y1) = (INSET, aw - INSET - w, INSET, floor - h);
+        if x1 < x0 || y1 < y0 {
+            return r;
+        }
+        // Where an edge of the card meets an edge of what it avoids, or of the area.
+        let gap = MARK_CLEAR + 1.0;
+        let mut xs = vec![r.x, x0, x1];
+        let mut ys = vec![r.y, y0, y1];
+        for a in &self.avoid {
+            xs.extend([a.right() + gap, a.x - gap - w]);
+            ys.extend([a.bottom() + gap, a.y - gap - h]);
+        }
+        let inside = |v: f32, lo: f32, hi: f32| v >= lo - 0.01 && v <= hi + 0.01;
+        xs.retain(|&x| inside(x, x0, x1));
+        ys.retain(|&y| inside(y, y0, y1));
+        let cost = |x: f32, y: f32| {
+            let (dx, dy) = (x - r.x, y - r.y);
+            // Over the legend or the title above the plot costs a little more than over the
+            // plot's empty space.
+            let above = (l.plot.y - y).max(0.0);
+            (dx * dx + dy * dy).sqrt() + above
+        };
+        let mut best: Option<(f32, Rect)> = None;
+        for &x in &xs {
+            for &y in &ys {
+                let c = Rect::new(x.round(), y.round(), w, h);
+                if covers(&c) {
+                    continue;
+                }
+                let k = cost(c.x, c.y);
+                if best.as_ref().is_none_or(|b| k < b.0) {
+                    best = Some((k, c));
+                }
+            }
+        }
+        best.map_or(r, |b| b.1)
     }
 
     fn draw(&self, scene: &mut Scene, r: Rect, theme: &Theme, m: &mut dyn Measure) {

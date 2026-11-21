@@ -1198,7 +1198,7 @@ fn log(
     scene.push(Item::PushClip(body));
     for (i, e) in entries.iter().enumerate() {
         let (s, n) = (layout.starts[i], layout.lens[i]);
-        if s + n <= top || s >= top + page + 1 {
+        if s + n <= top || s >= top + page {
             continue;
         }
         let r = Rect::new(
@@ -1235,7 +1235,7 @@ fn log(
         let lines = keep_caret(e, chars);
         for (k, spans) in lines.iter().enumerate() {
             let line = s + k;
-            if line < top || line > top + page {
+            if line < top || line >= top + page {
                 continue;
             }
             let base = line_y(line) + (LOG_LINE + m.ascent(mono) - m.descent(mono)) / 2.0;

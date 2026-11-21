@@ -1372,6 +1372,10 @@ impl FigState {
             (p.cols, p.rows, p.cell) = (cols, rows, cell);
             p.drawn = None;
             p.over_key = None;
+            // What the pointer was over is somewhere else now: the hover and its card go until
+            // it moves again. The keyboard's cursor stays.
+            (p.pointer, p.hovering) = (None, false);
+            (p.hover, p.near, p.legend, p.strip) = (None, None, None, None);
             // What the overlay drew at the old size stays in its buffer, which never shrinks,
             // where the new layout draws something else: the next draw clears it all.
             p.over_wipe |= p.over_bounds.is_some() || !p.over_items.is_empty();

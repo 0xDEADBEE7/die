@@ -570,11 +570,8 @@ impl ChartModel {
                 hi = hi.max(r.value);
             }
         }
-        let (lo, hi) = settle(lo, hi, self.x.kind);
-        if self.is_scatter() {
-            return nice_domain(lo, hi, self.x.kind, &self.zone, 5);
-        }
-        (lo, hi)
+        // A scatter's x is the data's own: the layout pads it by its dots' reach, not a tick.
+        settle(lo, hi, self.x.kind)
     }
 
     /// y's fit over the visible series inside `window` on x (anywhere with None).
@@ -675,6 +672,10 @@ impl ChartModel {
             hi = hi.max(0.0);
         }
         let (lo, hi) = settle(lo, hi, self.y.kind);
+        if self.is_scatter() {
+            // As x: the data's own, padded by the dots' reach in the layout.
+            return (lo, hi);
+        }
         nice_domain(lo, hi, self.y.kind, &self.zone, count)
     }
 
@@ -885,8 +886,9 @@ impl ChartModel {
                 Some(f) => format_with(x, f, &self.zone),
                 None => {
                     let v = self.x_value(x);
+                    // As quiet as a time's header: the axis's name, then the value.
                     match self.x.title.as_deref().filter(|t| !t.is_empty()) {
-                        Some(t) => format!("{t}: {v}"),
+                        Some(t) => format!("{t} {v}"),
                         None => v,
                     }
                 }

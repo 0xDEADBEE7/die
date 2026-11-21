@@ -785,7 +785,11 @@ fn attempt(
         } else {
             ((plot_h / Y_SPACING).round() as usize).clamp(2, Y_MOST)
         };
+        let floor = no_negatives(model, view, false);
         for t in whole_ticks(&up_scale, count, vertical_values && whole) {
+            if floor && t.value < 0.0 {
+                continue;
+            }
             let py = up_scale.map(t.value);
             if py < plot_top - 0.5 || py > plot_bottom + 0.5 {
                 continue;
@@ -955,11 +959,14 @@ fn attempt(
     let mut x_ticks: Vec<Tick> = Vec::new();
     let base_y = plot.bottom() + TICK_GAP + m.ascent(tick);
     if axes {
-        let placed = if across_kind == AxisKind::Band {
+        let mut placed = if across_kind == AxisKind::Band {
             band_labels(&across, across_bands, &plot, tick_plain, m)
         } else {
             value_ticks(model, &across, &plot, tick, vertical_values, whole, w, m)
         };
+        if no_negatives(model, view, true) {
+            placed.retain(|t| t.0.value >= 0.0);
+        }
         for (t, text, x, anchor) in placed {
             let spec = if across_kind == AxisKind::Band {
                 tick_plain
@@ -1298,6 +1305,12 @@ fn point_reach(model: &ChartModel, view: &View) -> f32 {
         })
         .fold(0.0, f32::max)
         + 1.0
+}
+
+/// Whether a scatter's axis (x, or y) holds no negative value: its dots' padding may reach
+/// below zero, but no tick there says a value it hasn't.
+fn no_negatives(model: &ChartModel, view: &View, x: bool) -> bool {
+    model.is_scatter() && points_extent(model, view, x).is_some_and(|e| e.0 >= 0.0)
 }
 
 /// The visible points' extent along x (or y).

@@ -1155,10 +1155,14 @@ fn bars_never_zoom_their_values_and_scatters_zoom_both_from_half_to_32_times() {
     let sc = load("scatter.csv");
     let view = View::default();
     let (_, l, _) = lay(&sc, &view, (880.0, 470.0));
-    let ((x0, x1), (y0, y1)) = sc.fit(&view);
+    let ((x0, x1), _) = sc.fit(&view);
+    // A zoom halves what's shown: the data's extent padded by the dots' reach.
+    let ((sx0, sx1), (sy0, sy1)) = l.domain;
     let v = plot::zoom(&sc, &l, &view, 2.0, None, None, None);
     let ((a, b), (c, d)) = (v.x.expect("x"), v.y.expect("y"));
-    assert!(((b - a) - (x1 - x0) / 2.0).abs() < 1e-9 && ((d - c) - (y1 - y0) / 2.0).abs() < 1e-9);
+    assert!(
+        ((b - a) - (sx1 - sx0) / 2.0).abs() < 1e-9 && ((d - c) - (sy1 - sy0) / 2.0).abs() < 1e-9
+    );
     let deep = plot::zoom(&sc, &l, &view, 1e6, None, None, None);
     let (a, b) = deep.x.expect("x");
     assert!(((b - a) - (x1 - x0) / 32.0).abs() < 1e-9);
@@ -2718,4 +2722,484 @@ fn a_scatter_reference_gives_dx_at_x_s_precision() {
         "{want}: {:?}",
         texts(&o)
     );
+}
+
+// ---------------------------------------------------------------- the error figure (phase 2b)
+
+use die_fig::error::{ErrorKind, FigError, Pos};
+use die_fig::plot::errors::{LOG_HEADER, LOG_LINE, badge_text, log_entries, title};
+use die_fig::plot::{ErrorView, error_figure, log_layout, log_page, stale_badge};
+
+/// The figure's text, and an error of each kind in it (or in a data file beside it).
+const SPEC: &str = "{\n  \"type\": \"line\",\n  \"data\": \"requests-old.csv\",\n  \"x\": \"time\",\n  \"y\": \"latency\"\n}\n";
+
+fn kinds() -> Vec<FigError> {
+    let at = |line: u32, col: u32| Pos { line, col, byte: 0 };
+    vec![
+        FigError::at("requests-old.csv: no such file", at(3, 11))
+            .with_kind(ErrorKind::Unreadable)
+            .note("looked for requests-old.csv"),
+        FigError::malformed("expected ',' or '}'", at(4, 3)),
+        FigError::at("no column \"latency\" in the data", at(5, 8))
+            .note("requests.csv has time, api, worker, batch"),
+        FigError::new("nothing to draw: the data has no rows").with_kind(ErrorKind::Empty),
+    ]
+}
+
+fn symbolic(errors: &[FigError], size: (f32, f32)) -> Scene {
+    error_figure(
+        errors,
+        SPEC,
+        "requests.fig",
+        ErrorView::Symbolic,
+        size,
+        2.0,
+        &Theme::mono_dark(),
+        &mut FixedMeasure,
+    )
+}
+
+/// Every text's box inside the area, and no two overlapping.
+fn tidy(scene: &Scene, what: &str) {
+    let area = Rect::new(0.0, 0.0, scene.width, scene.height);
+    let ts = texts(scene);
+    for (t, r) in &ts {
+        assert!(
+            r.x >= -0.5 && r.y >= -0.5 && r.right() <= area.w + 0.5 && r.bottom() <= area.h + 0.5,
+            "{what}: {t:?} at {r:?} leaves the area"
+        );
+    }
+    for (i, (a, ra)) in ts.iter().enumerate() {
+        for (b, rb) in &ts[i + 1..] {
+            assert!(!overlaps(ra, rb), "{what}: {a:?} and {b:?} overlap");
+        }
+    }
+}
+
+fn paths(scene: &Scene) -> usize {
+    scene
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Path { .. }))
+        .count()
+}
+
+#[test]
+fn the_symbolic_figure_says_the_kind_title_and_first_error_and_degrades_as_it_shrinks() {
+    for e in kinds() {
+        let what = e.kind.name();
+        let one = std::slice::from_ref(&e);
+        // All of it at the big size: the status, the title, the error with its place, the keys.
+        let big = symbolic(one, (880.0, 470.0));
+        tidy(&big, what);
+        let t = title(e.kind, "requests.fig");
+        assert!(has_text(&big, &t), "{what}: {:?}", texts(&big));
+        let said = die_fig::plot::errors::summary(&e);
+        assert!(has_text(&big, &said), "{what}: {said} in {:?}", texts(&big));
+        assert!(has_text(&big, "details") && has_text(&big, "source"));
+        let label = ["Unreadable", "Malformed", "Mismatch", "Empty"][e.kind as usize];
+        assert!(
+            has_text(&big, label),
+            "the status's label, not colour alone"
+        );
+        assert_eq!(big.hit(440.0, 235.0), Some(&Hit::ErrorFigure));
+        assert_eq!(
+            big.hit(5.0, 5.0),
+            Some(&Hit::ErrorFigure),
+            "the whole area turns it over"
+        );
+        // Centred.
+        let (_, tr) = texts(&big).into_iter().find(|x| x.0 == t).unwrap();
+        assert!(
+            ((tr.x + tr.w / 2.0) - 440.0).abs() < 1.0,
+            "{what}: centred, {tr:?}"
+        );
+        // Medium: still the title and the error.
+        let mid = symbolic(one, (400.0, 240.0));
+        tidy(&mid, what);
+        assert!(has_text(&mid, &t), "{what} at 400x240: {:?}", texts(&mid));
+        // Small: the glyph alone; then, too short for it, the title alone.
+        let small = symbolic(one, (200.0, 120.0));
+        tidy(&small, what);
+        assert!(
+            texts(&small).is_empty(),
+            "{what}: the glyph only, {:?}",
+            texts(&small)
+        );
+        assert!(paths(&small) >= 2, "{what}: its glyph");
+        let tiny = symbolic(one, (200.0, 44.0));
+        tidy(&tiny, what);
+        let words: Vec<String> = texts(&tiny).into_iter().map(|x| x.0).collect();
+        assert_eq!(words.len(), 1, "{what}: the title only, {words:?}");
+        assert!(words[0].starts_with(&t[..6]), "{words:?}");
+        assert_eq!(paths(&tiny), 0, "no glyph");
+    }
+}
+
+#[test]
+fn the_status_is_critical_for_failures_and_a_warning_for_nothing_to_draw() {
+    let theme = Theme::mono_dark();
+    let fills = |s: &Scene| -> Vec<Color> {
+        s.items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Path {
+                    fill: Some(Paint::Solid { color, .. }),
+                    ..
+                } => Some(*color),
+                _ => None,
+            })
+            .collect()
+    };
+    for e in kinds() {
+        let s = symbolic(std::slice::from_ref(&e), (880.0, 470.0));
+        let want = if e.kind == ErrorKind::Empty {
+            theme.status[1]
+        } else {
+            theme.status[3]
+        };
+        assert!(fills(&s).contains(&want), "{}'s icon", e.kind.name());
+    }
+    // Several errors: the first named, the count beside the status.
+    let s = symbolic(&kinds()[..3], (880.0, 470.0));
+    assert!(has_text(&s, " · 3 errors"), "{:?}", texts(&s));
+}
+
+fn logged(errors: &[FigError], size: (f32, f32), top: usize, mark: usize) -> Scene {
+    error_figure(
+        errors,
+        SPEC,
+        "requests.fig",
+        ErrorView::Log { top, mark },
+        size,
+        2.0,
+        &Theme::mono_dark(),
+        &mut FixedMeasure,
+    )
+}
+
+#[test]
+fn the_log_writes_each_entry_as_rustc_does_with_a_caret_under_its_column() {
+    let mut errors = kinds();
+    errors.push(
+        FigError::at(
+            "unknown field \"titel\"; did you mean \"title\"?",
+            Pos {
+                line: 2,
+                col: 3,
+                byte: 0,
+            },
+        )
+        .warn(),
+    );
+    let s = logged(&errors, (880.0, 470.0), 0, 0);
+    let ts = texts(&s);
+    let has = |t: &str| ts.iter().any(|x| x.0 == t);
+    assert!(
+        has("unreadable") && has(": requests-old.csv: no such file"),
+        "{ts:?}"
+    );
+    assert!(has("requests.fig:3:11"), "the file and line:column");
+    assert!(has("  \"data\": \"requests-old.csv\","), "the source line");
+    assert!(has("looked for requests-old.csv"), "what was tried");
+    assert!(has("4 errors · 1 warning"), "the header's count: {ts:?}");
+    // The caret under column 11, the quoted name underlined whole, in the monospace.
+    let mono = die_fig::scene::TextSpec::new(12.0).mono();
+    let cell = die_fig::scene::Measure::width(&mut FixedMeasure, "0", mono);
+    let (_, src) = ts
+        .iter()
+        .find(|x| x.0 == "  \"data\": \"requests-old.csv\",")
+        .unwrap();
+    let (caret, cr) = ts.iter().find(|x| x.0.starts_with('^')).unwrap();
+    assert_eq!(caret.len(), "\"requests-old.csv\"".len());
+    assert!(
+        (cr.x - (src.x + 10.0 * cell)).abs() < 0.5,
+        "under its column: {cr:?} {src:?}"
+    );
+    // Each entry's region, the header's that turns it over, the first entry lit.
+    let entries: Vec<u32> = s
+        .regions
+        .iter()
+        .filter_map(|r| match r.hit {
+            Hit::LogEntry(i) => Some(i),
+            _ => None,
+        })
+        .collect();
+    assert!(entries.starts_with(&[0, 1]), "{entries:?}");
+    assert_eq!(s.hit(400.0, LOG_HEADER / 2.0), Some(&Hit::ErrorFigure));
+    // No text leaves the area or overlaps another, at three sizes.
+    for size in [(880.0, 470.0), (400.0, 240.0), (200.0, 120.0)] {
+        let s = logged(&errors, size, 0, 0);
+        for (t, r) in texts(&s) {
+            assert!(
+                r.x >= -0.5 && r.right() <= size.0 + 0.5 && r.bottom() <= size.1 + 0.5,
+                "{t:?} at {r:?} leaves {size:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_log_scrolls_by_lines_and_keeps_a_long_line_s_caret_in_view() {
+    let errors = kinds();
+    let lines = log_layout(&errors, SPEC);
+    assert_eq!(lines.starts.len(), 4);
+    assert_eq!(lines.starts[0], 0);
+    for i in 1..4 {
+        assert_eq!(
+            lines.starts[i],
+            lines.starts[i - 1] + lines.lens[i - 1] + 1,
+            "a blank line between entries"
+        );
+    }
+    assert_eq!(lines.entry_at(lines.starts[1]), Some(1));
+    assert_eq!(lines.entry_at(lines.starts[1] - 1), None, "the blank");
+    let page = log_page((880.0, 200.0));
+    assert_eq!(page, ((200.0 - LOG_HEADER - 10.0) / LOG_LINE) as usize);
+    assert_eq!(lines.max_top(page), lines.total.saturating_sub(page));
+    let top = lines.reveal(0, 3, page);
+    assert!(
+        top + page >= lines.starts[3] + 1 && top <= lines.starts[3],
+        "{top}"
+    );
+    // A top past the end is the last page's.
+    let s = logged(&errors, (880.0, 200.0), 999, 3);
+    let last = texts(&s)
+        .into_iter()
+        .any(|x| x.0.contains("the data has no rows"));
+    assert!(last, "{:?}", texts(&s));
+    // A source line wider than the area: cut with '…', its caret still on screen.
+    let long = format!("{{\"a\": \"{}\", \"y\": \"latency\"}}", "x".repeat(300));
+    let e = FigError::at(
+        "no column \"latency\" in the data",
+        Pos {
+            line: 1,
+            col: 312,
+            byte: 0,
+        },
+    );
+    let s = error_figure(
+        std::slice::from_ref(&e),
+        &long,
+        "wide.fig",
+        ErrorView::Log { top: 0, mark: 0 },
+        (400.0, 240.0),
+        1.0,
+        &Theme::mono_dark(),
+        &mut FixedMeasure,
+    );
+    let ts = texts(&s);
+    let (_, caret) = ts.iter().find(|x| x.0.starts_with('^')).expect("a caret");
+    assert!(caret.right() <= 400.0, "the caret in view: {caret:?}");
+    assert!(ts.iter().any(|x| x.0.starts_with('…')), "{ts:?}");
+    let (entries, _) = log_entries(std::slice::from_ref(&e), &long, "wide.fig");
+    assert_eq!(entries[0].source, Some(3));
+}
+
+#[test]
+fn the_stale_badge_says_error_and_its_line_in_the_top_right_corner() {
+    let theme = Theme::mono_dark();
+    let e = FigError::malformed(
+        "expected ',' or '}'",
+        Pos {
+            line: 14,
+            col: 9,
+            byte: 0,
+        },
+    );
+    assert_eq!(badge_text(&e), "Error · line 14");
+    let data = FigError::at(
+        "\"slow\" is not a number",
+        Pos {
+            line: 6,
+            col: 3,
+            byte: 0,
+        },
+    )
+    .in_file("/d/lat.csv", None);
+    assert_eq!(badge_text(&data), "Error · lat.csv, line 6");
+    let empty = FigError::new("nothing to draw").with_kind(ErrorKind::Empty);
+    assert_eq!(badge_text(&empty), "Empty");
+    for (w, h) in [
+        (880.0, 470.0),
+        (400.0, 240.0),
+        (200.0, 120.0),
+        (60.0, 120.0),
+    ] {
+        let mut s = Scene::new(w, h, 2.0);
+        stale_badge(&mut s, &e, &theme, &mut FixedMeasure);
+        let r = s
+            .regions
+            .iter()
+            .find(|r| r.hit == Hit::Badge)
+            .expect("its region")
+            .rect;
+        assert!(
+            r.x >= 0.0 && r.right() <= w && r.y >= 0.0,
+            "inside at {w}: {r:?}"
+        );
+        assert!(
+            r.x + r.w / 2.0 > w / 2.0 && r.y < h / 4.0,
+            "top right at {w}: {r:?}"
+        );
+        tidy(&s, "badge");
+        for (t, tr) in texts(&s) {
+            assert!(
+                tr.right() <= r.right() && tr.x >= r.x,
+                "{t:?} inside the badge"
+            );
+        }
+        if w >= 400.0 {
+            assert!(has_text(&s, "Error · line 14"), "{:?}", texts(&s));
+        }
+    }
+    // Over a chart, the badge is pushed last: over everything, and hit first.
+    let model = load("requests.csv");
+    let (mut s, _, _) = lay(&model, &View::default(), (880.0, 470.0));
+    stale_badge(&mut s, &e, &theme, &mut FixedMeasure);
+    let r = s.regions.last().unwrap();
+    assert_eq!(r.hit, Hit::Badge);
+    assert_eq!(s.hit(r.rect.x + 4.0, r.rect.y + 4.0), Some(&Hit::Badge));
+}
+
+// ---------------------------------------------------------------- the phase 2 gallery's fixes
+
+/// Bars and totals as a card must keep clear of them where it can (the overlay's own margin).
+fn clear(card: &Rect, avoid: &[Rect]) -> bool {
+    avoid.iter().all(|a| !overlaps(card, &a.inflate(8.0)))
+}
+
+/// Whether a card of `w × h` has a spot in the area (4 px in, over the plot's bottom) that keeps
+/// clear of `avoid`: searched on a 2 px grid.
+fn free_spot_exists(l: &ChartLayout, w: f32, h: f32, avoid: &[Rect]) -> bool {
+    let (aw, ah) = l.size;
+    let floor = if h <= l.plot.bottom() - 8.0 {
+        l.plot.bottom() - 4.0
+    } else {
+        ah - 4.0
+    };
+    let mut y = 4.0;
+    while y + h <= floor {
+        let mut x = 4.0;
+        while x + w <= aw - 4.0 {
+            if clear(&Rect::new(x, y, w, h), avoid) {
+                return true;
+            }
+            x += 2.0;
+        }
+        y += 2.0;
+    }
+    false
+}
+
+#[test]
+fn a_bar_s_card_covers_no_bar_where_there_is_room() {
+    for name in [
+        "services-bars.csv",
+        "latency.json",
+        "hbars.json",
+        "profit.csv",
+        "deploys.json",
+    ] {
+        let model = load(name);
+        let view = View::default();
+        let (_, l, hits) = lay(&model, &view, (880.0, 470.0));
+        let bars: Vec<Rect> = l.bars.iter().map(|b| b.rect).collect();
+        assert!(!bars.is_empty(), "{name} has bars");
+        let mut seen = 0;
+        for b in &l.bars {
+            // The pointer on the bar's band at the plot's middle, across or down as it lies.
+            let c = (b.rect.x + b.rect.w / 2.0, b.rect.y + b.rect.h / 2.0);
+            let p = if l.horizontal {
+                (l.plot.x + l.plot.w / 2.0, c.1)
+            } else {
+                (c.0, l.plot.y + l.plot.h / 2.0)
+            };
+            let hover = plot::hover(&model, &l, &hits, &view, p.0, p.1);
+            let o = overlay(
+                &model,
+                &l,
+                &view,
+                &OverlayState {
+                    hover,
+                    pointer: Some(p),
+                    ..state()
+                },
+            );
+            let Some(card) = shadow(&o) else { continue };
+            seen += 1;
+            let mut avoid = bars.clone();
+            avoid.extend(l.totals.iter().map(|t| t.1));
+            avoid.push(Rect::new(p.0 - 6.0, p.1 - 6.0, 12.0, 12.0));
+            if !l.horizontal && !model.is_band() {
+                // Bars over time: the crosshair's column too.
+                avoid.push(Rect::new(p.0 - 16.0, l.plot.y - 6.0, 32.0, l.plot.h + 6.0));
+            }
+            if free_spot_exists(&l, card.w, card.h, &avoid) {
+                for r in &bars {
+                    assert!(
+                        !overlaps(&card, r),
+                        "{name}: the card {card:?} covers the bar {r:?}, hovered at {p:?}"
+                    );
+                }
+            }
+        }
+        assert!(seen > 0, "{name}: a card on some band");
+    }
+}
+
+#[test]
+fn a_scatter_pads_by_its_dots_and_non_negative_data_shows_no_negative_tick() {
+    let model = load("scatter.csv");
+    let (scene, l, _) = lay(&model, &View::default(), (880.0, 470.0));
+    assert!(
+        l.y_ticks.iter().all(|t| t.value >= 0.0),
+        "no negative tick: {:?}",
+        l.y_ticks
+    );
+    assert!(l.x_ticks.iter().all(|t| t.value >= 0.0));
+    // The domain reaches past the data by about a dot, not by a tick.
+    let lo = model
+        .series
+        .iter()
+        .flat_map(|s| s.ys.iter().copied())
+        .fold(f64::INFINITY, f64::min);
+    let (y0, y1) = l.domain.1;
+    let per_px = (y1 - y0) / f64::from(l.plot.h);
+    let past = (lo - y0) / per_px;
+    assert!(
+        (4.0..=16.0).contains(&past),
+        "{past} px under the lowest dot: {:?}",
+        l.domain
+    );
+    // Every dot whole inside the plot (the legend's dots are above it).
+    let p = l.plot;
+    let near = p.inflate(12.0);
+    for (_, (cx, cy), r) in circles(&scene) {
+        if !near.contains(cx, cy) {
+            continue;
+        }
+        assert!(
+            cx - r >= p.x - 0.5 && cx + r <= p.right() + 0.5,
+            "({cx}, {cy}) r {r} across {p:?}"
+        );
+        assert!(cy - r >= p.y - 0.5 && cy + r <= p.bottom() + 0.5);
+    }
+}
+
+#[test]
+fn a_number_x_s_card_header_is_its_title_and_value_without_a_colon() {
+    let model = load("many.json");
+    let view = View::default();
+    let (_, l, hits) = lay(&model, &view, (880.0, 470.0));
+    let p = (l.plot.x + l.plot.w * 0.55, l.plot.y + l.plot.h / 2.0);
+    let (hover, o) = hovered(&model, &l, &hits, &view, p);
+    assert!(hover.is_some());
+    let header = texts(&o)
+        .into_iter()
+        .map(|t| t.0)
+        .find(|t| t.starts_with("Hour"))
+        .expect("the header");
+    assert!(!header.contains(':'), "{header}");
+    assert!(header.starts_with("Hour "), "{header}");
 }

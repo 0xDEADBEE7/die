@@ -1187,3 +1187,28 @@ fn a_resize_that_doesnt_grow_the_buffers_leaves_nothing_of_the_overlay_behind() 
         assert_eq!(left, 0, "{how}: {left} px of {w}×{h} left behind");
     }
 }
+
+#[test]
+fn a_size_change_drops_the_hover_and_its_card_until_the_pointer_moves_and_keeps_the_cursor() {
+    let mut s = setup();
+    keys(&mut s.h, "l");
+    let kept = cursor(&mut s);
+    assert!(kept.is_some());
+    let at = sample_at(&mut s, "a", 10);
+    mv(&mut s, at);
+    assert!(hover(&mut s).is_some());
+    // The window narrows: what the pointer was over is somewhere else now.
+    keys(&mut s.h, "<C-w>v");
+    s.h.scene();
+    assert_eq!(hover(&mut s), None, "the hover goes");
+    let st = state(&mut s);
+    let o = st.borrow().panes[&s.win].overlay();
+    assert_eq!(o.hover, None);
+    assert_eq!(o.pointer, None, "no card");
+    drop(st);
+    assert_eq!(cursor(&mut s), kept, "the keyboard's cursor stays");
+    // The next move brings it back.
+    let at = sample_at(&mut s, "a", 10);
+    mv(&mut s, at);
+    assert!(hover(&mut s).is_some());
+}
