@@ -7,10 +7,10 @@
 //!   from a table: [`crate::spec::graph::from_table`]) and lays it out once: run it in a job;
 //! - [`base`] draws the graph at rest for a [`View`] and a size, with its regions, and returns the
 //!   [`GraphLayout`] the rest asks: where every node, edge and label landed;
-//! - [`overlay`] draws what follows the pointer and the cursor ([`OverlayState`]): emphasis, the
+//! - [`overlay`](fn@overlay) draws what follows the pointer and the cursor ([`OverlayState`]): emphasis, the
 //!   hovered node or edge, the cursor's ring, the reference and its path, a drag's ghost, and
 //!   the card;
-//! - [`hover`] finds the node or edge under the pointer;
+//! - [`hover`](fn@hover) finds the node or edge under the pointer;
 //! - [`nav`] moves the cursor between nodes and changes the view: fit, zoom, pan, reveal,
 //!   centre, and a node dragged and pinned;
 //! - [`GraphModel::path`], [`GraphModel::tsv`] and [`GraphModel::names`] give the shortest
