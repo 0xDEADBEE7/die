@@ -3721,3 +3721,52 @@ fn every_error_glyph_stays_inside_its_disc() {
         }
     }
 }
+
+#[test]
+fn a_short_chart_drops_its_legend_axis_titles_and_title_before_its_plot() {
+    // many.json: a title, twelve series' legend and both axes' titles. Beside the detail panel
+    // at the bottom of a 400 × 240 area it has 144 px; in a tiny tile, 120.
+    let model = load("many.json");
+    for size in [(400.0, 144.0), (200.0, 120.0)] {
+        let (scene, l, _) = lay(&model, &View::default(), size);
+        assert!(l.plot.h >= 48.0, "{size:?}: a plot of {} px", l.plot.h);
+        for (t, r) in texts(&scene) {
+            assert!(
+                r.x >= -0.5
+                    && r.y >= -0.5
+                    && r.right() <= size.0 + 0.5
+                    && r.bottom() <= size.1 + 0.5,
+                "{size:?}: {t} at {r:?} is cut at the edge"
+            );
+        }
+    }
+    // At 200 × 120 the x axis keeps two labels, thinned, not one.
+    let (scene, l, _) = lay(&model, &View::default(), (200.0, 120.0));
+    let under = texts(&scene)
+        .into_iter()
+        .filter(|(_, r)| r.y >= l.plot.bottom())
+        .count();
+    assert!(under >= 2, "{under} x labels");
+    // It keeps what it has room for: at 880 × 470 everything.
+    let (scene, _, _) = lay(&model, &View::default(), (880.0, 470.0));
+    assert!(has_text(&scene, "Queue depth by region"));
+}
+
+#[test]
+fn beside_the_panel_a_chart_keeps_the_areas_paddings() {
+    let model = load("requests.csv");
+    let (_, whole, _) = lay(&model, &View::default(), (880.0, 470.0));
+    let (_, beside, _) = plot::base_beside(
+        &model,
+        &View::default(),
+        (607.0, 470.0),
+        880.0,
+        1.0,
+        &Theme::mono_dark(),
+        &mut FixedMeasure,
+    );
+    assert_eq!(
+        beside.title.x, whole.title.x,
+        "the title doesn't move as the panel opens"
+    );
+}

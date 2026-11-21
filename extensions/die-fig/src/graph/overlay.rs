@@ -35,6 +35,8 @@ use crate::theme::{Color, Theme};
 
 /// A segment from one point to another, in px.
 type Seg = ((f32, f32), (f32, f32));
+/// A disc: its centre and radius, in px.
+type Disc = ((f32, f32), f32);
 /// A label the overlay shows: it, whether it's the focused one's, and the base label it
 /// replaces.
 type Shown = (super::NodeLabel, bool, Option<Rect>);
@@ -539,7 +541,7 @@ fn labels(
     hard: &[Seg],
     dimmed: Option<&[bool]>,
     m: &mut dyn Measure,
-) -> (Vec<Shown>, Vec<Rect>, Vec<((f32, f32), f32)>) {
+) -> (Vec<Shown>, Vec<Rect>, Vec<Disc>) {
     let mut order: Vec<(usize, bool)> = want
         .iter()
         .copied()
@@ -560,7 +562,7 @@ fn labels(
     };
     let mut shown: Vec<Shown> = Vec::new();
     let mut erase: Vec<Rect> = Vec::new();
-    let mut hidden: Vec<((f32, f32), f32)> = Vec::new();
+    let mut hidden: Vec<Disc> = Vec::new();
     if order.iter().any(|&(i, f)| fresh(i, f)) {
         let mut field = Field::of(layout);
         for &(a, b) in hard {

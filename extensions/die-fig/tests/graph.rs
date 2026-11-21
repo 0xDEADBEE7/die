@@ -1007,3 +1007,318 @@ fn a_table_nodes_detail_says_its_name_once_and_its_parent_by_label() {
         "{card:?}"
     );
 }
+
+// ---------------------------------------------------------------- the review's look fixes
+
+/// How far a point is from a rectangle.
+fn rect_distance(c: (f32, f32), r: &Rect) -> f32 {
+    let nx = c.0.clamp(r.x, r.right());
+    let ny = c.1.clamp(r.y, r.bottom());
+    (c.0 - nx).hypot(c.1 - ny)
+}
+
+/// How far a point is from a polyline.
+fn line_distance(c: (f32, f32), pts: &[(f32, f32)]) -> f32 {
+    pts.windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let l2 = (dx * dx + dy * dy).max(1e-9);
+            let t = (((c.0 - a.0) * dx + (c.1 - a.1) * dy) / l2).clamp(0.0, 1.0);
+            (c.0 - a.0 - t * dx).hypot(c.1 - a.1 - t * dy)
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// The gap from a label's box to a node's ring.
+fn gap(l: &GraphLayout, i: usize, r: &Rect) -> f32 {
+    let g = l.node(i).unwrap();
+    rect_distance(g.at, r) - (g.r + graph::geom::RING + 1.0)
+}
+
+#[test]
+fn a_label_at_rest_is_clearly_its_own_nodes_and_a_space_from_one_level_with_it() {
+    let (margin, share) = graph::label::OWN_MARGIN;
+    for f in FIXTURES {
+        let m = fixture(f);
+        for size in [(880.0, 470.0), (400.0, 240.0)] {
+            let (_, l) = base(&m, &View::default(), size);
+            let placed: Vec<(usize, &graph::NodeLabel)> = (0..m.len())
+                .filter_map(|i| l.labels[i].as_ref().map(|x| (i, x)))
+                .collect();
+            for &(i, lab) in &placed {
+                if m.show_label(i) == Some(true) {
+                    continue;
+                }
+                let mine = gap(&l, i, &lab.rect).max(0.0);
+                for j in (0..m.len()).filter(|&j| j != i && l.node(j).is_some()) {
+                    assert!(
+                        gap(&l, j, &lab.rect) >= mine + margin.max(mine * share) - 0.01,
+                        "{f} {size:?}: {} is as near {} as its own",
+                        lab.text,
+                        m.label(j)
+                    );
+                }
+            }
+            for (a, (_, x)) in placed.iter().enumerate() {
+                for (_, y) in &placed[a + 1..] {
+                    let level = x.rect.y < y.rect.bottom() && y.rect.y < x.rect.bottom();
+                    let apart = (y.rect.x - x.rect.right()).max(x.rect.x - y.rect.right());
+                    assert!(
+                        !level || apart >= 6.99,
+                        "{f} {size:?}: {} and {} run together ({apart} px)",
+                        x.text,
+                        y.text
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_neighbours_label_in_focus_is_nearer_its_own_node_than_any_bright_one() {
+    let (margin, share) = graph::label::OWN_MARGIN;
+    let m = fixture("services.json");
+    for size in [(880.0, 470.0), (640.0, 470.0)] {
+        let (_, l) = base(&m, &View::default(), size);
+        for c in 0..m.len() {
+            let st = OverlayState {
+                cursor: Some(m.cursor(c)),
+                ..Default::default()
+            };
+            let o = graph::overlay(
+                &m,
+                &l,
+                &View::default(),
+                &st,
+                &Theme::mono_dark(),
+                &mut FixedMeasure,
+            );
+            let bright: Vec<usize> = std::iter::once(c).chain(m.neighbours(c)).collect();
+            for item in &o.items {
+                let Item::Text {
+                    text,
+                    x,
+                    y,
+                    spec,
+                    anchor,
+                    ..
+                } = item
+                else {
+                    continue;
+                };
+                let Some(&i) = bright.iter().find(|&&i| m.label(i) == &**text) else {
+                    continue;
+                };
+                if i == c {
+                    continue;
+                }
+                let r = die_fig::plot::layout::text_box(
+                    text,
+                    *x,
+                    *y,
+                    *spec,
+                    *anchor,
+                    &mut FixedMeasure,
+                );
+                let r = Rect::new(r.x, r.y + r.h * 0.2, r.w, r.h * 0.6);
+                let mine = gap(&l, i, &r).max(0.0);
+                for &k in bright.iter().filter(|&&k| k != i) {
+                    assert!(
+                        gap(&l, k, &r) >= mine + margin.max(mine * share) - 2.5,
+                        "{size:?}, cursor {}: {text} reads as {}'s",
+                        m.id(c),
+                        m.label(k)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn an_edge_between_two_nodes_of_one_rank_arcs_clear_of_the_nodes_between() {
+    let text = std::fs::read_to_string(dir().join("services.json")).unwrap();
+    let m = GraphModel::build_as(
+        spec_of(&text, "services.json"),
+        Some(Layout::Tree { root: None }),
+    )
+    .unwrap();
+    let (_, l) = base(&m, &View::default(), (880.0, 470.0));
+    let mut level = 0;
+    for (k, e) in l.edges.iter().enumerate() {
+        let Some(e) = e else { continue };
+        let (a, b) = (m.ends[k].0 as usize, m.ends[k].1 as usize);
+        let (pa, pb) = (l.node(a).unwrap().at, l.node(b).unwrap().at);
+        if (pa.1 - pb.1).abs() >= 1.0 {
+            continue;
+        }
+        level += 1;
+        for (i, g) in l.nodes.iter().enumerate() {
+            let Some(g) = g else { continue };
+            if i == a || i == b {
+                continue;
+            }
+            assert!(
+                line_distance(g.at, &e.pts) > g.r + graph::geom::RING,
+                "{} – {} runs through {}",
+                m.id(a),
+                m.id(b),
+                m.id(i)
+            );
+        }
+    }
+    assert!(
+        level >= 3,
+        "services.json as a tree has edges along a rank: {level}"
+    );
+}
+
+#[test]
+fn a_self_loop_goes_in_the_widest_gap_between_its_nodes_edges() {
+    let m = fixture("cycle.json");
+    let (_, l) = base(&m, &View::default(), (880.0, 470.0));
+    let k = (0..m.ends.len())
+        .find(|&k| m.ends[k].0 == m.ends[k].1)
+        .expect("a self-loop");
+    let i = m.ends[k].0 as usize;
+    let c = l.node(i).unwrap().at;
+    let e = l.edges[k].as_ref().unwrap();
+    let far = e.pts.iter().copied().fold(c, |f, p| {
+        if (p.0 - c.0).hypot(p.1 - c.1) > (f.0 - c.0).hypot(f.1 - c.1) {
+            p
+        } else {
+            f
+        }
+    });
+    let dir = (far.1 - c.1).atan2(far.0 - c.0);
+    for j in m.neighbours(i) {
+        let o = l.node(j).unwrap().at;
+        let t = (o.1 - c.1).atan2(o.0 - c.0);
+        let d = (t - dir).rem_euclid(std::f32::consts::TAU);
+        let d = d.min(std::f32::consts::TAU - d);
+        assert!(
+            d > 0.6,
+            "the loop runs along the edge to {} ({d} rad)",
+            m.id(j)
+        );
+    }
+}
+
+#[test]
+fn the_card_stays_by_its_anchor_drops_rows_before_covering_neighbours_and_clears_cut_labels() {
+    // A small area: rows go before the card covers a neighbour.
+    let m = fixture("services.json");
+    let w = m.index_of("worker").unwrap();
+    let (_, l) = base(&m, &View::default(), (400.0, 240.0));
+    let st = OverlayState {
+        cursor: Some(m.cursor(w)),
+        cursor_card: true,
+        ..Default::default()
+    };
+    let o = graph::overlay(
+        &m,
+        &l,
+        &View::default(),
+        &st,
+        &Theme::mono_dark(),
+        &mut FixedMeasure,
+    );
+    let card = card_rect(&o).expect("a card");
+    for j in m.neighbours(w) {
+        let g = l.node(j).unwrap();
+        assert!(
+            !circle_meets(g.at, g.r + 1.0, &card),
+            "the card covers {}",
+            m.id(j)
+        );
+    }
+    // Every base label the card would cut is cleared whole, under it.
+    let theme = Theme::mono_dark();
+    for lab in l.labels.iter().flatten() {
+        let cut = lab
+            .rect
+            .intersect(&card)
+            .is_some_and(|o| o.w > 0.5 && o.h > 0.5);
+        let cleared = o.items.iter().any(|it| {
+            matches!(it, Item::Path { path, fill: Some(die_fig::scene::Paint::Solid { color, alpha }), .. }
+                if *color == theme.surface && *alpha == 1.0 && path.bounds().is_some_and(|b| b.contains(lab.rect.x + 0.5, lab.rect.y + 0.5) && b.contains(lab.rect.right() - 0.5, lab.rect.bottom() - 0.5)))
+        });
+        assert!(!cut || cleared, "{} is cut and left", lab.text);
+    }
+    // In a dense graph zoomed in, it stays by its node rather than flee to the edge.
+    let big = fixture("big.json");
+    let a = big.index_of("auth-01").unwrap();
+    let (_, l0) = base(&big, &View::default(), (880.0, 470.0));
+    let v = nav::zoom_about(&big, &l0, &View::default(), 2.0, None, Some(&big.cursor(a)));
+    let (_, l) = base(&big, &v, (880.0, 470.0));
+    let st = OverlayState {
+        cursor: Some(big.cursor(a)),
+        cursor_card: true,
+        ..Default::default()
+    };
+    let o = graph::overlay(&big, &l, &v, &st, &Theme::mono_dark(), &mut FixedMeasure);
+    let card = card_rect(&o).expect("a card");
+    let at = l.node(a).unwrap().at;
+    assert!(
+        rect_distance(at, &card) < 150.0,
+        "{card:?} strays from {at:?}"
+    );
+    // A hovered edge's card keeps off the edge.
+    let org = fixture("org.csv");
+    let (_, l) = base(&org, &View::default(), (880.0, 470.0));
+    let (x, y) = (
+        org.index_of("1").unwrap() as u32,
+        org.index_of("2").unwrap() as u32,
+    );
+    let k = org
+        .ends
+        .iter()
+        .position(|&e| e == (x, y) || e == (y, x))
+        .unwrap();
+    let e = l.edges[k].as_ref().unwrap();
+    let st = OverlayState {
+        hover: Some(Target::Edge(k as u32)),
+        pointer: Some(e.pts[e.pts.len() / 2]),
+        ..Default::default()
+    };
+    let o = graph::overlay(
+        &org,
+        &l,
+        &View::default(),
+        &st,
+        &Theme::mono_dark(),
+        &mut FixedMeasure,
+    );
+    let card = card_rect(&o).expect("a card");
+    let crosses = e.pts.windows(2).any(|w| {
+        (0..=20).any(|t| {
+            let t = t as f32 / 20.0;
+            card.contains(
+                w[0].0 + (w[1].0 - w[0].0) * t,
+                w[0].1 + (w[1].1 - w[0].1) * t,
+            )
+        })
+    });
+    assert!(!crosses, "the card covers its own edge");
+}
+
+#[test]
+fn beside_the_panel_a_graph_keeps_the_areas_paddings() {
+    let m = fixture("services.json");
+    let (_, whole) = base(&m, &View::default(), (880.0, 470.0));
+    let (_, beside) = graph::base_beside(
+        &m,
+        &View::default(),
+        (607.0, 470.0),
+        880.0,
+        1.0,
+        &Theme::mono_dark(),
+        &mut FixedMeasure,
+    );
+    assert_eq!(
+        beside.title.x, whole.title.x,
+        "the title doesn't move as the panel opens"
+    );
+}

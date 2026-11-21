@@ -1288,16 +1288,8 @@ fn picking_the_layout_drawn_changes_nothing_and_a_tree_keeps_the_specs_root() {
     let st = state(&mut s);
     let ys = |s: &mut Setup| -> Vec<f64> {
         let st = state(s);
-        let ys = st
-            .borrow()
-            .graph
-            .as_ref()
-            .unwrap()
-            .positions
-            .iter()
-            .map(|p| p.1)
-            .collect();
-        ys
+        let g = st.borrow().graph.clone().unwrap();
+        g.positions.iter().map(|p| p.1).collect()
     };
     let ys0 = ys(&mut s);
     keys(&mut s.h, "s");
