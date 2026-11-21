@@ -1,0 +1,250 @@
+{
+  "type": "graph",
+  "title": "Nightly pipeline",
+  "subtitle": "5 stages · runs nightly at 02:00 UTC",
+  "directed": true,
+  "nodes": [
+    {
+      "id": "s3-events",
+      "group": "ingest",
+      "owner": "platform",
+      "schedule": "02:00 UTC",
+      "runtime_min": 26
+    },
+    {
+      "id": "kafka-clicks",
+      "group": "ingest",
+      "owner": "platform",
+      "schedule": "02:00 UTC",
+      "runtime_min": 7
+    },
+    {
+      "id": "pg-replica",
+      "group": "ingest",
+      "owner": "platform",
+      "schedule": "02:00 UTC",
+      "runtime_min": 33
+    },
+    {
+      "id": "crm-export",
+      "group": "ingest",
+      "owner": "platform",
+      "schedule": "02:00 UTC",
+      "runtime_min": 33
+    },
+    {
+      "id": "parse-events",
+      "group": "clean",
+      "owner": "data-eng",
+      "schedule": "02:00 UTC",
+      "runtime_min": 7
+    },
+    {
+      "id": "dedupe-clicks",
+      "group": "clean",
+      "owner": "data-eng",
+      "schedule": "02:00 UTC",
+      "runtime_min": 14
+    },
+    {
+      "id": "snapshot-pg",
+      "group": "clean",
+      "owner": "data-eng",
+      "schedule": "02:00 UTC",
+      "runtime_min": 40
+    },
+    {
+      "id": "normalise-crm",
+      "group": "clean",
+      "owner": "data-eng",
+      "schedule": "02:00 UTC",
+      "runtime_min": 14
+    },
+    {
+      "id": "sessions",
+      "group": "join",
+      "owner": "data-eng",
+      "schedule": "02:00 UTC",
+      "runtime_min": 19
+    },
+    {
+      "id": "orders",
+      "group": "join",
+      "owner": "data-eng",
+      "schedule": "02:00 UTC",
+      "runtime_min": 5
+    },
+    {
+      "id": "customers",
+      "group": "join",
+      "owner": "data-eng",
+      "schedule": "02:00 UTC",
+      "runtime_min": 26
+    },
+    {
+      "id": "features",
+      "group": "model",
+      "owner": "ml",
+      "schedule": "02:00 UTC",
+      "runtime_min": 19
+    },
+    {
+      "id": "churn-model",
+      "group": "model",
+      "owner": "ml",
+      "schedule": "02:00 UTC",
+      "runtime_min": 40
+    },
+    {
+      "id": "ltv-model",
+      "group": "model",
+      "owner": "ml",
+      "schedule": "02:00 UTC",
+      "runtime_min": 26
+    },
+    {
+      "id": "forecast",
+      "group": "model",
+      "owner": "ml",
+      "schedule": "02:00 UTC",
+      "runtime_min": 19
+    },
+    {
+      "id": "dashboards",
+      "group": "publish",
+      "owner": "analytics",
+      "schedule": "02:00 UTC",
+      "runtime_min": 33
+    },
+    {
+      "id": "churn-scores",
+      "group": "publish",
+      "owner": "analytics",
+      "schedule": "02:00 UTC",
+      "runtime_min": 7
+    },
+    {
+      "id": "ltv-scores",
+      "group": "publish",
+      "owner": "analytics",
+      "schedule": "02:00 UTC",
+      "runtime_min": 33
+    },
+    {
+      "id": "finance-report",
+      "group": "publish",
+      "owner": "analytics",
+      "schedule": "02:00 UTC",
+      "runtime_min": 21
+    },
+    {
+      "id": "alerts",
+      "group": "publish",
+      "owner": "analytics",
+      "schedule": "02:00 UTC",
+      "runtime_min": 5
+    }
+  ],
+  "edges": [
+    {
+      "from": "s3-events",
+      "to": "parse-events"
+    },
+    {
+      "from": "kafka-clicks",
+      "to": "dedupe-clicks"
+    },
+    {
+      "from": "pg-replica",
+      "to": "snapshot-pg"
+    },
+    {
+      "from": "crm-export",
+      "to": "normalise-crm"
+    },
+    {
+      "from": "parse-events",
+      "to": "sessions"
+    },
+    {
+      "from": "dedupe-clicks",
+      "to": "sessions"
+    },
+    {
+      "from": "snapshot-pg",
+      "to": "orders"
+    },
+    {
+      "from": "snapshot-pg",
+      "to": "customers"
+    },
+    {
+      "from": "normalise-crm",
+      "to": "customers"
+    },
+    {
+      "from": "sessions",
+      "to": "features"
+    },
+    {
+      "from": "orders",
+      "to": "features"
+    },
+    {
+      "from": "customers",
+      "to": "features"
+    },
+    {
+      "from": "features",
+      "to": "churn-model"
+    },
+    {
+      "from": "features",
+      "to": "ltv-model"
+    },
+    {
+      "from": "orders",
+      "to": "forecast"
+    },
+    {
+      "from": "churn-model",
+      "to": "churn-scores"
+    },
+    {
+      "from": "ltv-model",
+      "to": "ltv-scores"
+    },
+    {
+      "from": "forecast",
+      "to": "finance-report"
+    },
+    {
+      "from": "orders",
+      "to": "finance-report"
+    },
+    {
+      "from": "sessions",
+      "to": "dashboards"
+    },
+    {
+      "from": "churn-model",
+      "to": "alerts"
+    },
+    {
+      "from": "forecast",
+      "to": "dashboards"
+    },
+    {
+      "from": "s3-events",
+      "to": "dashboards"
+    },
+    {
+      "from": "pg-replica",
+      "to": "finance-report"
+    },
+    {
+      "from": "customers",
+      "to": "ltv-scores"
+    }
+  ]
+}
