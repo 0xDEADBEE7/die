@@ -151,7 +151,9 @@ pub enum Event {
     Paste(String),
     /// The pointer left the window's area: it went to another window, a margin, the status or
     /// command line, out of DIE's window, or a prompt opened over the hover. Never sent while the
-    /// window holds a press; sent after the release if the pointer is out by then.
+    /// window holds a press; sent after the release if the pointer is out by then. A window that
+    /// shows another buffer now, or closed, is left too, by the next pointer event: the surface
+    /// that had the hover hears it, not what the window shows now.
     PointerLeft {
         /// The window it left.
         window: WindowId,

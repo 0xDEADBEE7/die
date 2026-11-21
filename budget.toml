@@ -32,7 +32,8 @@ path = "crates/die-core"
 # 15,860 until the whiteboard's scratch boards: `Ctx::rename_buffer`, made unique as a new buffer's name, for a scratch board saved as a file (15,867).
 # 15,870 until their review: `PromptSpec::line_first`, a prompt for a file to write answering with the name typed, not the file it flex matches (15,875).
 # 15,880 until die-fig's pointer slice: `Surface::fine_motion`, every sample over a chart with no button held, which the host asks `Ctx::fine_motion_at` of, and `Event::PointerLeft`, a surface told once the pointer has left its area, not while it holds a press, and when a prompt opens over it or the host says it left DIE's window (15,918).
-limit = 15920
+# 15,920 until its review: the surface hovered kept with its window, so one whose window shows another buffer hears the leave, a drag's pixel back inside the frame, and a release no surface took ending its press (15,926).
+limit = 15930
 
 [[crate]]
 name = "die-render"
@@ -282,7 +283,8 @@ name = "surfaces and PTYs"
 # 1,385 until the margins review: `SurfaceText::wrapped`, kept a line at a time, and each window's place in its line of output through a resize.
 # 1,425 until M3a: `Frame::place`, and `draw_surface` composing each placement at the area's offset, a destroyed buffer's dropped.
 # 1,445 until die-fig's pointer slice: `fine_motion_at` for the host, and the surface window hovered, which hears that the pointer left it once, after its release if it held a press, out of DIE's window by the host's word, and from the top of the loop when a prompt opens (1,476).
-limit = 1480
+# 1,480 until its review: the surface hovered kept with its window, so one whose window shows another buffer hears the leave there, a drag back in DIE's window by its pixel, and a release no surface took ending its press (1,484).
+limit = 1485
 files = ["surface.rs", "pty.rs", "surface/", "pty/"]
 
 # 950 until the prompt and the echo area lined up with a `\z` buffer's text column.

@@ -359,10 +359,12 @@ pub(crate) struct Surfaces {
     /// The surface window a press went to, and its button, which get the drags and the release:
     /// another button clicked meanwhile ends nothing.
     pressed: Option<(WindowId, Button)>,
-    /// The surface window the pointer is over, as its events went, which hears when it leaves.
-    hovered: Option<WindowId>,
-    /// The host said the pointer left DIE's window, and no press, move or wheel has come since:
-    /// a release then is out, wherever its cell is held.
+    /// The surface window the pointer is over, as its events went, and the surface it showed
+    /// then, which hears when it leaves: by the window showing another buffer too.
+    hovered: Option<(WindowId, BufferId)>,
+    /// The host said the pointer left DIE's window, and no press, move or wheel has come since,
+    /// nor a drag whose pixel is inside the frame: a release then is out, wherever its cell is
+    /// held.
     away: bool,
 }
 
@@ -591,21 +593,32 @@ impl Ctx {
     /// Pointer event `p` went to surface window `to`, if any: the surface window it's over, as a
     /// Move there would go, is the one hovered if it heard this or was already.
     pub(crate) fn hover(&mut self, p: &PointerEvent, hit: Option<CellHit>, to: Option<WindowId>) {
-        // A press, a move or the wheel comes from inside DIE's window; a drag may not.
-        self.surfaces.away &= matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_));
+        // A press, a move or the wheel comes from inside DIE's window; a drag may not, but its
+        // pixel, which the host doesn't hold to the frame as it does the cell, says.
+        let ((cols, rows), c) = (self.frame_size(), self.surfaces.cell);
+        let (w, h) = (cols as f32 * c.width as f32, rows as f32 * c.height as f32);
+        let inside = |(x, y): (f32, f32)| (0.0..w).contains(&x) && (0.0..h).contains(&y);
+        let held = matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_));
+        self.surfaces.away &= held && !p.px.is_some_and(inside);
+        // A release no surface took ends its press all the same: the window shows another now.
+        let up = |b| to.is_none() && p.kind == PointerKind::Release(b);
+        self.surfaces.pressed.take_if(|h| up(h.1));
         let over = self.surface_target(PointerKind::Move, p.col, hit);
-        self.leave(over.filter(|&w| to == Some(w) || self.surfaces.hovered == Some(w)));
+        let over = over.and_then(|w| Some((w, self.window_buffer(w)?)));
+        self.leave(over.filter(|&o| to == Some(o.0) || self.surfaces.hovered == Some(o)));
     }
 
-    /// The pointer is over surface window `now`, if any: the one it was over hears
-    /// [`Event::PointerLeft`], unless it holds a press, which hears it after the release.
-    pub(crate) fn leave(&mut self, now: Option<WindowId>) {
+    /// The pointer is over surface window `now`, if any, which shows that buffer: the surface it
+    /// was over hears [`Event::PointerLeft`] of the window it was in, unless that holds a press,
+    /// when it hears after the release.
+    pub(crate) fn leave(&mut self, now: Option<(WindowId, BufferId)>) {
         let (was, now) = (self.surfaces.hovered, now.filter(|_| !self.surfaces.away));
-        if was == now || self.surfaces.pressed.is_some_and(|(w, _)| Some(w) == was) {
+        let held = |(w, _): (WindowId, BufferId)| self.surfaces.pressed.is_some_and(|p| p.0 == w);
+        if was == now || was.is_some_and(held) {
             return;
         }
         self.surfaces.hovered = now;
-        if let Some((window, buf)) = was.and_then(|w| Some((w, self.window_buffer(w)?))) {
+        if let Some((window, buf)) = was {
             let _ = self.surface_event(buf, &Event::PointerLeft { window });
         }
     }

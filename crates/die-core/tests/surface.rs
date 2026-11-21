@@ -1081,7 +1081,12 @@ fn the_pointer_is_in_the_areas_cells_and_a_margin_isnt_the_programs() {
 /// What it heard of the pointer since the last look, by window: each event's kind, or None for
 /// [`Event::PointerLeft`].
 fn hovers(s: &Setup) -> Vec<(Option<PointerKind>, WindowId)> {
-    let evs = events(s).into_iter();
+    heard(&s.seen)
+}
+
+/// [`hovers`] of the surface that logs to `seen`.
+fn heard(seen: &RefCell<Seen>) -> Vec<(Option<PointerKind>, WindowId)> {
+    let evs = std::mem::take(&mut seen.borrow_mut().events).into_iter();
     evs.filter_map(|e| match e {
         Event::Pointer(p) => Some((Some(p.kind), p.window)),
         Event::PointerLeft { window } => Some((None, window)),
@@ -1100,6 +1105,33 @@ const LEFT: Option<PointerKind> = None;
 fn point(s: &mut Setup, kind: Option<PointerKind>, at: &[(usize, usize)]) {
     for &(row, col) in at {
         s.h.pointer(kind.unwrap(), row, col);
+    }
+}
+
+/// [`point`] at one cell, with the pixel the host says the pointer is at, `x` across DIE's
+/// window and a few down the cell's row, at 10 by 20 pixels a cell.
+fn point_px(s: &mut Setup, kind: Option<PointerKind>, (row, col): (usize, usize), x: f32) {
+    s.h.send(Input::Pointer(PointerEvent {
+        kind: kind.unwrap(),
+        row,
+        col,
+        clicks: 1,
+        mods: Mods::default(),
+        px: Some((x, row as f32 * 20.0 + 5.0)),
+    }));
+}
+
+/// Another surface, which logs what it hears to `seen`.
+fn another(seen: &Rc<RefCell<Seen>>) -> Grid {
+    Grid {
+        seen: seen.clone(),
+        cells: vec![],
+        cursor: None,
+        status: None,
+        takes_esc: Rc::default(),
+        refuses_keys: Rc::default(),
+        text: None,
+        fine: Rc::default(),
     }
 }
 
@@ -1178,6 +1210,124 @@ fn a_window_holding_a_press_hears_that_the_pointer_left_only_after_the_release()
     );
     point(&mut s, MOVE, &[inside]);
     assert_eq!(hovers(&s), [(MOVE, w)], "back in, a hover again");
+    // With the host's pixels, a drag says where it is: out of DIE's window and back in by the
+    // release, it's over the surface, which is still hovered.
+    s.h.set_cell_pixels(CellPixels {
+        width: 10,
+        height: 20,
+        scale: 2.0,
+    });
+    s.h.run_until_idle();
+    events(&s);
+    let right = c0 + s.h.surface_area(w).unwrap().text_w - 1;
+    let (x, past) = (|col: usize| col as f32 * 10.0 + 3.0, 80.0 * 10.0 + 25.0);
+    let back = (r0 + 2, c0 + 2);
+    point_px(&mut s, PRESS, inside, x(inside.1));
+    s.h.send(Input::PointerLeft);
+    point_px(&mut s, DRAG, (r0 + 1, right), past);
+    point_px(&mut s, DRAG, back, x(back.1));
+    point_px(&mut s, RELEASE, back, x(back.1));
+    assert_eq!(
+        hovers(&s),
+        [PRESS, DRAG, DRAG, RELEASE].map(|k| (k, w)),
+        "back in by the release"
+    );
+    point(&mut s, MOVE, &[text]);
+    assert_eq!(hovers(&s), [(LEFT, w)], "it left when the move did");
+    // Released past the frame's edge, its cell held at the area's edge: out.
+    point_px(&mut s, PRESS, inside, x(inside.1));
+    s.h.send(Input::PointerLeft);
+    point_px(&mut s, DRAG, (r0 + 1, right), past);
+    point_px(&mut s, RELEASE, (r0 + 1, right), past);
+    assert_eq!(
+        hovers(&s),
+        [PRESS, DRAG, RELEASE, LEFT].map(|k| (k, w)),
+        "out by the release, by its pixel"
+    );
+}
+
+#[test]
+fn it_hears_that_the_pointer_left_when_its_window_shows_another_buffer_under_the_hover() {
+    let mut s = setup(vec![]);
+    let (w, grid) = (s.win, s.buf);
+    let (r0, c0) = origin(&mut s.h, w);
+    let (inside, text_window) = ((r0 + 1, c0 + 1), (r0 + 1, 1));
+    let text = s.h.find_buffer("t").unwrap();
+    events(&s);
+    // Text in its place, as `\v` shows a chart's source: a move over that is off the surface.
+    point(&mut s, MOVE, &[inside]);
+    s.h.show(text, ShowIn::Current).unwrap();
+    point(&mut s, MOVE, &[inside, (r0 + 2, c0 + 1)]);
+    assert_eq!(
+        hovers(&s),
+        [(MOVE, w), (LEFT, w)],
+        "once, out of its window"
+    );
+    // Back before the pointer moved, it never left.
+    s.h.show(grid, ShowIn::Current).unwrap();
+    point(&mut s, MOVE, &[inside]);
+    s.h.show(text, ShowIn::Current).unwrap();
+    s.h.show(grid, ShowIn::Current).unwrap();
+    point(&mut s, MOVE, &[(r0 + 2, c0 + 1)]);
+    assert_eq!(hovers(&s), [(MOVE, w), (MOVE, w)], "still over it");
+    // Another surface in its place, which never had the hover, so hears no leave of it.
+    let seen = Rc::<RefCell<Seen>>::default();
+    let other = s.h.create_surface("other", another(&seen));
+    s.h.show(other, ShowIn::Current).unwrap();
+    point(&mut s, MOVE, &[text_window]);
+    assert_eq!(hovers(&s), [(LEFT, w)]);
+    assert_eq!(heard(&seen), [], "the other heard nothing of it");
+    // A move over the other in that window is a hover of the other's.
+    s.h.show(grid, ShowIn::Current).unwrap();
+    point(&mut s, MOVE, &[inside]);
+    s.h.show(other, ShowIn::Current).unwrap();
+    point(&mut s, MOVE, &[(r0 + 2, c0 + 1), text_window]);
+    assert_eq!(hovers(&s), [(MOVE, w), (LEFT, w)]);
+    assert_eq!(heard(&seen), [(MOVE, w), (LEFT, w)]);
+    // Its window closed under the hover: it hears at the next move, of the window it was in.
+    s.h.show(grid, ShowIn::Current).unwrap();
+    point(&mut s, MOVE, &[inside]);
+    s.h.close_window(w).unwrap();
+    s.h.run_until_idle();
+    point(&mut s, MOVE, &[inside]);
+    assert_eq!(hovers(&s), [(MOVE, w), (LEFT, w)]);
+}
+
+#[test]
+fn a_press_whose_window_no_longer_shows_it_by_the_release_ends_there() {
+    let mut s = setup(vec![]);
+    let (w, grid) = (s.win, s.buf);
+    let (r0, c0) = origin(&mut s.h, w);
+    let (inside, text_window) = ((r0 + 1, c0 + 1), (r0 + 1, 1));
+    let text = s.h.find_buffer("t").unwrap();
+    events(&s);
+    // Text shown in its window mid-press, as a pick that opens something in place may do.
+    point(&mut s, MOVE, &[inside]);
+    point(&mut s, PRESS, &[inside]);
+    s.h.show(text, ShowIn::Current).unwrap();
+    point(&mut s, RELEASE, &[inside]);
+    assert_eq!(hovers(&s), [MOVE, PRESS, LEFT].map(|k| (k, w)));
+    s.h.show(grid, ShowIn::Current).unwrap();
+    point(&mut s, MOVE, &[inside, (r0 + 2, c0 + 1), text_window]);
+    assert_eq!(
+        hovers(&s),
+        [MOVE, MOVE, LEFT].map(|k| (k, w)),
+        "the press held nothing past its release"
+    );
+    // Its window closed mid-press, and the surface shown again in another.
+    point(&mut s, MOVE, &[inside]);
+    point(&mut s, PRESS, &[inside]);
+    s.h.close_window(w).unwrap();
+    s.h.run_until_idle();
+    point(&mut s, RELEASE, &[text_window]);
+    assert_eq!(hovers(&s), [MOVE, PRESS, LEFT].map(|k| (k, w)));
+    let b = s.h.show(grid, ShowIn::Split(Side::Right)).unwrap().unwrap();
+    s.h.run_until_idle();
+    s.h.scene();
+    let (rb, cb) = origin(&mut s.h, b);
+    point(&mut s, MOVE, &[(rb + 1, cb + 1), (rb + 2, cb + 1)]);
+    s.h.send(Input::PointerLeft);
+    assert_eq!(hovers(&s), [MOVE, MOVE, LEFT].map(|k| (k, b)));
 }
 
 #[test]
