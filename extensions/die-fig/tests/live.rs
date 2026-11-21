@@ -9,7 +9,21 @@ mod common;
 
 use common::*;
 use die_core::{BufferId, Origin, ShowIn};
+use die_fig::Fig;
+use die_fig::interact::{Cursor, Setting};
+use die_fig::scene::Hit;
 use std::time::Duration;
+
+/// A point on the banner, found as the pointer finds it: it sits a few px in from the top.
+fn on_banner(s: &mut Setup) -> (f32, f32) {
+    let st = state(s);
+    let st = st.borrow();
+    let p = &st.panes[&s.win];
+    (0..80)
+        .map(|y| (40.0, y as f32))
+        .find(|&at| p.hit(at) == Hit::Banner)
+        .expect("a banner")
+}
 
 /// Append `text` to a buffer (the source when None), as a user's edit.
 fn append(s: &mut Setup, buf: Option<BufferId>, text: &str) {
@@ -114,7 +128,8 @@ fn a_click_on_the_banner_goes_to_the_error() {
     s.h.advance(Duration::from_millis(200));
     s.h.run_until_idle();
     assert!(state(&mut s).borrow().banner().is_some());
-    click(&mut s, (40.0, 6.0));
+    let at = on_banner(&mut s);
+    click(&mut s, at);
     assert_eq!(s.h.window_buffer(s.win), Some(s.src), "to the source");
     let t = s.h.text(s.src).unwrap();
     let at = t.cursor(s.win).unwrap();
@@ -127,7 +142,9 @@ fn a_click_on_the_banner_goes_to_the_error_with_no_chart_yet() {
     let st = state(&mut s);
     assert!(st.borrow().model.is_none());
     assert!(st.borrow().banner().is_some());
-    click(&mut s, (40.0, 6.0));
+    drop(st);
+    let at = on_banner(&mut s);
+    click(&mut s, at);
     assert_eq!(s.h.window_buffer(s.win), Some(s.src));
     let t = s.h.text(s.src).unwrap();
     assert_eq!(t.line_of(t.cursor(s.win).unwrap()), 1, "the error's line");
@@ -269,4 +286,116 @@ fn a_view_following_live_data_slides_to_the_newest() {
     s.h.run_until_idle();
     let (_, b) = view(&mut s).x.unwrap();
     assert!(b < 22.0, "it stays where it was put: {b}");
+}
+
+#[test]
+fn a_setting_turned_while_a_build_runs_loses_neither() {
+    let mut s = setup();
+    append(&mut s, None, "21,21,-1\n22,22,-2\n");
+    let (buf, win) = (s.buf, s.win);
+    // The quiet time's build and s's answer in one turn: the setting waits for the build.
+    s.h.with_ext(|f: &mut Fig, ctx| {
+        let st = f.figure(buf).unwrap();
+        let mut st = st.borrow_mut();
+        st.build(ctx);
+        st.flip(ctx, win, Setting::Grid);
+    })
+    .unwrap();
+    s.h.run_until_idle();
+    s.h.advance(Duration::from_secs(2));
+    let st = state(&mut s);
+    assert_eq!(rows(&mut s), 23, "the edit charted");
+    assert_eq!(st.borrow().toggles.grid, Some(false));
+    let grid = |s: &mut Setup| state(s).borrow().model.as_ref().unwrap().chart.view.grid;
+    assert!(!grid(&mut s), "and the setting with it");
+    assert_eq!(s.h.next_timer(), None, "nothing behind");
+    // An undo across the setting while a build runs: the same.
+    append(&mut s, None, "23,23,-3\n");
+    s.h.with_ext(|f: &mut Fig, ctx| {
+        let st = f.figure(buf).unwrap();
+        let mut st = st.borrow_mut();
+        st.build(ctx);
+        assert!(st.undo(ctx, win, false));
+    })
+    .unwrap();
+    s.h.run_until_idle();
+    s.h.advance(Duration::from_secs(2));
+    assert_eq!(rows(&mut s), 24);
+    assert_eq!(st.borrow().toggles.grid, None);
+    assert!(grid(&mut s), "the grid back");
+}
+
+#[test]
+fn a_brush_holds_the_view_still_while_live_data_arrives() {
+    let mut s = setup();
+    let (x0, y) = sample_at(&mut s, "a", 5);
+    let (x1, _) = sample_at(&mut s, "a", 15);
+    press(&mut s, (x0, y));
+    drag(&mut s, ((x0 + x1) / 2.0, y));
+    // Rows 21 to 40 arrive mid-drag, charted once the source is quiet.
+    let more: String = (21..=40).map(|i| format!("{i},{i},{}\n", 20 - i)).collect();
+    append(&mut s, None, &more);
+    s.h.advance(Duration::from_millis(200));
+    assert_eq!(rows(&mut s), 41, "the data arrived");
+    let (still, _) = sample_at(&mut s, "a", 15);
+    assert!(
+        (still - x1).abs() < 0.5,
+        "nothing slid under the hand: {x1} to {still}"
+    );
+    drag(&mut s, (x1, y));
+    release(&mut s, (x1, y));
+    let (a, b) = view(&mut s).x.expect("zoomed to the brush");
+    assert!(
+        (a - 5.0).abs() < 0.2 && (b - 15.0).abs() < 0.2,
+        "what was brushed: {a}..{b}"
+    );
+    // A brush let go with nothing to zoom to lets the view fit the data again.
+    s.h.advance(Duration::from_millis(400));
+    keys(&mut s.h, "0");
+    s.h.advance(Duration::from_millis(400));
+    let p = mid(plot(&mut s));
+    press(&mut s, p);
+    drag(&mut s, (p.0 + 6.0, p.1));
+    keys(&mut s.h, "<Esc>");
+    release(&mut s, (p.0 + 6.0, p.1));
+    s.h.run_until_idle();
+    assert_eq!(view(&mut s).x, None);
+    let (x40, _) = sample_at(&mut s, "a", 40);
+    assert!(
+        x40 <= plot(&mut s).right() + 0.5,
+        "the base fits all 41 rows again"
+    );
+}
+
+#[test]
+fn a_bands_cursor_and_reference_go_when_the_data_shrinks_past_them() {
+    let mut s = setup_with(
+        "services.csv",
+        "service,rpm\napi,640\nworker,300\nbatch,120\nauth,410\nmail,90\nsearch,220\n",
+    );
+    keys(&mut s.h, "lG");
+    assert!(
+        matches!(cursor(&mut s), Some(Cursor::Band { band: 5, .. })),
+        "{:?}",
+        cursor(&mut s)
+    );
+    keys(&mut s.h, "m");
+    assert!(view(&mut s).reference.is_some());
+    replace(&mut s, None, "service,rpm\napi,640\nworker,300\n");
+    s.h.advance(Duration::from_millis(200));
+    assert_eq!(cursor(&mut s), None, "band 5 is gone");
+    assert_eq!(view(&mut s).reference, None);
+}
+
+#[test]
+fn a_zoomed_view_the_data_has_left_fits_it_again() {
+    let mut s = setup();
+    keys(&mut s.h, "lG++++");
+    s.h.advance(Duration::from_millis(400));
+    let (a, _) = view(&mut s).x.expect("zoomed");
+    assert!(a > 4.0, "{a}");
+    replace(&mut s, None, "x,a,b\n0,0,4\n1,1,3\n2,2,2\n3,3,1\n4,4,0\n");
+    s.h.advance(Duration::from_millis(200));
+    assert_eq!(rows(&mut s), 5);
+    assert_eq!(view(&mut s).x, None, "nothing was left to show");
 }

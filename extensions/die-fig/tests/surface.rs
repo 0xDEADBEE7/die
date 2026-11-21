@@ -256,3 +256,40 @@ fn showing_the_figure_again_in_a_window_starts_from_where_it_was() {
         }
     );
 }
+
+#[test]
+fn a_commands_figure_put_away_keeps_its_view_for_the_same_command() {
+    let mut h = harness();
+    h.open_text("notes", "notes\n").unwrap();
+    let args = Args {
+        text: Some("!printf 'x,y\\n1,2\\n2,4\\n3,3\\n4,5\\n5,1\\n6,2\\n'".into()),
+        ..Args::default()
+    };
+    h.run("fig", &args).unwrap();
+    h.run_until_idle();
+    let w = h.focused().unwrap();
+    let buf = h.window_buffer(w).unwrap();
+    let mut s = Setup {
+        h,
+        src: buf,
+        buf,
+        win: w,
+    };
+    keys(&mut s.h, "++");
+    s.h.advance(std::time::Duration::from_millis(400));
+    let zoomed = view(&mut s).x;
+    assert!(zoomed.is_some());
+    run(&mut s.h, "fig-toggle");
+    assert_eq!(
+        s.h.buffer_name(s.h.window_buffer(s.win).unwrap()),
+        Some("notes")
+    );
+    s.h.run("fig", &args).unwrap();
+    s.h.run_until_idle();
+    s.buf = s.h.window_buffer(s.win).unwrap();
+    assert_eq!(
+        view(&mut s).x,
+        zoomed,
+        "found by its command, whatever it printed"
+    );
+}

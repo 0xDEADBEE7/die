@@ -22,7 +22,9 @@
 use crate::algo::HitIndex;
 use crate::data::{ColumnKind, SeriesKey, Table};
 use crate::error::FigError;
-use crate::interact::consts::{CLICK_SLOP, FOCUS_GRACE_MS, MOTION_MS, SCROLL_BURST_MS, ZOOM_STEP};
+use crate::interact::consts::{
+    CLICK_SLOP, FOCUS_GRACE_MS, MOTION_MS, NEAREST_SERIES, SCROLL_BURST_MS, ZOOM_STEP,
+};
 use crate::interact::{Axis, BrushKind, Cursor, Gesture, Steps, Toggles, Tween, View};
 use crate::plot::{self, ChartLayout, ChartModel, OverlayState};
 use crate::raster::{self, BookMeasure, PixelBox};
@@ -181,6 +183,7 @@ struct OverKey {
     emphasis: Option<SeriesKey>,
     reference: Option<Cursor>,
     help: bool,
+    strip: Option<Rect>,
 }
 
 /// One window's figure: its pixels, its layout, its view and what the pointer is doing there.
@@ -242,6 +245,16 @@ pub struct Pane {
     pub found: Option<SeriesKey>,
     /// The hover is to be worked out again: the view moved under a still pointer.
     rehover: bool,
+    /// The axis strip under the pointer, lit faintly as the affordance (mouse-ux §4.9).
+    strip: Option<Rect>,
+    /// The modifiers of the drag's last sample: Shift constrains a box brush.
+    drag_mods: Mods,
+    /// The view a brush holds still while it's drawn, so live data doesn't slide under the
+    /// hand (mouse-ux §3.7): what the base shows until its release.
+    frozen: Option<View>,
+    /// The area changed since the overlay last drew: its next draw clears the whole buffer,
+    /// since what it drew at the old size isn't where the new one draws.
+    over_wipe: bool,
 }
 
 impl Pane {
@@ -279,6 +292,10 @@ impl Pane {
             help: false,
             found: None,
             rehover: false,
+            strip: None,
+            drag_mods: Mods::default(),
+            frozen: None,
+            over_wipe: false,
         }
     }
 
@@ -308,11 +325,13 @@ impl Pane {
         Some((self.base.as_ref()?.id(), self.over.as_ref()?.id()))
     }
 
-    /// The view as shown now: on its way there while it eases.
+    /// The view as shown now: on its way there while it eases, held still while a brush is
+    /// drawn.
     pub fn shown(&self, now: u64) -> View {
-        match &self.ease {
-            Some(e) => plot::nav::tween(&e.tween.from, &e.tween.to, e.tween.progress(now)),
-            None => self.view.clone(),
+        match (&self.ease, &self.frozen) {
+            (Some(e), _) => plot::nav::tween(&e.tween.from, &e.tween.to, e.tween.progress(now)),
+            (None, Some(f)) => f.clone(),
+            (None, None) => self.view.clone(),
         }
     }
 
@@ -329,6 +348,21 @@ impl Pane {
     /// What the overlay is showing, as plot draws it.
     pub fn overlay(&self) -> OverlayState {
         self.overlay_state()
+    }
+
+    /// What's under a point of the area, in logical px, as the pointer finds it.
+    pub fn hit(&self, at: (f32, f32)) -> Hit {
+        self.hit_at(at)
+    }
+
+    /// Whether the card was last put left of its anchor (its hysteresis), once drawn.
+    pub fn card_flipped(&self) -> Option<bool> {
+        self.layout.as_ref().map(|l| l.flipped.get())
+    }
+
+    /// The axis strip the pointer is over, lit as the affordance.
+    pub fn lit_strip(&self) -> Option<Rect> {
+        self.strip
     }
 
     /// The ease stops where it is now: what a hand takes over from (mouse-ux §10).
@@ -410,6 +444,7 @@ impl Pane {
     /// after a key moved the cursor until the pointer moves.
     fn hover_again(&mut self, model: Option<&ChartModel>) {
         self.rehover = false;
+        let mut strip = None;
         let (hover, near, legend) = match (self.pointer, self.hovering && !self.gesturing()) {
             (Some(p), true) => {
                 let hit = self.hit_at(p);
@@ -420,30 +455,93 @@ impl Pane {
                         Some(m),
                         Some(l),
                         Some(h),
-                    ) => (
-                        plot::hover::hover(m, l, h, &self.view, p.0, p.1),
-                        plot::hover::nearest_series(m, l, h, &self.view, p.0, p.1),
-                        None,
-                    ),
+                    ) => {
+                        let near = plot::hover::nearest_series(m, l, h, &self.view, p.0, p.1);
+                        (
+                            plot::hover::hover(m, l, h, &self.view, p.0, p.1),
+                            self.steady_near(m, l, near, p),
+                            None,
+                        )
+                    }
+                    (hit @ (Hit::AxisX(_) | Hit::AxisY(_)), Some(m), Some(l), _) => {
+                        strip = Some(match hit {
+                            Hit::AxisX(_) => l.x_axis,
+                            _ => l.y_axis,
+                        });
+                        (category_at(m, l, &hit, p), None, None)
+                    }
                     _ => (None, None, None),
                 }
             }
             _ => (None, None, None),
         };
         (self.hover, self.near, self.legend) = (hover, near, legend);
+        self.strip = strip;
     }
 
-    /// The overlay's state as it stands.
-    fn overlay_state(&self) -> OverlayState {
-        let brush = match &self.gesture {
-            Gesture::Brush { kind, from, to, .. } => Some((*kind, *from, *to)),
-            _ => None,
+    /// The series the hover brings forward, kept while the pointer stays near its line: another
+    /// takes over only once it's nearer by [`NEAR_MARGIN`], and it lets go only past
+    /// [`NEAREST_SERIES`] and [`NEAR_KEEP`], measured against what the line reaches over the
+    /// pointer's pixel columns. So a hand that trembles over a dense series doesn't flicker
+    /// the plot-wide wash on and off, each change of which draws the whole plot again.
+    fn steady_near(
+        &self,
+        model: &ChartModel,
+        l: &ChartLayout,
+        near: Option<SeriesKey>,
+        p: (f32, f32),
+    ) -> Option<SeriesKey> {
+        let Some(cur) = self.near.clone() else {
+            return near;
         };
+        if near.as_ref() == Some(&cur) || !self.view.shows(&cur) {
+            return near;
+        }
+        let Some(dc) = line_distance(model, l, &cur, p) else {
+            return near;
+        };
+        if dc > NEAREST_SERIES + NEAR_KEEP {
+            return near;
+        }
+        match &near {
+            None => Some(cur),
+            Some(n) => match line_distance(model, l, n, p) {
+                Some(dn) if dn + NEAR_MARGIN < dc => near,
+                _ => Some(cur),
+            },
+        }
+    }
+
+    /// The brush as it's drawn and applied: a box brush with Shift held, once it's past twice
+    /// the slop, only along its larger side (mouse-ux §4.3).
+    #[allow(clippy::type_complexity)]
+    fn brush_shape(&self) -> Option<(BrushKind, (f32, f32), (f32, f32))> {
+        let Gesture::Brush { kind, from, to, .. } = &self.gesture else {
+            return None;
+        };
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let kind = match kind {
+            BrushKind::Box if self.drag_mods.shift && dx.hypot(dy) >= 2.0 * CLICK_SLOP => {
+                if dx.abs() >= dy.abs() {
+                    BrushKind::X
+                } else {
+                    BrushKind::Y
+                }
+            }
+            k => *k,
+        };
+        Some((kind, *from, *to))
+    }
+
+    /// The overlay's state as it stands. The pointer goes with a hover, and with a legend key
+    /// under it, which the overlay underlines.
+    fn overlay_state(&self) -> OverlayState {
+        let pointed = self.hover.is_some() || self.legend.is_some();
         OverlayState {
             hover: self.hover.clone(),
             cursor: self.cursor.clone(),
-            pointer: self.hover.as_ref().and(self.pointer),
-            brush,
+            pointer: self.pointer.filter(|_| pointed),
+            brush: self.brush_shape(),
             emphasis: (self.legend.clone())
                 .or_else(|| self.near.clone())
                 .or_else(|| self.found.clone()),
@@ -468,6 +566,121 @@ impl Pane {
             }
         }
         Ok(())
+    }
+}
+
+/// How much further than [`NEAREST_SERIES`] the series the hover brought forward stays forward.
+const NEAR_KEEP: f32 = 8.0;
+/// How much nearer another series must be to take over from it.
+const NEAR_MARGIN: f32 = 4.0;
+
+/// How far the pointer is from a series' line, in px: from the least and most the line
+/// reaches over the pixel columns either side of the pointer, so a dense series' samples,
+/// which jump about within a column, don't count one at a time. None where it isn't a line
+/// across the screen (a stack's band, bars across), or has no samples there.
+fn line_distance(
+    model: &ChartModel,
+    l: &ChartLayout,
+    key: &SeriesKey,
+    (x, y): (f32, f32),
+) -> Option<f32> {
+    if l.horizontal || !model.is_x_chart() {
+        return None;
+    }
+    let si = model.index_of(key)?;
+    if l.stacks.lo.get(si).is_some_and(Option::is_some) {
+        return None;
+    }
+    let s = &model.series[si];
+    let n = s.xs.len().min(s.ys.len());
+    let (xs, ys) = (&s.xs[..n], &s.ys[..n]);
+    let (a, b) = (l.x.invert(x - 1.5), l.x.invert(x + 1.5));
+    let (a, b) = (a.min(b), a.max(b));
+    let (i0, i1) = (
+        xs.partition_point(|&v| v < a),
+        xs.partition_point(|&v| v <= b),
+    );
+    let present = |i: usize| xs[i].is_finite() && ys[i].is_finite();
+    let mut reach: Vec<f64> = (i0..i1).filter(|&i| present(i)).map(|i| ys[i]).collect();
+    // Where the line crosses the columns' edges, between the samples either side.
+    for (at, i) in [(a, i0), (b, i1)] {
+        if i > 0 && i < n && present(i - 1) && present(i) && xs[i] > xs[i - 1] {
+            let t = (at - xs[i - 1]) / (xs[i] - xs[i - 1]);
+            reach.push(ys[i - 1] + (ys[i] - ys[i - 1]) * t.clamp(0.0, 1.0));
+        }
+    }
+    let px = reach.into_iter().map(|v| l.vy(v)).filter(|v| v.is_finite());
+    let (lo, hi) = px.fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| {
+        (lo.min(v), hi.max(v))
+    });
+    if !lo.is_finite() {
+        return None;
+    }
+    Some(if y < lo {
+        lo - y
+    } else if y > hi {
+        y - hi
+    } else {
+        0.0
+    })
+}
+
+/// The model's axis an axis strip moves: the strip under the plot is x, the one beside it y,
+/// the other way about for bars across.
+fn strip_axis(hit: &Hit, horizontal: bool) -> Option<Axis> {
+    match (hit, horizontal) {
+        (Hit::AxisX(_), false) | (Hit::AxisY(_), true) => Some(Axis::X),
+        (Hit::AxisY(_), false) | (Hit::AxisX(_), true) => Some(Axis::Y),
+        _ => None,
+    }
+}
+
+/// On a band chart's category axis, the band whose label is under the pointer (mouse-ux §4.9).
+fn category_at(
+    model: &ChartModel,
+    l: &ChartLayout,
+    hit: &Hit,
+    (x, y): (f32, f32),
+) -> Option<Cursor> {
+    if !model.is_band() || strip_axis(hit, l.horizontal) != Some(Axis::X) {
+        return None;
+    }
+    let p = l.plot;
+    let band = l.band_at(x.clamp(p.x, p.right()), y.clamp(p.y, p.bottom()))?;
+    Some(Cursor::Band {
+        band: band as u32,
+        series: None,
+    })
+}
+
+/// Whether two targets are one moment: on an x-chart, samples at one x, which the reference
+/// marks with one rule across every series; on bars, one band, whichever its segment; else
+/// the same target.
+fn same_moment(model: &ChartModel, a: &Cursor, b: &Cursor) -> bool {
+    let x = |c: &Cursor| match c {
+        Cursor::Point { series, row } => {
+            (model.series_of(series)).and_then(|s| s.xs.get(*row as usize).copied())
+        }
+        _ => None,
+    };
+    match (a, b) {
+        (Cursor::Band { band: p, .. }, Cursor::Band { band: q, .. }) => p == q,
+        (Cursor::Point { .. }, Cursor::Point { .. }) if model.is_x_chart() => {
+            x(a).is_some() && x(a) == x(b)
+        }
+        _ => a == b,
+    }
+}
+
+/// The content motion, in logical px, that moves one of the model's axes by `v` px towards its
+/// later or higher values as [`plot::nav::pan`] reads it with that axis named, across or down
+/// the screen as the chart lies.
+fn along(axis: Axis, v: f32, horizontal: bool) -> (f32, f32) {
+    match (axis, horizontal) {
+        (Axis::X, false) => (-v, 0.0),
+        (Axis::X, true) => (0.0, -v),
+        (Axis::Y, false) => (0.0, v),
+        (Axis::Y, true) => (-v, 0.0),
     }
 }
 
@@ -531,7 +744,14 @@ pub struct FigState {
     pub followed: Vec<PathBuf>,
     /// The settings `s` turned.
     pub toggles: Toggles,
+    /// A build from the text under way (or the command that gives it): it applies the
+    /// settings it was given, and builds again from its tables if they've turned since.
     building: Option<Sub>,
+    /// A model built again from the tables in hand, for a setting turned: never in place of a
+    /// build from the text, which would lose what it read.
+    rebuilding: Option<Sub>,
+    /// The key card was put up by the command just run, so the settle after it keeps it.
+    pub help_new: bool,
     /// How many builds have been started.
     pub builds: u64,
     /// Waiting to be built again when a window shows it.
@@ -597,6 +817,8 @@ impl FigState {
                 followed: vec![],
                 toggles: Toggles::default(),
                 building: None,
+                rebuilding: None,
+                help_new: false,
                 builds: 0,
                 behind: false,
                 debounce: None,
@@ -719,22 +941,30 @@ impl FigState {
                 open.push((path, Box::new(t.rope().clone())));
             }
         }
+        let toggles = self.toggles;
         let job = Job {
             text,
             name: self.format_name(ctx),
             dir: self.dir.clone(),
             zone: self.zone.clone(),
             open,
-            toggles: self.toggles,
+            toggles,
         };
         self.builds += 1;
+        // This build applies the settings as they are now: a rebuild for them is no more use.
+        self.rebuilding = None;
         let me = self.me.clone();
         self.building = Some(ctx.spawn(
             move || source::build(job),
             move |ctx, out| {
                 if let Some(s) = me.upgrade() {
                     let mut st = s.borrow_mut();
+                    st.building = None;
                     st.built(ctx, out);
+                    // A setting turned (or was undone) while it ran: again from its tables.
+                    if st.toggles != toggles {
+                        st.rebuild(ctx);
+                    }
                     st.refresh(ctx);
                 }
                 Ok(())
@@ -776,6 +1006,7 @@ impl FigState {
             move |ctx, out| {
                 if let Some(s) = me.upgrade() {
                     let mut st = s.borrow_mut();
+                    st.building = None;
                     match out {
                         Ok(text) => {
                             if let Source::Command { out, .. } = &mut st.source {
@@ -800,17 +1031,23 @@ impl FigState {
     }
 
     /// Build the model again from the chart and tables already read: the settings changed.
+    /// With a build from the text under way, that build does it when it's done, from what it
+    /// read (it compares the settings it was given with these).
     fn rebuild(&mut self, ctx: &mut Ctx) {
+        if self.building.is_some() {
+            return;
+        }
         let Some(chart) = self.chart.clone() else {
             return;
         };
         let (tables, toggles, zone) = (self.tables.clone(), self.toggles, self.zone.clone());
         let me = self.me.clone();
-        self.building = Some(ctx.spawn(
+        self.rebuilding = Some(ctx.spawn(
             move || source::rebuild(&chart, tables, toggles, &zone),
             move |ctx, out| {
                 if let Some(s) = me.upgrade() {
                     let mut st = s.borrow_mut();
+                    st.rebuilding = None;
                     match out {
                         Ok(model) => st.new_model(model, ctx.now()),
                         Err(error) => {
@@ -869,19 +1106,30 @@ impl FigState {
         self.keep_polling(ctx);
     }
 
-    /// A model to draw: the cursors and references that no longer name a sample let go, and a
-    /// view that follows live data slides to its newest.
+    /// A model to draw: the cursors and references that no longer name a sample, a band or a
+    /// cell let go, a zoomed view the data has left fits it again, and a view that follows
+    /// live data slides to its newest.
     fn new_model(&mut self, model: ChartModel, now: Duration) {
         let keys = model.keys();
         let len = |key: &SeriesKey| {
             let s = model.series.iter().find(|s| &s.key == key);
             s.map_or(0, |s| s.xs.len())
         };
+        let (cols, rows) = (model.x.bands.len(), model.y.bands.len());
         let fits = |c: &Option<Cursor>| match c {
             Some(Cursor::Point { series, row }) => {
                 keys.contains(series) && (*row as usize) < len(series)
             }
-            _ => true,
+            Some(Cursor::Band { band, series }) => {
+                (*band as usize) < cols && series.as_ref().is_none_or(|k| keys.contains(k))
+            }
+            Some(Cursor::Cell { row, col }) => (*row as usize) < rows && (*col as usize) < cols,
+            Some(Cursor::Node(_)) | None => true,
+        };
+        let (ext_x, ext_y) = model.extent();
+        // A domain that no longer meets the data's extent shows nothing: it fits again.
+        let meets = |d: Option<(f64, f64)>, e: (f64, f64)| {
+            d.is_none_or(|(a, b)| a.max(b) >= e.0.min(e.1) && a.min(b) <= e.0.max(e.1))
         };
         let newest = model.newest();
         let motion = self.motion();
@@ -892,6 +1140,16 @@ impl FigState {
             }
             if !fits(&p.view.reference) {
                 p.view.reference = None;
+            }
+            let (left_x, left_y) = (!meets(p.view.x, ext_x), !meets(p.view.y, ext_y));
+            if (left_x || left_y) && !p.gesturing() {
+                if left_x {
+                    (p.view.x, p.view.follow) = (None, false);
+                }
+                if left_y {
+                    p.view.y = None;
+                }
+                p.ease = None;
             }
             if let (true, Some((a, b)), Some(n), false) =
                 (p.view.follow, p.view.x, newest, p.gesturing())
@@ -976,8 +1234,15 @@ impl FigState {
     /// After a command, and anything else that may have changed what windows show: the panes of
     /// windows that are gone or show something else are freed (ruling 11), the poll runs only
     /// while shown, a figure behind its source is built when shown, and the theme is compared.
+    /// The key card goes after any command but the one that put it up, whoever's it is (`:`,
+    /// `C-w v`, `\z`): it shows until any key.
     pub fn settle(&mut self, ctx: &mut Ctx) {
         let Some(buf) = self.buf else { return };
+        if !std::mem::take(&mut self.help_new) {
+            for p in self.panes.values_mut() {
+                p.help = false;
+            }
+        }
         let gone: Vec<WindowId> = (self.panes.keys())
             .filter(|w| ctx.window_buffer(**w) != Some(buf))
             .copied()
@@ -1031,6 +1296,9 @@ impl FigState {
             (p.cols, p.rows, p.cell) = (cols, rows, cell);
             p.drawn = None;
             p.over_key = None;
+            // What the overlay drew at the old size stays in its buffer, which never shrinks,
+            // where the new layout draws something else: the next draw clears it all.
+            p.over_wipe |= p.over_bounds.is_some() || !p.over_items.is_empty();
             p.over_bounds = None;
             p.over_items.clear();
         }
@@ -1144,6 +1412,9 @@ impl FigState {
         let s = pane.scale();
         let at = (p.x / s, p.y / s);
         pane.pointer = Some(at);
+        if matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_)) {
+            pane.drag_mods = p.mods;
+        }
         let goto = |ctx: &mut Ctx| {
             let args = die_core::Args {
                 window: Some(p.window),
@@ -1204,6 +1475,7 @@ impl FigState {
                     cx.finish();
                 }
                 cx.pane.held = Some(b);
+                (cx.pane.frozen, cx.pane.drag_mods) = (None, p.mods);
                 if swallow {
                     cx.pane.gesture = Gesture::Swallowed;
                     return;
@@ -1270,7 +1542,9 @@ impl FigState {
     /// did it is on its way, to do nothing. Lost mid-gesture: the gesture ends where it stands.
     fn focus(&mut self, ctx: &mut Ctx, gained: bool) {
         let now = ctx.now();
-        let gesturing = self.panes.values().any(Pane::gesturing);
+        // Any press under way, the swallowed one that focused a window from another of DIE's
+        // among them, as the whiteboard counts it: that press brought the focus.
+        let gesturing = (self.panes.values()).any(|p| !matches!(p.gesture, Gesture::None));
         self.focused_at = (gained && !self.focused && !gesturing).then_some(now);
         self.focused = gained;
         if !gained {
@@ -1311,7 +1585,7 @@ impl FigState {
             return false;
         };
         match std::mem::replace(&mut p.gesture, Gesture::None) {
-            Gesture::Brush { .. } => p.gesture = Gesture::Swallowed,
+            Gesture::Brush { .. } => (p.gesture, p.frozen) = (Gesture::Swallowed, None),
             Gesture::Pan { before, .. } | Gesture::AxisPan { before, .. } => {
                 p.view = before;
                 p.ease = None;
@@ -1475,7 +1749,7 @@ impl Act<'_> {
     fn finish(&mut self) {
         match std::mem::replace(&mut self.pane.gesture, Gesture::None) {
             Gesture::Brush { .. } | Gesture::Pressed { .. } => {
-                self.pane.gesture = Gesture::Swallowed;
+                (self.pane.gesture, self.pane.frozen) = (Gesture::Swallowed, None);
             }
             Gesture::Pan { before, .. } | Gesture::AxisPan { before, .. } => {
                 if before != self.pane.view {
@@ -1537,21 +1811,16 @@ impl Act<'_> {
         self.pane.settle(ms(self.now));
         let before = self.pane.view.clone();
         self.pane.drag_last = from;
+        let strip = strip_axis(&hit, self.model.horizontal);
         self.pane.gesture = match hit {
             _ if button == Button::Middle || mods.alt => Gesture::Pan {
                 panel: 0,
                 from,
                 before,
             },
-            Hit::AxisX(panel) => Gesture::AxisPan {
+            Hit::AxisX(panel) | Hit::AxisY(panel) if strip.is_some() => Gesture::AxisPan {
                 panel,
-                axis: Axis::X,
-                from,
-                before,
-            },
-            Hit::AxisY(panel) => Gesture::AxisPan {
-                panel,
-                axis: Axis::Y,
+                axis: strip.unwrap_or(Axis::X),
                 from,
                 before,
             },
@@ -1561,6 +1830,19 @@ impl Act<'_> {
                     BrushKind::X if mods.super_ => BrushKind::Box,
                     kind => kind,
                 };
+                let frozen = self.freeze(kind);
+                if let Some(f) = &frozen {
+                    // The same domains spelled out: the base as drawn shows them already.
+                    let strip = |v: &View| View {
+                        reference: None,
+                        ..v.clone()
+                    };
+                    let now = strip(&self.pane.view);
+                    if let Some(d) = self.pane.drawn.as_mut().filter(|d| d.view == now) {
+                        d.view = strip(f);
+                    }
+                }
+                self.pane.frozen = frozen;
                 let from = self.in_plot(from);
                 Gesture::Brush {
                     panel,
@@ -1574,6 +1856,26 @@ impl Act<'_> {
         self.pane.rehover = true;
     }
 
+    /// The view a brush draws over, its domains as the base shows them now (mouse-ux §3.7):
+    /// x, and y too for a brush that reads it. Live data still draws, but nothing slides under
+    /// the hand, and the release zooms to what was brushed. None before the base is drawn.
+    fn freeze(&self, kind: BrushKind) -> Option<View> {
+        let l = self.pane.layout.as_ref()?;
+        let v = &self.pane.view;
+        let reads_y = kind != BrushKind::X && kind != BrushKind::Bands;
+        Some(View {
+            x: v.x.or(Some(l.domain.0)),
+            y: v.y.or(reads_y.then_some(l.domain.1)),
+            ..v.clone()
+        })
+    }
+
+    /// Whether the chart moves along one axis alone: an x-chart or a band chart whose value
+    /// axis fits the data. Once y is set by hand, it pans in two dimensions (mouse-ux §4.1).
+    fn one_axis(&self) -> bool {
+        (self.model.is_x_chart() || self.model.is_band()) && self.pane.view.y.is_none()
+    }
+
     /// A pan follows the hand from the last sample, by whole pixels as they came.
     fn pan_by(&mut self, at: (f32, f32), axis: Option<Axis>) {
         let (dx, dy) = (at.0 - self.pane.drag_last.0, at.1 - self.pane.drag_last.1);
@@ -1584,11 +1886,12 @@ impl Act<'_> {
         if dx == 0.0 && dy == 0.0 {
             return;
         }
-        // On an x-chart a drag pans x by its horizontal motion alone.
-        let dy = if self.model.is_x_chart() && axis.is_none() {
-            0.0
-        } else {
-            dy
+        // Along one axis, a drag pans by its motion along that axis alone: across the screen,
+        // or down it for bars across.
+        let (dx, dy) = match (axis.is_none() && self.one_axis(), l.horizontal) {
+            (true, false) => (dx, 0.0),
+            (true, true) => (0.0, dy),
+            (false, _) => (dx, dy),
         };
         let v = plot::nav::pan(self.model, l, &self.pane.view, dx, dy, axis);
         self.set(v, Change::Live);
@@ -1609,15 +1912,21 @@ impl Act<'_> {
                 button: Button::Left,
                 ..
             } => banner = self.click(hit, mods, at),
-            Gesture::Brush { kind, from, to, .. } => {
-                let to = self.in_plot(to);
-                let v = self
-                    .layout()
-                    .and_then(|l| plot::nav::brush(self.model, l, &self.pane.view, kind, from, to));
+            g @ Gesture::Brush { .. } => {
+                self.pane.gesture = g;
+                let shape = self.pane.brush_shape();
+                self.pane.gesture = Gesture::None;
+                let v = shape.and_then(|(kind, from, to)| {
+                    let to = self.in_plot(to);
+                    let l = self.layout()?;
+                    plot::nav::brush(self.model, l, &self.pane.view, kind, from, to)
+                });
+                // The ease starts from the domain held still, which goes after it.
                 if let Some(v) = v {
                     self.set(v, Change::Step);
                     self.follow_check();
                 }
+                self.pane.frozen = None;
             }
             g @ (Gesture::Pan { .. } | Gesture::AxisPan { .. }) => {
                 self.pane.gesture = g;
@@ -1642,6 +1951,14 @@ impl Act<'_> {
                     self.pane.last_click = Some(k);
                 }
             }
+            Hit::AxisX(_) | Hit::AxisY(_) => {
+                // A category's label: the cursor to its band (mouse-ux §4.9).
+                let c =
+                    (self.pane.layout.as_ref()).and_then(|l| category_at(self.model, l, &hit, at));
+                if c.is_some() {
+                    self.pane.cursor = c;
+                }
+            }
             Hit::Plot(_) | Hit::Bar { .. } | Hit::Cell { .. } => {
                 let (Some(l), Some(h)) = (self.pane.layout.as_ref(), self.pane.hits.as_ref())
                 else {
@@ -1651,10 +1968,14 @@ impl Act<'_> {
                 let near =
                     plot::hover::nearest_series(self.model, l, h, &self.pane.view, at.0, at.1);
                 if mods.shift {
-                    // The reference, A: set here, moved here, or cleared on itself. Not an
-                    // undo step (mouse-ux §9).
-                    let r = &mut self.pane.view.reference;
-                    *r = if *r == c { None } else { c };
+                    // The reference, A: set here, moved here, or cleared on itself, which on an
+                    // x-chart is its moment, one rule across every series (mouse-ux §6). Not
+                    // an undo step (mouse-ux §9).
+                    let same = match (&self.pane.view.reference, &c) {
+                        (Some(r), Some(c)) => same_moment(self.model, r, c),
+                        (r, c) => r == c,
+                    };
+                    self.pane.view.reference = if same { None } else { c };
                 } else if mods.alt {
                     let key = near.or(match c {
                         Some(Cursor::Point { series, .. }) => Some(series),
@@ -1692,8 +2013,10 @@ impl Act<'_> {
                 v.hidden.remove(k);
                 self.set(v, Change::Step);
             }
-            Hit::AxisX(_) => self.reset(Some(Axis::X)),
-            Hit::AxisY(_) => self.reset(Some(Axis::Y)),
+            Hit::AxisX(_) | Hit::AxisY(_) => {
+                let axis = strip_axis(hit, self.model.horizontal);
+                self.reset(axis.or(Some(Axis::X)));
+            }
             Hit::Plot(_) | Hit::Bar { .. } | Hit::Cell { .. } => self.reset(None),
             _ => {}
         }
@@ -1754,12 +2077,10 @@ impl Act<'_> {
         let timer = arm();
         if self.pane.burst.is_none() {
             self.pane.settle(ms(self.now));
-            let axis = match self.pane.hit_at(at) {
-                Hit::AxisX(_) => Some(Axis::X),
-                Hit::AxisY(_) => Some(Axis::Y),
-                _ => None,
-            };
-            let across = (self.model.is_x_chart() && axis.is_none()).then(|| dx.abs() >= dy.abs());
+            let axis = strip_axis(&self.pane.hit_at(at), self.model.horizontal);
+            // Along one axis (an axis's strip, an x-chart or bars whose values fit), the
+            // larger of the first event's components moves it, so a mouse's wheel works.
+            let across = (axis.is_some() || self.one_axis()).then(|| dx.abs() >= dy.abs());
             self.pane.burst = Some(Burst {
                 zoom: mods.super_ || mods.ctrl,
                 axis,
@@ -1788,17 +2109,23 @@ impl Act<'_> {
             let (tx, ty) = (dx * cw + self.pane.carry.0, dy * ch + self.pane.carry.1);
             let (wx, wy) = (tx.trunc(), ty.trunc());
             self.pane.carry = (tx - wx, ty - wy);
-            let (mut px, mut py) = (wx / s, wy / s);
-            match across {
-                Some(true) => py = 0.0,
-                Some(false) => px = 0.0,
-                None => {}
-            }
-            if px == 0.0 && py == 0.0 {
+            let (px, py) = (wx / s, wy / s);
+            // The wheel says how the view moves, right and down positive; a pan, how the
+            // content does. Along one axis, right and down move x later (mouse-ux §3.2) and
+            // y lower, named to the pan so its reading of a free pan can't turn them about.
+            let ((dx, dy), axis) = match across {
+                None => ((-px, -py), axis),
+                Some(across) => {
+                    let v = if across { px } else { py };
+                    let a = axis.unwrap_or(Axis::X);
+                    let v = if a == Axis::Y { -v } else { v };
+                    (along(a, v, l.horizontal), Some(a))
+                }
+            };
+            if dx == 0.0 && dy == 0.0 {
                 return;
             }
-            // The wheel says how the view moves; a pan, how the content does.
-            plot::nav::pan(self.model, l, &self.pane.view, -px, -py, axis)
+            plot::nav::pan(self.model, l, &self.pane.view, dx, dy, axis)
         };
         if self.set(v, Change::Live) {
             self.follow_check();
@@ -1811,16 +2138,25 @@ impl Act<'_> {
     /// `h l j k w b gg G H M L`: the cursor moved as `action` says, `count` times, the view
     /// following it as a window follows the text cursor; the hover hides until the pointer
     /// moves. `G` on live data follows the newest too. False if it didn't move.
+    ///
+    /// `H M L` land in the view by what they are, and so does the cursor's first place by `h l
+    /// j k`, at the view's edge or middle: the view stays as you saw it, with no scroll to put
+    /// them a tenth inside.
     pub fn move_cursor(&mut self, action: &crate::interact::Action, count: u32) -> bool {
+        use crate::interact::Action;
         let Some(l) = self.pane.layout.as_ref() else {
             return false;
         };
         let cursor = self.pane.cursor.as_ref();
+        let placed = cursor.is_none() && matches!(action, Action::Step(_) | Action::Series(_));
         let Some(c) = plot::nav::motion(self.model, l, &self.pane.view, cursor, action, count)
         else {
             return false;
         };
-        let v = plot::nav::reveal(self.model, l, &self.pane.view, &c);
+        let v = match placed || matches!(action, Action::ViewEdge(_)) {
+            true => self.pane.view.clone(),
+            false => plot::nav::reveal(self.model, l, &self.pane.view, &c),
+        };
         self.pane.cursor = Some(c);
         self.pane.hovering = false;
         self.pane.rehover = true;
@@ -1856,14 +2192,18 @@ impl Act<'_> {
         }
     }
 
-    /// `zh zl zH zL zj zk`: scroll the view by fractions of the plot, as Vim scrolls sideways:
-    /// right and down positive.
+    /// `zh zl zH zL zj zk`: scroll the view by fractions of the plot along x (right positive,
+    /// later) or y (up positive, higher values), as Vim scrolls sideways.
     pub fn scroll_keys(&mut self, fx: f32, fy: f32) {
         let Some(l) = self.pane.layout.as_ref() else {
             return;
         };
-        let axis = if fy != 0.0 { Axis::Y } else { Axis::X };
-        let (dx, dy) = (-fx * l.plot.w, -fy * l.plot.h);
+        let (xlen, ylen) = l.lengths();
+        let (axis, v) = match fy != 0.0 {
+            true => (Axis::Y, fy * ylen),
+            false => (Axis::X, fx * xlen),
+        };
+        let (dx, dy) = along(axis, v, l.horizontal);
         let v = plot::nav::pan(self.model, l, &self.pane.view, dx, dy, Some(axis));
         if self.set(v, Change::Keyed) {
             self.follow_check();
@@ -2128,7 +2468,16 @@ fn draw_base(
     producer.present(PixelRect::new(0, 0, damage.w, damage.h));
     scene.items.clear();
     p.scene = Some(scene);
-    p.layout = layout;
+    // The card's hysteresis is a cell wide, and the side it was put on lasts across redraws
+    // of the base (a pan, an ease's frame, live data), or it would come back each time.
+    let flipped = (p.layout.as_ref()).map(|l| l.flipped.get());
+    p.layout = layout.map(|mut l| {
+        l.cell_width = p.cell.width as f32 / scale;
+        if let Some(f) = flipped {
+            l.flipped.set(f);
+        }
+        l
+    });
     p.hits = hits;
     p.base_gen += 1;
 }
@@ -2152,6 +2501,7 @@ fn draw_overlay(
         emphasis: st.emphasis.clone(),
         reference: view.reference.clone(),
         help: p.help,
+        strip: p.strip,
     };
     if p.over_key.as_ref() == Some(&key) {
         return;
@@ -2163,6 +2513,15 @@ fn draw_overlay(
         _ => Scene::default(),
     });
     (scene.width, scene.height, scene.scale) = (size.0, size.1, scale);
+    if let Some(r) = p.strip {
+        // The axis strip under the pointer, lit faintly, under everything else.
+        let fill = Item::Path {
+            path: PathData::rect(r),
+            fill: Some(Paint::solid(theme.text, 0.06)),
+            stroke: None,
+        };
+        scene.items.insert(0, fill);
+    }
     if p.help {
         measured(kit.book.as_mut(), scale, |m| key_card(&mut scene, theme, m));
     }
@@ -2172,11 +2531,17 @@ fn draw_overlay(
     p.over_key = Some(key);
     p.over_items = scene.items.clone();
     let (aw, ah) = p.area_px();
-    let (Some(damage), Some(producer)) = (damage, p.over.as_mut()) else {
+    let wipe = std::mem::take(&mut p.over_wipe);
+    let Some(producer) = p.over.as_mut() else {
         return;
     };
     let (w, h, stride, px) = target(producer);
-    let b = raster::to_physical(damage, scale, aw.min(w), ah.min(h));
+    let b = match (wipe, damage) {
+        // After a resize: all of it, cleared, what was drawn at the old size with it.
+        (true, _) => PixelBox { x: 0, y: 0, w, h },
+        (false, Some(damage)) => raster::to_physical(damage, scale, aw.min(w), ah.min(h)),
+        (false, None) => return,
+    };
     if b.is_empty() {
         return;
     }
@@ -2329,8 +2694,10 @@ impl Surface for FigSurface {
     /// cells, not its placements. They were drawn and presented in the turn that changed them.
     fn render(&mut self, frame: &mut Frame, info: &RenderInfo) {
         let mut st = self.state.borrow_mut();
-        if info.focused {
+        if info.focused && st.last != Some(info.window) {
+            // What a restart keeps is the focused window's view: it changed with the focus.
             st.last = Some(info.window);
+            st.rev += 1;
         }
         if let Some(p) = st.panes.get(&info.window) {
             if let Some(b) = &p.base {

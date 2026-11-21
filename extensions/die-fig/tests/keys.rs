@@ -85,7 +85,6 @@ fn j_and_k_go_to_the_series_below_and_above() {
 }
 
 #[test]
-#[ignore = "needs fig/plot"]
 fn w_and_b_go_to_the_next_and_previous_peak() {
     let mut s = setup_with("peaks.csv", "x,v\n0,0\n1,1\n2,5\n3,1\n4,0\n5,1\n6,6\n7,1\n");
     keys(&mut s.h, "lgg");
@@ -93,20 +92,12 @@ fn w_and_b_go_to_the_next_and_previous_peak() {
     keys(&mut s.h, "w");
     assert_eq!(row(&mut s), 2, "the peak at 5");
     keys(&mut s.h, "w");
-    assert!(row(&mut s) > 2);
+    assert_eq!(row(&mut s), 6, "the peak at 6");
     keys(&mut s.h, "b");
     assert_eq!(row(&mut s), 2);
-}
-
-#[test]
-fn w_and_b_move_the_cursor_along_its_series() {
-    let mut s = setup_with("peaks.csv", "x,v\n0,0\n1,1\n2,5\n3,1\n4,0\n5,1\n6,6\n7,1\n");
-    keys(&mut s.h, "lgg");
-    keys(&mut s.h, "w");
-    assert!(row(&mut s) > 0);
-    let r = row(&mut s);
-    keys(&mut s.h, "b");
-    assert!(row(&mut s) < r);
+    // With a count, past the first.
+    keys(&mut s.h, "gg2w");
+    assert_eq!(row(&mut s), 6);
 }
 
 #[test]
@@ -125,15 +116,33 @@ fn h_m_l_go_to_the_views_edges_and_middle() {
         let info = m.series.iter().find(|i| i.key == series).unwrap();
         info.xs[row as usize]
     };
+    // The samples are a unit apart: H and L take the first and last inside the view, and the
+    // view stays as it was, with no scroll to put them a tenth inside.
     keys(&mut s.h, "H");
     let x = x_of(&mut s);
-    assert!(x >= a - 1.0 && x <= a + 1.0, "{x} at the left edge {a}");
+    assert!(x >= a && x < a + 1.0, "{x} at the left edge {a}");
+    assert_eq!(view(&mut s).x, Some((a, b)), "H scrolls nothing");
     keys(&mut s.h, "L");
     let x = x_of(&mut s);
-    assert!(x >= b - 1.0 && x <= b + 1.0, "{x} at the right edge {b}");
+    assert!(x <= b && x > b - 1.0, "{x} at the right edge {b}");
+    assert_eq!(view(&mut s).x, Some((a, b)), "L scrolls nothing");
     keys(&mut s.h, "M");
     let x = x_of(&mut s);
-    assert!((x - (a + b) / 2.0).abs() <= 1.0, "{x} in the middle");
+    assert!((x - (a + b) / 2.0).abs() <= 0.5, "{x} in the middle");
+    assert_eq!(view(&mut s).x, Some((a, b)));
+    // The first l puts the cursor at the view's left edge, and scrolls nothing either.
+    let mut s = setup();
+    keys(&mut s.h, "++++");
+    settle(&mut s);
+    let v = view(&mut s).x;
+    keys(&mut s.h, "l");
+    assert!(cursor(&mut s).is_some());
+    assert_eq!(view(&mut s).x, v);
+    // A step past the edge scrolls to keep it inside.
+    keys(&mut s.h, "H");
+    keys(&mut s.h, "h");
+    settle(&mut s);
+    assert_ne!(view(&mut s).x, v, "the view follows the cursor out");
 }
 
 #[test]
@@ -166,6 +175,19 @@ fn plus_equals_and_k_zoom_in_minus_and_j_zoom_out_eased_one_step_a_run() {
     keys(&mut s.h, "u");
     settle(&mut s);
     assert_eq!(view(&mut s).x, None, "the run was one step");
+}
+
+#[test]
+fn a_count_of_thousands_zooms_as_far_as_the_data_lets_it() {
+    // 1.25 to the 4000th is no number: the count stops where the zoom does.
+    let mut s = setup();
+    keys(&mut s.h, "4000+");
+    settle(&mut s);
+    let (a, b) = view(&mut s).x.expect("zoomed in");
+    assert!(b - a <= 2.0, "to the limit: {a}..{b}");
+    keys(&mut s.h, "4000-");
+    settle(&mut s);
+    assert_eq!(view(&mut s).x, None, "and out to the fit");
 }
 
 #[test]
@@ -296,14 +318,29 @@ fn t_shows_the_data_as_tsv_beside_the_figure() {
     assert!(text.contains('\t') && text.lines().count() > 20, "{text}");
     assert_eq!(s.h.window_list().len(), 2, "beside, in a split");
     assert_eq!(s.h.window_buffer(s.win), Some(s.buf), "the figure stays");
-    // Hidden series are left out.
-    let before = text.lines().count();
+    // A column a series: a hidden one is left out.
+    let header = |t: &str| {
+        t.lines()
+            .next()
+            .unwrap_or("")
+            .split('\t')
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let before = header(&text);
+    assert!(before.contains(&"b".to_string()), "{before:?}");
     s.h.focus(s.win);
-    keys(&mut s.h, "gg15lx");
+    keys(&mut s.h, "/b<CR>");
+    assert!(
+        matches!(cursor(&mut s), Some(Cursor::Point { ref series, .. }) if &*series.name == "b")
+    );
+    keys(&mut s.h, "x");
     s.h.focus(s.win);
     keys(&mut s.h, "t");
     let text = s.h.text(table).unwrap().rope().to_string();
-    assert!(text.lines().count() < before, "{text}");
+    let after = header(&text);
+    assert_eq!(after.len(), before.len() - 1, "{after:?}");
+    assert!(!after.contains(&"b".to_string()), "{after:?}");
 }
 
 #[test]
@@ -421,6 +458,42 @@ fn question_mark_shows_the_key_card_until_any_key() {
         st.borrow().panes[&s.win].overlay_bounds().is_some(),
         cursor(&mut s).is_some()
     );
+}
+
+#[test]
+fn the_key_card_goes_with_any_key_bound_or_not_the_figures() {
+    let mut s = setup();
+    let st = state(&mut s);
+    for k in [":<Esc>", "<C-w>v", "\\z"] {
+        keys(&mut s.h, "?");
+        let here = s.h.focused().unwrap();
+        assert!(st.borrow().panes[&here].help, "{k}: up");
+        keys(&mut s.h, k);
+        assert!(
+            st.borrow().panes.values().all(|p| !p.help),
+            "{k}: gone from every window"
+        );
+    }
+}
+
+#[test]
+fn zk_shows_higher_values_and_zj_lower_where_y_is_free() {
+    let mut text = String::from("u,v\n");
+    for i in 0..60 {
+        text.push_str(&format!("{},{}\n", (i * 37) % 60, i));
+    }
+    let mut s = setup_with("points.csv", &text);
+    keys(&mut s.h, "++");
+    settle(&mut s);
+    let (lo, hi) = view(&mut s).y.expect("a scatter zooms y too");
+    keys(&mut s.h, "zk");
+    settle(&mut s);
+    let (a, b) = view(&mut s).y.unwrap();
+    assert!(a > lo && b > hi, "up: {lo}..{hi} to {a}..{b}");
+    keys(&mut s.h, "zjzj");
+    settle(&mut s);
+    let (c, d) = view(&mut s).y.unwrap();
+    assert!(c < a && d < b, "down: {a}..{b} to {c}..{d}");
 }
 
 #[test]

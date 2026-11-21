@@ -47,6 +47,34 @@ pub enum Source {
 }
 
 impl Source {
+    /// Whether two are the same source, whatever they hold: one buffer, one file however its
+    /// path is spelled, one command line in one directory. A selection is the same as nothing,
+    /// its text being a moment's.
+    pub fn same(&self, other: &Source) -> bool {
+        match (self, other) {
+            (Source::Buffer(a), Source::Buffer(b)) => a == b,
+            (Source::File(a), Source::File(b)) => same_path(a, b),
+            (Source::Command { cmd: a, dir: d, .. }, Source::Command { cmd: b, dir: e, .. }) => {
+                a == b && d == e
+            }
+            _ => false,
+        }
+    }
+
+    /// The source without what it held, to find it by again: a command's output dropped. None
+    /// for a selection's lines, which nothing finds again.
+    pub fn identity(&self) -> Option<Source> {
+        match self {
+            Source::Command { cmd, dir, .. } => Some(Source::Command {
+                cmd: cmd.clone(),
+                dir: dir.clone(),
+                out: None,
+            }),
+            Source::Text(_) => None,
+            other => Some(other.clone()),
+        }
+    }
+
     /// What a restart keeps of it to find it again, if anything: a file's path, a command line.
     pub fn key(&self) -> Option<String> {
         match self {

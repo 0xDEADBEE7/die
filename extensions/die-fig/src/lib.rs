@@ -64,6 +64,13 @@ use surface::{FigState, FigSurface, Kit, Shared, SharedKit};
 /// What a host that shows no pixels says to `\v` (ruling 17), until phase 5's cells.
 pub const NO_PIXELS: &str = "fig: this host shows no pixels yet";
 
+/// How many figures put away by `\v` keep their views for the next, the oldest going first.
+const PARKED: usize = 32;
+
+/// The most of a command's output a restart keeps to chart again, rather than running the
+/// command again unasked; a figure of a command that printed more isn't kept.
+pub const KEPT_OUTPUT: usize = 256 * 1024;
+
 /// Your options (C7), as fields.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Options {
@@ -136,12 +143,7 @@ impl Fig {
 
     /// The figure of this source, if one is open.
     fn on_source(&self, source: &Source) -> Option<Shared> {
-        let same = |s: &&Shared| match (&s.borrow().source, source) {
-            (Source::Buffer(a), Source::Buffer(b)) => a == b,
-            (Source::File(a), Source::File(b)) => source::same_path(a, b),
-            (Source::Command { cmd: a, .. }, Source::Command { cmd: b, .. }) => a == b,
-            _ => false,
-        };
+        let same = |s: &&Shared| s.borrow().source.same(source);
         self.figs.iter().find(same).cloned()
     }
 
@@ -159,7 +161,7 @@ impl Fig {
         file: Option<PathBuf>,
         seed: Option<(View, Option<Cursor>)>,
     ) -> Result<Shared> {
-        let parked = self.parked.iter().position(|p| p.0 == source);
+        let parked = self.parked.iter().position(|p| p.0.same(&source));
         let seed = seed.or_else(|| parked.map(|i| self.parked.remove(i)).map(|p| (p.1, p.2)));
         let zone = self.zone().clone();
         let state = FigState::new(
@@ -254,9 +256,16 @@ impl Fig {
         };
         ctx.show(to, ShowIn::Current)?;
         if let Some(buf) = buf.filter(|b| !shows(ctx, *b)) {
-            let (view, cursor) = state.borrow().kept_view();
-            self.parked.retain(|p| p.0 != source);
-            self.parked.push((source, view, cursor));
+            // Kept by what the source is, not what it held: a command's line and directory,
+            // not its output. A selection's text was a moment's, and isn't kept at all.
+            if let Some(source) = source.identity() {
+                let (view, cursor) = state.borrow().kept_view();
+                self.parked.retain(|p| !p.0.same(&source));
+                self.parked.push((source, view, cursor));
+                if self.parked.len() > PARKED {
+                    self.parked.remove(0);
+                }
+            }
             self.figs.retain(|s| !Rc::ptr_eq(s, state));
             // The window has left it, and core has queued telling it so: it goes after that.
             ctx.defer(move |ctx| {
@@ -397,6 +406,15 @@ fn count(a: &Args) -> u32 {
     a.count.unwrap_or(1).clamp(1, 10_000) as u32
 }
 
+/// The most zoom steps a count makes: 1.25 to this is past every limit and still finite, so a
+/// count of thousands zooms as far as the data lets it rather than overflowing to nothing.
+const ZOOM_COUNT: u32 = 200;
+
+/// The zoom factor of a count of `+` (`by` 1) or `-` (`by` -1).
+fn zoom_factor(a: &Args, by: i32) -> f64 {
+    interact::consts::ZOOM_STEP.powi(count(a).min(ZOOM_COUNT) as i32 * by)
+}
+
 /// A key that acts on the pane through [`surface::Act`].
 fn act(ctx: &mut Ctx, a: &Args, f: impl FnOnce(&mut surface::Act, &Args)) -> Result {
     on_fig(ctx, a, false, |st, w, ctx| {
@@ -464,8 +482,9 @@ fn motion_of(name: &str) -> Action {
     match name {
         "fig-left" => Action::Step(-1),
         "fig-right" => Action::Step(1),
-        "fig-down" => Action::Series(-1),
-        "fig-up" => Action::Series(1),
+        // plot's order: the next series down the screen is +1 (plot/nav.rs), as Vim's j.
+        "fig-down" => Action::Series(1),
+        "fig-up" => Action::Series(-1),
         "fig-peak-next" => Action::Peak(1),
         "fig-peak-prev" => Action::Peak(-1),
         "fig-first" => Action::First,
@@ -1041,7 +1060,8 @@ fn view_of(v: &Value) -> (View, Option<Cursor>) {
 impl Fig {
     /// What the session keeps of the figures: each with its view and cursor, and whether the
     /// focused window showed it; one of a buffer rides on that buffer, one of a file or a
-    /// command in the state. A selection's isn't kept: its text was a moment's.
+    /// command in the state, a command's with what it printed, so a restart charts that and
+    /// runs nothing. A selection's isn't kept: its text was a moment's.
     fn keep(&self, ctx: &Ctx) -> Kept {
         let focused = ctx.focused_buffer();
         let (mut buffers, mut figures) = (vec![], vec![]);
@@ -1059,9 +1079,16 @@ impl Fig {
                     v["file"] = json!(p.display().to_string());
                     figures.push(v);
                 }
-                Source::Command { cmd, dir, .. } => {
+                // What it printed, to chart again: a restart doesn't run a command you typed
+                // once (ruling 13's waiver is for the typing). One that hasn't printed, or
+                // printed more than KEPT_OUTPUT, isn't kept.
+                Source::Command { cmd, dir, out } => {
+                    let Some(out) = out.as_deref().filter(|o| o.len() <= KEPT_OUTPUT) else {
+                        continue;
+                    };
                     v["cmd"] = json!(cmd);
                     v["dir"] = json!(dir.display().to_string());
+                    v["out"] = json!(out);
                     figures.push(v);
                 }
                 Source::Text(_) => {}
@@ -1122,20 +1149,12 @@ impl Extension for Fig {
         reg.command(
             "fig-zoom-in",
             "+ = K: zoom in about the cursor, or the middle. A count repeats; one undo step.",
-            |ctx, a| {
-                act(ctx, a, |act, a| {
-                    act.zoom_keys(interact::consts::ZOOM_STEP.powi(count(a) as i32))
-                })
-            },
+            |ctx, a| act(ctx, a, |act, a| act.zoom_keys(zoom_factor(a, 1))),
         );
         reg.command(
             "fig-zoom-out",
             "- J: zoom out about the cursor, or the middle, no further than the data.",
-            |ctx, a| {
-                act(ctx, a, |act, a| {
-                    act.zoom_keys(interact::consts::ZOOM_STEP.powi(-(count(a) as i32)))
-                })
-            },
+            |ctx, a| act(ctx, a, |act, a| act.zoom_keys(zoom_factor(a, -1))),
         );
         reg.command(
             "fig-zero",
@@ -1250,6 +1269,8 @@ impl Extension for Fig {
                     st.finish(w, ctx.now());
                     if let Some(p) = st.panes.get_mut(&w) {
                         p.help = !p.help;
+                        // The settle after this command keeps it; after any other, it goes.
+                        st.help_new = p.help;
                     }
                     Ok(())
                 })
@@ -1454,12 +1475,15 @@ impl Extension for Fig {
         for v in figures.into_iter().flatten() {
             let source = if let Some(f) = v.get("file").and_then(Value::as_str) {
                 Source::File(PathBuf::from(f))
-            } else if let Some(cmd) = v.get("cmd").and_then(Value::as_str) {
+            } else if let (Some(cmd), Some(out)) = (
+                v.get("cmd").and_then(Value::as_str),
+                v.get("out").and_then(Value::as_str),
+            ) {
                 let dir = v.get("dir").and_then(Value::as_str).unwrap_or("");
                 Source::Command {
                     cmd: cmd.into(),
                     dir: PathBuf::from(dir),
-                    out: None,
+                    out: Some(out.into()),
                 }
             } else {
                 continue;

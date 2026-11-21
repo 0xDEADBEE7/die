@@ -167,3 +167,65 @@ fn a_figure_of_a_file_comes_back_and_one_not_shown_waits_to_be_built() {
     s.h.run_until_idle();
     assert!(st.borrow().model.is_some(), "built when shown");
 }
+
+#[test]
+fn a_figure_of_a_command_comes_back_charted_from_what_it_printed_not_run_again() {
+    let state_dir = TempDir::new("session-cmd");
+    let dir = TempDir::new("session-cmd-data");
+    let log = dir.path().join("ran.log");
+    let ran = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let mut h = up(&state_dir);
+    h.open_text("notes", "notes\n").unwrap();
+    let cmd = format!(
+        "!echo ran >> '{}'; printf 'x,y\\n1,2\\n2,3\\n3,1\\n'",
+        log.display()
+    );
+    let args = Args {
+        text: Some(cmd),
+        ..Args::default()
+    };
+    h.run("fig", &args).unwrap();
+    h.run_until_idle();
+    assert_eq!(ran(), 1);
+    let h = restart(h, &state_dir);
+    let mut s = shown(h);
+    let name = s.h.buffer_name(s.buf).unwrap_or_default().to_string();
+    assert!(name.starts_with("*fig: !echo ran"), "shown again: {name}");
+    let st = state(&mut s);
+    let rows = st.borrow().model.as_ref().map(|m| m.series[0].xs.len());
+    assert_eq!(
+        rows,
+        Some(3),
+        "charted from what it printed: {:?}",
+        st.borrow().banner()
+    );
+    assert_eq!(ran(), 1, "and not run again");
+}
+
+#[test]
+fn the_session_keeps_the_view_of_the_window_the_focus_moved_to() {
+    let mut s = setup();
+    keys(&mut s.h, "<C-w>s");
+    let other = s.h.focused().unwrap();
+    assert_ne!(other, s.win);
+    keys(&mut s.h, "++++");
+    s.h.advance(Duration::from_millis(400));
+    s.h.scene();
+    // The figure's record, its x domain: a pair once zoomed, null at the fit.
+    let x_of = |h: &mut Harness| {
+        let json: String = h.session_json().split_whitespace().collect();
+        let at = json.find("\"fig\":{").expect("the figure's record");
+        let x = json[at..].find("\"x\":").expect("its x") + at + 4;
+        json[x..x + 4].to_string()
+    };
+    assert_ne!(x_of(&mut s.h), "null", "the zoomed window's");
+    // The focus back on the window that never zoomed: the session keeps its view.
+    s.h.focus(s.win);
+    s.h.scene();
+    assert_eq!(x_of(&mut s.h), "null");
+}
