@@ -169,6 +169,17 @@ pub(crate) fn sample_near(
     } else {
         f64::INFINITY
     };
+    // A missing sample nearer x than the nearest present one: a gap there, which says "—".
+    let len = s.xs.len().min(s.ys.len());
+    let at = s.xs[..len].partition_point(|&v| v < x);
+    let d = (s.xs[i] - x).abs();
+    let gap = [at.wrapping_sub(1), at]
+        .into_iter()
+        .filter(|&j| j < len)
+        .any(|j| s.ys[j].is_nan() && (s.xs[j] - x).abs() < d);
+    if gap {
+        return None;
+    }
     ((s.xs[i] - x).abs() <= reach * (1.0 + 1e-9)).then_some(i)
 }
 

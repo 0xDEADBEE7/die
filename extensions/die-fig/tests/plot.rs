@@ -483,6 +483,22 @@ fn a_missing_value_breaks_a_line() {
     // inbound misses rows 14-18 and 30: three runs; outbound misses 22-25: two.
     assert_eq!(strokes(&scene, theme.series[0]).len(), 3);
     assert_eq!(strokes(&scene, theme.series[1]).len(), 2);
+    // Where a series has a gap, its row in the card says so.
+    let (_, l, _) = lay(&model, &View::default(), (880.0, 470.0));
+    let c = Cursor::Point {
+        series: key("outbound"),
+        row: 16,
+    };
+    let o = overlay(
+        &model,
+        &l,
+        &View::default(),
+        &OverlayState {
+            cursor: Some(c),
+            ..state()
+        },
+    );
+    assert!(has_text(&o, "—"));
 }
 
 #[test]
@@ -1562,7 +1578,29 @@ fn a_reference_adds_deltas_and_the_measure_band() {
         },
     );
     assert!(has_text(&o, "A"), "the reference's chip");
-    assert!(has_text(&o, "+1h 55m"), "Δx over the band");
+    // Δx over the measure band where the card leaves it clear, and in the card's header.
+    let card = shadow(&o).expect("a card");
+    let label = texts(&o).into_iter().find(|(t, _)| t == "+1h 55m");
+    assert!(
+        label.is_none_or(|(_, b)| card.intersect(&b).is_none()),
+        "never under the card"
+    );
+    let low = (l.x.map(model.series[0].xs[53]), l.plot.bottom() - 10.0);
+    let hover = Some(Cursor::Point {
+        series: key("api"),
+        row: 53,
+    });
+    let o2 = overlay(
+        &model,
+        &l,
+        &view,
+        &OverlayState {
+            hover,
+            pointer: Some(low),
+            ..state()
+        },
+    );
+    assert!(has_text(&o2, "+1h 55m"), "over the band with the card low");
     assert!(
         texts(&o)
             .iter()

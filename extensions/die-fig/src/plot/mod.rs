@@ -871,7 +871,7 @@ impl ChartModel {
                 None => {
                     let v = self.x_value(x);
                     match self.x.title.as_deref().filter(|t| !t.is_empty()) {
-                        Some(t) => format!("{t} {v}"),
+                        Some(t) => format!("{t}: {v}"),
                         None => v,
                     }
                 }

@@ -90,8 +90,9 @@ pub fn overlay(
     }
     // The one the crosshair, dots and card follow: the hover, else the cursor.
     let target = hover.or(if brushing { None } else { cursor });
+    let mut measure_label = None;
     if let Some(r) = view.reference.as_ref().filter(|c| valid(model, view, c)) {
-        reference(model, view, layout, theme, &mut scene, r, target, m);
+        measure_label = reference(model, layout, theme, &mut scene, r, target, m);
     }
     if let (Some(c), Some(h)) = (cursor, hover)
         && c != h
@@ -126,6 +127,16 @@ pub fn overlay(
         );
     } else if let Some(c) = cursor.filter(|_| brushing) {
         marker(model, view, layout, theme, &mut scene, c, false, m);
+    }
+    // Δx over the measure band, where the card leaves it clear (the card's header says it too).
+    if let Some((label, b)) = measure_label {
+        let card = scene.items.iter().find_map(|i| match i {
+            Item::Shadow { rect, .. } => Some(*rect),
+            _ => None,
+        });
+        if card.is_none_or(|c| c.inflate(4.0).intersect(&b).is_none()) {
+            scene.push(label);
+        }
     }
     if let Some((kind, from, to)) = st.brush {
         brush(model, layout, theme, &mut scene, kind, from, to, m);
@@ -409,7 +420,7 @@ fn moment(
                 let big = mark == Some(&s.key);
                 dot(
                     scene,
-                    (x, pt.1),
+                    pt,
                     if big { DOT_BIG } else { DOT },
                     model.color(s, theme),
                     theme.surface,
@@ -684,7 +695,7 @@ fn cover(
     role: Role,
     m: &mut dyn Measure,
 ) {
-    let clear = r.inflate(4.0);
+    let clear = Rect::new(r.x - 10.0, r.y - 4.0, r.w + 20.0, r.h + 8.0);
     for label in l.labels.iter().filter(|lb| lb.role == role) {
         let b = label.bounds(m).inflate(1.0);
         if b.intersect(&clear).is_some() {
@@ -733,22 +744,19 @@ fn chip(
 }
 
 /// The reference: a dashed rule at 40 % with an outlined chip `A` on the x axis (a dashed ring
-/// for a point on a scatter), and the measure band from it to the target with Δx at its top.
-#[allow(clippy::too_many_arguments)]
+/// for a point on a scatter), and the measure band from it to the target; the Δx label for its
+/// top, and its box, to draw once the card is placed.
 fn reference(
     model: &ChartModel,
-    view: &View,
     l: &ChartLayout,
     theme: &Theme,
     scene: &mut Scene,
     r: &Cursor,
     target: Option<&Cursor>,
     m: &mut dyn Measure,
-) {
+) -> Option<(Item, Rect)> {
     let p = l.plot;
-    let Some((rx, ry)) = cursor_data(model, r) else {
-        return;
-    };
+    let (rx, ry) = cursor_data(model, r)?;
     if model.is_scatter() {
         let pt = l.at(rx, ry);
         scene.push(Item::Path {
@@ -759,19 +767,19 @@ fn reference(
                 ..Stroke::solid(1.0, theme.text, 0.6)
             }),
         });
-        return;
+        return None;
     }
-    let x = if model.is_band() {
-        l.ix(rx - 0.5)
-    } else {
-        l.ix(rx)
-    };
-    if let Some((tx, _)) = target.and_then(|t| cursor_data(model, t)) {
-        let t = if model.is_band() {
-            l.ix(tx - 0.5)
+    let at = |v: f64| {
+        if model.is_band() {
+            l.ix(v - 0.5)
         } else {
-            l.ix(tx)
-        };
+            l.ix(v)
+        }
+    };
+    let x = at(rx);
+    let mut label = None;
+    if let Some((tx, _)) = target.and_then(|t| cursor_data(model, t)) {
+        let t = at(tx);
         let (a, b) = (x.min(t).max(p.x), x.max(t).min(p.right()));
         if b - a >= 1.0 {
             scene.push(Item::Path {
@@ -783,32 +791,35 @@ fn reference(
             let text = delta_x(model, rx, tx);
             let w = m.width(&text, spec);
             if !text.is_empty() && w + 10.0 <= b - a {
-                scene.push(Item::Text {
+                let (asc, desc) = (m.ascent(spec), m.descent(spec));
+                let y = p.y + 6.0 + asc;
+                let bounds = Rect::new((a + b - w) / 2.0, y - asc, w, asc + desc);
+                let item = Item::Text {
                     text: text.into(),
                     x: (a + b) / 2.0,
-                    y: p.y + 6.0 + m.ascent(spec),
+                    y,
                     spec,
                     anchor: Anchor::Middle,
                     color: theme.text,
                     alpha: 1.0,
                     max_width: None,
-                });
+                };
+                label = Some((item, bounds));
             }
         }
     }
-    if x < p.x - 1.0 || x > p.right() + 1.0 {
-        return;
+    if x >= p.x - 1.0 && x <= p.right() + 1.0 {
+        scene.push(Item::Path {
+            path: PathData::polyline(&[(x, p.y), (x, p.bottom())]),
+            fill: None,
+            stroke: Some(Stroke {
+                dash: Some((4.0, 3.0)),
+                ..Stroke::hairline(theme.text, 0.4)
+            }),
+        });
+        chip_x(l, theme, scene, x, "A", false, m);
     }
-    scene.push(Item::Path {
-        path: PathData::polyline(&[(x, p.y), (x, p.bottom())]),
-        fill: None,
-        stroke: Some(Stroke {
-            dash: Some((4.0, 3.0)),
-            ..Stroke::hairline(theme.text, 0.4)
-        }),
-    });
-    chip_x(l, theme, scene, x, "A", false, m);
-    let _ = view;
+    label
 }
 
 /// Δx from the reference to `x`: "+35m" on a time axis, "Δ 12.5" on a number axis, the bands
@@ -994,10 +1005,18 @@ fn readout(
                     format!("{} – {} · {n} bands", name(i), name(j))
                 }
             }
-            _ => format!("{} – {}", short(lo, hi - lo), short(hi, hi - lo)),
+            _ => format!("{} – {}", model.x_value(lo), model.x_value(hi)),
         }
     };
-    let span_y = |lo: f64, hi: f64| format!("{} – {}", short(lo, hi - lo), short(hi, hi - lo));
+    // The values at the data's precision: the most decimals of the visible series.
+    let decimals = model.series.iter().map(|s| s.decimals).max().unwrap_or(0);
+    let span_y = |lo: f64, hi: f64| {
+        format!(
+            "{} – {}",
+            model.value_label(lo, decimals),
+            model.value_label(hi, decimals)
+        )
+    };
     let (dx0, dx1) = (l.data_x(a.0, a.1), l.data_x(b.0, b.1));
     let (dy0, dy1) = (l.data_y(a.0, a.1), l.data_y(b.0, b.1));
     match kind {
@@ -1009,12 +1028,6 @@ fn readout(
             span_y(dy0.min(dy1), dy0.max(dy1))
         ),
     }
-}
-
-/// A number to about three significant digits of a span.
-fn short(v: f64, span: f64) -> String {
-    let step = if span > 0.0 { span / 100.0 } else { 0.0 };
-    crate::scale::format_number(v, step, crate::scale::NumberStyle::Full)
 }
 
 /// A key's shape in the card.
