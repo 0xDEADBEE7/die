@@ -149,6 +149,13 @@ pub enum Event {
     /// Text to paste as one piece, which a terminal brackets: the DIE layer's V in passthrough,
     /// or `surface-paste`.
     Paste(String),
+    /// The pointer left the window's area: it went to another window, a margin, the status or
+    /// command line, out of DIE's window, or a prompt opened over the hover. Never sent while the
+    /// window holds a press; sent after the release if the pointer is out by then.
+    PointerLeft {
+        /// The window it left.
+        window: WindowId,
+    },
 }
 
 /// A custom surface: what a buffer shows when it isn't text (contract §10).
@@ -188,6 +195,11 @@ pub trait Surface: Any {
     /// snapshot: a terminal says yes while its program tracks the mouse, as ghostel sends it there
     /// in every Evil state (scope D18).
     fn takes_wheel(&self) -> bool {
+        false
+    }
+    /// Whether the host should send this surface every pointer sample while no button is held,
+    /// rather than one Move per cell. A chart's crosshair follows the hand with it. Default false.
+    fn fine_motion(&self) -> bool {
         false
     }
     /// The state a buffer showing it starts in.

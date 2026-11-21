@@ -359,6 +359,11 @@ pub(crate) struct Surfaces {
     /// The surface window a press went to, and its button, which get the drags and the release:
     /// another button clicked meanwhile ends nothing.
     pressed: Option<(WindowId, Button)>,
+    /// The surface window the pointer is over, as its events went, which hears when it leaves.
+    hovered: Option<WindowId>,
+    /// The host said the pointer left DIE's window, and no press, move or wheel has come since:
+    /// a release then is out, wherever its cell is held.
+    away: bool,
 }
 
 impl Ctx {
@@ -539,17 +544,18 @@ impl Ctx {
         (text, tag)
     }
 
-    /// The surface window a pointer event goes to, if any: the one that had the press, for a
-    /// drag or a release, or else the one whose area it's over, or for the wheel whose margin.
-    /// A drag or release from a press that went elsewhere, as to text or a margin, isn't a
-    /// surface's. With a prompt open, only a press's drags and release.
+    /// The surface window a pointer event of this kind at column `col` goes to, if any: the one
+    /// that had the press, for a drag or a release, or else the one whose area it's over, or for
+    /// the wheel whose margin. A drag or release from a press that went elsewhere, as to text or
+    /// a margin, isn't a surface's. With a prompt open, only a press's drags and release.
     pub(crate) fn surface_target(
         &self,
-        p: &PointerEvent,
+        kind: PointerKind,
+        col: usize,
         hit: Option<CellHit>,
     ) -> Option<WindowId> {
-        let held = matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_));
-        let wheel = matches!(p.kind, PointerKind::Scroll { .. });
+        let held = matches!(kind, PointerKind::Drag(_) | PointerKind::Release(_));
+        let wheel = matches!(kind, PointerKind::Scroll { .. });
         // Copy state's pointer is a text window's: a click moves the cursor, a drag selects,
         // the wheel scrolls the snapshot, unless the surface takes the wheel now.
         let copying = |w: WindowId| self.window_buffer(w).is_some_and(|b| self.text(b).is_ok());
@@ -558,7 +564,7 @@ impl Ctx {
                 return false;
             };
             let x = at.col + g.text_x;
-            wheel || (x..x + g.text_w).contains(&p.col)
+            wheel || (x..x + g.text_w).contains(&col)
         };
         let w = match self.surfaces.pressed {
             Some((w, _)) if held => w,
@@ -572,6 +578,49 @@ impl Ctx {
         let custom = matches!(self.buffers.get(buf)?.content, Content::Custom { .. });
         let taken = wheel && self.surface_says(buf, |s| s.takes_wheel());
         (custom && (taken || !copying(w))).then_some(w)
+    }
+
+    /// Whether a Move over this cell goes to a surface that wants every sample. The host asks it
+    /// before dropping a same-cell Move.
+    pub fn fine_motion_at(&self, row: usize, col: usize) -> bool {
+        let w = self.surface_target(PointerKind::Move, col, self.cell_at(row, col));
+        let buf = w.and_then(|w| self.window_buffer(w));
+        buf.is_some_and(|b| self.surface_says(b, |s| s.fine_motion()))
+    }
+
+    /// Pointer event `p` went to surface window `to`, if any: the surface window it's over, as a
+    /// Move there would go, is the one hovered if it heard this or was already.
+    pub(crate) fn hover(&mut self, p: &PointerEvent, hit: Option<CellHit>, to: Option<WindowId>) {
+        // A press, a move or the wheel comes from inside DIE's window; a drag may not.
+        self.surfaces.away &= matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_));
+        let over = self.surface_target(PointerKind::Move, p.col, hit);
+        self.leave(over.filter(|&w| to == Some(w) || self.surfaces.hovered == Some(w)));
+    }
+
+    /// The pointer is over surface window `now`, if any: the one it was over hears
+    /// [`Event::PointerLeft`], unless it holds a press, which hears it after the release.
+    pub(crate) fn leave(&mut self, now: Option<WindowId>) {
+        let (was, now) = (self.surfaces.hovered, now.filter(|_| !self.surfaces.away));
+        if was == now || self.surfaces.pressed.is_some_and(|(w, _)| Some(w) == was) {
+            return;
+        }
+        self.surfaces.hovered = now;
+        if let Some((window, buf)) = was.and_then(|w| Some((w, self.window_buffer(w)?))) {
+            let _ = self.surface_event(buf, &Event::PointerLeft { window });
+        }
+    }
+
+    /// The host said the pointer left DIE's window.
+    pub(crate) fn pointer_left(&mut self) {
+        self.surfaces.away = true;
+        self.leave(None);
+    }
+
+    /// A prompt opened, so no Move reaches a surface: the one hovered hears that the pointer
+    /// left, from the top of the loop, since it may be what's asking.
+    pub(crate) fn unhover(&mut self) -> Result {
+        self.leave(None);
+        Ok(())
     }
 
     /// Give a pointer event to the surface in `w`, in its area's cells and pixels.

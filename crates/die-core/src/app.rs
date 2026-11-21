@@ -89,6 +89,8 @@ pub enum Input {
         /// Its rows.
         rows: usize,
     },
+    /// The pointer left DIE's window (the host's CursorLeft).
+    PointerLeft,
 }
 
 /// How many turns one [`Ctx::run_ready`] takes before it lets the host draw. A long paste or macro
@@ -284,8 +286,10 @@ impl Ctx {
             ..hit
         });
         // A surface takes the pointer over its area itself. A press there ends what waits, as
-        // over text, and focuses its window.
-        if let Some(w) = self.surface_target(&p, hit) {
+        // over text, and focuses its window. The one it leaves hears so first, or after a release.
+        let to = self.surface_target(p.kind, p.col, hit);
+        self.hover(&p, hit, to);
+        if let Some(w) = to {
             if matches!(p.kind, PointerKind::Press(_)) {
                 self.command_ended();
                 self.pending.clear();
@@ -293,7 +297,8 @@ impl Ctx {
                 self.stop_selecting();
                 self.focus(w);
             }
-            return self.pointer_to_surface(w, p);
+            self.pointer_to_surface(w, p);
+            return self.hover(&p, hit, to);
         }
         match (p.kind, hit) {
             (PointerKind::Release(Button::Left), _) => self.pointer.pressed = None,
@@ -344,6 +349,7 @@ impl Ctx {
                 }
             }
             Input::Resize { cols, rows } => self.set_frame_size(cols, rows),
+            Input::PointerLeft => self.pointer_left(),
         }
     }
 
