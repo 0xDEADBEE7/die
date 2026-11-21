@@ -109,7 +109,7 @@ fn a_figure_comes_back_with_its_view_after_two_restarts() {
     assert!(
         st.borrow().model.is_some(),
         "built once shown: {:?}",
-        st.borrow().banner()
+        st.borrow().badge()
     );
     let got = view(&mut s);
     assert_eq!(got.x, want.x);
@@ -202,7 +202,7 @@ fn a_figure_of_a_command_comes_back_charted_from_what_it_printed_not_run_again()
         rows,
         Some(3),
         "charted from what it printed: {:?}",
-        st.borrow().banner()
+        st.borrow().badge()
     );
     assert_eq!(ran(), 1, "and not run again");
 }

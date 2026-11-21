@@ -1703,29 +1703,6 @@ fn a_brush_shows_its_band_and_readout_and_hides_the_hover() {
     );
 }
 
-#[test]
-fn the_banner_and_the_empty_figure() {
-    let theme = Theme::mono_dark();
-    let mut scene = Scene::new(600.0, 300.0, 2.0);
-    plot::banner(
-        &mut scene,
-        "line 3, column 7: expected ',' or '}'",
-        &theme,
-        &mut FixedMeasure,
-    );
-    assert!(scene.regions.iter().any(|r| r.hit == Hit::Banner));
-    assert!(has_text(&scene, "line 3, column 7: expected ',' or '}'"));
-    let e = plot::empty(
-        (600.0, 300.0),
-        2.0,
-        "No data in requests.csv",
-        &theme,
-        &mut FixedMeasure,
-    );
-    assert!(has_text(&e, "No data in requests.csv"));
-    assert_eq!(e.hit(300.0, 150.0), Some(&Hit::Chrome));
-}
-
 // ---------------------------------------------------------------- after the review
 
 /// What the pointer at `p` shows: the hover, the series it brings forward, the overlay.

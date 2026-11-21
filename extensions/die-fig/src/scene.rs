@@ -453,8 +453,12 @@ pub enum Item {
 /// What a place on screen is, for the pointer. Precedence is the order the surface asks.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
-    /// The parse error's banner.
-    Banner,
+    /// The stale badge: the last parse failed, and the figure shown is the one before.
+    Badge,
+    /// The error figure in its symbolic state, or the log's header: a click turns it over.
+    ErrorFigure,
+    /// An entry of the error figure's log, from 0.
+    LogEntry(u32),
     /// A row of the detail panel.
     Detail(u32),
     /// A legend key: its swatch and name.

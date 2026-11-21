@@ -11,7 +11,7 @@
 //! says those arrive in a later build, as do graphs, tiles and dashboards.
 
 use crate::data::{ReadOptions, Table};
-use crate::error::{FigError, Result};
+use crate::error::{ErrorKind, FigError, Pos, Result};
 use crate::interact::Toggles;
 use crate::plot::ChartModel;
 use crate::spec::chart::with_hints;
@@ -121,11 +121,11 @@ pub struct Built {
     pub figure: Figure,
     /// Whether it was guessed from bare data.
     pub inferred: bool,
-    /// The chart as parsed, before any toggles; None for a figure that isn't one.
+    /// The chart as parsed, before any toggles.
     pub chart: Option<Chart>,
     /// The chart's tables: its data's, then each layer's own.
     pub tables: Vec<Arc<Table>>,
-    /// The chart's model, if it has one: by value, since a model need only be `Send`.
+    /// The chart's model: by value, since a model need only be `Send`.
     pub model: Option<ChartModel>,
     /// What the spec had that was odd but not wrong.
     pub warnings: Vec<FigError>,
@@ -134,99 +134,284 @@ pub struct Built {
     pub files: Vec<(PathBuf, Option<SystemTime>)>,
     /// The data files read from buffers: followed as they're edited.
     pub followed: Vec<PathBuf>,
-    /// Why there's no model though the figure parsed: a later build's figure or source.
-    pub later: Option<String>,
+    /// The figure's own text as the build read it, for the log's caret lines.
+    pub text: Arc<str>,
 }
 
-/// Why a build failed: the error, and the file it's in if it isn't the figure's own text (a
-/// data file the spec names), so `<CR>` on the banner goes to the right place.
+/// Why a build failed: every error the build found (the first is the one the stale badge and
+/// the symbolic figure name), the warnings of the same parse, the figure's own text as it was
+/// read (for the log's caret lines), and the files it read on the way.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Failed {
-    /// What went wrong, and where.
-    pub error: FigError,
-    /// The data file it's in; None for the figure's own text.
-    pub file: Option<PathBuf>,
+    /// What went wrong, and where: never empty.
+    pub errors: Vec<FigError>,
+    /// What the spec had that was odd but not wrong, in the same parse.
+    pub warnings: Vec<FigError>,
+    /// The figure's own text as the build read it.
+    pub text: Arc<str>,
     /// The files read from disk before it failed: polled, so fixing one brings the figure back.
     pub files: Vec<(PathBuf, Option<SystemTime>)>,
 }
 
 impl Failed {
-    fn own(error: FigError, files: Vec<(PathBuf, Option<SystemTime>)>) -> Failed {
+    /// A failure of one error, with nothing read.
+    pub fn one(error: FigError) -> Failed {
         Failed {
-            error,
-            file: None,
-            files,
+            errors: vec![error],
+            warnings: vec![],
+            text: Arc::from(""),
+            files: vec![],
         }
+    }
+
+    /// The error the badge and the symbolic figure name.
+    pub fn first(&self) -> &FigError {
+        &self.errors[0]
+    }
+
+    /// Every error, then every warning, as the log lists them.
+    pub fn all(&self) -> Vec<FigError> {
+        let warnings = self.warnings.iter().map(|w| w.clone().warn());
+        self.errors.iter().cloned().chain(warnings).collect()
     }
 }
 
 /// Parse a figure's text, read its data and build its chart's model: off the main thread.
-/// An error is the parse's (with its place), a data file's (naming it), or the model's.
+/// A failure has every error the build could find: the parse's (with its place), a data file's
+/// (naming it), each field the data hasn't and each cell of text where the spec says numbers,
+/// the model's; each with what was tried on the way.
 pub fn build(job: Job) -> std::result::Result<Built, Failed> {
     let mut files = vec![];
     let text = match &job.text {
         Text::Of(r) => r.to_string(),
         Text::File(p) => {
             files.push((p.clone(), modified(p)));
-            read_file(p).map_err(|e| Failed::own(e, files.clone()))?
+            match read_file(p) {
+                Ok(t) => t,
+                Err(e) => {
+                    let e = e.note(format!("looked for {}", p.display()));
+                    return Err(Failed {
+                        files,
+                        ..Failed::one(e)
+                    });
+                }
+            }
         }
         Text::Given(s) => s.to_string(),
     };
+    let text: Arc<str> = Arc::from(text);
+    let failed = |errors: Vec<FigError>, warnings: Vec<FigError>, files| Failed {
+        errors,
+        warnings,
+        text: text.clone(),
+        files,
+    };
     let opt = ReadOptions::new(job.zone.clone());
-    let parsed = crate::spec::parse(&text, &job.name, &job.dir, &opt);
     let Parsed {
         figure,
         inferred,
-        warnings,
-    } = parsed.map_err(|e| Failed::own(e, files.clone()))?;
-    let mut built = Built {
-        figure: figure.clone(),
-        inferred,
-        chart: None,
-        tables: vec![],
-        model: None,
-        warnings,
-        files,
-        followed: vec![],
-        later: None,
+        mut warnings,
+    } = match crate::spec::parse(&text, &job.name, &job.dir, &opt) {
+        Ok(p) => p,
+        Err(e) => {
+            let e = e.note(read_as(&job.name, &text));
+            return Err(failed(vec![e], vec![], files));
+        }
     };
-    let chart = match figure {
+    // In the order they're in the text, as a reader goes down it.
+    warnings.sort_by_key(|w| w.at.map(|a| (a.line, a.col)));
+    let chart = match figure.clone() {
         Figure::Chart(c) => c,
         other => {
-            built.later = Some(format!("{} arrive in a later build", kind_plural(&other)));
-            return Ok(built);
+            let why = format!("{} arrive in a later build", kind_plural(&other));
+            let e = FigError::new(why).with_kind(ErrorKind::Empty);
+            return Err(failed(vec![e], warnings, files));
         }
     };
     let mut reader = Reader {
         open: &job.open,
         opt: &opt,
-        files: std::mem::take(&mut built.files),
+        dir: &job.dir,
+        spec: if inferred { None } else { Some(&text) },
+        files: std::mem::take(&mut files),
         followed: vec![],
+        read: vec![],
     };
     let tables = match reader.tables(&chart) {
         Ok(Ok(t)) => t,
-        Ok(Err((error, file))) => {
-            return Err(Failed {
-                error,
-                file,
-                files: reader.files,
-            });
-        }
+        Ok(Err(error)) => return Err(failed(vec![error], warnings, reader.files)),
         Err(Later) => {
-            built.files = reader.files;
-            built.chart = Some(chart);
-            built.later = Some(LATER_RUN.into());
-            return Ok(built);
+            let e = FigError::new(LATER_RUN).with_kind(ErrorKind::Empty);
+            return Err(failed(vec![e], warnings, reader.files));
         }
     };
-    built.files = reader.files;
-    built.followed = reader.followed;
-    let model = ChartModel::build(job.toggles.apply(&chart), tables.clone(), &job.zone)
-        .map_err(|e| Failed::own(e, built.files.clone()))?;
-    built.chart = Some(chart);
-    built.tables = tables;
-    built.model = Some(model);
-    Ok(built)
+    // Data that's all there but has no rows: nothing to draw, whatever the spec says.
+    if !tables.is_empty() && tables.iter().all(|t| t.rows == 0) {
+        let named = reader.read.first().map(|r| shown(&r.path));
+        let what = named.unwrap_or_else(|| "the data".into());
+        let mut e = FigError::new(format!("nothing to draw: {what} has no rows"))
+            .with_kind(ErrorKind::Empty);
+        for r in &reader.read {
+            e = e.note(r.said());
+        }
+        return Err(failed(vec![e], warnings, reader.files));
+    }
+    let model = match ChartModel::build(job.toggles.apply(&chart), tables.clone(), &job.zone) {
+        Ok(m) => m,
+        Err(e) => {
+            let errors = problems(&chart, &tables, &reader, e);
+            return Err(failed(errors, warnings, reader.files));
+        }
+    };
+    Ok(Built {
+        figure,
+        inferred,
+        chart: Some(chart),
+        tables,
+        model: Some(model),
+        warnings,
+        files: reader.files,
+        followed: reader.followed,
+        text,
+    })
+}
+
+/// How a figure's own text was read, for the log: `read NAME as JSON`.
+fn read_as(name: &str, text: &str) -> String {
+    let format = format_of_name(name).unwrap_or_else(|| sniff(text));
+    let how = match format {
+        DataFormat::Csv => "CSV",
+        DataFormat::Tsv => "TSV",
+        DataFormat::Json => "JSON",
+        DataFormat::Jsonl => "JSON lines",
+    };
+    let name = if name.is_empty() { "the text" } else { name };
+    format!("read {name} as {how}")
+}
+
+/// Every error a model's build would meet, not just its first: each layer's transforms, each
+/// field the data hasn't, each column of text a spec says is numbers (at the cell, in the data
+/// file, where the rows are the file's), with what was read. The build's own error first if
+/// the search doesn't find it.
+fn problems(
+    chart: &Chart,
+    tables: &[Arc<Table>],
+    reader: &Reader<'_>,
+    first: FigError,
+) -> Vec<FigError> {
+    let mut out: Vec<FigError> = Vec::new();
+    let push = |e: FigError, out: &mut Vec<FigError>| {
+        if !out.iter().any(|o| o.msg == e.msg && o.at == e.at) {
+            out.push(e);
+        }
+    };
+    let mut own = 0;
+    for layer in &chart.layers {
+        let ti = match layer.data {
+            Some(_) => {
+                own += 1;
+                own
+            }
+            None => 0,
+        };
+        let Some(table) = tables.get(ti) else {
+            continue;
+        };
+        let read = reader.read.iter().find(|r| r.table == ti);
+        let name = read.map_or_else(|| "the data".to_string(), |r| shown(&r.path));
+        let ts: Vec<crate::data::transform::Transform> = chart
+            .transform
+            .iter()
+            .chain(&layer.transform)
+            .cloned()
+            .collect();
+        let t = match crate::data::transform::apply(table, &ts) {
+            Ok(t) => t,
+            Err(e) => {
+                let names: Vec<&str> = ts.iter().map(transform_name).collect();
+                let mut e = e.note(format!("the transforms: {}", names.join(" → ")));
+                if let Some(r) = read {
+                    e = e.note(r.said());
+                }
+                push(e, &mut out);
+                continue;
+            }
+        };
+        let enc = &layer.enc;
+        let channels = [&enc.x, &enc.y, &enc.y2, &enc.color, &enc.size, &enc.label];
+        for ch in channels.into_iter().flatten() {
+            let Some(f) = ch.field.as_deref() else {
+                continue;
+            };
+            let Some(col) = t.column(f) else {
+                let msg = format!("no column \"{f}\" in the data");
+                let mut e = match ch.at {
+                    Some(at) => FigError::at(msg, at),
+                    None => FigError::new(msg),
+                };
+                let names: Vec<&str> = t.columns.iter().map(|c| &*c.name).collect();
+                e = e.note(format!("{name} has {}", names.join(", ")));
+                if let Some(r) = read {
+                    e = e.note(r.said());
+                }
+                push(e, &mut out);
+                continue;
+            };
+            if ch.kind != Some(crate::data::ColumnKind::Number) {
+                continue;
+            }
+            let Some((row, v)) = crate::plot::not_a_number(col, reader.opt.thousands) else {
+                continue;
+            };
+            let msg = format!("\"{v}\" in \"{f}\" is not a number");
+            let said = match ch.at {
+                Some(at) => format!(
+                    "the spec says \"{f}\" is a number: line {}, column {}",
+                    at.line, at.col
+                ),
+                None => format!("the spec says \"{f}\" is a number"),
+            };
+            // At the cell, where the table's rows are the file's.
+            let cell = read
+                .filter(|_| ts.is_empty())
+                .and_then(|r| r.cell(table, row, f).map(|at| (r, at)));
+            let mut e = match cell {
+                Some((r, at)) => FigError::at(msg, at).in_file(&r.path, Some(&r.text)),
+                None => match ch.at {
+                    Some(at) => FigError::at(msg, at),
+                    None => FigError::new(msg),
+                },
+            };
+            e = e.note(said).note(format!("row {} of {name}", row + 1));
+            if let Some(r) = read {
+                e = e.note(r.said());
+            }
+            push(e, &mut out);
+        }
+    }
+    if !out.iter().any(|o| o.msg == first.msg) {
+        let mut first = first;
+        for r in &reader.read {
+            first = first.note(r.said());
+        }
+        out.insert(0, first);
+    }
+    out
+}
+
+/// A transform's name, as the log lists them.
+fn transform_name(t: &crate::data::transform::Transform) -> &'static str {
+    use crate::data::transform::Transform as T;
+    match t {
+        T::Fold { .. } => "fold",
+        T::Filter { .. } => "filter",
+        T::Bin { .. } => "bin",
+        T::Aggregate { .. } => "aggregate",
+        T::Cumulative { .. } => "cumulative",
+        T::Window { .. } => "window",
+        T::Sort { .. } => "sort",
+        T::Top { .. } => "top",
+    }
 }
 
 /// Build a chart's model again from what's already read: a toggle changed the spec.
@@ -252,31 +437,87 @@ fn kind_plural(f: &Figure) -> &'static str {
 /// A source the build can't read yet: a command's.
 struct Later;
 
+/// A data file read: which table it made, its path, text and format, and how many rows.
+struct ReadFile {
+    table: usize,
+    path: PathBuf,
+    /// The path as the log writes it: from the figure's directory.
+    shown: String,
+    text: String,
+    format: DataFormat,
+    from_buffer: bool,
+    rows: usize,
+    columns: usize,
+}
+
+impl ReadFile {
+    /// What was tried, as the log says it.
+    fn said(&self) -> String {
+        let how = match self.format {
+            DataFormat::Csv => "CSV",
+            DataFormat::Tsv => "TSV",
+            DataFormat::Json => "JSON",
+            DataFormat::Jsonl => "JSON lines",
+        };
+        let whence = if self.from_buffer {
+            " (its buffer)"
+        } else {
+            ""
+        };
+        let rows = if self.rows == 1 { "row" } else { "rows" };
+        let cols = if self.columns == 1 {
+            "column"
+        } else {
+            "columns"
+        };
+        format!(
+            "read {}{whence} as {how}: {} {rows}, {} {cols}",
+            self.shown, self.rows, self.columns
+        )
+    }
+
+    /// Where row `row` of column `name` is in the file's text, if the format says.
+    fn cell(&self, table: &Table, row: usize, name: &str) -> Option<Pos> {
+        match self.format {
+            DataFormat::Csv | DataFormat::Tsv => {
+                let mut opt = ReadOptions::new(TimeZone::UTC);
+                if self.format == DataFormat::Tsv {
+                    opt.delimiter = Some(b'\t');
+                }
+                crate::data::csv::cell_at(&self.text, &opt, row, name).map(|(at, _)| at)
+            }
+            DataFormat::Json | DataFormat::Jsonl => {
+                let raw = table.raw.as_ref()?.get(row)?;
+                Some(raw.get(name)?.at)
+            }
+        }
+    }
+}
+
 /// Reads a chart's tables, from the buffers given where one visits the file and otherwise
-/// from disk, noting which was which.
+/// from disk, noting which was which and what each held.
 struct Reader<'a> {
     open: &'a [(PathBuf, Snapshot)],
     opt: &'a ReadOptions,
+    /// The spec's directory, which its data paths are relative to.
+    dir: &'a Path,
+    /// The spec's own text, where the figure's text is one: a data path's place is in it.
+    spec: Option<&'a str>,
     files: Vec<(PathBuf, Option<SystemTime>)>,
     followed: Vec<PathBuf>,
+    read: Vec<ReadFile>,
 }
-
-/// Why a table couldn't be read, and in which data file.
-type Unread = (FigError, Option<PathBuf>);
-
-/// A table, or why not and in which data file.
-type Read = std::result::Result<Arc<Table>, Unread>;
 
 impl Reader<'_> {
     /// The chart's data's table, then each layer's own, in order.
     fn tables(
         &mut self,
         chart: &Chart,
-    ) -> std::result::Result<std::result::Result<Vec<Arc<Table>>, Unread>, Later> {
+    ) -> std::result::Result<std::result::Result<Vec<Arc<Table>>, FigError>, Later> {
         let mut out = vec![];
         let own = chart.layers.iter().filter_map(|l| l.data.as_ref());
-        for spec in std::iter::once(&chart.data).chain(own) {
-            match self.table(spec)? {
+        for (i, spec) in std::iter::once(&chart.data).chain(own).enumerate() {
+            match self.table(i, spec)? {
                 Ok(t) => out.push(t),
                 Err(e) => return Ok(Err(e)),
             }
@@ -284,46 +525,159 @@ impl Reader<'_> {
         Ok(Ok(out))
     }
 
-    fn table(&mut self, spec: &DataSpec) -> std::result::Result<Read, Later> {
+    fn table(
+        &mut self,
+        i: usize,
+        spec: &DataSpec,
+    ) -> std::result::Result<Result<Arc<Table>>, Later> {
         Ok(match &spec.source {
             DataRef::Inline(t) => Ok(t.clone()),
-            DataRef::File(path) => self
-                .file(path, spec)
-                .map_err(|e| (e, Some(path.to_path_buf()))),
+            DataRef::File(path) => self.file(i, path, spec),
             DataRef::Run { .. } | DataRef::Stream { .. } => return Err(Later),
-            DataRef::Named(name) => Err((
-                FigError::new(format!(
-                    "\"{name}\" names a dashboard's data, outside a dashboard"
-                )),
-                None,
-            )),
-            DataRef::Source => Err((
-                FigError::new("\"data\": \"-\" is the buffer itself, which is the spec here"),
-                None,
+            DataRef::Named(name) => Err(FigError::new(format!(
+                "\"{name}\" names a dashboard's data, outside a dashboard"
+            ))),
+            DataRef::Source => Err(FigError::new(
+                "\"data\": \"-\" is the buffer itself, which is the spec here",
             )),
         })
     }
 
-    fn file(&mut self, path: &Path, spec: &DataSpec) -> Result<Arc<Table>> {
-        let text = match self.open.iter().find(|(p, _)| same_path(p, path)) {
+    fn file(&mut self, i: usize, path: &Path, spec: &DataSpec) -> Result<Arc<Table>> {
+        let (text, from_buffer) = match self.open.iter().find(|(p, _)| same_path(p, path)) {
             Some((_, text)) => {
                 self.followed.push(path.to_path_buf());
-                text.to_string()
+                (text.to_string(), true)
             }
             None => {
                 self.files.push((path.to_path_buf(), modified(path)));
-                read_file(path)?
+                match read_file(path) {
+                    Ok(t) => (t, false),
+                    Err(e) => {
+                        // At the path in the spec, where it's written there.
+                        let at = self.spec.and_then(|s| quoted_path(s, path, self.dir));
+                        let e = FigError {
+                            at,
+                            ..e.note(format!("looked for {}", relative(path, self.dir)))
+                        };
+                        return Err(e);
+                    }
+                }
             }
         };
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-        read_data(&text, spec, name.as_deref().unwrap_or(""), self.opt).map(Arc::new)
+        let name = name.as_deref().unwrap_or("");
+        let format = spec
+            .format
+            .or_else(|| format_of_name(name))
+            .unwrap_or_else(|| sniff(&text));
+        let table = read_data(&text, spec, name, self.opt);
+        let mut read = ReadFile {
+            table: i,
+            path: path.to_path_buf(),
+            shown: relative(path, self.dir),
+            text,
+            format,
+            from_buffer,
+            rows: 0,
+            columns: 0,
+        };
+        match table {
+            Ok(t) => {
+                (read.rows, read.columns) = (t.rows, t.columns.len());
+                self.read.push(read);
+                Ok(Arc::new(t))
+            }
+            Err(e) => {
+                let said = format!("read {} as {}", read.shown, format_label(format));
+                let e = e.in_file(path, Some(&read.text)).note(said);
+                Err(e)
+            }
+        }
     }
+}
+
+/// A path as the log writes it: from `dir` (with up to two `..`), else from your home as `~`,
+/// else whole.
+pub fn relative(path: &Path, dir: &Path) -> String {
+    let (p, d) = (lexical(path), lexical(dir));
+    let mut base = d.clone();
+    for up in 0..=2 {
+        if let Ok(rest) = p.strip_prefix(&base) {
+            let mut out = PathBuf::new();
+            for _ in 0..up {
+                out.push("..");
+            }
+            out.push(rest);
+            return out.display().to_string();
+        }
+        if !base.pop() || base.parent().is_none() {
+            break;
+        }
+    }
+    match std::env::home_dir().and_then(|h| p.strip_prefix(h).ok().map(Path::to_path_buf)) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => p.display().to_string(),
+    }
+}
+
+/// A data format as the log names it.
+fn format_label(f: DataFormat) -> &'static str {
+    match f {
+        DataFormat::Csv => "CSV",
+        DataFormat::Tsv => "TSV",
+        DataFormat::Json => "JSON",
+        DataFormat::Jsonl => "JSON lines",
+    }
+}
+
+/// Where a data path is written in a spec's text, quotes and all: as given relative to the
+/// spec's directory, else by its file's name. None if it isn't there as either.
+fn quoted_path(text: &str, path: &Path, dir: &Path) -> Option<Pos> {
+    let rel = path.strip_prefix(dir).ok().map(|p| p.display().to_string());
+    let whole = path.display().to_string();
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+    for c in [rel, Some(whole), name].into_iter().flatten() {
+        let quoted = format!("\"{}\"", c.replace('\\', "\\\\"));
+        if let Some(i) = text.find(&quoted) {
+            return Some(Pos::of(text, i));
+        }
+        // A path written with more before its name: `"data/x.csv"`, at its opening quote.
+        if let Some(i) = text.find(&format!("{}\"", c.replace('\\', "\\\\")))
+            && let Some(open) = text[..i].rfind('"')
+            && !text[open + 1..i].contains(['"', '\n'])
+        {
+            return Some(Pos::of(text, open));
+        }
+    }
+    None
 }
 
 /// A file's text, or why not, naming it.
 pub fn read_file(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path).map_err(|e| FigError::new(format!("{}: {e}", shown(path))))
+    let name = shown(path);
+    let unreadable = |why: String| FigError::new(why).with_kind(ErrorKind::Unreadable);
+    if let Ok(m) = std::fs::metadata(path)
+        && m.len() > TOO_LARGE
+    {
+        let mb = m.len() / (1024 * 1024);
+        return Err(unreadable(format!(
+            "{name} is too large to chart ({mb} MB)"
+        )));
+    }
+    std::fs::read_to_string(path).map_err(|e| {
+        unreadable(match e.kind() {
+            std::io::ErrorKind::NotFound => format!("{name}: no such file"),
+            std::io::ErrorKind::PermissionDenied => format!("{name}: permission denied"),
+            std::io::ErrorKind::InvalidData => format!("{name} isn't text (UTF-8)"),
+            std::io::ErrorKind::IsADirectory => format!("{name} is a directory"),
+            _ => format!("{name}: {e}"),
+        })
+    })
 }
+
+/// The largest file a figure reads: past this it says so rather than taking the memory.
+pub const TOO_LARGE: u64 = 1024 * 1024 * 1024;
 
 /// A path as an error shows it: its file's name, or the whole path if it has none.
 fn shown(path: &Path) -> String {

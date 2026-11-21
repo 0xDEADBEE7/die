@@ -1,0 +1,15 @@
+{
+  "type": "chart",
+  "titel": "Service health",
+  "subtitel": "Requests, latency and errors, last 6 hours",
+  "data": "../requests.csv",
+  "layers": [
+    {"mark": "line", "x": "time", "y": "api", "colour": "blue"},
+    {"mark": "line", "x": "time", "y": "latency_p50"},
+    {"mark": "line", "x": "time", "y": "latency_p95", "lable": "p95"},
+    {"mark": "area", "x": "time", "y": "errors"},
+    {"mark": "line", "x": "timestamp", "y": "worker"},
+    {"mark": "point", "x": "time", "y": "queue_depth", "size": "jobs"}
+  ],
+  "veiw": {"grid": false}
+}

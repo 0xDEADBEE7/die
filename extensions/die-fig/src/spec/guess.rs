@@ -23,17 +23,21 @@ use super::{
 };
 use crate::data::transform::{AggOp, Transform};
 use crate::data::{Column, ColumnKind, Table};
-use crate::error::{FigError, Result};
+use crate::error::{ErrorKind, FigError, Result};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// The chart a table's columns suggest.
 pub fn guess(table: &Table) -> Result<Chart> {
     if table.columns.is_empty() {
-        return Err(FigError::new("nothing to draw: the data has no columns"));
+        return Err(
+            FigError::new("nothing to draw: the data has no columns").with_kind(ErrorKind::Empty)
+        );
     }
     if table.rows == 0 {
-        return Err(FigError::new("nothing to draw: the data has no rows"));
+        return Err(
+            FigError::new("nothing to draw: the data has no rows").with_kind(ErrorKind::Empty)
+        );
     }
     let taken: Vec<&str> = table.columns.iter().map(|c| &*c.name).collect();
     let numbers: Vec<&Column> = of(table, ColumnKind::Number);

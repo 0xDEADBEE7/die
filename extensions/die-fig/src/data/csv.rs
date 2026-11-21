@@ -66,7 +66,7 @@ pub fn read_csv(text: &str, opt: &ReadOptions) -> Result<Table> {
         if rec.len() > header.len() {
             if opt.header {
                 let extra = &rec[header.len()];
-                return Err(FigError::at(
+                return Err(FigError::malformed(
                     format!(
                         "a row of {} fields where the header has {}",
                         rec.len(),
@@ -100,6 +100,66 @@ pub fn read_csv(text: &str, opt: &ReadOptions) -> Result<Table> {
     Table::new(columns)
 }
 
+/// Where the cell of column `name` in row `row` (from 0, the header not counted) is in `text`,
+/// read as [`read_csv`] reads it, and how many chars wide it is: for an error that names a cell,
+/// so the error figure's caret can sit under it. None where there's no such cell.
+pub fn cell_at(text: &str, opt: &ReadOptions, row: usize, name: &str) -> Option<(Pos, usize)> {
+    if opt
+        .delimiter
+        .is_some_and(|d| !d.is_ascii() || matches!(d, b'"' | b'\n' | b'\r'))
+    {
+        return None;
+    }
+    let bom = if text.starts_with('\u{feff}') { 3 } else { 0 };
+    let delim = opt.delimiter.unwrap_or_else(|| sniff(&text[bom..]));
+    let mut p = Parser {
+        text,
+        bytes: text.as_bytes(),
+        i: bom,
+        delim,
+    };
+    let unnamed = |i: usize| format!("column {}", i + 1);
+    let mut index: Option<usize> = None;
+    let mut seen = 0usize;
+    let mut rec: Vec<Field> = Vec::new();
+    while p.record(&mut rec).ok()? {
+        if let [only] = &rec[..]
+            && !only.quoted
+            && only.text.is_empty()
+        {
+            continue;
+        }
+        let i = match index {
+            Some(i) => i,
+            None => {
+                let named = |(i, f): (usize, &Field)| {
+                    f.text == name || (f.text.is_empty() && unnamed(i) == name)
+                };
+                let i = match opt.header {
+                    true => rec.iter().enumerate().position(named)?,
+                    false => (0..rec.len().max(64)).find(|i| unnamed(*i) == name)?,
+                };
+                index = Some(i);
+                if opt.header {
+                    continue;
+                }
+                i
+            }
+        };
+        if seen == row {
+            let f = rec.get(i)?;
+            let width = if f.quoted {
+                f.text.chars().count() + 2
+            } else {
+                f.text.chars().count()
+            };
+            return Some((pos_at(text, f.start), width.max(1)));
+        }
+        seen += 1;
+    }
+    None
+}
+
 /// The columns' names, each with whether it was made up rather than read from a header.
 type Names = Vec<(String, bool)>;
 
@@ -131,7 +191,7 @@ fn start<'a>(
             s => (s.to_string(), false),
         };
         if names.iter().any(|n| n.0 == name.0) {
-            return Err(FigError::at(
+            return Err(FigError::malformed(
                 format!("two columns are named \"{}\"", name.0),
                 pos_at(text, f.start),
             ));
@@ -273,7 +333,7 @@ impl<'a> Parser<'a> {
             let text = self.quoted(start)?;
             self.skip_blanks();
             let Some(end) = self.end() else {
-                return Err(FigError::at(
+                return Err(FigError::malformed(
                     "expected a delimiter or the line's end after a closing quote",
                     pos_at(self.text, self.i),
                 ));
@@ -309,7 +369,7 @@ impl<'a> Parser<'a> {
         let mut owned: Option<String> = None;
         loop {
             let Some(off) = self.bytes[self.i..].iter().position(|&b| b == b'"') else {
-                return Err(FigError::at(
+                return Err(FigError::malformed(
                     "unterminated quoted field",
                     pos_at(self.text, start),
                 ));

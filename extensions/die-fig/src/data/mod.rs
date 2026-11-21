@@ -17,7 +17,7 @@ pub mod rows;
 pub mod time;
 pub mod transform;
 
-use crate::error::{FigError, Result};
+use crate::error::{ErrorKind, FigError, Result};
 use crate::json::Node;
 use crate::style::FigStyle;
 use std::collections::BTreeMap;
@@ -199,10 +199,10 @@ impl Table {
         let rows = columns.first().map_or(0, Column::len);
         for (i, c) in columns.iter().enumerate() {
             if columns[..i].iter().any(|o| o.name == c.name) {
-                return Err(FigError::new(format!(
-                    "two columns are named \"{}\"",
-                    c.name
-                )));
+                return Err(
+                    FigError::new(format!("two columns are named \"{}\"", c.name))
+                        .with_kind(ErrorKind::Malformed),
+                );
             }
             if c.len() != rows {
                 return Err(FigError::new(format!(
@@ -210,7 +210,8 @@ impl Table {
                     c.name,
                     c.len(),
                     columns[0].name
-                )));
+                ))
+                .with_kind(ErrorKind::Malformed));
             }
         }
         Ok(Table {

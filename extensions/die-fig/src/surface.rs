@@ -21,12 +21,12 @@
 
 use crate::algo::HitIndex;
 use crate::data::{ColumnKind, SeriesKey, Table};
-use crate::error::FigError;
+use crate::error::{ErrorKind, FigError};
 use crate::interact::consts::{
     CLICK_SLOP, FOCUS_GRACE_MS, MOTION_MS, NEAREST_SERIES, SCROLL_BURST_MS, ZOOM_STEP,
 };
 use crate::interact::{Axis, BrushKind, Cursor, Gesture, Steps, Toggles, Tween, View};
-use crate::plot::{self, ChartLayout, ChartModel, OverlayState};
+use crate::plot::{self, ChartLayout, ChartModel, ErrorView, OverlayState};
 use crate::raster::{self, BookMeasure, PixelBox};
 use crate::scene::{
     Anchor, FixedMeasure, Hit, Item, Measure, Paint, PathData, Rect, Scene, Stroke, TextSpec,
@@ -57,6 +57,8 @@ const FRAME: Duration = Duration::from_millis(16);
 const QUIET: Duration = Duration::from_millis(150);
 /// How often a file a figure reads from disk is looked at while a window shows the figure.
 const POLL: Duration = Duration::from_secs(1);
+/// How many of the last lines a failed command wrote to its standard error the log shows.
+const STDERR_TAIL: usize = 6;
 
 /// The time on the workspace's clock, in ms.
 fn ms(d: Duration) -> u64 {
@@ -168,7 +170,9 @@ struct BaseKey {
     size: (u32, u32),
     scale: u32,
     theme: u64,
-    banner: Option<String>,
+    /// The failure shown (its generation) and the log's place, if it's up.
+    fail: u64,
+    log: Option<(usize, usize)>,
 }
 
 /// What the overlay shows: redrawn when this changes.
@@ -255,6 +259,11 @@ pub struct Pane {
     /// The area changed since the overlay last drew: its next draw clears the whole buffer,
     /// since what it drew at the old size isn't where the new one draws.
     over_wipe: bool,
+    /// The error figure's log, if it's up in this window: its first line shown and the entry
+    /// marked. It shows over the figure, a kept one too.
+    pub log: Option<(usize, usize)>,
+    /// What a wheel's scroll of the log hasn't moved yet, in lines: less than one.
+    log_carry: f32,
 }
 
 impl Pane {
@@ -296,6 +305,8 @@ impl Pane {
             drag_mods: Mods::default(),
             frozen: None,
             over_wipe: false,
+            log: None,
+            log_carry: 0.0,
         }
     }
 
@@ -732,12 +743,17 @@ pub struct FigState {
     pub model: Option<Arc<ChartModel>>,
     /// Goes up with each model.
     pub model_gen: u64,
-    /// Why the last build failed, while the last figure stays.
+    /// Why the last build failed: the error figure says so, or the stale badge over the last
+    /// figure, which stays.
     pub error: Option<Failed>,
-    /// Why there's no chart though the text parsed: a later build's.
-    pub later: Option<String>,
+    /// Goes up with each failure and each recovery: the base shows the newest.
+    pub fail_gen: u64,
+    /// The figure's own text as the last build read it, for the log's caret lines.
+    pub text: Arc<str>,
     /// The warnings last said, so a build says them once.
     warned: Vec<FigError>,
+    /// The failure last said in `*messages*`, so a run of the same says it once.
+    said: Option<String>,
     /// The files read from disk, polled while shown.
     files: Vec<(PathBuf, Option<SystemTime>)>,
     /// The data files read from their buffers, followed as edited.
@@ -811,8 +827,10 @@ impl FigState {
                 model: None,
                 model_gen: 0,
                 error: None,
-                later: None,
+                fail_gen: 0,
+                text: Arc::from(""),
                 warned: vec![],
+                said: None,
                 files: vec![],
                 followed: vec![],
                 toggles: Toggles::default(),
@@ -878,17 +896,29 @@ impl FigState {
         self.chart.as_ref().is_none_or(|c| c.view.motion)
     }
 
-    /// What the banner says, if anything: why the last build failed, or what a later build
-    /// will draw.
-    pub fn banner(&self) -> Option<String> {
-        if let Some(f) = &self.error {
-            let name = f.file.as_ref().and_then(|p| p.file_name());
-            return Some(match name {
-                Some(n) => format!("{}: {}", n.to_string_lossy(), f.error),
-                None => f.error.to_string(),
-            });
+    /// What the stale badge says while the last build failed: `Error · line 14`.
+    pub fn badge(&self) -> Option<String> {
+        let f = self.error.as_ref()?;
+        Some(plot::errors::badge_text(f.first()))
+    }
+
+    /// The last good build's warnings.
+    pub fn warnings(&self) -> &[FigError] {
+        &self.warned
+    }
+
+    /// What the log lists: the last build's errors and warnings, or the warnings of the good
+    /// build shown.
+    pub fn log_errors(&self) -> Vec<FigError> {
+        match &self.error {
+            Some(f) => f.all(),
+            None => self.warned.iter().map(|w| w.clone().warn()).collect(),
         }
-        self.later.clone()
+    }
+
+    /// The log's layout as it stands, for the keys that move in it.
+    pub fn log_layout(&self) -> plot::LogLayout {
+        plot::log_layout(&self.log_errors(), &self.text)
     }
 
     /// The status line: the name, how many series, how many hidden, whether it follows live
@@ -908,7 +938,7 @@ impl FigState {
                 }
             }
         }
-        if let Some(b) = self.banner() {
+        if let Some(b) = self.badge() {
             s.push_str("  ");
             s.push_str(&b);
         }
@@ -992,14 +1022,25 @@ impl FigState {
         let me = self.me.clone();
         self.builds += 1;
         self.building = Some(ctx.spawn(
-            move || -> std::result::Result<String, String> {
+            move || -> std::result::Result<String, FigError> {
                 let mut c = die_core::process::shell(&cmd, &dir);
                 c.env("PATH", die_core::process::path())
                     .stdin(std::process::Stdio::null());
-                let out = c.output().map_err(|e| format!("{cmd}: {e}"))?;
+                let ran = format!("ran `{cmd}` in {}", dir.display());
+                let unreadable = |msg: String| FigError::new(msg).with_kind(ErrorKind::Unreadable);
+                let out = c
+                    .output()
+                    .map_err(|e| unreadable(format!("{cmd}: {e}")).note(ran.clone()))?;
                 if !out.status.success() && out.stdout.is_empty() {
+                    let mut e = unreadable(format!("{cmd} failed and printed nothing"))
+                        .note(format!("{ran}: {}", out.status));
+                    // The end of what it said, a line each.
                     let err = String::from_utf8_lossy(&out.stderr);
-                    return Err(format!("{cmd}: {} {}", out.status, err.trim()));
+                    let lines: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).collect();
+                    for l in &lines[lines.len().saturating_sub(STDERR_TAIL)..] {
+                        e = e.note(format!("stderr: {}", l.trim_end()));
+                    }
+                    return Err(e);
                 }
                 Ok(String::from_utf8_lossy(&out.stdout).into_owned())
             },
@@ -1015,11 +1056,7 @@ impl FigState {
                             st.build(ctx);
                         }
                         Err(e) => {
-                            st.error = Some(Failed {
-                                error: FigError::new(e),
-                                file: None,
-                                files: vec![],
-                            });
+                            st.failed(ctx, Failed::one(e));
                             st.rev += 1;
                         }
                     }
@@ -1051,11 +1088,11 @@ impl FigState {
                     match out {
                         Ok(model) => st.new_model(model, ctx.now()),
                         Err(error) => {
-                            st.error = Some(Failed {
-                                error,
-                                file: None,
-                                files: vec![],
-                            })
+                            let f = Failed {
+                                text: st.text.clone(),
+                                ..Failed::one(error)
+                            };
+                            st.failed(ctx, f);
                         }
                     }
                     st.refresh(ctx);
@@ -1065,14 +1102,15 @@ impl FigState {
         ));
     }
 
-    /// A build's outcome: the new figure, or the last one kept with the banner saying why not.
+    /// A build's outcome: the new figure, or the last one kept with the stale badge saying
+    /// why not (the error figure where there's none).
     fn built(&mut self, ctx: &mut Ctx, out: std::result::Result<source::Built, Failed>) {
         self.rev += 1;
         match out {
             Ok(b) => {
                 if b.warnings != self.warned {
                     for w in &b.warnings {
-                        ctx.messages.push(format!("fig: {w}"));
+                        ctx.messages.push(format!("fig: {}: {w}", self.name));
                     }
                     self.warned = b.warnings.clone();
                 }
@@ -1082,8 +1120,19 @@ impl FigState {
                 self.tables = b.tables;
                 self.files = b.files;
                 self.followed = b.followed;
-                self.later = b.later;
-                self.error = None;
+                self.text = b.text;
+                if self.error.take().is_some() {
+                    self.fail_gen += 1;
+                }
+                self.said = None;
+                // The log stays up where it has warnings to show; otherwise, the figure.
+                let lines = self.log_layout();
+                for p in self.panes.values_mut() {
+                    p.log = p
+                        .log
+                        .filter(|_| !self.warned.is_empty())
+                        .map(|(top, mark)| (top, mark.min(lines.starts.len().saturating_sub(1))));
+                }
                 match b.model {
                     Some(m) => self.new_model(m, ctx.now()),
                     None => {
@@ -1100,10 +1149,37 @@ impl FigState {
                         self.files.push((p.clone(), *t));
                     }
                 }
-                self.error = Some(f);
+                self.failed(ctx, f);
             }
         }
         self.keep_polling(ctx);
+    }
+
+    /// A build failed: the error figure or the badge says so from now on, and `*messages*` does
+    /// once, a run of the same failure (the same error at the same place) said once. A log up
+    /// keeps its place within the new one.
+    pub fn failed(&mut self, ctx: &mut Ctx, f: Failed) {
+        let first = f.first();
+        let said = match first.place() {
+            Some(p) => format!("fig: {}: {p}: {}", self.name, first.msg),
+            None => format!("fig: {}: {}", self.name, first.msg),
+        };
+        if self.said.as_ref() != Some(&said) {
+            ctx.messages.push(said.clone());
+            self.said = Some(said);
+        }
+        if !f.text.is_empty() {
+            self.text = f.text.clone();
+        }
+        self.error = Some(f);
+        self.fail_gen += 1;
+        self.rev += 1;
+        let lines = self.log_layout();
+        for p in self.panes.values_mut() {
+            if let Some((top, mark)) = p.log {
+                p.log = Some((top, mark.min(lines.starts.len().saturating_sub(1))));
+            }
+        }
     }
 
     /// A model to draw: the cursors and references that no longer name a sample, a band or a
@@ -1324,11 +1400,12 @@ impl FigState {
         self.look(ctx);
         let now = ms(ctx.now());
         let Some(buf) = self.buf else { return };
-        let banner = self.banner();
-        let empty = match (&self.error, &self.later) {
-            (Some(_), _) => format!("No chart in {}", self.name),
-            (None, Some(later)) => later.clone(),
-            (None, None) => String::new(),
+        let log_errors = self.log_errors();
+        let failure = Failure {
+            failed: self.error.as_ref(),
+            log: &log_errors,
+            text: &self.text,
+            name: &self.name,
         };
         let model = self.model.clone();
         let mut kit = self.kit.borrow_mut();
@@ -1354,11 +1431,11 @@ impl FigState {
                 size: p.area_px(),
                 scale: p.scale().to_bits(),
                 theme: self.theme_gen,
-                banner: banner.clone(),
+                fail: self.fail_gen,
+                log: p.log,
             };
             if p.drawn.as_ref() != Some(&key) {
-                let words = (banner.as_deref(), empty.as_str());
-                draw_base(p, model.as_deref(), &shown, &self.theme, words, &mut kit);
+                draw_base(p, model.as_deref(), &shown, &self.theme, &failure, &mut kit);
                 p.drawn = Some(key);
                 p.rehover = true;
             }
@@ -1415,40 +1492,27 @@ impl FigState {
         if matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_)) {
             pane.drag_mods = p.mods;
         }
-        let goto = |ctx: &mut Ctx| {
-            let args = die_core::Args {
-                window: Some(p.window),
-                buffer: buf,
-                ..die_core::Args::default()
+        let Some(model) = model.filter(|_| pane.log.is_none()) else {
+            // The error figure, or its log: a click turns it over, an entry under the pointer
+            // is marked, a double click goes to it, and the wheel scrolls the log.
+            let lines = (pane.log.is_some()).then(|| {
+                let errors = self.log_errors();
+                plot::log_layout(&errors, &self.text)
+            });
+            let Some(pane) = self.panes.get_mut(&p.window) else {
+                return;
             };
-            ctx.defer(move |ctx| ctx.run("fig-goto-error", &args));
-        };
-        let Some(model) = model else {
-            // No chart yet, a build having failed from the start: the banner still takes a
-            // click to its error.
-            match p.kind {
-                PointerKind::Press(Button::Left) if !swallow => {
-                    pane.gesture = Gesture::Pressed {
-                        at,
-                        hit: pane.hit_at(at),
-                        button: Button::Left,
-                        mods: p.mods,
-                        clicks: p.clicks,
+            match on_error(pane, p, at, swallow, lines.as_ref()) {
+                ErrorAct::None => {}
+                ErrorAct::Goto(entry) => {
+                    let args = die_core::Args {
+                        window: Some(p.window),
+                        buffer: buf,
+                        count: entry.map(|e| e + 1),
+                        ..die_core::Args::default()
                     };
+                    ctx.defer(move |ctx| ctx.run("fig-goto-error", &args));
                 }
-                PointerKind::Release(Button::Left) => {
-                    let g = std::mem::replace(&mut pane.gesture, Gesture::None);
-                    if matches!(
-                        g,
-                        Gesture::Pressed {
-                            hit: Hit::Banner,
-                            ..
-                        }
-                    ) {
-                        goto(ctx);
-                    }
-                }
-                _ => {}
             }
             return;
         };
@@ -1499,11 +1563,7 @@ impl FigState {
             PointerKind::Press(Button::Right) => {}
             PointerKind::Drag(_) => cx.drag(at),
             PointerKind::Release(b) => {
-                if let Some(banner) = cx.release(b, at)
-                    && banner
-                {
-                    goto(ctx);
-                }
+                cx.release(b, at);
             }
             PointerKind::Scroll { dx, dy } => {
                 let w = p.window;
@@ -1584,6 +1644,12 @@ impl FigState {
         let Some(p) = self.panes.get_mut(&w) else {
             return false;
         };
+        // The log goes first: the figure again.
+        if p.log.take().is_some() {
+            p.rehover = true;
+            self.rev += 1;
+            return true;
+        }
         match std::mem::replace(&mut p.gesture, Gesture::None) {
             Gesture::Brush { .. } => (p.gesture, p.frozen) = (Gesture::Swallowed, None),
             Gesture::Pan { before, .. } | Gesture::AxisPan { before, .. } => {
@@ -1701,6 +1767,95 @@ impl FigState {
         }
         self.rev += 1;
         self.rebuild(ctx);
+    }
+}
+
+/// What a pointer event on the error figure or its log asks of the figure.
+enum ErrorAct {
+    /// Nothing more than the pane's change.
+    None,
+    /// Go to an entry's place (the first error's with None).
+    Goto(Option<usize>),
+}
+
+/// A pointer event on the error figure (symbolic, or its log over the figure): a click on the
+/// symbolic figure, the log's header or the badge turns it over; a press on an entry marks it
+/// and a double click goes to its place; the pointer over an entry marks it; the wheel scrolls
+/// the log by lines, the rest carried. `lines` is the log's layout while it's up.
+fn on_error(
+    pane: &mut Pane,
+    p: &SurfacePointer,
+    at: (f32, f32),
+    swallow: bool,
+    lines: Option<&plot::LogLayout>,
+) -> ErrorAct {
+    let hit = pane.hit_at(at);
+    match p.kind {
+        PointerKind::Move => {
+            if let (Some((top, _)), Hit::LogEntry(i)) = (pane.log, &hit) {
+                pane.log = Some((top, *i as usize));
+            }
+            pane.hovering = true;
+            ErrorAct::None
+        }
+        PointerKind::Press(Button::Left) if !swallow => {
+            pane.held = Some(Button::Left);
+            if let (Some((top, _)), Hit::LogEntry(i)) = (pane.log, &hit) {
+                pane.log = Some((top, *i as usize));
+                if p.clicks >= 2 {
+                    pane.gesture = Gesture::Swallowed;
+                    return ErrorAct::Goto(Some(*i as usize));
+                }
+            }
+            pane.gesture = Gesture::Pressed {
+                at,
+                hit,
+                button: Button::Left,
+                mods: p.mods,
+                clicks: p.clicks,
+            };
+            ErrorAct::None
+        }
+        PointerKind::Press(Button::Left) => {
+            pane.held = Some(Button::Left);
+            pane.gesture = Gesture::Swallowed;
+            ErrorAct::None
+        }
+        PointerKind::Release(Button::Left) => {
+            pane.held = None;
+            let g = std::mem::replace(&mut pane.gesture, Gesture::None);
+            if let Gesture::Pressed {
+                hit: pressed,
+                at: from,
+                ..
+            } = g
+                && (from.0 - at.0).hypot(from.1 - at.1) < CLICK_SLOP
+                && matches!(pressed, Hit::ErrorFigure | Hit::Badge)
+                && pane.hit_at(at) == pressed
+            {
+                pane.log = match pane.log {
+                    Some(_) => None,
+                    None => Some((0, 0)),
+                };
+                pane.log_carry = 0.0;
+            }
+            ErrorAct::None
+        }
+        PointerKind::Scroll { dy, .. } => {
+            if let (Some((top, mark)), Some(lines)) = (pane.log, lines)
+                && dy.is_finite()
+            {
+                let cell = pane.cell.height as f32 / pane.scale();
+                let by = dy * cell / plot::errors::LOG_LINE + pane.log_carry;
+                let whole = by.trunc();
+                pane.log_carry = by - whole;
+                let page = plot::log_page(pane.size());
+                let top = (top as f32 + whole).clamp(0.0, lines.max_top(page) as f32) as usize;
+                pane.log = Some((top, mark));
+            }
+            ErrorAct::None
+        }
+        _ => ErrorAct::None,
     }
 }
 
@@ -1897,21 +2052,19 @@ impl Act<'_> {
         self.set(v, Change::Live);
     }
 
-    /// A release: of the gesture's button, the gesture's end; of another, nothing. Some(true)
-    /// when it was a click on the banner, for the caller to go to the error.
-    fn release(&mut self, b: Button, at: (f32, f32)) -> Option<bool> {
+    /// A release: of the gesture's button, the gesture's end; of another, nothing.
+    fn release(&mut self, b: Button, at: (f32, f32)) {
         if self.pane.held.is_some_and(|h| h != b) {
-            return None;
+            return;
         }
         self.pane.held = None;
-        let mut banner = false;
         match std::mem::replace(&mut self.pane.gesture, Gesture::None) {
             Gesture::Pressed {
                 hit,
                 mods,
                 button: Button::Left,
                 ..
-            } => banner = self.click(hit, mods, at),
+            } => self.click(hit, mods, at),
             g @ Gesture::Brush { .. } => {
                 self.pane.gesture = g;
                 let shape = self.pane.brush_shape();
@@ -1936,11 +2089,11 @@ impl Act<'_> {
             _ => {}
         }
         self.pane.rehover = true;
-        Some(banner)
     }
 
-    /// A click, on its release: by what's under it (mouse-ux §4). True for the banner.
-    fn click(&mut self, hit: Hit, mods: Mods, at: (f32, f32)) -> bool {
+    /// A click, on its release: by what's under it (mouse-ux §4). On the stale badge, the log
+    /// comes up over the figure.
+    fn click(&mut self, hit: Hit, mods: Mods, at: (f32, f32)) {
         match hit {
             Hit::LegendKey(k) => {
                 if mods.alt {
@@ -1962,7 +2115,7 @@ impl Act<'_> {
             Hit::Plot(_) | Hit::Bar { .. } | Hit::Cell { .. } => {
                 let (Some(l), Some(h)) = (self.pane.layout.as_ref(), self.pane.hits.as_ref())
                 else {
-                    return false;
+                    return;
                 };
                 let c = plot::hover::hover(self.model, l, h, &self.pane.view, at.0, at.1);
                 let near =
@@ -1990,10 +2143,12 @@ impl Act<'_> {
                 }
                 self.pane.last_click = None;
             }
-            Hit::Banner => return true,
+            Hit::Badge => {
+                self.pane.log = Some((0, 0));
+                (self.pane.hover, self.pane.near) = (None, None);
+            }
             _ => {}
         }
-        false
     }
 
     /// A double click's second press, at once: on a legend key, only that series (the first
@@ -2414,36 +2569,52 @@ impl FigState {
     }
 }
 
-/// Draw a pane's base: the chart (or what stands in for one), the banner over it, opaque on the
-/// surface's colour, presented whole.
-/// `empty` is what stands in for a chart there's no model of: nothing while the first build
-/// runs.
+/// Why a figure can't draw, as its base shows it: the last build's failure, what the log lists
+/// (its errors and warnings, or a good build's warnings), the text they're in, and the name.
+struct Failure<'a> {
+    failed: Option<&'a Failed>,
+    log: &'a [FigError],
+    text: &'a str,
+    name: &'a str,
+}
+
+/// Draw a pane's base, opaque on the surface's colour, presented whole: the log where it's up;
+/// else the chart, with the stale badge over it while the last build failed; else the error
+/// figure; else, while the first build runs, nothing.
 fn draw_base(
     p: &mut Pane,
     model: Option<&ChartModel>,
     view: &View,
     theme: &Theme,
-    (banner, empty): (Option<&str>, &str),
+    why: &Failure<'_>,
     kit: &mut Kit,
 ) {
     let scale = p.scale();
     let size = p.size();
-    let (mut scene, layout, hits) = measured(kit.book.as_mut(), scale, |m| match model {
-        Some(model) => {
-            let (s, l, h) = plot::base(model, view, size, scale, theme, m);
-            (s, Some(l), Some(h))
+    let log = p.log;
+    let (mut scene, layout, hits) = measured(kit.book.as_mut(), scale, |m| {
+        let figure = |errors: &[FigError], state: ErrorView, m: &mut dyn Measure| {
+            plot::error_figure(errors, why.text, why.name, state, size, scale, theme, m)
+        };
+        match (log, model, why.failed) {
+            (Some((top, mark)), ..) => {
+                (figure(why.log, ErrorView::Log { top, mark }, m), None, None)
+            }
+            (None, Some(model), failed) => {
+                let (mut s, l, h) = plot::base(model, view, size, scale, theme, m);
+                if let Some(f) = failed {
+                    plot::stale_badge(&mut s, f.first(), theme, m);
+                }
+                (s, Some(l), Some(h))
+            }
+            (None, None, Some(f)) => (figure(&f.all(), ErrorView::Symbolic, m), None, None),
+            (None, None, None) => {
+                let mut s = Scene::new(size.0, size.1, scale);
+                s.region(Rect::new(0.0, 0.0, size.0, size.1), Hit::Chrome);
+                (s, None, None)
+            }
         }
-        None => (
-            plot::layout::empty(size, scale, empty, theme, m),
-            None,
-            None,
-        ),
     });
-    if let Some(b) = banner {
-        measured(kit.book.as_mut(), scale, |m| {
-            plot::layout::banner(&mut scene, b, theme, m)
-        });
-    }
     let (aw, ah) = p.area_px();
     let Some(producer) = p.base.as_mut() else {
         return;
@@ -2588,7 +2759,7 @@ fn changed(old: &[Item], new: &[Item], was: Option<Rect>, now: Option<Rect>) -> 
 }
 
 /// The keys `?` shows, a pair a row.
-pub const KEY_CARD: [(&str, &str); 20] = [
+pub const KEY_CARD: [(&str, &str); 21] = [
     ("h l", "previous, next point"),
     ("j k", "series below, above"),
     ("w b", "next, previous peak"),
@@ -2604,6 +2775,7 @@ pub const KEY_CARD: [(&str, &str); 20] = [
     ("E C", "export, copy the picture"),
     ("m `", "reference here, cursor to it"),
     ("⏎", "the cursor's values"),
+    ("!", "errors and warnings, as a log"),
     ("Esc", "cancel, clear"),
     ("drag", "zoom to the brush"),
     ("⌥-drag", "pan"),

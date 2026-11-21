@@ -1276,7 +1276,9 @@ fn every_error_has_its_place() {
     }
     let empty = parse(" \n\t", "x.json", Path::new(DIR), &opt()).unwrap_err();
     assert_eq!(empty.msg, "nothing to draw: the buffer is empty");
-    assert!(empty.at.is_some());
+    // About the whole text: no place, and the kind that draws as nothing to draw.
+    assert_eq!(empty.at, None);
+    assert_eq!(empty.kind, die_fig::ErrorKind::Empty);
 }
 
 #[test]

@@ -45,18 +45,19 @@ pub mod surface;
 pub mod svg;
 pub mod theme;
 
-pub use error::{FigError, Pos};
+pub use error::{ErrorKind, FigError, Pos};
 
 use die_core::session::{Kept, Value, json};
 use die_core::{
-    Args, BufferId, Ctx, Error, Extension, Prefix, PromptSpec, Registry, Result, ShowIn, Side,
-    State,
+    Args, BufferId, Ctx, Error, Extension, Mode, Origin, Prefix, PromptSpec, Registry, Result,
+    ShowIn, Side, State,
 };
 use interact::{Action, Cursor, Setting, View};
 use jiff::tz::TimeZone;
 use source::Source;
 use spec::{DataRef, Figure};
 use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use surface::{FigState, FigSurface, Kit, Shared, SharedKit};
@@ -71,6 +72,16 @@ const PARKED: usize = 32;
 /// command again unasked; a figure of a command that printed more isn't kept.
 pub const KEPT_OUTPUT: usize = 256 * 1024;
 
+/// How a `.fig` or `.fig.json` file opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OpenAs {
+    /// As its figure, the text behind it: `\v` goes to the text and back.
+    #[default]
+    Figure,
+    /// As text, as any file: `\v` shows the figure.
+    Text,
+}
+
 /// Your options (C7), as fields.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Options {
@@ -78,6 +89,37 @@ pub struct Options {
     /// none it knows. None finds it as DIE does: `$DIE_FONT_DIR`, the app's bundle, the
     /// workspace's `fonts/`.
     pub fonts: Option<PathBuf>,
+    /// How a `.fig` or `.fig.json` file opens: as its figure (the default) or as text.
+    pub open_fig_as: OpenAs,
+}
+
+/// The file-type mode of `.fig` and `.fig.json` files (contract §8): a buffer that comes to
+/// visit one opens as its figure, unless your options say text, or the session says you last
+/// looked at it as text.
+pub const FILE_MODE: &str = "fig-file";
+
+/// Whether a file is a figure's by its name: `.fig` or `.fig.json`, in any case.
+pub fn is_fig_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    (name.ends_with(".fig") && name.len() > 4) || (name.ends_with(".fig.json") && name.len() > 9)
+}
+
+/// The `.fig` file-type mode's instance on a buffer: its enable opens the buffer as its
+/// figure in the window that shows it, when one does.
+struct FigFile;
+
+impl Mode for FigFile {
+    fn on_enable(&mut self, buf: BufferId, ctx: &mut Ctx) -> Result {
+        ctx.with_ext(|fig: &mut Fig, ctx| fig.opened(ctx, buf))?
+    }
+
+    /// Saved under a name that isn't a figure's: it's text from now on.
+    fn on_disable(&mut self, buf: BufferId, ctx: &mut Ctx) {
+        let _ = ctx.with_ext(|fig: &mut Fig, _| fig.pending.retain(|b| *b != buf));
+    }
 }
 
 /// The extension: figures from data.
@@ -94,9 +136,20 @@ pub struct Fig {
     /// What a figure `\v` put away left: its view and cursor, by its source, for the next.
     parked: Vec<(Source, View, Option<Cursor>)>,
     /// What the session was last given, and what it was made from (call 1175's cache): the
-    /// figures' revisions, how many there were, and the focused buffer.
+    /// figures' revisions, how many there were, the views' revision, and the focused buffer.
     #[allow(clippy::type_complexity)]
-    kept: RefCell<Option<((u64, usize, Option<BufferId>), Kept)>>,
+    kept: RefCell<Option<((u64, usize, u64, Option<BufferId>), Kept)>>,
+    /// `.fig` buffers waiting to open as their figure: each does when the focused window first
+    /// shows it.
+    pending: Vec<BufferId>,
+    /// `.fig` buffers to leave as text when their mode comes: the session said you last looked
+    /// at them so, or `fig-spec` made them to edit.
+    as_text: BTreeSet<BufferId>,
+    /// How you last looked at each source buffer: as its figure or as text. The session keeps
+    /// it, so a restart opens each file as you left it.
+    views: BTreeMap<BufferId, OpenAs>,
+    /// Goes up with `views`: the session's cache key.
+    views_rev: u64,
 }
 
 impl Fig {
@@ -227,6 +280,7 @@ impl Fig {
             return Fig::show(ctx, &state);
         }
         ctx.text(buf)?;
+        self.seen(buf, OpenAs::Figure);
         let source = Source::Buffer(buf);
         if let Some(state) = self.on_source(&source) {
             return Fig::show(ctx, &state);
@@ -255,6 +309,7 @@ impl Fig {
             },
         };
         ctx.show(to, ShowIn::Current)?;
+        self.seen(to, OpenAs::Text);
         if let Some(buf) = buf.filter(|b| !shows(ctx, *b)) {
             // Kept by what the source is, not what it held: a command's line and directory,
             // not its output. A selection's text was a moment's, and isn't kept at all.
@@ -339,6 +394,53 @@ impl Fig {
     /// A buffer was killed: a figure's goes with its state, its timers and jobs.
     fn killed(&mut self, buf: BufferId) {
         self.figs.retain(|s| s.borrow().buf != Some(buf));
+        self.pending.retain(|b| *b != buf);
+        self.as_text.remove(&buf);
+        if self.views.remove(&buf).is_some() {
+            self.views_rev += 1;
+        }
+    }
+
+    /// You're looking at a source buffer this way now: the session keeps it, and a `.fig`
+    /// waiting to open as its figure no longer waits.
+    fn seen(&mut self, buf: BufferId, how: OpenAs) {
+        self.pending.retain(|b| *b != buf);
+        if self.views.insert(buf, how) != Some(how) {
+            self.views_rev += 1;
+        }
+    }
+
+    /// A `.fig` buffer's mode came (it was opened, restored or saved under a figure's name):
+    /// it opens as its figure in the focused window if that shows it, or when it first does;
+    /// not where your options say text or the session says you left it as text.
+    fn opened(&mut self, ctx: &mut Ctx, buf: BufferId) -> Result {
+        if self.options.open_fig_as == OpenAs::Text || self.as_text.remove(&buf) {
+            return Ok(());
+        }
+        if !self.pending.contains(&buf) {
+            self.pending.push(buf);
+        }
+        self.open_pending(ctx)
+    }
+
+    /// The `.fig` buffer the focused window shows, if it's waiting: its figure there.
+    fn open_pending(&mut self, ctx: &mut Ctx) -> Result {
+        let Some(w) = ctx.focused() else {
+            return Ok(());
+        };
+        let Some(buf) = ctx.window_buffer(w).filter(|b| self.pending.contains(b)) else {
+            return Ok(());
+        };
+        self.pending.retain(|b| *b != buf);
+        if ctx.text(buf).is_err() {
+            return Ok(());
+        }
+        let args = Args {
+            buffer: Some(buf),
+            window: Some(w),
+            ..Args::default()
+        };
+        self.toggle(ctx, &args)
     }
 }
 
@@ -367,6 +469,70 @@ pub fn faces() -> &'static [&'static str] {
 
 fn not_a_figure() -> Error {
     Error::Msg("fig: not a figure".into())
+}
+
+/// Run `f` on the figure's state and pane when its log is up in the window the command came
+/// from; None otherwise, for the key's other meaning.
+fn in_log(
+    ctx: &mut Ctx,
+    a: &Args,
+    f: impl FnOnce(&mut FigState, die_core::WindowId) -> Result,
+) -> Option<Result> {
+    let (state, w) = here(ctx, a).ok()?;
+    if state.borrow().panes.get(&w).is_none_or(|p| p.log.is_none()) {
+        return None;
+    }
+    Some(on_fig(ctx, a, true, |st, w, _| f(st, w)))
+}
+
+/// The log's keys: `j` and `k` to the next and previous entry, `gg` and `G` to the first and
+/// last, each brought into view; `C-d` and `C-u` half a page down and up, the mark kept on the
+/// page. Other motions do nothing in the log.
+fn log_move(st: &mut FigState, w: die_core::WindowId, action: &Action, n: u32) -> Result {
+    let lines = st.log_layout();
+    let Some(p) = st.panes.get_mut(&w) else {
+        return Ok(());
+    };
+    let Some((top, mark)) = p.log else {
+        return Ok(());
+    };
+    let page = plot::log_page(p.size());
+    let last = lines.starts.len().saturating_sub(1);
+    let n = n as usize;
+    let (top, mark) = match action {
+        Action::Series(by) if *by > 0 => {
+            let mark = (mark + n).min(last);
+            (lines.reveal(top, mark, page), mark)
+        }
+        Action::Series(_) => {
+            let mark = mark.saturating_sub(n);
+            (lines.reveal(top, mark, page), mark)
+        }
+        Action::First => (0, 0),
+        Action::Last => (lines.reveal(top, last, page), last),
+        Action::Scroll { dy, .. } => {
+            let by = (page / 2).max(1) * n;
+            let top = if *dy > 0.0 {
+                (top + by).min(lines.max_top(page))
+            } else {
+                top.saturating_sub(by)
+            };
+            // The mark stays on the page: the first entry on it, or the last, as the page went.
+            let on =
+                |i: usize| lines.starts[i] + lines.lens[i] > top && lines.starts[i] < top + page;
+            let mark = if lines.starts.get(mark).is_some() && on(mark) {
+                mark
+            } else if *dy > 0.0 {
+                (0..=last).find(|&i| on(i)).unwrap_or(last)
+            } else {
+                (0..=last).rev().find(|&i| on(i)).unwrap_or(0)
+            };
+            (top, mark)
+        }
+        _ => (top, mark),
+    };
+    p.log = Some((top, mark));
+    Ok(())
 }
 
 /// The figure a command was typed on, and its window's pane.
@@ -893,25 +1059,34 @@ fn search(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
-/// `fig-goto-error` (`<CR>` or a click on the banner): to the line and column the last build
-/// failed at, in the figure's source or the data file it names.
+/// `fig-goto-error` (`<CR>` in the log or on the error figure, a double click on an entry): to
+/// the line and column of the log's entry (the one a count names, from 1, else the marked one),
+/// or of the first error where the log isn't up, in the figure's source or the data file it
+/// names, shown in the window as `\v` shows the source.
 fn goto_error(ctx: &mut Ctx, a: &Args) -> Result {
-    let (state, _) = here(ctx, a)?;
-    let (failed, source) = {
+    let (state, w) = here(ctx, a)?;
+    let (target, source) = {
         let st = state.borrow();
-        (st.error.clone(), st.source.clone())
+        let log = st.panes.get(&w).and_then(|p| p.log);
+        let entry = a.count.map(|n| n.saturating_sub(1)).or(log.map(|l| l.1));
+        let target = match entry {
+            Some(i) => st.log_errors().get(i).cloned(),
+            None => st.error.as_ref().map(|f| f.first().clone()),
+        };
+        (target, st.source.clone())
     };
-    let Some(failed) = failed else {
+    let Some(error) = target else {
         return Err(Error::Msg("fig: no error to go to".into()));
     };
-    let buf = match (&failed.file, &source) {
+    let buf = match (&error.file, &source) {
         (Some(path), _) | (None, Source::File(path)) => ctx.open_file(path)?,
         (None, Source::Buffer(b)) if ctx.is_live(*b) => *b,
-        _ => return Err(Error::Msg(format!("fig: {}", failed.error))),
+        _ => return Err(Error::Msg(format!("fig: {error}"))),
     };
     let shown = ctx.show(buf, ShowIn::Current)?;
+    ctx.with_ext(|fig: &mut Fig, _| fig.seen(buf, OpenAs::Text))?;
     state.borrow_mut().settle(ctx);
-    if let (Some(w), Some(at)) = (shown, failed.error.at)
+    if let (Some(w), Some(at)) = (shown, error.at)
         && let Ok(t) = ctx.text_mut(buf)
     {
         let line = t
@@ -927,8 +1102,10 @@ fn goto_error(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
-/// `fig-spec`: the figure as a spec in a new buffer `NAME.fig.json`, unsaved: a guessed figure
-/// becomes one to edit, its data by its file's path where it came from one.
+/// `fig-spec`: the figure as a spec in a new buffer `NAME.fig` beside the data, unsaved and
+/// shown as text to edit: a guessed figure becomes one to edit, its data by its file's path
+/// where it came from one. `:w` writes it there; where a file of that name is there already,
+/// the buffer has no file.
 fn write_spec(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, _) = here(ctx, a)?;
     let (text, name, dir) = {
@@ -961,8 +1138,35 @@ fn write_spec(ctx: &mut Ctx, a: &Args) -> Result {
             st.dir.clone(),
         )
     };
-    let b = ctx.create_text(&format!("{name}.fig.json"), &text);
-    ctx.set_directory(b, dir);
+    let path = dir.join(format!("{name}.fig"));
+    let taken = path.exists()
+        || ctx.buffer_list().into_iter().any(|b| {
+            ctx.file(b)
+                .is_some_and(|f| source::same_path(&f.path, &path))
+        });
+    let b = if taken || !path.is_absolute() {
+        let b = ctx.create_text(&format!("{name}.fig"), &text);
+        ctx.set_directory(b, dir);
+        if taken {
+            ctx.messages.push(format!(
+                "fig: {} is there already, so the spec is in a buffer with no file",
+                path.display()
+            ));
+        }
+        b
+    } else {
+        let b = ctx.open_file(&path)?;
+        // Text to edit, not the figure it makes: its mode, queued, finds it here.
+        ctx.with_ext(|fig: &mut Fig, _| {
+            fig.as_text.insert(b);
+            fig.seen(b, OpenAs::Text);
+        })?;
+        ctx.text_mut(b)?
+            .tx(Origin::Extension)
+            .insert(0, &text)
+            .commit()?;
+        b
+    };
     ctx.show(b, ShowIn::Current)?;
     // Run from `:`, a key or not: the figure may show nowhere now, and its poll stops.
     state.borrow_mut().settle(ctx);
@@ -1064,7 +1268,8 @@ impl Fig {
     /// runs nothing. A selection's isn't kept: its text was a moment's.
     fn keep(&self, ctx: &Ctx) -> Kept {
         let focused = ctx.focused_buffer();
-        let (mut buffers, mut figures) = (vec![], vec![]);
+        let (mut buffers, mut figures): (BTreeMap<BufferId, Value>, Vec<Value>) =
+            (BTreeMap::new(), vec![]);
         for s in &self.figs {
             let st = s.borrow();
             if !st.buf.is_some_and(|b| ctx.is_live(b)) {
@@ -1074,7 +1279,9 @@ impl Fig {
             let mut v = view_value(&view, &cursor);
             v["shown"] = Value::Bool(st.buf == focused);
             match &st.source {
-                Source::Buffer(b) => buffers.push((*b, v)),
+                Source::Buffer(b) => {
+                    buffers.insert(*b, v);
+                }
                 Source::File(p) => {
                     v["file"] = json!(p.display().to_string());
                     figures.push(v);
@@ -1094,11 +1301,25 @@ impl Fig {
                 Source::Text(_) => {}
             }
         }
+        // How you last looked at each source buffer, on its figure's record or one of its own.
+        for (b, how) in &self.views {
+            if !ctx.is_live(*b) {
+                continue;
+            }
+            let how = match how {
+                OpenAs::Figure => "figure",
+                OpenAs::Text => "text",
+            };
+            buffers.entry(*b).or_insert_with(|| json!({}))["as"] = json!(how);
+        }
         let state = match figures.is_empty() {
             true => Value::Null,
             false => json!({ "figures": figures }),
         };
-        Kept { state, buffers }
+        Kept {
+            state,
+            buffers: buffers.into_iter().collect(),
+        }
     }
 }
 
@@ -1109,6 +1330,7 @@ impl Extension for Fig {
 
     fn register(&mut self, reg: &mut Registry) {
         theme::register(reg);
+        reg.mode(FILE_MODE, || FigFile).files(is_fig_file);
         reg.ext_command(
             "fig-toggle",
             "Show this buffer's data as a figure, or the buffer again from its figure. In visual state, chart the selected lines.",
@@ -1121,18 +1343,52 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-spec",
-            "Write the figure as a spec into a new buffer, NAME.fig.json, unsaved: a guessed figure becomes one to edit.",
+            "Write the figure as a spec into a new buffer, NAME.fig beside the data, unsaved: a guessed figure becomes one to edit.",
             write_spec,
         );
         reg.command(
             "fig-goto-error",
-            "Go to the line and column the figure's last build failed at, in its source or the data file it names.",
+            "Go to the line and column of the log's marked entry (or the one a count names), or of the first error, in the figure's source or the data file it names.",
             goto_error,
         );
+        reg.command(
+            "fig-log",
+            "!: every error and warning of the last build as a log, or the figure again: on a figure that can't draw, on one kept with the stale badge, or on one with warnings.",
+            |ctx, a| {
+                on_fig(ctx, a, false, |st, w, _| {
+                    let something = st.error.is_some() || !st.warnings().is_empty();
+                    let Some(p) = st.panes.get_mut(&w) else {
+                        return Ok(());
+                    };
+                    if p.log.take().is_some() {
+                        return Ok(());
+                    }
+                    if !something {
+                        return Err(Error::Msg("fig: no errors or warnings".into()));
+                    }
+                    p.log = Some((0, 0));
+                    Ok(())
+                })
+            },
+        );
+        for (name, by) in [("fig-log-page-down", 1.0f32), ("fig-log-page-up", -1.0)] {
+            let doc = if by > 0.0 {
+                "C-d: half a page down the log."
+            } else {
+                "C-u: half a page up the log."
+            };
+            reg.command(name, doc, move |ctx, a| {
+                let action = Action::Scroll { dx: 0.0, dy: by };
+                in_log(ctx, a, |st, w| log_move(st, w, &action, count(a))).unwrap_or(Ok(()))
+            });
+        }
         for (name, _, doc) in MOTIONS {
             let action = motion_of(name);
             reg.command(name, doc, move |ctx, a| {
                 let action = action.clone();
+                if let Some(done) = in_log(ctx, a, |st, w| log_move(st, w, &action, count(a))) {
+                    return done;
+                }
                 act(ctx, a, move |act, a| {
                     act.move_cursor(&action, count(a));
                 })
@@ -1278,10 +1534,15 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-detail",
-            "⏎: what the cursor is on and its values; on a figure whose last build failed, to the error.",
+            "⏎: what the cursor is on and its values; in the log, to the marked entry's place; on a figure that can't draw, to the error.",
             |ctx, a| {
                 let (state, w) = here(ctx, a)?;
-                if state.borrow().error.is_some() {
+                let to_error = {
+                    let st = state.borrow();
+                    let log = st.panes.get(&w).is_some_and(|p| p.log.is_some());
+                    log || (st.error.is_some() && st.model.is_none())
+                };
+                if to_error {
                     return goto_error(ctx, a);
                 }
                 let said = state.borrow().detail(w);
@@ -1359,6 +1620,9 @@ impl Extension for Fig {
             .bind(Normal, "?", "fig-help")
             .bind(Normal, "<Esc>", "fig-cancel")
             .bind(Normal, "<CR>", "fig-detail")
+            .bind(Normal, "!", "fig-log")
+            .bind(Normal, "<C-d>", "fig-log-page-down")
+            .bind(Normal, "<C-u>", "fig-log-page-up")
             .bind(Normal, "<leader>v", "fig-toggle")
             // The keys a buffer can't do without, as the whiteboard binds them for its own
             // surface: there's nothing to write, so ZZ is ZQ.
@@ -1399,6 +1663,10 @@ impl Extension for Fig {
             for s in figs {
                 s.borrow_mut().settle(ctx);
             }
+            // A `.fig` that came while no window showed it opens as its figure once one does.
+            if ctx.with_ext(|fig: &mut Fig, _| !fig.pending.is_empty())? {
+                ctx.with_ext(|fig: &mut Fig, ctx| fig.open_pending(ctx))??;
+            }
             Ok(())
         })
         .detach();
@@ -1411,7 +1679,7 @@ impl Extension for Fig {
     /// revisions and the focused buffer, since this is asked twice a second.
     fn save_session(&self, ctx: &Ctx) -> Kept {
         let revs = self.figs.iter().map(|s| s.borrow().rev).sum::<u64>();
-        let rev = (revs, self.figs.len(), ctx.focused_buffer());
+        let rev = (revs, self.figs.len(), self.views_rev, ctx.focused_buffer());
         if let Some((at, kept)) = &*self.kept.borrow()
             && *at == rev
         {
@@ -1465,7 +1733,22 @@ impl Extension for Fig {
             Ok(())
         };
         for (buf, v) in &kept.buffers {
-            if ctx.text(*buf).is_ok()
+            if ctx.text(*buf).is_err() {
+                continue;
+            }
+            // How you last looked at it: a `.fig` left as text opens as text.
+            match v.get("as").and_then(Value::as_str) {
+                Some("text") => {
+                    self.as_text.insert(*buf);
+                    self.views.insert(*buf, OpenAs::Text);
+                }
+                Some("figure") => {
+                    self.views.insert(*buf, OpenAs::Figure);
+                }
+                _ => {}
+            }
+            // A record with a view is a figure's; one with only how you looked is not.
+            if v.get("shown").is_some()
                 && let Err(e) = again(self, ctx, Source::Buffer(*buf), v)
             {
                 ctx.messages.push(format!("fig: {e}"));
