@@ -333,6 +333,7 @@ name = "die-dev"
 version = "0.0.0"
 dependencies = [
  "die",
+ "die-fig",
  "die-jellyfish",
  "die-markdown",
  "die-orchid-client",
