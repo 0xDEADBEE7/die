@@ -1,18 +1,24 @@
 //! The hit index: what the pointer is nearest. Nearest x by binary search over each visible
-//! series' raw samples; points and nodes in a grid hash with cells of `HIT_DENSE`; edges by
-//! segment distance.
+//! series' raw samples, stepping over a run of missing ones in `O(log runs)`; points and nodes
+//! in a grid hash with cells of `HIT_DENSE`; edges by segment distance.
 //!
 //! The plot builds one with its base layer and the surface asks it after the scene's regions
 //! (ruling 5). Everything is deterministic: the grid is a `BTreeMap`, and a tie between two
 //! points or two segments at the same distance goes to the one added last, which draws on top.
 
+use super::Pyramid;
+use super::pyramid::Missing;
 use crate::data::SeriesKey;
 use crate::interact::consts::HIT_DENSE;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// A series' samples: x and y.
-type Samples = (Arc<[f64]>, Arc<[f64]>);
+/// A series' samples, x and y, and its runs of missing samples.
+struct Samples {
+    xs: Arc<[f64]>,
+    ys: Arc<[f64]>,
+    missing: Arc<Missing>,
+}
 
 /// What's where, for the pointer: series by x, points and segments by screen position.
 #[derive(Default)]
@@ -48,8 +54,29 @@ impl HitIndex {
 
     /// A series' samples, sorted by x (ascending; a NaN x, if any, only at the end). A NaN y is
     /// a gap, which [`HitIndex::nearest_x`] steps over. Adding a key again replaces its samples.
+    /// It scans the samples once for their gaps, `O(n)`; [`HitIndex::add_series_with`] shares
+    /// a pyramid's instead.
     pub fn add_series(&mut self, key: SeriesKey, xs: Arc<[f64]>, ys: Arc<[f64]>) {
-        self.series.insert(key, (xs, ys));
+        let len = xs.len().min(ys.len());
+        let missing = Arc::new(Missing::of(&ys[..len]));
+        self.series.insert(key, Samples { xs, ys, missing });
+    }
+
+    /// As [`HitIndex::add_series`], with the gaps taken from `pyramid`, built over these same
+    /// samples, in `O(1)`: what a plot that keeps a pyramid per series adds on each layout. A
+    /// pyramid over a different number of samples isn't these samples', and they're scanned.
+    pub fn add_series_with(
+        &mut self,
+        key: SeriesKey,
+        xs: Arc<[f64]>,
+        ys: Arc<[f64]>,
+        pyramid: &Pyramid,
+    ) {
+        if pyramid.len() != xs.len().min(ys.len()) {
+            return self.add_series(key, xs, ys);
+        }
+        let missing = Arc::clone(pyramid.missing());
+        self.series.insert(key, Samples { xs, ys, missing });
     }
 
     /// A point at a screen position (logical px). One that isn't finite can't be hit.
@@ -81,18 +108,17 @@ impl HitIndex {
     /// The row of a series' sample nearest x, in data: its index in the samples given to
     /// [`HitIndex::add_series`]. Missing samples (NaN y) are passed over; on a tie the earlier x
     /// wins, and of samples at the same x the first. None for a key it doesn't have, a series
-    /// with no sample present, or a NaN x.
+    /// with no sample present, or a NaN x. `O(log n)`, however long the gaps.
     pub fn nearest_x(&self, key: &SeriesKey, x: f64) -> Option<u32> {
-        let (xs, ys) = self.series.get(key)?;
+        let Samples { xs, ys, missing } = self.series.get(key)?;
         if x.is_nan() {
             return None;
         }
         let len = xs.len().min(ys.len());
         let xs = &xs[..xs[..len].partition_point(|v| !v.is_nan())];
-        let present = |i: &usize| !ys[*i].is_nan();
         let p = xs.partition_point(|&v| v < x);
-        let right = (p..xs.len()).find(present);
-        let left = (0..p).rev().find(present);
+        let right = missing.next(p, xs.len());
+        let left = missing.prev(0, p);
         let pick = match (left, right) {
             (Some(l), Some(r)) => {
                 if x - xs[l] <= xs[r] - x {
@@ -104,7 +130,7 @@ impl HitIndex {
             (l, r) => l.or(r)?,
         };
         let first = xs.partition_point(|&v| v < xs[pick]);
-        (first..=pick).find(present).map(|i| i as u32)
+        missing.next(first, pick + 1).map(|i| i as u32)
     }
 
     /// The point nearest a screen position, within `reach` (inclusive).

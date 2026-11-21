@@ -7,9 +7,14 @@
 //! the indices of its least and greatest, and a column's range is a few aligned buckets plus
 //! fewer than [`LEAF`] raw samples at each end. Columns' ranges come from binary searches over x.
 //!
-//! Samples are `f64`, x ascending. A NaN y is a missing sample, and a gap: it never shows in an
-//! envelope, and [`Pyramid::gap`] says whether one lies between two samples, so the line breaks
-//! there. Ties go to the earlier sample, so the result is the same however it's found.
+//! Samples are `f64`, x ascending. A NaN y is a missing sample, and a gap: the line breaks there.
+//! A missing sample can split a column, so a line draws from [`Pyramid::line`], four samples for
+//! each unbroken piece of each column, and joins the window's ends to the samples
+//! [`Pyramid::beyond`] it. [`Pyramid::envelope`] is one M4 over each whole column, exact only
+//! where no sample in a column is missing. Ties go to the earlier sample, so the result is the
+//! same however it's found.
+
+use std::sync::Arc;
 
 /// A column with no sample in it.
 pub const EMPTY: [u32; 4] = [u32::MAX; 4];
@@ -25,7 +30,8 @@ pub struct Pyramid {
     /// `levels[j][b]`: the indices of the least and greatest sample in bucket `b` of
     /// `LEAF << j` samples, [`NONE`] when every one is missing.
     levels: Vec<Vec<(u32, u32)>>,
-    missing: Missing,
+    /// Shared with a [`HitIndex`](super::HitIndex) series built over the same samples.
+    missing: Arc<Missing>,
 }
 
 impl Pyramid {
@@ -35,7 +41,7 @@ impl Pyramid {
     pub fn build(xs: &[f64], ys: &[f64]) -> Pyramid {
         let len = xs.len().min(ys.len()).min(NONE as usize);
         let ys = &ys[..len];
-        let missing = Missing::of(ys);
+        let missing = Arc::new(Missing::of(ys));
         let mut levels = Vec::new();
         let base: Vec<(u32, u32)> = ys
             .chunks(LEAF)
@@ -82,15 +88,21 @@ impl Pyramid {
         self.len == 0
     }
 
+    /// Its runs of missing samples, to share.
+    pub(crate) fn missing(&self) -> &Arc<Missing> {
+        &self.missing
+    }
+
     /// For each of `columns` equal pixel columns over x in [x0, x1]: the first, min, max and
-    /// last sample (as indices into the raw data), exact at the pixel (M4). NaN gaps stay gaps.
+    /// last sample (as indices into the raw data), exact at the pixel (M4) where no sample in the
+    /// column is missing. NaN gaps stay gaps.
     ///
     /// `xs` and `ys` are the samples it was built over. A sample's column is [`column()`]'s. A
     /// column with no sample, or only missing ones, is [`EMPTY`]. Min and max are the first of
-    /// equals. The line runs on from one column's last sample to the next drawn sample unless
-    /// [`Pyramid::gap`] says a missing one lies between them; inside a column likewise, between
-    /// its four in index order. With `x1 <= x0` or a bound that isn't finite, every column is
-    /// empty.
+    /// equals, over every present sample in the column. Where a missing sample splits a column,
+    /// its four may lie on different sides of the gap, and a line drawn through them with the
+    /// gaps broken loses what lies between: a line draws from [`Pyramid::line`] instead. With
+    /// `x1 <= x0` or a bound that isn't finite, every column is empty.
     pub fn envelope(
         &self,
         xs: &[f64],
@@ -100,16 +112,96 @@ impl Pyramid {
         columns: usize,
     ) -> Vec<[u32; 4]> {
         let mut out = vec![EMPTY; columns];
+        self.columns(xs, ys, x0, x1, columns, |c, s, e| {
+            if let Some(m4) = self.m4(ys, s, e) {
+                out[c] = m4;
+            }
+        });
+        out
+    }
+
+    /// The line over x in [x0, x1] at `columns` equal pixel columns: for each unbroken piece of
+    /// each column, its column and its first, min, max and last sample (indices into the raw
+    /// data), in index order. A piece is a run of present samples with no missing one between,
+    /// inside one column, so a column a missing sample splits has a piece each side of it.
+    ///
+    /// Drawn this way it lights the pixels the line through every sample lights, breaking at
+    /// each missing one: each piece's four in index order (equal ones once), with no gap inside
+    /// a piece; then each piece's last sample joined to the next piece's first unless
+    /// [`Pyramid::gap`] says a missing one lies between them. There are at most `columns` pieces
+    /// plus one for each run of missing samples in the window. Columns, min and max are as
+    /// [`Pyramid::envelope`]'s; a column with no present sample has no piece.
+    pub fn line(
+        &self,
+        xs: &[f64],
+        ys: &[f64],
+        x0: f64,
+        x1: f64,
+        columns: usize,
+    ) -> Vec<(u32, [u32; 4])> {
+        let mut out = Vec::new();
+        self.columns(xs, ys, x0, x1, columns, |c, s, e| {
+            let mut i = s;
+            while let Some(first) = self.missing.next(i, e) {
+                // The piece runs to the next missing sample, or the column's end.
+                let end = self.missing.run_from(first).map_or(e, |(m, _)| m.min(e));
+                let m = self.range(ys, first, end);
+                out.push((c as u32, [first as u32, m.min, m.max, (end - 1) as u32]));
+                i = end;
+            }
+        });
+        out
+    }
+
+    /// The present samples nearest the window [x0, x1] outside it: the last with x below x0 and
+    /// the first with x above x1. A line joins its first drawn sample to the one below, and its
+    /// last to the one above, unless [`Pyramid::gap`] says a missing one lies between, so a
+    /// zoomed line runs on to the plot's edges. With no sample drawn in the window, the line
+    /// crosses it from the one below to the one above, unless a gap lies between them. None for
+    /// a side with no present sample, and both None for a window the envelope has no columns for
+    /// (`x1 <= x0`, or a bound that isn't finite). A sample with a NaN x is never one.
+    pub fn beyond(&self, xs: &[f64], x0: f64, x1: f64) -> (Option<u32>, Option<u32>) {
+        let len = self.len.min(xs.len());
+        if !Domain::valid(x0, x1) {
+            return (None, None);
+        }
+        let xs = &xs[..len];
+        let end = xs.partition_point(|x| !x.is_nan());
+        let lo = xs[..end].partition_point(|&x| x < x0);
+        let hi = lo + xs[lo..end].partition_point(|&x| x <= x1);
+        let below = self.missing.prev(0, lo).map(|i| i as u32);
+        let above = self.missing.next(hi, end).map(|i| i as u32);
+        (below, above)
+    }
+
+    /// Whether a missing sample (a NaN y) lies strictly between samples `a` and `b`, in either
+    /// order: where a line through them breaks.
+    pub fn gap(&self, a: u32, b: u32) -> bool {
+        let (a, b) = (a.min(b) as usize, a.max(b) as usize);
+        self.missing.between(a, b)
+    }
+
+    /// Each column `c` over x in [x0, x1] that holds a sample, with the samples `s..e` in it, in
+    /// order: binary searches over x, so `O(columns · log n)`.
+    fn columns(
+        &self,
+        xs: &[f64],
+        ys: &[f64],
+        x0: f64,
+        x1: f64,
+        columns: usize,
+        mut each: impl FnMut(usize, usize, usize),
+    ) {
         let len = self.len.min(xs.len()).min(ys.len());
         if columns == 0 || !Domain::valid(x0, x1) {
-            return out;
+            return;
         }
-        let (xs, ys) = (&xs[..len], &ys[..len]);
+        let xs = &xs[..len];
         let dom = Domain { x0, x1, columns };
         let lo = xs.partition_point(|&x| x < x0);
         let hi = lo + xs[lo..].partition_point(|&x| x <= x1);
         let mut s = lo;
-        for (c, slot) in out.iter_mut().enumerate() {
+        for c in 0..columns {
             if s >= hi {
                 break;
             }
@@ -118,19 +210,11 @@ impl Pyramid {
             } else {
                 s + xs[s..hi].partition_point(|&x| dom.index(x) <= c)
             };
-            if let Some(m4) = self.m4(ys, s, e) {
-                *slot = m4;
+            if e > s {
+                each(c, s, e);
             }
             s = e;
         }
-        out
-    }
-
-    /// Whether a missing sample (a NaN y) lies strictly between samples `a` and `b`, in either
-    /// order: where a line through them breaks.
-    pub fn gap(&self, a: u32, b: u32) -> bool {
-        let (a, b) = (a.min(b) as usize, a.max(b) as usize);
-        self.missing.between(a, b)
     }
 
     /// The first, least, greatest and last sample in `s..e`, if any isn't missing.
@@ -229,16 +313,17 @@ impl MinMax {
     }
 }
 
-/// The runs of missing samples, ascending, each maximal: `O(log runs)` to ask about.
+/// The runs of missing samples, ascending, each maximal: `O(log runs)` to ask about. The hit
+/// index keeps one per series to step over gaps.
 #[derive(Clone, Debug, Default)]
-struct Missing {
+pub(crate) struct Missing {
     /// `[start, end)` of each run.
     runs: Vec<(usize, usize)>,
 }
 
 impl Missing {
     /// The runs of NaN in `ys`.
-    fn of(ys: &[f64]) -> Missing {
+    pub(crate) fn of(ys: &[f64]) -> Missing {
         let mut runs: Vec<(usize, usize)> = Vec::new();
         for (i, y) in ys.iter().enumerate() {
             if y.is_nan() {
@@ -258,7 +343,7 @@ impl Missing {
     }
 
     /// The first sample in `i..end` that isn't missing.
-    fn next(&self, i: usize, end: usize) -> Option<usize> {
+    pub(crate) fn next(&self, i: usize, end: usize) -> Option<usize> {
         let j = match self.run_from(i) {
             Some((s, e)) if s <= i => e,
             _ => i,
@@ -267,7 +352,7 @@ impl Missing {
     }
 
     /// The last sample in `start..end` that isn't missing.
-    fn prev(&self, start: usize, end: usize) -> Option<usize> {
+    pub(crate) fn prev(&self, start: usize, end: usize) -> Option<usize> {
         if end <= start {
             return None;
         }

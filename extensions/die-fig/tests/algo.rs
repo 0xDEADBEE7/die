@@ -1,17 +1,21 @@
 //! die-fig's algorithms: fig's stress layout against golden positions and fig's own layout tests;
-//! the tidy tree and the layered layout's invariants; fig's LTTB and search scores against golden
-//! values; the pyramid's M4 envelope against a brute-force scan over random data; the hit index
-//! against brute force. One timing test, ignored, measures a million samples' envelope.
+//! the tidy tree and the layered layout's invariants, its routes for long edges and its budget;
+//! fig's LTTB and search scores against golden values, and the tiers against flex; the pyramid's
+//! M4 envelope against a brute-force scan over random data, and its line against the line
+//! through every sample; the hit index against brute force. Timing tests, ignored, measure a
+//! million samples' envelope, nearest x in a long gap, and dense layered layouts.
 
 use die_test_cap as _;
 
 use die_fig::algo::hit::segment_distance;
+use die_fig::algo::layered::DUMMY_BUDGET;
 use die_fig::algo::pyramid::{EMPTY, LEAF, column};
 use die_fig::algo::search::{UNMATCHED, score};
 use die_fig::algo::stress::seed;
-use die_fig::algo::{HitIndex, Pyramid, layered, lttb, stress, tier, tree};
+use die_fig::algo::{HitIndex, Pyramid, Routed, layered, layered_routes, lttb, stress, tier, tree};
 use die_fig::data::SeriesKey;
 use die_fig::interact::consts::HIT_DENSE;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::Instant;
 
@@ -369,6 +373,39 @@ fn tree_lays_out_a_deep_chain_without_recursion() {
     assert_eq!(p[n - 1].1, -((n - 1) as f64));
 }
 
+#[test]
+fn tree_shares_a_push_evenly_among_the_subtrees_between() {
+    // A root over a wide subtree, one or two leaves, and the same wide subtree again: the second
+    // is pushed four units off the first, and the leaves between take equal shares of the push
+    // rather than staying a unit from their left neighbour.
+    for leaves in 1..=2 {
+        let mut parent = vec![None];
+        let mut add = |p: usize| {
+            parent.push(Some(p));
+            parent.len() - 1
+        };
+        let mut kids = vec![add(0)];
+        kids.extend((0..leaves).map(|_| add(0)));
+        kids.push(add(0));
+        for r in [kids[0], kids[leaves + 1]] {
+            let (a, _, c) = (add(r), add(r), add(r));
+            for q in [a, a, c, c] {
+                add(q);
+            }
+        }
+        let n = parent.len();
+        let p = tree(n, &parent);
+        assert_tidy(n, &parent, &p);
+        let gaps: Vec<f64> = kids.windows(2).map(|w| p[w[1]].0 - p[w[0]].0).collect();
+        for g in &gaps {
+            assert!(
+                (g - 4.0 / (leaves + 1) as f64).abs() < 1e-9,
+                "{leaves} leaves: {gaps:?}"
+            );
+        }
+    }
+}
+
 // --------------------------------------------------------------------------------- layered
 
 /// The pairs of edges between neighbouring layers that cross, from the output alone (edges
@@ -485,6 +522,182 @@ fn layered_of_no_node_and_of_isolated_ones() {
     assert_eq!(layered(3, &[]), vec![(-1.0, 0.0), (0.0, 0.0), (1.0, 0.0)]);
 }
 
+/// Each edge's route: from its `from` end through its bends to its `to` end, one layer a step
+/// and never back, meeting each layer it crosses at its own slot, a unit from every node there.
+/// Empty for a bad edge and one between neighbouring layers. Past the budget, the long edges
+/// with bends span fewer layers than those without, which it counts.
+fn assert_routes(
+    n: usize,
+    edges: &[(usize, usize)],
+    p: &[(f64, f64)],
+    routes: &[Vec<(f64, f64)>],
+) -> usize {
+    assert_eq!(routes.len(), edges.len());
+    let (mut routed, mut straight, mut unrouted) = (0.0f64, f64::INFINITY, 0);
+    for (&(a, b), bends) in edges.iter().zip(routes) {
+        if a >= n || b >= n || a == b {
+            assert!(bends.is_empty(), "edge {a}->{b} has bends");
+            continue;
+        }
+        let span = (p[a].1 - p[b].1).abs();
+        if bends.is_empty() && span > 1.0 {
+            straight = straight.min(span);
+            unrouted += 1;
+            continue;
+        }
+        if span > 1.0 {
+            routed = routed.max(span);
+        }
+        assert_eq!(bends.len() as f64, span - 1.0, "edge {a}->{b}'s bends");
+        let mut line = vec![p[a]];
+        line.extend(bends);
+        line.push(p[b]);
+        let step = (p[b].1 - p[a].1).signum();
+        for w in line.windows(2) {
+            assert_eq!(w[1].1 - w[0].1, step, "edge {a}->{b} skips a layer");
+        }
+        for (v, q) in p.iter().enumerate() {
+            for bend in bends {
+                if bend.1 == q.1 {
+                    assert!((bend.0 - q.0).abs() >= 1.0, "edge {a}->{b} meets node {v}");
+                }
+            }
+        }
+    }
+    assert!(
+        routed < straight,
+        "an edge spanning {straight} has no bends, one spanning {routed} has"
+    );
+    unrouted
+}
+
+#[test]
+fn layered_routes_a_long_edge_round_the_nodes_it_passes() {
+    // A probe's graph, where 12 -> 13 drawn straight ran through node 9.
+    let edges = [
+        (0, 2),
+        (7, 13),
+        (8, 9),
+        (12, 13),
+        (1, 5),
+        (12, 13),
+        (4, 9),
+        (9, 13),
+        (9, 13),
+        (8, 13),
+        (10, 11),
+        (10, 11),
+        (0, 2),
+        (2, 5),
+        (10, 11),
+        (0, 6),
+        (7, 12),
+        (1, 7),
+        (0, 3),
+        (6, 10),
+        (2, 3),
+        (7, 11),
+        (6, 8),
+        (5, 6),
+        (6, 8),
+    ];
+    let Routed {
+        nodes: p,
+        bends: routes,
+    } = layered_routes(14, &edges);
+    assert_eq!(p, layered(14, &edges));
+    assert_layered(14, &edges, &p);
+    assert_eq!(assert_routes(14, &edges, &p, &routes), 0);
+    assert_eq!((p[12].0, p[9].0, p[13].0), (0.0, 0.0, 0.0));
+    assert_eq!(routes[3].len(), 3, "12 -> 13 spans four layers");
+    assert_eq!(routes[5], routes[3], "a duplicate takes the first's bends");
+    assert!(routes[3].iter().all(|q| q.0 != 0.0));
+}
+
+#[test]
+fn layered_routes_keep_their_invariants_on_random_graphs() {
+    for s in 0..60 {
+        let mut rng = Rng::new(900 + s);
+        let n = 2 + rng.below(60);
+        let m = rng.below(3 * n);
+        let edges: Vec<(usize, usize)> = (0..m)
+            .map(|_| {
+                let a = rng.below(n);
+                if s % 2 == 0 {
+                    // Cycles, loops and ends past the nodes.
+                    (a, rng.below(n + 2))
+                } else {
+                    (a, a + 1 + rng.below(6))
+                }
+            })
+            .collect();
+        let Routed {
+            nodes: p,
+            bends: routes,
+        } = layered_routes(n, &edges);
+        assert_eq!(p, layered(n, &edges), "seed {s}");
+        assert_eq!(assert_routes(n, &edges, &p, &routes), 0, "seed {s}");
+    }
+}
+
+#[test]
+fn layered_routes_run_an_edge_turned_round_back_up() {
+    // 0 -> 1 -> 2 -> 3 and 3 -> 0, which the layout turns round: its route climbs from 3.
+    let edges = [(0, 1), (1, 2), (2, 3), (3, 0), (2, 2), (0, 9)];
+    let Routed {
+        nodes: p,
+        bends: routes,
+    } = layered_routes(4, &edges);
+    assert_eq!(assert_routes(4, &edges, &p, &routes), 0);
+    assert_eq!(
+        routes[3].iter().map(|q| q.1).collect::<Vec<_>>(),
+        [-2.0, -1.0]
+    );
+    assert!(routes[..3].iter().chain(&routes[4..]).all(Vec::is_empty));
+}
+
+#[test]
+fn layered_keeps_to_its_dummy_budget() {
+    // Every edge of a 300-node complete DAG: longest paths put node i in layer i, and its edges
+    // would need four and a half million dummies.
+    let n = 300;
+    let edges: Vec<(usize, usize)> = (0..n)
+        .flat_map(|a| (a + 1..n).map(move |b| (a, b)))
+        .collect();
+    let Routed {
+        nodes: p,
+        bends: routes,
+    } = layered_routes(n, &edges);
+    assert!((0..n).all(|v| p[v].1 == -(v as f64)));
+    assert!(assert_routes(n, &edges, &p, &routes) > 0);
+    let bends: usize = routes.iter().map(Vec::len).sum();
+    assert!(
+        bends <= DUMMY_BUDGET && bends > DUMMY_BUDGET / 2,
+        "{bends} bends"
+    );
+}
+
+#[test]
+#[ignore = "speed"]
+fn layered_lays_out_a_dense_dag_and_a_fan_quickly() {
+    let complete: Vec<(usize, usize)> = (0..300)
+        .flat_map(|a| (a + 1..300).map(move |b| (a, b)))
+        .collect();
+    let mut fan: Vec<(usize, usize)> = (1..2000).map(|i| (i - 1, i)).collect();
+    fan.extend((2..2000).map(|i| (0, i)));
+    for (name, n, edges) in [
+        ("complete 300", 300, complete),
+        ("chain and fan 2,000", 2000, fan),
+    ] {
+        let t = Instant::now();
+        let p = layered_routes(n, &edges).nodes;
+        let took = t.elapsed();
+        println!("{name}: {took:?}");
+        assert_eq!(p.len(), n);
+        assert!(took.as_millis() < 300, "{name} took {took:?}");
+    }
+}
+
 // ------------------------------------------------------------------------------------ lttb
 
 #[test]
@@ -541,6 +754,33 @@ fn search_tiers_put_exact_before_prefix_before_substring_before_subsequence() {
     let mut ranked = labels.to_vec();
     ranked.sort_by_key(|l| tier("api", l));
     assert_eq!(ranked, ["API", "api gateway", "rapid", "Application"]);
+}
+
+#[test]
+fn search_tiers_fold_case_a_character_at_a_time_as_flex_does() {
+    // Lowercased whole, "ΟΔΟΣ" ends in a final sigma, so fig's score finds no "σ" in it; flex
+    // folds each character on its own and keeps it, and so does the tier.
+    assert_eq!(score("ΟΔΟΣ", "σ"), None);
+    assert_eq!(tier("σ", "ΟΔΟΣ"), 2);
+    assert_eq!(tier("Σ", "ΟΔΟΣ"), 2);
+    assert_eq!(tier("οδοσ", "ΟΔΟΣ"), 0);
+    // Every label flex keeps has a tier fig ranks.
+    let alphabet = ['a', 'A', 'o', 'σ', 'Σ', 'ς', 'Ο', 'δ', 'i', 'İ', 'ß', ' '];
+    let mut rng = Rng::new(77);
+    let word = |rng: &mut Rng, most: usize| -> String {
+        (0..1 + rng.below(most))
+            .map(|_| alphabet[rng.below(alphabet.len())])
+            .collect()
+    };
+    let mut kept = 0;
+    for _ in 0..4000 {
+        let (q, l) = (word(&mut rng, 3), word(&mut rng, 8));
+        if !die_core::flex_rank(&q, &[l.as_str()]).is_empty() {
+            kept += 1;
+            assert!(tier(&q, &l) < UNMATCHED, "flex keeps {l:?} for {q:?}");
+        }
+    }
+    assert!(kept > 500, "{kept}");
 }
 
 // --------------------------------------------------------------------------------- pyramid
@@ -702,6 +942,232 @@ fn column_splits_the_window_evenly_and_holds_both_ends() {
     assert_eq!(column(1.0, 1.0, 1.0, 5), None);
 }
 
+/// Merged y-intervals, sorted.
+fn merged(mut v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    v.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (lo, hi) in v {
+        match out.last_mut() {
+            Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
+            _ => out.push((lo, hi)),
+        }
+    }
+    out
+}
+
+/// What a line lights, as each column's merged y-intervals and the segments between columns
+/// (index pairs, sorted): from `segments` and lone `points`, in the window's columns.
+type Lit = (BTreeMap<usize, Vec<(f64, f64)>>, Vec<(u32, u32)>);
+
+fn lit(
+    ys: &[f64],
+    col: impl Fn(u32) -> Option<usize>,
+    points: &[u32],
+    segments: &[(u32, u32)],
+) -> Lit {
+    let (mut cols, mut across) = (BTreeMap::<usize, Vec<(f64, f64)>>::new(), Vec::new());
+    for &i in points {
+        let y = ys[i as usize];
+        cols.entry(col(i).unwrap()).or_default().push((y, y));
+    }
+    for &(a, b) in segments {
+        let (ya, yb) = (ys[a as usize], ys[b as usize]);
+        match (col(a), col(b)) {
+            (Some(c), Some(d)) if c == d => {
+                cols.entry(c).or_default().push((ya.min(yb), ya.max(yb)))
+            }
+            _ => across.push((a.min(b), a.max(b))),
+        }
+    }
+    let cols = cols.into_iter().map(|(c, v)| (c, merged(v))).collect();
+    across.sort_unstable();
+    across.dedup();
+    (cols, across)
+}
+
+/// The line through every sample, breaking at each missing one, within [x0, x1] and on to the
+/// nearest samples outside it.
+fn whole_line(xs: &[f64], ys: &[f64], x0: f64, x1: f64, columns: usize) -> Lit {
+    let inside = |i: usize| column(xs[i], x0, x1, columns).is_some();
+    let present = |i: usize| !ys[i].is_nan();
+    let points: Vec<u32> = (0..xs.len())
+        .filter(|&i| inside(i) && present(i))
+        .map(|i| i as u32)
+        .collect();
+    let segments: Vec<(u32, u32)> = (1..xs.len())
+        .filter(|&i| present(i - 1) && present(i) && (inside(i - 1) || inside(i)))
+        .map(|i| (i as u32 - 1, i as u32))
+        .collect();
+    // A segment from outside across the whole window, when no sample is in it.
+    let lo = xs.partition_point(|&x| x < x0);
+    let mut segments = segments;
+    if lo > 0 && lo < xs.len() && !inside(lo) && present(lo - 1) && present(lo) {
+        segments.push((lo as u32 - 1, lo as u32));
+    }
+    lit(
+        ys,
+        |i| column(xs[i as usize], x0, x1, columns),
+        &points,
+        &segments,
+    )
+}
+
+/// What [`Pyramid::line`] draws, by its rule, with [`Pyramid::beyond`] at the ends; and every
+/// segment it draws checked against the raw samples for a gap.
+fn drawn_line(pyr: &Pyramid, xs: &[f64], ys: &[f64], x0: f64, x1: f64, columns: usize) -> Lit {
+    let pieces = pyr.line(xs, ys, x0, x1, columns);
+    let (below, above) = pyr.beyond(xs, x0, x1);
+    let (mut points, mut segments) = (Vec::new(), Vec::new());
+    let mut last: Option<u32> = below;
+    for &(c, m4) in &pieces {
+        let mut four = m4.to_vec();
+        four.sort_unstable();
+        four.dedup();
+        assert!(
+            four.iter()
+                .all(|&i| column(xs[i as usize], x0, x1, columns) == Some(c as usize))
+        );
+        points.extend(&four);
+        segments.extend(four.windows(2).map(|w| (w[0], w[1])));
+        if let Some(l) = last.filter(|&l| !pyr.gap(l, four[0])) {
+            segments.push((l, four[0]));
+        }
+        last = Some(four[four.len() - 1]);
+    }
+    if let (Some(l), Some(a)) = (last, above)
+        && !pyr.gap(l, a)
+    {
+        segments.push((l, a));
+    }
+    for &(a, b) in &segments {
+        let (a, b) = (a.min(b) as usize, a.max(b) as usize);
+        assert!(
+            ys[a..=b].iter().all(|y| !y.is_nan()),
+            "{a}..{b} is drawn across a gap"
+        );
+    }
+    lit(
+        ys,
+        |i| column(xs[i as usize], x0, x1, columns),
+        &points,
+        &segments,
+    )
+}
+
+#[test]
+fn pyramid_line_lights_what_the_line_through_every_sample_lights() {
+    let mut split = 0;
+    for s in 0..60 {
+        let mut rng = Rng::new(300 + s);
+        let n = [1, LEAF + 1, 300, 1000, 4000][s as usize % 5] + rng.below(3);
+        let (xs, mut ys) = series(&mut rng, n);
+        for y in &mut ys {
+            // Spikes, which a column's four must keep.
+            if rng.below(97) == 0 {
+                *y += 25.0;
+            }
+        }
+        let pyr = Pyramid::build(&xs, &ys);
+        let (lo, hi) = (xs[0], xs[n - 1]);
+        let span = (hi - lo).max(1.0);
+        for _ in 0..6 {
+            let a = lo + span * (rng.unit() * 1.4 - 0.2);
+            let b = a + span * rng.unit() * 1.2 + 1e-3;
+            for columns in [1, 3, 64, 799, 2 * n + 1] {
+                assert_eq!(
+                    drawn_line(&pyr, &xs, &ys, a, b, columns),
+                    whole_line(&xs, &ys, a, b, columns),
+                    "seed {s}, {columns} columns over {a}..{b}"
+                );
+                let pieces = pyr.line(&xs, &ys, a, b, columns);
+                split += pieces.windows(2).filter(|w| w[0].0 == w[1].0).count();
+            }
+        }
+    }
+    assert!(split > 1000, "only {split} columns split by a gap");
+}
+
+#[test]
+fn pyramid_line_splits_a_column_at_a_missing_sample() {
+    // One column over 0, 10, a gap, 5, -3: the envelope's four span the gap, and a line through
+    // them broken at it never reaches -3; the line's two pieces do.
+    let xs = [0.0, 1.0, 2.0, 3.0, 4.0];
+    let ys = [0.0, 10.0, f64::NAN, 5.0, -3.0];
+    let pyr = Pyramid::build(&xs, &ys);
+    assert_eq!(pyr.envelope(&xs, &ys, 0.0, 4.0, 1), vec![[0, 4, 1, 4]]);
+    assert_eq!(
+        pyr.line(&xs, &ys, 0.0, 4.0, 1),
+        vec![(0, [0, 0, 1, 1]), (0, [3, 4, 3, 4])]
+    );
+    assert_eq!(
+        pyr.line(&xs, &ys, 0.0, 4.0, 5),
+        vec![(0, [0; 4]), (1, [1; 4]), (3, [3; 4]), (4, [4; 4])]
+    );
+    assert!(pyr.line(&xs, &ys, 4.0, 0.0, 1).is_empty());
+    assert!(pyr.line(&xs, &ys, 0.0, 4.0, 0).is_empty());
+}
+
+#[test]
+fn pyramid_line_keeps_every_spike_among_scattered_missing_samples() {
+    // Flat, a spike to 10 in each column of 256 samples, one sample in 64 missing (widths in
+    // powers of two, so no sample rounds into its neighbour's column).
+    let n = 1 << 14;
+    let xs: Vec<f64> = (0..n).map(f64::from).collect();
+    let ys: Vec<f64> = (0..n)
+        .map(|i| match (i % 64, i % 256) {
+            (63, _) => f64::NAN,
+            (_, 120) => 10.0,
+            _ => f64::from(i % 3) * 0.01,
+        })
+        .collect();
+    let pyr = Pyramid::build(&xs, &ys);
+    let pieces = pyr.line(&xs, &ys, 0.0, f64::from(n), 64);
+    assert_eq!(pieces.len(), 4 * 64, "four pieces a column");
+    for c in 0..64u32 {
+        let spike = c * 256 + 120;
+        let piece = pieces.iter().find(|p| p.0 == c && p.1[2] == spike);
+        assert!(
+            piece.is_some_and(|p| p.1[0] < spike && spike < p.1[3]),
+            "column {c}'s spike isn't drawn"
+        );
+    }
+}
+
+#[test]
+fn pyramid_beyond_finds_the_present_samples_past_the_window() {
+    let nan = f64::NAN;
+    let xs = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, nan];
+    let ys = [0.0, 1.0, 2.0, nan, 4.0, 5.0, 6.0, nan, 8.0, 9.0];
+    let pyr = Pyramid::build(&xs, &ys);
+    // Zoomed so the window's edges are missing samples: the line stops at the gaps.
+    assert_eq!(pyr.beyond(&xs, 3.0, 7.0), (Some(2), Some(8)));
+    assert!(pyr.gap(2, 4) && pyr.gap(6, 8));
+    // A window between two samples, with none in it: the line crosses it from 0 to 1.
+    assert_eq!(pyr.beyond(&xs, 0.2, 0.8), (Some(0), Some(1)));
+    assert!(pyr.line(&xs, &ys, 0.2, 0.8, 4).is_empty() && !pyr.gap(0, 1));
+    // Past the data's ends; the NaN x at the end is never a neighbour.
+    assert_eq!(pyr.beyond(&xs, -5.0, 0.0), (None, Some(1)));
+    assert_eq!(pyr.beyond(&xs, 7.5, 100.0), (Some(6), None));
+    assert_eq!(pyr.beyond(&xs, 5.0, 4.0), (None, None));
+    assert_eq!(pyr.beyond(&xs, nan, 4.0), (None, None));
+    // Against a scan on random data.
+    for s in 0..20 {
+        let mut rng = Rng::new(700 + s);
+        let n = 1 + rng.below(3000);
+        let (xs, ys) = series(&mut rng, n);
+        let pyr = Pyramid::build(&xs, &ys);
+        let (lo, hi) = (xs[0], xs[xs.len() - 1]);
+        for _ in 0..100 {
+            let a = lo + (hi - lo + 2.0) * (rng.unit() * 1.2 - 0.1) - 1.0;
+            let b = a + (hi - lo) * rng.unit() * 0.3 + 1e-6;
+            let below = (0..xs.len()).rev().find(|&i| xs[i] < a && !ys[i].is_nan());
+            let above = (0..xs.len()).find(|&i| xs[i] > b && !ys[i].is_nan());
+            let want = (below.map(|i| i as u32), above.map(|i| i as u32));
+            assert_eq!(pyr.beyond(&xs, a, b), want, "seed {s}, {a}..{b}");
+        }
+    }
+}
+
 #[test]
 #[ignore = "speed"]
 fn pyramid_envelope_of_a_million_samples_at_2560_columns() {
@@ -721,9 +1187,21 @@ fn pyramid_envelope_of_a_million_samples_at_2560_columns() {
         env = pyr.envelope(&xs, &ys, lo, lo + w, 2560);
         worst = worst.max(t.elapsed());
     }
-    println!("1M samples: build {build:?}, worst envelope at 2,560 columns {worst:?}");
+    let mut worst_line = std::time::Duration::ZERO;
+    for k in 0..20 {
+        let w = (hi - lo) / f64::from(1 << (k % 10));
+        let t = Instant::now();
+        let pieces = pyr.line(&xs, &ys, lo, lo + w, 2560);
+        worst_line = worst_line.max(t.elapsed());
+        assert!(pieces.len() >= env.iter().filter(|c| **c != EMPTY).count() / 2);
+    }
+    println!(
+        "1M samples: build {build:?}, worst envelope at 2,560 columns {worst:?}, worst line \
+         {worst_line:?}"
+    );
     assert_eq!(env, brute(&xs, &ys, lo, lo + (hi - lo) / 512.0, 2560));
     assert!(worst.as_millis() < 20, "an envelope took {worst:?}");
+    assert!(worst_line.as_millis() < 20, "a line took {worst_line:?}");
 }
 
 // ------------------------------------------------------------------------------------- hit
@@ -776,20 +1254,88 @@ fn nearest_x_equals_a_brute_force_scan_on_random_data() {
             } else {
                 lo + (hi - lo + 2.0) * rng.unit() - 1.0
             };
-            let mut want: Option<(f64, u32)> = None;
-            for (i, (&x, &y)) in xs.iter().zip(&ys).enumerate() {
-                let d = (x - q).abs();
-                if !y.is_nan() && want.is_none_or(|(wd, _)| d < wd) {
-                    want = Some((d, i as u32));
-                }
-            }
             assert_eq!(
                 h.nearest_x(&key("s"), q),
-                want.map(|w| w.1),
+                nearest_by_scan(&xs, &ys, q),
                 "seed {s}, x {q}"
             );
         }
     }
+}
+
+/// The nearest present sample's row by a scan: the earlier x of a tie, the first at one x.
+fn nearest_by_scan(xs: &[f64], ys: &[f64], q: f64) -> Option<u32> {
+    let mut want: Option<(f64, u32)> = None;
+    for (i, (&x, &y)) in xs.iter().zip(ys).enumerate() {
+        let d = (x - q).abs();
+        if !y.is_nan() && want.is_none_or(|(wd, _)| d < wd) {
+            want = Some((d, i as u32));
+        }
+    }
+    want.map(|w| w.1)
+}
+
+#[test]
+fn nearest_x_steps_over_long_gaps_and_shares_a_pyramids() {
+    // 200,000 samples, present only at the ends and for a few in the middle.
+    let n = 200_000usize;
+    let xs: Vec<f64> = (0..n).map(|i| i as f64 * 0.5).collect();
+    let ys: Vec<f64> = (0..n)
+        .map(|i| match i {
+            0..10 | 100_000..100_004 => 1.0,
+            i if i >= n - 10 => 2.0,
+            _ => f64::NAN,
+        })
+        .collect();
+    let pyr = Pyramid::build(&xs, &ys);
+    let mut shared = HitIndex::new();
+    shared.add_series_with(key("s"), xs.clone().into(), ys.clone().into(), &pyr);
+    // A pyramid over other samples isn't used for these.
+    let other = Pyramid::build(&xs[..10], &ys[..10]);
+    let mut stale = HitIndex::new();
+    stale.add_series_with(key("s"), xs.clone().into(), ys.clone().into(), &other);
+    let plain = index_with("s", &xs, &ys);
+    let mut rng = Rng::new(8);
+    for _ in 0..40 {
+        let q = (rng.unit() * 1.1 - 0.05) * n as f64 * 0.5;
+        let want = nearest_by_scan(&xs, &ys, q);
+        for h in [&plain, &shared, &stale] {
+            assert_eq!(h.nearest_x(&key("s"), q), want, "x {q}");
+        }
+    }
+    // Samples 9 and 100,000 are at 4.5 and 50,000, which are equally far from 25,002.25.
+    let at = |x| plain.nearest_x(&key("s"), x);
+    assert_eq!(at(20_000.0), Some(9));
+    assert_eq!(at(25_002.25), Some(9), "a tie goes to the earlier x");
+    assert_eq!(at(25_002.35), Some(100_000));
+    assert_eq!(at(60_000.0), Some(100_003));
+}
+
+#[test]
+#[ignore = "speed"]
+fn nearest_x_in_a_gap_of_two_million_samples() {
+    let n = 2_000_000usize;
+    let xs: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let ys: Vec<f64> = (0..n)
+        .map(|i| {
+            if (10..n - 10).contains(&i) {
+                f64::NAN
+            } else {
+                1.0
+            }
+        })
+        .collect();
+    let h = index_with("s", &xs, &ys);
+    let t = Instant::now();
+    for q in 0..10_000 {
+        assert_eq!(
+            h.nearest_x(&key("s"), (n / 2 + q) as f64),
+            Some(n as u32 - 10)
+        );
+    }
+    let each = t.elapsed() / 10_000;
+    println!("nearest x in a gap of two million: {each:?} a query");
+    assert!(each.as_micros() < 20, "{each:?} a query");
 }
 
 #[test]

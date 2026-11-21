@@ -10,7 +10,7 @@ pub mod stress;
 pub mod tree;
 
 pub use hit::HitIndex;
-pub use layered::layered;
+pub use layered::{Routed, layered, layered_routes};
 pub use lttb::lttb;
 pub use pyramid::Pyramid;
 pub use search::tier;
