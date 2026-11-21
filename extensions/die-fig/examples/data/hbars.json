@@ -1,0 +1,18 @@
+{
+  "type": "bar",
+  "title": "Errors by service",
+  "subtitle": "Last 24 hours · hbars.json, horizontal bars",
+  "data": {
+    "values": [
+      {"service": "checkout", "errors": 122},
+      {"service": "search", "errors": 58},
+      {"service": "recommendations-v2", "errors": 48},
+      {"service": "auth", "errors": 140},
+      {"service": "inventory", "errors": 144},
+      {"service": "payments", "errors": 25}
+    ]
+  },
+  "y": "service",
+  "x": {"field": "errors", "title": "errors"},
+  "mark": {"type": "bar", "horizontal": true}
+}
