@@ -836,18 +836,35 @@ const WINDOW_KEYS: [(&str, &str); 32] = [
     ("<Esc>", "vim-cancel"),
 ];
 
-/// The names a search looks through: a chart's series and categories, a graph's nodes, each
-/// with the mark it names.
-fn search_names(st: &FigState) -> Option<Vec<(String, Item)>> {
-    match (&st.graph, &st.model) {
-        (Some(g), _) => Some(g.search_names()),
-        (None, Some(m)) => Some(m.names()),
-        _ => None,
+/// Whether a search's item is drawn under `view`: a graph's node whose group shows (and whose
+/// `fig` block doesn't hide it), a chart's series that shows; a category always.
+fn item_shown(st: &FigState, view: &View, item: &Item) -> bool {
+    match (&st.graph, &st.model, item) {
+        (Some(g), _, Item::Node { id, .. }) => g.index_of(id).is_some_and(|i| g.visible(view, i)),
+        (None, Some(m), Item::Series(k)) => m.visible(view, k),
+        _ => true,
     }
 }
 
+/// The names a search looks through: a chart's series and categories, a graph's nodes, each
+/// with the mark it names; what window `w`'s view hides left out, so a find is always drawn.
+fn search_names(st: &FigState, w: die_core::WindowId) -> Option<Vec<(String, Item)>> {
+    let view = st.panes.get(&w).map(|p| p.view.clone()).unwrap_or_default();
+    let names = match (&st.graph, &st.model) {
+        (Some(g), _) => g.search_names(),
+        (None, Some(m)) => m.names(),
+        _ => return None,
+    };
+    Some(
+        names
+            .into_iter()
+            .filter(|(_, i)| item_shown(st, &view, i))
+            .collect(),
+    )
+}
+
 /// A search's find in a window: the cursor on what `item` names, the view keeping it in sight,
-/// and its mark brought forward until `Esc` (a chart's series, a graph's node).
+/// and its mark brought forward until `Esc` (a chart's series or category, a graph's node).
 fn found(st: &mut FigState, w: die_core::WindowId, now: std::time::Duration, item: &Item) {
     if st.graph.is_some() {
         let Some(c) = item.cursor() else { return };
@@ -860,73 +877,111 @@ fn found(st: &mut FigState, w: die_core::WindowId, now: std::time::Duration, ite
     let Some(c) = st.model.as_ref().and_then(|m| m.cursor_of(item)) else {
         return;
     };
-    st.act(w, now, |a| a.found(c));
+    st.act(w, now, |a| {
+        a.found(c);
+        a.pane.found_band = match item {
+            Item::Band { band, series: None } => Some(*band),
+            _ => None,
+        };
+    });
 }
 
-/// What the window showed before `/`, which `Esc` in the prompt puts back.
+/// What the window showed before `/`, which `Esc` in the prompt (or the query typed away to
+/// nothing) puts back.
+#[derive(Clone)]
 struct Before {
     cursor: Option<Cursor>,
     view: View,
     found: Option<data::SeriesKey>,
+    found_band: Option<u32>,
     found_node: Option<Cursor>,
 }
 
-/// `n` and `N`: the next or previous of the last search's matches, from the one the cursor is
-/// on, round the ends.
+impl Before {
+    /// Window `w` of `st` as it is now.
+    fn of(st: &FigState, w: die_core::WindowId) -> Before {
+        let p = st.panes.get(&w);
+        Before {
+            cursor: p.and_then(|p| p.cursor.clone()),
+            view: p.map(|p| p.view.clone()).unwrap_or_default(),
+            found: p.and_then(|p| p.found.clone()),
+            found_band: p.and_then(|p| p.found_band),
+            found_node: p.and_then(|p| p.found_node.clone()),
+        }
+    }
+
+    /// The cursor, the view and the emphasis put back in window `w`, the lit matches let go.
+    fn put_back(&self, st: &mut FigState, w: die_core::WindowId, now: std::time::Duration) {
+        let restore = |p: &mut surface::Pane| {
+            (p.cursor, p.found, p.found_band, p.found_node) = (
+                self.cursor.clone(),
+                self.found.clone(),
+                self.found_band,
+                self.found_node.clone(),
+            );
+            p.matches.clear();
+            p.lit.clear();
+            p.lit_bands.clear();
+        };
+        let v = self.view.clone();
+        if st.is_graph() {
+            st.graph_act(w, now, |g| {
+                restore(g.pane);
+                g.set(v, surface::Change::Follow);
+            });
+        } else {
+            st.act(w, now, |a| {
+                restore(a.pane);
+                a.set(v, surface::Change::Follow);
+            });
+        }
+    }
+}
+
+/// `n` and `N`: the next or previous of the last search's marks, from the one the cursor is on,
+/// round the ends. Each mark is one stop, at its best-ranked name (a node found by its label
+/// and by its id is one), and a mark the view hides now is passed over.
 fn find_next(
     st: &mut FigState,
     w: die_core::WindowId,
     now: std::time::Duration,
     by: i32,
 ) -> Result {
-    let cursor = st.panes.get(&w).and_then(|p| p.cursor.clone());
-    let Some(search) = st.search.as_mut() else {
+    let (cursor, view) = match st.panes.get(&w) {
+        Some(p) => (p.cursor.clone(), p.view.clone()),
+        None => (None, View::default()),
+    };
+    let Some(search) = st.search.as_ref() else {
         return Err(Error::Msg("fig: no search yet".into()));
     };
-    if search.matches().is_empty() {
+    let mut stops: Vec<Item> = Vec::new();
+    for m in search.matches() {
+        if !stops.iter().any(|s| s.same(&m.item)) && item_shown(st, &view, &m.item) {
+            stops.push(m.item.clone());
+        }
+    }
+    if stops.is_empty() {
         return Err(Error::Msg(format!(
             "fig: nothing matches {}",
             search.query()
         )));
     }
-    // From the match the cursor is on, wherever it went since.
-    let on = cursor.as_ref().and_then(|c| {
-        let m = search.matches().iter().find(|m| m.item.holds(c))?;
-        Some(m.item.clone())
-    });
-    match on {
-        Some(item) => {
-            search.select(&item);
-        }
-        None => {
-            // Off every match: `n` takes the first, `N` the last.
-            let n = search.matches().len();
-            let item = search.matches()[if by > 0 { n - 1 } else { 0 }]
-                .item
-                .clone();
-            search.select(&item);
-        }
+    let n = stops.len() as i64;
+    // From the mark the cursor is on, wherever it went since; off every one, `n` takes the
+    // first and `N` the last.
+    let on = cursor
+        .as_ref()
+        .and_then(|c| stops.iter().position(|s| s.holds(c)));
+    let at = match on {
+        Some(i) => (i as i64 + i64::from(by.signum())).rem_euclid(n) as usize,
+        None if by > 0 => 0,
+        None => stops.len() - 1,
+    };
+    let item = stops[at].clone();
+    if let Some(search) = st.search.as_mut() {
+        search.select(&item);
     }
-    // A node found by its label and its id is one match to step over.
-    let from = search.current().map(|m| m.item.clone());
-    let mut item = None;
-    for _ in 0..search.matches().len() {
-        let m = match by > 0 {
-            true => search.next(),
-            false => search.prev(),
-        };
-        let Some(m) = m.map(|m| m.item.clone()) else {
-            break;
-        };
-        let again = from.as_ref().is_some_and(|f| f.same(&m));
-        item = Some(m);
-        if !again {
-            break;
-        }
-    }
-    if let Some(item) = item {
-        found(st, w, now, &item);
-    }
+    found(st, w, now, &item);
     Ok(())
 }
 
@@ -1147,8 +1202,14 @@ fn graph_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result
                 let Some(pick) = pick else {
                     return Ok(());
                 };
-                st.turn_graph(ctx, w, |t, _| t.layout = Some(pick));
-                format!("settings: layout {}", pick.name())
+                // The layout drawn already changes nothing, and makes no undo step.
+                let drawn = (st.graph.as_ref()).and_then(|g| LayoutPick::of(&g.layout));
+                if drawn == Some(pick) {
+                    format!("settings: layout {} already", pick.name())
+                } else {
+                    st.turn_graph(ctx, w, |t, _| t.layout = Some(pick));
+                    format!("settings: layout {}", pick.name())
+                }
             }
             "relayout" => {
                 let now = ctx.now();
@@ -1210,25 +1271,20 @@ fn settings(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
-/// `/`: find a series, a category or a node by name with fig's fuzzy match (search's model,
-/// the prompt's list in fig's tiers over flex's order). As you type, the cursor goes to the best
-/// match and the figure lights what matches (a graph's matching nodes, the rest dimmed); `⏎`
-/// keeps the find, its mark brought forward until `Esc`, and `n` `N` go on through the matches;
-/// `Esc` in the prompt puts the cursor and the view back.
+/// `/`: find a series, a category or a node by name with fig's fuzzy match (search's model;
+/// the prompt's list in the same order, fig's score over byte order, so its first row is the
+/// best match). As you type, the cursor goes to the best match and the figure lights what
+/// matches (a graph's nodes, a chart's series and categories, the rest dimmed); typed away to
+/// nothing, the cursor and the view are as they were. `⏎` keeps the find, its mark brought
+/// forward until `Esc`, and `n` `N` go on through the matches; `Esc` in the prompt puts the
+/// cursor and the view back. What the view hides isn't looked through.
 fn search(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, w) = here(ctx, a)?;
     let (names, before) = {
         let st = state.borrow();
         let names =
-            search_names(&st).ok_or_else(|| Error::Msg("fig: nothing is drawn yet".into()))?;
-        let p = st.panes.get(&w);
-        let before = Before {
-            cursor: p.and_then(|p| p.cursor.clone()),
-            view: p.map(|p| p.view.clone()).unwrap_or_default(),
-            found: p.and_then(|p| p.found.clone()),
-            found_node: p.and_then(|p| p.found_node.clone()),
-        };
-        (names, before)
+            search_names(&st, w).ok_or_else(|| Error::Msg("fig: nothing is drawn yet".into()))?;
+        (names, Before::of(&st, w))
     };
     let mut labels: Vec<String> = Vec::new();
     for (l, _) in &names {
@@ -1236,38 +1292,61 @@ fn search(ctx: &mut Ctx, a: &Args) -> Result {
             labels.push(l.clone());
         }
     }
+    // The prompt ranks as search's model does: fig's tier and tie-break, then the label's byte
+    // order, flex's own order breaking only what's left (nothing: the labels are each once).
+    let mut sorted = labels.clone();
+    sorted.sort();
+    let order: BTreeMap<String, usize> = sorted
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| (l, i))
+        .collect();
+    let rank = move |q: &str, l: &str| -> usize {
+        let at = order.get(l).copied().unwrap_or(0).min((1 << 20) - 1);
+        match algo::search::score(l, q) {
+            Some((t, b)) => (t << 44) | (b.min((1 << 24) - 1) << 20) | at,
+            None => usize::MAX,
+        }
+    };
     let typed = state.clone();
-    let live = std::rc::Rc::new(std::cell::RefCell::new(search::Search::new(names)));
+    let live = Rc::new(RefCell::new(search::Search::new(names)));
     let typing = live.clone();
+    let back = before.clone();
     let spec = PromptSpec::new("Find: ")
         .history("fig-find")
         .candidates(labels)
-        .tiers(algo::tier)
+        .tiers(rank)
         .on_change(move |ctx, text| {
             let mut st = typed.borrow_mut();
             let mut search = typing.borrow_mut();
             search.set_query(text);
             let now = ctx.now();
-            let best = (!text.is_empty())
-                .then(|| search.best().map(|m| m.item.clone()))
-                .flatten();
-            // The figure lights what matches: a graph's nodes.
-            let lit: Vec<usize> = match (&st.graph, text.is_empty()) {
-                (Some(g), false) => search
-                    .matches()
-                    .iter()
-                    .filter_map(|m| match &m.item {
-                        Item::Node { id, .. } => g.index_of(id),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => vec![],
-            };
-            if let Some(p) = st.panes.get_mut(&w) {
-                p.matches = lit;
+            if text.is_empty() {
+                // Typed away to nothing: where it was, as Vim's incremental search goes back.
+                back.put_back(&mut st, w, now);
+                st.refresh(ctx);
+                return Ok(());
             }
-            if let Some(item) = best {
-                found(&mut st, w, now, &item);
+            let best = search.best().map(|m| m.item.clone());
+            // The figure lights what matches: a graph's nodes, a chart's series and categories.
+            let (mut nodes, mut series, mut bands) = (vec![], vec![], vec![]);
+            for m in search.matches() {
+                match (&m.item, &st.graph) {
+                    (Item::Node { id, .. }, Some(g)) => nodes.extend(g.index_of(id)),
+                    (Item::Series(k), None) if !series.contains(k) => series.push(k.clone()),
+                    (Item::Band { band, series: None }, None) if !bands.contains(band) => {
+                        bands.push(*band)
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(p) = st.panes.get_mut(&w) {
+                (p.matches, p.lit, p.lit_bands) = (nodes, series, bands);
+            }
+            match best {
+                Some(item) => found(&mut st, w, now, &item),
+                // Nothing matches: the cursor where it was, nothing lit.
+                None => back.put_back(&mut st, w, now),
             }
             st.refresh(ctx);
             Ok(())
@@ -1277,18 +1356,21 @@ fn search(ctx: &mut Ctx, a: &Args) -> Result {
         let now = ctx.now();
         if let Some(p) = st.panes.get_mut(&w) {
             p.matches.clear();
+            p.lit.clear();
+            p.lit_bands.clear();
         }
         match answer.filter(|a| !a.is_empty()) {
             Some(answer) => {
                 // What was typed is the search `n` and `N` go on with; the answer is the row
-                // chosen in the list (the best match unless you moved), or the line as typed.
+                // chosen in the list (the best match, the cursor's as you typed, unless you
+                // moved), or the line as typed.
                 let mut search = live.borrow().clone();
                 if search.query().is_empty() {
                     search.set_query(&answer);
                 }
-                let chosen = (search.names().iter())
-                    .find(|(l, _)| *l == answer)
-                    .map(|(_, i)| i.clone())
+                let chosen = (search.matches().iter())
+                    .find(|m| m.label == answer)
+                    .map(|m| m.item.clone())
                     .or_else(|| search.best().map(|m| m.item.clone()));
                 if let Some(item) = &chosen {
                     search.select(item);
@@ -1297,28 +1379,8 @@ fn search(ctx: &mut Ctx, a: &Args) -> Result {
                 st.query = Some(search.query().to_string());
                 st.search = Some(search);
             }
-            None => {
-                // Esc: the cursor and the view as they were, the emphasis too.
-                let restore = |p: &mut surface::Pane| {
-                    (p.cursor, p.found, p.found_node) = (
-                        before.cursor.clone(),
-                        before.found.clone(),
-                        before.found_node.clone(),
-                    );
-                };
-                let v = before.view.clone();
-                if st.is_graph() {
-                    st.graph_act(w, now, |g| {
-                        restore(g.pane);
-                        g.set(v, surface::Change::Follow);
-                    });
-                } else {
-                    st.act(w, now, |a| {
-                        restore(a.pane);
-                        a.set(v, surface::Change::Follow);
-                    });
-                }
-            }
+            // Esc: the cursor and the view as they were, the emphasis too.
+            None => before.put_back(&mut st, w, now),
         }
         st.refresh(ctx);
         Ok(())
@@ -1706,8 +1768,17 @@ impl Extension for Fig {
             ),
         ] {
             reg.command(name, doc, move |ctx, a| {
-                act(ctx, a, move |act, a| {
-                    act.move_cursor(&Action::Neighbour(by), count(a));
+                on_fig(ctx, a, false, |st, w, ctx| {
+                    let none = st.panes.get(&w).is_some_and(|p| p.cursor.is_none());
+                    st.keys(w, ctx.now(), |k| {
+                        k.move_cursor(&Action::Neighbour(by), count(a))
+                    });
+                    match none {
+                        true => Err(Error::Msg(
+                            "fig: no cursor yet: h l j k or a click puts it on the data".into(),
+                        )),
+                        false => Ok(()),
+                    }
                 })
             });
         }
@@ -1842,10 +1913,10 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-cancel",
-            "Esc: drop a brush, take a pan back, close the key card, or clear the search's emphasis or the reference.",
+            "Esc: drop a brush, take a pan back, close the key card, or clear the search's emphasis, the detail panel, the reference or a graph cursor's emphasis.",
             |ctx, a| {
-                on_fig(ctx, a, true, |st, w, _| {
-                    st.cancel(w);
+                on_fig(ctx, a, true, |st, w, ctx| {
+                    st.cancel(w, ctx.now());
                     Ok(())
                 })
             },

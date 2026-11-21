@@ -678,6 +678,7 @@ fn build(path: &Path, zone: &TimeZone) -> Result<Built, Failed> {
         zone: zone.clone(),
         open: vec![],
         toggles: Toggles::default(),
+        auto: None,
     })
 }
 

@@ -78,6 +78,8 @@ pub struct OverlayState {
     /// The nodes a search typed so far matches: they stay bright and the rest dim, the best
     /// (`emphasis`) in focus.
     pub matches: Vec<usize>,
+    /// The cursor's emphasis let go (`Esc`): its node keeps its ring, and nothing dims for it.
+    pub calm: bool,
 }
 
 /// The overlay's scene: see the module's docs. The reference is the view's.
@@ -109,10 +111,10 @@ pub fn overlay(
     // What's emphasised: a path from the reference, a group, else the node in focus.
     let path_end = hover_node.or(cursor).filter(|&e| Some(e) != reference);
     let path = match (reference, path_end) {
-        (Some(r), Some(e)) => model.path(r, e).filter(|p| p.len() >= 2),
+        (Some(r), Some(e)) => model.path_shown(view, r, e).filter(|p| p.len() >= 2),
         _ => None,
     };
-    let focus = dwell.or(cursor);
+    let focus = dwell.or(cursor.filter(|_| !st.calm));
     let group = st
         .group
         .as_ref()

@@ -3,7 +3,7 @@
 //! the items its rows and a search's matches name, and the emphasis of the nodes a search lights.
 
 use super::{Emphasis, GraphModel};
-use crate::detail::{self, DetailTree, EdgeFacts, Item, Neighbour, NodeFacts, Swatch};
+use crate::detail::{self, DetailTree, EdgeFacts, Item, Neighbour, NodeFacts, RowKind, Swatch};
 use crate::interact::Cursor;
 use crate::style::ColorSpec;
 
@@ -59,8 +59,34 @@ impl GraphModel {
     }
 
     /// Node `i`'s detail: its id, label, group, degree, fields, neighbours in edge order (as
-    /// m3 lists worker's), metadata and `fig` block.
+    /// m3 lists worker's), metadata and `fig` block. A table's row says no more than the card
+    /// does: its name column, which is the label, isn't listed again, and its parent column
+    /// names the parent by its label, a row that brings it forward and goes to it.
     pub fn node_detail(&self, i: usize) -> DetailTree {
+        let mut t = self.node_tree(i);
+        let label = self.label(i);
+        t.rows.retain(|r| {
+            !(r.depth == 0
+                && r.kind == RowKind::Field
+                && super::is_name_key(&r.key)
+                && !r.key.trim().eq_ignore_ascii_case("label")
+                && r.value == label)
+        });
+        for r in &mut t.rows {
+            if r.depth == 0
+                && r.kind == RowKind::Field
+                && super::is_parent_key(&r.key)
+                && let Some(p) = self.index_of(&r.value)
+            {
+                let id = std::mem::replace(&mut r.value, self.label(p).to_string());
+                (r.item, r.copy) = (Some(self.item(p)), Some(id));
+            }
+        }
+        t
+    }
+
+    /// Node `i`'s tree as its facts and its source object give it.
+    fn node_tree(&self, i: usize) -> DetailTree {
         let n = &self.spec.nodes[i];
         let label = self.label(i);
         detail::node_tree(&NodeFacts {

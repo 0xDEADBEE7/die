@@ -211,6 +211,15 @@ impl Toggles {
         self.layout.map(LayoutPick::layout)
     }
 
+    /// [`Toggles::graph_layout`] for `spec`: a tree picked where the spec's own layout is a tree
+    /// keeps the spec's root.
+    pub fn graph_layout_for(&self, spec: &GraphSpec) -> Option<Layout> {
+        self.layout.map(|p| match (p, &spec.layout) {
+            (LayoutPick::Tree, Layout::Tree { root }) => Layout::Tree { root: root.clone() },
+            (p, _) => p.layout(),
+        })
+    }
+
     /// Whether a graph's labels show: turned, else the spec's.
     pub fn graph_labels(&self, spec: &GraphSpec) -> bool {
         self.labels.unwrap_or(spec.view.labels != Labels::None)

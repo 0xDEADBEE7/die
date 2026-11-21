@@ -140,6 +140,11 @@ impl Pane {
         panel.cursor = self.cursor.clone();
         panel.built = built;
         panel.rev += 1;
+        // The row under the pointer names something else now, or nothing: its mark goes back
+        // until the pointer moves again.
+        if self.row_hover.take().is_some() {
+            self.rehover = true;
+        }
         self.reveal_panel();
     }
 
@@ -278,9 +283,27 @@ impl FigState {
     }
 
     /// The figure's cursor to what a panel row names: a sample, a band, a cell, a node (an
-    /// edge has nowhere of its own); the view keeps it in sight.
+    /// edge has nowhere of its own); the view keeps it in sight. On a chart, a row naming a
+    /// series, or the value the cursor is on already, opens the series' own tree in the panel
+    /// (its count, least, most, mean and last), the cursor where it was.
     pub fn jump(&mut self, ctx: &mut Ctx, w: die_core::WindowId, item: &Item) {
         let now = ctx.now();
+        let here = self.panes.get(&w).and_then(|p| p.cursor.clone());
+        let series = match item {
+            Item::Series(k) => Some(k.clone()),
+            Item::Point { series, .. } if item.cursor() == here => Some(series.clone()),
+            _ => None,
+        };
+        if let (None, Some(k)) = (&self.graph, series) {
+            let focused = self.panes.get(&w).is_some_and(|p| p.panel_focused());
+            if let Err(why) = self.open_panel(w, Some(Item::Series(k))) {
+                ctx.messages.push(why);
+            }
+            if let Some(panel) = self.panes.get_mut(&w).and_then(|p| p.panel.as_mut()) {
+                panel.state.focused = focused;
+            }
+            return;
+        }
         if self.graph.is_some() {
             if let Some(c) = item.cursor() {
                 self.graph_act(w, now, |g| g.put_cursor(c));
@@ -451,7 +474,8 @@ impl Pane {
     /// that names a mark is the item the figure's cursor goes to.
     fn panel_double(&mut self, hit: &Hit) -> Option<Item> {
         let panel = self.panel.as_mut()?;
-        let (Hit::Detail(i) | Hit::DetailFold(i)) = hit else {
+        // On the triangle, the first click folded or unfolded the branch already.
+        let Hit::Detail(i) = hit else {
             return None;
         };
         let i = *i as usize;

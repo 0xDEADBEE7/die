@@ -37,6 +37,8 @@ pub struct GraphAct<'a> {
     pub now: Duration,
     /// The fonts, which say where a fitted window lands for an ease.
     pub kit: &'a mut Kit,
+    /// What the pointer's act has to say, for `*messages*`.
+    pub say: Option<String>,
 }
 
 impl GraphAct<'_> {
@@ -162,7 +164,7 @@ impl GraphAct<'_> {
             None => self.pane.view.clone(),
         };
         self.pane.cursor = Some(c);
-        self.pane.anchor = None;
+        (self.pane.anchor, self.pane.calm) = (None, None);
         self.pane.hovering = false;
         self.pane.rehover = true;
         self.set(v, Change::Follow);
@@ -194,6 +196,18 @@ impl GraphAct<'_> {
                 let Some(l) = self.pane.graph.as_ref() else {
                     return;
                 };
+                // Kept inside the graph's region (as the core keeps a drag in the window), so
+                // it never goes under the panel or off the figure where it couldn't be taken
+                // again.
+                let r = (self.model.index_of(&node).and_then(|i| l.node(i))).map_or(0.0, |g| g.r);
+                let b = l.region;
+                let (lo_x, hi_x) = (b.x + r, (b.right() - r).max(b.x + r));
+                let (lo_y, hi_y) = (b.y + r, (b.bottom() - r).max(b.y + r));
+                let c = (
+                    (at.0 - grab.0).clamp(lo_x, hi_x),
+                    (at.1 - grab.1).clamp(lo_y, hi_y),
+                );
+                let at = (c.0 + grab.0, c.1 + grab.1);
                 let v = nav::drag_node(self.model, l, &self.pane.view, &node, at, grab);
                 self.set(v, Change::Live);
             }
@@ -326,13 +340,18 @@ impl GraphAct<'_> {
                     }
                 } else if mods.alt {
                     let i = c.as_ref().and_then(|c| self.model.node_of(c));
-                    if let Some(g) = i.and_then(|i| self.model.group_of[i]) {
-                        let k = self.model.group_key(g as usize);
-                        self.solo(&k);
+                    match i.map(|i| self.model.group_of[i]) {
+                        Some(Some(g)) => {
+                            let k = self.model.group_key(g as usize);
+                            self.solo(&k);
+                        }
+                        // As x and o say it.
+                        Some(None) => self.say = Some("fig: the node has no group".into()),
+                        None => {}
                     }
                 } else if c.is_some() {
                     self.pane.cursor = c;
-                    self.pane.anchor = None;
+                    (self.pane.anchor, self.pane.calm) = (None, None);
                 }
                 self.pane.last_click = None;
             }
@@ -483,6 +502,7 @@ impl Keys for GraphAct<'_> {
             false => nav::reveal(self.model, l, &self.pane.view, &c),
         };
         self.pane.cursor = Some(c);
+        self.pane.calm = None;
         self.pane.hovering = false;
         self.pane.rehover = true;
         self.set(v, Change::Follow);
@@ -612,6 +632,7 @@ impl Pane {
             (_, Some(Item::Node { id, .. })) => Some(Cursor::Node(id.clone())),
             _ => None,
         };
+        let calm = self.calm.is_some() && self.calm == self.cursor;
         graph::OverlayState {
             hover: self.target,
             cursor: self.cursor.clone(),
@@ -624,9 +645,11 @@ impl Pane {
             group: self.legend.clone(),
             // Mid-drag the card goes: the dragged node's own label says enough (mouse-ux §3.3).
             cursor_card: self.panel.is_none()
+                && !calm
                 && !matches!(self.gesture, Gesture::NodeDrag { .. } | Gesture::Pan { .. }),
             ghost,
             matches: self.matches.clone(),
+            calm,
         }
     }
 
@@ -694,6 +717,7 @@ impl FigState {
             motion,
             now,
             kit: &mut kit,
+            say: None,
         };
         let mut open = None;
         match p.kind {
@@ -746,6 +770,9 @@ impl FigState {
                 });
             }
         }
+        if let Some(said) = g.say.take() {
+            ctx.messages.push(said);
+        }
         drop(kit);
         if let Some(item) = open
             && let Err(why) = self.open_panel(w, Some(item))
@@ -773,6 +800,7 @@ impl FigState {
             motion,
             now,
             kit: &mut kit,
+            say: None,
         };
         let r = f(&mut g);
         self.rev += 1;

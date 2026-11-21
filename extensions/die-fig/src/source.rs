@@ -18,7 +18,7 @@ use crate::interact::Toggles;
 use crate::plot::ChartModel;
 use crate::spec::chart::with_hints;
 use crate::spec::{
-    Chart, DataFormat, DataRef, DataSpec, Figure, GraphSpec, Parsed, format_of_name,
+    Chart, DataFormat, DataRef, DataSpec, Figure, GraphSpec, Layout, Parsed, format_of_name,
 };
 use die_core::BufferId;
 use jiff::tz::TimeZone;
@@ -117,6 +117,9 @@ pub struct Job {
     pub open: Vec<(PathBuf, Snapshot)>,
     /// What the figure changed of its spec, applied before the model is built.
     pub toggles: Toggles,
+    /// The layout `auto` picked for the graph shown, which a graph whose spec still says
+    /// `auto` keeps while it's followed, so an edit doesn't lay it out another way.
+    pub auto: Option<Layout>,
 }
 
 /// What a build job made.
@@ -230,7 +233,7 @@ pub fn build(job: Job) -> std::result::Result<Built, Failed> {
         Figure::Chart(c) => c,
         Figure::Graph(spec) => {
             // Laid out here, off the main thread: the last frame stays up until it's done.
-            return match graph_model(&spec, job.toggles, &job.name) {
+            return match graph_model(&spec, job.toggles, &job.name, job.auto.as_ref()) {
                 Ok(g) => Ok(Built {
                     figure,
                     inferred,
@@ -472,9 +475,21 @@ pub fn rebuild(
 }
 
 /// A graph's model from its spec with the settings turned (its labels, its layout), named for
-/// its subtitle by the file it came from, laid out: run it in a job.
-pub fn graph_model(spec: &GraphSpec, toggles: Toggles, name: &str) -> Result<GraphModel> {
-    let model = GraphModel::build_as(toggles.apply_graph(spec), toggles.graph_layout())?;
+/// its subtitle by the file it came from, laid out: run it in a job. Where neither the
+/// settings nor the spec choose a layout, `auto` (the one picked before) is kept.
+pub fn graph_model(
+    spec: &GraphSpec,
+    toggles: Toggles,
+    name: &str,
+    auto: Option<&Layout>,
+) -> Result<GraphModel> {
+    let layout = toggles
+        .graph_layout_for(spec)
+        .or_else(|| match spec.layout {
+            Layout::Auto => auto.cloned(),
+            _ => None,
+        });
+    let model = GraphModel::build_as(toggles.apply_graph(spec), layout)?;
     Ok(match name.is_empty() {
         true => model,
         false => model.named(name),

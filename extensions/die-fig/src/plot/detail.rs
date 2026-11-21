@@ -436,7 +436,9 @@ impl ChartModel {
             );
             r.quiet = quiet;
             values.push(r);
-            if v.is_finite() {
+            // A total only of parts that stack: grouped bars side by side (two percentiles,
+            // say) add up to nothing, as the chart's card has it.
+            if v.is_finite() && stacks.hi[si].is_some() {
                 sums.push((v, s.decimals));
             }
         }

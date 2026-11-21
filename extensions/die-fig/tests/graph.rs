@@ -933,3 +933,77 @@ fn the_overlay_repaints_a_300_node_hover_within_its_budget() {
     );
     assert!(worst.as_secs_f64() < 0.008, "the repaint took {worst:?}");
 }
+
+#[test]
+fn a_path_goes_only_through_what_is_drawn() {
+    let m = model(
+        r#"{"nodes": [{"id": "a", "group": "x"}, {"id": "b", "group": "y"}, {"id": "c", "group": "x"}, {"id": "d", "group": "x"}],
+            "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}, {"from": "a", "to": "d"}]}"#,
+    );
+    let mut view = View::default();
+    assert_eq!(m.path_shown(&view, 0, 2), Some(vec![0, 1, 2]));
+    view.hidden.insert(die_fig::data::SeriesKey::new("y", 0));
+    assert_eq!(
+        m.path_shown(&view, 0, 2),
+        None,
+        "b is hidden: no path to see"
+    );
+    assert_eq!(m.path_shown(&view, 0, 3), Some(vec![0, 3]));
+    assert_eq!(m.path(0, 2), Some(vec![0, 1, 2]), "the graph's own path");
+    // The card says no hops, and nothing is lit along a path no one can see.
+    view.reference = Some(m.cursor(0));
+    let (_, l) = base(&m, &view, (600.0, 400.0));
+    let st = OverlayState {
+        hover: Some(Target::Node(2)),
+        pointer: Some((10.0, 10.0)),
+        ..OverlayState::default()
+    };
+    let o = graph::overlay(&m, &l, &view, &st, &Theme::mono_dark(), &mut FixedMeasure);
+    let said: Vec<String> = (o.items.iter())
+        .filter_map(|i| match i {
+            Item::Text { text, .. } => Some(text.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(!said.iter().any(|t| t.contains("hop")), "{said:?}");
+}
+
+#[test]
+fn a_graph_with_no_nodes_is_nothing_to_draw_and_a_twice_given_id_is_named() {
+    let bad = |t: &str| spec::parse(t, "g.json", Path::new("."), &opt()).expect_err("an error");
+    let e = bad(r#"{"nodes": []}"#);
+    assert_eq!(e.kind, die_fig::error::ErrorKind::Empty, "{e:?}");
+    let e = bad(r#"{"nodes": [{"id": "a"}, {"id": "a"}]}"#);
+    assert_eq!(e.msg, "node ids must be unique: a is given twice");
+}
+
+#[test]
+fn a_table_nodes_detail_says_its_name_once_and_its_parent_by_label() {
+    let m = fixture("org.csv");
+    let i = m.index_of("2").unwrap();
+    let t = m.node_detail(i);
+    let keys: Vec<&str> = t.rows.iter().map(|r| r.key.as_str()).collect();
+    assert!(keys.contains(&"label"), "{keys:?}");
+    assert!(
+        !keys.contains(&"name"),
+        "the name column is the label: {keys:?}"
+    );
+    let parent = t
+        .rows
+        .iter()
+        .find(|r| r.key == "parent")
+        .expect("its parent");
+    assert_eq!(parent.value, "Maya");
+    assert_eq!(
+        parent.item,
+        Some(m.item(m.index_of("1").unwrap())),
+        "it names the node"
+    );
+    assert_eq!(parent.copy.as_deref(), Some("1"), "y yanks the id");
+    // As the card has them.
+    let card = m.fields(i);
+    assert!(
+        card.iter().any(|(k, v)| k == "parent" && v == "Maya"),
+        "{card:?}"
+    );
+}

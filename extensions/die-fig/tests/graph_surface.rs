@@ -15,7 +15,7 @@ use die_fig::Fig;
 use die_fig::detail::Item;
 use die_fig::graph::Target;
 use die_fig::interact::Cursor;
-use die_fig::scene::{Hit, Rect};
+use die_fig::scene::{FixedMeasure, Hit, Item as Item_, Paint, Rect};
 use die_vim::Vim;
 use jiff::tz::TimeZone;
 use std::time::Duration;
@@ -418,6 +418,9 @@ fn a_node_dragged_moves_and_pins_as_one_undo_step_and_esc_mid_drag_puts_it_back(
     );
     assert!(view(&mut s).pinned.contains_key("mailer"), "live");
     keys(&mut s.h, "<Esc>");
+    // It goes back as `u` would take it back: eased (mouse-ux §10).
+    let st = state(&mut s);
+    assert!(st.borrow().panes[&s.win].easing(), "Esc's way back eases");
     pointer(
         &mut s,
         PointerKind::Release(Button::Left),
@@ -427,6 +430,7 @@ fn a_node_dragged_moves_and_pins_as_one_undo_step_and_esc_mid_drag_puts_it_back(
     );
     assert!(view(&mut s).pinned.is_empty(), "put back");
     assert_eq!(undoable(&mut s), steps);
+    settle(&mut s);
     let back = node_at(&mut s, "mailer");
     assert!((back.0 - from.0).abs() < 1.0 && (back.1 - from.1).abs() < 1.0);
 }
@@ -1006,4 +1010,544 @@ fn a_restart_keeps_the_pins_the_layout_the_labels_and_the_open_panel() {
         .as_ref()
         .map(|p| p.tree.title.clone());
     assert_eq!(panel.as_deref(), Some("worker"), "the panel open again");
+}
+
+// ---------------------------------------------------------------- the review's fixes
+
+/// Whether the graph's overlay as it stands lays the emphasis wash.
+fn washed(s: &mut Setup) -> bool {
+    let st = state(s);
+    let st = st.borrow();
+    let g = st.graph.as_ref().unwrap();
+    let p = &st.panes[&s.win];
+    let l = p.graph.as_ref().unwrap();
+    let ov = p.graph_overlay(g);
+    let theme = die_fig::theme::Theme::mono_dark();
+    let scene = die_fig::graph::overlay(g, l, &p.view, &ov, &theme, &mut FixedMeasure);
+    scene.items.iter().any(|it| {
+        matches!(it, Item_::Path { fill: Some(Paint::Solid { color, alpha }), stroke: None, .. }
+            if *color == theme.surface && (*alpha - die_fig::graph::overlay::WASH).abs() < 1e-3)
+    })
+}
+
+/// Whether a node is drawn in the window.
+fn shown(s: &mut Setup, id: &str) -> bool {
+    let st = state(s);
+    let st = st.borrow();
+    let g = st.graph.as_ref().unwrap();
+    let i = g.index_of(id).unwrap();
+    st.panes[&s.win].graph.as_ref().unwrap().node(i).is_some()
+}
+
+/// A place in the panel whose hit `want` takes.
+fn panel_place(s: &mut Setup, want: &dyn Fn(&Hit) -> bool) -> Option<(f32, f32)> {
+    let st = state(s);
+    let st = st.borrow();
+    let p = &st.panes[&s.win];
+    let rect = p.panel_rect()?;
+    for y in 0..(rect.h as i32) {
+        for x in 0..(rect.w as i32) {
+            let at = (rect.x + x as f32, rect.y + y as f32);
+            if want(&p.hit(at)) {
+                return Some(at);
+            }
+        }
+    }
+    None
+}
+
+/// The source's text replaced, as an edit, and the build after it let land.
+fn replace_src(s: &mut Setup, text: &str) {
+    let len = s.h.text(s.src).unwrap().len();
+    s.h.text_mut(s.src)
+        .unwrap()
+        .tx(die_core::Origin::User)
+        .replace(0..len, text)
+        .commit()
+        .unwrap();
+    s.h.advance(Duration::from_millis(400));
+    s.h.run_until_idle();
+}
+
+fn layout_of(s: &mut Setup) -> die_fig::spec::Layout {
+    let st = state(s);
+    st.borrow().graph.as_ref().unwrap().layout.clone()
+}
+
+#[test]
+fn n_and_cap_n_visit_every_matching_node_once_where_labels_differ_from_ids() {
+    // fig-graph.json's labels differ from its ids: each node is found by both, one stop.
+    let mut s = graph_with("fig-graph.json", &fixture("fig-graph.json"), 200, 50);
+    for q in ["a", "i", "e"] {
+        keys(&mut s.h, &format!("/{q}<CR>"));
+        let st = state(&mut s);
+        let mut want: Vec<String> = {
+            let st = st.borrow();
+            let search = st.search.as_ref().unwrap();
+            search
+                .matches()
+                .iter()
+                .filter_map(|m| match &m.item {
+                    Item::Node { id, .. } => Some(id.to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        want.sort();
+        want.dedup();
+        let mut seen = vec![cursor_id(&mut s)];
+        for _ in 1..want.len() {
+            keys(&mut s.h, "n");
+            seen.push(cursor_id(&mut s));
+        }
+        let mut distinct = seen.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct, want, "/{q}: n visits {seen:?}");
+        keys(&mut s.h, "n");
+        assert_eq!(cursor_id(&mut s), seen[0], "/{q}: round to the first");
+        keys(&mut s.h, "N");
+        assert_eq!(&cursor_id(&mut s), seen.last().unwrap(), "/{q}: N back");
+        keys(&mut s.h, "<Esc>");
+    }
+}
+
+#[test]
+fn return_keeps_the_match_the_cursor_jumped_to_as_typed() {
+    let check = |s: &mut Setup, q: &str| {
+        for log in s.h.type_keys(&format!("/{q}")).unwrap() {
+            assert!(log.errors.is_empty(), "{:?}", log.errors);
+        }
+        let live = cursor(s);
+        let first = s.h.prompt_candidates().first().map(|c| c.to_string());
+        keys(&mut s.h, "<CR>");
+        assert_eq!(
+            cursor(s),
+            live,
+            "/{q}: ⏎ keeps the live find (first row {first:?})"
+        );
+        keys(&mut s.h, "<Esc>");
+    };
+    let mut s = services();
+    for q in ["e", "i", "a", "s"] {
+        check(&mut s, q);
+    }
+    let mut s = graph_with("fig-graph.json", &fixture("fig-graph.json"), 200, 50);
+    for q in ["e", "i", "a", "au"] {
+        check(&mut s, q);
+    }
+    // Where fig's substring rank (earliest first) and flex's (shortest first) disagree.
+    let text = r#"{"nodes": [{"id": "xapiyyyyyyyyyyyy"}, {"id": "zzzapi"}, {"id": "other"}],
+        "edges": [{"from": "xapiyyyyyyyyyyyy", "to": "other"}, {"from": "zzzapi", "to": "other"}]}"#;
+    let mut s = graph_with("g.json", text, 200, 50);
+    check(&mut s, "api");
+    assert_eq!(cursor(&mut s), Some(node("xapiyyyyyyyyyyyy")));
+}
+
+#[test]
+fn search_looks_only_through_what_is_drawn_and_typed_away_goes_back() {
+    let mut s = services();
+    click_node(&mut s, "db");
+    keys(&mut s.h, "x");
+    assert!(!shown(&mut s, "db"), "data hidden");
+    click_node(&mut s, "mobile");
+    for log in s.h.type_keys("/db").unwrap() {
+        assert!(log.errors.is_empty(), "{:?}", log.errors);
+    }
+    assert_eq!(
+        cursor(&mut s),
+        Some(node("mobile")),
+        "a hidden node isn't found"
+    );
+    let st = state(&mut s);
+    assert!(st.borrow().panes[&s.win].matches.is_empty());
+    keys(&mut s.h, "<Esc>");
+    // Typed to a find and back to nothing: where it was, nothing lit.
+    for log in s.h.type_keys("/a").unwrap() {
+        assert!(log.errors.is_empty());
+    }
+    assert_eq!(cursor(&mut s), Some(node("api")));
+    for log in s.h.type_keys("<BS>").unwrap() {
+        assert!(log.errors.is_empty());
+    }
+    assert_eq!(cursor(&mut s), Some(node("mobile")), "back where it was");
+    assert_eq!(st.borrow().panes[&s.win].found_node, None);
+    assert!(st.borrow().panes[&s.win].matches.is_empty());
+    keys(&mut s.h, "<Esc>");
+    // n passes over a match the view hides since.
+    keys(&mut s.h, "X/er<CR>");
+    let first = cursor_id(&mut s);
+    keys(&mut s.h, "x");
+    for _ in 0..6 {
+        keys(&mut s.h, "n");
+        let id = cursor_id(&mut s);
+        assert!(shown(&mut s, &id), "{id} after x hid {first}'s group");
+    }
+    // A chart's hidden series either.
+    let mut c = setup();
+    keys(&mut c.h, "gg");
+    let hidden = cursor(&mut c);
+    keys(&mut c.h, "x");
+    let Some(Cursor::Point { series, .. }) = hidden else {
+        panic!("{hidden:?}")
+    };
+    for log in c.h.type_keys(&format!("/{}<CR>", series.name)).unwrap() {
+        assert!(log.errors.is_empty(), "{:?}", log.errors);
+    }
+    assert!(
+        !matches!(cursor(&mut c), Some(Cursor::Point { series: k, .. }) if k == series),
+        "the hidden series isn't found"
+    );
+}
+
+#[test]
+fn a_chart_search_lights_every_match_and_a_category_find_brings_its_band_forward() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/requests.csv");
+    let mut s = setup_with("requests.csv", &std::fs::read_to_string(path).unwrap());
+    for log in s.h.type_keys("/a").unwrap() {
+        assert!(log.errors.is_empty());
+    }
+    let st = state(&mut s);
+    let lit: Vec<String> = (st.borrow().panes[&s.win].chart_lit().series.iter())
+        .map(|k| k.name.to_string())
+        .collect();
+    assert!(
+        lit.contains(&"api".to_string()) && lit.contains(&"batch".to_string()),
+        "{lit:?}"
+    );
+    keys(&mut s.h, "<Esc>");
+    assert!(st.borrow().panes[&s.win].chart_lit().series.is_empty());
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/services-bars.csv");
+    let mut b = setup_with("services-bars.csv", &std::fs::read_to_string(path).unwrap());
+    for log in b.h.type_keys("/billing<CR>").unwrap() {
+        assert!(log.errors.is_empty(), "{:?}", log.errors);
+    }
+    let st = state(&mut b);
+    let band = match cursor(&mut b) {
+        Some(Cursor::Band { band, series: None }) => band,
+        c => panic!("{c:?}"),
+    };
+    assert_eq!(st.borrow().panes[&b.win].chart_lit().bands, vec![band]);
+    keys(&mut b.h, "<Esc>");
+    assert!(st.borrow().panes[&b.win].chart_lit().bands.is_empty());
+}
+
+#[test]
+fn undoing_a_layout_switch_brings_back_its_pins_and_window() {
+    let mut s = services();
+    settle(&mut s);
+    let from = node_at(&mut s, "cdn");
+    gesture(
+        &mut s,
+        &[
+            from,
+            (from.0 + 10.0, from.1),
+            (from.0 + 40.0, from.1 + 10.0),
+        ],
+    );
+    let before = view(&mut s);
+    assert_eq!(before.pinned.len(), 1);
+    keys(&mut s.h, "s");
+    keys(&mut s.h, "layout: tree<CR>");
+    settle(&mut s);
+    s.h.run_until_idle();
+    assert_eq!(
+        layout_of(&mut s),
+        die_fig::spec::Layout::Tree { root: None }
+    );
+    assert!(
+        view(&mut s).pinned.is_empty(),
+        "the switch lets the pins go"
+    );
+    keys(&mut s.h, "u");
+    settle(&mut s);
+    s.h.run_until_idle();
+    assert_eq!(layout_of(&mut s), die_fig::spec::Layout::Force);
+    let after = view(&mut s);
+    assert_eq!(after.pinned, before.pinned, "u brings the pin back");
+    assert_eq!((after.x, after.y), (before.x, before.y), "and the window");
+    keys(&mut s.h, "<C-r>");
+    settle(&mut s);
+    s.h.run_until_idle();
+    assert_eq!(
+        layout_of(&mut s),
+        die_fig::spec::Layout::Tree { root: None }
+    );
+    assert!(view(&mut s).pinned.is_empty());
+}
+
+#[test]
+fn picking_the_layout_drawn_changes_nothing_and_a_tree_keeps_the_specs_root() {
+    let text = r#"{"layout": {"type": "tree", "root": "c"}, "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+        "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}]}"#;
+    let mut s = graph_with("g.json", text, 200, 50);
+    let tree = die_fig::spec::Layout::Tree {
+        root: Some("c".into()),
+    };
+    let st = state(&mut s);
+    let ys = |s: &mut Setup| -> Vec<f64> {
+        let st = state(s);
+        let ys = st
+            .borrow()
+            .graph
+            .as_ref()
+            .unwrap()
+            .positions
+            .iter()
+            .map(|p| p.1)
+            .collect();
+        ys
+    };
+    let ys0 = ys(&mut s);
+    keys(&mut s.h, "s");
+    keys(&mut s.h, "layout: tree<CR>");
+    settle(&mut s);
+    s.h.run_until_idle();
+    assert_eq!(layout_of(&mut s), tree);
+    assert_eq!(ys(&mut s), ys0);
+    assert_eq!(st.borrow().panes[&s.win].undo.undoable(), 0, "no step");
+    // Away and back to a tree: the spec's root stays.
+    keys(&mut s.h, "s");
+    keys(&mut s.h, "layout: force<CR>");
+    settle(&mut s);
+    s.h.run_until_idle();
+    keys(&mut s.h, "s");
+    keys(&mut s.h, "layout: tree<CR>");
+    settle(&mut s);
+    s.h.run_until_idle();
+    assert_eq!(layout_of(&mut s), tree);
+    assert_eq!(ys(&mut s), ys0);
+}
+
+#[test]
+fn following_an_edit_keeps_the_layout_auto_picked_and_the_pins() {
+    let text = r#"{"nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "d"}],
+        "edges": [{"from": "a", "to": "b"}, {"from": "a", "to": "c"}, {"from": "c", "to": "d"}]}"#;
+    let mut s = graph_with("g.json", text, 200, 50);
+    settle(&mut s);
+    assert_eq!(
+        layout_of(&mut s),
+        die_fig::spec::Layout::Tree { root: None }
+    );
+    let from = node_at(&mut s, "d");
+    gesture(
+        &mut s,
+        &[from, (from.0 + 10.0, from.1), (from.0 + 40.0, from.1)],
+    );
+    let pins = view(&mut s).pinned.clone();
+    assert_eq!(pins.len(), 1);
+    // A cycle now: auto alone would pick force, and the pins would mean nothing.
+    let cyclic = text.replace(
+        r#"{"from": "c", "to": "d"}"#,
+        r#"{"from": "c", "to": "d"}, {"from": "d", "to": "b"}"#,
+    );
+    replace_src(&mut s, &cyclic);
+    assert_eq!(
+        layout_of(&mut s),
+        die_fig::spec::Layout::Tree { root: None }
+    );
+    assert_eq!(view(&mut s).pinned, pins, "the pins stay");
+}
+
+#[test]
+fn a_tree_csv_edited_into_a_chart_lets_the_graphs_window_pins_and_cursor_go() {
+    let text = "id,parent,value\n1,,10\n2,1,20\n3,1,30\n4,2,40\n5,2,50\n6,3,60\n";
+    let mut s = graph_with("t.csv", text, 200, 50);
+    settle(&mut s);
+    let from = node_at(&mut s, "4");
+    gesture(
+        &mut s,
+        &[
+            from,
+            (from.0 + 10.0, from.1),
+            (from.0 + 40.0, from.1 + 10.0),
+        ],
+    );
+    click_node(&mut s, "2");
+    assert!(view(&mut s).x.is_some(), "a drag holds the window");
+    replace_src(&mut s, &text.replace("id,parent,value", "id,boss,value"));
+    let st = state(&mut s);
+    assert!(st.borrow().model.is_some(), "a chart now");
+    let v = view(&mut s);
+    assert_eq!((v.x, v.y), (None, None), "the chart fits its data");
+    assert!(v.pinned.is_empty());
+    assert_eq!(cursor(&mut s), None, "no node to be on");
+    for k in ["l", "<CR>", "zz", "+", "0", "x", "X"] {
+        assert!(
+            keys_errors(&mut s.h, k)
+                .iter()
+                .all(|e| !e.contains("panick")),
+            "{k}"
+        );
+    }
+}
+
+#[test]
+fn a_click_in_the_figure_takes_the_keys_back_from_the_panel() {
+    let mut s = services();
+    click_node(&mut s, "worker");
+    keys(&mut s.h, "<CR><Tab>");
+    let st = state(&mut s);
+    assert!(st.borrow().panes[&s.win].panel_focused());
+    click_node(&mut s, "db");
+    assert_eq!(cursor(&mut s), Some(node("db")));
+    assert!(
+        !st.borrow().panes[&s.win].panel_focused(),
+        "the figure has the keys"
+    );
+    keys(&mut s.h, "l");
+    assert_ne!(
+        cursor(&mut s),
+        Some(node("db")),
+        "l moves the figure's cursor"
+    );
+    // On a chart too.
+    let mut c = setup();
+    keys(&mut c.h, "gg5l<CR><Tab>");
+    let st = state(&mut c);
+    assert!(st.borrow().panes[&c.win].panel_focused());
+    let p = plot(&mut c);
+    click(&mut c, (p.x + p.w * 0.3, p.y + p.h * 0.5));
+    assert!(!st.borrow().panes[&c.win].panel_focused());
+}
+
+#[test]
+fn esc_lets_the_cursors_emphasis_go_and_a_move_brings_it_back() {
+    let mut s = services();
+    assert!(!washed(&mut s), "at rest, undimmed");
+    click_node(&mut s, "worker");
+    let spot = empty_spot(&mut s);
+    mv(&mut s, spot);
+    settle(&mut s);
+    assert!(washed(&mut s), "the cursor's emphasis");
+    keys(&mut s.h, "<Esc>");
+    assert!(!washed(&mut s), "Esc lets it go");
+    assert_eq!(
+        cursor(&mut s),
+        Some(node("worker")),
+        "the cursor stays, ringed"
+    );
+    keys(&mut s.h, "l");
+    assert!(washed(&mut s), "a move brings it back");
+    keys(&mut s.h, "<Esc>");
+    let id = cursor_id(&mut s);
+    click_node(&mut s, &id);
+    assert!(washed(&mut s), "a click on it too");
+}
+
+#[test]
+fn a_rows_emphasis_goes_with_its_row_and_a_triangles_double_click_folds_once() {
+    let mut s = services();
+    click_node(&mut s, "worker");
+    keys(&mut s.h, "<CR>");
+    let st = state(&mut s);
+    let rows = st.borrow().panes[&s.win]
+        .panel
+        .as_ref()
+        .unwrap()
+        .tree
+        .rows
+        .clone();
+    let api = (rows.iter())
+        .position(|r| matches!(&r.item, Some(Item::Node { id, .. }) if &**id == "api"))
+        .expect("api's row");
+    let at = panel_place(&mut s, &|h| *h == Hit::Detail(api as u32)).expect("on screen");
+    mv(&mut s, at);
+    let em = |s: &mut Setup| {
+        let st = state(s);
+        let st = st.borrow();
+        st.panes[&s.win]
+            .graph_overlay(st.graph.as_ref().unwrap())
+            .emphasis
+    };
+    assert_eq!(em(&mut s), Some(node("api")));
+    keys(&mut s.h, "]]");
+    assert_ne!(
+        em(&mut s),
+        Some(node("api")),
+        "the row went with the tree it was in"
+    );
+    // A double click on a fold triangle folds or unfolds it once.
+    let mut s = graph_with("services.json", &fixture("services.json"), 200, 26);
+    click_node(&mut s, "worker");
+    keys(&mut s.h, "<CR>");
+    let st = state(&mut s);
+    let rows = st.borrow().panes[&s.win]
+        .panel
+        .as_ref()
+        .unwrap()
+        .tree
+        .rows
+        .clone();
+    let deploy = rows.iter().position(|r| r.key == "deploy").expect("deploy");
+    let at = panel_place(&mut s, &|h| *h == Hit::DetailFold(deploy as u32)).expect("triangle");
+    double_click(&mut s, at);
+    let folded = st.borrow().panes[&s.win].panel.as_ref().unwrap().tree.rows[deploy].folded;
+    assert_ne!(folded, rows[deploy].folded);
+}
+
+#[test]
+fn a_node_dragged_toward_the_panel_stays_in_the_graphs_region() {
+    let mut s = services();
+    click_node(&mut s, "metrics");
+    keys(&mut s.h, "<CR>");
+    let st = state(&mut s);
+    let rect = st.borrow().panes[&s.win].panel_rect().unwrap();
+    let from = node_at(&mut s, "metrics");
+    let to = (rect.x + rect.w / 2.0, from.1);
+    gesture(&mut s, &[from, (from.0 + 10.0, from.1), to]);
+    let region = st.borrow().panes[&s.win].graph.as_ref().unwrap().region;
+    let now = node_at(&mut s, "metrics");
+    assert!(region.contains(now.0, now.1), "{now:?} in {region:?}");
+    assert!(now.0 < rect.x, "not under the panel");
+}
+
+#[test]
+fn keys_and_clicks_that_do_nothing_say_why() {
+    let mut s = services();
+    let e = keys_errors(&mut s.h, "]");
+    assert!(e.iter().any(|e| e.contains("no cursor yet")), "{e:?}");
+    let mut g = graph_with("fig-graph.json", &fixture("fig-graph.json"), 200, 50);
+    let at = node_at(&mut g, "worker");
+    click_with(&mut g, at, ALT);
+    let said = format!("{:?}", g.h.messages);
+    assert!(said.contains("has no group"), "{said}");
+}
+
+#[test]
+fn a_charts_cursor_card_goes_while_the_panel_shows_the_same() {
+    let mut s = setup();
+    keys(&mut s.h, "gg5l");
+    let st = state(&mut s);
+    assert!(st.borrow().panes[&s.win].chart_lit().cursor_card);
+    keys(&mut s.h, "<CR>");
+    assert!(!st.borrow().panes[&s.win].chart_lit().cursor_card);
+    keys(&mut s.h, "<CR>");
+    assert!(st.borrow().panes[&s.win].chart_lit().cursor_card);
+}
+
+#[test]
+fn return_on_a_series_row_opens_the_series_tree_in_the_panel() {
+    let mut s = setup();
+    keys(&mut s.h, "gg5l<CR><Tab>");
+    let st = state(&mut s);
+    let before = cursor(&mut s);
+    // The panel's row starts on the cursor's own value: ⏎ there shows its series.
+    keys(&mut s.h, "<CR>");
+    let item = st.borrow().panes[&s.win]
+        .panel
+        .as_ref()
+        .unwrap()
+        .item
+        .clone();
+    assert!(matches!(item, Some(Item::Series(_))), "{item:?}");
+    assert_eq!(cursor(&mut s), before, "the cursor stays");
+    assert!(
+        st.borrow().panes[&s.win].panel_focused(),
+        "the panel keeps the keys"
+    );
+    // Its last value's row goes back to a point.
+    keys(&mut s.h, "G<CR>");
+    assert_ne!(cursor(&mut s), before, "to the series' last point");
 }

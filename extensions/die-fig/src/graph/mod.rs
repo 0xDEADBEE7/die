@@ -532,8 +532,30 @@ impl GraphModel {
     /// (a breadth-first search, neighbours in edge order, so the first of equal paths); None
     /// when there's none. A node to itself is a path of one.
     pub fn path(&self, a: usize, b: usize) -> Option<Vec<usize>> {
+        self.path_through(a, b, |_| true, |_| true)
+    }
+
+    /// [`GraphModel::path`] over what `view` draws only: a path that needs a hidden node or
+    /// edge is no path, since it couldn't be seen.
+    pub fn path_shown(&self, view: &View, a: usize, b: usize) -> Option<Vec<usize>> {
+        self.path_through(
+            a,
+            b,
+            |i| self.visible(view, i),
+            |k| self.edge_visible(view, k),
+        )
+    }
+
+    /// The shortest path from `a` to `b` through the nodes and edges the two tests let by.
+    fn path_through(
+        &self,
+        a: usize,
+        b: usize,
+        node: impl Fn(usize) -> bool,
+        edge: impl Fn(usize) -> bool,
+    ) -> Option<Vec<usize>> {
         let n = self.len();
-        if a >= n || b >= n {
+        if a >= n || b >= n || !node(a) || !node(b) {
             return None;
         }
         let mut from = vec![usize::MAX; n];
@@ -543,9 +565,9 @@ impl GraphModel {
             if x == b {
                 break;
             }
-            for &(y, _) in &self.adjacency[x] {
+            for &(y, k) in &self.adjacency[x] {
                 let y = y as usize;
-                if from[y] == usize::MAX {
+                if from[y] == usize::MAX && node(y) && edge(k as usize) {
                     from[y] = x;
                     q.push_back(y);
                 }
@@ -1003,14 +1025,14 @@ fn acyclic(n: usize, links: &[(usize, usize)]) -> bool {
 }
 
 /// Whether a field's key is one a table's label column goes by.
-fn is_name_key(k: &str) -> bool {
+pub(crate) fn is_name_key(k: &str) -> bool {
     ["label", "name", "title"]
         .iter()
         .any(|n| k.trim().eq_ignore_ascii_case(n))
 }
 
 /// Whether a field's key is one a table's parent column goes by.
-fn is_parent_key(k: &str) -> bool {
+pub(crate) fn is_parent_key(k: &str) -> bool {
     ["parent", "parent_id", "parentid", "parent id", "parent-id"]
         .iter()
         .any(|n| k.trim().eq_ignore_ascii_case(n))

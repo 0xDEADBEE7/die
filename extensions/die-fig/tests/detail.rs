@@ -977,3 +977,26 @@ fn an_x_chart_s_and_a_scatter_s_tables_put_the_cursor_on_its_sample() {
             .ends_with(&format!("\t{}", scatter.series[si].name))
     );
 }
+
+#[test]
+fn grouped_bars_side_by_side_have_no_total_in_their_band_tree() {
+    // services-bars.csv: p50 and p95 per service, grouped, not stacked. Two percentiles add up
+    // to nothing, as the chart's card has it.
+    let model = load("services-bars.csv");
+    let t = model
+        .detail(
+            &View::default(),
+            &Cursor::Band {
+                band: 1,
+                series: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(t.title, "auth");
+    assert!(
+        t.rows.iter().all(|r| r.kind != RowKind::Sum),
+        "{:?}",
+        rows(&t)
+    );
+    assert_eq!(row(&t, "p95").value, "51");
+}

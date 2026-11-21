@@ -45,7 +45,7 @@ use crate::scene::{
 };
 use crate::search::Search;
 use crate::source::{self, Failed, Job, Snapshot, Source, Text};
-use crate::spec::{Chart, Figure, GraphSpec};
+use crate::spec::{Chart, Figure, GraphSpec, Layout};
 use crate::theme::{self, Theme};
 use die_core::{
     BufferId, Button, CellPixels, Ctx, Event, Frame, KeyEvent, KeyKind, Mods, PixelProducer,
@@ -220,6 +220,8 @@ struct OverKey {
     strip: Option<Rect>,
     /// A graph's overlay, whole.
     graph: Option<crate::graph::OverlayState>,
+    /// What a chart's search lights, and whether its cursor's card shows.
+    lit: plot::overlay::Lit,
 }
 
 /// One window's figure: its pixels, its layout, its view and what the pointer is doing there.
@@ -279,6 +281,15 @@ pub struct Pane {
     pub help: bool,
     /// The series a search found, brought forward until `Esc`.
     pub found: Option<SeriesKey>,
+    /// The category a search found on a band chart, brought forward until `Esc`.
+    pub found_band: Option<u32>,
+    /// The series a search typed so far matches on a chart, lit while it's typed.
+    pub lit: Vec<SeriesKey>,
+    /// The categories it matches on a band chart, lit with them.
+    pub lit_bands: Vec<u32>,
+    /// The cursor whose emphasis `Esc` let go (a graph's): its ring stays, nothing dims, until
+    /// the cursor moves, a click or a search puts it somewhere again.
+    pub calm: Option<Cursor>,
     /// The hover is to be worked out again: the view moved under a still pointer.
     rehover: bool,
     /// The axis strip under the pointer, lit faintly as the affordance (mouse-ux §4.9).
@@ -359,6 +370,10 @@ impl Pane {
             last_click: None,
             help: false,
             found: None,
+            found_band: None,
+            lit: vec![],
+            lit_bands: vec![],
+            calm: None,
             rehover: false,
             strip: None,
             drag_mods: Mods::default(),
@@ -633,6 +648,21 @@ impl Pane {
         }
     }
 
+    /// What a chart's overlay shows past [`OverlayState`]: the series and categories a search
+    /// lights (as typed, or found), and the cursor's card, which goes while the detail panel
+    /// says the same (a hover's card stays).
+    pub fn chart_lit(&self) -> plot::overlay::Lit {
+        let bands = match (self.lit_bands.is_empty(), self.found_band) {
+            (true, Some(b)) if self.lit.is_empty() => vec![b],
+            _ => self.lit_bands.clone(),
+        };
+        plot::overlay::Lit {
+            series: self.lit.clone(),
+            bands,
+            cursor_card: self.panel.is_none(),
+        }
+    }
+
     /// Make or grow the two buffers for the area. False if the host gave none.
     fn buffers_for(&mut self, ctx: &mut Ctx) -> std::result::Result<(), String> {
         let (w, h) = self.area_px();
@@ -875,6 +905,13 @@ pub struct FigState {
     pub kill: Option<Kill>,
     /// Goes up with what a restart keeps: the session's cache key.
     pub rev: u64,
+    /// Views an undo of a layout (or labels) setting put back, each with its window: applied
+    /// when the graph laid out again lands, so pins in the old layout's units never draw on
+    /// the new one, and the switch's own clearing doesn't take them.
+    pending: Vec<(WindowId, View)>,
+    /// The layout `auto` picked for the graph, kept while its spec still says `auto` and no
+    /// setting chooses one, so an edit that follows the source doesn't lay it out anew.
+    auto_pick: Option<Layout>,
 }
 
 /// A figure's state, shared by its surface, the extension and its timers.
@@ -938,6 +975,8 @@ impl FigState {
                 panel_seed: false,
                 kill: None,
                 rev: 1,
+                pending: vec![],
+                auto_pick: None,
             })
         })
     }
@@ -1096,6 +1135,7 @@ impl FigState {
             zone: self.zone.clone(),
             open,
             toggles,
+            auto: self.auto_pick.clone(),
         };
         self.builds += 1;
         // This build applies the settings as they are now: a rebuild for them is no more use.
@@ -1233,9 +1273,10 @@ impl FigState {
     /// layout): in a job, the last frame up until it's done.
     fn rebuild_graph(&mut self, ctx: &mut Ctx, spec: GraphSpec) {
         let (toggles, name) = (self.toggles, self.format_name(ctx));
+        let auto = self.auto_pick.clone();
         let me = self.me.clone();
         self.rebuilding = Some(ctx.spawn(
-            move || source::graph_model(&spec, toggles, &name),
+            move || source::graph_model(&spec, toggles, &name, auto.as_ref()),
             move |ctx, out| {
                 if let Some(s) = me.upgrade() {
                     let mut st = s.borrow_mut();
@@ -1356,8 +1397,11 @@ impl FigState {
                 (*band as usize) < cols && series.as_ref().is_none_or(|k| keys.contains(k))
             }
             Some(Cursor::Cell { row, col }) => (*row as usize) < rows && (*col as usize) < cols,
-            Some(Cursor::Node(_)) | None => true,
+            Some(Cursor::Node(_)) => false,
+            None => true,
         };
+        let from_graph = self.graph.is_some();
+        self.auto_pick = None;
         let (ext_x, ext_y) = model.extent();
         // A domain that no longer meets the data's extent shows nothing: it fits again.
         let meets = |d: Option<(f64, f64)>, e: (f64, f64)| {
@@ -1372,6 +1416,20 @@ impl FigState {
             }
             if !fits(&p.view.reference) {
                 p.view.reference = None;
+            }
+            if from_graph {
+                // From a graph to a chart: its window (in layout units), its pins and its
+                // groups mean nothing here.
+                (p.view.x, p.view.y, p.view.follow, p.ease) = (None, None, false, None);
+                (p.view.hidden, p.view.only) = (Default::default(), None);
+                p.view.pinned.clear();
+                (p.calm, p.panel) = (None, None);
+                if let Gesture::NodeDrag { .. } = p.gesture {
+                    p.gesture = Gesture::Swallowed;
+                }
+            }
+            if p.found_band.is_some_and(|b| b as usize >= cols) {
+                p.found_band = None;
             }
             let (left_x, left_y) = (!meets(p.view.x, ext_x), !meets(p.view.y, ext_y));
             if (left_x || left_y) && !p.gesturing() {
@@ -1435,14 +1493,31 @@ impl FigState {
             (p.target, p.matches) = (None, vec![]);
             p.rehover = true;
         }
-        // Laid out another way: the old layout's units, and the pins in them, mean nothing.
+        // Laid out another way: the old layout's units, and the pins in them, mean nothing,
+        // unless an undo put back a view of this layout, which lands with it.
         let relaid = self
             .graph
             .as_ref()
             .is_some_and(|g| g.layout != model.layout);
-        for p in self.panes.values_mut().filter(|_| relaid) {
-            (p.view.x, p.view.y, p.ease) = (None, None, None);
-            p.view.pinned.clear();
+        let pending = std::mem::take(&mut self.pending);
+        for (w, p) in self.panes.iter_mut() {
+            if let Some((_, v)) = pending.iter().find(|(pw, _)| pw == w) {
+                p.view = View {
+                    reference: p.view.reference.clone(),
+                    ..v.clone()
+                };
+                p.view.pinned.retain(|id, _| model.index_of(id).is_some());
+                p.ease = None;
+            } else if relaid {
+                (p.view.x, p.view.y, p.ease) = (None, None, None);
+                p.view.pinned.clear();
+            }
+        }
+        // What `auto` picked, kept while the spec still says `auto` and no setting chooses.
+        if model.spec.layout != Layout::Auto {
+            self.auto_pick = None;
+        } else if self.toggles.layout.is_none() {
+            self.auto_pick = Some(model.layout.clone());
         }
         self.graph = Some(Arc::new(model));
         self.model = None;
@@ -1752,6 +1827,16 @@ impl FigState {
             if self.panel_pointer(ctx, p, at, swallow) {
                 return;
             }
+            // A press in the figure takes the keys back from the panel, as one on the panel
+            // gives them to it.
+            if press
+                && !swallow
+                && let Some(panel) = self.panes.get_mut(&p.window).and_then(|p| p.panel.as_mut())
+                && panel.state.focused
+            {
+                panel.state.focused = false;
+                panel.rev += 1;
+            }
             if self.graph.is_some() {
                 return self.graph_pointer(ctx, p, at, swallow);
             }
@@ -1911,11 +1996,29 @@ impl FigState {
     }
 
     /// `Esc` in a window (mouse-ux §8): a brush is dropped and its release does nothing; a pan
-    /// or a node's drag goes back where it started; a scroll burst ends. With nothing under way,
-    /// the first of the key card, the search's emphasis, the detail panel and the reference
-    /// goes. False if there was nothing.
-    pub fn cancel(&mut self, w: WindowId) -> bool {
+    /// goes back where it started, and a node's drag eases back (mouse-ux §10); a scroll burst
+    /// ends. With nothing under way, the first of the key card, the search's emphasis, the
+    /// detail panel, the reference and (on a graph) the cursor's emphasis goes, the graph at
+    /// rest again with the cursor's ring still on its node (fig-port §9.1-2). False if there
+    /// was nothing.
+    pub fn cancel(&mut self, w: WindowId, now: Duration) -> bool {
         self.end_burst(w);
+        let graph = self.graph.is_some();
+        if let Some(p) = self.panes.get_mut(&w)
+            && p.log.is_none()
+            && let Gesture::NodeDrag { before, .. } = &p.gesture
+        {
+            let before = before.clone();
+            p.gesture = Gesture::Swallowed;
+            self.graph_act(w, now, |g| {
+                g.set(before, Change::Follow);
+            });
+            if let Some(p) = self.panes.get_mut(&w) {
+                p.rehover = true;
+            }
+            self.rev += 1;
+            return true;
+        }
         let Some(p) = self.panes.get_mut(&w) else {
             return false;
         };
@@ -1936,15 +2039,24 @@ impl FigState {
             }
             Gesture::Pressed { .. } => p.gesture = Gesture::Swallowed,
             Gesture::None | Gesture::Swallowed => {
+                let searched = p.found.is_some()
+                    || p.found_band.is_some()
+                    || p.found_node.is_some()
+                    || !p.matches.is_empty()
+                    || !p.lit.is_empty()
+                    || !p.lit_bands.is_empty();
                 if p.help {
                     p.help = false;
-                } else if p.found.is_some() || p.found_node.is_some() || !p.matches.is_empty() {
-                    (p.found, p.found_node, p.matches) = (None, None, vec![]);
+                } else if searched {
+                    (p.found, p.found_band, p.found_node) = (None, None, None);
+                    (p.matches, p.lit, p.lit_bands) = (vec![], vec![], vec![]);
                 } else if p.panel.is_some() {
                     p.panel = None;
                     p.row_hover = None;
                 } else if p.view.reference.is_some() {
                     p.view.reference = None;
+                } else if graph && p.cursor.is_some() && p.calm != p.cursor {
+                    p.calm = p.cursor.clone();
                 } else {
                     return false;
                 }
@@ -2023,16 +2135,17 @@ impl FigState {
             Some((snap, v))
         };
         if self.graph.is_some() {
-            let Some(snap) = self
-                .graph_act(w, now, |g| {
-                    let (snap, v) = step(g.pane)?;
-                    g.set(v, Change::Follow);
-                    Some(snap)
-                })
-                .flatten()
-            else {
+            let Some((snap, v)) = self.panes.get_mut(&w).and_then(step) else {
                 return false;
             };
+            self.rev += 1;
+            if snap.toggles.layout != self.toggles.layout {
+                // The layout goes back first; the view, its pins in that layout's units, lands
+                // with it.
+                self.pending = vec![(w, v)];
+            } else {
+                self.graph_act(w, now, |g| g.set(v, Change::Follow));
+            }
             if snap.toggles != self.toggles {
                 self.toggles = snap.toggles;
                 self.rebuild(ctx);
@@ -3133,6 +3246,7 @@ fn draw_overlay(p: &mut Pane, shows: Shows<'_>, view: &View, theme: &Theme, kit:
         help: p.help,
         strip: p.strip,
         graph: gst.clone(),
+        lit: p.chart_lit(),
     };
     if p.over_key.as_ref() == Some(&key) {
         return;
@@ -3146,7 +3260,7 @@ fn draw_overlay(p: &mut Pane, shows: Shows<'_>, view: &View, theme: &Theme, kit:
                 None => Scene::default(),
             },
             (Shows::Chart(model), Some(l), _) if p.log.is_none() => {
-                plot::overlay(model, l, view, &st, theme, m)
+                plot::overlay::overlay_lit(model, l, view, &st, &key.lit, theme, m)
             }
             _ => Scene::default(),
         }
