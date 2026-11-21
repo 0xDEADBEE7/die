@@ -14,7 +14,13 @@ pub struct Image {
     pub pixels: Vec<u8>,
 }
 
-/// A PNG's picture, premultiplied, from a PNG of any colour type and depth.
+/// The most bytes a picture decodes to as RGBA8: 256 MiB, a square 8192 pixels a side. A
+/// file's header can claim any size in a few bytes, and the png crate's own limits don't cover
+/// the buffer its pixels are read into.
+pub const LARGEST: u64 = 256 << 20;
+
+/// A PNG's picture, premultiplied, from a PNG of any colour type and depth. One that would be
+/// more than [`LARGEST`] bytes is "too large to decode", before any of its pixels are read.
 pub fn decode(bytes: &[u8]) -> Result<Image, String> {
     let wrong = |what: &dyn std::fmt::Display| what.to_string();
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
@@ -22,8 +28,13 @@ pub fn decode(bytes: &[u8]) -> Result<Image, String> {
     // with alpha where the file has any.
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().map_err(|e| wrong(&e))?;
+    let (width, height) = reader.info().size();
     let size = reader
         .output_buffer_size()
+        .filter(|_| {
+            let count = u64::from(width) * u64::from(height);
+            count.checked_mul(4).is_some_and(|n| n <= LARGEST)
+        })
         .ok_or_else(|| wrong(&"too large to decode"))?;
     let mut buffer = vec![0; size];
     let info = reader.next_frame(&mut buffer).map_err(|e| wrong(&e))?;
@@ -129,5 +140,20 @@ mod tests {
         let missing = Path::new("/nonexistent/die-draw.png");
         let why = load(missing).unwrap_err();
         assert!(why.starts_with("/nonexistent/die-draw.png: "), "{why}");
+    }
+
+    #[test]
+    fn a_png_claiming_a_picture_too_large_is_refused_before_its_pixels_are_made_room_for() {
+        // A header of 100,000 pixels a side, 40 GB as RGBA, in a file of a few bytes.
+        let mut claim = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut claim, 100_000, 100_000);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().unwrap();
+            w.write_chunk(png::chunk::IDAT, &[0x78, 0x9c]).unwrap();
+        }
+        assert!(claim.len() < 100);
+        assert_eq!(decode(&claim).unwrap_err(), "too large to decode");
     }
 }

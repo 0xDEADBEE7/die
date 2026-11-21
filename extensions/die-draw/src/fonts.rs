@@ -1192,7 +1192,8 @@ pub fn fill(
     let top = (b.top() * scale - grow).floor() as i32;
     let right = (b.right() * scale + sub_x + grow).ceil() as i32;
     let bottom = (b.bottom() * scale + grow).ceil() as i32;
-    let (w, h) = (right - left, bottom - top);
+    // At a scale far past any glyph's the edges saturate, and their difference with them.
+    let (w, h) = (right.saturating_sub(left), bottom.saturating_sub(top));
     if w <= 0 || h <= 0 || w >= 2048 || h >= 2048 {
         return None;
     }
@@ -1346,6 +1347,12 @@ mod tests {
                     (width - 420.9531).abs() < 0.05,
                     "CoreText's 420.9531 is {width}"
                 );
+                // Its cap height is its own, not the 0.7 of an em a face without one takes.
+                for size in [11.0, 16.0, 32.0] {
+                    let inst = pass.primary(Style::default(), size);
+                    let m = pass.metrics(inst);
+                    assert_eq!((m.upem, m.cap_height), (2048.0, 1443.0), "at {size}");
+                }
             }
         }
         // With no font at all there's nothing to hold; DIE's own is there in a checkout.
@@ -1376,9 +1383,12 @@ mod tests {
         };
         let pairs = [
             ("SF", "SF Mono"),
+            ("Helvetica Neue", "Menlo"),
             ("Helvetica", "Menlo"),
             ("Arial", "Menlo"),
             ("DejaVu Sans", "DejaVu Sans Mono"),
+            ("Noto Sans", "Noto Sans Mono"),
+            ("Liberation Sans", "Liberation Mono"),
             ("Ioskeley Mono", "Ioskeley Mono"),
         ];
         let mut tried = 0;
@@ -1442,6 +1452,19 @@ mod tests {
         }
         if tried == 0 {
             eprintln!("skipped: no font on this machine");
+        }
+    }
+
+    #[test]
+    fn a_shape_too_big_or_at_a_scale_that_is_no_number_has_no_coverage() {
+        let mut b = PathBuilder::new();
+        b.push_rect(tiny_skia::Rect::from_ltrb(0.0, -700.0, 600.0, 200.0).unwrap());
+        let path = b.finish().unwrap();
+        let mask = fill(&path, 0.02, 0.0, 0.3, FillRule::Winding).unwrap();
+        assert_eq!((mask.width, mask.height), (14, 20));
+        for scale in [5e26, 1e30, f32::INFINITY, f32::NAN, -1.0] {
+            let none = fill(&path, scale, 0.0, 0.3, FillRule::Winding);
+            assert!(none.is_none(), "at {scale}");
         }
     }
 

@@ -108,6 +108,13 @@ pub fn bins(scale: f32) -> u8 {
     if scale < 1.5 { 4 } else { 2 }
 }
 
+/// Whether a look at a scale has a size to set text at: its size, its scale and the physical
+/// size they make all finite and above zero. A size that isn't, as a layout's NaN, sets nothing.
+fn sized(look: TextLook, scale: f32) -> bool {
+    let px = look.size * scale;
+    look.size > 0.0 && scale > 0.0 && px > 0.0 && px.is_finite()
+}
+
 impl Pass<'_> {
     /// The primary face's measures for a look at a scale, with no width.
     fn measures(&mut self, look: TextLook, scale: f32) -> Extent {
@@ -124,6 +131,9 @@ impl Pass<'_> {
 
     /// A line's measures without setting it: the same as [`Pass::set`]'s, with nothing kept.
     pub fn extent(&mut self, text: &str, look: TextLook, scale: f32) -> Extent {
+        if !sized(look, scale) {
+            return Extent::default();
+        }
         let mut run = self.run(look.style, look.size, scale).tabular(look.tabular);
         let mut pen = 0.0;
         for c in text.chars() {
@@ -137,7 +147,8 @@ impl Pass<'_> {
         }
     }
 
-    /// A line set in a look at a scale: each glyph where the pen is after its kerning.
+    /// A line set in a look at a scale: each glyph where the pen is after its kerning. A size
+    /// or a scale that's not finite and above zero sets an empty line, with no measures.
     pub fn set(&mut self, text: &str, look: TextLook, scale: f32) -> Line {
         self.set_ends(text, look, scale, None)
     }
@@ -150,6 +161,9 @@ impl Pass<'_> {
         scale: f32,
         mut ends: Option<&mut Vec<f32>>,
     ) -> Line {
+        if !sized(look, scale) {
+            return Line::default();
+        }
         let mut run = self.run(look.style, look.size, scale).tabular(look.tabular);
         let mut glyphs = Vec::with_capacity(text.len());
         let mut pen = 0.0;
@@ -179,14 +193,19 @@ impl Pass<'_> {
 
     /// A line no wider than `max` physical px: the whole of it if it fits, else the longest
     /// start of it that fits with '…' after, spaces before the '…' dropped; only the '…' when
-    /// not even one character fits with it.
+    /// not even one character fits with it, or `max` is NaN. A text of nothing but spaces (or
+    /// nothing), or one no wider than the '…' alone, stays whole however little room there is,
+    /// since a cut would show what wasn't there, or be no narrower.
     pub fn set_within(&mut self, text: &str, look: TextLook, scale: f32, max: f32) -> Line {
         let mut ends = Vec::new();
         let mut line = self.set_ends(text, look, scale, Some(&mut ends));
-        if line.extent.width <= max {
+        if line.extent.width <= max || text.chars().all(char::is_whitespace) {
             return line;
         }
         let dots = self.set("…", look, scale);
+        if dots.extent.width >= line.extent.width {
+            return line;
+        }
         let room = max - dots.extent.width;
         let mut keep = ends.iter().take_while(|end| **end <= room).count();
         let mut chars = text.chars().take(keep).collect::<Vec<char>>();
@@ -203,7 +222,8 @@ impl Pass<'_> {
 
     /// Draws a line with its pen at `x` and its baseline at `baseline` (physical px; the pen
     /// lands on the nearest of the line's bins, the baseline on a whole pixel), in `ink` at
-    /// `alpha` of 255, grown by [`smoothing`] and clipped to `clip`.
+    /// `alpha` of 255, grown by [`smoothing`] and clipped to `clip`. At an `x` or a `baseline`
+    /// that's not finite, as a missing value mapped, it draws nothing.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -215,7 +235,9 @@ impl Pass<'_> {
         alpha: u8,
         clip: Clip,
     ) {
-        if alpha == 0 {
+        // A float cast to an integer saturates, and NaN casts to 0: the line would land on the
+        // buffer's left column or top row.
+        if alpha == 0 || !x.is_finite() || !baseline.is_finite() {
             return;
         }
         let bins = line.bins.max(1);
@@ -270,6 +292,11 @@ mod tests {
             for (a, b) in kept.iter().zip(&whole.glyphs) {
                 assert_eq!((a.x, a.inst, a.id), (b.x, b.inst, b.id));
             }
+            // The '…' goes where the pen is after what's kept.
+            let start: String = text.chars().take(kept.len()).collect();
+            let pen = pass.extent(&start, look, 2.0).width;
+            assert_eq!(last.x, pen + dots.glyphs[0].x, "{start:?}");
+            assert_eq!(cut.extent.width, pen + dots.extent.width);
             // The longest start that fits: one character more, past any spaces, wouldn't.
             let spaces = text
                 .chars()
@@ -286,10 +313,67 @@ mod tests {
         assert_eq!(cut.glyphs.len(), "Requests…".chars().count());
         let words = pass.extent("Requests", look, 2.0).width;
         assert_eq!(cut.extent.width, words + dots.extent.width);
-        // Not one character fits beside it: only the ellipsis.
-        let none = pass.set_within(text, look, 2.0, 1.0);
-        assert_eq!(none.glyphs.len(), 1);
-        assert_eq!(none.glyphs[0].id, dots_id);
+        // Not one character fits beside it, or there's no room at all: only the ellipsis.
+        for max in [1.0, -5.0, f32::NAN] {
+            let none = pass.set_within(text, look, 2.0, max);
+            assert_eq!(none.glyphs.len(), 1, "in {max}");
+            assert_eq!(none.glyphs[0].id, dots_id);
+            assert_eq!(none.extent.width, dots.extent.width);
+        }
+        // Nothing to cut, nothing that shows, or nothing a cut would narrow: the text as it is,
+        // however little room there is.
+        for short in ["", "        ", "i", "1"] {
+            let whole = pass.set(short, look, 2.0);
+            // The spaces are wider than the '…', the letters no wider.
+            let wider = whole.extent.width > dots.extent.width;
+            assert_eq!(wider, short.contains(' '), "{short:?}");
+            for max in [whole.extent.width - 0.01, 0.0, -5.0, f32::NAN] {
+                let kept = pass.set_within(short, look, 2.0, max);
+                let ids = |l: &Line| l.glyphs.iter().map(|g| g.id).collect::<Vec<u16>>();
+                assert_eq!(ids(&kept), ids(&whole), "{short:?} in {max}");
+                assert_eq!(kept.extent, whole.extent, "{short:?} in {max}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_size_or_a_scale_that_is_no_size_sets_nothing_and_a_huge_one_draws_nothing() {
+        let Ok(mut book) = Book::load(None) else {
+            eprintln!("skipped: no font on this machine");
+            return;
+        };
+        let mut pass = book.pass();
+        let text = "Ag 12";
+        let nan = f32::NAN;
+        let inf = f32::INFINITY;
+        let sizes = [
+            (nan, 2.0),
+            (inf, 2.0),
+            (-12.0, 2.0),
+            (0.0, 2.0),
+            (3e38, 2.0),
+        ];
+        let scales = [(12.0, nan), (12.0, inf), (12.0, -1.0), (12.0, 0.0)];
+        for (size, scale) in sizes.into_iter().chain(scales) {
+            let look = TextLook::new(Weight::Regular, size);
+            for look in [look, look.tabular(), look.mono()] {
+                let line = pass.set(text, look, scale);
+                assert!(line.glyphs.is_empty(), "{look:?} at {scale}");
+                assert_eq!(line.extent, Extent::default(), "{look:?} at {scale}");
+                assert_eq!(pass.extent(text, look, scale), Extent::default());
+                let cut = pass.set_within(text, look, scale, 20.0);
+                assert!(cut.glyphs.is_empty(), "{look:?} at {scale}");
+            }
+        }
+        // A size that's huge but a size is set, and draws nothing: no glyph's coverage is that big.
+        let huge = pass.set(text, TextLook::new(Weight::Regular, 1e30), 2.0);
+        assert_eq!(huge.glyphs.len(), text.chars().count());
+        let (w, h) = (100u32, 60u32);
+        let mut bytes = vec![0u8; (w * h * 4) as usize];
+        let mut to = Pixels::new(&mut bytes, w, h).unwrap();
+        let clip = to.whole();
+        pass.draw(&huge, &mut to, 10.0, 30.0, Rgb(255, 255, 255), 255, clip);
+        assert!(bytes.iter().all(|b| *b == 0));
     }
 
     #[test]
@@ -304,13 +388,26 @@ mod tests {
         let (w, h) = (200u32, 60u32);
         let baseline = line.extent.baseline_in(0.0, h as f32);
         let ink = Rgb(255, 255, 255);
-        let mut draw = |alpha: u8, clip: Option<Clip>| {
+        let mut draw_at = |x: f32, baseline: f32, alpha: u8, clip: Option<Clip>| {
             let mut bytes = vec![0u8; (w * h * 4) as usize];
             let mut to = Pixels::new(&mut bytes, w, h).unwrap();
             let clip = clip.unwrap_or(to.whole());
-            pass.draw(&line, &mut to, 10.25, baseline, ink, alpha, clip);
+            pass.draw(&line, &mut to, x, baseline, ink, alpha, clip);
             bytes
         };
+        // At a place that's no place, as a missing value mapped, it draws nothing at all.
+        for (x, y) in [
+            (f32::NAN, baseline),
+            (10.25, f32::NAN),
+            (f32::INFINITY, baseline),
+            (10.25, f32::NEG_INFINITY),
+        ] {
+            assert!(
+                draw_at(x, y, 255, None).iter().all(|b| *b == 0),
+                "({x}, {y})"
+            );
+        }
+        let mut draw = |alpha: u8, clip: Option<Clip>| draw_at(10.25, baseline, alpha, clip);
         // Ink where the line is, between its ascent and descent, white and premultiplied.
         let full = draw(255, None);
         let mut inked = 0;

@@ -60,12 +60,13 @@ pub(crate) fn track(face: &Face<'_>) -> Vec<(f32, f32)> {
 }
 
 /// The tracking a track adds to every advance at `points`, in font units: between the sizes
-/// the table lists, as CoreText does.
+/// the table lists, as CoreText does. A size that's NaN takes the smallest size's.
 pub(crate) fn tracking(track: &[(f32, f32)], points: f32) -> f32 {
     let (Some(first), Some(last)) = (track.first(), track.last()) else {
         return 0.0;
     };
-    if points <= first.0 {
+    // NaN, for which no comparison holds, would find no size below it.
+    if points.is_nan() || points <= first.0 {
         return first.1;
     }
     if points >= last.0 {
@@ -258,4 +259,21 @@ fn lookup(d: &[u8], index: u16, left: u16, right: u16) -> Option<(i16, Option<(u
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracking_is_the_tables_between_its_sizes_and_its_ends_past_them() {
+        let track = [(6.0, 40.0), (12.0, 0.0), (17.0, -12.0)];
+        assert_eq!(tracking(&track, 9.0), 20.0);
+        assert_eq!(tracking(&track, 12.0), 0.0);
+        assert_eq!(tracking(&track, 3.0), 40.0);
+        assert_eq!(tracking(&track, 99.0), -12.0);
+        assert_eq!(tracking(&[], 12.0), 0.0);
+        // A size that's no size takes the smallest size's, and never reads past the table.
+        assert_eq!(tracking(&track, f32::NAN), 40.0);
+    }
 }

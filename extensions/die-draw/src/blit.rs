@@ -187,8 +187,10 @@ impl<'a> Pixels<'a> {
     }
 }
 
-/// One premultiplied pixel: `ink` over what's there, `a` of 255 of it.
+/// One premultiplied pixel: `ink` over what's there, `a` of 255 of it; more than 255 is all of
+/// it.
 pub fn blend(px: &mut [u8], ink: Rgb, a: u32) {
+    let a = a.min(255);
     let rest = 255 - a;
     for (to, from) in px.iter_mut().zip([ink.0, ink.1, ink.2, 255]) {
         *to = ((u32::from(from) * a + u32::from(*to) * rest + 127) / 255) as u8;
@@ -301,6 +303,12 @@ mod tests {
         to.fill(left, ink, 255);
         to.fill(right, ink, 51);
         assert_eq!(bytes, [200, 100, 50, 255, 40, 20, 10, 255]);
+        // A blend of more than all of the ink is all of it.
+        for a in [256, 1000, u32::MAX] {
+            let mut px = [10, 20, 30, 40];
+            blend(&mut px, ink, a);
+            assert_eq!(px, [200, 100, 50, 255], "at {a}");
+        }
     }
 
     #[test]
