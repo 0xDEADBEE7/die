@@ -595,8 +595,8 @@ impl Pane {
     }
 
     /// What a graph's overlay shows: the hover, the cursor and its card (not while the panel
-    /// says the same), the node in focus (a panel row's under the pointer, else a search's
-    /// find, else the hover's after its dwell), a group's legend key under the pointer, a
+    /// says the same, nor mid-drag), the node in focus (a dragged node, a panel row's under the
+    /// pointer, else a search's find, else the hover's after its dwell), a group's legend key under the pointer, a
     /// dragged node's ghost where it was, and the nodes a search typed so far lights.
     pub fn graph_overlay(&self, model: &GraphModel) -> graph::OverlayState {
         let ghost = match &self.gesture {
@@ -605,8 +605,11 @@ impl Pane {
                 .map(|i| (node.clone(), model.position(before, i))),
             _ => None,
         };
-        let row = match &self.row_hover {
-            Some(Item::Node { id, .. }) => Some(Cursor::Node(id.clone())),
+        // The node dragged is the one in focus, its edges bright as they follow it; else a
+        // panel row's under the pointer.
+        let row = match (&self.gesture, &self.row_hover) {
+            (Gesture::NodeDrag { node, .. }, _) => Some(Cursor::Node(node.clone())),
+            (_, Some(Item::Node { id, .. })) => Some(Cursor::Node(id.clone())),
             _ => None,
         };
         graph::OverlayState {
@@ -619,8 +622,10 @@ impl Pane {
                 .or_else(|| self.found_node.clone())
                 .or_else(|| self.dwell.clone()),
             group: self.legend.clone(),
+            // Mid-drag the card goes: the dragged node's own label says enough (mouse-ux §3.3).
+            cursor_card: self.panel.is_none()
+                && !matches!(self.gesture, Gesture::NodeDrag { .. } | Gesture::Pan { .. }),
             ghost,
-            cursor_card: self.panel.is_none(),
             matches: self.matches.clone(),
         }
     }
