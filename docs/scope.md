@@ -325,7 +325,7 @@ Alongside decorations, text buffers provide markers (positions that move with ed
 
 ## 9. Pixel buffers: what they're for
 
-None of your existing packages need pixel buffers (scope guard 8). Pixel buffers are for things you don't have today because Emacs can't support them. These are future extensions. They aren't core features and aren't built here; they're listed to check that the primitive is big enough:
+None of your existing packages need pixel buffers (scope guard 8). Pixel buffers are for things you don't have today because Emacs can't support them. These are future extensions. They aren't core features, and they aren't built here unless you choose them for `extensions/` (D14), as you chose the first, plots and charts, on 2026-11-21: die-fig, in your fig's ethos, which charts the data in a buffer on `\v` (m0-log 1191). They're listed to check that the primitive is big enough:
 
 - Plots and charts from data in a buffer
 - Image and PDF viewers
