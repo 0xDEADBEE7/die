@@ -5,7 +5,8 @@
 //! cargo run --release -p die-fig --example fig_shot -- <file> <out.png> [--size 880x470] \
 //!     [--scale 2] [--light] [--cursor <n>] [--hover <x>,<y>] [--brush <x0>,<x1>[,<y0>,<y1>]] \
 //!     [--reference <n>] [--svg <out.svg>] [--log] [--log-top <n>] [--log-mark <n>] \
-//!     [--stale <bad file>]
+//!     [--stale <bad file>] [--detail] [--detail-series] [--detail-row <n>] [--detail-top <n>] \
+//!     [--detail-focus] [--detail-unfold]
 //! ```
 //!
 //! The size is the area's in logical px, the scale the display's. `--cursor` puts the keyboard's
@@ -21,11 +22,19 @@
 //! `--log-mark` the entry lit). A file that draws, with `--log`, shows its warnings' log. With
 //! `--stale BAD`, the file's figure is drawn with BAD's stale badge, as a figure kept while its
 //! source fails to parse.
+//!
+//! `--detail` opens the detail panel for what the cursor is on (else the hover), beside the
+//! figure as the surface lays it out (`detail::split`): the chart in what's left, the panel at
+//! the right, or the bottom of an area under 560 px wide. `--detail-series` shows the cursor's
+//! series instead. `--detail-row` puts the panel's cursor on a row (its index in the tree, as
+//! printed), `--detail-top` scrolls it, `--detail-focus` gives it focus and `--detail-unfold`
+//! opens every branch. It prints the tree.
 
 use die_test_cap as _;
 
 use die_draw::Book;
 use die_fig::FigError;
+use die_fig::detail::{self, Item, PanelState};
 use die_fig::interact::{BrushKind, Cursor, Toggles, View};
 use die_fig::plot::{self, ChartModel, ErrorView, OverlayState};
 use die_fig::raster::{self, BookMeasure};
@@ -57,6 +66,17 @@ struct Ask {
     log_top: usize,
     log_mark: usize,
     stale: Option<String>,
+    detail: Option<DetailAsk>,
+}
+
+/// What the detail flags ask for.
+#[derive(Clone, Copy, Default)]
+struct DetailAsk {
+    series: bool,
+    row: Option<usize>,
+    top: usize,
+    focus: bool,
+    unfold: bool,
 }
 
 fn pair(v: &str, sep: char) -> Result<Vec<f32>, String> {
@@ -73,7 +93,8 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let usage = "fig_shot <file> <out.png> [--size WxH] [--scale S] [--light] [--cursor N] \
                  [--hover X,Y] [--brush X0,X1[,Y0,Y1]] [--reference N] [--svg OUT.svg] [--log] \
-                 [--log-top N] [--log-mark N] [--stale BAD]";
+                 [--log-top N] [--log-mark N] [--stale BAD] [--detail] [--detail-series] \
+                 [--detail-row N] [--detail-top N] [--detail-focus] [--detail-unfold]";
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage.to_owned());
     };
@@ -90,6 +111,7 @@ fn run() -> Result<(), String> {
         log_top: 0,
         log_mark: 0,
         stale: None,
+        detail: None,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
@@ -118,6 +140,20 @@ fn run() -> Result<(), String> {
             "--log-top" => ask.log_top = pair(&value()?, ',')?[0] as usize,
             "--log-mark" => ask.log_mark = pair(&value()?, ',')?[0] as usize,
             "--stale" => ask.stale = Some(value()?),
+            "--detail" => {
+                ask.detail.get_or_insert_with(DetailAsk::default);
+            }
+            "--detail-series" => ask.detail.get_or_insert_with(DetailAsk::default).series = true,
+            "--detail-row" => {
+                let n = pair(&value()?, ',')?[0] as usize;
+                ask.detail.get_or_insert_with(DetailAsk::default).row = Some(n);
+            }
+            "--detail-top" => {
+                let n = pair(&value()?, ',')?[0] as usize;
+                ask.detail.get_or_insert_with(DetailAsk::default).top = n;
+            }
+            "--detail-focus" => ask.detail.get_or_insert_with(DetailAsk::default).focus = true,
+            "--detail-unfold" => ask.detail.get_or_insert_with(DetailAsk::default).unfold = true,
             other => return Err(format!("{other}: no such flag\n{usage}")),
         }
     }
@@ -231,16 +267,96 @@ fn run() -> Result<(), String> {
             plot::stale_badge(scene, e, &theme, &mut m);
         }
     };
-    let mut scene = draw(
+    let mut scene = beside(
         &model, &view, &ask, &theme, ask.scale, &mut book, &cursor_at, true,
     )?;
     badge(&mut scene, ask.scale, &mut book);
     write(&scene, &output, &ask, &theme, &mut book, |scale, book| {
         let mut s =
-            draw(&model, &view, &ask, &theme, scale, book, &cursor_at, false).unwrap_or_default();
+            beside(&model, &view, &ask, &theme, scale, book, &cursor_at, false).unwrap_or_default();
         badge(&mut s, scale, book);
         s
     })
+}
+
+/// The figure, and the detail panel beside it where asked: the chart laid out in what the
+/// panel leaves, as the surface does.
+#[allow(clippy::too_many_arguments)]
+fn beside(
+    model: &ChartModel,
+    view: &View,
+    ask: &Ask,
+    theme: &Theme,
+    scale: f32,
+    book: &mut Book,
+    cursor_at: &dyn Fn(usize) -> Option<Cursor>,
+    say: bool,
+) -> Result<Scene, String> {
+    let Some(d) = ask.detail else {
+        return draw(model, view, ask, theme, scale, book, cursor_at, say);
+    };
+    let (fig, rect, _) = detail::split(ask.size);
+    let small = Ask {
+        size: (fig.w, fig.h),
+        ..ask.clone()
+    };
+    let chart = draw(model, view, &small, theme, scale, book, cursor_at, say)?;
+    let target = ask.cursor.and_then(cursor_at).or_else(|| {
+        let mut m = BookMeasure { book, scale };
+        let (_, layout, hits) = plot::base(model, view, small.size, scale, theme, &mut m);
+        ask.hover
+            .and_then(|(x, y)| plot::hover(model, &layout, &hits, view, x, y))
+    });
+    let Some(target) = target else {
+        return Err("--detail needs --cursor or --hover on a mark".into());
+    };
+    let mut tree = if d.series {
+        let key = match &target {
+            Cursor::Point { series, .. } => Some(series.clone()),
+            Cursor::Band { series, .. } => series.clone().or_else(|| model.keys().first().cloned()),
+            _ => None,
+        };
+        key.and_then(|k| model.series_detail(&k))
+    } else {
+        model.detail(view, &target)
+    }
+    .ok_or("the cursor names nothing with a detail")?;
+    if d.unfold {
+        tree.unfold_all();
+    }
+    let mut state = PanelState::open(&tree, Item::of_cursor(&target).as_ref());
+    if let Some(r) = d.row {
+        state.row = r.min(tree.rows.len().saturating_sub(1));
+    }
+    state.top = d.top;
+    state.focused = d.focus;
+    if d.row.is_some() || d.top == 0 {
+        detail::reveal(&tree, &mut state, rect);
+    }
+    let mut m = BookMeasure { book, scale };
+    let panel = detail::panel(&tree, state, rect, scale, theme, &mut m);
+    if say {
+        println!(
+            "detail {:?} at {rect:?}: {} — {}",
+            target, tree.title, tree.kind
+        );
+        for (i, r) in tree.rows.iter().enumerate() {
+            println!(
+                "  {i:>3} {}{:?} {} = {}{}",
+                "  ".repeat(usize::from(r.depth)),
+                r.kind,
+                r.key,
+                r.value,
+                if i == state.row { "  <" } else { "" }
+            );
+        }
+    }
+    let mut scene = Scene::new(ask.size.0, ask.size.1, scale);
+    scene.items = chart.items;
+    scene.regions = chart.regions;
+    scene.items.extend(panel.items);
+    scene.regions.extend(panel.regions);
+    Ok(scene)
 }
 
 /// A file built by the job `\v` runs, its data read from disk, times in `zone`.
