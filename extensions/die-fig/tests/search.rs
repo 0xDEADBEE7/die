@@ -1,5 +1,7 @@
 //! Search's model: fig's ranking on fig's own cases (briefs/fig-port.md §6), the matched
 //! characters a highlight draws, and `n` and `N` wrapping over the matches.
+// One matched range is a list of one range, not a range to collect.
+#![allow(clippy::single_range_in_vec_init)]
 
 use die_test_cap as _;
 
@@ -12,15 +14,14 @@ fn item(i: usize) -> Item {
 }
 
 fn search(labels: &[&str], query: &str) -> Search {
-    let mut s = Search::new(
+    Search::with(
         labels
             .iter()
             .enumerate()
             .map(|(i, l)| (l.to_string(), item(i)))
             .collect(),
-    );
-    s.set_query(query);
-    s
+        query,
+    )
 }
 
 fn order(s: &Search) -> Vec<&str> {
@@ -30,7 +31,8 @@ fn order(s: &Search) -> Vec<&str> {
 #[test]
 fn fig_s_scores_rank_exact_then_prefix_then_substring_then_subsequence() {
     // fig's golden values, through the model.
-    let cases: &[(&str, &str, Option<(usize, usize)>)] = &[
+    type Case<'a> = (&'a str, &'a str, Option<(usize, usize)>);
+    let cases: &[Case] = &[
         ("API", "api", Some((0, 0))),
         ("API server", "api", Some((1, 10))),
         ("Application", "api", Some((3, 2))),

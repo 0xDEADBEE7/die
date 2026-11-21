@@ -245,6 +245,19 @@ impl ChartModel {
         Some(t)
     }
 
+    /// A mean at a decimal past its series' precision, a zero there trimmed ("778", not
+    /// "778.0"); with the axis's format, or a share, as the values are written.
+    fn mean_text(&self, mean: f64, decimals: usize) -> String {
+        let t = self.value_label(mean, (decimals + 1).min(6));
+        let plain =
+            self.y.format.is_none() && !self.series.iter().any(|s| s.stack == Stack::Normalize);
+        if plain && t.contains('.') {
+            t.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            t
+        }
+    }
+
     /// The total of two or more stacked values, at their finest precision; none for shares.
     fn total(&self, parts: &[(f64, usize)]) -> Option<String> {
         if parts.len() < 2 || self.series.iter().any(|s| s.stack == Stack::Normalize) {
@@ -386,10 +399,7 @@ impl ChartModel {
             let mean = present.iter().map(|&i| s.ys[i]).sum::<f64>() / present.len() as f64;
             rows.push(DetailRow::field("min", at(min)).naming(point(min)));
             rows.push(DetailRow::field("max", at(max)).naming(point(max)));
-            rows.push(DetailRow::field(
-                "mean",
-                self.value_label(mean, (s.decimals + 1).min(6)),
-            ));
+            rows.push(DetailRow::field("mean", self.mean_text(mean, s.decimals)));
             rows.push(DetailRow::field("last", at(last)).naming(point(last)));
         }
         let mut style = Vec::new();

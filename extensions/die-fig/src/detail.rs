@@ -32,6 +32,7 @@ use crate::scene::{
 };
 use crate::style::{ColorSpec, FigStyle};
 use crate::theme::{Color, Theme, color_of};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------- items
 
@@ -403,7 +404,7 @@ impl DetailTree {
         j
     }
 
-    /// The first row that names `item` (as [`Item::same`] has it), or one that holds it.
+    /// The first row that names `item` (as [`Item::same`] has it).
     pub fn row_of(&self, item: &Item) -> Option<usize> {
         self.rows
             .iter()
@@ -1136,7 +1137,7 @@ pub struct PanelLayout {
     pub inner: (f32, f32),
     /// The top padding: the title's cap sits under it.
     pub pad_top: f32,
-    /// The kind line's baseline offset from the title's, when it's shown.
+    /// Whether the kind line is shown (a panel under 140 px drops it).
     pub kind: bool,
     /// The rule under the header.
     pub rule_y: f32,
@@ -1174,7 +1175,11 @@ pub fn layout(tree: &DetailTree, state: &PanelState, rect: Rect) -> PanelLayout 
             let (_, t, b) = paddings(rect.w, rect.h);
             (t, b)
         }
-        Dock::Bottom => (14.0, 12.0),
+        // A short strip at the bottom keeps its rows, not its margins.
+        Dock::Bottom => (
+            (rect.h * 0.08).clamp(8.0, 14.0),
+            (rect.h * 0.06).clamp(6.0, 12.0),
+        ),
     };
     let kind = rect.h >= SHORT;
     let head = if kind { HEAD } else { HEAD_SHORT };
@@ -1396,19 +1401,36 @@ fn baseline(line: Rect) -> f32 {
 /// the panel.
 fn key_column(tree: &DetailTree, gut: &[bool], width: f32, m: &mut dyn Measure) -> f32 {
     let spec = TextSpec::new(BODY);
-    let widest = tree
-        .rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| matches!(r.kind, RowKind::Field | RowKind::Branch))
-        .map(|(i, r)| {
-            m.width(&r.key, spec) + f32::from(r.depth) * INDENT + if gut[i] { GUTTER } else { 0.0 }
-        })
-        .fold(0.0, f32::max);
+    // Per indent, only the keys longest in characters are measured: a JSON row with thousands
+    // of members measures a handful, not thousands, at every draw.
+    let mut longest: BTreeMap<u32, Vec<(usize, &str)>> = BTreeMap::new();
+    for (i, r) in tree.rows.iter().enumerate() {
+        if !matches!(r.kind, RowKind::Field | RowKind::Branch) {
+            continue;
+        }
+        let at = u32::from(r.depth) * 2 + u32::from(gut[i]);
+        let list = longest.entry(at).or_default();
+        list.push((r.key.chars().count(), &r.key));
+        if list.len() > 2 * KEYS_MEASURED {
+            list.sort_by_key(|k| std::cmp::Reverse(k.0));
+            list.truncate(KEYS_MEASURED);
+        }
+    }
+    let mut widest: f32 = 0.0;
+    for (at, mut list) in longest {
+        list.sort_by_key(|k| std::cmp::Reverse(k.0));
+        let indent = (at / 2) as f32 * INDENT + if at % 2 == 1 { GUTTER } else { 0.0 };
+        for (_, k) in list.into_iter().take(KEYS_MEASURED) {
+            widest = widest.max(m.width(k, spec) + indent);
+        }
+    }
     (widest + 18.0)
         .clamp(64.0, (width * 0.45).max(64.0))
         .round()
 }
+
+/// How many of the longest keys at each indent the key column measures.
+const KEYS_MEASURED: usize = 4;
 
 /// The heading each line is under, and whether the rows under it have a gutter for fold
 /// triangles (any of them is a branch).
@@ -1671,7 +1693,8 @@ pub fn panel(
                 continue;
             }
             RowKind::Sum => {
-                let rule = (lr.y).round() + 0.5;
+                // Clear of a lit row above it.
+                let rule = (lr.y + 2.0).round() + 0.5;
                 scene.push(scene::Item::Path {
                     path: PathData::polyline(&[(x0 + 14.0, rule), (x1 - 4.0, rule)]),
                     fill: None,

@@ -50,6 +50,13 @@ impl Search {
         s
     }
 
+    /// A search over `names` for `query`.
+    pub fn with(names: Vec<(String, Item)>, query: &str) -> Search {
+        let mut s = Search::new(names);
+        s.set_query(query);
+        s
+    }
+
     /// The names it searches.
     pub fn names(&self) -> &[(String, Item)] {
         &self.names
