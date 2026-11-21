@@ -289,8 +289,23 @@ fn moment(
             card.avoid = l.bars.iter().map(|b| b.rect).collect();
             card.avoid.extend(l.totals.iter().map(|t| t.1));
             if let Some((px, py)) = pointer {
-                card.avoid.push(Rect::new(px - 6.0, py - 6.0, 12.0, 12.0));
+                // Kept CARD_GAP from the pointer, as the card's first place is.
+                let r = CARD_GAP - MARK_CLEAR;
+                card.avoid.push(Rect::new(px - r, py - r, 2.0 * r, 2.0 * r));
             }
+            card.home = Some(if l.horizontal {
+                Home {
+                    centre: slot.y + slot.h / 2.0,
+                    step: slot.h.max(1.0),
+                    across: false,
+                }
+            } else {
+                Home {
+                    centre: slot.x + slot.w / 2.0,
+                    step: slot.w.max(1.0),
+                    across: true,
+                }
+            });
             // What the card keeps clear of: the band's bars, from their ends to the baseline.
             let bars = l
                 .bars
@@ -1540,6 +1555,8 @@ struct Card {
     /// The marks it covers only where there's no room clear of them (a bar chart's bars, their
     /// totals, the pointer): empty where it goes where it's put.
     avoid: Vec<Rect>,
+    /// The band it's about, on a band chart: it stays by it where there's room.
+    home: Option<Home>,
     header: String,
     rows: Vec<Row>,
     more: usize,
@@ -1552,6 +1569,19 @@ struct Card {
     w: f32,
     h: f32,
 }
+
+/// The band a card is about: its middle and its step along the band axis, across the screen
+/// (`across`) or down it.
+#[derive(Clone, Copy)]
+struct Home {
+    centre: f32,
+    step: f32,
+    across: bool,
+}
+
+/// The most places along the rects' narrow axis a card tries to sit clear of them, nearest
+/// first: every one on a chart of a few dozen bars, enough near the hover on a day of minutes.
+const CLEAR_TRIES: usize = 96;
 
 const PAD: f32 = 12.0;
 /// How far a card keeps from a mark it avoids.
@@ -1659,6 +1689,7 @@ impl Card {
         let h = CARD_CHROME + n as f32 * CARD_ROW + total_h;
         let mut card = Card {
             avoid: Vec::new(),
+            home: None,
             header,
             rows,
             more,
@@ -1878,15 +1909,18 @@ impl Card {
 
     /// `r` where it covers none of what the card avoids (kept `MARK_CLEAR` px from each);
     /// else the nearest place that does, inside the area and over the plot where it fits, the
-    /// legend and the title costing a little to cover; else `r` after all.
+    /// legend and the title costing a little to cover, and a band's card costing a band's step
+    /// for each band past its neighbour it strays (so it stays with its band where that has
+    /// room); else `r` after all.
+    ///
+    /// The places tried are where an edge of the card meets an edge of what it avoids, or of
+    /// the area: at most [`CLEAR_TRIES`] across the rects' narrow axis, nearest first, each
+    /// tested against the rects that reach it by a sweep, so a day of minute bars costs no more
+    /// than a dozen.
     fn clear_of(&self, l: &ChartLayout, r: Rect) -> Rect {
-        let covers = |c: &Rect| {
-            self.avoid.iter().any(|a| {
-                c.intersect(&a.inflate(MARK_CLEAR))
-                    .is_some_and(|i| i.w > 0.01 && i.h > 0.01)
-            })
-        };
-        if self.avoid.is_empty() || !covers(&r) {
+        let inflated: Vec<Rect> = self.avoid.iter().map(|a| a.inflate(MARK_CLEAR)).collect();
+        let meets = |c: &Rect, a: &Rect| c.intersect(a).is_some_and(|i| i.w > 0.01 && i.h > 0.01);
+        if inflated.is_empty() || !inflated.iter().any(|a| meets(&r, a)) {
             return r;
         }
         let (aw, ah) = l.size;
@@ -1900,34 +1934,120 @@ impl Card {
         if x1 < x0 || y1 < y0 {
             return r;
         }
-        // Where an edge of the card meets an edge of what it avoids, or of the area.
-        let gap = MARK_CLEAR + 1.0;
-        let mut xs = vec![r.x, x0, x1];
-        let mut ys = vec![r.y, y0, y1];
-        for a in &self.avoid {
-            xs.extend([a.right() + gap, a.x - gap - w]);
-            ys.extend([a.bottom() + gap, a.y - gap - h]);
+        // Bars down the screen are narrow across it, bars across narrow down it: the search
+        // runs along the axis the rects are narrow on, `u`, and tries every place down the
+        // other, `v`.
+        let widest = |f: fn(&Rect) -> f32| inflated.iter().map(f).fold(0.0, f32::max);
+        let across = widest(|a| a.w) <= widest(|a| a.h);
+        // (u0, u1, v0, v1) of a rect, (u, v) of a point, and back.
+        let uv = |a: &Rect| match across {
+            true => (a.x, a.right(), a.y, a.bottom()),
+            false => (a.y, a.bottom(), a.x, a.right()),
+        };
+        let (su, sv) = if across { (w, h) } else { (h, w) };
+        let (u_lo, u_hi, v_lo, v_hi) = if across {
+            (x0, x1, y0, y1)
+        } else {
+            (y0, y1, x0, x1)
+        };
+        let (ru, rv) = if across { (r.x, r.y) } else { (r.y, r.x) };
+        let point = |u: f32, v: f32| if across { (u, v) } else { (v, u) };
+        // A pixel past the inflated rect: MARK_CLEAR and one from the mark itself.
+        let gap = 1.0;
+        let mut blocks: Vec<(f32, f32, f32, f32)> = inflated.iter().map(uv).collect();
+        blocks.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let longest = blocks.iter().map(|b| b.1 - b.0).fold(0.0, f32::max);
+        // The places: rounded as the card is placed, each once.
+        let places = |lo: f32, hi: f32, from: f32, size: f32, along_u: bool| {
+            let mut out: Vec<f32> = vec![from.round(), lo.round(), hi.round()];
+            for b in &blocks {
+                let (a, z) = if along_u { (b.0, b.1) } else { (b.2, b.3) };
+                out.extend([(z + gap).round(), (a - gap - size).round()]);
+            }
+            out.retain(|&v| v >= lo - 0.51 && v <= hi + 0.51);
+            out.sort_by(f32::total_cmp);
+            out.dedup();
+            out
+        };
+        let mut us = places(u_lo, u_hi, ru, su, true);
+        let mut vs = places(v_lo, v_hi, rv, sv, false);
+        // A band's card also tries the places that centre it on its band and on each
+        // neighbour, and the furthest that still reads as its neighbour's.
+        let home = self.home;
+        let mut homes: Vec<f32> = Vec::new();
+        if let Some(hm) = home {
+            let size = if hm.across { w } else { h };
+            for k in [0.0, -1.0, 1.0, -1.45, 1.45] {
+                homes.push((hm.centre + k * hm.step - size / 2.0).round());
+            }
+            let (lo, hi, list) = if hm.across == across {
+                (u_lo, u_hi, &mut us)
+            } else {
+                (v_lo, v_hi, &mut vs)
+            };
+            homes.retain(|&v| v >= lo - 0.51 && v <= hi + 0.51);
+            list.extend(homes.iter().copied());
+            list.sort_by(f32::total_cmp);
+            list.dedup();
         }
-        let inside = |v: f32, lo: f32, hi: f32| v >= lo - 0.01 && v <= hi + 0.01;
-        xs.retain(|&x| inside(x, x0, x1));
-        ys.retain(|&y| inside(y, y0, y1));
+        us.sort_by(|a, b| (a - ru).abs().total_cmp(&(b - ru).abs()));
+        // The area's edges and the band's own places stay among them however many there are,
+        // in their order.
+        let mut kept: Vec<f32> = us.iter().copied().take(CLEAR_TRIES).collect();
+        for e in us.iter().skip(CLEAR_TRIES) {
+            if *e == u_lo.round() || *e == u_hi.round() || homes.contains(e) {
+                kept.push(*e);
+            }
+        }
         let cost = |x: f32, y: f32| {
             let (dx, dy) = (x - r.x, y - r.y);
             // Over the legend or the title above the plot costs a little more than over the
             // plot's empty space.
             let above = (l.plot.y - y).max(0.0);
-            (dx * dx + dy * dy).sqrt() + above
+            // A band's card past its neighbour reads as another band's.
+            let strays = home.map_or(0.0, |hm| {
+                let centre = if hm.across { x + w / 2.0 } else { y + h / 2.0 };
+                let bands = ((centre - hm.centre).abs() / hm.step - 0.5).ceil().max(0.0);
+                (bands - 1.0).max(0.0) * hm.step
+            });
+            (dx * dx + dy * dy).sqrt() + above + strays
         };
         let mut best: Option<(f32, Rect)> = None;
-        for &x in &xs {
-            for &y in &ys {
-                let c = Rect::new(x.round(), y.round(), w, h);
-                if covers(&c) {
+        let mut spans: Vec<(f32, f32)> = Vec::new();
+        for &u in &kept {
+            // Nothing further along can cost less than this place's distance already does.
+            if best.as_ref().is_some_and(|b| (u - ru).abs() >= b.0) {
+                break;
+            }
+            // What reaches across [u, u + su], as spans down v, merged.
+            spans.clear();
+            let first = blocks.partition_point(|b| b.0 <= u + 0.01 - longest);
+            for b in &blocks[first..] {
+                if b.0 >= u + su - 0.01 {
+                    break;
+                }
+                if b.1 > u + 0.01 {
+                    spans.push((b.2, b.3));
+                }
+            }
+            spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut merged: Vec<(f32, f32)> = Vec::with_capacity(spans.len());
+            for &(a, z) in &spans {
+                match merged.last_mut() {
+                    Some(m) if a <= m.1 => m.1 = m.1.max(z),
+                    _ => merged.push((a, z)),
+                }
+            }
+            for &v in &vs {
+                // The first span that ends past the card's start; free if it starts past its end.
+                let i = merged.partition_point(|m| m.1 <= v + 0.01);
+                if merged.get(i).is_some_and(|m| m.0 < v + sv - 0.01) {
                     continue;
                 }
-                let k = cost(c.x, c.y);
+                let (x, y) = point(u, v);
+                let k = cost(x, y);
                 if best.as_ref().is_none_or(|b| k < b.0) {
-                    best = Some((k, c));
+                    best = Some((k, Rect::new(x, y, w, h)));
                 }
             }
         }

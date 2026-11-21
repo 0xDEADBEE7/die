@@ -2942,7 +2942,7 @@ fn the_log_writes_each_entry_as_rustc_does_with_a_caret_under_its_column() {
 #[test]
 fn the_log_scrolls_by_lines_and_keeps_a_long_line_s_caret_in_view() {
     let errors = kinds();
-    let lines = log_layout(&errors, SPEC);
+    let lines = log_layout(&errors, SPEC, "spec.fig");
     assert_eq!(lines.starts.len(), 4);
     assert_eq!(lines.starts[0], 0);
     for i in 1..4 {
@@ -3072,6 +3072,17 @@ fn clear(card: &Rect, avoid: &[Rect]) -> bool {
 /// Whether a card of `w × h` has a spot in the area (4 px in, over the plot's bottom) that keeps
 /// clear of `avoid`: searched on a 2 px grid.
 fn free_spot_exists(l: &ChartLayout, w: f32, h: f32, avoid: &[Rect]) -> bool {
+    free_spot_where(l, w, h, avoid, |_| true)
+}
+
+/// [`free_spot_exists`], among the spots `ok` takes.
+fn free_spot_where(
+    l: &ChartLayout,
+    w: f32,
+    h: f32,
+    avoid: &[Rect],
+    ok: impl Fn(&Rect) -> bool,
+) -> bool {
     let (aw, ah) = l.size;
     let floor = if h <= l.plot.bottom() - 8.0 {
         l.plot.bottom() - 4.0
@@ -3082,7 +3093,8 @@ fn free_spot_exists(l: &ChartLayout, w: f32, h: f32, avoid: &[Rect]) -> bool {
     while y + h <= floor {
         let mut x = 4.0;
         while x + w <= aw - 4.0 {
-            if clear(&Rect::new(x, y, w, h), avoid) {
+            let r = Rect::new(x, y, w, h);
+            if ok(&r) && clear(&r, avoid) {
                 return true;
             }
             x += 2.0;
@@ -3145,6 +3157,59 @@ fn a_bar_s_card_covers_no_bar_where_there_is_room() {
             }
         }
         assert!(seen > 0, "{name}: a card on some band");
+    }
+}
+
+#[test]
+fn a_band_s_card_stays_by_its_band_where_its_band_or_a_neighbour_has_room() {
+    for name in ["services-bars.csv", "latency.json", "hbars.json"] {
+        let model = load(name);
+        let view = View::default();
+        let (_, l, hits) = lay(&model, &view, (880.0, 470.0));
+        let bars: Vec<Rect> = l.bars.iter().map(|b| b.rect).collect();
+        let scale = if l.horizontal { &l.y } else { &l.x };
+        let (a0, _) = scale.band_of(0).unwrap();
+        let (a1, _) = scale.band_of(1).unwrap();
+        let step = (a1 - a0).abs();
+        let mut band = 0;
+        while let Some((a, bw)) = scale.band_of(band) {
+            let home = a + bw / 2.0;
+            // The pointer low on the band (as the gallery hovered services-bars), and in the
+            // plot's middle.
+            for along in [0.5, 0.85] {
+                let p = if l.horizontal {
+                    (l.plot.x + l.plot.w * (1.0 - along), home)
+                } else {
+                    (home, l.plot.y + l.plot.h * along)
+                };
+                let (hover, o) = hovered(&model, &l, &hits, &view, p);
+                assert!(
+                    matches!(hover, Some(Cursor::Band { .. })),
+                    "{name}: {hover:?}"
+                );
+                let Some(card) = shadow(&o) else { continue };
+                let mut avoid = bars.clone();
+                avoid.extend(l.totals.iter().map(|t| t.1));
+                avoid.push(Rect::new(p.0 - 4.0, p.1 - 4.0, 8.0, 8.0));
+                let centre = |r: &Rect| {
+                    if l.horizontal {
+                        r.y + r.h / 2.0
+                    } else {
+                        r.x + r.w / 2.0
+                    }
+                };
+                // Over its own band or its neighbour: no further than a band and a half.
+                let near = |r: &Rect| (centre(r) - home).abs() < 1.5 * step;
+                if free_spot_where(&l, card.w, card.h, &avoid, near) {
+                    assert!(
+                        near(&card),
+                        "{name}: band {band}'s card at {card:?} strays from {home} (step {step})"
+                    );
+                }
+            }
+            band += 1;
+        }
+        assert!(band > 2, "{name}: bands");
     }
 }
 

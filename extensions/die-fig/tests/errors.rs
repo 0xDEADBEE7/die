@@ -213,6 +213,89 @@ fn the_log_moves_with_j_k_gg_g_ctrl_d_ctrl_u_and_the_wheel() {
     );
 }
 
+/// The log as it's drawn, with the figure's name (each entry's `-->` line says it), and its page.
+fn drawn_log(s: &mut Setup) -> (die_fig::plot::LogLayout, usize) {
+    let st = state(s);
+    let st = st.borrow();
+    let (_, lines) = die_fig::plot::errors::log_entries(&st.log_errors(), &st.text, &st.name);
+    (lines, die_fig::plot::log_page(st.panes[&s.win].size()))
+}
+
+/// Whether entry `i` of the drawn log is on the page whole.
+fn on_page(
+    lines: &die_fig::plot::LogLayout,
+    page: usize,
+    (top, _): (usize, usize),
+    i: usize,
+) -> bool {
+    let top = top.min(lines.max_top(page));
+    lines.starts[i] >= top && lines.starts[i] + lines.lens[i] <= top + page
+}
+
+#[test]
+fn the_log_s_keys_and_wheel_reach_every_entry_of_the_log_as_drawn() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/errors/many-errors.fig");
+    let mut h = harness();
+    let src = open(&mut h, &path);
+    let mut s = setup_on(h, src);
+    assert_ne!(s.buf, src, "the .fig opened as its figure");
+    keys(&mut s.h, "!");
+    let (lines, page) = drawn_log(&mut s);
+    let n = lines.starts.len();
+    assert!(
+        n >= 8 && lines.total > page,
+        "a long log: {n} entries, {} lines",
+        lines.total
+    );
+    // The figure's own entries say its name, so the keys' layout is the drawn one.
+    assert_eq!(state(&mut s).borrow().log_layout(), lines);
+    // j to each entry brings it whole onto the page.
+    for i in 1..n {
+        keys(&mut s.h, "j");
+        let at = log(&mut s).unwrap();
+        assert_eq!(at.1, i);
+        assert!(
+            on_page(&lines, page, at, i),
+            "j to entry {i}: {at:?}, {lines:?}"
+        );
+    }
+    // G lights the last, on the page, where the pointer finds it.
+    keys(&mut s.h, "gg");
+    keys(&mut s.h, "G");
+    let at = log(&mut s).unwrap();
+    assert_eq!(at.1, n - 1);
+    assert!(on_page(&lines, page, at, n - 1), "G: {at:?}");
+    let last = (n - 1) as u32;
+    assert!(
+        point_on(&mut s, |h| *h == Hit::LogEntry(last)).is_some(),
+        "the last entry under the pointer"
+    );
+    // The wheel goes as far as the drawn log's end, and no further.
+    keys(&mut s.h, "gg");
+    let (w, hh) = state(&mut s).borrow().panes[&s.win].size();
+    for _ in 0..60 {
+        scroll(
+            &mut s,
+            (w / 2.0, hh / 2.0),
+            (0.0, 5.0),
+            die_core::Mods::default(),
+        );
+    }
+    assert_eq!(
+        log(&mut s).unwrap().0,
+        lines.max_top(page),
+        "the wheel to the end"
+    );
+    // C-d as far as it goes: the end too.
+    keys(&mut s.h, "gg");
+    keys(&mut s.h, "20<C-d>");
+    assert_eq!(
+        log(&mut s).unwrap().0,
+        lines.max_top(page),
+        "C-d to the end"
+    );
+}
+
 #[test]
 fn a_bad_edit_keeps_the_last_figure_with_the_stale_badge_until_a_good_one() {
     let mut s = setup_with("data.json", GOOD);
@@ -346,6 +429,68 @@ fn a_fig_file_opens_as_its_figure_and_leader_v_flips_to_its_text_and_back() {
     assert_eq!(s.h.window_buffer(s.win), Some(csv), "a CSV is text");
 }
 
+/// `:CMD` typed, run to its end.
+fn ex(h: &mut Harness, cmd: &str) {
+    keys(h, &format!(":{cmd}<CR>"));
+    h.run_until_idle();
+    h.scene();
+}
+
+#[test]
+fn a_fig_file_opened_again_opens_as_you_last_looked_at_it_and_its_own_text_stays_text() {
+    let dir = TempDir::new("errors-again");
+    write(dir.path(), "rates.csv", &crossing());
+    let spec = write(dir.path(), "rates.fig", RATES_FIG);
+    let notes = write(dir.path(), "notes.txt", "hello\n");
+    let mut h = harness();
+    h.open_text("scratch", "").unwrap();
+    h.run_until_idle();
+    ex(&mut h, &format!("e {}", spec.display()));
+    assert_eq!(shown_name(&mut h), "rates.fig *fig*", ":e: the figure");
+    // Elsewhere and back: the figure again, as it was left.
+    ex(&mut h, &format!("e {}", notes.display()));
+    assert_eq!(shown_name(&mut h), "notes.txt");
+    ex(&mut h, &format!("e {}", spec.display()));
+    assert_eq!(
+        shown_name(&mut h),
+        "rates.fig *fig*",
+        ":e again: the figure"
+    );
+    ex(&mut h, "b notes.txt");
+    ex(&mut h, "b rates.fig");
+    assert_eq!(shown_name(&mut h), "rates.fig *fig*", ":b: the figure");
+    // From its figure to its text by name, or back along the jumps: its text, which stays.
+    ex(&mut h, "b rates.fig");
+    assert_eq!(
+        shown_name(&mut h),
+        "rates.fig",
+        "its text, asked for from its figure"
+    );
+    keys(&mut h, "l");
+    assert_eq!(shown_name(&mut h), "rates.fig", "and it stays so");
+    // Left as text: `:e` brings it back as text.
+    ex(&mut h, &format!("e {}", notes.display()));
+    ex(&mut h, &format!("e {}", spec.display()));
+    assert_eq!(
+        shown_name(&mut h),
+        "rates.fig",
+        "last looked at as text: text"
+    );
+    // \v to the figure, and `C-^` to the text behind it: text, not the figure again.
+    h.run("fig-toggle", &Args::default()).unwrap();
+    h.run_until_idle();
+    assert_eq!(shown_name(&mut h), "rates.fig *fig*");
+    keys(&mut h, "<C-^>");
+    h.run_until_idle();
+    assert_ne!(
+        shown_name(&mut h),
+        "rates.fig *fig*",
+        "C-^ leaves the figure"
+    );
+    keys(&mut h, "l");
+    assert_ne!(shown_name(&mut h), "rates.fig *fig*", "and stays gone");
+}
+
 #[test]
 fn a_fig_that_fails_on_opening_shows_the_symbolic_figure_and_leader_v_its_text() {
     let dir = TempDir::new("errors-fail");
@@ -473,6 +618,51 @@ fn a_restart_reopens_each_fig_file_as_you_last_looked_at_it() {
         "drawn: {:?}",
         st.borrow().error
     );
+}
+
+#[test]
+fn a_restart_reopens_a_fig_left_as_text_however_its_text_was_reached() {
+    let state_dir = TempDir::new("errors-session-b");
+    let dir = TempDir::new("errors-session-b-data");
+    write(dir.path(), "rates.csv", &crossing());
+    let a = write(dir.path(), "a.fig", RATES_FIG);
+    let b = write(dir.path(), "b.fig", RATES_FIG);
+    let mut h = up(&state_dir);
+    open(&mut h, &a);
+    assert_eq!(shown_name(&mut h), "a.fig *fig*");
+    // Its text by `:b` from its figure: text is how you left it.
+    ex(&mut h, "b a.fig");
+    assert_eq!(shown_name(&mut h), "a.fig");
+    let mut h = restart(h, &state_dir);
+    assert_eq!(
+        shown_name(&mut h),
+        "a.fig",
+        "left as text by :b, back as text"
+    );
+    keys(&mut h, "l");
+    assert_eq!(shown_name(&mut h), "a.fig", "and it stays so");
+    // b.fig left as its figure; after a restart its text reached from elsewhere opens its
+    // figure, as it did before the restart, and from its figure stays text.
+    open(&mut h, &b);
+    assert_eq!(shown_name(&mut h), "b.fig *fig*");
+    let mut h = restart(h, &state_dir);
+    assert_eq!(
+        shown_name(&mut h),
+        "b.fig *fig*",
+        "left as the figure, back so"
+    );
+    ex(&mut h, "b a.fig");
+    assert_eq!(shown_name(&mut h), "a.fig", "a.fig still text");
+    ex(&mut h, "b b.fig");
+    assert_eq!(
+        shown_name(&mut h),
+        "b.fig *fig*",
+        "b.fig from elsewhere: its figure"
+    );
+    ex(&mut h, "b b.fig");
+    assert_eq!(shown_name(&mut h), "b.fig", "from its figure: its text");
+    let mut h = restart(h, &state_dir);
+    assert_eq!(shown_name(&mut h), "b.fig", "left as text, back as text");
 }
 
 #[test]

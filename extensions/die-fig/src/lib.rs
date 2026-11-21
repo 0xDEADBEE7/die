@@ -57,7 +57,7 @@ use jiff::tz::TimeZone;
 use source::Source;
 use spec::{DataRef, Figure};
 use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use surface::{FigState, FigSurface, Kit, Shared, SharedKit};
@@ -94,8 +94,8 @@ pub struct Options {
 }
 
 /// The file-type mode of `.fig` and `.fig.json` files (contract §8): a buffer that comes to
-/// visit one opens as its figure, unless your options say text, or the session says you last
-/// looked at it as text.
+/// visit one opens as its figure, unless your options say text, or you last looked at it as
+/// text (in this session or the one before).
 pub const FILE_MODE: &str = "fig-file";
 
 /// Whether a file is a figure's by its name: `.fig` or `.fig.json`, in any case.
@@ -107,18 +107,14 @@ pub fn is_fig_file(path: &Path) -> bool {
     (name.ends_with(".fig") && name.len() > 4) || (name.ends_with(".fig.json") && name.len() > 9)
 }
 
-/// The `.fig` file-type mode's instance on a buffer: its enable opens the buffer as its
-/// figure in the window that shows it, when one does.
+/// The `.fig` file-type mode's instance on a buffer: when it comes (a file opened outside a
+/// command, a restart), the focused window is looked at as after a command, so a `.fig` that
+/// came into it opens as its figure.
 struct FigFile;
 
 impl Mode for FigFile {
-    fn on_enable(&mut self, buf: BufferId, ctx: &mut Ctx) -> Result {
-        ctx.with_ext(|fig: &mut Fig, ctx| fig.opened(ctx, buf))?
-    }
-
-    /// Saved under a name that isn't a figure's: it's text from now on.
-    fn on_disable(&mut self, buf: BufferId, ctx: &mut Ctx) {
-        let _ = ctx.with_ext(|fig: &mut Fig, _| fig.pending.retain(|b| *b != buf));
+    fn on_enable(&mut self, _buf: BufferId, ctx: &mut Ctx) -> Result {
+        ctx.with_ext(|fig: &mut Fig, ctx| fig.arrivals(ctx))?
     }
 }
 
@@ -139,14 +135,12 @@ pub struct Fig {
     /// figures' revisions, how many there were, the views' revision, and the focused buffer.
     #[allow(clippy::type_complexity)]
     kept: RefCell<Option<((u64, usize, u64, Option<BufferId>), Kept)>>,
-    /// `.fig` buffers waiting to open as their figure: each does when the focused window first
-    /// shows it.
-    pending: Vec<BufferId>,
-    /// `.fig` buffers to leave as text when their mode comes: the session said you last looked
-    /// at them so, or `fig-spec` made them to edit.
-    as_text: BTreeSet<BufferId>,
-    /// How you last looked at each source buffer: as its figure or as text. The session keeps
-    /// it, so a restart opens each file as you left it.
+    /// What each window showed when last looked at: a `.fig` that comes into the focused
+    /// window from anywhere but its own figure opens as its figure.
+    shown: BTreeMap<die_core::WindowId, BufferId>,
+    /// How you last looked at each source buffer: as its figure or as text, from what the
+    /// focused window shows after each command. The session keeps it, so `:e` and a restart
+    /// open each file as you left it.
     views: BTreeMap<BufferId, OpenAs>,
     /// Goes up with `views`: the session's cache key.
     views_rev: u64,
@@ -394,62 +388,93 @@ impl Fig {
     /// A buffer was killed: a figure's goes with its state, its timers and jobs.
     fn killed(&mut self, buf: BufferId) {
         self.figs.retain(|s| s.borrow().buf != Some(buf));
-        self.pending.retain(|b| *b != buf);
-        self.as_text.remove(&buf);
+        self.shown.retain(|_, b| *b != buf);
         if self.views.remove(&buf).is_some() {
             self.views_rev += 1;
         }
     }
 
-    /// You're looking at a source buffer this way now: the session keeps it, and a `.fig`
-    /// waiting to open as its figure no longer waits.
+    /// You're looking at a source buffer this way now: the session keeps it, and `:e` opens it
+    /// so again.
     fn seen(&mut self, buf: BufferId, how: OpenAs) {
-        self.pending.retain(|b| *b != buf);
         if self.views.insert(buf, how) != Some(how) {
             self.views_rev += 1;
         }
     }
 
-    /// A `.fig` buffer's mode came (it was opened, restored or saved under a figure's name):
-    /// it opens as its figure in the focused window if that shows it, or when it first does.
-    /// Not where your options say text, nor one the session says you left as text or you've
-    /// gone to as text already (a jump to its error); nor one saved under the name, whose
-    /// text you're writing (it has changes of its own), nor a new file with nothing in it yet.
-    fn opened(&mut self, ctx: &mut Ctx, buf: BufferId) -> Result {
-        let as_text = self.as_text.remove(&buf);
-        let looked = self.views.get(&buf) == Some(&OpenAs::Text);
-        let fresh = ctx.text(buf).is_ok_and(|t| {
-            let blank = t.rope().chars().all(char::is_whitespace);
-            t.rev() == 0 && !blank
-        });
-        if self.options.open_fig_as == OpenAs::Text || as_text || looked || !fresh {
+    /// After each command, and when a `.fig`'s mode comes: a `.fig` that has come into the
+    /// focused window (by `:e`, `:b`, a jump, a restart) from anywhere but its own figure opens
+    /// as its figure, unless your options say text or you last looked at it as text; the first
+    /// time, not a new file with nothing in it yet, nor one saved under the name, whose text
+    /// you're writing. Then how the focused window shows a `.fig` is how you last looked at it:
+    /// its text, or its figure.
+    fn arrivals(&mut self, ctx: &mut Ctx) -> Result {
+        let windows = ctx.window_list();
+        self.shown.retain(|w, _| windows.contains(w));
+        let focused = ctx.focused();
+        let mut came = None;
+        for w in windows {
+            let Some(buf) = ctx.window_buffer(w) else {
+                continue;
+            };
+            let before = self.shown.insert(w, buf);
+            if Some(w) == focused && before != Some(buf) {
+                came = Some((w, buf, before));
+            }
+        }
+        let Some(w) = focused else {
+            return Ok(());
+        };
+        let Some(buf) = ctx.window_buffer(w) else {
+            return Ok(());
+        };
+        if let Some(state) = self.figure(buf) {
+            // Its figure in front: that's how you're looking at a `.fig` it follows.
+            if let Source::Buffer(b) = state.borrow().source
+                && fig_buffer(ctx, b)
+            {
+                self.seen(b, OpenAs::Figure);
+            }
             return Ok(());
         }
-        if !self.pending.contains(&buf) {
-            self.pending.push(buf);
+        if !fig_buffer(ctx, buf) {
+            return Ok(());
         }
-        self.open_pending(ctx)
+        if let Some((w, buf, before)) = came {
+            // From its own figure (`\v`, `C-o`, `C-^`), it's its text you asked for.
+            let path = ctx.file(buf).map(|f| f.path.clone());
+            let from_its_figure = before
+                .and_then(|b| self.figure(b))
+                .is_some_and(|f| f.borrow().is_of(buf, path.as_deref()));
+            let first = !self.views.contains_key(&buf);
+            let fresh = ctx.text(buf).is_ok_and(|t| {
+                let blank = t.rope().chars().all(char::is_whitespace);
+                t.rev() == 0 && !blank
+            });
+            let wanted = self.options.open_fig_as == OpenAs::Figure
+                && self.views.get(&buf) != Some(&OpenAs::Text)
+                && (fresh || !first);
+            if !from_its_figure && wanted && ctx.text(buf).is_ok() {
+                let args = Args {
+                    buffer: Some(buf),
+                    window: Some(w),
+                    ..Args::default()
+                };
+                self.toggle(ctx, &args)?;
+                if let Some(b) = ctx.window_buffer(w) {
+                    self.shown.insert(w, b);
+                }
+                return Ok(());
+            }
+        }
+        self.seen(buf, OpenAs::Text);
+        Ok(())
     }
+}
 
-    /// The `.fig` buffer the focused window shows, if it's waiting: its figure there.
-    fn open_pending(&mut self, ctx: &mut Ctx) -> Result {
-        let Some(w) = ctx.focused() else {
-            return Ok(());
-        };
-        let Some(buf) = ctx.window_buffer(w).filter(|b| self.pending.contains(b)) else {
-            return Ok(());
-        };
-        self.pending.retain(|b| *b != buf);
-        if ctx.text(buf).is_err() {
-            return Ok(());
-        }
-        let args = Args {
-            buffer: Some(buf),
-            window: Some(w),
-            ..Args::default()
-        };
-        self.toggle(ctx, &args)
-    }
+/// Whether a buffer visits a `.fig` or `.fig.json` file.
+fn fig_buffer(ctx: &Ctx, buf: BufferId) -> bool {
+    ctx.file(buf).is_some_and(|f| is_fig_file(&f.path))
 }
 
 /// Whether a window shows the buffer.
@@ -1165,10 +1190,7 @@ fn write_spec(ctx: &mut Ctx, a: &Args) -> Result {
     } else {
         let b = ctx.open_file(&path)?;
         // Text to edit, not the figure it makes: its mode, queued, finds it here.
-        ctx.with_ext(|fig: &mut Fig, _| {
-            fig.as_text.insert(b);
-            fig.seen(b, OpenAs::Text);
-        })?;
+        ctx.with_ext(|fig: &mut Fig, _| fig.seen(b, OpenAs::Text))?;
         ctx.text_mut(b)?
             .tx(Origin::Extension)
             .insert(0, &text)
@@ -1671,11 +1693,8 @@ impl Extension for Fig {
             for s in figs {
                 s.borrow_mut().settle(ctx);
             }
-            // A `.fig` that came while no window showed it opens as its figure once one does.
-            if ctx.with_ext(|fig: &mut Fig, _| !fig.pending.is_empty())? {
-                ctx.with_ext(|fig: &mut Fig, ctx| fig.open_pending(ctx))??;
-            }
-            Ok(())
+            // A `.fig` that came into the focused window opens as its figure.
+            ctx.with_ext(|fig: &mut Fig, ctx| fig.arrivals(ctx))?
         })
         .detach();
         ctx.on_buffer_killed(|ctx, buf| Ok(ctx.with_ext(|fig: &mut Fig, _| fig.killed(buf))?))
@@ -1747,7 +1766,6 @@ impl Extension for Fig {
             // How you last looked at it: a `.fig` left as text opens as text.
             match v.get("as").and_then(Value::as_str) {
                 Some("text") => {
-                    self.as_text.insert(*buf);
                     self.views.insert(*buf, OpenAs::Text);
                 }
                 Some("figure") => {

@@ -967,9 +967,10 @@ pub fn log_entries(errors: &[FigError], source: &str, name: &str) -> (Vec<Entry>
     (entries, layout)
 }
 
-/// The log's layout alone, for the keys that scroll it.
-pub fn log_layout(errors: &[FigError], source: &str) -> LogLayout {
-    log_entries(errors, source, "").1
+/// The log's layout alone, for the keys and the wheel that scroll it: the same lines the log
+/// draws, so `name` is the figure's, as [`error_figure`] is given it.
+pub fn log_layout(errors: &[FigError], source: &str, name: &str) -> LogLayout {
+    log_entries(errors, source, name).1
 }
 
 fn span(text: impl Into<String>, ink: LogInk, bold: bool) -> Span {

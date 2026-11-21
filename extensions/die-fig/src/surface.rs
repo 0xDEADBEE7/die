@@ -918,7 +918,7 @@ impl FigState {
 
     /// The log's layout as it stands, for the keys that move in it.
     pub fn log_layout(&self) -> plot::LogLayout {
-        plot::log_layout(&self.log_errors(), &self.text)
+        plot::log_layout(&self.log_errors(), &self.text, &self.name)
     }
 
     /// The status line: the name, how many series, how many hidden, whether it follows live
@@ -1260,6 +1260,14 @@ impl FigState {
         }));
     }
 
+    /// Whether it's the figure of this buffer: the one it follows, the one it was opened from,
+    /// or the file it charts, which `buf` visits at `path`.
+    pub fn is_of(&self, buf: BufferId, path: Option<&std::path::Path>) -> bool {
+        self.source == Source::Buffer(buf)
+            || self.from == Some(buf)
+            || matches!((&self.file, path), (Some(f), Some(p)) if source::same_path(f, p))
+    }
+
     /// Whether the figure follows this file's buffer: its own text, or a data file it reads.
     pub fn follows(&self, buf: BufferId, path: Option<&std::path::Path>) -> bool {
         if self.source == Source::Buffer(buf) {
@@ -1499,10 +1507,7 @@ impl FigState {
         let Some(model) = model.filter(|_| pane.log.is_none()) else {
             // The error figure, or its log: a click turns it over, an entry under the pointer
             // is marked, a double click goes to it, and the wheel scrolls the log.
-            let lines = (pane.log.is_some()).then(|| {
-                let errors = self.log_errors();
-                plot::log_layout(&errors, &self.text)
-            });
+            let lines = (pane.log.is_some()).then(|| self.log_layout());
             let Some(pane) = self.panes.get_mut(&p.window) else {
                 return;
             };

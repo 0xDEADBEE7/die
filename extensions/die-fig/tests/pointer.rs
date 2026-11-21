@@ -1212,3 +1212,43 @@ fn a_size_change_drops_the_hover_and_its_card_until_the_pointer_moves_and_keeps_
     mv(&mut s, at);
     assert!(hover(&mut s).is_some());
 }
+
+/// `n` bars a minute apart: a day of minutes at 1440.
+fn bars_over_time(n: usize) -> String {
+    let rows: Vec<String> = (0..n)
+        .map(|i| {
+            format!(
+                "{{\"time\": {}, \"v\": {}}}",
+                1_763_700_000 + i * 60,
+                (i * 37 % 11) + 1
+            )
+        })
+        .collect();
+    format!(
+        "{{\"type\": \"bar\", \"data\": {{\"values\": [{}]}}, \"x\": {{\"field\": \"time\", \"type\": \"time\", \"unit\": \"s\"}}, \"y\": \"v\"}}\n",
+        rows.join(",")
+    )
+}
+
+#[test]
+#[ignore = "speed"]
+fn hovering_two_thousand_bars_costs_a_few_ms_a_move() {
+    let mut s = setup_with("bars.json", &bars_over_time(2000));
+    let bars = state(&mut s).borrow().panes[&s.win]
+        .layout
+        .as_ref()
+        .map_or(0, |l| l.bars.len());
+    assert!(bars > 1000, "{bars} bars drawn");
+    let p = plot(&mut s);
+    // Low in the plot, where the card's first place covers bars and it looks for another.
+    let moves = 20;
+    let t0 = std::time::Instant::now();
+    for i in 0..moves {
+        let x = p.x + p.w * (0.2 + 0.03 * i as f32);
+        mv(&mut s, (x, p.y + p.h * 0.9));
+    }
+    let each = t0.elapsed() / moves;
+    eprintln!("{bars} bars: {each:?} a hover move");
+    assert!(hover(&mut s).is_some());
+    assert!(each < Duration::from_millis(8), "{each:?} a move");
+}
