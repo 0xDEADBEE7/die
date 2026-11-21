@@ -739,3 +739,99 @@ fn data_with_only_its_header_draws_nothing_to_draw_until_a_row_comes() {
     assert!(st.borrow().model.is_some(), "{:?}", st.borrow().error);
     assert_eq!(st.borrow().badge(), None);
 }
+
+#[test]
+fn a_filter_that_keeps_no_row_draws_nothing_to_draw_and_says_the_transforms() {
+    let spec = |lo: u32| {
+        format!(
+            "{{\"type\": \"line\", \"data\": {{\"values\": [{{\"x\": 1, \"a\": 2}}, {{\"x\": 2, \"a\": 3}}]}},\n \"transform\": [{{\"filter\": \"x\", \"range\": [{lo}, 9]}}], \"x\": \"x\", \"y\": \"a\"}}\n"
+        )
+    };
+    let mut s = setup_with("f.json", &spec(5));
+    let st = state(&mut s);
+    assert!(st.borrow().model.is_none(), "no chart of nothing");
+    let first = st.borrow().error.as_ref().expect("why").first().clone();
+    assert_eq!(first.kind, ErrorKind::Empty);
+    assert_eq!(first.msg, "nothing to draw: no rows after the transforms");
+    assert!(
+        first.context.iter().any(|c| c == "the transforms: filter"),
+        "{:?}",
+        first.context
+    );
+    assert_eq!(st.borrow().badge().as_deref(), Some("Empty"));
+    drop(st);
+    let (w, h) = state(&mut s).borrow().panes[&s.win].size();
+    assert_eq!(
+        state(&mut s).borrow().panes[&s.win].hit((w / 2.0, h / 2.0)),
+        Hit::ErrorFigure
+    );
+    // A range that keeps rows: the chart.
+    edit(&mut s, &spec(0));
+    let st = state(&mut s);
+    assert!(st.borrow().model.is_some(), "{:?}", st.borrow().error);
+}
+
+#[test]
+fn fig_spec_on_a_fig_json_figure_names_its_spec_name_fig_not_name_fig_fig() {
+    let dir = TempDir::new("errors-spec-name");
+    write(dir.path(), "rates.csv", &crossing());
+    let json = write(dir.path(), "other.fig.json", RATES_FIG);
+    let mut h = harness();
+    open(&mut h, &json);
+    assert_eq!(shown_name(&mut h), "other.fig.json *fig*");
+    h.run("fig-spec", &Args::default()).unwrap();
+    h.run_until_idle();
+    h.scene();
+    assert_eq!(shown_name(&mut h), "other.fig", "NAME.fig");
+    assert!(
+        !dir.path().join("other.fig.fig").exists(),
+        "and nothing of other.fig.fig"
+    );
+}
+
+#[test]
+fn a_command_that_prints_nothing_says_it_ran_and_printed_nothing() {
+    let mut h = harness();
+    h.open_text("notes", "hello").unwrap();
+    h.run_until_idle();
+    let args = Args {
+        text: Some("!true".into()),
+        ..Args::default()
+    };
+    h.run("fig", &args).unwrap();
+    h.run_until_idle();
+    h.scene();
+    let buf = h.window_buffer(h.focused().unwrap()).unwrap();
+    assert_eq!(h.buffer_name(buf), Some("*fig: !true*"));
+    let st = h.with_ext(|f: &mut Fig, _| f.figure(buf)).unwrap().unwrap();
+    let first = st.borrow().error.as_ref().expect("why").first().clone();
+    assert_eq!(first.kind, ErrorKind::Empty);
+    assert_eq!(first.msg, "!true printed nothing");
+    assert!(
+        first
+            .context
+            .iter()
+            .any(|c| c.starts_with("ran `true` in ") && c.ends_with(": exit status: 0")),
+        "{:?}",
+        first.context
+    );
+    assert!(st.borrow().model.is_none());
+}
+
+#[test]
+fn a_double_click_on_the_symbolic_figure_opens_the_log_and_goes_nowhere() {
+    let mut s = setup_with("data.json", BROKEN);
+    let (w, h) = state(&mut s).borrow().panes[&s.win].size();
+    // The middle of the area: under it, once the log is up, an entry or the log's body.
+    double_click(&mut s, (w / 2.0, h / 2.0));
+    s.h.run_until_idle();
+    assert_eq!(s.h.window_buffer(s.win), Some(s.buf), "still the figure");
+    assert!(log(&mut s).is_some(), "its log, the first click's");
+    // And an entry's own double click still goes to it.
+    let on = point_on(&mut s, |h| matches!(h, Hit::LogEntry(0))).expect("an entry");
+    click(&mut s, on);
+    let left = die_core::PointerKind::Press(die_core::Button::Left);
+    pointer(&mut s, left, on, die_core::Mods::default(), 2);
+    s.h.run_until_idle();
+    assert_eq!(s.h.window_buffer(s.win), Some(s.src), "to the source");
+}

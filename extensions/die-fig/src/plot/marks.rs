@@ -10,7 +10,7 @@
 //! never wears a series colour, but a label inside a filled mark, in white or near black by the
 //! fill's luminance (ruling 18).
 
-use super::layout::{BODY, ChartLayout, TICK};
+use super::layout::{ChartLayout, TICK};
 use super::{ChartModel, SeriesInfo};
 use crate::algo::HitIndex;
 use crate::interact::View;
@@ -144,17 +144,7 @@ pub(crate) fn draw(
     }
     bar_labels(model, view, l, theme, scene, m);
     if !model.series.is_empty() && model.keys().iter().all(|k| !model.visible(view, k)) {
-        let spec = TextSpec::new(BODY);
-        scene.push(Item::Text {
-            text: "All series hidden".into(),
-            x: l.plot.x + l.plot.w / 2.0,
-            y: l.plot.y + l.plot.h / 2.0 + m.cap(spec) / 2.0,
-            spec,
-            anchor: Anchor::Middle,
-            color: theme.muted,
-            alpha: 1.0,
-            max_width: Some(l.plot.w),
-        });
+        super::errors::all_hidden(scene, l.plot, theme, m);
     }
 }
 

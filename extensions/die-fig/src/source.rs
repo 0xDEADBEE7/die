@@ -263,6 +263,28 @@ pub fn build(job: Job) -> std::result::Result<Built, Failed> {
             return Err(failed(errors, warnings, reader.files));
         }
     };
+    // Rows read, and none left to chart (a filter that keeps nothing): nothing to draw too.
+    if model.series.iter().all(|s| s.xs.is_empty())
+        && model.rules.is_empty()
+        && model.texts.is_empty()
+    {
+        let names: Vec<&str> = (chart.transform.iter())
+            .chain(chart.layers.iter().flat_map(|l| &l.transform))
+            .map(transform_name)
+            .collect();
+        let why = match names.is_empty() {
+            true => "nothing to draw: no rows to chart",
+            false => "nothing to draw: no rows after the transforms",
+        };
+        let mut e = FigError::new(why).with_kind(ErrorKind::Empty);
+        if !names.is_empty() {
+            e = e.note(format!("the transforms: {}", names.join(" → ")));
+        }
+        for r in &reader.read {
+            e = e.note(r.said());
+        }
+        return Err(failed(vec![e], warnings, reader.files));
+    }
     Ok(Built {
         figure,
         inferred,

@@ -724,7 +724,8 @@ fn attempt(
             y_count = c;
         }
     }
-    // A scatter's points keep their whole dot inside the plot at its fit.
+    // A scatter's points keep their whole dot inside the plot at its fit, and its top tick
+    // labels most of them.
     let reach = point_reach(model, view);
     if model.is_scatter()
         && view.y.is_none()
@@ -732,7 +733,13 @@ fn attempt(
         && let Some(ext) = points_extent(model, view, false)
     {
         yd = pad_for(yd, ext, plot_h, reach, model.y.kind);
+        if model.y.kind == AxisKind::Linear {
+            let range = (plot_bottom, plot_top);
+            yd = to_next_tick(yd, ext, y_count, range, whole);
+        }
     }
+    // A plot too short to pad by the dots' reach lets them past its edges, whole.
+    let dots_bleed = model.is_scatter() && plot_h <= 4.0 * reach;
 
     // Up the screen: the values' ticks, or the bands'.
     let (up_kind, up_domain, up_bands, up_rect) = if vertical_values {
@@ -1097,6 +1104,12 @@ fn attempt(
         plot.w + if bx { 2.0 * BLEED } else { 0.0 },
         plot.h + if by { BLEED } else { 0.0 },
     );
+    let clip = if dots_bleed {
+        let top = clip.y.min(plot.y - reach);
+        Rect::new(clip.x, top, clip.w, plot.bottom() + reach - top)
+    } else {
+        clip
+    };
     ChartLayout {
         plot,
         x: xs_scale,
@@ -1330,6 +1343,50 @@ fn points_extent(model: &ChartModel, view: &View, x: bool) -> Option<(f64, f64)>
         }
     }
     (lo <= hi).then_some((lo, hi))
+}
+
+/// A scatter's domain `d` whose last tick labels little of its data (5 of a 0 to 8.8, the top
+/// 43 % of the plot unlabelled): on to the next tick, so its top is labelled, where the ticks
+/// keep a step that does; the same at the bottom where that doesn't go below zero.
+fn to_next_tick(
+    d: (f64, f64),
+    data: (f64, f64),
+    count: usize,
+    range: (f32, f32),
+    whole: bool,
+) -> (f64, f64) {
+    let ticks = |dom: (f64, f64)| whole_ticks(&Scale::Linear { domain: dom, range }, count, whole);
+    let span = data.1 - data.0;
+    let ts = ticks(d);
+    let (Some(first), Some(last), true) = (ts.first(), ts.last(), ts.len() >= 2 && span > 0.0)
+    else {
+        return d;
+    };
+    let step = (ts[1].value - ts[0].value).abs();
+    let mut out = d;
+    if last.value < data.0 + 0.75 * span {
+        out.1 = out.1.max(last.value + step);
+    }
+    let floor = if data.0 >= 0.0 {
+        0.0
+    } else {
+        f64::NEG_INFINITY
+    };
+    if first.value > data.1 - 0.75 * span && first.value - step >= floor {
+        out.0 = out.0.min(first.value - step);
+    }
+    if out == d {
+        return d;
+    }
+    // Only where the ticks then reach as far: a step that labels the new ends.
+    let after = ticks(out);
+    let covers = after
+        .last()
+        .is_some_and(|t| t.value >= data.0 + 0.75 * span)
+        && after
+            .first()
+            .is_some_and(|t| t.value <= data.1 - 0.75 * span);
+    if covers { out } else { d }
 }
 
 /// A domain widened so that data from `data.0` to `data.1`, over `len` px, keeps `reach` px

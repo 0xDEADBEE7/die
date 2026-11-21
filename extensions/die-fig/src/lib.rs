@@ -483,6 +483,19 @@ fn shows(ctx: &Ctx, buf: BufferId) -> bool {
     windows.any(|w| ctx.window_buffer(w) == Some(buf))
 }
 
+/// A file's name without its extension, a figure's `.fig` or `.fig.json` (in any case) whole:
+/// `rates.csv` and `rates.fig` are `rates`, and so is `rates.fig.json`.
+fn stem_of(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let lower = name.to_ascii_lowercase();
+    for ext in [".fig.json", ".fig"] {
+        if lower.ends_with(ext) && name.len() > ext.len() {
+            return Some(name[..name.len() - ext.len()].to_string());
+        }
+    }
+    path.file_stem().map(|s| s.to_string_lossy().into_owned())
+}
+
 /// A path as typed, from `dir`: `~/` is home.
 fn resolve(dir: &Path, typed: &str) -> PathBuf {
     let home = std::env::home_dir();
@@ -846,12 +859,9 @@ fn export(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, w) = here(ctx, a)?;
     let default = {
         let st = state.borrow();
-        let stem = st
-            .file
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .map_or_else(|| "fig".to_string(), |s| s.to_string_lossy().into_owned());
-        st.dir.join(format!("{stem}.png"))
+        let stem = st.file.as_deref().and_then(stem_of);
+        st.dir
+            .join(format!("{}.png", stem.as_deref().unwrap_or("fig")))
     };
     let home = std::env::home_dir();
     let line = abbreviate(&default, home.as_deref());
@@ -1160,11 +1170,7 @@ fn write_spec(ctx: &mut Ctx, a: &Args) -> Result {
             }
             other => other,
         };
-        let stem = st
-            .file
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .map(|s| s.to_string_lossy().into_owned());
+        let stem = st.file.as_deref().and_then(stem_of);
         (
             spec::write(&figure),
             stem.unwrap_or_else(|| "fig".into()),

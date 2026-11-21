@@ -264,6 +264,9 @@ pub struct Pane {
     pub log: Option<(usize, usize)>,
     /// What a wheel's scroll of the log hasn't moved yet, in lines: less than one.
     log_carry: f32,
+    /// The entry the last press on the log was on: a double click goes to an entry only where
+    /// both its presses were on it, not one whose first click turned the figure over.
+    log_pressed: Option<u32>,
 }
 
 impl Pane {
@@ -307,6 +310,7 @@ impl Pane {
             over_wipe: false,
             log: None,
             log_carry: 0.0,
+            log_pressed: None,
         }
     }
 
@@ -1031,9 +1035,16 @@ impl FigState {
                 let out = c
                     .output()
                     .map_err(|e| unreadable(format!("{cmd}: {e}")).note(ran.clone()))?;
-                if !out.status.success() && out.stdout.is_empty() {
-                    let mut e = unreadable(format!("{cmd} failed and printed nothing"))
-                        .note(format!("{ran}: {}", out.status));
+                let silent = out.stdout.iter().all(u8::is_ascii_whitespace);
+                if silent {
+                    // Failed, it's unreadable; ran well and printed nothing, there's nothing
+                    // to draw, and the log says it ran, not that a buffer was empty.
+                    let mut e = match out.status.success() {
+                        false => unreadable(format!("{cmd} failed and printed nothing")),
+                        true => FigError::new(format!("!{cmd} printed nothing"))
+                            .with_kind(ErrorKind::Empty),
+                    }
+                    .note(format!("{ran}: {}", out.status));
                     // The end of what it said, a line each.
                     let err = String::from_utf8_lossy(&out.stderr);
                     let lines: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -1809,9 +1820,11 @@ fn on_error(
         }
         PointerKind::Press(Button::Left) if !swallow => {
             pane.held = Some(Button::Left);
+            let before = std::mem::take(&mut pane.log_pressed);
             if let (Some((top, _)), Hit::LogEntry(i)) = (pane.log, &hit) {
                 pane.log = Some((top, *i as usize));
-                if p.clicks >= 2 {
+                pane.log_pressed = Some(*i);
+                if p.clicks >= 2 && before == Some(*i) {
                     pane.gesture = Gesture::Swallowed;
                     return ErrorAct::Goto(Some(*i as usize));
                 }
@@ -1826,8 +1839,13 @@ fn on_error(
             ErrorAct::None
         }
         PointerKind::Press(Button::Left) => {
+            // The press that focuses only focuses, but it's a double click's first all the same.
             pane.held = Some(Button::Left);
             pane.gesture = Gesture::Swallowed;
+            pane.log_pressed = match (pane.log, &hit) {
+                (Some(_), Hit::LogEntry(i)) => Some(*i),
+                _ => None,
+            };
             ErrorAct::None
         }
         PointerKind::Release(Button::Left) => {
@@ -1846,7 +1864,7 @@ fn on_error(
                     Some(_) => None,
                     None => Some((0, 0)),
                 };
-                pane.log_carry = 0.0;
+                (pane.log_carry, pane.log_pressed) = (0.0, None);
             }
             ErrorAct::None
         }
@@ -2153,7 +2171,7 @@ impl Act<'_> {
                 self.pane.last_click = None;
             }
             Hit::Badge => {
-                self.pane.log = Some((0, 0));
+                (self.pane.log, self.pane.log_pressed) = (Some((0, 0)), None);
                 (self.pane.hover, self.pane.near) = (None, None);
             }
             _ => {}

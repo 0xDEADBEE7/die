@@ -407,8 +407,36 @@ fn a_hidden_series_keeps_its_slot_and_its_key_goes_hollow() {
         hidden: model.keys().into_iter().collect(),
         ..View::default()
     };
-    let (scene, _, _) = lay(&model, &all, (880.0, 470.0));
-    assert!(has_text(&scene, "All series hidden"));
+    let (scene, l, _) = lay(&model, &all, (880.0, 470.0));
+    // The empty kind, inside the plot: its status, what's so, how to bring them back.
+    assert!(
+        has_text(&scene, "Every series is hidden"),
+        "{:?}",
+        texts(&scene)
+    );
+    assert!(has_text(&scene, "Empty") && has_text(&scene, "shows them all"));
+    for (t, r) in texts(&scene) {
+        if ["Every series is hidden", "Empty", "shows them all"].contains(&t.as_str()) {
+            assert!(
+                r.x >= l.plot.x && r.right() <= l.plot.right() && r.y >= l.plot.y,
+                "{t:?} at {r:?} in the plot {:?}",
+                l.plot
+            );
+        }
+    }
+    // The legend stays, to click.
+    assert!(!l.legend.is_empty());
+    tidy(&scene, "every series hidden");
+    // Small: the words alone, or less, never out of the plot.
+    for size in [(400.0, 240.0), (200.0, 120.0)] {
+        let (scene, l, _) = lay(&model, &all, size);
+        tidy(&scene, "every series hidden, small");
+        for (_, r) in texts(&scene) {
+            if l.plot.contains(r.x + r.w / 2.0, r.y + r.h / 2.0) {
+                assert!(r.x >= l.plot.x - 0.5 && r.right() <= l.plot.right() + 0.5);
+            }
+        }
+    }
 }
 
 #[test]
@@ -2584,7 +2612,7 @@ fn every_series_hidden_draws_no_grid_and_no_ticks() {
     let theme = Theme::mono_dark();
     let view = model.initial_view();
     let (scene, l, _) = lay(&model, &view, (880.0, 470.0));
-    assert!(has_text(&scene, "All series hidden"));
+    assert!(has_text(&scene, "Every series is hidden"));
     assert!(
         l.labels
             .iter()
@@ -2818,15 +2846,25 @@ fn the_symbolic_figure_says_the_kind_title_and_first_error_and_degrades_as_it_sh
         let mid = symbolic(one, (400.0, 240.0));
         tidy(&mid, what);
         assert!(has_text(&mid, &t), "{what} at 400x240: {:?}", texts(&mid));
-        // Small: the glyph alone; then, too short for it, the title alone.
+        // Small: the glyph and its status, which says it's a failure in words; narrower, the
+        // glyph alone; then, too short for it, the title alone.
         let small = symbolic(one, (200.0, 120.0));
         tidy(&small, what);
-        assert!(
-            texts(&small).is_empty(),
-            "{what}: the glyph only, {:?}",
-            texts(&small)
+        let words: Vec<String> = texts(&small).into_iter().map(|x| x.0).collect();
+        assert_eq!(
+            words,
+            vec![label.to_string()],
+            "{what}: the glyph and its status"
         );
-        assert!(paths(&small) >= 2, "{what}: its glyph");
+        assert!(paths(&small) >= 3, "{what}: its glyph and the status icon");
+        let narrow = symbolic(one, (60.0, 120.0));
+        tidy(&narrow, what);
+        assert!(
+            texts(&narrow).is_empty(),
+            "{what}: the glyph only, {:?}",
+            texts(&narrow)
+        );
+        assert!(paths(&narrow) >= 2, "{what}: its glyph");
         let tiny = symbolic(one, (200.0, 44.0));
         tidy(&tiny, what);
         let words: Vec<String> = texts(&tiny).into_iter().map(|x| x.0).collect();
@@ -2834,6 +2872,47 @@ fn the_symbolic_figure_says_the_kind_title_and_first_error_and_degrades_as_it_sh
         assert!(words[0].starts_with(&t[..6]), "{words:?}");
         assert_eq!(paths(&tiny), 0, "no glyph");
     }
+}
+
+#[test]
+fn the_symbolic_figure_drops_its_hint_before_the_message_s_second_line() {
+    // A message of two lines at a size where both fit, or the hint and one: both lines.
+    let e = FigError::at(
+        "no column \"latency_p50\" in the data",
+        Pos {
+            line: 8,
+            col: 40,
+            byte: 0,
+        },
+    )
+    .with_kind(ErrorKind::Mismatch);
+    let said = die_fig::plot::errors::summary(&e);
+    let mut found = false;
+    for h in (150..=260).step_by(2) {
+        let s = symbolic(std::slice::from_ref(&e), (340.0, h as f32));
+        tidy(&s, "two lines");
+        let ts = texts(&s);
+        let lines: Vec<&String> = ts
+            .iter()
+            .map(|t| &t.0)
+            .filter(|t| said.starts_with(t.as_str()) || said.ends_with(t.as_str()))
+            .collect();
+        let hint = has_text(&s, "details");
+        if lines.len() == 2 && !hint {
+            // The rung that matters: the whole message, the hint gone for it.
+            let joined = format!("{} {}", lines[0], lines[1]);
+            assert_eq!(joined, said, "at 340x{h}: the whole message");
+            found = true;
+        }
+        // Never the hint with a message cut short.
+        if hint {
+            assert!(
+                !ts.iter().any(|t| t.0.ends_with('…')),
+                "at 340x{h}: the hint kept over the message: {ts:?}"
+            );
+        }
+    }
+    assert!(found, "some height shows both lines without the hint");
 }
 
 #[test]
@@ -3062,6 +3141,91 @@ fn the_stale_badge_says_error_and_its_line_in_the_top_right_corner() {
     assert_eq!(s.hit(r.rect.x + 4.0, r.rect.y + 4.0), Some(&Hit::Badge));
 }
 
+#[test]
+fn the_stale_badge_never_covers_the_title_the_legend_or_a_label() {
+    let theme = Theme::mono_dark();
+    let line = FigError::at(
+        "expected ',' or '}'",
+        Pos {
+            line: 14,
+            col: 9,
+            byte: 0,
+        },
+    );
+    let data = FigError::at(
+        "\"timeout\" in \"ms\" is not a number",
+        Pos {
+            line: 6,
+            col: 22,
+            byte: 0,
+        },
+    )
+    .in_file(std::path::Path::new("/tmp/latency-ms.csv"), None);
+    let empty = FigError::new("nothing to draw: the data has no rows").with_kind(ErrorKind::Empty);
+    for name in [
+        "requests.csv",
+        "services-bars.csv",
+        "thresholds.json",
+        "many.json",
+        "hbars.json",
+        "latency.json",
+    ] {
+        let model = load(name);
+        for size in [(880.0, 470.0), (400.0, 240.0), (200.0, 120.0)] {
+            for e in [&line, &data, &empty] {
+                let (mut s, _, _) = lay(&model, &View::default(), size);
+                let n = s.items.len();
+                let keys: Vec<Rect> = s
+                    .regions
+                    .iter()
+                    .filter(|r| matches!(r.hit, Hit::LegendKey(_)))
+                    .map(|r| r.rect)
+                    .collect();
+                stale_badge(&mut s, e, &theme, &mut FixedMeasure);
+                let r = s.regions.last().unwrap();
+                assert_eq!(r.hit, Hit::Badge);
+                let b = r.rect;
+                let what = format!("{name} at {size:?}, {:?}", e.msg);
+                assert!(
+                    b.x >= 0.0 && b.right() <= size.0 && b.y >= 0.0,
+                    "{what}: inside: {b:?}"
+                );
+                // Every text of the chart's as it's drawn now (a title cut for the badge with
+                // its ellipsis), the badge's own after them.
+                let mut m = FixedMeasure;
+                for item in &s.items[..n] {
+                    let Item::Text {
+                        text,
+                        x,
+                        y,
+                        spec,
+                        anchor,
+                        max_width,
+                        ..
+                    } = item
+                    else {
+                        continue;
+                    };
+                    let mut tr = text_box(text, *x, *y, *spec, *anchor, &mut m);
+                    if let Some(mw) = max_width {
+                        tr.w = tr.w.min(*mw);
+                    }
+                    assert!(
+                        !overlaps(&b, &tr),
+                        "{what}: the badge {b:?} covers {text:?} at {tr:?}"
+                    );
+                }
+                for k in &keys {
+                    assert!(
+                        !overlaps(&b, k),
+                        "{what}: the badge {b:?} covers the key {k:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- the phase 2 gallery's fixes
 
 /// Bars and totals as a card must keep clear of them where it can (the overlay's own margin).
@@ -3250,6 +3414,36 @@ fn a_scatter_pads_by_its_dots_and_non_negative_data_shows_no_negative_tick() {
         );
         assert!(cy - r >= p.y - 0.5 && cy + r <= p.bottom() + 0.5);
     }
+    // Smaller, the top tick still labels most of the dots (10 over 8.8, not 5), and a plot
+    // too short to pad lets its dots past its edges whole rather than cutting them.
+    let hi = model
+        .series
+        .iter()
+        .flat_map(|s| s.ys.iter().copied())
+        .fold(f64::NEG_INFINITY, f64::max);
+    for size in [(400.0, 240.0), (340.0, 200.0)] {
+        let (_, l, _) = lay(&model, &View::default(), size);
+        let top = l.y_ticks.last().map_or(f64::NAN, |t| t.value);
+        assert!(
+            top >= lo + 0.75 * (hi - lo),
+            "{size:?}: the top tick {top} labels most of {lo} to {hi}: {:?}",
+            l.y_ticks
+        );
+        assert!(l.y_ticks.iter().all(|t| t.value >= 0.0));
+        assert!(l.domain.1.1 >= top, "the tick inside the domain");
+    }
+    let (scene, l, _) = lay(&model, &View::default(), (200.0, 120.0));
+    let p = l.plot;
+    for (_, (cx, cy), r) in circles(&scene) {
+        if !p.inflate(12.0).contains(cx, cy) || cy < p.y - r - 1.0 {
+            continue;
+        }
+        assert!(
+            cy - r >= l.clip.y - 0.5 && cy + r <= l.clip.bottom() + 0.5,
+            "200x120: the dot at ({cx}, {cy}) r {r} whole in the clip {:?}",
+            l.clip
+        );
+    }
 }
 
 #[test]
@@ -3267,4 +3461,162 @@ fn a_number_x_s_card_header_is_its_title_and_value_without_a_colon() {
         .expect("the header");
     assert!(!header.contains(':'), "{header}");
     assert!(header.starts_with("Hour "), "{header}");
+}
+
+#[test]
+fn a_cut_ends_at_a_word_with_nothing_dangling_before_its_ellipsis() {
+    use die_fig::plot::errors::fit_words;
+    use die_fig::scene::TextSpec;
+    let spec = TextSpec::new(10.0);
+    let mut m = FixedMeasure;
+    // 6 px a char: room for so many chars and the '…'.
+    let room = |n: usize| n as f32 * 6.0 + 6.0;
+    assert_eq!(
+        fit_words("short", spec, 100.0, &mut m),
+        "short",
+        "whole when it fits"
+    );
+    // A space before the cut goes.
+    assert_eq!(
+        fit_words("malformed: expected ',' or '}'", spec, room(20), &mut m),
+        "malformed: expected…"
+    );
+    // A full stop before it too: no four dots.
+    assert_eq!(
+        fit_words("Error · latency-ms.csv, line 6", spec, room(19), &mut m),
+        "Error · latency-ms…"
+    );
+    // Mid-word with a word's end near: there.
+    assert_eq!(
+        fit_words(
+            "\"timeout\" in \"ms\" is not a number",
+            spec,
+            room(19),
+            &mut m
+        ),
+        "\"timeout\" in \"ms\"…"
+    );
+    // Mid-word with no end near: where it was cut.
+    assert_eq!(
+        fit_words("abcdefghijklmnopqrstuvwxyz", spec, room(10), &mut m),
+        "abcdefghij…"
+    );
+    // In the log, a line cut leaves nothing dangling either.
+    let e = FigError::at(
+        "expected ',' or '}' after the value, as JSON objects are written",
+        Pos {
+            line: 2,
+            col: 7,
+            byte: 0,
+        },
+    );
+    for w in (160..=420).step_by(4) {
+        let s = error_figure(
+            std::slice::from_ref(&e),
+            "[{\"x\": 1, \"y\": 2},\n {\"x\" 2}]\n",
+            "data.json",
+            ErrorView::Log { top: 0, mark: 0 },
+            (w as f32, 240.0),
+            2.0,
+            &Theme::mono_dark(),
+            &mut FixedMeasure,
+        );
+        // The log draws each line's spans one after another: a span of '…' after a run
+        // that ends in a space or a dot is what's wrong.
+        let items: Vec<String> = texts(&s).into_iter().map(|t| t.0).collect();
+        for pair in items.windows(2) {
+            if pair[1] == "…" {
+                let c = pair[0].chars().last().unwrap();
+                assert!(
+                    !(c.is_whitespace() || matches!(c, '.' | ',' | ':')),
+                    "at {w}: {:?} before its '…'",
+                    pair[0]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_long_source_line_in_the_log_shifts_by_the_least_that_shows_its_caret() {
+    let line =
+        "    {\"mark\": \"line\", \"x\": \"time\", \"y\": \"latency_p50\"}, {\"mark\": \"area\"},";
+    let source = format!("{{\n  \"layers\": [\n{line}\n  ]\n}}\n");
+    let c0 = line.find("\"latency_p50\"").unwrap();
+    let n = "\"latency_p50\"".len();
+    let e = FigError::at(
+        "no column \"latency_p50\" in the data",
+        Pos {
+            line: 3,
+            col: c0 as u32 + 1,
+            byte: 0,
+        },
+    );
+    let mut checked = 0;
+    for w in (300..=640).step_by(2) {
+        let s = error_figure(
+            std::slice::from_ref(&e),
+            &source,
+            "many.fig",
+            ErrorView::Log { top: 0, mark: 0 },
+            (w as f32, 300.0),
+            2.0,
+            &Theme::mono_dark(),
+            &mut FixedMeasure,
+        );
+        let ts = texts(&s);
+        let i = ts
+            .iter()
+            .position(|t| t.0 == "3 | ")
+            .expect("the source line's gutter");
+        let shown = &ts[i + 1].0;
+        // The log's cells as it counts them.
+        let cell = die_fig::scene::Measure::width(
+            &mut FixedMeasure,
+            "0",
+            die_fig::scene::TextSpec::new(12.0).mono(),
+        );
+        let pad = 20f32.min(w as f32 / 12.0).round();
+        let cells = ((w as f32 - pad - 6.0 - (pad + 4.0)) / cell).floor() as usize;
+        let room = cells - ("3 | ".len() + 1);
+        if c0 + n <= room {
+            assert!(
+                line.starts_with(shown.as_str()),
+                "at {w}: no shift: {shown:?}"
+            );
+            continue;
+        }
+        // The least shift that shows the caret and four cells after it.
+        let shift = (c0 + n + 4 - room).min(c0 - 2);
+        let rest: String = line.chars().skip(shift + 1).collect();
+        assert_eq!(
+            shown
+                .strip_prefix('…')
+                .map(|r| rest.starts_with(r.trim_end_matches('…'))),
+            Some(true),
+            "at {w}: {shown:?}, shifted {shift}"
+        );
+        let (_, caret) = ts.iter().find(|t| t.0.starts_with('^')).expect("a caret");
+        assert!(caret.right() <= w as f32 - pad, "at {w}: the caret in view");
+        checked += 1;
+    }
+    assert!(checked > 10, "the shift was seen");
+}
+
+#[test]
+fn the_log_of_nothing_to_draw_says_so_not_one_error_and_its_entry_says_it_once() {
+    let e = FigError::new("nothing to draw: the data has no rows").with_kind(ErrorKind::Empty);
+    let s = logged(std::slice::from_ref(&e), (880.0, 470.0), 0, 0);
+    let ts: Vec<String> = texts(&s).into_iter().map(|t| t.0).collect();
+    assert!(ts.iter().any(|t| t == "Nothing to draw"), "{ts:?}");
+    assert!(
+        !ts.iter().any(|t| t.contains("error")),
+        "not an error: {ts:?}"
+    );
+    assert!(ts.iter().any(|t| t == ": the data has no rows"), "{ts:?}");
+    assert!(!ts.iter().any(|t| t.contains("nothing to draw:")), "{ts:?}");
+    // A real error with it: counted as errors.
+    let bad = FigError::new("no column \"y\" in the data");
+    let s = logged(&[bad, e], (880.0, 470.0), 0, 0);
+    assert!(has_text(&s, "2 errors"), "{:?}", texts(&s));
 }

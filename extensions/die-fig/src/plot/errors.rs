@@ -6,8 +6,10 @@
 //!   line when it doesn't parse, two pieces that don't fit when the data doesn't fit the spec,
 //!   empty dashed bars when there's nothing to draw), the status as an icon and a label (never
 //!   colour alone), the title `Can't draw NAME` (or `Nothing to draw in NAME`), the first error
-//!   with its place, and a hint of the keys. A small area drops the hint, then the status and the
-//!   message, then shows the glyph alone, then the title alone, so nothing ever overlaps.
+//!   with its place, and a hint of the keys. A small area drops the hint, then the message's
+//!   second line, then the status and the message (the glyph and the title), then the title
+//!   (the glyph and its status), then shows the glyph alone, then the title alone, so nothing
+//!   ever overlaps.
 //! - **Log**: every error and warning of the newest parse in the monospace, as rustc writes them:
 //!   the kind and the message, the file and line:column, the source line with a caret under the
 //!   column (clipped to the width, the caret kept in view), and what was tried. It scrolls by
@@ -148,6 +150,8 @@ enum Rung {
     Full { lines: usize, hint: bool },
     /// Glyph and title.
     Titled,
+    /// Glyph and the status: its icon and label, without the count.
+    Status,
     /// The glyph alone.
     Glyph,
     /// The title alone.
@@ -207,13 +211,11 @@ fn symbolic(
     // Words want room to be read: below 260 px across, the glyph and the title at most.
     let wordy = aw >= 260.0;
     let one = msg_lines.len().min(1);
+    // The hint goes before the message's second line: what went wrong matters more than how
+    // to see more of it.
     let rung = [
         Rung::Full {
             lines: msg_lines.len(),
-            hint: hint_w <= aw,
-        },
-        Rung::Full {
-            lines: one,
             hint: hint_w <= aw,
         },
         Rung::Full {
@@ -232,6 +234,8 @@ fn symbolic(
     })
     .unwrap_or(if title_fits && g + GLYPH_GAP + title_h <= ah {
         Rung::Titled
+    } else if g + GLYPH_GAP + STATUS_H <= ah && status_width(first, errors, false, m) <= aw {
+        Rung::Status
     } else if g <= ah && g <= aw {
         Rung::Glyph
     } else if title_h <= ah && aw >= 24.0 {
@@ -242,6 +246,7 @@ fn symbolic(
     let block = match rung {
         Rung::Full { lines, hint } => full(lines, hint),
         Rung::Titled => g + GLYPH_GAP + title_h,
+        Rung::Status => g + GLYPH_GAP + STATUS_H,
         Rung::Glyph => g,
         Rung::Title => title_h,
         Rung::Nothing => 0.0,
@@ -250,19 +255,23 @@ fn symbolic(
     let cx = (w / 2.0).round();
     let lift = (h * 0.03).min(12.0);
     let mut y = ((h - block) / 2.0 - lift).max(margin).round();
-    if matches!(rung, Rung::Full { .. } | Rung::Titled | Rung::Glyph) {
+    if matches!(
+        rung,
+        Rung::Full { .. } | Rung::Titled | Rung::Status | Rung::Glyph
+    ) {
         glyph(scene, kind, Rect::new(cx - g / 2.0, y, g, g), theme);
         y += g + GLYPH_GAP;
     }
-    if let Rung::Full { .. } = rung {
-        status_row(scene, first, errors, cx, y, theme, m);
+    if matches!(rung, Rung::Full { .. } | Rung::Status) {
+        let count = matches!(rung, Rung::Full { .. });
+        status_row(scene, first, errors, count, cx, y, theme, m);
         y += STATUS_H + STATUS_GAP;
     }
     if matches!(rung, Rung::Full { .. } | Rung::Titled | Rung::Title) {
         let text = if title_fits {
             title_text
         } else {
-            m.fit(&title_text, title_spec, aw)
+            fit_words(&title_text, title_spec, aw, m)
         };
         scene.push(text_item(
             &text,
@@ -277,13 +286,9 @@ fn symbolic(
     if let Rung::Full { lines, hint } = rung {
         y += TITLE_GAP;
         for (i, line) in msg_lines.iter().take(lines).enumerate() {
-            let last = i + 1 == lines && lines < msg_lines.len();
-            let text = if last {
-                m.fit(
-                    &format!("{line} {}", msg_lines[i + 1..].join(" ")),
-                    msg_spec,
-                    text_w,
-                )
+            // The last line shown carries the rest, cut to the width.
+            let text = if i + 1 == lines {
+                fit_words(&msg_lines[i..].join(" "), msg_spec, text_w, m)
             } else {
                 line.clone()
             };
@@ -305,27 +310,40 @@ fn symbolic(
     }
 }
 
+/// What the status row says after its label: how many errors there are when there's more
+/// than one, if `count`.
+fn status_more(errors: &[FigError], count: bool) -> Option<String> {
+    let n = errors.iter().filter(|e| !e.warning).count();
+    (count && n > 1).then(|| format!(" · {n} errors"))
+}
+
+/// The status row's width.
+fn status_width(first: &FigError, errors: &[FigError], count: bool, m: &mut dyn Measure) -> f32 {
+    let spec = TextSpec::new(12.0).weight(Weight::Medium);
+    let lw = m.width(status_label(first.kind), spec);
+    let mw = status_more(errors, count).map_or(0.0, |t| m.width(&t, TextSpec::new(12.0)));
+    13.0 + 6.0 + lw + mw
+}
+
 /// The status row: the icon and the label, and how many errors there are when there's more
-/// than one.
+/// than one and `count`.
+#[allow(clippy::too_many_arguments)]
 fn status_row(
     scene: &mut Scene,
     first: &FigError,
     errors: &[FigError],
+    count: bool,
     cx: f32,
     y: f32,
     theme: &Theme,
     m: &mut dyn Measure,
 ) {
     let spec = TextSpec::new(12.0).weight(Weight::Medium);
-    let count = errors.iter().filter(|e| !e.warning).count();
     let label = status_label(first.kind);
-    let more = (count > 1).then(|| format!(" · {count} errors"));
+    let more = status_more(errors, count);
     let icon = 13.0;
     let lw = m.width(label, spec);
-    let mw = more
-        .as_deref()
-        .map_or(0.0, |t| m.width(t, TextSpec::new(12.0)));
-    let total = icon + 6.0 + lw + mw;
+    let total = status_width(first, errors, count, m);
     let x = (cx - total / 2.0).round();
     let mid = y + STATUS_H / 2.0;
     status_icon(
@@ -489,6 +507,44 @@ fn wrap(text: &str, spec: TextSpec, max: f32, most: usize, m: &mut dyn Measure) 
     lines
 }
 
+/// What a cut leaves dangling before its '…': a space, a full stop, a comma, a colon, a dot
+/// between words.
+fn dangling(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '.' | ',' | ':' | ';' | '·')
+}
+
+/// `text` cut to `max` with an ellipsis as [`Measure::fit`] cuts it, but at the end of a word
+/// where one is a few characters back, and with nothing dangling before the '…' (never
+/// `expected …` or `latency-ms.…`).
+pub fn fit_words(text: &str, spec: TextSpec, max: f32, m: &mut dyn Measure) -> String {
+    let cut = m.fit(text, spec, max);
+    if cut == text {
+        return cut;
+    }
+    let Some(kept) = cut.strip_suffix('…') else {
+        return cut;
+    };
+    let chars: Vec<char> = kept.chars().collect();
+    let mut end = chars.len();
+    // Cut in the middle of a word: back to its start where that's near.
+    let mid_word = text.chars().nth(end).is_some_and(|c| !c.is_whitespace());
+    if mid_word
+        && let Some(sp) = (end.saturating_sub(6)..end)
+            .rev()
+            .find(|&i| chars[i] == ' ')
+        && sp * 2 >= end
+    {
+        end = sp;
+    }
+    while end > 0 && dangling(chars[end - 1]) {
+        end -= 1;
+    }
+    if end == 0 {
+        return cut;
+    }
+    format!("{}…", chars[..end].iter().collect::<String>())
+}
+
 fn text_item(text: &str, x: f32, y: f32, spec: TextSpec, anchor: Anchor, color: Color) -> Item {
     Item::Text {
         text: text.into(),
@@ -499,6 +555,92 @@ fn text_item(text: &str, x: f32, y: f32, spec: TextSpec, anchor: Anchor, color: 
         color,
         alpha: 1.0,
         max_width: None,
+    }
+}
+
+// ------------------------------------------------------------------ every series hidden
+
+/// What a chart shows in its plot when every series is hidden (the empty kind, contract-p2b
+/// §1): the empty glyph, the status, `Every series is hidden`, and how to bring them back,
+/// centred in `plot`, the chart's legend and axes around it kept so a click on a key brings
+/// its series back. A short plot drops the hint, then the status, then the glyph.
+pub fn all_hidden(scene: &mut Scene, plot: Rect, theme: &Theme, m: &mut dyn Measure) {
+    let title_spec = TextSpec::new(13.0).weight(Weight::Semibold);
+    let title = "Every series is hidden";
+    let keys: Vec<(bool, String)> = vec![
+        (true, "X".into()),
+        (false, "shows them all".into()),
+        (false, "·".into()),
+        (false, "or click a key".into()),
+    ];
+    let room = (plot.w - 16.0).max(0.0);
+    let g = if plot.h >= 200.0 { 40.0 } else { 32.0 };
+    let gap = 14.0;
+    let title_h = m.ascent(title_spec) + m.descent(title_spec);
+    let title_w = m.width(title, title_spec);
+    let hint_w = hint_width(&keys, m);
+    let height = |glyph: bool, status: bool, hint: bool| {
+        let mut h = title_h;
+        if glyph {
+            h += g + gap;
+        }
+        if status {
+            h += STATUS_H + STATUS_GAP;
+        }
+        if hint {
+            h += HINT_GAP + HINT_H;
+        }
+        h
+    };
+    let fits = |glyph: bool, status: bool, hint: bool| {
+        height(glyph, status, hint) <= plot.h - 16.0 && title_w <= room && (!hint || hint_w <= room)
+    };
+    let Some((glyph_on, status, hint)) = [
+        (true, true, true),
+        (true, true, false),
+        (true, false, false),
+        (false, false, false),
+    ]
+    .into_iter()
+    .find(|&(a, b, c)| fits(a, b, c)) else {
+        return;
+    };
+    let cx = (plot.x + plot.w / 2.0).round();
+    let mut y = (plot.y + (plot.h - height(glyph_on, status, hint)) / 2.0).round();
+    if glyph_on {
+        glyph(
+            scene,
+            ErrorKind::Empty,
+            Rect::new(cx - g / 2.0, y, g, g),
+            theme,
+        );
+        y += g + gap;
+    }
+    if status {
+        let why = FigError::new("every series is hidden").with_kind(ErrorKind::Empty);
+        status_row(
+            scene,
+            &why,
+            std::slice::from_ref(&why),
+            false,
+            cx,
+            y,
+            theme,
+            m,
+        );
+        y += STATUS_H + STATUS_GAP;
+    }
+    scene.push(text_item(
+        title,
+        cx,
+        y + m.ascent(title_spec),
+        title_spec,
+        Anchor::Middle,
+        theme.strong,
+    ));
+    y += title_h;
+    if hint {
+        draw_hint(scene, &keys, cx - hint_w / 2.0, y + HINT_GAP, theme, m);
     }
 }
 
@@ -687,20 +829,21 @@ pub fn glyph(scene: &mut Scene, kind: ErrorKind, r: Rect, theme: &Theme) {
             );
         }
         ErrorKind::Mismatch => {
-            // Two pieces that don't fit: a round tab against a square notch, out of line.
+            // Two jigsaw pieces that don't fit: the left one's round tab, low, against the
+            // right one's round socket, high, a little apart. Centred on the disc.
             path(
                 vec![
-                    mv(9.5, 15.0),
-                    ln(17.5, 15.0),
-                    qd(19.5, 15.0, 19.5, 17.0),
-                    ln(19.5, 20.0),
-                    cu(24.5, 20.0, 24.5, 28.0, 19.5, 28.0),
-                    ln(19.5, 31.0),
-                    qd(19.5, 33.0, 17.5, 33.0),
-                    ln(9.5, 33.0),
-                    qd(7.5, 33.0, 7.5, 31.0),
-                    ln(7.5, 17.0),
-                    qd(7.5, 15.0, 9.5, 15.0),
+                    mv(9.0, 21.0),
+                    ln(19.0, 21.0),
+                    qd(21.0, 21.0, 21.0, 23.0),
+                    ln(21.0, 25.0),
+                    cu(25.0, 25.0, 25.0, 31.0, 21.0, 31.0),
+                    ln(21.0, 33.0),
+                    qd(21.0, 35.0, 19.0, 35.0),
+                    ln(9.0, 35.0),
+                    qd(7.0, 35.0, 7.0, 33.0),
+                    ln(7.0, 23.0),
+                    qd(7.0, 21.0, 9.0, 21.0),
                     Verb::Close,
                 ],
                 stroke(width),
@@ -708,19 +851,17 @@ pub fn glyph(scene: &mut Scene, kind: ErrorKind, r: Rect, theme: &Theme) {
             );
             path(
                 vec![
-                    mv(30.5, 12.0),
-                    ln(38.5, 12.0),
-                    qd(40.5, 12.0, 40.5, 14.0),
-                    ln(40.5, 28.0),
-                    qd(40.5, 30.0, 38.5, 30.0),
-                    ln(30.5, 30.0),
-                    qd(28.5, 30.0, 28.5, 28.0),
-                    ln(28.5, 24.5),
-                    ln(32.0, 24.5),
-                    ln(32.0, 17.5),
-                    ln(28.5, 17.5),
-                    ln(28.5, 14.0),
-                    qd(28.5, 12.0, 30.5, 12.0),
+                    mv(29.0, 12.0),
+                    ln(39.0, 12.0),
+                    qd(41.0, 12.0, 41.0, 14.0),
+                    ln(41.0, 24.0),
+                    qd(41.0, 26.0, 39.0, 26.0),
+                    ln(29.0, 26.0),
+                    qd(27.0, 26.0, 27.0, 24.0),
+                    ln(27.0, 22.0),
+                    cu(31.0, 22.0, 31.0, 16.0, 27.0, 16.0),
+                    ln(27.0, 14.0),
+                    qd(27.0, 12.0, 29.0, 12.0),
                     Verb::Close,
                 ],
                 stroke(width),
@@ -780,9 +921,81 @@ pub fn badge_text(first: &FigError) -> String {
     }
 }
 
+/// What the stale badge says, from all of it down to the icon alone (an empty string): the
+/// file and line, the line alone, the word alone.
+fn badge_texts(first: &FigError) -> Vec<String> {
+    let full = badge_text(first);
+    let word = full.split(" · ").next().unwrap_or("").to_string();
+    let mut out = vec![full.clone()];
+    if let (Some(_), Some(at)) = (first.file_name(), first.at) {
+        out.push(format!("{word} · line {}", at.line));
+    }
+    out.push(word);
+    out.push(String::new());
+    out.dedup();
+    out
+}
+
+/// What of a chart the badge must leave readable.
+#[derive(Clone, Copy, PartialEq)]
+enum Obstacle {
+    /// A text, the scene's item `usize`.
+    Text(usize),
+    /// A legend key.
+    Key,
+    /// The title's region.
+    Title,
+}
+
+/// Where a chart has drawn what the badge must leave readable: every text's box, the legend's
+/// keys and the title's region.
+fn badge_obstacles(scene: &Scene, m: &mut dyn Measure) -> Vec<(Rect, Obstacle)> {
+    let mut out = Vec::new();
+    for (i, item) in scene.items.iter().enumerate() {
+        if let Item::Text {
+            text,
+            x,
+            y,
+            spec,
+            anchor,
+            max_width,
+            ..
+        } = item
+        {
+            if text.trim().is_empty() {
+                continue;
+            }
+            let w = m.width(text, *spec).min(max_width.unwrap_or(f32::INFINITY));
+            let left = match anchor {
+                Anchor::Start => *x,
+                Anchor::Middle => x - w / 2.0,
+                Anchor::End => x - w,
+            };
+            let top = y - m.ascent(*spec);
+            let r = Rect::new(left, top, w, m.ascent(*spec) + m.descent(*spec));
+            out.push((r, Obstacle::Text(i)));
+        }
+    }
+    for r in &scene.regions {
+        match r.hit {
+            Hit::LegendKey(_) => out.push((r.rect, Obstacle::Key)),
+            Hit::PanelTitle(_) => out.push((r.rect, Obstacle::Title)),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The least of a title the badge leaves when it cuts it to make room.
+const TITLE_KEPT: f32 = 64.0;
+
 /// The stale badge in the top-right corner of `scene`: the status icon and what
-/// [`badge_text`] says, on the card's ground, over whatever's there, with its region. Narrow
-/// areas get the word alone, then the icon alone.
+/// [`badge_text`] says, on the card's ground, with its region. It never covers what the chart
+/// says: where its words would meet the title, the legend or a label on its row (8 px kept
+/// between), it says less (the line without the file, the word, the icon alone); where even
+/// the icon would, the title is cut back with its ellipsis to make room (keeping some of it);
+/// else the icon goes into the plot's top-right corner, clear of the chart's words there; and
+/// only where that fails too, it sits in the corner over whatever's there.
 pub fn stale_badge(scene: &mut Scene, first: &FigError, theme: &Theme, m: &mut dyn Measure) {
     let w = scene.width;
     let spec = TextSpec::new(12.0);
@@ -795,8 +1008,6 @@ pub fn stale_badge(scene: &mut Scene, first: &FigError, theme: &Theme, m: &mut d
     let mid = pad_top + m.ascent(title) - m.cap(title) / 2.0;
     let top = (mid - h / 2.0).max(4.0).round();
     let icon = 12.0;
-    let full = badge_text(first);
-    let word = full.split(" · ").next().unwrap_or("").to_string();
     let room = (w - 2.0 * inset).max(0.0);
     let pad = (10.0, 12.0);
     let width = |t: &str, m: &mut dyn Measure| {
@@ -807,20 +1018,97 @@ pub fn stale_badge(scene: &mut Scene, first: &FigError, theme: &Theme, m: &mut d
         }
     };
     let most = room.min((w * 0.6).max(160.0));
-    let mut text = full.clone();
-    if width(&text, m) > most {
-        let fitted = m.fit(&full, spec, most - (pad.0 + icon + 6.0 + pad.1));
-        text = if fitted.chars().count() > word.chars().count() + 3 {
-            fitted
-        } else {
-            word.clone()
-        };
+    let obstacles = badge_obstacles(scene, m);
+    // Clear of everything, but the title's text `but` and its region when it's to be cut.
+    let clear = |r: &Rect, but: Option<usize>| {
+        let near = Rect::new(r.x - 8.0, r.y, r.w + 16.0, r.h);
+        obstacles.iter().all(|(o, what)| {
+            let cut = match what {
+                Obstacle::Text(i) => but == Some(*i),
+                Obstacle::Title => but.is_some(),
+                Obstacle::Key => false,
+            };
+            cut || near.intersect(o).is_none_or(|i| i.w <= 0.01 || i.h <= 0.01)
+        })
+    };
+    let plot = scene
+        .regions
+        .iter()
+        .find(|r| matches!(r.hit, Hit::Plot(_)))
+        .map(|r| r.rect);
+    let texts = badge_texts(first);
+    let fit = |right: f32, y: f32, texts: &[String], but: Option<usize>, m: &mut dyn Measure| {
+        texts.iter().find_map(|t| {
+            let bw = width(t, m);
+            if bw > most && !t.is_empty() {
+                return None;
+            }
+            let r = Rect::new((right - bw).round(), y.round(), bw, h);
+            (r.x >= inset.min(4.0) && clear(&r, but)).then(|| (r, t.clone()))
+        })
+    };
+    // The top-right corner, clear of everything.
+    let mut placed = fit(w - inset, top, &texts, None, m);
+    // The title cut back to make room for a word or the icon.
+    if placed.is_none() {
+        let row = Rect::new(0.0, top, w, h);
+        let title_item = obstacles.iter().find_map(|(o, what)| {
+            let Obstacle::Text(i) = *what else {
+                return None;
+            };
+            let start = matches!(
+                scene.items[i],
+                Item::Text {
+                    anchor: Anchor::Start,
+                    ..
+                }
+            );
+            let titled = scene.regions.iter().any(|r| {
+                matches!(r.hit, Hit::PanelTitle(_)) && r.rect.contains(o.x + 1.0, o.y + o.h / 2.0)
+            });
+            (start && titled && row.intersect(o).is_some()).then_some((i, *o))
+        });
+        if let Some((i, o)) = title_item {
+            // The word where the title keeps a good part of itself, else the icon.
+            let tries = texts.iter().rev().take(2).rev();
+            let cut = tries.filter_map(|t| {
+                let (r, t) = fit(w - inset, top, std::slice::from_ref(t), Some(i), m)?;
+                let keep = if t.is_empty() {
+                    TITLE_KEPT
+                } else {
+                    2.0 * TITLE_KEPT
+                };
+                (r.x - 8.0 - o.x >= keep.min(o.w)).then_some((r, t))
+            });
+            if let Some((r, t)) = cut.into_iter().next() {
+                if let Item::Text {
+                    text,
+                    spec,
+                    max_width,
+                    ..
+                } = &mut scene.items[i]
+                {
+                    let room = r.x - 8.0 - o.x;
+                    *text = fit_words(text, *spec, room, m).into();
+                    *max_width = Some(room);
+                }
+                placed = Some((r, t));
+            }
+        }
     }
-    if width(&text, m) > room {
-        text.clear();
+    // Into the plot's top-right corner, over the data: as small as it goes, the icon.
+    if placed.is_none()
+        && let Some(p) = plot
+    {
+        placed = fit(p.right() - 8.0, p.y + 8.0, &[String::new()], None, m);
     }
-    let bw = width(&text, m).min(room.max(h));
-    let r = Rect::new((w - inset - bw).round(), top, bw, h);
+    let (r, text) = placed.unwrap_or_else(|| {
+        let bw = h.min(room.max(h));
+        (
+            Rect::new((w - inset - bw).round(), top, bw, h),
+            String::new(),
+        )
+    });
     scene.push(Item::Shadow {
         rect: r,
         radius: h / 2.0,
@@ -1028,9 +1316,14 @@ fn caret_len(line: &str, col: usize) -> usize {
 fn entry(e: &FigError, source: &str, name: &str, digits: usize) -> Entry {
     let mut lines: Vec<Vec<Span>> = Vec::new();
     let word = if e.warning { "warning" } else { e.kind.name() };
+    // `empty: the data has no rows`, not `empty: nothing to draw: ...`.
+    let msg = match e.kind {
+        ErrorKind::Empty => e.msg.strip_prefix("nothing to draw: ").unwrap_or(&e.msg),
+        _ => &e.msg,
+    };
     lines.push(vec![
         span(word, LogInk::Status, true),
-        span(format!(": {}", e.msg), LogInk::Strong, true),
+        span(format!(": {msg}"), LogInk::Strong, true),
     ]);
     let file = e
         .file_name()
@@ -1106,12 +1399,19 @@ fn log(
     let head = Rect::new(0.0, 0.0, w, LOG_HEADER);
     let n_err = errors.iter().filter(|e| !e.warning).count();
     let n_warn = errors.len() - n_err;
+    let empty = n_err > 0
+        && (errors.iter())
+            .filter(|e| !e.warning)
+            .all(|e| e.kind == ErrorKind::Empty);
     let count = |n: usize, one: &str, many: &str| match n {
         1 => format!("1 {one}"),
         n => format!("{n} {many}"),
     };
     let mut said = Vec::new();
-    if n_err > 0 || n_warn == 0 {
+    // Nothing to draw isn't an error, as the figure's own status says.
+    if empty {
+        said.push("Nothing to draw".to_string());
+    } else if n_err > 0 || n_warn == 0 {
         said.push(count(n_err, "error", "errors"));
     }
     if n_warn > 0 {
@@ -1164,13 +1464,14 @@ fn log(
         Anchor::Start,
         theme.strong,
     ));
-    let named = m.fit(
+    let named = fit_words(
         &in_name,
         TextSpec::new(12.0),
         (name_room - ic - 8.0).max(0.0),
+        m,
     );
-    // A name cut to nothing but its dots says nothing: none, then.
-    let named = if named.chars().count() < 8 && named != in_name {
+    // A name cut to a few letters and its dots says nothing: none, then.
+    let named = if named.chars().count() < " in ".len() + 6 + 1 && named != in_name {
         String::new()
     } else {
         named
@@ -1296,9 +1597,12 @@ fn log(
     }
 }
 
+/// How many cells a caret moved into view keeps from the right edge.
+const CARET_MARGIN: usize = 4;
+
 /// An entry's lines with its source line and caret moved left together where the caret would
-/// be past `chars` cells: the source starts further in, after a '…', and the caret sits some
-/// way across.
+/// be past `chars` cells: the source starts further in, after a '…', by the least that brings
+/// the caret and [`CARET_MARGIN`] cells into view, so as much of the line as can be stays.
 fn keep_caret(e: &Entry, chars: usize) -> Vec<Vec<Span>> {
     let mut lines = e.lines.clone();
     let Some(si) = e.source else {
@@ -1314,8 +1618,11 @@ fn keep_caret(e: &Entry, chars: usize) -> Vec<Vec<Span>> {
     if c0 + n <= room || room < 8 {
         return lines;
     }
-    let want = (room * 3 / 5).saturating_sub(n.min(room / 3)).max(1);
-    let shift = c0.saturating_sub(want);
+    // The least shift that shows the caret's run and the margin; a run longer than the room
+    // starts two cells in, after the '…', its end cut.
+    let shift = (c0 + n + CARET_MARGIN)
+        .saturating_sub(room)
+        .min(c0.saturating_sub(2));
     if shift == 0 {
         return lines;
     }
@@ -1391,6 +1698,15 @@ fn clip_line(spans: &[Span], chars: usize) -> Vec<Span> {
             });
             left = 0;
         }
+    }
+    // Nothing dangling before the '…'.
+    while let Some(last) = out.last_mut() {
+        let kept = last.text.trim_end_matches(dangling).len();
+        last.text.truncate(kept);
+        if !last.text.is_empty() {
+            break;
+        }
+        out.pop();
     }
     out.push(span("…", LogInk::Muted, false));
     out
