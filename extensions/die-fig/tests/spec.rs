@@ -3,8 +3,7 @@
 //! encodings inherited by layers, dashboards and their tiles, errors and warnings at their
 //! places, the guess at a bare table, and `write`'s text read back as the same figure.
 //!
-//! Every spec and table is made here. The tests that read bare data through the data module's
-//! readers wait for it (`#[ignore = "needs fig/data"]`).
+//! Every spec and table is made here; bare data goes through the data module's readers.
 
 use die_test_cap as _;
 
@@ -2074,7 +2073,6 @@ fn a_table_without_its_objects_is_written_as_its_columns() {
 // Bare data, through the data module's readers.
 
 #[test]
-#[ignore = "needs fig/data"]
 fn a_csv_buffer_is_read_and_guessed() {
     let csv = "time,api,worker,batch\n2026-11-21T06:00,642,431,388\n2026-11-21T06:05,655,436,176\n";
     let p = parse(csv, "requests.csv", Path::new(DIR), &opt()).unwrap();
@@ -2100,7 +2098,6 @@ fn a_csv_buffer_is_read_and_guessed() {
 }
 
 #[test]
-#[ignore = "needs fig/data"]
 fn json_rows_and_jsonl_are_read_and_guessed() {
     let rows = r#"[{"k": "a", "v": 1}, {"k": "b", "v": 2}]"#;
     let p = parse(rows, "rows.json", Path::new(DIR), &opt()).unwrap();
@@ -2125,7 +2122,6 @@ fn json_rows_and_jsonl_are_read_and_guessed() {
 }
 
 #[test]
-#[ignore = "needs fig/data"]
 fn inline_values_are_read_and_written_back() {
     let c = chart(
         r#"{"type": "bar", "data": {"values": [{"k": "a", "v": 1, "fig": {"color": "red"}}, {"k": "b", "v": 2}]}, "x": "k", "y": "v"}"#,
@@ -2183,7 +2179,6 @@ fn inline_values_are_read_and_written_back() {
 }
 
 #[test]
-#[ignore = "needs fig/data"]
 fn an_error_in_values_text_is_at_the_string_with_its_place_in_the_text() {
     let cases = [
         (
@@ -2210,7 +2205,6 @@ fn an_error_in_values_text_is_at_the_string_with_its_place_in_the_text() {
 }
 
 #[test]
-#[ignore = "needs fig/data"]
 fn a_histograms_bins_are_named_clear_of_its_inline_columns() {
     use die_fig::data::transform::apply;
     let c = chart(
@@ -2231,7 +2225,6 @@ fn a_histograms_bins_are_named_clear_of_its_inline_columns() {
 }
 
 #[test]
-#[ignore = "needs fig/data"]
 fn one_line_of_jsonl_with_a_type_no_figure_has_is_a_row() {
     for name in ["log", "log.json", "log.jsonl"] {
         let p = parse(
@@ -2261,7 +2254,6 @@ fn one_line_of_jsonl_with_a_type_no_figure_has_is_a_row() {
 }
 
 #[test]
-#[ignore = "needs fig/data"]
 fn a_domain_may_be_two_times() {
     let c = chart(
         r#"{"type": "line", "data": "d.csv", "x": {"field": "t", "domain": ["2026-11-21T00:00:00Z", "2026-11-22T00:00:00Z"]}}"#,

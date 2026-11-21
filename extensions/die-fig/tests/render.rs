@@ -1249,7 +1249,6 @@ fn a_png_is_the_scene_at_its_scale() {
 }
 
 #[test]
-#[ignore = "needs fig/draw"]
 fn a_png_is_opaque_on_its_background() {
     let mut s = Scene::new(10.0, 6.0, 2.0);
     s.push(rect(Rect::new(0.0, 0.0, 5.0, 6.0), RED, 0.5));
@@ -1294,7 +1293,6 @@ fn ink_span(shot: &Shot, y0: u32, y1: u32) -> Option<(u32, u32)> {
 }
 
 #[test]
-#[ignore = "needs fig/draw"]
 fn text_is_drawn_at_its_anchor_in_its_colour_at_its_alpha() {
     let mut fonts = book().expect("fonts");
     for scale in [1.0f32, 2.0] {
@@ -1345,7 +1343,6 @@ fn text_is_drawn_at_its_anchor_in_its_colour_at_its_alpha() {
 }
 
 #[test]
-#[ignore = "needs fig/draw"]
 fn a_text_past_its_width_is_cut_as_the_measure_cuts_it() {
     let mut fonts = book().expect("fonts");
     let long = "A label far too long for its place";
