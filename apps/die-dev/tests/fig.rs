@@ -5,6 +5,8 @@
 //! colours, and nothing of fig's runs before `\v` or after it's gone. And the whole round trip
 //! as you'd make it: a CSV, `\v`, a hover bringing a series forward with its card, a brush, the
 //! wheel, ⌘-wheel and `+`, an edit of the CSV in a split that the chart follows, and `\v` back.
+//! And a `.fig` file through your config: it opens as its figure, `\v` flips it to its text and
+//! back, and one that can't draw shows the symbolic error figure, its log a `!` away.
 
 use die_test_cap as _;
 
@@ -506,4 +508,97 @@ fn the_round_trip_a_csv_its_chart_hover_brush_wheel_zoom_an_edit_followed_and_ba
     assert_eq!(h.window_buffer(win2), Some(src));
     assert!(!h.is_live(fig));
     assert_eq!(h.next_timer(), None);
+}
+
+/// A directory of the test's own, made empty.
+fn dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("die-dev-fig-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d.canonicalize().unwrap()
+}
+
+/// A file opened in the focused window, as `:e` opens it.
+fn open(h: &mut Harness, path: &std::path::Path) -> die::core::BufferId {
+    let b = h.open_file(path).unwrap();
+    h.show(b, die::core::ShowIn::Current).unwrap();
+    h.run_until_idle();
+    h.scene();
+    b
+}
+
+#[test]
+fn a_fig_file_opens_as_its_figure_and_leader_v_flips_it_to_its_text_and_back() {
+    let d = dir("open");
+    std::fs::write(d.join("requests.csv"), data()).unwrap();
+    let spec = d.join("requests.fig");
+    std::fs::write(
+        &spec,
+        "{\"type\": \"line\", \"title\": \"Requests\", \"data\": \"requests.csv\", \"x\": \"time\", \"y\": \"api\"}\n",
+    )
+    .unwrap();
+    let mut h = harness();
+    let src = open(&mut h, &spec);
+    let fig = h.focused_buffer().unwrap();
+    assert_eq!(
+        h.buffer_name(fig),
+        Some("requests.fig *fig*"),
+        "opened as its figure"
+    );
+    let placed = placed(&mut h);
+    assert_eq!(placed.iter().map(|p| p.1).collect::<Vec<_>>(), vec![-2, -1]);
+    let st = h.with_ext(|f: &mut Fig, _| f.figure(fig)).unwrap().unwrap();
+    assert!(
+        st.borrow().model.is_some(),
+        "drawn: {:?}",
+        st.borrow().error
+    );
+    keys(&mut h, "\\v");
+    assert_eq!(h.focused_buffer(), Some(src), "\\v: its text");
+    keys(&mut h, "l");
+    assert_eq!(h.focused_buffer(), Some(src), "and it stays text");
+    keys(&mut h, "\\v");
+    let again = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(again), Some("requests.fig *fig*"), "and back");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_fig_file_that_cannot_draw_shows_the_symbolic_figure_and_its_log() {
+    let d = dir("broken");
+    let spec = d.join("broken.fig");
+    std::fs::write(
+        &spec,
+        "{\"type\": \"line\",\n \"data\": \"gone.csv\", \"x\": \"t\", \"y\": \"v\"}\n",
+    )
+    .unwrap();
+    let mut h = harness();
+    open(&mut h, &spec);
+    let fig = h.focused_buffer().unwrap();
+    let st = h.with_ext(|f: &mut Fig, _| f.figure(fig)).unwrap().unwrap();
+    assert!(st.borrow().model.is_none());
+    let win = h.focused().unwrap();
+    let (w, ht) = st.borrow().panes[&win].size();
+    assert_eq!(
+        st.borrow().panes[&win].hit((w / 2.0, ht / 2.0)),
+        die_fig::scene::Hit::ErrorFigure
+    );
+    // Drawn on mono-dark's ground, with something on it: the glyph and the words.
+    let (base, _) = st.borrow().panes[&win].buffers().unwrap();
+    let (_, _, px) = h.pixels(base).unwrap();
+    let inked = px
+        .chunks_exact(4)
+        .filter(|p| p[..3] != [0x1a, 0x1a, 0x1a])
+        .count();
+    assert!(inked > 500, "{inked} px of the error figure");
+    keys(&mut h, "!");
+    assert_eq!(st.borrow().panes[&win].log, Some((0, 0)), "! shows the log");
+    assert!(
+        h.messages
+            .iter()
+            .any(|m| m.contains("broken.fig") && m.contains("no such file")),
+        "said in *messages*: {:?}",
+        h.messages
+    );
+    let _ = std::fs::remove_dir_all(&d);
 }

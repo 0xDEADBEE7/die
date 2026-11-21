@@ -2959,7 +2959,7 @@ fn the_log_scrolls_by_lines_and_keeps_a_long_line_s_caret_in_view() {
     assert_eq!(lines.max_top(page), lines.total.saturating_sub(page));
     let top = lines.reveal(0, 3, page);
     assert!(
-        top + page >= lines.starts[3] + 1 && top <= lines.starts[3],
+        top + page > lines.starts[3] && top <= lines.starts[3],
         "{top}"
     );
     // A top past the end is the last page's.
