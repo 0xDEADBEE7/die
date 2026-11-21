@@ -1,7 +1,7 @@
-//! Following the source (contract-p2 §4): an edit is charted once the buffer is quiet; a parse
-//! error keeps the last figure with a banner, `⏎` or a click on it goes to the error, and a fix
-//! brings the figure back; a data file is polled while shown and its buffer followed when open;
-//! no timer runs when no figure shows; a view following live data slides to the newest.
+//! Following the source (contract-p2 §4): an edit is charted once the buffer is quiet; a data
+//! file is polled while shown and its buffer followed when open; no timer runs when no figure
+//! shows; a view following live data slides to the newest. What a failed parse shows (the error
+//! figure, the stale badge and the log) is `tests/errors.rs`'s.
 
 use die_test_cap as _;
 
@@ -11,19 +11,7 @@ use common::*;
 use die_core::{BufferId, Origin, ShowIn};
 use die_fig::Fig;
 use die_fig::interact::{Cursor, Setting};
-use die_fig::scene::Hit;
 use std::time::Duration;
-
-/// A point on the banner, found as the pointer finds it: it sits a few px in from the top.
-fn on_banner(s: &mut Setup) -> (f32, f32) {
-    let st = state(s);
-    let st = st.borrow();
-    let p = &st.panes[&s.win];
-    (0..80)
-        .map(|y| (40.0, y as f32))
-        .find(|&at| p.hit(at) == Hit::Banner)
-        .expect("a banner")
-}
 
 /// Append `text` to a buffer (the source when None), as a user's edit.
 fn append(s: &mut Setup, buf: Option<BufferId>, text: &str) {
@@ -75,95 +63,6 @@ fn an_edit_is_charted_once_the_source_is_quiet() {
     assert_eq!(s.h.next_timer(), None, "nothing left running");
 }
 
-#[test]
-fn a_parse_error_keeps_the_last_figure_with_a_banner_and_a_fix_brings_it_back() {
-    let rows_json = r#"[{"x": 1, "y": 2},
- {"x": 2, "y": 4},
- {"x": 3, "y": 3}]
-"#;
-    let mut s = setup_with("data.json", rows_json);
-    let st = state(&mut s);
-    let built = st.borrow().model_gen;
-    assert!(st.borrow().model.is_some(), "{:?}", st.borrow().error);
-    // Break it on its second line.
-    replace(
-        &mut s,
-        None,
-        "[{\"x\": 1, \"y\": 2},\n {\"x\": 2 \"y\": 4}]\n",
-    );
-    s.h.advance(Duration::from_millis(200));
-    s.h.run_until_idle();
-    let banner = st.borrow().banner().expect("a banner");
-    assert!(banner.contains("line 2"), "{banner}");
-    assert_eq!(st.borrow().model_gen, built, "the last figure kept");
-    assert!(st.borrow().model.is_some());
-    assert!(status(&mut s).contains("line 2"), "{}", status(&mut s));
-    // ⏎ goes to the error's line and column in the source.
-    keys(&mut s.h, "<CR>");
-    assert_eq!(s.h.window_buffer(s.win), Some(s.src));
-    let t = s.h.text(s.src).unwrap();
-    let at = t.cursor(s.win).unwrap();
-    assert_eq!(t.line_of(at), 1, "the second line");
-    // Fixed: the banner goes and the figure follows.
-    s.h.show(s.buf, ShowIn::Current).unwrap();
-    s.h.run_until_idle();
-    replace(
-        &mut s,
-        None,
-        "[{\"x\": 1, \"y\": 2},\n {\"x\": 2, \"y\": 9}]\n",
-    );
-    s.h.advance(Duration::from_millis(200));
-    s.h.run_until_idle();
-    assert_eq!(st.borrow().banner(), None);
-    assert!(st.borrow().model_gen > built);
-}
-
-#[test]
-fn a_click_on_the_banner_goes_to_the_error() {
-    let mut s = setup_with(
-        "data.json",
-        "[{\"x\": 1, \"y\": 2}, {\"x\": 2, \"y\": 3}]\n",
-    );
-    replace(&mut s, None, "[{\"x\": 1, \"y\": 2}, {\"x\" 2}]\n");
-    s.h.advance(Duration::from_millis(200));
-    s.h.run_until_idle();
-    assert!(state(&mut s).borrow().banner().is_some());
-    let at = on_banner(&mut s);
-    click(&mut s, at);
-    assert_eq!(s.h.window_buffer(s.win), Some(s.src), "to the source");
-    let t = s.h.text(s.src).unwrap();
-    let at = t.cursor(s.win).unwrap();
-    assert!(at > 0, "at the error's column: {at}");
-}
-
-#[test]
-fn a_click_on_the_banner_goes_to_the_error_with_no_chart_yet() {
-    let mut s = setup_with("data.json", "[{\"x\": 1, \"y\": 2},\n {\"x\" 2}]\n");
-    let st = state(&mut s);
-    assert!(st.borrow().model.is_none());
-    assert!(st.borrow().banner().is_some());
-    drop(st);
-    let at = on_banner(&mut s);
-    click(&mut s, at);
-    assert_eq!(s.h.window_buffer(s.win), Some(s.src));
-    let t = s.h.text(s.src).unwrap();
-    assert_eq!(t.line_of(t.cursor(s.win).unwrap()), 1, "the error's line");
-}
-
-#[test]
-fn an_empty_source_shows_why_in_place_of_a_chart() {
-    let mut s = setup_with("data.csv", "x,a\n");
-    let st = state(&mut s);
-    assert!(st.borrow().model.is_none());
-    let banner = st.borrow().banner().expect("why");
-    assert!(banner.contains("nothing to draw"), "{banner}");
-    // A row arrives: a chart.
-    append(&mut s, None, "1,2\n2,3\n");
-    s.h.advance(Duration::from_millis(200));
-    s.h.run_until_idle();
-    assert!(st.borrow().model.is_some(), "{:?}", st.borrow().banner());
-}
-
 /// A spec in a directory of its own reading `rates.csv` beside it.
 fn spec_reading_a_file(dir: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let data = dir.path().join("rates.csv");
@@ -184,14 +83,14 @@ fn a_data_file_is_polled_while_the_figure_shows() {
     let mut h = harness();
     let src = h.open_file(&spec).unwrap();
     h.show(src, ShowIn::Current).unwrap();
-    h.run_until_idle();
-    h.run("fig-toggle", &die_core::Args::default()).unwrap();
+    // A .fig.json opens as its figure.
     h.run_until_idle();
     let win = h.focused().unwrap();
     let buf = h.window_buffer(win).unwrap();
+    assert_ne!(buf, src, "the figure in the window");
     let mut s = Setup { h, src, buf, win };
     let st = state(&mut s);
-    assert!(st.borrow().model.is_some(), "{:?}", st.borrow().banner());
+    assert!(st.borrow().model.is_some(), "{:?}", st.borrow().badge());
     assert_eq!(rows(&mut s), 21);
     assert!(st.borrow().polling(), "the file's poll");
     // Changed on disk: read again at the next poll.
@@ -219,8 +118,7 @@ fn a_data_file_open_in_a_buffer_follows_its_edits_instead() {
     let file = h.open_file(&data).unwrap();
     let src = h.open_file(&spec).unwrap();
     h.show(src, ShowIn::Current).unwrap();
-    h.run_until_idle();
-    h.run("fig-toggle", &die_core::Args::default()).unwrap();
+    // A .fig.json opens as its figure.
     h.run_until_idle();
     let win = h.focused().unwrap();
     let buf = h.window_buffer(win).unwrap();

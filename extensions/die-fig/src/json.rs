@@ -287,7 +287,7 @@ impl<'a> Reader<'a> {
     }
 
     fn fail(&self, msg: &str) -> FigError {
-        FigError::at(msg, self.pos())
+        FigError::malformed(msg, self.pos())
     }
 
     fn eof(&self) -> FigError {
@@ -373,7 +373,7 @@ impl<'a> Reader<'a> {
                 None => entries.iter().any(|(k, _)| k.name == name),
             };
             if twice {
-                return Err(FigError::at(format!("duplicate key \"{name}\""), at));
+                return Err(FigError::malformed(format!("duplicate key \"{name}\""), at));
             }
             if seen.is_none() && entries.len() >= SCAN {
                 let mut set: HashSet<Box<str>> =
@@ -433,7 +433,7 @@ impl<'a> Reader<'a> {
     /// A string from its opening quote, its escapes undone.
     fn string(&mut self) -> Result<String> {
         let open = self.pos();
-        let unterminated = || FigError::at("unterminated string", open);
+        let unterminated = || FigError::malformed("unterminated string", open);
         self.bump();
         let mut out = String::new();
         loop {
@@ -467,7 +467,7 @@ impl<'a> Reader<'a> {
                         b'r' => Some('\r'),
                         b't' => Some('\t'),
                         b'u' => None,
-                        _ => return Err(FigError::at("invalid escape", esc)),
+                        _ => return Err(FigError::malformed("invalid escape", esc)),
                     };
                     self.bump();
                     match plain {
@@ -482,7 +482,7 @@ impl<'a> Reader<'a> {
 
     /// A `\u` escape's character, after its `u`: a pair of surrogates makes one.
     fn unicode(&mut self, esc: Pos, open: Pos) -> Result<char> {
-        let lone = || FigError::at("lone surrogate in \\u escape", esc);
+        let lone = || FigError::malformed("lone surrogate in \\u escape", esc);
         let first = self.hex4(esc, open)?;
         let code = match first {
             0xD800..=0xDBFF => {
@@ -507,11 +507,11 @@ impl<'a> Reader<'a> {
         let mut v = 0;
         for _ in 0..4 {
             let Some(b) = self.peek() else {
-                return Err(FigError::at("unterminated string", open));
+                return Err(FigError::malformed("unterminated string", open));
             };
             let d = (b as char)
                 .to_digit(16)
-                .ok_or_else(|| FigError::at("invalid \\u escape", esc))?;
+                .ok_or_else(|| FigError::malformed("invalid \\u escape", esc))?;
             v = v * 16 + d;
             self.bump();
         }
@@ -523,7 +523,7 @@ impl<'a> Reader<'a> {
     fn number(&mut self) -> Result<f64> {
         let at = self.pos();
         let start = self.i;
-        let invalid = || FigError::at("invalid number", at);
+        let invalid = || FigError::malformed("invalid number", at);
         if self.peek() == Some(b'-') {
             self.bump();
         }
@@ -559,7 +559,7 @@ impl<'a> Reader<'a> {
         }
         let v: f64 = self.src[start..self.i].parse().map_err(|_| invalid())?;
         if !v.is_finite() {
-            return Err(FigError::at("number out of range", at));
+            return Err(FigError::malformed("number out of range", at));
         }
         Ok(v)
     }

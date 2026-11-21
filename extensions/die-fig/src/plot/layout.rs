@@ -321,7 +321,7 @@ impl ChartLayout {
 }
 
 /// The area's paddings: across, at the top and at the bottom.
-fn paddings(w: f32, h: f32) -> (f32, f32, f32) {
+pub(crate) fn paddings(w: f32, h: f32) -> (f32, f32, f32) {
     (
         (w * 0.032).clamp(10.0, 28.0),
         (h * 0.05).clamp(8.0, 24.0),
@@ -724,7 +724,8 @@ fn attempt(
             y_count = c;
         }
     }
-    // A scatter's points keep their whole dot inside the plot at its fit.
+    // A scatter's points keep their whole dot inside the plot at its fit, and its top tick
+    // labels most of them.
     let reach = point_reach(model, view);
     if model.is_scatter()
         && view.y.is_none()
@@ -732,7 +733,13 @@ fn attempt(
         && let Some(ext) = points_extent(model, view, false)
     {
         yd = pad_for(yd, ext, plot_h, reach, model.y.kind);
+        if model.y.kind == AxisKind::Linear {
+            let range = (plot_bottom, plot_top);
+            yd = to_next_tick(yd, ext, y_count, range, whole);
+        }
     }
+    // A plot too short to pad by the dots' reach lets them past its edges, whole.
+    let dots_bleed = model.is_scatter() && plot_h <= 4.0 * reach;
 
     // Up the screen: the values' ticks, or the bands'.
     let (up_kind, up_domain, up_bands, up_rect) = if vertical_values {
@@ -785,7 +792,11 @@ fn attempt(
         } else {
             ((plot_h / Y_SPACING).round() as usize).clamp(2, Y_MOST)
         };
+        let floor = no_negatives(model, view, false);
         for t in whole_ticks(&up_scale, count, vertical_values && whole) {
+            if floor && t.value < 0.0 {
+                continue;
+            }
             let py = up_scale.map(t.value);
             if py < plot_top - 0.5 || py > plot_bottom + 0.5 {
                 continue;
@@ -955,11 +966,14 @@ fn attempt(
     let mut x_ticks: Vec<Tick> = Vec::new();
     let base_y = plot.bottom() + TICK_GAP + m.ascent(tick);
     if axes {
-        let placed = if across_kind == AxisKind::Band {
+        let mut placed = if across_kind == AxisKind::Band {
             band_labels(&across, across_bands, &plot, tick_plain, m)
         } else {
             value_ticks(model, &across, &plot, tick, vertical_values, whole, w, m)
         };
+        if no_negatives(model, view, true) {
+            placed.retain(|t| t.0.value >= 0.0);
+        }
         for (t, text, x, anchor) in placed {
             let spec = if across_kind == AxisKind::Band {
                 tick_plain
@@ -1090,6 +1104,12 @@ fn attempt(
         plot.w + if bx { 2.0 * BLEED } else { 0.0 },
         plot.h + if by { BLEED } else { 0.0 },
     );
+    let clip = if dots_bleed {
+        let top = clip.y.min(plot.y - reach);
+        Rect::new(clip.x, top, clip.w, plot.bottom() + reach - top)
+    } else {
+        clip
+    };
     ChartLayout {
         plot,
         x: xs_scale,
@@ -1300,6 +1320,12 @@ fn point_reach(model: &ChartModel, view: &View) -> f32 {
         + 1.0
 }
 
+/// Whether a scatter's axis (x, or y) holds no negative value: its dots' padding may reach
+/// below zero, but no tick there says a value it hasn't.
+fn no_negatives(model: &ChartModel, view: &View, x: bool) -> bool {
+    model.is_scatter() && points_extent(model, view, x).is_some_and(|e| e.0 >= 0.0)
+}
+
 /// The visible points' extent along x (or y).
 fn points_extent(model: &ChartModel, view: &View, x: bool) -> Option<(f64, f64)> {
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -1317,6 +1343,50 @@ fn points_extent(model: &ChartModel, view: &View, x: bool) -> Option<(f64, f64)>
         }
     }
     (lo <= hi).then_some((lo, hi))
+}
+
+/// A scatter's domain `d` whose last tick labels little of its data (5 of a 0 to 8.8, the top
+/// 43 % of the plot unlabelled): on to the next tick, so its top is labelled, where the ticks
+/// keep a step that does; the same at the bottom where that doesn't go below zero.
+fn to_next_tick(
+    d: (f64, f64),
+    data: (f64, f64),
+    count: usize,
+    range: (f32, f32),
+    whole: bool,
+) -> (f64, f64) {
+    let ticks = |dom: (f64, f64)| whole_ticks(&Scale::Linear { domain: dom, range }, count, whole);
+    let span = data.1 - data.0;
+    let ts = ticks(d);
+    let (Some(first), Some(last), true) = (ts.first(), ts.last(), ts.len() >= 2 && span > 0.0)
+    else {
+        return d;
+    };
+    let step = (ts[1].value - ts[0].value).abs();
+    let mut out = d;
+    if last.value < data.0 + 0.75 * span {
+        out.1 = out.1.max(last.value + step);
+    }
+    let floor = if data.0 >= 0.0 {
+        0.0
+    } else {
+        f64::NEG_INFINITY
+    };
+    if first.value > data.1 - 0.75 * span && first.value - step >= floor {
+        out.0 = out.0.min(first.value - step);
+    }
+    if out == d {
+        return d;
+    }
+    // Only where the ticks then reach as far: a step that labels the new ends.
+    let after = ticks(out);
+    let covers = after
+        .last()
+        .is_some_and(|t| t.value >= data.0 + 0.75 * span)
+        && after
+            .first()
+            .is_some_and(|t| t.value <= data.1 - 0.75 * span);
+    if covers { out } else { d }
 }
 
 /// A domain widened so that data from `data.0` to `data.1`, over `len` px, keeps `reach` px
@@ -1522,70 +1592,4 @@ pub(crate) fn regions(model: &ChartModel, l: &ChartLayout, scene: &mut Scene) {
     if !l.title.is_empty() {
         scene.region(l.title, Hit::PanelTitle(0));
     }
-}
-
-/// The error banner over the top of the area (a parse error with its line and column, a missing
-/// file): drawn by the surface onto the base when the last parse failed but a figure is kept.
-pub fn banner(scene: &mut Scene, text: &str, theme: &Theme, m: &mut dyn Measure) {
-    let w = scene.width;
-    let inset = 8.0f32.min(w / 8.0);
-    let spec = TextSpec::new(BODY);
-    let h = (m.ascent(spec) + m.descent(spec) + 14.0).round();
-    let r = Rect::new(inset, inset, (w - 2.0 * inset).max(0.0), h);
-    scene.push(Item::Shadow {
-        rect: r,
-        radius: 6.0,
-        blur: 8.0,
-        dy: 2.0,
-        alpha: if theme.dark { 0.5 } else { 0.18 },
-    });
-    scene.push(Item::Path {
-        path: PathData::rounded(r, [6.0; 4]),
-        fill: Some(Paint::solid(theme.tooltip, 1.0)),
-        stroke: Some(Stroke::hairline(theme.ring, 1.0)),
-    });
-    let bar = Rect::new(r.x, r.y, 3.0, r.h);
-    scene.push(Item::Path {
-        path: PathData::rounded(bar, [6.0, 0.0, 0.0, 6.0]),
-        fill: Some(Paint::solid(theme.status[3], 1.0)),
-        stroke: None,
-    });
-    let x = r.x + 14.0;
-    let fitted = m.fit(text, spec, (r.right() - 12.0 - x).max(0.0));
-    scene.push(Item::Text {
-        text: fitted.into(),
-        x,
-        y: r.y + r.h / 2.0 + m.cap(spec) / 2.0,
-        spec,
-        anchor: Anchor::Start,
-        color: theme.text,
-        alpha: 1.0,
-        max_width: None,
-    });
-    scene.region(r, Hit::Banner);
-}
-
-/// What an empty or failed figure shows in place of a chart ("No data in requests.csv").
-pub fn empty(
-    size: (f32, f32),
-    scale: f32,
-    text: &str,
-    theme: &Theme,
-    m: &mut dyn Measure,
-) -> Scene {
-    let mut scene = Scene::new(size.0, size.1, scale);
-    scene.region(Rect::new(0.0, 0.0, size.0, size.1), Hit::Chrome);
-    let spec = TextSpec::new(13.0);
-    let fitted = m.fit(text, spec, (size.0 - 24.0).max(0.0));
-    scene.push(Item::Text {
-        text: fitted.into(),
-        x: size.0 / 2.0,
-        y: size.1 / 2.0 + m.cap(spec) / 2.0,
-        spec,
-        anchor: Anchor::Middle,
-        color: theme.muted,
-        alpha: 1.0,
-        max_width: None,
-    });
-    scene
 }

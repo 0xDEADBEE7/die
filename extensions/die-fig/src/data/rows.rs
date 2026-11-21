@@ -30,7 +30,7 @@ pub fn read_json(node: &Node, opt: &ReadOptions) -> Result<Table> {
     match &node.kind {
         Kind::Arr(items) => rows(items, opt),
         Kind::Obj(fields) => columns(fields, opt),
-        _ => Err(FigError::at(
+        _ => Err(FigError::malformed(
             format!(
                 "expected an array of rows or an object of columns, not {}",
                 a(node)
@@ -77,7 +77,7 @@ fn rows(items: &[Node], opt: &ReadOptions) -> Result<Table> {
     match first.kind {
         Kind::Obj(_) => objects(items, opt),
         Kind::Arr(_) => arrays(items, opt),
-        _ => Err(FigError::at(
+        _ => Err(FigError::malformed(
             format!("expected a row, an object or an array, not {}", a(first)),
             first.at,
         )),
@@ -86,7 +86,7 @@ fn rows(items: &[Node], opt: &ReadOptions) -> Result<Table> {
 
 /// The error for a row that isn't what the first row is.
 fn unlike(row: &Node, want: &str) -> FigError {
-    FigError::at(
+    FigError::malformed(
         format!("expected an {want} like the first row, not {}", a(row)),
         row.at,
     )
@@ -144,14 +144,14 @@ fn arrays(items: &[Node], opt: &ReadOptions) -> Result<Table> {
                 Kind::Num(v) => Cow::Owned(format!("{v}")),
                 Kind::Null => Cow::Owned(format!("column {}", i + 1)),
                 _ => {
-                    return Err(FigError::at(
+                    return Err(FigError::malformed(
                         format!("expected a column's name, not {}", a(h)),
                         h.at,
                     ));
                 }
             };
             if names.contains(&name) {
-                return Err(FigError::at(
+                return Err(FigError::malformed(
                     format!("two columns are named \"{name}\""),
                     h.at,
                 ));
@@ -175,7 +175,7 @@ fn arrays(items: &[Node], opt: &ReadOptions) -> Result<Table> {
             return Err(unlike(row, "array"));
         };
         if vals.len() > names.len() {
-            return Err(FigError::at(
+            return Err(FigError::malformed(
                 format!(
                     "a row of {} values where the header has {}",
                     vals.len(),
@@ -200,7 +200,7 @@ fn columns(fields: &[(json::Key, Node)], opt: &ReadOptions) -> Result<Table> {
     let mut first: Option<(&str, usize)> = None;
     for (key, value) in fields {
         let Some(vals) = value.as_arr() else {
-            return Err(FigError::at(
+            return Err(FigError::malformed(
                 format!(
                     "expected an array of the values of \"{}\", not {}",
                     key.name,
@@ -212,7 +212,7 @@ fn columns(fields: &[(json::Key, Node)], opt: &ReadOptions) -> Result<Table> {
         match first {
             None => first = Some((&key.name, vals.len())),
             Some((name, n)) if n != vals.len() => {
-                return Err(FigError::at(
+                return Err(FigError::malformed(
                     format!(
                         "\"{}\" has {} values where \"{name}\" has {n}",
                         key.name,

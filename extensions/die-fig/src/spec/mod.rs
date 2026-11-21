@@ -587,7 +587,8 @@ pub fn parse(text: &str, name: &str, dir: &Path, opt: &ReadOptions) -> Result<Pa
         .chars()
         .next();
     let Some(first) = first else {
-        return Err(FigError::at("nothing to draw: the buffer is empty", START));
+        return Err(FigError::new("nothing to draw: the buffer is empty")
+            .with_kind(crate::error::ErrorKind::Empty));
     };
     let (figure, inferred) = match format_of_name(name) {
         Some(f @ (DataFormat::Csv | DataFormat::Tsv)) => (bare_csv(text, f, true, opt)?, true),
@@ -699,11 +700,13 @@ fn inferred(table: Table, f: DataFormat) -> Result<Figure> {
     Ok(Figure::Chart(chart))
 }
 
-/// An error given a place if it has none.
+/// An error given a place if it has none; not one of nothing to draw, which is about the
+/// whole of the text.
 pub(crate) fn placed(e: FigError, at: Pos) -> FigError {
     match e.at {
         Some(_) => e,
-        None => FigError::at(e.msg, at),
+        None if e.kind == crate::error::ErrorKind::Empty => e,
+        None => FigError { at: Some(at), ..e },
     }
 }
 

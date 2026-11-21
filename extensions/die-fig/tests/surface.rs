@@ -159,16 +159,25 @@ fn fig_file_charts_a_file_no_buffer_visits_and_fig_spec_writes_it_as_a_spec() {
     assert!(s.h.next_timer().is_some(), "the file's poll");
     keys(&mut s.h, ":fig-spec<CR>");
     let spec = s.h.window_buffer(s.win).unwrap();
-    assert_eq!(s.h.buffer_name(spec), Some("rates.fig.json"));
+    // NAME.fig beside the data, unsaved, as text to edit: not opened as the figure it makes.
+    assert_eq!(s.h.buffer_name(spec), Some("rates.fig"));
+    let file = s.h.file(spec).map(|f| f.path.clone());
+    assert_eq!(file, Some(dir.path().join("rates.fig")));
+    assert!(
+        !dir.path().join("rates.fig").exists(),
+        "not written until :w"
+    );
+    assert!(s.h.text(spec).unwrap().modified());
     let text = s.h.text(spec).unwrap().rope().to_string();
     assert!(text.contains("rates.csv"), "the data by its file: {text}");
     assert!(!text.contains("\"values\""), "{text}");
-    // No window shows the figure now: no poll.
-    assert_eq!(s.h.next_timer(), None);
+    // No window shows the figure now: no poll (the timer left is core's, watching the file
+    // the spec's buffer visits).
+    assert!(!state(&mut s).borrow().polling());
     // It reads back as a chart.
     let back = die_fig::spec::parse(
         &text,
-        "rates.fig.json",
+        "rates.fig",
         dir.path(),
         &die_fig::data::ReadOptions::new(jiff::tz::TimeZone::UTC),
     );
