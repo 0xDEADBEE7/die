@@ -429,7 +429,7 @@ pub(super) fn lay(doc: &Doc, env: &Env<'_>, pass: Pass<'_>, pictures: &Pictures)
             height: 0.0,
             scale: s,
             // Quarter pixels where a pixel is a CSS pixel; halves where it's half of one.
-            bins: if s < 1.5 { 4 } else { 2 },
+            bins: die_draw::bins(s),
             canvas: pal.canvas,
             ring: pal.link,
             ops: Vec::new(),

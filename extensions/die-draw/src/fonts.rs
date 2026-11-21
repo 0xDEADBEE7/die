@@ -16,8 +16,12 @@
 //! Glyphs are outlines filled by tiny-skia at twice the size and averaged down to 8-bit
 //! coverage, which halves the error of its four-by-four sampling, and kept by face, glyph, size
 //! and the fraction of a pixel they start at.
+//!
+//! A run may set its digits as tabular figures ([`Run::tabular`]): the face's `tnum` glyphs,
+//! one width each, with no kerning either side, so a column of numbers lines up. A face with no
+//! `tnum` centres each digit in the widest one's width.
 
-use crate::kern;
+use crate::{gsub, kern};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
@@ -83,6 +87,8 @@ pub struct Metrics {
     pub descent: f32,
     /// The height of a lowercase x.
     pub x_height: f32,
+    /// The height of a capital: the face's own, else 0.7 of an em. Digits are as tall.
+    pub cap_height: f32,
 }
 
 /// A glyph's coverage at one size and one fraction of a pixel.
@@ -184,6 +190,9 @@ struct Instance {
     ascii_kern: Vec<f32>,
     /// Other characters: the face that has each, and its glyph there.
     found: FxMap<char, (Inst, u16)>,
+    /// The digits as tabular figures, made at the first one asked for: each one's glyph, its
+    /// advance and the space before it, in the face's units; [`TOFU`] for a digit it lacks.
+    figures: Option<[(u16, f32, f32); 10]>,
     advances: FxMap<u16, f32>,
     kerns: FxMap<(u16, u16), f32>,
 }
@@ -657,6 +666,8 @@ pub struct Run {
     prev: Option<(u16, char)>,
     /// The width of the primary face's letters, if they're all as wide.
     cell: f32,
+    /// Whether its digits are tabular figures.
+    tabular: bool,
 }
 
 /// A character as it's set: its face and glyph, how far the pen moves after it, and the
@@ -675,7 +686,8 @@ pub struct Shaped {
 
 impl Run {
     /// Digits set as tabular figures: one width each, with no kerning on either side.
-    pub fn tabular(self, _on: bool) -> Run {
+    pub fn tabular(mut self, on: bool) -> Run {
+        self.tabular = on;
         self
     }
 }
@@ -745,6 +757,7 @@ impl<'a> Pass<'a> {
             (ascent, descent) = (upem * 0.8, upem * 0.2);
         }
         let x_height = face.x_height().map(f32::from).filter(|x| *x > 0.0);
+        let cap_height = face.capital_height().map(f32::from).filter(|c| *c > 0.0);
         let mut ascii = [(TOFU, 0.0); 128];
         for (c, slot) in ascii.iter_mut().enumerate().skip(32) {
             let glyph = face.glyph_index(c as u8 as char).filter(|g| g.0 != 0);
@@ -763,6 +776,7 @@ impl<'a> Pass<'a> {
                 ascent,
                 descent,
                 x_height: x_height.unwrap_or(upem * 0.52),
+                cap_height: cap_height.unwrap_or(upem * 0.7),
             },
             kerned: !lookups.is_empty() || face.tables().kern.is_some(),
             cell: (narrow == wide && wide > 0.0).then_some(wide),
@@ -771,6 +785,7 @@ impl<'a> Pass<'a> {
             ascii,
             ascii_kern: Vec::new(),
             found: FxMap::default(),
+            figures: None,
             advances: FxMap::default(),
             kerns: FxMap::default(),
         });
@@ -818,6 +833,7 @@ impl<'a> Pass<'a> {
                 ascent: 800.0,
                 descent: 200.0,
                 x_height: 500.0,
+                cap_height: 700.0,
             },
             |i| i.metrics,
         )
@@ -952,6 +968,7 @@ impl<'a> Pass<'a> {
             track: 0.0,
             prev: None,
             cell: 0.0,
+            tabular: false,
         };
         self.enter(&mut run, primary);
         let cell = self
@@ -975,8 +992,64 @@ impl<'a> Pass<'a> {
         run.prev = None;
     }
 
+    /// A digit as a tabular figure in an instance: its glyph, advance and the space before it,
+    /// in the face's units. None for a character that's no digit, or a digit the face lacks.
+    fn figure(&mut self, inst: Inst, c: char) -> Option<(u16, f32, f32)> {
+        let d = (c as u32).checked_sub('0' as u32).filter(|d| *d < 10)? as usize;
+        let at = usize::from(inst);
+        if self.st.instances.get(at)?.figures.is_none() {
+            let ascii = self.st.instances[at].ascii;
+            let made = self.face(inst).map(|face| {
+                let lookups = gsub::lookups(face, b"tnum");
+                let mut out = [(TOFU, 0.0, 0.0); 10];
+                for (i, slot) in out.iter_mut().enumerate() {
+                    let (g, units) = ascii[usize::from(b'0') + i];
+                    if g == TOFU {
+                        continue;
+                    }
+                    *slot = match gsub::single(face, &lookups, g) {
+                        Some(t) => {
+                            let advance = face.glyph_hor_advance(GlyphId(t)).unwrap_or(0);
+                            (t, f32::from(advance), 0.0)
+                        }
+                        None => (g, units, 0.0),
+                    };
+                }
+                if lookups.is_empty() {
+                    // No tnum: digits of differing widths are centred in the widest.
+                    let widest = out.iter().map(|s| s.1).fold(0.0, f32::max);
+                    for s in out.iter_mut().filter(|s| s.0 != TOFU) {
+                        s.2 = (widest - s.1) / 2.0;
+                        s.1 = widest;
+                    }
+                }
+                out
+            });
+            self.st.instances[at].figures = Some(made.unwrap_or([(TOFU, 0.0, 0.0); 10]));
+        }
+        let f = self.st.instances[at].figures.as_ref()?[d];
+        (f.0 != TOFU).then_some(f)
+    }
+
     /// The next character of a run.
     pub fn next(&mut self, run: &mut Run, c: char) -> Shaped {
+        if run.tabular
+            && let Some((id, units, lead)) = self.figure(run.primary, c)
+        {
+            if run.inst != run.primary {
+                self.enter(run, run.primary);
+            }
+            // No kerning out of a figure, and none into it by returning here: the ASCII pairs'
+            // kerning is kept by character, and a figure's glyph is no proportional digit's.
+            run.prev = None;
+            let (advance, lead) = ((units + run.track) * run.unit, lead * run.unit);
+            return Shaped {
+                inst: run.primary,
+                id,
+                advance: advance - lead,
+                kern: lead,
+            };
+        }
         let quick = self
             .st
             .instances
@@ -1276,6 +1349,97 @@ mod tests {
             }
         }
         // With no font at all there's nothing to hold; DIE's own is there in a checkout.
+        if tried == 0 {
+            eprintln!("skipped: no font on this machine");
+        }
+    }
+
+    /// How each character of a run over `text` is set, at 11 px and a scale of 2.
+    fn shaped(pass: &mut Pass<'_>, text: &str, style: Style, tabular: bool) -> Vec<Shaped> {
+        let mut run = pass.run(style, 11.0, 2.0).tabular(tabular);
+        text.chars().map(|c| pass.next(&mut run, c)).collect()
+    }
+
+    #[test]
+    fn tabular_figures_are_one_width_and_never_kerned() {
+        let italic = Style {
+            italic: true,
+            ..Style::default()
+        };
+        let strong = Style {
+            weight: Weight::Semibold,
+            ..Style::default()
+        };
+        let mono = Style {
+            mono: true,
+            ..Style::default()
+        };
+        let pairs = [
+            ("SF", "SF Mono"),
+            ("Helvetica", "Menlo"),
+            ("Arial", "Menlo"),
+            ("DejaVu Sans", "DejaVu Sans Mono"),
+            ("Ioskeley Mono", "Ioskeley Mono"),
+        ];
+        let mut tried = 0;
+        for (text, mono_name) in pairs {
+            let Some(mut book) = book(text, mono_name) else {
+                continue;
+            };
+            tried += 1;
+            let mut pass = book.pass();
+            // In every face, with tnum or without: each digit one width.
+            for style in [Style::default(), italic, strong, mono] {
+                let figures = shaped(&mut pass, "0123456789", style, true);
+                let wide = figures[0].advance + figures[0].kern;
+                for (d, s) in figures.iter().enumerate() {
+                    let near = (s.advance + s.kern - wide).abs() < 1e-4;
+                    assert!(
+                        near,
+                        "{text}/{mono_name} {style:?}: {d} is {s:?}, 0 is {wide}"
+                    );
+                }
+            }
+            // A monospace's digits are tabular already, and set the same either way.
+            let (plain, figures) = (
+                shaped(&mut pass, "0123456789", mono, false),
+                shaped(&mut pass, "0123456789", mono, true),
+            );
+            for (p, f) in plain.iter().zip(&figures) {
+                assert_eq!((p.id, p.advance, p.kern), (f.id, f.advance, f.kern));
+            }
+            if text == "SF" {
+                // SF's own digits are proportional, '1' 950 units to '0''s 1290; its tnum
+                // glyphs are all 1290 at the regular weight, tracked +12 at 11 px (opsz 17),
+                // and 1328 in the italic.
+                let unit = 22.0 / 2048.0;
+                let one = shaped(&mut pass, "1", Style::default(), false)[0];
+                assert!(
+                    (one.advance - (950.0 + 12.0) * unit).abs() < 1e-3,
+                    "{one:?}"
+                );
+                let upright = shaped(&mut pass, "1", Style::default(), true)[0];
+                let want = (1290.0 + 12.0) * unit;
+                assert!(
+                    (upright.advance - want).abs() < 1e-3,
+                    "{upright:?}, not {want}"
+                );
+                let slanted = shaped(&mut pass, "1", italic, true)[0];
+                assert!((slanted.advance - (1328.0 + 12.0) * unit).abs() < 1e-3);
+                // No kerning into, out of or between figures, where proportional digits kern.
+                let money = shaped(&mut pass, "$1,111.25%", Style::default(), true);
+                assert!(money.iter().all(|s| s.kern == 0.0), "{money:?}");
+                let kerned = shaped(&mut pass, "1,111.25", Style::default(), false);
+                assert!(kerned.iter().any(|s| s.kern != 0.0));
+            }
+            if text == "Helvetica" {
+                // Its digits are one width already, but its kern table pulls "11" together.
+                let plain = shaped(&mut pass, "11", Style::default(), false);
+                let figures = shaped(&mut pass, "11", Style::default(), true);
+                assert!(plain[1].kern < 0.0, "{plain:?}");
+                assert_eq!(figures[1].kern, 0.0);
+            }
+        }
         if tried == 0 {
             eprintln!("skipped: no font on this machine");
         }

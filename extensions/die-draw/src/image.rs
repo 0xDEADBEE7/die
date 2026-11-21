@@ -101,3 +101,33 @@ pub fn demultiply(pixels: &mut [u8]) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_png_written_reads_back_premultiplied_and_demultiplies_to_what_was_written() {
+        // Opaque red, half blue, nothing, and a fifth of an orange.
+        let straight = [
+            255, 0, 0, 255, 0, 0, 255, 128, 10, 20, 30, 0, 200, 100, 50, 51,
+        ];
+        let png = encode(2, 2, &straight).unwrap();
+        assert_eq!(&png[1..4], b"PNG");
+        let image = decode(&png).unwrap();
+        assert_eq!((image.width, image.height), (2, 2));
+        let premultiplied = [255, 0, 0, 255, 0, 0, 128, 128, 0, 0, 0, 0, 40, 20, 10, 51];
+        assert_eq!(image.pixels, premultiplied);
+        let mut back = image.pixels.clone();
+        demultiply(&mut back);
+        assert_eq!(
+            back,
+            [255, 0, 0, 255, 0, 0, 255, 128, 0, 0, 0, 0, 200, 100, 50, 51]
+        );
+        // What isn't a PNG is an error; a file's errors name it.
+        assert!(decode(b"not a png").is_err());
+        let missing = Path::new("/nonexistent/die-draw.png");
+        let why = load(missing).unwrap_err();
+        assert!(why.starts_with("/nonexistent/die-draw.png: "), "{why}");
+    }
+}
