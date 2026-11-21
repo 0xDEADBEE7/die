@@ -14,7 +14,9 @@
 //! - [`nav`] moves the cursor between nodes and changes the view: fit, zoom, pan, reveal,
 //!   centre, and a node dragged and pinned;
 //! - [`GraphModel::path`], [`GraphModel::tsv`] and [`GraphModel::names`] give the shortest
-//!   path, the node and edge tables, and what a search can find.
+//!   path, the node and edge tables, and what a search can find;
+//! - [`detail`] gives a node's or an edge's tree for the detail panel, the items a search's
+//!   matches name, and the emphasis of the nodes a search lights.
 //!
 //! A [`View`]'s `x` and `y` are the window onto the layout's units (y up, as fig's), None to fit
 //! the graph; `hidden` and `only` hold groups (each a [`SeriesKey`] named by its group, `nth`
@@ -34,6 +36,7 @@
 //! stacked in a column under it, and a layered graph top down with its long edges routed round
 //! the nodes they pass.
 
+pub mod detail;
 pub mod draw;
 pub mod geom;
 pub mod hover;

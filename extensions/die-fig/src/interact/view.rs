@@ -4,7 +4,7 @@
 
 use super::cursor::Cursor;
 use crate::data::SeriesKey;
-use crate::spec::{Chart, Labels, MarkKind, ScaleKind, Stack};
+use crate::spec::{Chart, GraphSpec, Labels, Layout, MarkKind, ScaleKind, Stack};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// How many changes an undo history keeps (briefs/mouse-ux.md §9): the oldest go first.
@@ -83,6 +83,55 @@ impl Setting {
     }
 }
 
+/// A graph's layout as the settings choose it, over what the spec says (or the graph picks).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutPick {
+    /// fig's stress layout.
+    Force,
+    /// A tidy tree, top down.
+    Tree,
+    /// Layers, top down.
+    Layered,
+}
+
+impl LayoutPick {
+    /// Every layout, in the menu's order.
+    pub const ALL: [LayoutPick; 3] = [LayoutPick::Force, LayoutPick::Tree, LayoutPick::Layered];
+
+    /// Its name in the menu, the messages and the session.
+    pub fn name(self) -> &'static str {
+        match self {
+            LayoutPick::Force => "force",
+            LayoutPick::Tree => "tree",
+            LayoutPick::Layered => "layered",
+        }
+    }
+
+    /// The layout with this name.
+    pub fn from_name(name: &str) -> Option<LayoutPick> {
+        LayoutPick::ALL.into_iter().find(|l| l.name() == name)
+    }
+
+    /// The spec's layout it is.
+    pub fn layout(self) -> Layout {
+        match self {
+            LayoutPick::Force => Layout::Force,
+            LayoutPick::Tree => Layout::Tree { root: None },
+            LayoutPick::Layered => Layout::Layered,
+        }
+    }
+
+    /// The pick a laid-out graph's layout is (None for `auto`, which a model never keeps).
+    pub fn of(layout: &Layout) -> Option<LayoutPick> {
+        match layout {
+            Layout::Force => Some(LayoutPick::Force),
+            Layout::Tree { .. } => Some(LayoutPick::Tree),
+            Layout::Layered => Some(LayoutPick::Layered),
+            Layout::Auto => None,
+        }
+    }
+}
+
 /// The settings turned over the spec's own: None is the spec's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Toggles {
@@ -98,6 +147,8 @@ pub struct Toggles {
     pub labels: Option<bool>,
     /// Points on lines.
     pub markers: Option<bool>,
+    /// A graph's layout.
+    pub layout: Option<LayoutPick>,
 }
 
 /// Whether a layer's marks stack, or could: bars and areas.
@@ -143,6 +194,32 @@ impl Toggles {
     pub fn flip(&mut self, chart: &Chart, s: Setting) {
         let to = !self.value(chart, s);
         *self.slot(s) = (to != Toggles::spec_value(chart, s)).then_some(to);
+    }
+
+    /// A graph's spec with these turned: its labels on or off. The layout goes to the model's
+    /// build beside it ([`Toggles::graph_layout`]).
+    pub fn apply_graph(&self, spec: &GraphSpec) -> GraphSpec {
+        let mut g = spec.clone();
+        if let Some(on) = self.labels {
+            g.view.labels = if on { Labels::Auto } else { Labels::None };
+        }
+        g
+    }
+
+    /// The layout the settings chose for a graph, over the spec's; None leaves it the spec's.
+    pub fn graph_layout(&self) -> Option<Layout> {
+        self.layout.map(LayoutPick::layout)
+    }
+
+    /// Whether a graph's labels show: turned, else the spec's.
+    pub fn graph_labels(&self, spec: &GraphSpec) -> bool {
+        self.labels.unwrap_or(spec.view.labels != Labels::None)
+    }
+
+    /// A graph's labels turned over; back to the spec's own when that's what it comes to.
+    pub fn flip_graph_labels(&mut self, spec: &GraphSpec) {
+        let to = !self.graph_labels(spec);
+        self.labels = (to != (spec.view.labels != Labels::None)).then_some(to);
     }
 
     /// `chart` with these turned: what the model is built from.

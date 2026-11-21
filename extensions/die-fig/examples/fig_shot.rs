@@ -24,6 +24,9 @@
 //! place in the area and pinned; again for more), `--zoom F` (about the cursor's node, else the
 //! middle), `--layout force|tree|layered|auto`, `--labels off` and `--ghost` (with one `--pin`,
 //! the drag still under way: its ghost where it was). `--hover X,Y` finds what's there.
+//! `--search Q` shows the search as it's typed: the nodes matching Q lit, the best in focus
+//! with the cursor on it. `--detail` opens the panel for the cursor's node (else the hovered
+//! one) beside the graph, as the surface lays it out, with the detail flags below.
 //!
 //! The file is built by the job `\v` runs (`source::build`), so a file that can't be drawn
 //! draws the error figure: symbolic, or with `--log` its log (`--log-top` its first line shown,
@@ -86,6 +89,7 @@ struct Ask {
     log_mark: usize,
     stale: Option<String>,
     detail: Option<DetailAsk>,
+    search: Option<String>,
 }
 
 /// What the detail flags ask for.
@@ -115,7 +119,7 @@ fn run() -> Result<(), String> {
                  [--log-top N] [--log-mark N] [--stale BAD] [--cursor-node ID] [--hover-node ID] \
                  [--hover-edge A,B] [--pin ID@X,Y] [--zoom F] [--layout L] [--labels off] [--ghost] \
                  [--detail] [--detail-series] [--detail-row N] [--detail-top N] [--detail-focus] \
-                 [--detail-unfold]";
+                 [--detail-unfold] [--search Q]";
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage.to_owned());
     };
@@ -141,6 +145,7 @@ fn run() -> Result<(), String> {
         log_mark: 0,
         stale: None,
         detail: None,
+        search: None,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
@@ -211,6 +216,7 @@ fn run() -> Result<(), String> {
             }
             "--detail-focus" => ask.detail.get_or_insert_with(DetailAsk::default).focus = true,
             "--detail-unfold" => ask.detail.get_or_insert_with(DetailAsk::default).unfold = true,
+            "--search" => ask.search = Some(value()?),
             other => return Err(format!("{other}: no such flag\n{usage}")),
         }
     }
@@ -377,9 +383,12 @@ fn graph_shot(
     let node =
         |id: &str| -> Result<usize, String> { model.index_of(id).ok_or(format!("no node {id}")) };
     let mut view = model.initial_view();
+    // Beside the detail panel, the graph lays out in what it leaves.
+    let split = ask.detail.map(|_| detail::split(ask.size));
+    let fsize = split.map_or(ask.size, |(f, _, _)| (f.w, f.h));
     let lay = |view: &View, scale: f32, book: &mut Book| -> (Scene, GraphLayout) {
         let mut m = BookMeasure { book, scale };
-        graph::base(&model, view, ask.size, scale, theme, &mut m)
+        graph::base(&model, view, fsize, scale, theme, &mut m)
     };
     let mut ghost = None;
     for (id, x, y) in &ask.pins {
@@ -388,9 +397,26 @@ fn graph_shot(
         ghost = Some((id.as_str().into(), model.position(&view, i)));
         view = graph::nav::drag_node(&model, &l, &view, id, (*x, *y), (0.0, 0.0));
     }
-    let cursor = match &ask.cursor_node {
-        Some(id) => Some(model.cursor(node(id)?)),
-        None => None,
+    let found = ask.search.as_deref().map(|q| {
+        let s = die_fig::search::Search::with(model.search_names(), q);
+        let lit: Vec<usize> = (s.matches().iter())
+            .filter_map(|m| match &m.item {
+                Item::Node { id, .. } => model.index_of(id),
+                _ => None,
+            })
+            .collect();
+        let best = s.best().and_then(|m| m.item.cursor());
+        println!(
+            "search {q:?}: {} matches, best {:?}",
+            s.matches().len(),
+            best
+        );
+        (lit, best)
+    });
+    let cursor = match (&ask.cursor_node, &found) {
+        (Some(id), _) => Some(model.cursor(node(id)?)),
+        (None, Some((_, best))) => best.clone(),
+        _ => None,
     };
     if let Some(f) = ask.zoom {
         let (_, l) = lay(&view, ask.scale, book);
@@ -407,10 +433,14 @@ fn graph_shot(
         let (scene, l) = lay(view, scale, book);
         let mut st = graph::OverlayState {
             cursor: cursor.clone(),
-            cursor_card: true,
+            cursor_card: split.is_none(),
             ghost: if ask.ghost { ghost.clone() } else { None },
             ..Default::default()
         };
+        if let Some((lit, best)) = &found {
+            st.matches = lit.clone();
+            st.emphasis = best.clone();
+        }
         if let Some(id) = &ask.hover_node {
             let i = node(id)?;
             let g = l.node(i).ok_or(format!("{id} isn't drawn"))?;
@@ -460,6 +490,49 @@ fn graph_shot(
                 over.bounds(),
                 took.as_secs_f64() * 1e3,
             );
+        }
+        let mut scene = scene;
+        if let (Some((_, rect, _)), Some(d)) = (split, ask.detail) {
+            // The panel for the cursor's node, else the hovered one, beside the graph.
+            let at = cursor
+                .as_ref()
+                .and_then(|c| model.node_of(c))
+                .or(st.hover.and_then(Target::node))
+                .ok_or("--detail needs --cursor-node or --hover-node")?;
+            let mut tree = model.node_detail(at);
+            if d.unfold {
+                tree.unfold_all();
+            }
+            let mut state = PanelState::open(&tree, Some(&model.item(at)));
+            if let Some(r) = d.row {
+                state.row = r.min(tree.rows.len().saturating_sub(1));
+            }
+            state.top = d.top;
+            state.focused = d.focus;
+            detail::reveal(&tree, &mut state, rect);
+            let mut m = BookMeasure { book, scale };
+            let panel = detail::panel(&tree, state, rect, scale, theme, &mut m);
+            if say {
+                println!(
+                    "detail {} at {rect:?}: {} — {}",
+                    model.id(at),
+                    tree.title,
+                    tree.kind
+                );
+                for (i, r) in tree.rows.iter().enumerate() {
+                    println!(
+                        "  {i:>3} {}{:?} {} = {}{}",
+                        "  ".repeat(usize::from(r.depth)),
+                        r.kind,
+                        r.key,
+                        r.value,
+                        if i == state.row { "  <" } else { "" }
+                    );
+                }
+            }
+            (scene.width, scene.height) = ask.size;
+            scene.items.extend(panel.items);
+            scene.regions.extend(panel.regions);
         }
         Ok((scene, over))
     };

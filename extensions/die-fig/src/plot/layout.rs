@@ -809,6 +809,24 @@ fn attempt(
             y_text.push((text, py));
             y_ticks.push(t);
         }
+        // In a short plot the ticks come closer than a line of their text: they drop from the
+        // bottom up until each clears the one below it (call 1432).
+        let clear = m.ascent(tick) + m.descent(tick) + 1.0;
+        let mut order: Vec<usize> = (0..y_text.len()).collect();
+        order.sort_by(|a, b| y_text[*b].1.total_cmp(&y_text[*a].1));
+        let mut kept = vec![false; y_text.len()];
+        let mut last: Option<f32> = None;
+        for i in order {
+            let py = y_text[i].1;
+            if last.is_none_or(|l| l - py >= clear) {
+                kept[i] = true;
+                last = Some(py);
+            }
+        }
+        let mut k = kept.iter();
+        y_text.retain(|_| *k.next().unwrap_or(&true));
+        let mut k = kept.iter();
+        y_ticks.retain(|_| *k.next().unwrap_or(&true));
     }
     let ytick_spec = if up_kind == AxisKind::Band {
         tick_plain

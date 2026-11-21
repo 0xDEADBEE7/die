@@ -3651,3 +3651,73 @@ fn the_log_s_keys_give_way_from_the_right_before_the_figure_s_name_is_cut() {
     }
     assert!(seen.starts_with(&[3, 2, 1]), "{seen:?}");
 }
+
+#[test]
+fn a_short_plot_drops_value_ticks_until_they_clear_each_other() {
+    // Call 1432: at 200 × 120, thresholds.json and many.json drew their ticks on each other.
+    for name in [
+        "thresholds.json",
+        "many.json",
+        "requests.csv",
+        "stacked-area.json",
+    ] {
+        let model = load(name);
+        for size in [(200.0, 120.0), (220.0, 140.0), (260.0, 160.0)] {
+            let (scene, l, _) = lay(&model, &View::default(), size);
+            let ticks: Vec<Rect> = texts(&scene)
+                .into_iter()
+                .filter(|(t, _)| {
+                    l.labels
+                        .iter()
+                        .any(|x| x.role == Role::YTick && x.text == *t)
+                })
+                .map(|(_, r)| r)
+                .collect();
+            for (i, a) in ticks.iter().enumerate() {
+                for b in &ticks[i + 1..] {
+                    assert!(!overlaps(a, b), "{name} at {size:?}: {a:?} and {b:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_error_glyph_stays_inside_its_disc() {
+    // The mismatch glyph's right piece read as poking past its disc (errors-mismatch.png).
+    use die_fig::ErrorKind;
+    let r = Rect::new(10.0, 10.0, 96.0, 96.0);
+    let (cx, cy, radius) = (58.0, 58.0, 48.0);
+    for kind in [
+        ErrorKind::Unreadable,
+        ErrorKind::Malformed,
+        ErrorKind::Mismatch,
+        ErrorKind::Empty,
+    ] {
+        let mut scene = Scene::new(120.0, 120.0, 1.0);
+        plot::errors::glyph(&mut scene, kind, r, &Theme::mono_dark());
+        // Past the disc itself, every point a path draws or bends towards, with half its
+        // stroke, keeps within 82 % of the radius: the document and the axes reach about 80 %.
+        for item in scene.items.iter().skip(1) {
+            let Item::Path { path, stroke, .. } = item else {
+                continue;
+            };
+            let half = stroke.as_ref().map_or(0.0, |s| s.width / 2.0);
+            for v in &path.verbs {
+                let pts: Vec<(f32, f32)> = match *v {
+                    Verb::Move(x, y) | Verb::Line(x, y) => vec![(x, y)],
+                    Verb::Quad(a, b, x, y) => vec![(a, b), (x, y)],
+                    Verb::Cubic(a, b, c, d, x, y) => vec![(a, b), (c, d), (x, y)],
+                    Verb::Close => vec![],
+                };
+                for (x, y) in pts {
+                    let reach = (x - cx).hypot(y - cy) + half;
+                    assert!(
+                        reach <= radius * 0.82,
+                        "{kind:?}: ({x}, {y}) reaches {reach}"
+                    );
+                }
+            }
+        }
+    }
+}

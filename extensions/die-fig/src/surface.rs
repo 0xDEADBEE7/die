@@ -18,22 +18,34 @@
 //! the pointer, a double-click resets, and the legend's keys toggle and solo. The press that
 //! focuses the window only focuses it ([`FOCUS_GRACE_MS`]). The right button, Space and
 //! Ctrl-click open nothing: there is no dial (the owner, 2026-11-22).
+//!
+//! A graph is shown as a chart is, with a graph's gestures and keys ([`graph`]); the detail
+//! panel opens beside either, the figure laid out in what it leaves ([`panel`]).
+
+pub mod graph;
+pub mod panel;
+
+pub use graph::GraphAct;
+pub use panel::{Kill, Panel};
 
 use crate::algo::HitIndex;
 use crate::data::{ColumnKind, SeriesKey, Table};
+use crate::detail::Item as Mark;
 use crate::error::{ErrorKind, FigError};
+use crate::graph::{GraphLayout, GraphModel, Target};
 use crate::interact::consts::{
     CLICK_SLOP, FOCUS_GRACE_MS, MOTION_MS, NEAREST_SERIES, SCROLL_BURST_MS, ZOOM_STEP,
 };
-use crate::interact::{Axis, BrushKind, Cursor, Gesture, Steps, Toggles, Tween, View};
+use crate::interact::{Action, Axis, BrushKind, Cursor, Gesture, Steps, Toggles, Tween, View};
 use crate::plot::{self, ChartLayout, ChartModel, ErrorView, OverlayState};
 use crate::raster::{self, BookMeasure, PixelBox};
 use crate::scene::{
     Anchor, FixedMeasure, Hit, Item, Measure, Paint, PathData, Rect, Scene, Stroke, TextSpec,
     Weight,
 };
+use crate::search::Search;
 use crate::source::{self, Failed, Job, Snapshot, Source, Text};
-use crate::spec::{Chart, Figure};
+use crate::spec::{Chart, Figure, GraphSpec};
 use crate::theme::{self, Theme};
 use die_core::{
     BufferId, Button, CellPixels, Ctx, Event, Frame, KeyEvent, KeyKind, Mods, PixelProducer,
@@ -149,15 +161,31 @@ struct Burst {
     axis: Option<Axis>,
     /// On an x-chart, which of the wheel's components pans x: across (true) or up (false).
     across: Option<bool>,
+    /// It began over the detail panel, which it scrolls.
+    panel: bool,
     /// The view before it, for its undo step.
     before: View,
     /// Ends it when the wheel is quiet.
     _timer: Sub,
 }
 
-/// An ease from one view to another, with both domains made explicit so they can be tweened.
+/// An ease from one view to another, with both domains made explicit so they can be tweened;
+/// a graph's pins glide with it.
 struct Ease {
     tween: Tween<View>,
+    /// The graph whose pinned nodes glide, when it's a graph's.
+    graph: Option<Arc<GraphModel>>,
+}
+
+impl Ease {
+    /// The view part way, at `now`.
+    fn at(&self, now: u64) -> View {
+        let t = self.tween.progress(now);
+        match &self.graph {
+            Some(g) => crate::graph::nav::tween(g, &self.tween.from, &self.tween.to, t),
+            None => plot::nav::tween(&self.tween.from, &self.tween.to, t),
+        }
+    }
 }
 
 // ------------------------------------------------------------------ a window's pane
@@ -173,6 +201,8 @@ struct BaseKey {
     /// The failure shown (its generation) and the log's place, if it's up.
     fail: u64,
     log: Option<(usize, usize)>,
+    /// The figure laid out beside the detail panel.
+    panel: bool,
 }
 
 /// What the overlay shows: redrawn when this changes.
@@ -188,6 +218,8 @@ struct OverKey {
     reference: Option<Cursor>,
     help: bool,
     strip: Option<Rect>,
+    /// A graph's overlay, whole.
+    graph: Option<crate::graph::OverlayState>,
 }
 
 /// One window's figure: its pixels, its layout, its view and what the pointer is doing there.
@@ -267,6 +299,30 @@ pub struct Pane {
     /// The entry the last press on the log was on: a double click goes to an entry only where
     /// both its presses were on it, not one whose first click turned the figure over.
     log_pressed: Option<u32>,
+    /// Where a graph landed, as last drawn.
+    pub graph: Option<GraphLayout>,
+    /// The node or edge of a graph under the pointer.
+    pub target: Option<Target>,
+    /// The node the hover brought into focus once it dwelt there.
+    pub dwell: Option<Cursor>,
+    /// What the dwell's timer will bring into focus, and the timer.
+    dwell_next: Option<(Option<Cursor>, Sub)>,
+    /// `]` and `[`'s anchor: the node they turn about, and the node they left the cursor on.
+    anchor: Option<(Box<str>, Box<str>)>,
+    /// The node a search found on a graph, in focus until `Esc`.
+    pub found_node: Option<Cursor>,
+    /// The nodes the search typed so far matches, lit while it's typed.
+    pub matches: Vec<usize>,
+    /// The detail panel, if it's open.
+    pub panel: Option<Panel>,
+    /// The panel as last drawn.
+    panel_drawn: Option<panel::PanelKey2>,
+    /// How many of the base scene's regions are the figure's; the panel's come after.
+    fig_regions: usize,
+    /// The mark named by the panel's row under the pointer: it comes forward in the figure.
+    pub row_hover: Option<Mark>,
+    /// The press under way began on the panel: its drags and release are the panel's.
+    panel_press: bool,
 }
 
 impl Pane {
@@ -311,6 +367,18 @@ impl Pane {
             log: None,
             log_carry: 0.0,
             log_pressed: None,
+            graph: None,
+            target: None,
+            dwell: None,
+            dwell_next: None,
+            anchor: None,
+            found_node: None,
+            matches: vec![],
+            panel: None,
+            panel_drawn: None,
+            fig_regions: 0,
+            row_hover: None,
+            panel_press: false,
         }
     }
 
@@ -344,7 +412,7 @@ impl Pane {
     /// drawn.
     pub fn shown(&self, now: u64) -> View {
         match (&self.ease, &self.frozen) {
-            (Some(e), _) => plot::nav::tween(&e.tween.from, &e.tween.to, e.tween.progress(now)),
+            (Some(e), _) => e.at(now),
             (None, Some(f)) => f.clone(),
             (None, None) => self.view.clone(),
         }
@@ -384,7 +452,7 @@ impl Pane {
     fn settle(&mut self, now: u64) {
         if let Some(e) = self.ease.take() {
             let reached = e.tween.done(now);
-            let at = plot::nav::tween(&e.tween.from, &e.tween.to, e.tween.progress(now));
+            let at = e.at(now);
             if !reached {
                 self.view = View {
                     x: at.x,
@@ -448,6 +516,7 @@ impl Pane {
             let to = explicit(model, &v);
             self.ease = Some(Ease {
                 tween: Tween::new(from, to, t, MOTION_MS),
+                graph: None,
             });
         }
         self.view = v;
@@ -558,6 +627,7 @@ impl Pane {
             pointer: self.pointer.filter(|_| pointed),
             brush: self.brush_shape(),
             emphasis: (self.legend.clone())
+                .or_else(|| self.row_hover.as_ref().and_then(|i| i.series().cloned()))
                 .or_else(|| self.near.clone())
                 .or_else(|| self.found.clone()),
         }
@@ -745,6 +815,8 @@ pub struct FigState {
     pub tables: Vec<Arc<Table>>,
     /// The chart's model, as last built.
     pub model: Option<Arc<ChartModel>>,
+    /// The graph's model, laid out, as last built: a figure is a chart or a graph.
+    pub graph: Option<Arc<GraphModel>>,
     /// Goes up with each model.
     pub model_gen: u64,
     /// Why the last build failed: the error figure says so, or the stale badge over the last
@@ -795,6 +867,12 @@ pub struct FigState {
     refused: bool,
     /// The last search: its text, for `n` and `N`.
     pub query: Option<String>,
+    /// The last search's matches, for `n` and `N`; while `/` is typed, the one under way.
+    pub search: Option<Search>,
+    /// A restart's word that the panel was open: it opens again in the first window drawn.
+    pub panel_seed: bool,
+    /// How a yank from the panel reaches the registers.
+    pub kill: Option<Kill>,
     /// Goes up with what a restart keeps: the session's cache key.
     pub rev: u64,
 }
@@ -829,6 +907,7 @@ impl FigState {
                 chart: None,
                 tables: vec![],
                 model: None,
+                graph: None,
                 model_gen: 0,
                 error: None,
                 fail_gen: 0,
@@ -855,6 +934,9 @@ impl FigState {
                 focused_at: None,
                 refused: false,
                 query: None,
+                search: None,
+                panel_seed: false,
+                kill: None,
                 rev: 1,
             })
         })
@@ -886,6 +968,14 @@ impl FigState {
         }
     }
 
+    /// Whether a restart opens the detail panel again: the last window's is open.
+    pub fn kept_panel(&self) -> bool {
+        match self.last.and_then(|w| self.panes.get(&w)) {
+            Some(p) => p.panel.is_some(),
+            None => self.panel_seed,
+        }
+    }
+
     /// The colours as the theme has them now: a change draws every base again.
     pub fn look(&mut self, ctx: &Ctx) {
         let theme = theme::resolve(ctx);
@@ -897,7 +987,18 @@ impl FigState {
 
     /// Whether discrete changes ease: the spec's `motion`.
     fn motion(&self) -> bool {
-        self.chart.as_ref().is_none_or(|c| c.view.motion)
+        match &self.graph {
+            Some(g) => g.spec.view.motion,
+            None => self.chart.as_ref().is_none_or(|c| c.view.motion),
+        }
+    }
+
+    /// The graph's spec as parsed, before the settings.
+    pub fn graph_spec(&self) -> Option<&GraphSpec> {
+        match &self.figure {
+            Some(Figure::Graph(g)) => Some(g),
+            _ => None,
+        }
     }
 
     /// What the stale badge says while the last build failed: `Error · line 14`.
@@ -929,6 +1030,18 @@ impl FigState {
     /// data, and why the last build failed.
     pub fn status(&self) -> String {
         let mut s = self.name.clone();
+        if let Some(g) = &self.graph {
+            s.push_str(&format!("  {} nodes  {} edges", g.len(), g.ends.len()));
+            if let Some(p) = self.last.and_then(|w| self.panes.get(&w)) {
+                let hidden = g.keys().iter().filter(|k| !p.view.shows(k)).count();
+                if hidden > 0 {
+                    s.push_str(&format!("  {hidden} groups hidden"));
+                }
+                if !p.view.pinned.is_empty() {
+                    s.push_str(&format!("  {} pinned", p.view.pinned.len()));
+                }
+            }
+        }
         if let Some(m) = &self.model {
             let n = m.keys().len();
             s.push_str(&format!("  {n} series"));
@@ -1085,6 +1198,9 @@ impl FigState {
         if self.building.is_some() {
             return;
         }
+        if let Some(spec) = self.graph_spec().cloned() {
+            return self.rebuild_graph(ctx, spec);
+        }
         let Some(chart) = self.chart.clone() else {
             return;
         };
@@ -1098,6 +1214,34 @@ impl FigState {
                     st.rebuilding = None;
                     match out {
                         Ok(model) => st.new_model(model, ctx.now()),
+                        Err(error) => {
+                            let f = Failed {
+                                text: st.text.clone(),
+                                ..Failed::one(error)
+                            };
+                            st.failed(ctx, f);
+                        }
+                    }
+                    st.refresh(ctx);
+                }
+                Ok(())
+            },
+        ));
+    }
+
+    /// The graph laid out again from its spec as parsed, for a setting turned (its labels, its
+    /// layout): in a job, the last frame up until it's done.
+    fn rebuild_graph(&mut self, ctx: &mut Ctx, spec: GraphSpec) {
+        let (toggles, name) = (self.toggles, self.format_name(ctx));
+        let me = self.me.clone();
+        self.rebuilding = Some(ctx.spawn(
+            move || source::graph_model(&spec, toggles, &name),
+            move |ctx, out| {
+                if let Some(s) = me.upgrade() {
+                    let mut st = s.borrow_mut();
+                    st.rebuilding = None;
+                    match out {
+                        Ok(model) => st.new_graph(model),
                         Err(error) => {
                             let f = Failed {
                                 text: st.text.clone(),
@@ -1144,10 +1288,11 @@ impl FigState {
                         .filter(|_| !self.warned.is_empty())
                         .map(|(top, mark)| (top, mark.min(lines.starts.len().saturating_sub(1))));
                 }
-                match b.model {
-                    Some(m) => self.new_model(m, ctx.now()),
-                    None => {
-                        self.model = None;
+                match (b.model, b.graph) {
+                    (Some(m), _) => self.new_model(m, ctx.now()),
+                    (None, Some(g)) => self.new_graph(g),
+                    (None, None) => {
+                        (self.model, self.graph) = (None, None);
                         self.model_gen += 1;
                     }
                 }
@@ -1249,8 +1394,58 @@ impl FigState {
                 p.set_view(v, Change::Follow, toggles, &model, motion, now);
             }
             p.rehover = true;
+            (p.graph, p.target, p.dwell, p.dwell_next, p.anchor) = (None, None, None, None, None);
+            (p.found_node, p.matches) = (None, vec![]);
         }
         self.model = Some(Arc::new(model));
+        self.graph = None;
+        self.model_gen += 1;
+        self.rev += 1;
+    }
+
+    /// A graph to draw: what names a node that's gone lets go (the cursor, the reference, a
+    /// pin, the search's find), and the rest stays as it was, the view and the pins of every
+    /// node whose id survived the edit among them.
+    fn new_graph(&mut self, model: GraphModel) {
+        let has = |c: &Option<Cursor>| match c {
+            Some(Cursor::Node(id)) => model.index_of(id).is_some(),
+            Some(_) => false,
+            None => true,
+        };
+        for p in self.panes.values_mut() {
+            if !has(&p.cursor) {
+                p.cursor = None;
+            }
+            if !has(&p.view.reference) {
+                p.view.reference = None;
+            }
+            if !has(&p.found_node) {
+                p.found_node = None;
+            }
+            if !has(&p.dwell) {
+                (p.dwell, p.dwell_next) = (None, None);
+            }
+            p.view.pinned.retain(|id, _| model.index_of(id).is_some());
+            if self.model.is_some() {
+                // From a chart to a graph: its domains mean nothing here.
+                (p.view.x, p.view.y, p.ease) = (None, None, None);
+                (p.view.hidden, p.view.only) = (Default::default(), None);
+            }
+            (p.layout, p.hits, p.hover, p.near, p.anchor) = (None, None, None, None, None);
+            (p.target, p.matches) = (None, vec![]);
+            p.rehover = true;
+        }
+        // Laid out another way: the old layout's units, and the pins in them, mean nothing.
+        let relaid = self
+            .graph
+            .as_ref()
+            .is_some_and(|g| g.layout != model.layout);
+        for p in self.panes.values_mut().filter(|_| relaid) {
+            (p.view.x, p.view.y, p.ease) = (None, None, None);
+            p.view.pinned.clear();
+        }
+        self.graph = Some(Arc::new(model));
+        self.model = None;
         self.model_gen += 1;
         self.rev += 1;
     }
@@ -1423,6 +1618,17 @@ impl FigState {
         self.look(ctx);
         let now = ms(ctx.now());
         let Some(buf) = self.buf else { return };
+        // A restart's panel opens in the first window drawn, for the cursor it kept.
+        if self.panel_seed && (self.model.is_some() || self.graph.is_some()) {
+            let ws: Vec<WindowId> = (self.panes.iter())
+                .filter(|(_, p)| p.base.is_some() && p.cursor.is_some())
+                .map(|(w, _)| *w)
+                .collect();
+            if let Some(w) = ws.first() {
+                self.panel_seed = false;
+                let _ = self.open_panel(*w, None);
+            }
+        }
         let log_errors = self.log_errors();
         let failure = Failure {
             failed: self.error.as_ref(),
@@ -1430,7 +1636,18 @@ impl FigState {
             text: &self.text,
             name: &self.name,
         };
-        let model = self.model.clone();
+        let (model, graph) = (self.model.clone(), self.graph.clone());
+        let shows = match (&model, &graph) {
+            (_, Some(g)) => Shows::Graph(g),
+            (Some(m), None) => Shows::Chart(m),
+            (None, None) => Shows::Nothing,
+        };
+        let src = panel::Source {
+            chart: model.as_deref(),
+            graph: graph.as_deref(),
+        };
+        let me = self.me.clone();
+        let model_gen = self.model_gen;
         let mut kit = self.kit.borrow_mut();
         let mut easing = false;
         for (w, p) in &mut self.panes {
@@ -1444,6 +1661,7 @@ impl FigState {
                 p.rehover = true;
             }
             easing |= p.ease.is_some();
+            p.sync_panel(src, model_gen);
             let shown = p.shown(now);
             let key = BaseKey {
                 model: self.model_gen,
@@ -1456,16 +1674,28 @@ impl FigState {
                 theme: self.theme_gen,
                 fail: self.fail_gen,
                 log: p.log,
+                panel: p.panel.is_some() && p.log.is_none(),
             };
+            let panel_key = panel::panel_key_of(p, self.theme_gen).filter(|_| p.log.is_none());
             if p.drawn.as_ref() != Some(&key) {
-                draw_base(p, model.as_deref(), &shown, &self.theme, &failure, &mut kit);
+                draw_base(p, shows, &shown, &self.theme, &failure, &mut kit);
                 p.drawn = Some(key);
+                p.panel_drawn = panel_key;
                 p.rehover = true;
+            } else if p.panel_drawn != panel_key {
+                panel::draw_panel_only(p, &self.theme, &mut kit);
+                p.panel_drawn = panel_key;
             }
             if p.rehover {
-                p.hover_again(model.as_deref());
+                match shows {
+                    Shows::Graph(g) => p.graph_hover(g),
+                    _ => p.hover_again(model.as_deref()),
+                }
             }
-            draw_overlay(p, model.as_deref(), &shown, &self.theme, &mut kit);
+            if let Shows::Graph(g) = shows {
+                p.dwell_on(g, *w, &me, ctx);
+            }
+            draw_overlay(p, shows, &shown, &self.theme, &mut kit);
         }
         drop(kit);
         match (easing, self.motion.is_some()) {
@@ -1515,6 +1745,19 @@ impl FigState {
         if matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_)) {
             pane.drag_mods = p.mods;
         }
+        let drawn = model.is_some() || self.graph.is_some();
+        if pane.log.is_none() && drawn {
+            // The panel takes what's over it, then a graph's gestures, else a chart's.
+            if self.panel_pointer(ctx, p, at, swallow) {
+                return;
+            }
+            if self.graph.is_some() {
+                return self.graph_pointer(ctx, p, at, swallow);
+            }
+        }
+        let Some(pane) = self.panes.get_mut(&p.window) else {
+            return;
+        };
         let Some(model) = model.filter(|_| pane.log.is_none()) else {
             // The error figure, or its log: a click turns it over, an entry under the pointer
             // is marked, a double click goes to it, and the wheel scrolls the log.
@@ -1640,6 +1883,16 @@ impl FigState {
     /// ends.
     pub fn finish(&mut self, w: WindowId, now: Duration) {
         self.end_burst(w);
+        if let Some(p) = self.panes.get_mut(&w)
+            && std::mem::take(&mut p.panel_press)
+        {
+            (p.gesture, p.held) = (Gesture::Swallowed, None);
+            return;
+        }
+        if self.graph.is_some() {
+            self.graph_act(w, now, |g| g.finish());
+            return;
+        }
         let (Some(model), toggles, motion) = (self.model.clone(), self.toggles, self.motion())
         else {
             return;
@@ -1657,8 +1910,9 @@ impl FigState {
     }
 
     /// `Esc` in a window (mouse-ux §8): a brush is dropped and its release does nothing; a pan
-    /// goes back where it started; a scroll burst ends. With nothing under way, the first of the
-    /// key card, the search's emphasis and the reference goes. False if there was nothing.
+    /// or a node's drag goes back where it started; a scroll burst ends. With nothing under way,
+    /// the first of the key card, the search's emphasis, the detail panel and the reference
+    /// goes. False if there was nothing.
     pub fn cancel(&mut self, w: WindowId) -> bool {
         self.end_burst(w);
         let Some(p) = self.panes.get_mut(&w) else {
@@ -1672,17 +1926,22 @@ impl FigState {
         }
         match std::mem::replace(&mut p.gesture, Gesture::None) {
             Gesture::Brush { .. } => (p.gesture, p.frozen) = (Gesture::Swallowed, None),
-            Gesture::Pan { before, .. } | Gesture::AxisPan { before, .. } => {
+            Gesture::Pan { before, .. }
+            | Gesture::AxisPan { before, .. }
+            | Gesture::NodeDrag { before, .. } => {
                 p.view = before;
                 p.ease = None;
                 p.gesture = Gesture::Swallowed;
             }
             Gesture::Pressed { .. } => p.gesture = Gesture::Swallowed,
-            Gesture::None | Gesture::Swallowed | Gesture::NodeDrag { .. } => {
+            Gesture::None | Gesture::Swallowed => {
                 if p.help {
                     p.help = false;
-                } else if p.found.is_some() {
-                    p.found = None;
+                } else if p.found.is_some() || p.found_node.is_some() || !p.matches.is_empty() {
+                    (p.found, p.found_node, p.matches) = (None, None, vec![]);
+                } else if p.panel.is_some() {
+                    p.panel = None;
+                    p.row_hover = None;
                 } else if p.view.reference.is_some() {
                     p.view.reference = None;
                 } else {
@@ -1746,6 +2005,38 @@ impl FigState {
     pub fn undo(&mut self, ctx: &mut Ctx, w: WindowId, redo: bool) -> bool {
         let now = ctx.now();
         let toggles = self.toggles;
+        let step = |pane: &mut Pane| {
+            let current = Snap {
+                view: pane.view.clone(),
+                toggles,
+            };
+            let snap = match redo {
+                true => pane.undo.redo(&current),
+                false => pane.undo.undo(&current),
+            }?;
+            let v = View {
+                reference: pane.view.reference.clone(),
+                ..snap.view.clone()
+            };
+            Some((snap, v))
+        };
+        if self.graph.is_some() {
+            let Some(snap) = self
+                .graph_act(w, now, |g| {
+                    let (snap, v) = step(g.pane)?;
+                    g.set(v, Change::Follow);
+                    Some(snap)
+                })
+                .flatten()
+            else {
+                return false;
+            };
+            if snap.toggles != self.toggles {
+                self.toggles = snap.toggles;
+                self.rebuild(ctx);
+            }
+            return true;
+        }
         let Some(snap) = self
             .act(w, now, |a| {
                 let current = Snap {
@@ -1772,6 +2063,32 @@ impl FigState {
             self.rebuild(ctx);
         }
         true
+    }
+
+    /// A graph's settings turned, one undo step, the graph laid out again: `labels` on or off,
+    /// or the layout `s` picked.
+    pub fn turn_graph(
+        &mut self,
+        ctx: &mut Ctx,
+        w: WindowId,
+        f: impl FnOnce(&mut Toggles, &GraphSpec),
+    ) {
+        let Some(spec) = self.graph_spec().cloned() else {
+            return;
+        };
+        let before = self.toggles;
+        f(&mut self.toggles, &spec);
+        if self.toggles == before {
+            return;
+        }
+        if let Some(p) = self.panes.get_mut(&w) {
+            p.undo.push(Snap {
+                view: p.view.clone(),
+                toggles: before,
+            });
+        }
+        self.rev += 1;
+        self.rebuild(ctx);
     }
 
     /// `s`'s answer: a setting turned over, one undo step, the model built again.
@@ -2267,6 +2584,7 @@ impl Act<'_> {
                 zoom: mods.super_ || mods.ctrl,
                 axis,
                 across,
+                panel: false,
                 before: self.pane.view.clone(),
                 _timer: timer,
             });
@@ -2475,6 +2793,19 @@ impl Act<'_> {
         true
     }
 
+    /// The cursor on a place, the view keeping it in sight, the hover hidden until the pointer
+    /// moves: a jump from the panel.
+    pub fn put_cursor(&mut self, c: Cursor) {
+        let v = match self.pane.layout.as_ref() {
+            Some(l) => plot::nav::reveal(self.model, l, &self.pane.view, &c),
+            None => self.pane.view.clone(),
+        };
+        self.pane.cursor = Some(c);
+        self.pane.hovering = false;
+        self.pane.rehover = true;
+        self.set(v, Change::Follow);
+    }
+
     /// A search's find: the cursor there, its series brought forward until `Esc`.
     pub fn found(&mut self, c: Cursor) {
         self.pane.cursor = Some(c);
@@ -2493,10 +2824,89 @@ impl Act<'_> {
     }
 }
 
-/// What a job draws a figure's picture from: everything a model is built of, the view, the
-/// size and the colours, with fonts of its own (ruling 12).
+/// The keys' actions, on a chart or a graph alike (the design's controls).
+pub trait Keys {
+    /// `h l j k w b gg G H M L ] [`: the cursor moved as `action` says, `count` times, the view
+    /// following it. False if it didn't move.
+    fn move_cursor(&mut self, action: &Action, count: u32) -> bool;
+    /// `+ - K J`: zoom by `factor` about the cursor (or the middle), eased.
+    fn zoom_keys(&mut self, factor: f64);
+    /// `zh zl zH zL zj zk`: scroll by fractions of the plot, right and up positive.
+    fn scroll_keys(&mut self, fx: f32, fy: f32);
+    /// `zz`: the view centred on the cursor.
+    fn centre(&mut self);
+    /// `0`: the view fits the data again.
+    fn fit(&mut self);
+    /// `x`: the cursor's series (a graph's group) hidden. False with none.
+    fn hide(&mut self) -> bool;
+    /// `o`: only the cursor's series (group), or all again. False with none.
+    fn only(&mut self) -> bool;
+    /// `X`: everything shown.
+    fn show_all(&mut self);
+    /// `m`: the reference at the cursor, or cleared there. False with no cursor.
+    fn reference(&mut self) -> bool;
+    /// `` ` ``: the cursor to the reference. False with none.
+    fn to_reference(&mut self) -> bool;
+}
+
+impl Keys for Act<'_> {
+    fn move_cursor(&mut self, action: &Action, count: u32) -> bool {
+        Act::move_cursor(self, action, count)
+    }
+    fn zoom_keys(&mut self, factor: f64) {
+        Act::zoom_keys(self, factor)
+    }
+    fn scroll_keys(&mut self, fx: f32, fy: f32) {
+        Act::scroll_keys(self, fx, fy)
+    }
+    fn centre(&mut self) {
+        Act::centre(self)
+    }
+    fn fit(&mut self) {
+        self.reset(None)
+    }
+    fn hide(&mut self) -> bool {
+        Act::hide(self)
+    }
+    fn only(&mut self) -> bool {
+        Act::only(self)
+    }
+    fn show_all(&mut self) {
+        Act::show_all(self)
+    }
+    fn reference(&mut self) -> bool {
+        Act::reference(self)
+    }
+    fn to_reference(&mut self) -> bool {
+        Act::to_reference(self)
+    }
+}
+
+impl FigState {
+    /// A key's action on a window's figure, a chart's or a graph's. None with neither drawn.
+    pub fn keys<R>(
+        &mut self,
+        w: WindowId,
+        now: Duration,
+        f: impl FnOnce(&mut dyn Keys) -> R,
+    ) -> Option<R> {
+        if self.graph.is_some() {
+            return self.graph_act(w, now, |g| f(g));
+        }
+        self.act(w, now, |a| f(a))
+    }
+
+    /// Whether the figure is a graph.
+    pub fn is_graph(&self) -> bool {
+        self.graph.is_some()
+    }
+}
+
+/// What a job draws a figure's picture from: everything a model is built of (or a graph's model,
+/// laid out), the view, the size and the colours, with fonts of its own (ruling 12).
 pub struct Picture {
-    chart: Chart,
+    graph: Option<Arc<GraphModel>>,
+    chart: Option<Chart>,
     tables: Vec<Arc<Table>>,
     toggles: Toggles,
     zone: TimeZone,
@@ -2509,7 +2919,15 @@ pub struct Picture {
 impl Picture {
     /// The chart's base scene at `scale`, with the fonts loaded for it.
     fn scene(&self, scale: f32) -> std::result::Result<(Scene, Option<Book>), String> {
-        let chart = self.toggles.apply(&self.chart);
+        if let Some(g) = &self.graph {
+            let mut book = Book::load(self.fonts.as_deref()).ok();
+            let (scene, _) = measured(book.as_mut(), scale, |m| {
+                crate::graph::base(g, &self.view, self.size, scale, &self.theme, m)
+            });
+            return Ok((scene, book));
+        }
+        let chart = self.chart.as_ref().ok_or("nothing is drawn yet")?;
+        let chart = self.toggles.apply(chart);
         let model =
             ChartModel::build(chart, self.tables.clone(), &self.zone).map_err(|e| e.to_string())?;
         let mut book = Book::load(self.fonts.as_deref()).ok();
@@ -2540,8 +2958,12 @@ impl Picture {
 impl FigState {
     /// What a job needs to draw the figure as a window shows it (or at 880 × 470 with no window).
     pub fn picture(&self, w: Option<WindowId>) -> Option<Picture> {
-        let chart = self.chart.clone()?;
-        self.model.as_ref()?;
+        let graph = self.graph.clone();
+        let chart = match (&graph, &self.chart, &self.model) {
+            (Some(_), ..) => None,
+            (None, Some(c), Some(_)) => Some(c.clone()),
+            _ => return None,
+        };
         let pane = w.and_then(|w| self.panes.get(&w));
         let view = pane.map_or_else(View::default, |p| View {
             reference: None,
@@ -2549,6 +2971,7 @@ impl FigState {
         });
         let size = pane.map_or((880.0, 470.0), Pane::size);
         Some(Picture {
+            graph,
             chart,
             tables: self.tables.clone(),
             toggles: self.toggles,
@@ -2558,41 +2981,6 @@ impl FigState {
             theme: self.theme.clone(),
             fonts: self.kit.borrow().fonts.clone(),
         })
-    }
-
-    /// `<CR>`'s message for now (the detail panel is phase 3's): what the cursor is on and its
-    /// values.
-    pub fn detail(&self, w: WindowId) -> String {
-        let (Some(model), Some(p)) = (&self.model, self.panes.get(&w)) else {
-            return "fig: nothing is drawn yet".into();
-        };
-        match &p.cursor {
-            Some(Cursor::Point { series, row }) => {
-                let Some(s) = model.series.iter().find(|s| &s.key == series) else {
-                    return "fig: the cursor's series is gone".into();
-                };
-                let i = *row as usize;
-                let (x, y) = (s.xs.get(i).copied(), s.ys.get(i).copied());
-                let field = (self.chart.as_ref())
-                    .and_then(|c| c.layers.first())
-                    .and_then(|l| l.enc.x.as_ref())
-                    .and_then(|c| c.field.clone());
-                let time = field.is_some_and(|f| column_kind(model, &f) == Some(ColumnKind::Time));
-                let x = x.map_or_else(String::new, |x| match time {
-                    true => crate::scale::format_time_full(x, 1.0, &self.zone),
-                    false => crate::scale::format_value(x),
-                });
-                let y = y.map_or_else(String::new, crate::scale::format_value);
-                format!("{} · {x} · {y}", series.name)
-            }
-            Some(c @ Cursor::Band { .. }) => {
-                let labels = model.labels();
-                let name = labels.into_iter().find(|l| &l.1 == c).map(|l| l.0);
-                name.unwrap_or_else(|| "a band".into())
-            }
-            Some(_) => "fig: the detail panel arrives in a later build".into(),
-            None => "fig: no cursor yet: h l j k or a click puts it on the data".into(),
-        }
     }
 }
 
@@ -2605,12 +2993,27 @@ struct Failure<'a> {
     name: &'a str,
 }
 
+/// What a figure shows: a chart, a graph, or nothing yet.
+#[derive(Clone, Copy)]
+enum Shows<'a> {
+    Chart(&'a ChartModel),
+    Graph(&'a GraphModel),
+    Nothing,
+}
+
+impl Shows<'_> {
+    fn some(&self) -> bool {
+        !matches!(self, Shows::Nothing)
+    }
+}
+
 /// Draw a pane's base, opaque on the surface's colour, presented whole: the log where it's up;
-/// else the chart, with the stale badge over it while the last build failed; else the error
-/// figure; else, while the first build runs, nothing.
+/// else the chart or graph (beside the detail panel when it's open), with the stale badge over
+/// it while the last build failed; else the error figure; else, while the first build runs,
+/// nothing.
 fn draw_base(
     p: &mut Pane,
-    model: Option<&ChartModel>,
+    shows: Shows<'_>,
     view: &View,
     theme: &Theme,
     why: &Failure<'_>,
@@ -2618,30 +3021,51 @@ fn draw_base(
 ) {
     let scale = p.scale();
     let size = p.size();
+    let fsize = p.figure_size();
     let log = p.log;
+    let mut glayout = None;
     let (mut scene, layout, hits) = measured(kit.book.as_mut(), scale, |m| {
         let figure = |errors: &[FigError], state: ErrorView, m: &mut dyn Measure| {
             plot::error_figure(errors, why.text, why.name, state, size, scale, theme, m)
         };
-        match (log, model, why.failed) {
+        match (log, shows, why.failed) {
             (Some((top, mark)), ..) => {
                 (figure(why.log, ErrorView::Log { top, mark }, m), None, None)
             }
-            (None, Some(model), failed) => {
-                let (mut s, l, h) = plot::base(model, view, size, scale, theme, m);
+            (None, Shows::Graph(g), failed) => {
+                let (mut s, l) = crate::graph::base(g, view, fsize, scale, theme, m);
+                if let Some(f) = failed {
+                    plot::stale_badge(&mut s, f.first(), theme, m);
+                }
+                glayout = Some(l);
+                (s, None, None)
+            }
+            (None, Shows::Chart(model), failed) => {
+                let (mut s, l, h) = plot::base(model, view, fsize, scale, theme, m);
                 if let Some(f) = failed {
                     plot::stale_badge(&mut s, f.first(), theme, m);
                 }
                 (s, Some(l), Some(h))
             }
-            (None, None, Some(f)) => (figure(&f.all(), ErrorView::Symbolic, m), None, None),
-            (None, None, None) => {
+            (None, Shows::Nothing, Some(f)) => {
+                (figure(&f.all(), ErrorView::Symbolic, m), None, None)
+            }
+            (None, Shows::Nothing, None) => {
                 let mut s = Scene::new(size.0, size.1, scale);
                 s.region(Rect::new(0.0, 0.0, size.0, size.1), Hit::Chrome);
                 (s, None, None)
             }
         }
     });
+    (scene.width, scene.height) = size;
+    p.fig_regions = scene.regions.len();
+    if log.is_none()
+        && shows.some()
+        && let Some(panel) = panel::panel_scene(p, theme, kit)
+    {
+        scene.items.extend(panel.items);
+        scene.regions.extend(panel.regions);
+    }
     let (aw, ah) = p.area_px();
     let Some(producer) = p.base.as_mut() else {
         return;
@@ -2676,20 +3100,26 @@ fn draw_base(
         }
         l
     });
+    let gflipped = (p.graph.as_ref()).map(|l| l.flipped.get());
+    p.graph = glayout.map(|mut l| {
+        l.cell_width = p.cell.width as f32 / scale;
+        if let Some(f) = gflipped {
+            l.flipped.set(f);
+        }
+        l
+    });
     p.hits = hits;
     p.base_gen += 1;
 }
 
 /// Draw a pane's overlay where what it shows changed: it clears and draws the union of what it
 /// drew last and draws now, and presents that alone.
-fn draw_overlay(
-    p: &mut Pane,
-    model: Option<&ChartModel>,
-    view: &View,
-    theme: &Theme,
-    kit: &mut Kit,
-) {
+fn draw_overlay(p: &mut Pane, shows: Shows<'_>, view: &View, theme: &Theme, kit: &mut Kit) {
     let st = p.overlay_state();
+    let gst = match shows {
+        Shows::Graph(g) if p.log.is_none() => Some(p.graph_overlay(g)),
+        _ => None,
+    };
     let key = OverKey {
         base: p.base_gen,
         hover: st.hover.clone(),
@@ -2700,15 +3130,24 @@ fn draw_overlay(
         reference: view.reference.clone(),
         help: p.help,
         strip: p.strip,
+        graph: gst.clone(),
     };
     if p.over_key.as_ref() == Some(&key) {
         return;
     }
     let scale = p.scale();
     let size = p.size();
-    let mut scene = measured(kit.book.as_mut(), scale, |m| match (model, &p.layout) {
-        (Some(model), Some(l)) => plot::overlay(model, l, view, &st, theme, m),
-        _ => Scene::default(),
+    let mut scene = measured(kit.book.as_mut(), scale, |m| {
+        match (shows, &p.layout, &p.graph) {
+            (Shows::Graph(g), _, Some(l)) => match &gst {
+                Some(gst) => crate::graph::overlay(g, l, view, gst, theme, m),
+                None => Scene::default(),
+            },
+            (Shows::Chart(model), Some(l), _) if p.log.is_none() => {
+                plot::overlay(model, l, view, &st, theme, m)
+            }
+            _ => Scene::default(),
+        }
     });
     (scene.width, scene.height, scene.scale) = (size.0, size.1, scale);
     if let Some(r) = p.strip {
@@ -2721,7 +3160,13 @@ fn draw_overlay(
         scene.items.insert(0, fill);
     }
     if p.help {
-        measured(kit.book.as_mut(), scale, |m| key_card(&mut scene, theme, m));
+        let card: &[(&str, &str)] = match shows {
+            Shows::Graph(_) => &GRAPH_KEY_CARD,
+            _ => &KEY_CARD,
+        };
+        measured(kit.book.as_mut(), scale, |m| {
+            key_card(&mut scene, card, theme, m)
+        });
     }
     let now = scene.bounds();
     let damage = changed(&p.over_items, &scene.items, p.over_bounds, now);
@@ -2801,7 +3246,7 @@ pub const KEY_CARD: [(&str, &str); 21] = [
     ("s", "settings"),
     ("E C", "export, copy the picture"),
     ("m `", "reference here, cursor to it"),
-    ("⏎", "the cursor's values"),
+    ("⏎ Tab", "detail panel, into it and back"),
     ("!", "errors and warnings, as a log"),
     ("Esc", "cancel, clear"),
     ("drag", "zoom to the brush"),
@@ -2810,22 +3255,39 @@ pub const KEY_CARD: [(&str, &str); 21] = [
     ("click ⇧-click", "cursor, reference"),
 ];
 
-/// The key card, centred over the area.
-fn key_card(scene: &mut Scene, theme: &Theme, m: &mut dyn Measure) {
+/// The keys `?` shows on a graph, a pair a row.
+pub const GRAPH_KEY_CARD: [(&str, &str); 19] = [
+    ("h j k l", "nearest node that way"),
+    ("] [", "next, previous neighbour"),
+    ("gg G", "first, last node"),
+    ("+ - 0", "zoom in, out, fit"),
+    ("zh zl zj zk zz", "scroll; centre"),
+    ("x o X", "hide, only, show all: groups"),
+    ("u C-r", "undo, redo a view change"),
+    ("/ n N", "find a node, next, previous"),
+    ("⏎ Tab", "detail panel, into it and back"),
+    ("t", "node and edge tables beside"),
+    ("s", "labels, layout, relayout"),
+    ("E C", "export, copy the picture"),
+    ("m `", "reference here, cursor to it"),
+    ("Esc", "cancel, clear"),
+    ("drag a node", "move and pin it"),
+    ("drag", "pan"),
+    ("scroll ⌘-scroll", "pan, zoom about the pointer"),
+    ("click ⇧-click", "cursor, reference and path"),
+    ("double-click", "detail, or fit"),
+];
+
+/// The key card, centred over the area: a chart's keys, or a graph's.
+fn key_card(scene: &mut Scene, rows: &[(&str, &str)], theme: &Theme, m: &mut dyn Measure) {
     let (keys, what) = (
         TextSpec::new(12.0).weight(Weight::Semibold),
         TextSpec::new(12.0),
     );
-    let kw = KEY_CARD
-        .iter()
-        .map(|k| m.width(k.0, keys))
-        .fold(0.0, f32::max);
-    let ww = KEY_CARD
-        .iter()
-        .map(|k| m.width(k.1, what))
-        .fold(0.0, f32::max);
+    let kw = rows.iter().map(|k| m.width(k.0, keys)).fold(0.0, f32::max);
+    let ww = rows.iter().map(|k| m.width(k.1, what)).fold(0.0, f32::max);
     let row = 18.0;
-    let (w, h) = (kw + ww + 40.0, KEY_CARD.len() as f32 * row + 16.0);
+    let (w, h) = (kw + ww + 40.0, rows.len() as f32 * row + 16.0);
     let x = ((scene.width - w) / 2.0).max(4.0).round();
     let y = ((scene.height - h) / 2.0).max(4.0).round();
     let card = Rect::new(x, y, w.min(scene.width - 8.0), h.min(scene.height - 8.0));
@@ -2842,7 +3304,7 @@ fn key_card(scene: &mut Scene, theme: &Theme, m: &mut dyn Measure) {
         stroke: Some(Stroke::hairline(theme.ring, 1.0)),
     });
     scene.push(Item::PushClip(card));
-    for (i, (k, d)) in KEY_CARD.iter().enumerate() {
+    for (i, (k, d)) in rows.iter().enumerate() {
         let base = y + 8.0 + row * (i as f32 + 1.0) - 5.0;
         for (text, at, spec, color) in [
             (*k, x + 12.0, keys, theme.strong),

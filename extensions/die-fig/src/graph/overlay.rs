@@ -2,7 +2,8 @@
 //! hover repaints nothing else.
 //!
 //! - **Emphasis.** With a node in focus (the hover after its dwell, else the cursor's, which
-//!   sticks), a group's legend key under the pointer, or a path from the reference: a wash of
+//!   sticks), a group's legend key under the pointer, the nodes a search matches as it's typed,
+//!   or a path from the reference: a wash of
 //!   the surface over what the graph covers leaves everything at about 25 %, then what's
 //!   emphasised is drawn again on top: the focused node last, its neighbours and the edges to
 //!   them brighter, or the path's nodes and edges; whatever opts out of emphasis (an explicit
@@ -74,6 +75,9 @@ pub struct OverlayState {
     /// Whether the cursor's node shows its card while nothing is hovered (off while the detail
     /// panel says the same).
     pub cursor_card: bool,
+    /// The nodes a search typed so far matches: they stay bright and the rest dim, the best
+    /// (`emphasis`) in focus.
+    pub matches: Vec<usize>,
 }
 
 /// The overlay's scene: see the module's docs. The reference is the view's.
@@ -117,6 +121,8 @@ pub fn overlay(
         Some(model.path_emphasis(p))
     } else if let Some(g) = group {
         Some(model.group_emphasis(g))
+    } else if !st.matches.is_empty() {
+        Some(model.set_emphasis(&st.matches, dwell))
     } else {
         focus.map(|f| model.emphasis(Some(f)))
     };

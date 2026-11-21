@@ -63,8 +63,9 @@ pub enum Gesture {
         node: Box<str>,
         /// Where on the node it was taken, from its centre.
         grab: (f32, f32),
-        /// Where it was, and whether it was pinned.
-        before: ((f64, f64), bool),
+        /// The view at the press: where the node was and whether it was pinned, the window
+        /// before the drag held it; for undo and Esc.
+        before: View,
     },
 }
 

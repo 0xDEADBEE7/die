@@ -7,15 +7,19 @@
 //! as they were. Reading it, its data files and building the chart's model all happen in one
 //! job, [`build`], off the main thread: the job is given the text of every buffer that visits a
 //! file, so a data file open in a buffer is read from the buffer and follows its edits, and the
-//! rest from disk, polled. Phase 2 charts; a spec whose data is a command's (`run`, `stream`)
-//! says those arrive in a later build, as do graphs, tiles and dashboards.
+//! rest from disk, polled. A chart's model is built there, and so is a graph's, laid out once
+//! (fig's stress layout is `O(n²)`); a spec whose data is a command's (`run`, `stream`) says
+//! those arrive in a later build, as do tiles and dashboards.
 
 use crate::data::{ReadOptions, Table};
 use crate::error::{ErrorKind, FigError, Pos, Result};
+use crate::graph::GraphModel;
 use crate::interact::Toggles;
 use crate::plot::ChartModel;
 use crate::spec::chart::with_hints;
-use crate::spec::{Chart, DataFormat, DataRef, DataSpec, Figure, Parsed, format_of_name};
+use crate::spec::{
+    Chart, DataFormat, DataRef, DataSpec, Figure, GraphSpec, Parsed, format_of_name,
+};
 use die_core::BufferId;
 use jiff::tz::TimeZone;
 use std::fmt::Display;
@@ -127,6 +131,8 @@ pub struct Built {
     pub tables: Vec<Arc<Table>>,
     /// The chart's model: by value, since a model need only be `Send`.
     pub model: Option<ChartModel>,
+    /// The graph's model, laid out, when the figure is a graph.
+    pub graph: Option<GraphModel>,
     /// What the spec had that was odd but not wrong.
     pub warnings: Vec<FigError>,
     /// The files read from disk, and when each last changed: polled while shown. A figure
@@ -222,6 +228,24 @@ pub fn build(job: Job) -> std::result::Result<Built, Failed> {
     warnings.sort_by_key(|w| w.at.map(|a| (a.line, a.col)));
     let chart = match figure.clone() {
         Figure::Chart(c) => c,
+        Figure::Graph(spec) => {
+            // Laid out here, off the main thread: the last frame stays up until it's done.
+            return match graph_model(&spec, job.toggles, &job.name) {
+                Ok(g) => Ok(Built {
+                    figure,
+                    inferred,
+                    chart: None,
+                    tables: vec![],
+                    model: None,
+                    graph: Some(g),
+                    warnings,
+                    files,
+                    followed: vec![],
+                    text,
+                }),
+                Err(e) => Err(failed(vec![e], warnings, files)),
+            };
+        }
         other => {
             let why = format!("{} arrive in a later build", kind_plural(&other));
             let e = FigError::new(why).with_kind(ErrorKind::Empty);
@@ -291,6 +315,7 @@ pub fn build(job: Job) -> std::result::Result<Built, Failed> {
         chart: Some(chart),
         tables,
         model: Some(model),
+        graph: None,
         warnings,
         files: reader.files,
         followed: reader.followed,
@@ -444,6 +469,16 @@ pub fn rebuild(
     zone: &TimeZone,
 ) -> Result<ChartModel> {
     ChartModel::build(toggles.apply(chart), tables, zone)
+}
+
+/// A graph's model from its spec with the settings turned (its labels, its layout), named for
+/// its subtitle by the file it came from, laid out: run it in a job.
+pub fn graph_model(spec: &GraphSpec, toggles: Toggles, name: &str) -> Result<GraphModel> {
+    let model = GraphModel::build_as(toggles.apply_graph(spec), toggles.graph_layout())?;
+    Ok(match name.is_empty() {
+        true => model,
+        false => model.named(name),
+    })
 }
 
 /// A figure's kind in the plural, for what arrives later.

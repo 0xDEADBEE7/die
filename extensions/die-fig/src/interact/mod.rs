@@ -12,4 +12,4 @@ pub use action::Action;
 pub use cursor::Cursor;
 pub use gesture::{Axis, BrushKind, Gesture};
 pub use motion::{Tween, ease_out_cubic};
-pub use view::{Setting, Steps, Toggles, View, ViewStack};
+pub use view::{LayoutPick, Setting, Steps, Toggles, View, ViewStack};
