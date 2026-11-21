@@ -391,7 +391,9 @@ fn moment(
             dot(scene, pt, r, lift(c, theme), theme.strong, 2.0);
             let xl = model.x_value(s.xs[i]);
             chip_x(l, theme, scene, pt.0, &xl, keyboard, m);
-            chip_y(l, theme, scene, pt.1, &model.y_label(s.ys[i]), keyboard, m);
+            // The chips say what the card says, at the data's precision.
+            let yl = card_value(model, s.ys[i], s.decimals);
+            chip_y(l, theme, scene, pt.1, &yl, keyboard, m);
             let rows = point_rows(model, view, si, i, theme);
             let mut header = s.name.clone();
             // Δx and Δy from the reference, each at its own axis's precision. No distance: a
@@ -771,7 +773,7 @@ fn cover(
     role: Role,
     m: &mut dyn Measure,
 ) {
-    let clear = Rect::new(r.x - 10.0, r.y - 4.0, r.w + 20.0, r.h + 8.0);
+    let clear = Rect::new(r.x - 6.0, r.y - 4.0, r.w + 12.0, r.h + 8.0);
     for label in l.labels.iter().filter(|lb| lb.role == role) {
         let b = label.bounds(m).inflate(1.0);
         if b.intersect(&clear).is_some() {
@@ -1282,10 +1284,14 @@ fn shape_of(mark: MarkKind) -> KeyShape {
     }
 }
 
+/// What a card's row says where its series has no sample: words, in the muted ink and the
+/// names' weight, never a dash that reads as one more line key.
+const NO_DATA: &str = "no data";
+
 /// A value as the card writes it: the axis's format, else in full at its series' precision.
 fn card_value(model: &ChartModel, v: f64, decimals: usize) -> String {
     if v.is_nan() {
-        return "—".into();
+        return NO_DATA.into();
     }
     if model.y.format.is_some() || model.series.iter().any(|s| s.stack == Stack::Normalize) {
         return model.y_label(v);
@@ -1606,7 +1612,8 @@ impl Card {
         let mut val_w: f32 = 0.0;
         let mut name_w: f32 = 0.0;
         for r in &rows {
-            val_w = val_w.max(m.width(&r.value, vspec));
+            let spec = if r.missing { nspec } else { vspec };
+            val_w = val_w.max(m.width(&r.value, spec));
             name_w = name_w.max(m.width(&r.name, nspec));
         }
         if let Some(t) = &total {
@@ -1895,7 +1902,7 @@ impl Card {
                 text: row.value.as_str().into(),
                 x: vx,
                 y: base,
-                spec: vspec,
+                spec: if row.missing { nspec } else { vspec },
                 anchor: Anchor::End,
                 color: if row.missing {
                     theme.muted

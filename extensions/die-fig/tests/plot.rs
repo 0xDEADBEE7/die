@@ -508,7 +508,7 @@ fn a_missing_value_breaks_a_line() {
             ..state()
         },
     );
-    assert!(has_text(&o, "—"));
+    assert!(has_text(&o, "no data"));
 }
 
 #[test]

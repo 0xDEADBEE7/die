@@ -36,12 +36,18 @@ const KEY_GAP: f32 = 6.0;
 /// The least room between two x labels' centres, and between their ends.
 const X_SPACING: f32 = 64.0;
 const X_CLEAR: f32 = 12.0;
+/// The least room between an end x label and the area's edge.
+const EDGE: f32 = 4.0;
 /// About how far apart y ticks are, and the least. A grid from 48 to 64 px apart is calm; one
 /// denser reads busier than one as much sparser (`DENSE_COST`).
 const Y_SPACING: f32 = 48.0;
 const Y_CALM: f32 = 64.0;
 const Y_MIN_GAP: f32 = 32.0;
 const DENSE_COST: f32 = 1.25;
+/// The most ticks an axis asks for however much room it has: a tall plot's grid opens up
+/// rather than filling with lines, a wide one's labels rather than crowding.
+const Y_MOST: usize = 10;
+const X_MOST: usize = 12;
 /// What a domain's headroom over the tightest one costs, against a grid's calm.
 const HEADROOM_COST: f32 = 4.0;
 /// How far a mark may reach past the plot's edges at fit before it's clipped: a point's ring.
@@ -668,7 +674,7 @@ fn attempt(
     // A fitted y is niced for the ticks the plot has room for, so its top is a tick: of the
     // counts near the room's, the one whose grid is calmest (48 to 64 px apart), its headroom
     // over the tightest counting against it; whole steps only for whole numbers.
-    let mut y_count = ((plot_h / Y_SPACING).round() as usize).max(2);
+    let mut y_count = ((plot_h / Y_SPACING).round() as usize).clamp(2, Y_MOST);
     if vertical_values
         && view.y.is_none()
         && model.y.domain.is_none()
@@ -714,7 +720,7 @@ fn attempt(
                 .then((a.2 - Y_SPACING).abs().total_cmp(&(b.2 - Y_SPACING).abs()))
         });
         if let Some(&(d, c, _, _)) = best {
-            yd = d;
+            yd = loosened(model, view, d, c, (plot_bottom, plot_top), whole);
             y_count = c;
         }
     }
@@ -777,7 +783,7 @@ fn attempt(
         let count = if vertical_values {
             y_count
         } else {
-            ((plot_h / Y_SPACING).round() as usize).max(2)
+            ((plot_h / Y_SPACING).round() as usize).clamp(2, Y_MOST)
         };
         for t in whole_ticks(&up_scale, count, vertical_values && whole) {
             let py = up_scale.map(t.value);
@@ -918,6 +924,13 @@ fn attempt(
 
     // Across the screen: the independent axis (or the values for horizontal bars).
     let mut xd = xd;
+    if !vertical_values
+        && view.y.is_none()
+        && model.y.domain.is_none()
+        && model.y.kind == AxisKind::Linear
+    {
+        yd = across_values(model, view, &plot, m).unwrap_or(yd);
+    }
     if model.is_scatter()
         && view.x.is_none()
         && model.x.domain.is_none()
@@ -977,9 +990,10 @@ fn attempt(
             });
         }
         if let Some(mut l) = ytitle {
-            // Over the ticks' column, right-aligned with it, unless it would pass the padding.
+            // Over the ticks' column, right-aligned with it, where it fits in the column; a
+            // wider one starts at the padding with the title and the legend.
             let tw = m.width(&l.text, tick_plain);
-            if plot.x - TICK_GAP - tw >= pad * 0.5 {
+            if plot.x - TICK_GAP - tw >= pad - 1.0 {
                 l.x = plot.x - TICK_GAP;
                 l.anchor = Anchor::End;
             }
@@ -1197,6 +1211,70 @@ fn whole_ticks(s: &Scale, count: usize, whole: bool) -> Vec<Tick> {
     }
 }
 
+/// A fitted y domain `d` (niced for `count` ticks) whose end tick stands far past the data, as
+/// a short plot's coarse step leaves it (0 to 1,500 by 500 for data to 1,060), stopped a little
+/// past the data instead, at a fifth of the step (0 to 1,200, ticks 0, 500, 1,000): the plot
+/// isn't a third empty. Its ticks keep their step; where they wouldn't, `d` stays.
+fn loosened(
+    model: &ChartModel,
+    view: &View,
+    d: (f64, f64),
+    count: usize,
+    range: (f32, f32),
+    whole: bool,
+) -> (f64, f64) {
+    let step_of = |dom: (f64, f64)| {
+        let ts = whole_ticks(&Scale::Linear { domain: dom, range }, count, whole);
+        match ts.as_slice() {
+            [a, b, ..] => (b.value - a.value).abs(),
+            _ => f64::NAN,
+        }
+    };
+    let step = step_of(d);
+    let span = d.1 - d.0;
+    // The data's own extent, zero and all, at a fine step.
+    let tight = model.fit_ticks(view, 40).1;
+    if !(step.is_finite() && span > 0.0 && tight.0 < tight.1) {
+        return d;
+    }
+    // A little past the data: a twentieth of it, and over a bar room for its total.
+    let per_px = span / f64::from((range.0 - range.1).abs().max(1.0));
+    let bars = model.series.iter().any(|s| s.mark == MarkKind::Bar);
+    let pad = (0.05 * (tight.1 - tight.0)).max(if bars { 24.0 * per_px } else { 0.0 });
+    let unit = step / 5.0;
+    let mut out = d;
+    if d.1 - tight.1 > 0.25 * span {
+        out.1 = (((tight.1 + pad) / unit).ceil() * unit).min(d.1);
+    }
+    if tight.0 - d.0 > 0.25 * span {
+        out.0 = (((tight.0 - pad) / unit).floor() * unit).max(d.0);
+    }
+    if out != d && (step_of(out) - step).abs() <= step * 1e-9 {
+        out
+    } else {
+        d
+    }
+}
+
+/// Bars across: their values fit to the ticks the plot's width has room for, as a plot's height
+/// does for values up it (0 to 160 by 20 for a top of 144, not 0 to 200 by 50), with room past
+/// the longest bar for its total.
+fn across_values(
+    model: &ChartModel,
+    view: &View,
+    plot: &Rect,
+    m: &mut dyn Measure,
+) -> Option<(f64, f64)> {
+    let tight = model.fit_ticks(view, 40).1;
+    let room = 8.0 + m.width(&model.y_label(tight.1), TextSpec::new(TICK).tabular());
+    let most = ((plot.w / 90.0).round() as usize).clamp(2, X_MOST);
+    (2..=most).rev().find_map(|c| {
+        let d = model.fit_ticks(view, c).1;
+        let end = plot.w * ((tight.1 - d.0) / (d.1 - d.0)) as f32;
+        (d.1 > d.0 && end + room <= plot.w).then_some(d)
+    })
+}
+
 /// Whether the chart has series and every one is hidden.
 pub(crate) fn nothing_shown(model: &ChartModel, view: &View) -> bool {
     !model.series.is_empty() && model.keys().iter().all(|k| !model.visible(view, k))
@@ -1263,10 +1341,30 @@ fn value_ticks(
     area_w: f32,
     m: &mut dyn Measure,
 ) -> Vec<(Tick, String, f32, Anchor)> {
-    let mut count = ((plot.w / 90.0).round() as usize).max(2);
+    let mut count = ((plot.w / 90.0).round() as usize).clamp(2, X_MOST);
+    // Bars over a time or a number tick no finer than they come: an hour's bars get no half
+    // hours between them (a month's still take calendar months).
+    let bar_step = if independent && !model.is_band() {
+        model
+            .series
+            .iter()
+            .filter(|s| s.mark == MarkKind::Bar && s.interval > 0.0)
+            .map(|s| s.interval)
+            .fold(f64::INFINITY, f64::min)
+    } else {
+        f64::INFINITY
+    };
     loop {
+        let ts = whole_ticks(s, count, !independent && whole);
+        if bar_step.is_finite()
+            && count > 2
+            && matches!(ts.as_slice(), [a, b, ..] if (b.value - a.value).abs() < 0.75 * bar_step)
+        {
+            count -= 1;
+            continue;
+        }
         let mut placed: Vec<(Tick, String, f32, Anchor, Rect)> = Vec::new();
-        for t in whole_ticks(s, count, !independent && whole) {
+        for t in ts {
             let px = s.map(t.value);
             if px < plot.x - 0.5 || px > plot.right() + 0.5 {
                 continue;
@@ -1277,10 +1375,10 @@ fn value_ticks(
                 value_label(model, &t)
             };
             let tw = m.width(&text, spec);
-            let (x, anchor) = if px + tw / 2.0 > area_w - 2.0 {
-                (area_w - 2.0, Anchor::End)
-            } else if px - tw / 2.0 < 2.0 {
-                (2.0, Anchor::Start)
+            let (x, anchor) = if px + tw / 2.0 > area_w - EDGE {
+                (area_w - EDGE, Anchor::End)
+            } else if px - tw / 2.0 < EDGE {
+                (EDGE, Anchor::Start)
             } else {
                 (px, Anchor::Middle)
             };
@@ -1322,35 +1420,47 @@ pub(crate) fn chrome(
     let p = l.plot;
     let nothing = nothing_shown(model, view);
     let grid = model.chart.view.grid && !model.is_heatmap() && !nothing;
+    let axes = model.chart.view.axes && !model.is_heatmap() && !nothing;
+    // The baseline: at zero where the values cross it, else along the plot's bottom (its left
+    // for bars across).
+    let val = l.val();
+    let (lo, hi) = val.domain();
+    let zero = lo.min(hi) <= 0.0
+        && lo.max(hi) >= 0.0
+        && !matches!(val, Scale::Log { .. } | Scale::Band { .. });
+    let base_at = if model.horizontal {
+        if zero { l.x.map(0.0) } else { p.x }
+    } else if zero {
+        l.y.map(0.0)
+    } else {
+        p.bottom()
+    };
     if grid {
         // Hairlines along the value axis's ticks: across the plot, or up it for bars across.
+        // The one under the baseline gives way to it; a tick at the bottom below zero keeps its.
         if model.horizontal {
             for t in &l.x_ticks {
                 let x = l.x.map(t.value);
+                if axes && (x - base_at).abs() < 0.5 {
+                    continue;
+                }
                 hair(scene, (x, p.y), (x, p.bottom()), theme.grid);
             }
         } else {
             for t in &l.y_ticks {
                 let y = l.y.map(t.value);
-                if (y - p.bottom()).abs() < 0.5 {
+                if (axes && (y - base_at).abs() < 0.5) || (!axes && (y - p.bottom()).abs() < 0.5) {
                     continue;
                 }
                 hair(scene, (p.x, y), (p.right(), y), theme.grid);
             }
         }
     }
-    if model.chart.view.axes && !model.is_heatmap() && !nothing {
-        let val = l.val();
-        let (lo, hi) = val.domain();
-        let zero = lo.min(hi) <= 0.0
-            && lo.max(hi) >= 0.0
-            && !matches!(val, Scale::Log { .. } | Scale::Band { .. });
+    if axes {
         if model.horizontal {
-            let x = if zero { l.x.map(0.0) } else { p.x };
-            hair(scene, (x, p.y), (x, p.bottom()), theme.baseline);
+            hair(scene, (base_at, p.y), (base_at, p.bottom()), theme.baseline);
         } else {
-            let y = if zero { l.y.map(0.0) } else { p.bottom() };
-            hair(scene, (p.x, y), (p.right(), y), theme.baseline);
+            hair(scene, (p.x, base_at), (p.right(), base_at), theme.baseline);
         }
     }
     for item in &l.items {
