@@ -1,0 +1,59 @@
+{
+  "type": "histogram",
+  "title": "Request latency",
+  "subtitle": "Last 24 hours · latency.json, a fig histogram",
+  "x_label": "Latency, ms",
+  "y_label": "Count",
+  "series": [
+    {
+      "label": "success"
+    },
+    {
+      "label": "failure"
+    }
+  ],
+  "buckets": [
+    {
+      "label": "0–10",
+      "values": {
+        "success": 1840,
+        "failure": 30
+      }
+    },
+    {
+      "label": "10–25",
+      "values": {
+        "success": 2630,
+        "failure": 42
+      }
+    },
+    {
+      "label": "25–50",
+      "values": {
+        "success": 1210,
+        "failure": 64
+      }
+    },
+    {
+      "label": "50–100",
+      "values": {
+        "success": 520,
+        "failure": 88
+      }
+    },
+    {
+      "label": "100–250",
+      "values": {
+        "success": 160,
+        "failure": 61
+      }
+    },
+    {
+      "label": "250+",
+      "values": {
+        "success": 40,
+        "failure": 37
+      }
+    }
+  ]
+}
