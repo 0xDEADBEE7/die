@@ -12,6 +12,7 @@ members = [
     "extensions/die-whiteboard",
     "extensions/die-jellyfish",
     "extensions/die-markdown",
+    "extensions/die-draw",
     "tools/evil-oracle",
     "tools/test-cap",
     "xtask",
@@ -28,6 +29,7 @@ default-members = [
     "extensions/die-whiteboard",
     "extensions/die-jellyfish",
     "extensions/die-markdown",
+    "extensions/die-draw",
 ]
 
 [workspace.package]
@@ -49,6 +51,9 @@ die-orchid-client = { path = "extensions/die-orchid-client" }
 die-whiteboard = { path = "extensions/die-whiteboard" }
 die-jellyfish = { path = "extensions/die-jellyfish" }
 die-markdown = { path = "extensions/die-markdown" }
+# The extensions' shared drawing crate: fonts, text runs, PNG and the premultiplied blit, lifted
+# from die-markdown under the rule of two. It depends on none of DIE's crates (scope D14).
+die-draw = { path = "extensions/die-draw" }
 evil-oracle = { path = "tools/evil-oracle" }
 die-test-cap = { path = "tools/test-cap" }
 

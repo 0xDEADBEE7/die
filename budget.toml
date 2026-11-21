@@ -121,6 +121,14 @@ path = "extensions/die-markdown"
 extension = true
 note = "an extension, outside guard 7: a markdown file's rendered view, a page drawn as GitHub draws a README (its typesetter is most of it), or the markup hidden in place"
 
+# die-draw is under extensions/ and counts as one: shared by them, depending on none of DIE's
+# crates (scope D14, amended 2026-11-21).
+[[crate]]
+name = "die-draw"
+path = "extensions/die-draw"
+extension = true
+note = "shared by the extensions, outside guard 7: fonts, text runs, PNG and the premultiplied blit, lifted from die-markdown (the rule of two)"
+
 [[crate]]
 name = "xtask"
 path = "xtask"

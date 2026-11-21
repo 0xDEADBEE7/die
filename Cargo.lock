@@ -341,6 +341,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "die-draw"
+version = "0.0.0"
+dependencies = [
+ "die-test-cap",
+ "png",
+ "tiny-skia",
+ "ttf-parser",
+]
+
+[[package]]
 name = "die-jellyfish"
 version = "0.0.0"
 dependencies = [

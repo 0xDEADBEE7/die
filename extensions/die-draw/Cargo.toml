@@ -1,0 +1,23 @@
+[package]
+name = "die-draw"
+description = "The extensions' shared drawing: the system's fonts set as text runs, a premultiplied RGBA8 blit with clipping, PNG in and out, and the pasteboard's and opener's command lines (scope D14)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Shared by the extensions, outside the product: it depends on none of DIE's crates, so any
+# extension may depend on it (`cargo xtask lint` checks), and it moves out at M4 with the
+# extensions that use it. tiny-skia fills glyph outlines, ttf-parser reads the fonts, png reads
+# and writes pictures; each stays behind its own module.
+[dependencies]
+tiny-skia.workspace = true
+ttf-parser.workspace = true
+png.workspace = true
+
+[dev-dependencies]
+die-test-cap.workspace = true
+
+[lints]
+workspace = true
