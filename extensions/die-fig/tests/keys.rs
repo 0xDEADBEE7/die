@@ -512,17 +512,27 @@ fn esc_clears_the_key_card_then_the_reference() {
 }
 
 #[test]
-fn return_says_the_cursors_values() {
+fn return_opens_the_detail_panel_for_the_cursor_and_closes_it() {
     let mut s = setup();
-    keys(&mut s.h, "<CR>");
+    let errors = keys_errors(&mut s.h, "<CR>");
     assert!(
-        s.h.messages.iter().any(|m| m.contains("no cursor yet")),
-        "{:?}",
-        s.h.messages
+        errors.iter().any(|m| m.contains("no cursor yet")),
+        "{errors:?}"
     );
     keys(&mut s.h, "gg7l<CR>");
-    let said = s.h.messages.last().unwrap().clone();
-    assert!(said.contains(" · 7 · "), "{said}");
+    let st = state(&mut s);
+    let rows = {
+        let st = st.borrow();
+        let p = st.panes[&s.win].panel.as_ref().expect("open");
+        p.tree
+            .rows
+            .iter()
+            .map(|r| r.value.clone())
+            .collect::<Vec<_>>()
+    };
+    assert!(rows.iter().any(|v| v == "7"), "the cursor's x: {rows:?}");
+    keys(&mut s.h, "<CR>");
+    assert!(st.borrow().panes[&s.win].panel.is_none(), "closed again");
 }
 
 #[test]

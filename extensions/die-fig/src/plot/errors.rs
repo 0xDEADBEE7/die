@@ -830,20 +830,21 @@ pub fn glyph(scene: &mut Scene, kind: ErrorKind, r: Rect, theme: &Theme) {
         }
         ErrorKind::Mismatch => {
             // Two jigsaw pieces that don't fit: the left one's round tab, low, against the
-            // right one's round socket, high, a little apart. Centred on the disc.
+            // right one's round socket, high, a little apart. Centred on the disc, and kept as
+            // far in from its edge as the other glyphs are.
             path(
                 vec![
-                    mv(9.0, 21.0),
-                    ln(19.0, 21.0),
-                    qd(21.0, 21.0, 21.0, 23.0),
-                    ln(21.0, 25.0),
-                    cu(25.0, 25.0, 25.0, 31.0, 21.0, 31.0),
-                    ln(21.0, 33.0),
-                    qd(21.0, 35.0, 19.0, 35.0),
-                    ln(9.0, 35.0),
-                    qd(7.0, 35.0, 7.0, 33.0),
-                    ln(7.0, 23.0),
-                    qd(7.0, 21.0, 9.0, 21.0),
+                    mv(11.7, 21.45),
+                    ln(19.9, 21.45),
+                    qd(21.54, 21.45, 21.54, 23.09),
+                    ln(21.54, 24.73),
+                    cu(24.82, 24.73, 24.82, 29.65, 21.54, 29.65),
+                    ln(21.54, 31.29),
+                    qd(21.54, 32.93, 19.9, 32.93),
+                    ln(11.7, 32.93),
+                    qd(10.06, 32.93, 10.06, 31.29),
+                    ln(10.06, 23.09),
+                    qd(10.06, 21.45, 11.7, 21.45),
                     Verb::Close,
                 ],
                 stroke(width),
@@ -851,17 +852,17 @@ pub fn glyph(scene: &mut Scene, kind: ErrorKind, r: Rect, theme: &Theme) {
             );
             path(
                 vec![
-                    mv(29.0, 12.0),
-                    ln(39.0, 12.0),
-                    qd(41.0, 12.0, 41.0, 14.0),
-                    ln(41.0, 24.0),
-                    qd(41.0, 26.0, 39.0, 26.0),
-                    ln(29.0, 26.0),
-                    qd(27.0, 26.0, 27.0, 24.0),
-                    ln(27.0, 22.0),
-                    cu(31.0, 22.0, 31.0, 16.0, 27.0, 16.0),
-                    ln(27.0, 14.0),
-                    qd(27.0, 12.0, 29.0, 12.0),
+                    mv(28.1, 14.07),
+                    ln(36.3, 14.07),
+                    qd(37.94, 14.07, 37.94, 15.71),
+                    ln(37.94, 23.91),
+                    qd(37.94, 25.55, 36.3, 25.55),
+                    ln(28.1, 25.55),
+                    qd(26.46, 25.55, 26.46, 23.91),
+                    ln(26.46, 22.27),
+                    cu(29.74, 22.27, 29.74, 17.35, 26.46, 17.35),
+                    ln(26.46, 15.71),
+                    qd(26.46, 14.07, 28.1, 14.07),
                     Verb::Close,
                 ],
                 stroke(width),

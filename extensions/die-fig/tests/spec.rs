@@ -421,7 +421,7 @@ fn a_fig_graph_reads_figs_fields_its_aliases_and_keeps_the_rest() {
     // A graph has no grid and no axes unless it says.
     assert_eq!(g.view, ViewSettings::graph());
     assert!(!g.view.grid && !g.view.axes && g.view.render_options);
-    assert_eq!(g.layout, Layout::Force);
+    assert_eq!(g.layout, Layout::Auto);
 
     // Without "type", nodes make a graph; fig.menu sets the plane.
     let Figure::Graph(g) = read(
@@ -457,7 +457,10 @@ fn a_fig_graph_says_what_fig_does_where_it_went_wrong() {
     let twice = r#"{"type": "graph", "nodes": [{"id": "a"}, {"id": "b"}, {"id": "a"}]}"#;
     assert_eq!(
         fails(twice),
-        ("node ids must be unique".into(), nth(twice, "\"a\"", 1))
+        (
+            "node ids must be unique: a is given twice".into(),
+            nth(twice, "\"a\"", 1)
+        )
     );
     let source =
         r#"{"type": "graph", "nodes": [{"id": "a"}], "edges": [{"from": "z", "to": "a"}]}"#;

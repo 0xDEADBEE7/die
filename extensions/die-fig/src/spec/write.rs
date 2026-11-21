@@ -822,7 +822,7 @@ fn graph_j(g: &GraphSpec) -> J {
     o.opt("title", &g.title);
     o.opt("subtitle", &g.subtitle);
     match &g.layout {
-        Layout::Force => {}
+        Layout::Auto => {}
         Layout::Tree { root: Some(r) } => o.put(
             "layout",
             J::Obj(vec![("type", J::s("tree")), ("root", J::s(r))]),

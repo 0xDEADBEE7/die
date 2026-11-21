@@ -40,6 +40,29 @@ pub struct OverlayState {
     pub emphasis: Option<SeriesKey>,
 }
 
+/// What a chart's overlay shows past [`OverlayState`]: the series and categories a search
+/// lights (they stay bright, the rest fade under the wash), and whether the keyboard cursor's
+/// card shows (not while the detail panel says the same; a hover's card always does).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lit {
+    /// The series lit.
+    pub series: Vec<SeriesKey>,
+    /// The categories lit, on a band chart: their bars.
+    pub bands: Vec<u32>,
+    /// Whether the keyboard cursor's card shows.
+    pub cursor_card: bool,
+}
+
+impl Default for Lit {
+    fn default() -> Lit {
+        Lit {
+            series: Vec::new(),
+            bands: Vec::new(),
+            cursor_card: true,
+        }
+    }
+}
+
 /// How much of the surface the emphasis wash lays over the plot: the rest show at about 35 %.
 pub const WASH: f32 = 0.65;
 /// The most series rows a card lists before "+N more" (ruling 4).
@@ -66,6 +89,19 @@ pub fn overlay(
     theme: &Theme,
     m: &mut dyn Measure,
 ) -> Scene {
+    overlay_lit(model, layout, view, st, &Lit::default(), theme, m)
+}
+
+/// The overlay's scene with what a search lights and the cursor's card as `lit` says.
+pub fn overlay_lit(
+    model: &ChartModel,
+    layout: &ChartLayout,
+    view: &View,
+    st: &OverlayState,
+    lit: &Lit,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> Scene {
     let mut scene = Scene::new(layout.size.0, layout.size.1, layout.scale);
     let brushing = st.brush.is_some();
     let hover = if brushing {
@@ -83,10 +119,21 @@ pub fn overlay(
         .into_iter()
         .filter(|k| model.visible(view, k))
         .count();
-    if let Some(k) = emphasis
-        && visible > 1
-    {
-        wash(model, view, layout, theme, &mut scene, k, st.pointer, m);
+    // What comes forward: the emphasised series and every one the search lights, and the
+    // categories it lights, the rest under the wash.
+    let mut forward: Vec<&SeriesKey> = emphasis.into_iter().collect();
+    for k in &lit.series {
+        if !forward.contains(&k) && model.visible(view, k) && model.series_of(k).is_some() {
+            forward.push(k);
+        }
+    }
+    let bands: Vec<u32> = (lit.bands.iter().copied())
+        .filter(|&b| (b as usize) < model.x.bands.len())
+        .collect();
+    if (!forward.is_empty() && visible > 1) || !bands.is_empty() {
+        wash(
+            model, view, layout, theme, &mut scene, &forward, &bands, st.pointer, m,
+        );
     }
     // The one the crosshair, dots and card follow: the hover, else the cursor.
     let target = hover.or(if brushing { None } else { cursor });
@@ -119,6 +166,7 @@ pub fn overlay(
             mark.as_ref(),
             hover.is_none(),
             anchor,
+            hover.is_some() || lit.cursor_card,
             m,
         );
     } else if let Some(c) = cursor.filter(|_| brushing) {
@@ -152,7 +200,8 @@ fn valid(model: &ChartModel, view: &View, c: &Cursor) -> bool {
     }
 }
 
-/// The surface over the plot, so every series but `key` fades, and `key` drawn again on top.
+/// The surface over the plot, so every series but `keys` fades, and `keys` drawn again on
+/// top; and the bars of `bands` (a search's categories) with them.
 #[allow(clippy::too_many_arguments)]
 fn wash(
     model: &ChartModel,
@@ -160,7 +209,8 @@ fn wash(
     l: &ChartLayout,
     theme: &Theme,
     scene: &mut Scene,
-    key: &SeriesKey,
+    keys: &[&SeriesKey],
+    bands: &[u32],
     pointer: Option<(f32, f32)>,
     m: &mut dyn Measure,
 ) {
@@ -170,7 +220,7 @@ fn wash(
         stroke: None,
     });
     // The other series' end labels fade with them.
-    for e in l.ends.iter().filter(|e| &e.key != key) {
+    for e in l.ends.iter().filter(|e| !keys.contains(&&e.key)) {
         let r = e.name.bounds(m).union(&e.value.bounds(m)).inflate(1.0);
         scene.push(Item::Path {
             path: PathData::rect(r),
@@ -180,15 +230,22 @@ fn wash(
     }
     scene.push(Item::PushClip(l.clip));
     for (si, s) in model.series.iter().enumerate() {
-        if &s.key == key && model.visible(view, &s.key) {
+        if keys.contains(&&s.key) && model.visible(view, &s.key) {
             marks::series(model, l, theme, scene, si, Look::Emphasis);
         }
+    }
+    for b in l.bars.iter().filter(|b| bands.contains(&b.band)) {
+        marks::bar(scene, b, model.color(&model.series[b.series], theme));
     }
     scene.push(Item::PopClip);
     // A legend key under the pointer is underlined: the affordance, with no pointer shape.
     if let Some((px, py)) = pointer
-        && let Some(item) = l.items.iter().find(|i| &i.key == key)
-        && l.legend.iter().any(|(k, r)| k == key && r.contains(px, py))
+        && let Some(item) = l.items.iter().find(|i| {
+            keys.contains(&&i.key)
+                && l.legend
+                    .iter()
+                    .any(|(k, r)| k == &i.key && r.contains(px, py))
+        })
     {
         let b = item.name.bounds(m);
         let y = item.name.y + 3.0;
@@ -223,6 +280,7 @@ fn moment(
     mark: Option<&SeriesKey>,
     keyboard: bool,
     pointer: Option<(f32, f32)>,
+    card_shown: bool,
     m: &mut dyn Measure,
 ) {
     let p = l.plot;
@@ -284,6 +342,7 @@ fn moment(
                 theme,
                 m,
             );
+            card.shown = card_shown;
             // Where there's room, the card covers no bar, no total and not the pointer: over
             // the shorter neighbours, beside the lower ones, or over the band's own empty head.
             card.avoid = l.bars.iter().map(|b| b.rect).collect();
@@ -383,6 +442,7 @@ fn moment(
                 theme,
                 m,
             );
+            card.shown = card_shown;
             card.place_point(
                 l,
                 scene,
@@ -429,6 +489,7 @@ fn moment(
                 );
             }
             let mut card = Card::new(model, l, header, rows, None, None, 0.0, theme, m);
+            card.shown = card_shown;
             card.place_point(l, scene, pt, r + 2.0, theme, m);
         }
         Cursor::Point { .. } => {
@@ -513,6 +574,7 @@ fn moment(
             let header = model.x_label(col.x, interval(model, &col));
             let total = stacked_total(model, view, l, &rows);
             let mut card = Card::new(model, l, header, rows, total, delta, col.x, theme, m);
+            card.shown = card_shown;
             let ay = anchor_y.unwrap_or(p.y + 4.0 - CARD_GAP);
             // Beside the crosshair, clear of its dots (CARD_GAP is more than a dot's reach) and
             // of any bar it lifted.
@@ -1552,6 +1614,8 @@ fn signed(d: f64, decimals: usize) -> String {
 
 /// A card: its header, rows and total, measured, and what it keeps clear of where it can.
 struct Card {
+    /// Whether it's drawn: the keyboard cursor's isn't while the detail panel says the same.
+    shown: bool,
     /// The marks it covers only where there's no room clear of them (a bar chart's bars, their
     /// totals, the pointer): empty where it goes where it's put.
     avoid: Vec<Rect>,
@@ -1688,6 +1752,7 @@ impl Card {
         let n = rows.len() + usize::from(more > 0);
         let h = CARD_CHROME + n as f32 * CARD_ROW + total_h;
         let mut card = Card {
+            shown: true,
             avoid: Vec::new(),
             home: None,
             header,
@@ -2055,6 +2120,9 @@ impl Card {
     }
 
     fn draw(&self, scene: &mut Scene, r: Rect, theme: &Theme, m: &mut dyn Measure) {
+        if !self.shown {
+            return;
+        }
         scene.push(Item::Shadow {
             rect: r,
             radius: CARD_RADIUS,

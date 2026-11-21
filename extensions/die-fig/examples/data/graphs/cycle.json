@@ -1,0 +1,93 @@
+{
+  "type": "graph",
+  "title": "Job states",
+  "directed": true,
+  "nodes": [
+    {
+      "id": "idle",
+      "label": "idle"
+    },
+    {
+      "id": "queued",
+      "label": "queued"
+    },
+    {
+      "id": "running",
+      "label": "running"
+    },
+    {
+      "id": "paused",
+      "label": "paused"
+    },
+    {
+      "id": "failed",
+      "label": "failed"
+    },
+    {
+      "id": "done",
+      "label": "done"
+    }
+  ],
+  "edges": [
+    {
+      "from": "idle",
+      "to": "queued",
+      "label": "submit",
+      "weight": 3
+    },
+    {
+      "from": "queued",
+      "to": "running",
+      "label": "start",
+      "weight": 3
+    },
+    {
+      "from": "running",
+      "to": "paused",
+      "label": "pause",
+      "weight": 1
+    },
+    {
+      "from": "paused",
+      "to": "running",
+      "label": "resume",
+      "weight": 1
+    },
+    {
+      "from": "running",
+      "to": "failed",
+      "label": "error",
+      "weight": 2
+    },
+    {
+      "from": "failed",
+      "to": "queued",
+      "label": "retry",
+      "weight": 2
+    },
+    {
+      "from": "running",
+      "to": "done",
+      "label": "finish",
+      "weight": 3
+    },
+    {
+      "from": "done",
+      "to": "idle",
+      "label": "reset",
+      "weight": 1
+    },
+    {
+      "from": "failed",
+      "to": "failed",
+      "label": "backoff",
+      "weight": 1
+    },
+    {
+      "from": "running",
+      "to": "paused",
+      "label": "preempt",
+      "weight": 1
+    }
+  ]
+}

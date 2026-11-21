@@ -14,9 +14,9 @@
 //!   PNG and SVG;
 //! - [`algo`]: layouts, downsampling, envelopes, search and the hit index;
 //! - [`plot`] and [`interact`]: a chart drawn, and the keyboard's and pointer's ways with it;
-//! - [`detail`], [`graph`], [`figure`], [`dashboard`], [`source`], [`surface`] and [`cells`]:
-//!   the detail panel, the network figure, tiles, dashboards, where data comes from, the DIE
-//!   surface, and the braille fallback.
+//! - [`detail`], [`search`], [`graph`], [`figure`], [`dashboard`], [`source`], [`surface`] and
+//!   [`cells`]: the detail panel, search's model, the network figure, tiles, dashboards, where
+//!   data comes from, the DIE surface, and the braille fallback.
 //!
 //! Nothing of fig's runs until `fig-toggle` asks for a figure: no timer, no job.
 #![warn(missing_docs)]
@@ -38,6 +38,7 @@ pub mod plot;
 pub mod raster;
 pub mod scale;
 pub mod scene;
+pub mod search;
 pub mod source;
 pub mod spec;
 pub mod style;
@@ -47,12 +48,13 @@ pub mod theme;
 
 pub use error::{ErrorKind, FigError, Pos};
 
+use detail::{Item, PanelKey};
 use die_core::session::{Kept, Value, json};
 use die_core::{
     Args, BufferId, Ctx, Error, Extension, Mode, Origin, Prefix, PromptSpec, Registry, Result,
     ShowIn, Side, State,
 };
-use interact::{Action, Cursor, Setting, View};
+use interact::{Action, Cursor, LayoutPick, Setting, View};
 use jiff::tz::TimeZone;
 use source::Source;
 use spec::{DataRef, Figure};
@@ -60,7 +62,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use surface::{FigState, FigSurface, Kit, Shared, SharedKit};
+use surface::{FigState, FigSurface, Keys, Kill, Kit, Shared, SharedKit};
 
 /// What a host that shows no pixels says to `\v` (ruling 17), until phase 5's cells.
 pub const NO_PIXELS: &str = "fig: this host shows no pixels yet";
@@ -144,6 +146,8 @@ pub struct Fig {
     views: BTreeMap<BufferId, OpenAs>,
     /// Goes up with `views`: the session's cache key.
     views_rev: u64,
+    /// How a yank from the detail panel reaches the registers, as your config gives it.
+    kill: Option<Kill>,
 }
 
 impl Fig {
@@ -163,6 +167,14 @@ impl Fig {
             zone: OnceCell::from(zone),
             ..Fig::default()
         }
+    }
+
+    /// The extension, a yank from the detail panel going through `kill` (die-vim's
+    /// `kill_new`: the clipboard and the kill ring, as Evil's `y`). Without it, a yank sets the
+    /// unnamed register and the clipboard.
+    pub fn copying_with(mut self, kill: Kill) -> Fig {
+        self.kill = Some(kill);
+        self
     }
 
     /// Your options.
@@ -225,6 +237,7 @@ impl Fig {
         {
             let mut st = state.borrow_mut();
             (st.buf, st.from, st.file, st.behind) = (Some(buf), from, file, true);
+            st.kill = self.kill;
         }
         self.figs.push(state.clone());
         Ok(state)
@@ -294,8 +307,11 @@ impl Fig {
             let st = state.borrow();
             (st.source.clone(), st.from, st.buf, st.file.clone())
         };
+        // A figure of a file (`:fig rates.fig`) goes back to the file's text, not the buffer it
+        // was charted from (call 1426).
         let to = match (&source, from) {
             (Source::Buffer(b), _) if ctx.is_live(*b) => *b,
+            (Source::File(path), _) => ctx.open_file(path)?,
             (_, Some(b)) if ctx.is_live(b) => b,
             _ => match file {
                 Some(path) => ctx.open_file(&path)?,
@@ -627,11 +643,41 @@ fn zoom_factor(a: &Args, by: i32) -> f64 {
     interact::consts::ZOOM_STEP.powi(count(a).min(ZOOM_COUNT) as i32 * by)
 }
 
-/// A key that acts on the pane through [`surface::Act`].
-fn act(ctx: &mut Ctx, a: &Args, f: impl FnOnce(&mut surface::Act, &Args)) -> Result {
+/// A key that acts on the pane, a chart's or a graph's, through [`surface::Keys`].
+fn act(ctx: &mut Ctx, a: &Args, f: impl FnOnce(&mut dyn Keys, &Args)) -> Result {
     on_fig(ctx, a, false, |st, w, ctx| {
-        st.act(w, ctx.now(), |act| f(act, a));
+        st.keys(w, ctx.now(), |k| f(k, a));
         Ok(())
+    })
+}
+
+/// Run a panel key when the detail panel has the keys in the window the command came from;
+/// None otherwise, for the key's figure meaning.
+fn in_panel(ctx: &mut Ctx, a: &Args, key: PanelKey) -> Option<Result> {
+    let (state, w) = here(ctx, a).ok()?;
+    if !state
+        .borrow()
+        .panes
+        .get(&w)
+        .is_some_and(|p| p.panel_focused())
+    {
+        return None;
+    }
+    Some(on_fig(ctx, a, true, |st, w, ctx| {
+        st.panel_key(ctx, w, key, count(a))
+    }))
+}
+
+/// The panel's key a figure motion is, while the panel has the keys.
+fn panel_key_of(motion: &str) -> Option<PanelKey> {
+    Some(match motion {
+        "fig-down" => PanelKey::Down,
+        "fig-up" => PanelKey::Up,
+        "fig-left" => PanelKey::Fold,
+        "fig-right" => PanelKey::Unfold,
+        "fig-first" => PanelKey::First,
+        "fig-last" => PanelKey::Last,
+        _ => return None,
     })
 }
 
@@ -790,66 +836,152 @@ const WINDOW_KEYS: [(&str, &str); 32] = [
     ("<Esc>", "vim-cancel"),
 ];
 
-/// `/`'s answer, or the best match as it's typed: the cursor there.
-fn find(
-    st: &mut FigState,
-    w: die_core::WindowId,
-    now: std::time::Duration,
-    query: &str,
-    exact: bool,
-) {
-    let Some(model) = st.model.clone() else {
-        return;
-    };
-    let labels = model.labels();
-    let hit = match exact {
-        true => labels.iter().find(|l| l.0 == query),
-        false => labels
-            .iter()
-            .filter(|l| algo::tier(query, &l.0) < algo::search::UNMATCHED)
-            .min_by_key(|l| algo::tier(query, &l.0)),
-    };
-    if let Some((_, c)) = hit.cloned() {
-        st.act(w, now, |a| a.found(c));
+/// Whether a search's item is drawn under `view`: a graph's node whose group shows (and whose
+/// `fig` block doesn't hide it), a chart's series that shows; a category always.
+fn item_shown(st: &FigState, view: &View, item: &Item) -> bool {
+    match (&st.graph, &st.model, item) {
+        (Some(g), _, Item::Node { id, .. }) => g.index_of(id).is_some_and(|i| g.visible(view, i)),
+        (None, Some(m), Item::Series(k)) => m.visible(view, k),
+        _ => true,
     }
 }
 
-/// `n` and `N`: the next or previous label the last search matches, after the cursor's.
+/// The names a search looks through: a chart's series and categories, a graph's nodes, each
+/// with the mark it names; what window `w`'s view hides left out, so a find is always drawn.
+fn search_names(st: &FigState, w: die_core::WindowId) -> Option<Vec<(String, Item)>> {
+    let view = st.panes.get(&w).map(|p| p.view.clone()).unwrap_or_default();
+    let names = match (&st.graph, &st.model) {
+        (Some(g), _) => g.search_names(),
+        (None, Some(m)) => m.names(),
+        _ => return None,
+    };
+    Some(
+        names
+            .into_iter()
+            .filter(|(_, i)| item_shown(st, &view, i))
+            .collect(),
+    )
+}
+
+/// A search's find in a window: the cursor on what `item` names, the view keeping it in sight,
+/// and its mark brought forward until `Esc` (a chart's series or category, a graph's node).
+fn found(st: &mut FigState, w: die_core::WindowId, now: std::time::Duration, item: &Item) {
+    if st.graph.is_some() {
+        let Some(c) = item.cursor() else { return };
+        st.graph_act(w, now, |g| {
+            g.pane.found_node = Some(c.clone());
+            g.put_cursor(c);
+        });
+        return;
+    }
+    let Some(c) = st.model.as_ref().and_then(|m| m.cursor_of(item)) else {
+        return;
+    };
+    st.act(w, now, |a| {
+        a.found(c);
+        a.pane.found_band = match item {
+            Item::Band { band, series: None } => Some(*band),
+            _ => None,
+        };
+    });
+}
+
+/// What the window showed before `/`, which `Esc` in the prompt (or the query typed away to
+/// nothing) puts back.
+#[derive(Clone)]
+struct Before {
+    cursor: Option<Cursor>,
+    view: View,
+    found: Option<data::SeriesKey>,
+    found_band: Option<u32>,
+    found_node: Option<Cursor>,
+}
+
+impl Before {
+    /// Window `w` of `st` as it is now.
+    fn of(st: &FigState, w: die_core::WindowId) -> Before {
+        let p = st.panes.get(&w);
+        Before {
+            cursor: p.and_then(|p| p.cursor.clone()),
+            view: p.map(|p| p.view.clone()).unwrap_or_default(),
+            found: p.and_then(|p| p.found.clone()),
+            found_band: p.and_then(|p| p.found_band),
+            found_node: p.and_then(|p| p.found_node.clone()),
+        }
+    }
+
+    /// The cursor, the view and the emphasis put back in window `w`, the lit matches let go.
+    fn put_back(&self, st: &mut FigState, w: die_core::WindowId, now: std::time::Duration) {
+        let restore = |p: &mut surface::Pane| {
+            (p.cursor, p.found, p.found_band, p.found_node) = (
+                self.cursor.clone(),
+                self.found.clone(),
+                self.found_band,
+                self.found_node.clone(),
+            );
+            p.matches.clear();
+            p.lit.clear();
+            p.lit_bands.clear();
+        };
+        let v = self.view.clone();
+        if st.is_graph() {
+            st.graph_act(w, now, |g| {
+                restore(g.pane);
+                g.set(v, surface::Change::Follow);
+            });
+        } else {
+            st.act(w, now, |a| {
+                restore(a.pane);
+                a.set(v, surface::Change::Follow);
+            });
+        }
+    }
+}
+
+/// `n` and `N`: the next or previous of the last search's marks, from the one the cursor is on,
+/// round the ends. Each mark is one stop, at its best-ranked name (a node found by its label
+/// and by its id is one), and a mark the view hides now is passed over.
 fn find_next(
     st: &mut FigState,
     w: die_core::WindowId,
     now: std::time::Duration,
     by: i32,
 ) -> Result {
-    let (Some(model), Some(query)) = (st.model.clone(), st.query.clone()) else {
+    let (cursor, view) = match st.panes.get(&w) {
+        Some(p) => (p.cursor.clone(), p.view.clone()),
+        None => (None, View::default()),
+    };
+    let Some(search) = st.search.as_ref() else {
         return Err(Error::Msg("fig: no search yet".into()));
     };
-    let mut hits: Vec<(String, Cursor)> = model
-        .labels()
-        .into_iter()
-        .filter(|l| algo::tier(&query, &l.0) < algo::search::UNMATCHED)
-        .collect();
-    hits.sort_by_key(|l| algo::tier(&query, &l.0));
-    if hits.is_empty() {
-        return Err(Error::Msg(format!("fig: nothing matches {query}")));
+    let mut stops: Vec<Item> = Vec::new();
+    for m in search.matches() {
+        if !stops.iter().any(|s| s.same(&m.item)) && item_shown(st, &view, &m.item) {
+            stops.push(m.item.clone());
+        }
     }
-    let cursor = st.panes.get(&w).and_then(|p| p.cursor.clone());
-    let series = |c: &Cursor| match c {
-        Cursor::Point { series, .. } => Some(series.clone()),
-        Cursor::Band { band, .. } => Some(data::SeriesKey::new(&band.to_string(), u32::MAX)),
-        _ => None,
-    };
-    let at = cursor
+    if stops.is_empty() {
+        return Err(Error::Msg(format!(
+            "fig: nothing matches {}",
+            search.query()
+        )));
+    }
+    let n = stops.len() as i64;
+    // From the mark the cursor is on, wherever it went since; off every one, `n` takes the
+    // first and `N` the last.
+    let on = cursor
         .as_ref()
-        .and_then(|c| hits.iter().position(|h| series(&h.1) == series(c)));
-    let n = hits.len() as i32;
-    let i = match at {
-        Some(i) => (i as i32 + by).rem_euclid(n),
+        .and_then(|c| stops.iter().position(|s| s.holds(c)));
+    let at = match on {
+        Some(i) => (i as i64 + i64::from(by.signum())).rem_euclid(n) as usize,
         None if by > 0 => 0,
-        None => n - 1,
+        None => stops.len() - 1,
     };
-    let c = hits[i as usize].1.clone();
-    st.act(w, now, |a| a.found(c));
+    let item = stops[at].clone();
+    if let Some(search) = st.search.as_mut() {
+        search.select(&item);
+    }
+    found(st, w, now, &item);
     Ok(())
 }
 
@@ -991,17 +1123,24 @@ fn copy_image(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
-/// `t`: the data as TSV in a buffer beside the figure, where all of Vim works.
+/// `t`: the data as TSV in a buffer beside the figure, where all of Vim works, its cursor on the
+/// figure's cursor's row. A graph's is one buffer of two tables, the nodes and then the edges,
+/// a blank line between, each with its header.
 fn table(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, w) = here(ctx, a)?;
     let (text, line, name, dir) = {
         let st = state.borrow();
-        let model = st
-            .model
-            .clone()
-            .ok_or_else(|| Error::Msg("fig: nothing is drawn yet".into()))?;
-        let view = st.panes.get(&w).map(|p| p.view.clone()).unwrap_or_default();
-        let (text, line) = model.tsv(&view);
+        let p = st.panes.get(&w);
+        let view = p.map(|p| p.view.clone()).unwrap_or_default();
+        let cursor = p.and_then(|p| p.cursor.clone());
+        let (text, line) = match (&st.graph, &st.model) {
+            (Some(g), _) => {
+                let t = g.tsv(&view, cursor.as_ref());
+                (format!("{}\n{}", t.nodes, t.edges), t.line)
+            }
+            (None, Some(m)) => m.tsv_at(&view, cursor.as_ref()),
+            _ => return Err(Error::Msg("fig: nothing is drawn yet".into())),
+        };
         (text, line, st.name.clone(), st.dir.clone())
     };
     let b = ctx.output_buffer(&format!("*fig table: {name}*"), &text, &dir)?;
@@ -1022,9 +1161,78 @@ fn table(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
+/// A graph's `s`: its labels on or off, its layout, and `relayout`, which lets every pin go;
+/// each answer one undo step.
+fn graph_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result {
+    let items: Vec<String> = {
+        let st = state.borrow();
+        let (Some(spec), Some(g)) = (st.graph_spec(), st.graph.as_ref()) else {
+            return Err(Error::Msg("fig: nothing is drawn yet".into()));
+        };
+        let on = st.toggles.graph_labels(spec);
+        let now = LayoutPick::of(&g.layout);
+        let mut items = vec![format!("labels: {}", if on { "on" } else { "off" })];
+        for l in LayoutPick::ALL {
+            let mark = if Some(l) == now { " (now)" } else { "" };
+            items.push(format!("layout: {}{mark}", l.name()));
+        }
+        items.push("relayout: let every pin go".into());
+        items
+    };
+    let spec = PromptSpec::new("Settings: ")
+        .candidates(items)
+        .require_match();
+    ctx.prompt(spec, move |ctx, answer| {
+        let Some(answer) = answer else {
+            return Ok(());
+        };
+        let (name, rest) = answer.split_once(':').unwrap_or((&answer, ""));
+        let mut st = state.borrow_mut();
+        let said = match name.trim() {
+            "labels" => {
+                st.turn_graph(ctx, w, |t, spec| t.flip_graph_labels(spec));
+                let on = (st.graph_spec()).is_some_and(|spec| st.toggles.graph_labels(spec));
+                format!("settings: labels {}", if on { "on" } else { "off" })
+            }
+            "layout" => {
+                let pick = rest
+                    .split_whitespace()
+                    .next()
+                    .and_then(LayoutPick::from_name);
+                let Some(pick) = pick else {
+                    return Ok(());
+                };
+                // The layout drawn already changes nothing, and makes no undo step.
+                let drawn = (st.graph.as_ref()).and_then(|g| LayoutPick::of(&g.layout));
+                if drawn == Some(pick) {
+                    format!("settings: layout {} already", pick.name())
+                } else {
+                    st.turn_graph(ctx, w, |t, _| t.layout = Some(pick));
+                    format!("settings: layout {}", pick.name())
+                }
+            }
+            "relayout" => {
+                let now = ctx.now();
+                match st.graph_act(w, now, |g| g.unpin_all()) {
+                    Some(true) => "settings: every pin let go".to_string(),
+                    _ => "settings: nothing is pinned".to_string(),
+                }
+            }
+            _ => return Ok(()),
+        };
+        ctx.messages.push(said);
+        st.refresh(ctx);
+        Ok(())
+    });
+    Ok(())
+}
+
 /// `s`: the settings as a menu, each answer one setting turned over, one undo step.
 fn settings(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, w) = here(ctx, a)?;
+    if state.borrow().is_graph() {
+        return graph_settings(ctx, state, w);
+    }
     let items: Vec<String> = {
         let st = state.borrow();
         let Some(chart) = st.chart.as_ref() else {
@@ -1063,38 +1271,116 @@ fn settings(ctx: &mut Ctx, a: &Args) -> Result {
     Ok(())
 }
 
-/// `/`: find a series or category by name, fig's tiers over flex's order; the cursor goes to
-/// the best match as you type and its series comes forward until `Esc`.
+/// `/`: find a series, a category or a node by name with fig's fuzzy match (search's model;
+/// the prompt's list in the same order, fig's score over byte order, so its first row is the
+/// best match). As you type, the cursor goes to the best match and the figure lights what
+/// matches (a graph's nodes, a chart's series and categories, the rest dimmed); typed away to
+/// nothing, the cursor and the view are as they were. `⏎` keeps the find, its mark brought
+/// forward until `Esc`, and `n` `N` go on through the matches; `Esc` in the prompt puts the
+/// cursor and the view back. What the view hides isn't looked through.
 fn search(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, w) = here(ctx, a)?;
-    let labels: Vec<String> = {
+    let (names, before) = {
         let st = state.borrow();
-        let Some(model) = st.model.as_ref() else {
-            return Err(Error::Msg("fig: nothing is drawn yet".into()));
-        };
-        model.labels().into_iter().map(|l| l.0).collect()
+        let names =
+            search_names(&st, w).ok_or_else(|| Error::Msg("fig: nothing is drawn yet".into()))?;
+        (names, Before::of(&st, w))
+    };
+    let mut labels: Vec<String> = Vec::new();
+    for (l, _) in &names {
+        if !labels.contains(l) {
+            labels.push(l.clone());
+        }
+    }
+    // The prompt ranks as search's model does: fig's tier and tie-break, then the label's byte
+    // order, flex's own order breaking only what's left (nothing: the labels are each once).
+    let mut sorted = labels.clone();
+    sorted.sort();
+    let order: BTreeMap<String, usize> = sorted
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| (l, i))
+        .collect();
+    let rank = move |q: &str, l: &str| -> usize {
+        let at = order.get(l).copied().unwrap_or(0).min((1 << 20) - 1);
+        match algo::search::score(l, q) {
+            Some((t, b)) => (t << 44) | (b.min((1 << 24) - 1) << 20) | at,
+            None => usize::MAX,
+        }
     };
     let typed = state.clone();
+    let live = Rc::new(RefCell::new(search::Search::new(names)));
+    let typing = live.clone();
+    let back = before.clone();
     let spec = PromptSpec::new("Find: ")
         .history("fig-find")
         .candidates(labels)
-        .tiers(algo::tier)
+        .tiers(rank)
         .on_change(move |ctx, text| {
             let mut st = typed.borrow_mut();
-            if !text.is_empty() {
-                find(&mut st, w, ctx.now(), text, false);
-                st.query = Some(text.to_string());
+            let mut search = typing.borrow_mut();
+            search.set_query(text);
+            let now = ctx.now();
+            if text.is_empty() {
+                // Typed away to nothing: where it was, as Vim's incremental search goes back.
+                back.put_back(&mut st, w, now);
+                st.refresh(ctx);
+                return Ok(());
+            }
+            let best = search.best().map(|m| m.item.clone());
+            // The figure lights what matches: a graph's nodes, a chart's series and categories.
+            let (mut nodes, mut series, mut bands) = (vec![], vec![], vec![]);
+            for m in search.matches() {
+                match (&m.item, &st.graph) {
+                    (Item::Node { id, .. }, Some(g)) => nodes.extend(g.index_of(id)),
+                    (Item::Series(k), None) if !series.contains(k) => series.push(k.clone()),
+                    (Item::Band { band, series: None }, None) if !bands.contains(band) => {
+                        bands.push(*band)
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(p) = st.panes.get_mut(&w) {
+                (p.matches, p.lit, p.lit_bands) = (nodes, series, bands);
+            }
+            match best {
+                Some(item) => found(&mut st, w, now, &item),
+                // Nothing matches: the cursor where it was, nothing lit.
+                None => back.put_back(&mut st, w, now),
             }
             st.refresh(ctx);
             Ok(())
         });
     ctx.prompt(spec, move |ctx, answer| {
         let mut st = state.borrow_mut();
-        if let Some(answer) = answer.filter(|a| !a.is_empty()) {
-            find(&mut st, w, ctx.now(), &answer, true);
-            if st.query.is_none() {
-                st.query = Some(answer);
+        let now = ctx.now();
+        if let Some(p) = st.panes.get_mut(&w) {
+            p.matches.clear();
+            p.lit.clear();
+            p.lit_bands.clear();
+        }
+        match answer.filter(|a| !a.is_empty()) {
+            Some(answer) => {
+                // What was typed is the search `n` and `N` go on with; the answer is the row
+                // chosen in the list (the best match, the cursor's as you typed, unless you
+                // moved), or the line as typed.
+                let mut search = live.borrow().clone();
+                if search.query().is_empty() {
+                    search.set_query(&answer);
+                }
+                let chosen = (search.matches().iter())
+                    .find(|m| m.label == answer)
+                    .map(|m| m.item.clone())
+                    .or_else(|| search.best().map(|m| m.item.clone()));
+                if let Some(item) = &chosen {
+                    search.select(item);
+                    found(&mut st, w, now, item);
+                }
+                st.query = Some(search.query().to_string());
+                st.search = Some(search);
             }
+            // Esc: the cursor and the view as they were, the emphasis too.
+            None => before.put_back(&mut st, w, now),
         }
         st.refresh(ctx);
         Ok(())
@@ -1270,16 +1556,41 @@ fn domain_of(v: Option<&Value>) -> Option<(f64, f64)> {
 }
 
 /// A view and cursor as a restart keeps them (ruling 16): the domains, what's hidden or alone,
-/// following, and the cursor, by series key. Not the reference (mouse-ux §6).
+/// following, a graph's pinned nodes, and the cursor, by series key or node id. Not the
+/// reference (mouse-ux §6).
 fn view_value(v: &View, c: &Option<Cursor>) -> Value {
+    let pinned: Vec<Value> = (v.pinned.iter())
+        .filter(|(_, p)| p.0.is_finite() && p.1.is_finite())
+        .map(|(id, p)| json!([&**id, p.0, p.1]))
+        .collect();
     json!({
         "x": domain(v.x),
         "y": domain(v.y),
         "hidden": v.hidden.iter().map(key_value).collect::<Vec<_>>(),
         "only": v.only.as_ref().map(key_value),
         "follow": v.follow,
+        "pinned": pinned,
         "cursor": cursor_value(c),
     })
+}
+
+/// A graph's pinned nodes as the session keeps them.
+fn pins_of(v: Option<&Value>) -> std::collections::BTreeMap<Box<str>, (f64, f64)> {
+    let mut out = std::collections::BTreeMap::new();
+    for p in v.and_then(Value::as_array).into_iter().flatten() {
+        let Some(a) = p.as_array() else { continue };
+        let (Some(id), Some(x), Some(y)) = (
+            a.first().and_then(Value::as_str),
+            a.get(1).and_then(Value::as_f64),
+            a.get(2).and_then(Value::as_f64),
+        ) else {
+            continue;
+        };
+        if x.is_finite() && y.is_finite() {
+            out.insert(id.into(), (x, y));
+        }
+    }
+    out
 }
 
 fn view_of(v: &Value) -> (View, Option<Cursor>) {
@@ -1292,6 +1603,7 @@ fn view_of(v: &Value) -> (View, Option<Cursor>) {
             .unwrap_or_default(),
         only: v.get("only").and_then(key_of),
         follow: v.get("follow").and_then(Value::as_bool).unwrap_or(false),
+        pinned: pins_of(v.get("pinned")),
         ..View::default()
     };
     (view, v.get("cursor").and_then(cursor_of))
@@ -1314,6 +1626,16 @@ impl Fig {
             let (view, cursor) = st.kept_view();
             let mut v = view_value(&view, &cursor);
             v["shown"] = Value::Bool(st.buf == focused);
+            // A graph's layout and labels as `s` left them, and whether the panel was open.
+            if let Some(l) = st.toggles.layout {
+                v["layout"] = json!(l.name());
+            }
+            if let Some(on) = st.toggles.labels.filter(|_| st.is_graph()) {
+                v["labels"] = json!(on);
+            }
+            if st.kept_panel() {
+                v["panel"] = Value::Bool(true);
+            }
             match &st.source {
                 Source::Buffer(b) => {
                     buffers.insert(*b, v);
@@ -1425,8 +1747,38 @@ impl Extension for Fig {
                 if let Some(done) = in_log(ctx, a, |st, w| log_move(st, w, &action, count(a))) {
                     return done;
                 }
+                if let Some(done) = panel_key_of(name).and_then(|k| in_panel(ctx, a, k)) {
+                    return done;
+                }
                 act(ctx, a, move |act, a| {
                     act.move_cursor(&action, count(a));
+                })
+            });
+        }
+        for (name, by, doc) in [
+            (
+                "fig-neighbour-next",
+                1,
+                "]: on a graph, the cursor to the next neighbour of its node, clockwise from straight up; again goes on round the same node.",
+            ),
+            (
+                "fig-neighbour-prev",
+                -1,
+                "[: on a graph, the cursor to the previous neighbour of its node.",
+            ),
+        ] {
+            reg.command(name, doc, move |ctx, a| {
+                on_fig(ctx, a, false, |st, w, ctx| {
+                    let none = st.panes.get(&w).is_some_and(|p| p.cursor.is_none());
+                    st.keys(w, ctx.now(), |k| {
+                        k.move_cursor(&Action::Neighbour(by), count(a))
+                    });
+                    match none {
+                        true => Err(Error::Msg(
+                            "fig: no cursor yet: h l j k or a click puts it on the data".into(),
+                        )),
+                        false => Ok(()),
+                    }
                 })
             });
         }
@@ -1459,7 +1811,7 @@ impl Extension for Fig {
                     });
                     return Ok(());
                 }
-                act(ctx, a, |act, _| act.reset(None))
+                act(ctx, a, |act, _| act.fit())
             },
         );
         reg.command(
@@ -1484,23 +1836,39 @@ impl Extension for Fig {
             "zz: centre the view on the cursor.",
             |ctx, a| act(ctx, a, |act, _| act.centre()),
         );
-        reg.command("fig-hide", "x: hide the cursor's series.", |ctx, a| {
-            act(ctx, a, |act, _| {
-                act.hide();
-            })
-        });
         reg.command(
-            "fig-only",
-            "o: show only the cursor's series, or all of them again.",
+            "fig-hide",
+            "x: hide the cursor's series (on a graph, its node's group).",
             |ctx, a| {
-                act(ctx, a, |act, _| {
-                    act.only();
+                on_fig(ctx, a, false, |st, w, ctx| {
+                    match st.keys(w, ctx.now(), |k| k.hide()) {
+                        Some(false) if st.is_graph() => {
+                            Err(Error::Msg("fig: the cursor's node has no group".into()))
+                        }
+                        _ => Ok(()),
+                    }
                 })
             },
         );
-        reg.command("fig-show-all", "X: show every series.", |ctx, a| {
-            act(ctx, a, |act, _| act.show_all())
-        });
+        reg.command(
+            "fig-only",
+            "o: show only the cursor's series (on a graph, its node's group), or all of them again.",
+            |ctx, a| {
+                on_fig(ctx, a, false, |st, w, ctx| {
+                    match st.keys(w, ctx.now(), |k| k.only()) {
+                        Some(false) if st.is_graph() => {
+                            Err(Error::Msg("fig: the cursor's node has no group".into()))
+                        }
+                        _ => Ok(()),
+                    }
+                })
+            },
+        );
+        reg.command(
+            "fig-show-all",
+            "X: show every series (on a graph, every group).",
+            |ctx, a| act(ctx, a, |act, _| act.show_all()),
+        );
         reg.command(
             "fig-undo",
             "u: undo the last view change (a zoom, a pan, a brush, a legend click, a setting).",
@@ -1522,7 +1890,7 @@ impl Extension for Fig {
             "m: set the reference at the cursor, or clear it there: every card then shows the change since.",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
-                    match st.act(w, ctx.now(), |a| a.reference()) {
+                    match st.keys(w, ctx.now(), |a| a.reference()) {
                         Some(true) => Ok(()),
                         _ => Err(Error::Msg("fig: no cursor yet".into())),
                     }
@@ -1534,7 +1902,7 @@ impl Extension for Fig {
             "`: the cursor to the reference.",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
-                    match st.act(w, ctx.now(), |a| a.to_reference()) {
+                    match st.keys(w, ctx.now(), |a| a.to_reference()) {
                         Some(true) => Ok(()),
                         _ => Err(Error::Msg(
                             "fig: no reference set: m or ⇧-click sets one".into(),
@@ -1545,10 +1913,10 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-cancel",
-            "Esc: drop a brush, take a pan back, close the key card, or clear the search's emphasis or the reference.",
+            "Esc: drop a brush, take a pan back, close the key card, or clear the search's emphasis, the detail panel, the reference or a graph cursor's emphasis.",
             |ctx, a| {
-                on_fig(ctx, a, true, |st, w, _| {
-                    st.cancel(w);
+                on_fig(ctx, a, true, |st, w, ctx| {
+                    st.cancel(w, ctx.now());
                     Ok(())
                 })
             },
@@ -1570,22 +1938,66 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-detail",
-            "⏎: what the cursor is on and its values; in the log, to the marked entry's place; on a figure that can't draw, to the error.",
+            "⏎: the detail panel for what the cursor is on, or closed again; in the panel, to the mark its row names (a branch folds); in the log, to the marked entry's place; on a figure that can't draw, to the error.",
             |ctx, a| {
                 let (state, w) = here(ctx, a)?;
                 let to_error = {
                     let st = state.borrow();
                     let log = st.panes.get(&w).is_some_and(|p| p.log.is_some());
-                    log || (st.error.is_some() && st.model.is_none())
+                    log || (st.error.is_some() && st.model.is_none() && st.graph.is_none())
                 };
                 if to_error {
                     return goto_error(ctx, a);
                 }
-                let said = state.borrow().detail(w);
-                ctx.messages.push(said);
-                Ok(())
+                if let Some(done) = in_panel(ctx, a, PanelKey::Enter) {
+                    return done;
+                }
+                on_fig(ctx, a, false, |st, w, _| {
+                    if st.close_panel(w) {
+                        return Ok(());
+                    }
+                    st.open_panel(w, None).map_err(Error::Msg)
+                })
             },
         );
+        for (name, doc) in [
+            (
+                "fig-focus-next",
+                "Tab: the keys to the detail panel, or back to the figure (the focus stops in turn).",
+            ),
+            (
+                "fig-focus-prev",
+                "S-Tab: the keys back to the figure from the detail panel, or to it.",
+            ),
+        ] {
+            reg.command(name, doc, |ctx, a| {
+                on_fig(ctx, a, true, |st, w, _| match st.focus_panel(w) {
+                    true => Ok(()),
+                    false => Err(Error::Msg(
+                        "fig: no detail panel: ⏎ opens one for the cursor".into(),
+                    )),
+                })
+            });
+        }
+        for (name, key, doc) in [
+            (
+                "fig-yank",
+                PanelKey::Yank,
+                "y: in the detail panel, copy the row's value (a branch's JSON, a neighbour's id).",
+            ),
+            (
+                "fig-yank-pair",
+                PanelKey::YankPair,
+                "Y: in the detail panel, copy the row as `key: value`.",
+            ),
+        ] {
+            reg.command(name, doc, move |ctx, a| match in_panel(ctx, a, key) {
+                Some(done) => done,
+                None => Err(Error::Msg(
+                    "fig: y copies in the detail panel: ⏎ opens it, Tab goes in".into(),
+                )),
+            });
+        }
         reg.command("fig-find", "/: find a series or category by name.", search);
         reg.command(
             "fig-find-next",
@@ -1656,6 +2068,17 @@ impl Extension for Fig {
             .bind(Normal, "?", "fig-help")
             .bind(Normal, "<Esc>", "fig-cancel")
             .bind(Normal, "<CR>", "fig-detail")
+            .bind(Normal, "]", "fig-neighbour-next")
+            .bind(Normal, "[", "fig-neighbour-prev")
+            .bind(Normal, "<Tab>", "fig-focus-next")
+            .bind(Normal, "<C-i>", "fig-focus-next")
+            .bind(Normal, "<S-Tab>", "fig-focus-prev")
+            .bind(Normal, "y", "fig-yank")
+            .bind(Normal, "Y", "fig-yank-pair")
+            .bind(Normal, "<Left>", "fig-left")
+            .bind(Normal, "<Right>", "fig-right")
+            .bind(Normal, "<Down>", "fig-down")
+            .bind(Normal, "<Up>", "fig-up")
             .bind(Normal, "!", "fig-log")
             .bind(Normal, "<C-d>", "fig-log-page-down")
             .bind(Normal, "<C-u>", "fig-log-page-up")
@@ -1760,6 +2183,13 @@ impl Extension for Fig {
             };
             let seed = Some(view_of(v));
             let state = fig.make(ctx, source, &title, &name, dir, from, file, seed)?;
+            {
+                let mut st = state.borrow_mut();
+                st.toggles.layout =
+                    (v.get("layout").and_then(Value::as_str)).and_then(LayoutPick::from_name);
+                st.toggles.labels = v.get("labels").and_then(Value::as_bool);
+                st.panel_seed = v.get("panel") == Some(&Value::Bool(true));
+            }
             if v.get("shown") == Some(&Value::Bool(true)) {
                 show = state.borrow().buf;
             }

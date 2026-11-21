@@ -26,7 +26,8 @@
 //! array. One line of JSONL whose `"type"` is no figure's and that has none of a figure's
 //! `data`, `mark`, `layers`, `nodes`, `edges`, `series`, `buckets` or `rows` is a row of data,
 //! when it makes a figure; else the spec's error stands. Bare data is read and [`guess`]ed, and
-//! the guess's data is the table itself.
+//! the guess's data is the table itself; but a table with an `id` and a `parent` column is a
+//! tree, a [`GraphSpec`] of a node a row ([`graph::from_table`]).
 //!
 //! `dir` is made absolute against the working directory first (an empty one stays empty), so a
 //! file's path, which [`write`] gives as it was resolved, reads back as the same path.
@@ -378,6 +379,10 @@ pub struct Chart {
 /// How a graph's nodes are laid out.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Layout {
+    /// The spec doesn't say: the graph picks (a tree for a forest or a table's parents,
+    /// layers for a directed acyclic graph, else fig's stress layout; see
+    /// [`crate::graph::GraphModel::build`]).
+    Auto,
     /// fig's stress layout.
     Force,
     /// A tidy tree from a root, or from every node with no parent.
@@ -693,8 +698,12 @@ fn bare_jsonl(text: &str, opt: &ReadOptions) -> Result<Figure> {
     inferred(table, DataFormat::Jsonl)
 }
 
-/// The guess at a table read from bare data, its format kept.
+/// The guess at a table read from bare data, its format kept: a tree when it has an id and a
+/// parent column ([`graph::from_table`]), else a chart.
 fn inferred(table: Table, f: DataFormat) -> Result<Figure> {
+    if let Some(g) = graph::from_table(&table) {
+        return g.map(Figure::Graph);
+    }
     let mut chart = guess(&table).map_err(|e| placed(e, START))?;
     chart.data.format = Some(f);
     Ok(Figure::Chart(chart))
