@@ -25,10 +25,16 @@
 //! at any figure's size. [`layout`] places the names, the labels, the chip and the readout
 //! (measured through [`Measure`], so tests need no fonts) clear of the line art and of each
 //! other wherever the anchor is; [`draw`] draws the line art over a scrim of the surface, and
-//! the text over that, with a [`Region`](crate::scene::Region) for each name, each label and
-//! the dead centre. What stays while the pointer moves ([`draw_still`]) and what follows it
-//! ([`draw_live`]) can be drawn apart, so a surface can keep the first. The surface owns a
-//! [`DialState`] while it's open; nothing changes until it picks.
+//! the text over that, with [`Region`](crate::scene::Region)s. The surface owns a
+//! [`DialState`] while it's open; nothing changes until it picks. While it's open the dial
+//! takes every pointer event: a press goes to [`DialState::press`], which picks by where it is
+//! as letting go there would. Each region is a place where that press picks what the region
+//! says ([`DialState::pick_of`]), so a surface that asks the regions first gets the same
+//! answer, and between them `press` alone says. What stays while the pointer moves
+//! ([`draw_still`]) and what follows it ([`draw_live`]) can be drawn apart, so a surface can
+//! keep the first.
+
+use std::collections::BTreeMap;
 
 use crate::scene::{
     Anchor, Cap, Hit, Item, Join, Measure, Paint, PathData, Rect, Scene, Stroke, TextSpec, Verb,
@@ -103,6 +109,13 @@ const DOTTED: f32 = 1.3;
 const SEAM: f32 = 0.25;
 /// The most steps of a px a name or a label moves out to clear what's placed before it.
 const MOVES: usize = 4096;
+/// How far, in degrees, a region keeps inside the edges of the wedge where a press picks what
+/// it says, so a press anywhere in it lands on the same side of each edge however its angle
+/// rounds.
+const EDGE: f32 = 0.01;
+/// How far past either end of stage two's arc a region of the end's choice may reach, in
+/// degrees: the end's choice picks for a good way further, to the far side of the dial.
+const PAST_END: f32 = 60.0;
 
 /// The sectors' indices, north first then clockwise.
 pub mod sector {
@@ -128,12 +141,12 @@ pub mod sector {
 pub const NAMES: [&str; 8] = [
     "detail", "compare", "only", "table", "view", "export", "hide", "settings",
 ];
-/// View's stage two: the time ranges.
-pub const VIEW: [&str; 5] = ["1h", "6h", "24h", "7d", "all"];
+/// View's stage two on a time axis: the time ranges (briefs/mouse-ux.md §7.3).
+pub const VIEW: [&str; 6] = ["15m", "1h", "6h", "24h", "7d", "all"];
 /// Export's stage two: the formats.
 pub const EXPORT: [&str; 3] = ["png", "svg", "copy"];
-/// Settings' stage two: the toggles.
-pub const SETTINGS: [&str; 5] = ["grid", "labels", "log", "stack", "markers"];
+/// Settings' stage two on a chart: the toggles (briefs/mouse-ux.md §7.3).
+pub const SETTINGS: [&str; 6] = ["grid", "axes", "log", "stack", "labels", "marks"];
 
 /// The unit vector `deg` degrees clockwise from north (up: negative y).
 pub fn toward(deg: f32) -> (f32, f32) {
@@ -188,6 +201,8 @@ pub struct DialState {
     current: [Option<u8>; 8],
     /// What the readout says with nothing hovered: the target.
     target: Option<String>,
+    /// What the readout says after a sector's stage-two choice: ` y on` for a toggle.
+    notes: BTreeMap<(u8, u8), String>,
 }
 
 /// What the dial offers here.
@@ -274,14 +289,17 @@ impl DialSpec {
     }
 }
 
-/// What letting go would do, as the whiteboard's readout says it: `key: value`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What letting go would do, as the whiteboard's readout says it: `key: value rest`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Readout {
     /// The sector, with its colon if there's a value, in the dial's grey; with nothing hovered,
     /// the target.
     pub key: String,
     /// Stage two's choice, in the accent.
     pub value: String,
+    /// What the surface says after the choice ([`DialState::note`]), as given, in the text's
+    /// colour: ` y on`.
+    pub rest: String,
     /// Nothing hovered, or a sector that doesn't apply: all of it in the dial's grey, faint.
     pub dim: bool,
 }
@@ -289,26 +307,34 @@ pub struct Readout {
 impl Readout {
     /// It as one line.
     pub fn line(&self) -> String {
-        if self.value.is_empty() {
-            self.key.clone()
-        } else {
-            format!("{} {}", self.key, self.value)
+        let mut s = self.key.clone();
+        if !self.value.is_empty() {
+            s.push(' ');
+            s.push_str(&self.value);
         }
+        s.push_str(&self.rest);
+        s
     }
 }
 
 impl DialState {
-    /// A dial opened at `anchor`, for cells of `cell` logical px, nothing hovered yet.
+    /// A dial opened at `anchor`, for cells of `cell` logical px, nothing hovered yet. Export's
+    /// arc centres png, as the first time does (briefs/mouse-ux.md §7.3), until
+    /// [`DialState::centre_on`] says the format last used; the other arcs centre their middle
+    /// choice until it says theirs. An anchor at no real place picks nothing anywhere.
     pub fn open(anchor: (f32, f32), cell: (f32, f32)) -> DialState {
         let fine = |v: f32, or: f32| if v.is_finite() && v > 0.0 { v } else { or };
+        let mut current = [None; 8];
+        current[usize::from(sector::EXPORT)] = Some(0);
         DialState {
             anchor,
             cell: (fine(cell.0, 10.0), fine(cell.1, 20.0)),
             hovered: None,
             pointer: anchor,
             stage: Stage::Sectors,
-            current: [None; 8],
+            current,
             target: None,
+            notes: BTreeMap::new(),
         }
     }
 
@@ -363,9 +389,11 @@ impl DialState {
         self.radius() + ARC * self.cell.1
     }
 
-    /// The sector in the direction of `p`, or None in the dead zone.
+    /// The sector in the direction of `p`, or None in the dead zone, and for a point (or an
+    /// anchor) at no real place, as the dead zone.
     pub fn sector_at(&self, p: (f32, f32)) -> Option<u8> {
-        if dist(p, self.anchor) < self.dead() {
+        let r = dist(p, self.anchor);
+        if !(r.is_finite() && r >= self.dead()) {
             return None;
         }
         let turn = angle_of(p.0 - self.anchor.0, p.1 - self.anchor.1) / 45.0;
@@ -373,7 +401,8 @@ impl DialState {
     }
 
     /// Centres `sector`'s stage two on `choice` (the time range shown, the format last used),
-    /// so pushing straight out keeps it. Unset, the middle choice is centred.
+    /// so pushing straight out keeps it. Unset, the middle choice is centred (the earlier of
+    /// the two middle ones for an even count), and export's png.
     pub fn centre_on(&mut self, sector: u8, choice: u8) {
         if let Some(c) = self.current.get_mut(usize::from(sector)) {
             *c = Some(choice);
@@ -383,6 +412,18 @@ impl DialState {
     /// What the readout says with nothing hovered, dimmed: the target (`api · 06:05 · 642`).
     pub fn set_target(&mut self, about: impl Into<String>) {
         self.target = Some(about.into());
+    }
+
+    /// What the readout says after `sector`'s stage-two `choice`, as given, so start it with a
+    /// space: ` y on` for a toggle that's off, so the readout says `settings: log y on`. An
+    /// empty note says nothing more.
+    pub fn note(&mut self, sector: u8, choice: u8, rest: impl Into<String>) {
+        let rest = rest.into();
+        if rest.is_empty() {
+            self.notes.remove(&(sector, choice));
+        } else {
+            self.notes.insert((sector, choice), rest);
+        }
     }
 
     /// Sector `i`'s arc's ends, in degrees clockwise from north, the counter-clockwise first:
@@ -404,10 +445,14 @@ impl DialState {
     }
 
     /// The hovered sector's choice in the direction of `p`; past the arc, the nearer end's.
+    /// None for a point (or an anchor) at no real place.
     pub fn choice_at(&self, p: (f32, f32), spec: &DialSpec) -> Option<u8> {
         let (start, end) = self.span(spec)?;
         let half = (end - start) / 2.0;
         let a = angle_of(p.0 - self.anchor.0, p.1 - self.anchor.1);
+        if !(a.is_finite() && dist(p, self.anchor).is_finite()) {
+            return None;
+        }
         let rel = wrap(a - (start + half)) + half;
         let n = ((end - start) / SEGMENT).round();
         Some((rel / SEGMENT).floor().clamp(0.0, n - 1.0) as u8)
@@ -431,8 +476,15 @@ impl DialState {
 
     fn track(&mut self, p: (f32, f32), may_open: bool, spec: &DialSpec) {
         let was = (self.hovered, self.stage);
-        self.pointer = p;
         let r = dist(p, self.anchor);
+        // A pointer at no real place is in the dead zone, its needle home: nothing hovered.
+        if !r.is_finite() {
+            self.pointer = self.anchor;
+            self.hovered = None;
+            self.stage = Stage::Sectors;
+            return;
+        }
+        self.pointer = p;
         let held = self.stage != Stage::Sectors && r >= self.radius();
         if !held {
             self.hovered = self.sector_at(p);
@@ -468,20 +520,39 @@ impl DialState {
 
     /// A left press while it's open: it picks there, at whichever stage, as letting go there
     /// would ([`DialState::settle`], then [`DialState::release`]). The surface swallows its
-    /// drag and release.
+    /// drag and release. Every press on the dial comes here; where a region is, this picks
+    /// what [`DialState::pick_of`] says of it.
     pub fn press(&mut self, at: (f32, f32), spec: &DialSpec) -> DialPick {
         self.settle(at, spec);
         self.release(spec)
     }
 
-    /// What letting go would do: the sector, or `sector: choice` past the first band; with
-    /// nothing hovered, the target, dimmed; on a sector that doesn't apply, its name, dimmed.
+    /// What a press on one of the dial's regions picks, as [`DialState::press`] there would: a
+    /// sector's name that sector, or nothing if it doesn't apply; a stage-two word, or the
+    /// chip past the arc, that choice of the hovered sector; the dead centre, and any other
+    /// hit, nothing.
+    pub fn pick_of(&self, hit: &Hit, spec: &DialSpec) -> DialPick {
+        match (hit, self.hovered) {
+            (Hit::DialSector(i), _) if spec.applies(*i) => DialPick::Sector(*i),
+            (Hit::DialStage2(k), Some(i)) if self.stage != Stage::Sectors && spec.has_arc(i) => {
+                DialPick::Stage2(i, *k)
+            }
+            _ => DialPick::None,
+        }
+    }
+
+    /// What letting go would do: the sector, or `sector: choice` and its note past the first
+    /// band; with nothing hovered, the target, dimmed; on a sector that doesn't apply, its
+    /// name, dimmed.
     pub fn readout(&self, spec: &DialSpec) -> Readout {
-        let Some(s) = self.hovered.and_then(|i| spec.sectors.get(usize::from(i))) else {
+        let Some((i, s)) = self
+            .hovered
+            .and_then(|i| spec.sectors.get(usize::from(i)).map(|s| (i, s)))
+        else {
             return Readout {
                 key: self.target.clone().unwrap_or_default(),
-                value: String::new(),
                 dim: true,
+                ..Readout::default()
             };
         };
         if let Stage::Choice(k) = self.stage
@@ -490,18 +561,21 @@ impl DialState {
             return Readout {
                 key: format!("{}:", s.name),
                 value: (*choice).to_string(),
+                rest: self.notes.get(&(i, k)).cloned().unwrap_or_default(),
                 dim: false,
             };
         }
         Readout {
             key: s.name.to_string(),
-            value: String::new(),
             dim: !s.enabled,
+            ..Readout::default()
         }
     }
 
-    /// The dial with the pointer at its anchor: what [`draw_still`] draws depends on nothing
-    /// else, so a surface that keeps that drawing compares these.
+    /// The dial with the pointer at its anchor. What [`draw_still`] draws depends on this, on
+    /// the area it's laid out in, the spec, the theme, the scene's scale and the measure's
+    /// fonts, and on nothing else, so a surface that keeps that drawing keys it on all of them,
+    /// as the whiteboard keys its own on its still, its map and its scrim's colour.
     pub fn still(&self) -> DialState {
         DialState {
             pointer: self.anchor,
@@ -568,6 +642,9 @@ pub struct DialLayout {
     /// The readout's box, a cell tall: under everything with a blank line between, or over it
     /// when the area ends first, and inside the area's sides. None when it says nothing.
     pub readout: Option<Rect>,
+    /// What the readout in that box says: [`DialState::readout`], cut with an ellipsis where
+    /// it's wider than the area.
+    pub said: Readout,
     /// The farthest from the anchor the scrim must reach: everything drawn but stage two's
     /// chip, which is solid.
     pub reach: f32,
@@ -800,9 +877,9 @@ pub fn layout(
     }
     let lowest = drawn.iter().map(Rect::bottom).fold(c.1, f32::max);
     let highest = drawn.iter().map(|r| r.y).fold(c.1, f32::min);
-    let r = st.readout(spec);
-    let readout = (!r.line().is_empty()).then(|| {
-        let w = readout_width(&r, text, m);
+    let said = fit_readout(&st.readout(spec), text, area.0, m);
+    let readout = (!said.line().is_empty()).then(|| {
+        let w = readout_width(&said, text, m);
         let (below, above) = (lowest + ch, highest - 2.0 * ch);
         let y = if below + ch <= area.1 || above < 0.0 {
             below
@@ -821,6 +898,7 @@ pub fn layout(
         labels,
         chip,
         readout,
+        said,
         reach,
     }
 }
@@ -832,6 +910,8 @@ enum Piece {
     Key,
     /// Stage two's choice: the accent.
     Value,
+    /// The surface's note after it: the text's colour.
+    Rest,
     /// All of it, with nothing hovered or on a sector that doesn't apply: the grey, faint.
     Dim,
 }
@@ -846,7 +926,46 @@ fn readout_pieces(r: &Readout) -> Vec<(String, Piece)> {
         pieces.push((" ".into(), Piece::Key));
         pieces.push((r.value.clone(), Piece::Value));
     }
+    if !r.rest.is_empty() {
+        pieces.push((r.rest.clone(), Piece::Rest));
+    }
     pieces
+}
+
+/// `r` cut to `max` wide: its pieces in order, the first that doesn't fit cut with an ellipsis
+/// and the rest dropped. A dimmed one is one piece.
+fn fit_readout(r: &Readout, text: TextSpec, max: f32, m: &mut dyn Measure) -> Readout {
+    if readout_width(r, text, m) <= max {
+        return r.clone();
+    }
+    if r.dim {
+        return Readout {
+            key: m.fit(&r.line(), text, max),
+            dim: true,
+            ..Readout::default()
+        };
+    }
+    let mut out = Readout::default();
+    let mut left = max;
+    let pieces = [
+        (&r.key, "", &mut out.key),
+        (&r.value, " ", &mut out.value),
+        (&r.rest, "", &mut out.rest),
+    ];
+    for (piece, before, to) in pieces {
+        if piece.is_empty() {
+            continue;
+        }
+        let room = left - m.width(before, text);
+        let w = m.width(piece, text);
+        if w > room {
+            *to = m.fit(piece, text, room.max(0.0));
+            break;
+        }
+        *to = piece.clone();
+        left = room - w;
+    }
+    out
 }
 
 fn readout_width(r: &Readout, text: TextSpec, m: &mut dyn Measure) -> f32 {
@@ -1026,8 +1145,11 @@ fn scrim(scene: &mut Scene, c: (f32, f32), s: f32, ch: f32, colour: Color) {
 /// grey, ticks between them in the strong grey, a T at each end, the picked one thick in the
 /// accent. Over the line art, the names in the dial's grey (faint in stage two, dim where they
 /// don't apply), the hovered one a chip, the surface's colour on the accent; stage two's words,
-/// the picked one strong; and the readout, `key:` in the grey and the value in the accent. And
-/// the regions: each name shown, each word, and the dead centre.
+/// the picked one strong; and the readout, `key:` in the grey, the value in the accent and the
+/// note in the text's colour. And the regions, where a press picks what each says
+/// ([`DialState::pick_of`]): in stage one each name shown, in stage two each word and the chip
+/// past the arc (the choice straight out), each cut to the part whose direction picks it, and
+/// the dead centre.
 pub fn draw_still(
     st: &DialState,
     spec: &DialSpec,
@@ -1166,10 +1288,11 @@ pub fn draw_still(
     if let Some(b) = l.readout {
         let mut x = b.x;
         let y = b.y + (b.h + m.cap(text)) / 2.0;
-        for (s, piece) in readout_pieces(&st.readout(spec)) {
+        for (s, piece) in readout_pieces(&l.said) {
             let ink = match piece {
                 Piece::Key => (theme.dial, 1.0),
                 Piece::Value => (theme.dial_accent, 1.0),
+                Piece::Rest => (theme.text, 1.0),
                 Piece::Dim => (theme.dial, alpha::FAINT),
             };
             let w = m.width(&s, text);
@@ -1179,18 +1302,110 @@ pub fn draw_still(
             x += w;
         }
     }
-    // What each place is.
-    for (i, b) in l.names.iter().enumerate().filter(|(i, _)| l.shown[*i]) {
-        scene.region(*b, Hit::DialSector(i as u8));
-    }
-    if open {
+    regions(st, spec, l, scene);
+}
+
+/// The dial's regions: in stage one each name shown, in stage two each word and the chip past
+/// the arc, each cut to the wedge about the anchor where a press picks what it says (a long
+/// name's ends reach into its neighbours' directions), and the dead centre. In stage two the
+/// faint names have none: a press there picks on the arc, or its sector.
+fn regions(st: &DialState, spec: &DialSpec, l: &DialLayout, scene: &mut Scene) {
+    let c = st.anchor;
+    if let (Stage::Arc | Stage::Choice(_), Some(i), Some((start, _))) =
+        (st.stage, st.hovered, st.span(spec))
+    {
+        let n = spec.sectors[usize::from(i)].stage2.len();
+        let wedge = |k: u8| choice_wedge(start, n, usize::from(k));
         for (k, b) in &l.labels {
-            scene.region(*b, Hit::DialStage2(*k));
+            let (from, to) = wedge(*k);
+            if let Some(r) = in_wedge(c, b, from, to) {
+                scene.region(r, Hit::DialStage2(*k));
+            }
+        }
+        // Past the arc straight out, the chip picks the choice it's over: the centred one.
+        if let Some(chip) = l.chip
+            && let Some(k) = st.choice_at((chip.x + chip.w / 2.0, chip.y + chip.h / 2.0), spec)
+        {
+            let (from, to) = wedge(k);
+            if let Some(r) = in_wedge(c, &chip, from, to) {
+                scene.region(r, Hit::DialStage2(k));
+            }
+        }
+    } else {
+        for (i, b) in l.names.iter().enumerate().filter(|(i, _)| l.shown[*i]) {
+            let mid = i as f32 * 45.0;
+            if let Some(r) = in_wedge(c, b, mid - 22.5, mid + 22.5) {
+                scene.region(r, Hit::DialSector(i as u8));
+            }
         }
     }
-    let half = st.dead() / std::f32::consts::SQRT_2;
+    // A square inside the dead zone, a hair in from its circle.
+    let half = st.dead() / std::f32::consts::SQRT_2 * 0.999;
     let centre = Rect::new(c.0 - half, c.1 - half, 2.0 * half, 2.0 * half);
     scene.region(centre, Hit::DialCentre);
+}
+
+/// Where stage two's choice `k` of `n` picks, the arc starting at `start`: its segment, and
+/// for an end's choice [`PAST_END`] past that end too (less for an arc so long its far side
+/// comes sooner), in degrees clockwise from north, the counter-clockwise first.
+fn choice_wedge(start: f32, n: usize, k: usize) -> (f32, f32) {
+    let past = (180.0 - n as f32 * SEGMENT / 2.0 - 1.0).clamp(0.0, PAST_END);
+    let from = start + k as f32 * SEGMENT;
+    let first = if k == 0 { past } else { 0.0 };
+    let last = if k + 1 >= n { past } else { 0.0 };
+    (from - first, from + SEGMENT + last)
+}
+
+/// The part of `b` whose every point is `from` to `to` degrees clockwise from north about `c`
+/// (less than 180° apart), [`EDGE`] inside: `b` cut at its sides, or where that leaves nothing,
+/// at its top and bottom. None if neither leaves anything.
+fn in_wedge(c: (f32, f32), b: &Rect, from: f32, to: f32) -> Option<Rect> {
+    // A point v from c is clockwise of the ray at a when cos a·v.x + sin a·v.y ≥ 0, so it's in
+    // the wedge when that holds for `from` and its opposite for `to`: s = 1 and −1. Each is
+    // a bound on one coordinate at each of the box's two edges across the other, and the box
+    // is in the wedge when its corners are, the wedge being convex.
+    let edges = [(from + EDGE, 1.0), (to - EDGE, -1.0)];
+    let cut = |across: bool| {
+        let (mut lo, mut hi, origin) = if across {
+            (b.x, b.right(), c.0)
+        } else {
+            (b.y, b.bottom(), c.1)
+        };
+        let (others, other_origin) = if across {
+            ([b.y, b.bottom()], c.1)
+        } else {
+            ([b.x, b.right()], c.0)
+        };
+        for (a, s) in edges {
+            let (sin, cos) = f32::to_radians(a).sin_cos();
+            let (k, o) = if across {
+                (s * cos, s * sin)
+            } else {
+                (s * sin, s * cos)
+            };
+            for e in others {
+                // k·v + o·(e − other_origin) ≥ 0, v the coordinate cut.
+                let fixed = o * (e - other_origin);
+                if k.abs() < 1e-6 {
+                    if fixed < 0.0 {
+                        return None;
+                    }
+                } else if k > 0.0 {
+                    lo = lo.max(origin - fixed / k);
+                } else {
+                    hi = hi.min(origin - fixed / k);
+                }
+            }
+        }
+        (hi > lo).then_some((lo, hi))
+    };
+    if let Some((lo, hi)) = cut(true) {
+        if lo == b.x && hi == b.right() {
+            return Some(*b);
+        }
+        return Some(Rect::new(lo, b.y, hi - lo, b.h));
+    }
+    cut(false).map(|(lo, hi)| Rect::new(b.x, lo, b.w, hi - lo))
 }
 
 /// What of the dial follows the pointer: the crosshair through it, faint in the accent, across

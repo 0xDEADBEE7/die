@@ -2,13 +2,15 @@
 //! cell's larger side, past the ring an arc of words for view, export and settings whose first
 //! band picks nothing and whose angle picks past it, the flick that lands past the ring at once
 //! staying stage one's, a release and a press picking what the dial says and the dead zone or a
-//! sector that doesn't apply nothing, the current choice centred, and the readout. Laid out with
-//! `FixedMeasure`, the names clear the ring and each other, and stage two's words clear the line
-//! art, the chip and each other, wherever the anchor falls, the corners included, and the
-//! readout meets nothing. Drawn, it's line art on a scrim of the surface with no disc, the
-//! hovered stretch and chip in the accent, a needle dotted until stage two picks, dimmed sectors
-//! dimmed, regions for each name and word and the dead centre, the theme's dial faces, text
-//! never in a series colour, and what follows the pointer within the dial's bounds.
+//! sector that doesn't apply nothing, a pointer or an anchor at no real place nothing, the current
+//! choice centred (export's png the first time), and the readout with the surface's note, cut to
+//! the area. Laid out with `FixedMeasure`, the names hang right off the ring, clear of it and of
+//! each other, and stage two's words clear the line art, the chip and each other, wherever the
+//! anchor falls, the corners included, and the readout meets nothing. Drawn, it's line art on a
+//! scrim of the surface with no disc, the hovered stretch and chip in the accent, a needle dotted
+//! until stage two picks, dimmed sectors dimmed, regions where a press picks what each says, the
+//! theme's dial faces, text never in a series colour, and what follows the pointer within the
+//! dial's bounds.
 
 use die_test_cap as _;
 
@@ -137,23 +139,23 @@ fn past_the_ring_a_sector_with_choices_opens_its_arc_whose_first_band_picks_noth
     assert_eq!(
         d.stage(),
         Stage::Choice(2),
-        "past the guide, straight out: the middle, 24h"
+        "past the guide, straight out: the middle, 6h"
     );
-    assert_eq!(d.readout(&spec).line(), "view: 24h");
-    // 20° a choice clockwise, 24h centred south: 1h from 130°.
-    assert_eq!(d.span(&spec), Some((130.0, 230.0)));
+    assert_eq!(d.readout(&spec).line(), "view: 6h");
+    // 20° a choice clockwise, 6h centred south: 15m from 130°.
+    assert_eq!(d.span(&spec), Some((130.0, 250.0)));
     d.moved(at(140.0, 60.0), &spec);
     assert_eq!(
         (d.hovered(), d.stage()),
         (Some(sector::VIEW), Stage::Choice(0)),
         "held: the angle picks now, in table's direction"
     );
-    d.moved(at(215.0, 60.0), &spec);
-    assert_eq!(d.stage(), Stage::Choice(4));
+    d.moved(at(235.0, 60.0), &spec);
+    assert_eq!(d.stage(), Stage::Choice(5));
     d.moved(at(300.0, 60.0), &spec);
     assert_eq!(
         d.stage(),
-        Stage::Choice(4),
+        Stage::Choice(5),
         "past the clockwise end: the last"
     );
     d.moved(at(60.0, 60.0), &spec);
@@ -176,31 +178,33 @@ fn past_the_ring_a_sector_with_choices_opens_its_arc_whose_first_band_picks_noth
         (Some(sector::ONLY), Stage::Sectors)
     );
     assert_eq!(d.span(&spec), None);
-    // Export's three formats about south-west, svg in the middle; settings' five about
-    // north-west, log in the middle.
+    // Export's three formats from south-west, png straight out the first time; settings' six
+    // about north-west, log straight out.
     let mut d = dial();
     d.moved(at(225.0, 20.0), &spec);
     d.moved(at(225.0, 60.0), &spec);
     assert_eq!(
         (d.span(&spec), d.stage()),
-        (Some((195.0, 255.0)), Stage::Choice(1))
+        (Some((215.0, 275.0)), Stage::Choice(0))
     );
-    assert_eq!(d.readout(&spec).line(), "export: svg");
+    assert_eq!(d.readout(&spec).line(), "export: png");
     let mut d = dial();
     d.moved(at(315.0, 20.0), &spec);
     d.moved(at(315.0, 60.0), &spec);
     assert_eq!(
         (d.span(&spec), d.stage()),
-        (Some((265.0, 365.0)), Stage::Choice(2))
+        (Some((265.0, 385.0)), Stage::Choice(2))
     );
     assert_eq!(d.readout(&spec).line(), "settings: log");
-    // Past north, the angle wraps: 10° is markers', the last.
+    // Past north, the angle wraps: 10° is marks', the last.
     d.moved(at(10.0, 60.0), &spec);
-    assert_eq!(d.stage(), Stage::Choice(4));
+    assert_eq!(d.stage(), Stage::Choice(5));
+    // The lists are briefs/mouse-ux.md §7.3's.
+    assert_eq!(VIEW, ["15m", "1h", "6h", "24h", "7d", "all"]);
+    assert_eq!(EXPORT, ["png", "svg", "copy"]);
     assert_eq!(
-        (VIEW.len(), EXPORT.len(), SETTINGS.len()),
-        (5, 3, 5),
-        "1h 6h 24h 7d all; png svg copy; grid labels log stack markers"
+        SETTINGS,
+        ["grid", "axes", "log", "stack", "labels", "marks"]
     );
     // A sector that doesn't apply opens nothing either.
     let mut dim = DialSpec::chart();
@@ -225,26 +229,33 @@ fn the_arc_centres_the_current_choice_so_straight_out_keeps_it() {
         assert_eq!(d.stage(), Stage::Choice(k as u8), "{word}");
         assert_eq!(d.readout(&spec).line(), format!("view: {word}"));
         let start = 180.0 - (k as f32 + 0.5) * 20.0;
-        assert_eq!(d.span(&spec), Some((start, start + 100.0)));
+        assert_eq!(d.span(&spec), Some((start, start + 120.0)));
     }
-    // Export the first time: png, straight out, the arc running on clockwise from it.
+    // Export the first time, no format said yet: png, straight out, the arc running on
+    // clockwise from it.
     let mut d = dial();
-    d.centre_on(sector::EXPORT, 0);
     d.moved(at(225.0, 20.0), &spec);
     d.moved(at(225.0, 50.0), &spec);
     assert_eq!(
         (d.stage(), d.span(&spec)),
         (Stage::Choice(0), Some((215.0, 275.0)))
     );
-    // A choice past the last is the last.
+    // The format last used, once said, and a choice past the last is the last.
+    d.centre_on(sector::EXPORT, 1);
+    assert_eq!(d.span(&spec), Some((195.0, 255.0)));
     d.centre_on(sector::EXPORT, 9);
     assert_eq!(d.span(&spec), Some((175.0, 235.0)));
+    // Settings, never said, centres its middle: log.
+    assert_eq!(
+        DialState::open(C, CELL).span_of(sector::SETTINGS, &spec),
+        Some((265.0, 385.0))
+    );
 }
 
 #[test]
 fn a_flick_that_hovers_a_sector_and_lands_past_the_ring_at_once_is_stage_ones() {
     let spec = DialSpec::chart();
-    // One move 35 out at 240°: export's sector, past where stage two opens, and in copy's
+    // One move 35 out at 240°: export's sector, past where stage two opens, and in svg's
     // segment. It hovers export, and letting go there doesn't open it either.
     let mut d = dial();
     d.moved(at(240.0, 35.0), &spec);
@@ -276,9 +287,9 @@ fn a_flick_that_hovers_a_sector_and_lands_past_the_ring_at_once_is_stage_ones() 
         (Some(sector::EXPORT), Stage::Sectors)
     );
     d.moved(at(225.0, 51.0), &spec);
-    assert_eq!(d.stage(), Stage::Choice(1));
+    assert_eq!(d.stage(), Stage::Choice(0));
     // A flick of a few moves that overshoots into the first band picks nothing of stage two,
-    // 15° off the axis where copy's segment is.
+    // 15° off the axis where svg's segment is.
     let mut d = dial();
     for r in [15.0, 28.0, 38.0] {
         d.moved(at(240.0, r), &spec);
@@ -288,8 +299,8 @@ fn a_flick_that_hovers_a_sector_and_lands_past_the_ring_at_once_is_stage_ones() 
     assert_eq!(d.release(&spec), DialPick::Sector(sector::EXPORT));
     // Once it's open, letting go elsewhere moves in it as any move does.
     d.settle(at(240.0, 50.0), &spec);
-    assert_eq!(d.stage(), Stage::Choice(2));
-    assert_eq!(d.release(&spec), DialPick::Stage2(sector::EXPORT, 2));
+    assert_eq!(d.stage(), Stage::Choice(1));
+    assert_eq!(d.release(&spec), DialPick::Stage2(sector::EXPORT, 1));
 }
 
 #[test]
@@ -340,7 +351,7 @@ fn a_press_while_open_picks_at_whichever_stage_and_never_opens_stage_two() {
         d.press(at(180.0, 60.0), &spec),
         DialPick::Sector(sector::VIEW)
     );
-    // In stage two it picks the choice there: 7d at 195°.
+    // In stage two it picks the choice there: 24h at 195°.
     let mut d = dial();
     d.moved(at(180.0, 20.0), &spec);
     d.moved(at(180.0, 50.0), &spec);
@@ -352,6 +363,109 @@ fn a_press_while_open_picks_at_whichever_stage_and_never_opens_stage_two() {
     let mut d = dial();
     d.moved(at(90.0, 20.0), &spec);
     assert_eq!(d.press(C, &spec), DialPick::None);
+}
+
+#[test]
+fn a_pointer_or_an_anchor_at_no_real_place_picks_nothing() {
+    let spec = DialSpec::chart();
+    let nan = f32::NAN;
+    let inf = f32::INFINITY;
+    for p in [
+        (nan, nan),
+        (nan, 100.0),
+        (100.0, nan),
+        (inf, 100.0),
+        (-inf, inf),
+    ] {
+        let at_p = format!("{p:?}");
+        assert_eq!(dial().sector_at(p), None, "{at_p}");
+        // A move there is the dead zone's, the needle home, and letting go picks nothing.
+        let mut d = dial();
+        d.moved(at(90.0, 20.0), &spec);
+        d.moved(p, &spec);
+        assert_eq!(
+            (d.hovered(), d.stage(), d.pointer()),
+            (None, Stage::Sectors, C),
+            "{at_p}"
+        );
+        assert_eq!(d.release(&spec), DialPick::None, "{at_p}");
+        let mut d = dial();
+        d.moved(at(90.0, 20.0), &spec);
+        d.settle(p, &spec);
+        assert_eq!(d.release(&spec), DialPick::None, "{at_p}");
+        assert_eq!(dial().press(p, &spec), DialPick::None, "{at_p}");
+        // In stage two too.
+        let d = on_arc(C, CELL, sector::VIEW, 2, &spec);
+        assert_eq!(d.choice_at(p, &spec), None, "{at_p}");
+        let mut moved = d.clone();
+        moved.moved(p, &spec);
+        assert_eq!((moved.hovered(), moved.stage()), (None, Stage::Sectors));
+        assert_eq!(moved.release(&spec), DialPick::None, "{at_p}");
+        assert_eq!(d.clone().press(p, &spec), DialPick::None, "{at_p}");
+    }
+    // A dial opened at no real place picks nothing wherever the pointer goes.
+    let mut d = DialState::open((nan, 100.0), CELL);
+    for p in [
+        at(90.0, 20.0),
+        at(90.0, 21.0),
+        at(180.0, 20.0),
+        at(180.0, 50.0),
+    ] {
+        d.moved(p, &spec);
+        assert_eq!(d.hovered(), None);
+    }
+    assert_eq!(d.release(&spec), DialPick::None);
+    assert_eq!(d.press(at(0.0, 20.0), &spec), DialPick::None);
+}
+
+/// Call: the whiteboard's geometry and flick rule, kept. The names hang past where stage two
+/// opens, so a drag that ends on export's or settings' name, sending every sample as fine motion
+/// does, has opened the arc and gone past its guide, and letting go picks the choice the readout
+/// said; view's name ends inside the guide, so it's view's own. A press on a name in stage one
+/// picks its sector.
+#[test]
+fn a_drag_onto_an_arc_sectors_name_picks_what_the_readout_says_there() {
+    let spec = DialSpec::chart();
+    for (cell, area) in [(CELL, (400.0, 300.0)), (BIG, (800.0, 600.0))] {
+        let a = (area.0 / 2.0, area.1 / 2.0);
+        let one = layout(&DialState::open(a, cell), &spec, area, &mut FixedMeasure);
+        for i in [sector::VIEW, sector::EXPORT, sector::SETTINGS] {
+            let b = one.names[usize::from(i)];
+            let to = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+            let len = dist(a, to);
+            let steps = (len / 4.0).ceil() as usize;
+            let mut d = DialState::open(a, cell);
+            for k in 1..=steps {
+                let t = k as f32 / steps as f32;
+                d.moved((a.0 + (to.0 - a.0) * t, a.1 + (to.1 - a.1) * t), &spec);
+            }
+            let said = d.readout(&spec).line();
+            d.settle(to, &spec);
+            let got = d.release(&spec);
+            let at = format!("{} at {to:?}, {len} out, {cell:?}", NAMES[usize::from(i)]);
+            let want = match got {
+                DialPick::Sector(s) if s == i => NAMES[usize::from(i)].to_string(),
+                DialPick::Stage2(s, k) if s == i => format!(
+                    "{}: {}",
+                    NAMES[usize::from(i)],
+                    spec.sectors[usize::from(i)].stage2[usize::from(k)]
+                ),
+                other => panic!("{other:?}: {at}"),
+            };
+            assert_eq!(said, want, "{at}");
+            assert_eq!(
+                matches!(got, DialPick::Stage2(..)),
+                i != sector::VIEW,
+                "past the guide: {at}"
+            );
+            assert_eq!(len >= d.band(), i != sector::VIEW, "{at}");
+            assert_eq!(
+                DialState::open(a, cell).press(to, &spec),
+                DialPick::Sector(i),
+                "{at}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -383,8 +497,88 @@ fn the_readout_says_what_letting_go_does_and_with_nothing_hovered_the_target_dim
     let r = d.readout(&spec);
     assert_eq!(
         (r.key.as_str(), r.value.as_str(), r.dim),
-        ("view:", "24h", false)
+        ("view:", "6h", false)
     );
+}
+
+#[test]
+fn the_readout_says_the_surfaces_note_after_a_choice_and_fits_the_area() {
+    let theme = Theme::mono_dark();
+    let spec = DialSpec::chart();
+    let a = (200.0, 150.0);
+    let text = TextSpec::new(6.0);
+    let mut d = on_arc(a, CELL, sector::SETTINGS, 2, &spec);
+    let before = d.still();
+    d.note(sector::SETTINGS, 2, " y on");
+    d.note(sector::SETTINGS, 3, " off");
+    assert_ne!(d.still(), before, "a note changes what's kept");
+    let r = d.readout(&spec);
+    assert_eq!(
+        (r.key.as_str(), r.value.as_str(), r.rest.as_str(), r.dim),
+        ("settings:", "log", " y on", false)
+    );
+    assert_eq!(r.line(), "settings: log y on");
+    // Drawn: the key in the grey, the value in the accent, the note in the text's colour, in
+    // a row, the box as wide as the line.
+    let (scene, l) = drawn(&d, &spec, &theme);
+    let ts = texts(&scene);
+    let row: Vec<&Text> = ts.iter().filter(|t| t.anchor == Anchor::Start).collect();
+    let said: Vec<(&str, Color)> = row.iter().map(|t| (t.text.as_str(), t.color)).collect();
+    assert_eq!(
+        said,
+        [
+            ("settings:", theme.dial),
+            ("log", theme.dial_accent),
+            (" y on", theme.text)
+        ]
+    );
+    let w = |s: &str| FixedMeasure.width(s, text);
+    assert!(close(row[2].x, row[1].x + w("log")));
+    assert!(close(l.readout.unwrap().w, w("settings: log y on")));
+    // Each choice says its own note, one with none nothing more, and an empty note clears.
+    d.moved(out(a, 335.0, 60.0), &spec);
+    assert_eq!(d.readout(&spec).line(), "settings: stack off");
+    d.moved(out(a, 300.0, 60.0), &spec);
+    assert_eq!(d.readout(&spec).line(), "settings: axes");
+    d.note(sector::SETTINGS, 3, "");
+    d.moved(out(a, 335.0, 60.0), &spec);
+    assert_eq!(d.readout(&spec).line(), "settings: stack");
+    // Stage one, and the first band, say the sector alone.
+    let mut one = DialState::open(a, CELL);
+    one.note(sector::SETTINGS, 2, " y on");
+    one.moved(out(a, 315.0, 20.0), &spec);
+    assert_eq!(one.readout(&spec).line(), "settings");
+    // Wider than the area, it's cut with an ellipsis and stays inside the area's sides.
+    let area = (100.0, 50.0);
+    let mut d = DialState::open((50.0, 25.0), CELL);
+    d.set_target("x".repeat(500));
+    let l = layout(&d, &spec, area, &mut FixedMeasure);
+    let b = l.readout.unwrap();
+    assert!(b.x >= 0.0 && b.right() <= area.0 + 1e-3, "{b:?}");
+    assert!(l.said.dim && l.said.key.ends_with('…'), "{:?}", l.said);
+    assert!(close(b.w, w(&l.said.line())));
+    let mut scene = Scene::new(area.0, area.1, 2.0);
+    draw(&d, &spec, &theme, &mut scene, &mut FixedMeasure);
+    let t = texts(&scene)
+        .into_iter()
+        .find(|t| t.anchor == Anchor::Start)
+        .unwrap();
+    assert_eq!(t.text, l.said.key, "drawn as cut");
+    // A long note is cut, and what comes before it kept.
+    let mut d = on_arc(a, CELL, sector::SETTINGS, 2, &spec);
+    d.note(sector::SETTINGS, 2, format!(" {}", "y".repeat(300)));
+    let l = layout(&d, &spec, (400.0, 300.0), &mut FixedMeasure);
+    assert_eq!(
+        (l.said.key.as_str(), l.said.value.as_str()),
+        ("settings:", "log")
+    );
+    assert!(l.said.rest.ends_with('…'), "{:?}", l.said);
+    let b = l.readout.unwrap();
+    assert!(b.x >= 0.0 && b.right() <= 400.0 + 1e-3, "{b:?}");
+    // One that fits is left whole.
+    let d = on_arc(a, CELL, sector::SETTINGS, 2, &spec);
+    let l = layout(&d, &spec, (400.0, 300.0), &mut FixedMeasure);
+    assert_eq!(l.said, d.readout(&spec));
 }
 
 /// Anchors over an area: about its middle, wherever in a cell the anchor falls, and at and by
@@ -467,6 +661,38 @@ fn the_names_clear_the_ring_its_ticks_and_each_other_wherever_the_anchor_falls()
                     assert!(
                         close(r.y, below + cell.1),
                         "a blank line under the names: {at}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn each_name_hangs_off_the_ring_by_its_near_end_unless_one_before_it_is_in_the_way() {
+    let spec = DialSpec::chart();
+    for (cell, area) in [(CELL, (400.0, 300.0)), (BIG, (800.0, 600.0))] {
+        for a in anchors(area, cell) {
+            let d = DialState::open(a, cell);
+            let l = layout(&d, &spec, area, &mut FixedMeasure);
+            let clear = d.radius() + art::TICK + art::CLEAR;
+            for (i, b) in l.names.iter().enumerate() {
+                let gap = near(a, b) - clear;
+                let at = format!("{} {gap} past at {a:?} {cell:?}", NAMES[i]);
+                assert!(gap > -1e-3, "{at}");
+                if i % 2 == 0 {
+                    assert!(
+                        gap < 1.0,
+                        "north, east, south and west hang right off: {at}"
+                    );
+                } else if gap >= 1.0 {
+                    // A diagonal moves out across a px at a time: one px back, it would meet a
+                    // name placed before it.
+                    let back = if i < 4 { -1.0 } else { 1.0 };
+                    let nearer = Rect::new(b.x + back, b.y, b.w, b.h);
+                    assert!(
+                        l.names[..i].iter().any(|o| overlap(o, &nearer)),
+                        "pushed out by nothing: {at}"
                     );
                 }
             }
@@ -647,7 +873,7 @@ fn in_stage_two_a_name_gives_way_only_to_what_crosses_or_meets_it() {
     let spec = DialSpec::chart();
     let area = (400.0, 300.0);
     let a = (200.0, 150.0);
-    // View's arc, 130° to 230°, and its guide cross table and export, which give way; the rest
+    // View's arc, 130° to 250°, and its guide cross table and export, which give way; the rest
     // show, faint.
     let d = on_arc(a, CELL, sector::VIEW, 2, &spec);
     let l = layout(&d, &spec, area, &mut FixedMeasure);
@@ -1071,12 +1297,12 @@ fn stage_two_draws_the_arc_its_words_and_a_solid_needle_the_picked_one_marked() 
     d.moved(p, &spec);
     assert_eq!(d.stage(), Stage::Choice(2));
     let (scene, l) = drawn(&d, &spec, &theme);
-    // Five segments on the arc, 24h's thick in the accent, the rest in the grey.
+    // Six segments on the arc, 6h's thick in the accent, the rest in the grey.
     let on_arc: Vec<Path> = paths(&scene)
         .into_iter()
         .filter(|p| p.stroke.is_some() && ends(p.path).iter().all(|q| close(dist(*q, a), 75.0)))
         .collect();
-    assert_eq!(on_arc.len(), 5);
+    assert_eq!(on_arc.len(), 6);
     for (k, seg) in on_arc.iter().enumerate() {
         let s = seg.stroke.unwrap();
         let from = 130.0 + 20.0 * k as f32;
@@ -1161,10 +1387,10 @@ fn stage_two_draws_the_arc_its_words_and_a_solid_needle_the_picked_one_marked() 
         0.0
     ));
     assert!(close(dist(e[2], e[3]), 2.0 * art::TICK * 0.75));
-    // The readout: `view:` in the grey, 24h in the accent.
+    // The readout: `view:` in the grey, 6h in the accent.
     let r: Vec<&Text> = ts.iter().filter(|t| t.anchor == Anchor::Start).collect();
     let said: Vec<(&str, Color)> = r.iter().map(|t| (t.text.as_str(), t.color)).collect();
-    assert_eq!(said, [("view:", theme.dial), ("24h", theme.dial_accent)]);
+    assert_eq!(said, [("view:", theme.dial), ("6h", theme.dial_accent)]);
     assert!(r[1].x > r[0].x + FixedMeasure.width("view:", r[0].spec));
 }
 
@@ -1220,23 +1446,39 @@ fn the_regions_say_what_each_place_is() {
     let d = DialState::open(a, CELL);
     let (scene, l) = drawn(&d, &spec, &theme);
     assert_eq!(scene.hit(a.0, a.1), Some(&Hit::DialCentre));
+    // Each name's region is its box, cut at the sides to where its own direction picks it.
     for (i, b) in l.names.iter().enumerate() {
+        let r = region_of(&scene, &Hit::DialSector(i as u8)).expect("a region");
+        assert!(r.y == b.y && r.bottom() == b.bottom(), "{}", NAMES[i]);
+        assert!(
+            r.x >= b.x && r.right() <= b.right() && r.w > b.w / 2.0,
+            "{}",
+            NAMES[i]
+        );
         assert_eq!(
-            scene.hit(b.x + b.w / 2.0, b.y + b.h / 2.0),
+            scene.hit(r.x + r.w / 2.0, r.y + r.h / 2.0),
             Some(&Hit::DialSector(i as u8))
         );
     }
+    // North's and south's boxes reach past their wedges either side, so theirs are cut both
+    // sides alike; east's and west's lie inside theirs.
+    let n = region_of(&scene, &Hit::DialSector(sector::DETAIL)).unwrap();
+    assert!(n.w < l.names[0].w && close(n.x + n.w / 2.0, a.0), "{n:?}");
+    assert_eq!(
+        region_of(&scene, &Hit::DialSector(sector::ONLY)),
+        Some(l.names[2])
+    );
+    assert_eq!(
+        region_of(&scene, &Hit::DialSector(sector::HIDE)),
+        Some(l.names[6])
+    );
     // The dead centre's region is inside the dead zone, so no sector is picked there.
-    let centre = scene
-        .regions
-        .iter()
-        .find(|r| r.hit == Hit::DialCentre)
-        .unwrap()
-        .rect;
+    let centre = region_of(&scene, &Hit::DialCentre).unwrap();
     for q in [(centre.x, centre.y), (centre.right(), centre.bottom())] {
-        assert!(dist(q, a) <= d.dead() + 1e-3);
+        assert!(dist(q, a) < d.dead());
     }
-    // Stage two: each word, the chip, and no region for a name that gave way.
+    // Stage two: each word, and the chip past the arc as the choice straight out, 6h; no name
+    // has one, the faint ones included, since a press there picks on the arc.
     let d = on_arc(a, CELL, sector::VIEW, 2, &spec);
     let (scene, l) = drawn(&d, &spec, &theme);
     for (k, b) in &l.labels {
@@ -1247,16 +1489,115 @@ fn the_regions_say_what_each_place_is() {
     }
     let chip = l.chip.unwrap();
     let hit = scene.hit(chip.x + chip.w / 2.0, chip.y + chip.h / 2.0);
-    assert_eq!(hit, Some(&Hit::DialSector(sector::VIEW)));
-    let sectors: Vec<u8> = scene
+    assert_eq!(hit, Some(&Hit::DialStage2(2)));
+    assert!(
+        scene
+            .regions
+            .iter()
+            .all(|r| !matches!(r.hit, Hit::DialSector(_))),
+        "{:?}",
+        scene.regions
+    );
+    let words = scene
         .regions
         .iter()
-        .filter_map(|r| match r.hit {
-            Hit::DialSector(i) => Some(i),
-            _ => None,
-        })
+        .filter(|r| matches!(r.hit, Hit::DialStage2(_)))
+        .count();
+    assert_eq!(words, VIEW.len() + 1, "each word and the chip");
+}
+
+fn region_of(s: &Scene, hit: &Hit) -> Option<Rect> {
+    let found: Vec<Rect> = s
+        .regions
+        .iter()
+        .filter(|r| &r.hit == hit)
+        .map(|r| r.rect)
         .collect();
-    assert_eq!(sectors, [0, 1, 2, 4, 6, 7], "table and export gave way");
+    assert!(found.len() <= 1, "{hit:?} once: {found:?}");
+    found.first().copied()
+}
+
+/// Dials in every stage: nothing hovered, each sector hovered inside the ring (one dimmed), and
+/// each arc in its first band and past it with each choice centred.
+fn every_stage(a: (f32, f32), cell: (f32, f32), spec: &DialSpec) -> Vec<DialState> {
+    let mut states = vec![DialState::open(a, cell)];
+    for i in 0..8u8 {
+        let mut d = DialState::open(a, cell);
+        d.moved(out(a, f32::from(i) * 45.0, d.radius() * 0.8), spec);
+        states.push(d);
+    }
+    for i in [sector::VIEW, sector::EXPORT, sector::SETTINGS] {
+        let n = spec.sectors[usize::from(i)].stage2.len() as u8;
+        for current in 0..n {
+            let d = on_arc(a, cell, i, current, spec);
+            let mut band = d.clone();
+            band.moved(out(a, f32::from(i) * 45.0 + 7.0, d.opens() + 2.0), spec);
+            assert_eq!(band.stage(), Stage::Arc);
+            states.extend([d, band]);
+        }
+    }
+    states
+}
+
+#[test]
+fn a_press_anywhere_in_a_region_picks_what_the_region_says() {
+    let theme = Theme::mono_dark();
+    let mut spec = DialSpec::chart();
+    spec.sectors[usize::from(sector::TABLE)].enabled = false;
+    for cell in [CELL, BIG] {
+        let area = (800.0, 600.0);
+        for a in [(400.0, 300.0), (403.1, 296.4), (30.0, 30.0), (790.0, 590.0)] {
+            for d in every_stage(a, cell, &spec) {
+                let mut scene = Scene::new(area.0, area.1, 2.0);
+                draw(&d, &spec, &theme, &mut scene, &mut FixedMeasure);
+                assert!(scene.regions.len() > 2, "{a:?}");
+                for r in &scene.regions {
+                    let want = d.pick_of(&r.hit, &spec);
+                    let b = r.rect;
+                    for gx in 0..=12 {
+                        for gy in 0..=4 {
+                            // Every place in it, its edges a hundredth of it in.
+                            let fx = 0.01 + 0.98 * gx as f32 / 12.0;
+                            let fy = 0.01 + 0.98 * gy as f32 / 4.0;
+                            let p = (b.x + b.w * fx, b.y + b.h * fy);
+                            let mut probe = d.clone();
+                            let got = probe.press(p, &spec);
+                            assert_eq!(
+                                got,
+                                want,
+                                "{:?} at {p:?}, a {:?} dial at {a:?} {cell:?}",
+                                r.hit,
+                                (d.hovered(), d.stage())
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // What each kind says: a name its sector, nothing where it doesn't apply; a word or the
+    // chip in stage two that choice; the centre, and a hit not the dial's, nothing.
+    let d = DialState::open((400.0, 300.0), CELL);
+    assert_eq!(
+        d.pick_of(&Hit::DialSector(sector::ONLY), &spec),
+        DialPick::Sector(2)
+    );
+    assert_eq!(
+        d.pick_of(&Hit::DialSector(sector::TABLE), &spec),
+        DialPick::None
+    );
+    assert_eq!(
+        d.pick_of(&Hit::DialStage2(1), &spec),
+        DialPick::None,
+        "no arc open"
+    );
+    assert_eq!(d.pick_of(&Hit::DialCentre, &spec), DialPick::None);
+    assert_eq!(d.pick_of(&Hit::Plot(0), &spec), DialPick::None);
+    let d = on_arc((400.0, 300.0), CELL, sector::SETTINGS, 2, &spec);
+    assert_eq!(
+        d.pick_of(&Hit::DialStage2(4), &spec),
+        DialPick::Stage2(sector::SETTINGS, 4)
+    );
 }
 
 #[test]
@@ -1268,6 +1609,7 @@ fn the_dial_takes_its_colours_from_the_theme_and_its_text_never_a_series_colour(
     theme.dial_accent = Color(0x00, 0x88, 0xff);
     let mut d = on_arc(a, CELL, sector::EXPORT, 1, &spec);
     d.set_target("api · 06:05 · 642");
+    d.note(sector::EXPORT, 1, " at 2x");
     let (scene, l) = drawn(&d, &spec, &theme);
     let chip = l.chip.unwrap();
     assert!(
@@ -1283,7 +1625,9 @@ fn the_dial_takes_its_colours_from_the_theme_and_its_text_never_a_series_colour(
     );
     let ts = texts(&scene);
     assert_eq!(text(&ts, "detail").color, theme.dial);
-    // Every text is in the dial's colours, the strong grey or the surface's on the chip.
+    assert_eq!(text(&ts, " at 2x").color, theme.text, "the note");
+    // Every text is in the dial's colours, the strong grey, the text's for a note or the
+    // surface's on the chip.
     for (st, theme) in [
         (d.clone(), theme.clone()),
         (DialState::open(a, CELL), Theme::mono_dark()),
@@ -1292,7 +1636,14 @@ fn the_dial_takes_its_colours_from_the_theme_and_its_text_never_a_series_colour(
         for t in texts(&scene) {
             assert!(!theme.series.contains(&t.color), "{t:?}");
             assert!(
-                [theme.dial, theme.dial_accent, theme.strong, theme.surface].contains(&t.color),
+                [
+                    theme.dial,
+                    theme.dial_accent,
+                    theme.strong,
+                    theme.text,
+                    theme.surface
+                ]
+                .contains(&t.color),
                 "{t:?}"
             );
         }
