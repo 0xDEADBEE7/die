@@ -6,9 +6,9 @@
 //! draws its own text, so a page's letters weigh what the editor's beside it do. The buffer is
 //! filled with the canvas first, so it stays opaque whatever is drawn.
 
-use super::fonts::{self, Mask, Pass};
 use super::layout::{Laid, Mark, Op};
 use super::{Pictures, Rect, Rgb, sheet};
+use die_draw::{Mask, Pass, smoothing};
 use std::ops::Range;
 use tiny_skia::{FillRule, LineCap, LineJoin, PathBuilder, Stroke};
 
@@ -151,24 +151,6 @@ impl Target<'_> {
     }
 }
 
-/// How far a glyph `px` physical pixels an em drawn in `ink` grows a side, in physical pixels:
-/// as far as a Mac's font smoothing grows it, by its size and how light its colour is.
-pub(super) fn grow(px: f32, ink: Rgb) -> f32 {
-    let part = |v: u8| {
-        let v = f32::from(v) / 255.0;
-        if v <= 0.04045 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let light = 0.2126 * part(ink.0) + 0.7152 * part(ink.1) + 0.0722 * part(ink.2);
-    let span = sheet::GROW_LIGHT_FROM - sheet::GROW_DARK_UNDER;
-    let lighter = ((light - sheet::GROW_DARK_UNDER) / span).clamp(0.0, 1.0);
-    let per_px = sheet::GROW_DARK + (sheet::GROW_LIGHT - sheet::GROW_DARK) * lighter;
-    (per_px * px.max(0.0)).min(sheet::GROW_MOST)
-}
-
 /// Paints the rows `rows` of a buffer whose row 0 shows the page's row `top`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint(
@@ -263,7 +245,7 @@ pub(super) fn paint(
                 ink,
             } => {
                 let glyphs = laid.glyphs.get(from as usize..to as usize).unwrap_or(&[]);
-                let grown = grow(px, ink);
+                let grown = smoothing(px, ink);
                 for glyph in glyphs {
                     let (x, bin) = place(glyph.x);
                     if let Some(mask) = pass.mask(glyph.inst, glyph.id, px, bin, bins, grown) {
@@ -289,7 +271,7 @@ pub(super) fn paint(
                 let clear = (laid.scale * 0.75).round().max(1.0) as i32;
                 // The glyphs as they were drawn: a link's, in the line's own colour.
                 let glyphs = laid.glyphs.get(from as usize..to as usize).unwrap_or(&[]);
-                let grown = grow(px, ink);
+                let grown = smoothing(px, ink);
                 for glyph in glyphs {
                     let (x, bin) = place(glyph.x);
                     let Some(mask) = pass.mask(glyph.inst, glyph.id, px, bin, bins, grown) else {
@@ -494,5 +476,5 @@ fn mark(kind: Mark, px: f32) -> Option<Mask> {
     {
         solid.push_path(&stroked);
     }
-    fonts::fill(&solid.finish()?, scale, 0.0, 0.0, FillRule::Winding)
+    die_draw::fill(&solid.finish()?, scale, 0.0, 0.0, FillRule::Winding)
 }

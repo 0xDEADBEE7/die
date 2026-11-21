@@ -92,19 +92,6 @@ pub(super) const RING_RADIUS: f32 = 4.0;
 /// How far under the baseline a link's underline starts.
 pub(super) const UNDERLINE: f32 = 3.2;
 
-/// How far each glyph's outline grows a side, in physical pixels for each physical pixel of its
-/// size: a Mac browser draws GitHub with font smoothing on, and CoreText's smoothing grows a
-/// glyph in proportion to its size, the more the lighter its colour, up to a limit. Dark text
-/// (a luminance of [`GROW_DARK_UNDER`] or less) grows the least, light text (from
-/// [`GROW_LIGHT_FROM`]) the most, and what's between in proportion. Measured against CoreText
-/// drawing the same text in the three palettes at scales 1, 1.5 and 2.
-pub(super) const GROW_DARK: f32 = 0.0068;
-pub(super) const GROW_LIGHT: f32 = 0.0145;
-pub(super) const GROW_DARK_UNDER: f32 = 0.1;
-pub(super) const GROW_LIGHT_FROM: f32 = 0.585;
-/// The most a glyph grows a side, in physical pixels.
-pub(super) const GROW_MOST: f32 = 0.345;
-
 /// A hairline's thickness in physical pixels: one CSS pixel, as a browser draws GitHub's rules,
 /// grid and borders, in whole pixels so it's never blurred, and never under one.
 pub(super) fn hairline(scale: f32) -> f32 {

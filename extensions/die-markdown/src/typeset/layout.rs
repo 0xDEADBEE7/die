@@ -12,10 +12,10 @@
 //! first and last child's margins through.
 
 use super::doc::{self, Alert, Align, Block, Doc, Fit, Inline, Item, Length, Note, Para, Table};
-use super::fonts::{Inst, Pass, Style as Face, Weight};
 use super::sheet;
 use super::syntax::Highlighter;
 use super::{Env, HeadingPos, LinkBox, Palette, Pictures, Rect, Rgb};
+use die_draw::{FontStyle as Face, Inst, Pass, Weight};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 

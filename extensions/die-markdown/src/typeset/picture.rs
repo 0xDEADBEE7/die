@@ -1,59 +1,15 @@
-//! Pictures: a PNG file decoded to premultiplied RGBA, and a picture drawn at another size.
+//! Pictures: a PNG file decoded to premultiplied RGBA (by die-draw), and a picture drawn at
+//! another size.
 
 use super::Picture;
 use std::path::Path;
 
-/// Reads and decodes a PNG of any colour type and depth.
+/// Reads and decodes a PNG of any colour type and depth: die-draw's reader.
 pub(super) fn load(path: &Path) -> Result<Picture, String> {
-    let wrong = |what: &dyn std::fmt::Display| format!("{}: {what}", path.display());
-    let bytes = std::fs::read(path).map_err(|e| wrong(&e))?;
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    // Palettes, grey levels and sixteen bits a channel all come out as eight-bit grey or RGB,
-    // with alpha where the file has any.
-    decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder.read_info().map_err(|e| wrong(&e))?;
-    let size = reader
-        .output_buffer_size()
-        .ok_or_else(|| wrong(&"too large to decode"))?;
-    let mut buffer = vec![0; size];
-    let info = reader.next_frame(&mut buffer).map_err(|e| wrong(&e))?;
-    let data = buffer
-        .get(..info.buffer_size())
-        .ok_or_else(|| wrong(&"cut short"))?;
-    let count = info.width as usize * info.height as usize;
-    let mut pixels = Vec::with_capacity(count * 4);
-    let over = |c: u8, a: u8| ((u32::from(c) * u32::from(a) + 127) / 255) as u8;
-    match info.color_type {
-        png::ColorType::Rgba => {
-            for p in data.chunks_exact(4) {
-                pixels.extend([over(p[0], p[3]), over(p[1], p[3]), over(p[2], p[3]), p[3]]);
-            }
-        }
-        png::ColorType::Rgb => {
-            for p in data.chunks_exact(3) {
-                pixels.extend([p[0], p[1], p[2], 255]);
-            }
-        }
-        png::ColorType::GrayscaleAlpha => {
-            for p in data.chunks_exact(2) {
-                let grey = over(p[0], p[1]);
-                pixels.extend([grey, grey, grey, p[1]]);
-            }
-        }
-        png::ColorType::Grayscale => {
-            for grey in data {
-                pixels.extend([*grey, *grey, *grey, 255]);
-            }
-        }
-        png::ColorType::Indexed => return Err(wrong(&"its palette wasn't expanded")),
-    }
-    if count == 0 || pixels.len() != count * 4 {
-        return Err(wrong(&"no pixels"));
-    }
-    Ok(Picture {
-        width: info.width,
-        height: info.height,
-        pixels,
+    die_draw::image::load(path).map(|i| Picture {
+        width: i.width,
+        height: i.height,
+        pixels: i.pixels,
     })
 }
 

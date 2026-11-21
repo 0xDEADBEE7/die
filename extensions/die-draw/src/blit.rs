@@ -180,7 +180,11 @@ pub fn blend(px: &mut [u8], ink: Rgb, a: u32) {
 }
 
 /// How far each glyph's outline grows a side, in physical pixels for each physical pixel of its
-/// size, as CoreText's font smoothing grows it: dark text the least, light text the most.
+/// size: a Mac draws text with font smoothing on, and CoreText's smoothing grows a glyph in
+/// proportion to its size, the more the lighter its colour, up to a limit. Dark text (a
+/// luminance of [`GROW_DARK_UNDER`] or less) grows the least, light text (from
+/// [`GROW_LIGHT_FROM`]) the most, and what's between in proportion. Measured (for die-markdown's
+/// page) against CoreText drawing the same text in three palettes at scales 1, 1.5 and 2.
 const GROW_DARK: f32 = 0.0068;
 const GROW_LIGHT: f32 = 0.0145;
 const GROW_DARK_UNDER: f32 = 0.1;

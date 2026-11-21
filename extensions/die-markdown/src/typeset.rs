@@ -12,17 +12,16 @@
 //! - `doc`: the text as blocks and runs, built on the parser's events, with `html` for the
 //!   tags a README uses;
 //! - `sheet`: GitHub's geometry as numbers;
-//! - `fonts` and `kern`: the system's faces read from their files and set as CoreText sets
-//!   them, and the glyphs drawn and kept;
+//! - die-draw's fonts (a crate of its own, shared with the other extensions that draw): the
+//!   system's faces read from their files and set as CoreText sets them, and the glyphs drawn
+//!   and kept;
 //! - `layout`: the document set for a width, as a list of things to draw;
 //! - `paint`: the rows a buffer shows, drawn;
 //! - `picture`: PNG files, and pictures at other sizes;
 //! - `syntax`: a fenced code block's words, by what each is, for their colours.
 
 mod doc;
-mod fonts;
 mod html;
-mod kern;
 mod layout;
 mod paint;
 mod picture;
@@ -36,9 +35,8 @@ use std::sync::{Arc, Mutex};
 
 // ------------------------------------------------------------------ colours
 
-/// A colour, as red, green and blue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Rgb(pub u8, pub u8, pub u8);
+/// A colour, as red, green and blue: die-draw's, which the page's paint draws in.
+pub use die_draw::Rgb;
 
 /// An alert's two colours: `> [!NOTE]` and its kin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -376,7 +374,7 @@ pub struct Env<'a> {
 /// The fonts a page is set in, with the glyphs already drawn. One serves every page.
 #[derive(Debug)]
 pub struct Fonts {
-    book: fonts::Book,
+    book: die_draw::Book,
 }
 
 impl Fonts {
@@ -385,7 +383,7 @@ impl Fonts {
     /// own fonts are in, the last resort where the system has none we know. An error says no
     /// font could be read at all, and a page can't be drawn.
     pub fn load(own: Option<&Path>) -> Result<Fonts, String> {
-        fonts::Book::load(own).map(|book| Fonts { book })
+        die_draw::Book::load(own).map(|book| Fonts { book })
     }
 
     /// The families found: the text's, then the code's.
@@ -397,7 +395,7 @@ impl Fonts {
     /// the same with no kerning between its letters: what a test of the kerning compares.
     pub fn measure(&mut self, text: &str, scale: f32) -> (f32, f32) {
         let mut pass = self.book.pass();
-        let mut run = pass.run(fonts::Style::default(), sheet::TEXT, scale);
+        let mut run = pass.run(die_draw::FontStyle::default(), sheet::TEXT, scale);
         let (mut kerned, mut plain) = (0.0, 0.0);
         for c in text.chars() {
             let shaped = pass.next(&mut run, c);

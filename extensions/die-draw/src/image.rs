@@ -1,6 +1,5 @@
-//! Pictures as PNG: read into premultiplied RGBA8, and written from straight RGBA8.
-//!
-//! The skeleton writes PNGs and reads none: the lift from die-markdown brings the reader.
+//! Pictures as PNG: read into premultiplied RGBA8, and written from straight RGBA8. The reader
+//! is die-markdown's, lifted.
 
 use std::path::Path;
 
@@ -15,9 +14,57 @@ pub struct Image {
     pub pixels: Vec<u8>,
 }
 
-/// A PNG's picture, premultiplied.
-pub fn decode(_bytes: &[u8]) -> Result<Image, String> {
-    Err("die-draw reads no PNG yet".into())
+/// A PNG's picture, premultiplied, from a PNG of any colour type and depth.
+pub fn decode(bytes: &[u8]) -> Result<Image, String> {
+    let wrong = |what: &dyn std::fmt::Display| what.to_string();
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    // Palettes, grey levels and sixteen bits a channel all come out as eight-bit grey or RGB,
+    // with alpha where the file has any.
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().map_err(|e| wrong(&e))?;
+    let size = reader
+        .output_buffer_size()
+        .ok_or_else(|| wrong(&"too large to decode"))?;
+    let mut buffer = vec![0; size];
+    let info = reader.next_frame(&mut buffer).map_err(|e| wrong(&e))?;
+    let data = buffer
+        .get(..info.buffer_size())
+        .ok_or_else(|| wrong(&"cut short"))?;
+    let count = info.width as usize * info.height as usize;
+    let mut pixels = Vec::with_capacity(count * 4);
+    let over = |c: u8, a: u8| ((u32::from(c) * u32::from(a) + 127) / 255) as u8;
+    match info.color_type {
+        png::ColorType::Rgba => {
+            for p in data.chunks_exact(4) {
+                pixels.extend([over(p[0], p[3]), over(p[1], p[3]), over(p[2], p[3]), p[3]]);
+            }
+        }
+        png::ColorType::Rgb => {
+            for p in data.chunks_exact(3) {
+                pixels.extend([p[0], p[1], p[2], 255]);
+            }
+        }
+        png::ColorType::GrayscaleAlpha => {
+            for p in data.chunks_exact(2) {
+                let grey = over(p[0], p[1]);
+                pixels.extend([grey, grey, grey, p[1]]);
+            }
+        }
+        png::ColorType::Grayscale => {
+            for grey in data {
+                pixels.extend([*grey, *grey, *grey, 255]);
+            }
+        }
+        png::ColorType::Indexed => return Err(wrong(&"its palette wasn't expanded")),
+    }
+    if count == 0 || pixels.len() != count * 4 {
+        return Err(wrong(&"no pixels"));
+    }
+    Ok(Image {
+        width: info.width,
+        height: info.height,
+        pixels,
+    })
 }
 
 /// The picture in the PNG file at `path`. An error says `{path}: {why}`.

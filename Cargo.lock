@@ -378,12 +378,12 @@ name = "die-markdown"
 version = "0.0.0"
 dependencies = [
  "die-core",
+ "die-draw",
  "die-test-cap",
  "die-vim",
  "png",
  "pulldown-cmark",
  "tiny-skia",
- "ttf-parser",
  "unicode-segmentation",
  "unicode-width",
 ]
