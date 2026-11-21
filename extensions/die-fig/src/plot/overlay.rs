@@ -1751,9 +1751,10 @@ impl Card {
             Side::Right => right + CARD_GAP,
             Side::Left => left - CARD_GAP - self.w,
         };
-        // Over the plot, not the axis under it, where it fits.
-        let floor = if self.h <= l.plot.bottom() - INSET {
-            l.plot.bottom()
+        // Over the plot, not the axis under it, where it fits: clear of the baseline, so its
+        // edge never merges with the axis's line.
+        let floor = if self.h <= l.plot.bottom() - 2.0 * INSET {
+            l.plot.bottom() - INSET
         } else {
             ah - INSET
         };
