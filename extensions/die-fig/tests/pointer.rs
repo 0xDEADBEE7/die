@@ -702,3 +702,119 @@ fn a_key_that_moves_the_cursor_hides_the_hover_until_the_pointer_moves() {
     mv(&mut s, (x + 1.0, y));
     assert!(hover(&mut s).is_some());
 }
+
+#[test]
+fn the_hover_card_is_drawn_on_the_cards_ground_and_goes_with_the_pointer() {
+    let mut s = setup();
+    let (_, over) = buffers(&mut s);
+    let (x, y) = sample_at(&mut s, "a", 6);
+    mv(&mut s, (x, y));
+    let tooltip = state(&mut s).borrow().theme.tooltip;
+    let (_, _, px) = s.h.pixels(over).unwrap();
+    let ground = px
+        .chunks_exact(4)
+        .filter(|p| p[3] == 255 && p[..3] == [tooltip.0, tooltip.1, tooltip.2])
+        .count();
+    assert!(ground > 200, "the card's ground: {ground} px");
+    s.h.send(Input::PointerLeft);
+    let (_, _, px) = s.h.pixels(over).unwrap();
+    assert!(px.chunks_exact(4).all(|p| p[3] == 0));
+}
+
+/// A bar chart of six services, one band each.
+fn bars() -> Setup {
+    setup_with(
+        "services.csv",
+        "service,rpm\napi,640\nworker,300\nbatch,120\nauth,410\nmail,90\nsearch,220\n",
+    )
+}
+
+/// The middle of band `i`, halfway up the plot.
+fn band_mid(s: &mut Setup, i: usize) -> (f32, f32) {
+    let st = state(s);
+    let w = s.win;
+    let st = st.borrow();
+    let l = st.panes[&w].layout.as_ref().unwrap();
+    let (start, width) = l.x.band_of(i).expect("a band scale across");
+    (start + width / 2.0, l.plot.y + l.plot.h / 2.0)
+}
+
+#[test]
+#[ignore = "needs fig/plot"]
+fn hovering_a_bar_chart_targets_the_band_under_the_pointer() {
+    let mut s = bars();
+    let at = band_mid(&mut s, 2);
+    mv(&mut s, at);
+    assert!(
+        matches!(hover(&mut s), Some(Cursor::Band { band: 2, .. })),
+        "{:?}",
+        hover(&mut s)
+    );
+    let four = band_mid(&mut s, 4);
+    click(&mut s, four);
+    assert!(matches!(cursor(&mut s), Some(Cursor::Band { band: 4, .. })));
+}
+
+#[test]
+#[ignore = "needs fig/plot"]
+fn a_drag_across_bands_brushes_whole_bands_and_zooms_to_them() {
+    let mut s = bars();
+    let (a, b) = (band_mid(&mut s, 1), band_mid(&mut s, 3));
+    gesture(&mut s, &[a, ((a.0 + b.0) / 2.0, a.1), b]);
+    let (lo, hi) = view(&mut s).x.expect("zoomed to the bands");
+    assert!(lo <= 1.0 && hi >= 4.0 && hi - lo <= 4.0, "{lo}..{hi}");
+}
+
+/// Points over two unordered numbers.
+fn scatter() -> Setup {
+    let mut text = String::from("u,v\n");
+    for (u, v) in [
+        (5, 1),
+        (1, 7),
+        (3, 3),
+        (8, 6),
+        (2, 9),
+        (7, 2),
+        (4, 5),
+        (9, 8),
+    ] {
+        text.push_str(&format!("{u},{v}\n"));
+    }
+    setup_with("points.csv", &text)
+}
+
+#[test]
+#[ignore = "needs fig/plot"]
+fn hovering_a_scatter_finds_the_nearest_point_within_reach() {
+    let mut s = scatter();
+    let name = {
+        let st = state(&mut s);
+        let st = st.borrow();
+        st.model.as_ref().unwrap().series[0].key.name.to_string()
+    };
+    let (x, y) = sample_at(&mut s, &name, 3);
+    mv(&mut s, (x + 3.0, y - 3.0));
+    assert!(
+        matches!(hover(&mut s), Some(Cursor::Point { row: 3, .. })),
+        "{:?}",
+        hover(&mut s)
+    );
+    // Far from every point: nothing.
+    let l = plot(&mut s);
+    mv(&mut s, (l.x + 2.0, l.y + 2.0));
+    assert_eq!(hover(&mut s), None);
+}
+
+#[test]
+#[ignore = "needs fig/plot"]
+fn a_drag_on_a_scatter_is_a_box_brush_zooming_both_axes() {
+    let mut s = scatter();
+    let l = plot(&mut s);
+    let (a, b) = (
+        (l.x + l.w * 0.2, l.y + l.h * 0.2),
+        (l.x + l.w * 0.6, l.y + l.h * 0.7),
+    );
+    gesture(&mut s, &[a, ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0), b]);
+    let v = view(&mut s);
+    assert!(v.x.is_some() && v.y.is_some(), "{v:?}");
+}

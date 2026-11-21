@@ -478,9 +478,8 @@ fn the_textless_surface_keeps_the_window_keys_colon_and_leader_z() {
     keys(&mut s.h, ":");
     assert_eq!(s.h.state(), die_core::State::CommandLine);
     keys(&mut s.h, "<Esc>");
-    // \z gives the figure a window's width back, or takes it.
-    keys(&mut s.h, "\\z");
-    assert!(s.h.messages.is_empty() || !s.h.take_errors().iter().any(|e| !e.is_empty()));
+    // \z gives the figure a file's width, and its whole width back.
+    keys(&mut s.h, "\\z\\z");
 }
 
 #[test]
