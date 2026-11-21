@@ -840,6 +840,23 @@ fn a_drag_keeps_the_grab_pins_the_node_and_moves_nothing_else() {
 }
 
 #[test]
+fn with_every_group_hidden_the_graph_says_so() {
+    let m = fixture("services.json");
+    let mut v = View::default();
+    v.hidden.extend(m.keys());
+    let (scene, l) = base(&m, &v, (880.0, 470.0));
+    assert!(l.nodes.iter().all(Option::is_none));
+    let said = scene
+        .items
+        .iter()
+        .any(|i| matches!(i, Item::Text { text, .. } if text.contains("hidden")));
+    assert!(said);
+    // The legend still offers its keys, hollow.
+    assert_eq!(l.items.len(), 3);
+    assert!(l.items.iter().all(|i| i.hidden));
+}
+
+#[test]
 fn hidden_groups_take_their_nodes_and_edges() {
     let m = fixture("services.json");
     let mut v = View::default();

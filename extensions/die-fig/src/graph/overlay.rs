@@ -369,14 +369,17 @@ pub fn overlay(
         // cursor's most, the emphasised next, and their labels; the rest a little.
         let (nodes_e, _) = emph.clone().unwrap_or_else(|| model.emphasis(None));
         let mut avoid: Vec<(Rect, f32)> = Vec::new();
+        // An edge's ends are what its card is about.
+        let ends = hover_edge.map(|k| model.ends[k]);
+        let is_end = |i: usize| ends.is_some_and(|(a, b)| a as usize == i || b as usize == i);
         for (i, g) in layout.nodes.iter().enumerate() {
             let Some(g) = g else { continue };
-            let w = if Some(i) == cursor || ringed.contains(&i) {
+            let w = if Some(i) == cursor || ringed.contains(&i) || is_end(i) {
                 24.0
             } else {
                 match nodes_e[i] {
                     Emphasis::Focused => 24.0,
-                    Emphasis::Related => 9.0,
+                    Emphasis::Related => 12.0,
                     Emphasis::Normal => 3.0,
                     Emphasis::Dimmed => 1.0,
                 }
@@ -386,14 +389,21 @@ pub fn overlay(
                 Rect::new(g.at.0 - reach, g.at.1 - reach, 2.0 * reach, 2.0 * reach),
                 w,
             ));
-            if let Some(l) = &layout.labels[i] {
+            // The base's label, unless the overlay showed it again elsewhere.
+            if let Some(l) = &layout.labels[i]
+                && !shown_labels.iter().any(|(_, _, e)| *e == Some(l.rect))
+            {
                 let lw = match nodes_e[i] {
-                    Emphasis::Focused | Emphasis::Related => 6.0,
+                    _ if is_end(i) => 10.0,
+                    Emphasis::Focused | Emphasis::Related => 10.0,
                     Emphasis::Normal => 1.5,
                     Emphasis::Dimmed => 0.5,
                 };
                 avoid.push((l.rect, lw));
             }
+        }
+        for (l, _, _) in &shown_labels {
+            avoid.push((l.rect, 10.0));
         }
         // The edges drawn bright: a path's most, a neighbour's less.
         let mut lines: Vec<(Vec<(f32, f32)>, f32)> = Vec::new();

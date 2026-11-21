@@ -17,7 +17,7 @@ const PIN_ANGLE: f32 = -std::f32::consts::FRAC_PI_4;
 const EDGE_DASH: (f32, f32) = (6.0, 4.0);
 
 /// The base layer: the header, then the graph clipped to its region, at rest (nothing
-/// emphasised), with regions: the area as chrome, the region as the plot, a node's disc and
+/// emphasised), or with every group hidden the chart's note that they are, with regions: the area as chrome, the region as the plot, a node's disc and
 /// its reach as the node, the legend's keys and the title.
 pub fn base(
     model: &GraphModel,
@@ -62,6 +62,10 @@ pub fn base(
     }
     if !layout.contained {
         scene.push(Item::PopClip);
+    }
+    if layout.nodes.iter().all(Option::is_none) {
+        // Every group hidden: the plot says so, as a chart's does, and how to bring them back.
+        crate::plot::errors::all_hidden(&mut scene, layout.plot, theme, m);
     }
     for (i, g) in layout.nodes.iter().enumerate() {
         if let Some(g) = g {

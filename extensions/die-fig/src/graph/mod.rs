@@ -55,7 +55,7 @@ use crate::json::{Kind, Node};
 use crate::scale::format_value;
 use crate::spec::graph::{from_table, layout_name};
 use crate::spec::{GraphSpec, Labels, Layout};
-use crate::style::{ColorSpec, FigStyle};
+use crate::style::FigStyle;
 use crate::theme::{Color, Theme, color_of};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -1044,9 +1044,4 @@ pub fn value_text(v: &Node) -> String {
         Kind::Arr(a) => format!("[{}]", a.len()),
         Kind::Obj(o) => format!("{{{}}}", o.len()),
     }
-}
-
-/// The colour a spec's `fig` colour gives, for callers holding a spec colour.
-pub fn spec_color(c: ColorSpec, theme: &Theme) -> Color {
-    color_of(c, theme)
 }
