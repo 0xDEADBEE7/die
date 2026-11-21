@@ -739,7 +739,16 @@ fn chip_x(
     let spec = TextSpec::new(TICK).weight(Weight::Semibold).tabular();
     let w = m.width(text, spec) + 2.0 * CHIP_PAD;
     let left = (x - w / 2.0).clamp(INSET, (l.size.0 - INSET - w).max(INSET));
-    let r = Rect::new(left, l.plot.bottom() + 5.0, w, CHIP_H);
+    // Its text on the tick labels' baseline, as m1's chip sits in the row of times.
+    let top = l
+        .labels
+        .iter()
+        .find(|lb| lb.role == Role::XTick)
+        .map_or(l.plot.bottom() + 5.0, |lb| {
+            lb.y - CHIP_H / 2.0 - m.cap(spec) / 2.0
+        })
+        .max(l.plot.bottom() + 3.0);
+    let r = Rect::new(left, top, w, CHIP_H);
     cover(l, theme, scene, r, Role::XTick, m);
     chip(theme, scene, r, text, spec, inverted, m);
 }

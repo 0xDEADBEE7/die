@@ -325,7 +325,7 @@ fn paddings(w: f32, h: f32) -> (f32, f32, f32) {
     (
         (w * 0.032).clamp(10.0, 28.0),
         (h * 0.05).clamp(8.0, 24.0),
-        (h * 0.035).clamp(6.0, 18.0),
+        (h * 0.045).clamp(6.0, 22.0),
     )
 }
 
@@ -885,7 +885,8 @@ fn attempt(
                 .iter()
                 .map(|(_, _, nw, vw)| nw + 6.0 + vw)
                 .fold(0.0, f32::max);
-            let candidate = w - (pad * 0.5).max(8.0) - need - 10.0;
+            // The labels end at the padding, as the title starts at it on the left.
+            let candidate = w - pad.max(8.0) - need - 10.0;
             if candidate - plot_x >= 0.55 * w {
                 right = candidate.min(right);
                 for (k, &(si, top, _)) in cands.iter().enumerate() {
