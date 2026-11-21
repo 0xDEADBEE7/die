@@ -122,6 +122,18 @@ fn a_click_on_the_banner_goes_to_the_error() {
 }
 
 #[test]
+fn a_click_on_the_banner_goes_to_the_error_with_no_chart_yet() {
+    let mut s = setup_with("data.json", "[{\"x\": 1, \"y\": 2},\n {\"x\" 2}]\n");
+    let st = state(&mut s);
+    assert!(st.borrow().model.is_none());
+    assert!(st.borrow().banner().is_some());
+    click(&mut s, (40.0, 6.0));
+    assert_eq!(s.h.window_buffer(s.win), Some(s.src));
+    let t = s.h.text(s.src).unwrap();
+    assert_eq!(t.line_of(t.cursor(s.win).unwrap()), 1, "the error's line");
+}
+
+#[test]
 fn an_empty_source_shows_why_in_place_of_a_chart() {
     let mut s = setup_with("data.csv", "x,a\n");
     let st = state(&mut s);

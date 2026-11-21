@@ -375,7 +375,11 @@ impl Pane {
             toggles,
         };
         match how {
-            Change::Step => self.undo.push(before),
+            Change::Step => {
+                self.undo.push(before);
+                // A key's zoom after this is a step of its own.
+                self.keyed = None;
+            }
             Change::Keyed => {
                 let within = self
                     .keyed
@@ -1130,13 +1134,51 @@ impl FigState {
         let (toggles, motion) = (self.toggles, self.motion());
         let me = self.me.clone();
         let buf = self.buf;
+        if p.kind != PointerKind::Move {
+            // What a restart keeps may have changed: the view, the cursor.
+            self.rev += 1;
+        }
         let Some(pane) = self.panes.get_mut(&p.window) else {
             return;
         };
         let s = pane.scale();
         let at = (p.x / s, p.y / s);
         pane.pointer = Some(at);
+        let goto = |ctx: &mut Ctx| {
+            let args = die_core::Args {
+                window: Some(p.window),
+                buffer: buf,
+                ..die_core::Args::default()
+            };
+            ctx.defer(move |ctx| ctx.run("fig-goto-error", &args));
+        };
         let Some(model) = model else {
+            // No chart yet, a build having failed from the start: the banner still takes a
+            // click to its error.
+            match p.kind {
+                PointerKind::Press(Button::Left) if !swallow => {
+                    pane.gesture = Gesture::Pressed {
+                        at,
+                        hit: pane.hit_at(at),
+                        button: Button::Left,
+                        mods: p.mods,
+                        clicks: p.clicks,
+                    };
+                }
+                PointerKind::Release(Button::Left) => {
+                    let g = std::mem::replace(&mut pane.gesture, Gesture::None);
+                    if matches!(
+                        g,
+                        Gesture::Pressed {
+                            hit: Hit::Banner,
+                            ..
+                        }
+                    ) {
+                        goto(ctx);
+                    }
+                }
+                _ => {}
+            }
             return;
         };
         let mut cx = Act {
@@ -1188,12 +1230,7 @@ impl FigState {
                 if let Some(banner) = cx.release(b, at)
                     && banner
                 {
-                    let args = die_core::Args {
-                        window: Some(p.window),
-                        buffer: buf,
-                        ..die_core::Args::default()
-                    };
-                    ctx.defer(move |ctx| ctx.run("fig-goto-error", &args));
+                    goto(ctx);
                 }
             }
             PointerKind::Scroll { dx, dy } => {
@@ -2133,7 +2170,7 @@ fn draw_overlay(
     let damage = changed(&p.over_items, &scene.items, p.over_bounds, now);
     p.over_bounds = now;
     p.over_key = Some(key);
-    let drawn = scene.items.clone();
+    p.over_items = scene.items.clone();
     let (aw, ah) = p.area_px();
     let (Some(damage), Some(producer)) = (damage, p.over.as_mut()) else {
         return;
@@ -2145,7 +2182,6 @@ fn draw_overlay(
     }
     raster::draw(&scene, px, w, h, stride, Some(b), None, kit.book.as_mut());
     producer.present(b.into());
-    p.over_items = drawn;
 }
 
 /// Where an overlay must be drawn again: where its items differ from those it drew last. Items
