@@ -124,14 +124,68 @@ pub fn register(reg: &mut Registry) {
     }
 }
 
-/// The faces as the theme has them now, each unstyled one at its default.
-pub fn resolve(_ctx: &die_core::Ctx) -> Theme {
-    todo!("P1-render: theme::resolve")
+/// Whether a background is dark: its luma (Rec. 601, on the colour as it's written, 0 to 1)
+/// under a half, as Ghostty decides a terminal's background is light or dark.
+pub fn is_dark(c: Color) -> bool {
+    let luma = 0.299 * f32::from(c.0) + 0.587 * f32::from(c.1) + 0.114 * f32::from(c.2);
+    luma / 255.0 < 0.5
 }
 
-/// The colour a spec's colour is in this theme.
-pub fn color_of(_spec: ColorSpec, _theme: &Theme) -> Color {
-    todo!("P1-render: theme::color_of")
+/// The faces as the theme has them now, each unstyled one at its default. `default`'s
+/// background is the surface and picks the set: dark when it's dark or unset (DIE's themes are
+/// dark first), light otherwise.
+pub fn resolve(ctx: &die_core::Ctx) -> Theme {
+    let fg = |name: &str| ctx.face_style(name).and_then(|s| s.fg).map(core_rgb);
+    let bg = ctx.face_style("default").and_then(|s| s.bg).map(core_rgb);
+    let dark = bg.is_none_or(is_dark);
+    let base = if dark {
+        Theme::mono_dark()
+    } else {
+        Theme::light()
+    };
+    let surface = bg.unwrap_or(base.surface);
+    let or = |name: &str, default: Color| fg(name).unwrap_or(default);
+    let mut series = base.series;
+    for (i, slot) in series.iter_mut().enumerate() {
+        *slot = or(FACES[i], *slot);
+    }
+    let mut status = base.status;
+    for (i, slot) in status.iter_mut().enumerate() {
+        *slot = or(FACES[8 + i], *slot);
+    }
+    Theme {
+        dark,
+        surface,
+        text: or("fig-text", base.text),
+        strong: or("fig-strong", base.strong),
+        muted: or("fig-tick", base.muted),
+        grid: or("fig-grid", base.grid),
+        baseline: or("fig-baseline", base.baseline),
+        tooltip: or("fig-tooltip", base.tooltip),
+        ring: or("fig-ring", base.ring),
+        chip: or("fig-cursor", base.chip),
+        chip_text: surface,
+        accent: base.accent,
+        dial: or("fig-dial", base.dial),
+        dial_accent: or("fig-dial-accent", base.dial_accent),
+        series,
+        status,
+        other: base.other,
+    }
+}
+
+/// The colour a spec's colour is in this theme: a slot's series colour, a status's colour,
+/// `dim` the neutral that series past the eighth draw in, `bright` the strong text's colour,
+/// `accent` the accent, and `#rrggbb` itself.
+pub fn color_of(spec: ColorSpec, theme: &Theme) -> Color {
+    match spec {
+        ColorSpec::Slot(i) => theme.series[usize::from(i) % theme.series.len()],
+        ColorSpec::Status(s) => theme.status[s as usize],
+        ColorSpec::Dim => theme.other,
+        ColorSpec::Bright => theme.strong,
+        ColorSpec::Accent => theme.accent,
+        ColorSpec::Rgb(r, g, b) => Color(r, g, b),
+    }
 }
 
 /// A colour from `#rrggbb`, for the tables below.
