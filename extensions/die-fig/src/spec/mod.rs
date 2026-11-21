@@ -10,8 +10,66 @@
 //! - [`write`]: a figure back to JSON text, for `:fig-spec`.
 //!
 //! `"type"` is one of `chart`, `line`, `area`, `bar`, `scatter`, `heatmap`, `histogram`,
-//! `graph`, `stat`, `meter` and `dashboard`. Unknown fields are tolerated and kept in `raw`; a
-//! misspelt known one is a warning.
+//! `graph`, `stat`, `meter` and `dashboard`. Unknown fields are tolerated: a node's and an
+//! edge's are kept in their `raw` object, and data rows keep theirs in [`Table::raw`]. A key
+//! within two edits of a known one (one for a known key of three or four letters, none for one
+//! or two) is a warning that names the key it may have meant. Every error has its place.
+//!
+//! # What a buffer is
+//!
+//! [`parse`] goes by the file's extension first (`.csv`, `.tsv` and `.tab`, `.jsonl` and
+//! `.ndjson`, `.json`), then by the text: JSON starting `{` or `[`, JSONL when the whole text
+//! isn't one value but its first line is an object, else CSV or TSV. A JSON object is a spec
+//! when it has a string `"type"`, a `"mark"`, `"layers"`, `"nodes"` or `"buckets"`, or fig's
+//! `"series"` with `"points"`; an object whose every value is an array is data, as is a JSON
+//! array. Bare data is read and [`guess`]ed, and the guess's data is the table itself.
+//!
+//! # The grammar
+//!
+//! A chart (`"type": "chart"`, or a shorthand: `line`, `area`, `bar`, `scatter` for points and
+//! `heatmap` for rects) has these keys, all optional but `data` and a mark:
+//!
+//! - `title`, `subtitle`: strings;
+//! - `data`: a file's name, relative to the spec's directory (`"-"` is the buffer itself, and
+//!   in a dashboard a name of its `data` is that data), or an object with one of `file`,
+//!   `values` (rows as JSON, or CSV text), `run` (a command, with `every`: `"30s"`, `"5m"`,
+//!   `"1h"`, `"500ms"`, `"1d"`) or `stream`, and the reading hints `format` (`csv`, `tsv`,
+//!   `json`, `jsonl`), `delimiter`, `header`, `thousands` and `time_format` (strtime);
+//! - `transform`: a list, each an object with one of `fold` (`["a", "b"]`, `"as": [key,
+//!   value]`), `filter` (a field with `in`, `not_in`, `range: [lo, hi]` or `min`/`max`), `bin`
+//!   (a field, `step`, `max_bins`, `"as": [start, end]`), `aggregate` (`"count"` or `{"sum":
+//!   field}`, `by`, `as`), `cumulative` (a field, `by`, `as`), `window` (a field, `size`, `by`,
+//!   `as`), `sort` (a field, `descending`) or `top` (a count, `by`, `field`);
+//! - the encodings `x`, `y`, `y2`, `color`, `size` and `label`: each a field's name, a number
+//!   (a constant), or an object of `field` or `value`, `type` (`number`, `time`, `category`,
+//!   `text`), `unit` (`s` or `ms`, for epoch times), `title`, `scale` (`auto`, `linear`, `log`,
+//!   `time`, `band`), `domain` (`[lo, hi]`), `zero` and `format`; and `tooltip` and `detail`, a
+//!   field or a list of them;
+//! - `mark`: `line`, `area`, `bar`, `point`, `rect`, `rule`, `band` or `text`, or an object of
+//!   `type`, `curve` (`linear`, `step`), `points`, `stack` (`none`, `zero`, `normalize`, or a
+//!   boolean) and `horizontal`. Bars and areas stack from zero unless told otherwise. This is
+//!   layer 0, and the top's `fig` block is its block;
+//! - `layers`: more layers, each with `mark`, its own encodings, `data`, `transform` and `fig`.
+//!   A layer takes every encoding of the top's that it doesn't give itself; `null` drops one;
+//! - `series`: each series' `fig` block by its name, `{"api": {"color": "red"}}`; a list of
+//!   blocks for several series of one name, the nth of the list for the nth series;
+//! - `view`: `grid`, `axes`, `legend` (`top`, `right`, `none`), `labels` (`auto`, `ends`,
+//!   `none`), `render_options` and `motion`. fig's `fig.menu` (`plane.axis_lines`,
+//!   `plane.grid_lines`, `render_options`) is read first, and `view` over it.
+//!
+//! `"type": "histogram"` without fig's `buckets` counts `x` in bins (`step`, or at most `bins`
+//! of them, 20 by default), or sums `y` in them, as stacked bars from each bin's start.
+//!
+//! # fig's shapes
+//!
+//! fig's `line` is a long table `(series, x, y)` drawn as one line layer coloured by series:
+//! its `series` column is a category with one entry a series, in the file's order, so two
+//! series of one name stay two (group by the code, not the string). Each series' `fig` block
+//! goes to [`Chart::series_fig`] under the [`SeriesKey`] of its name in the data (its
+//! `"label"`) and which of that name it is. fig's `histogram` is a table `(bucket, series,
+//! value)` drawn as stacked bars on a band x, one band a bucket (one entry a bucket, too).
+//! `x_label` and `y_label` are the channels' titles. A graph is [`GraphSpec`], with `source`
+//! and `target` for `from` and `to`, and fig's messages.
 
 pub mod chart;
 pub mod dash;
@@ -26,7 +84,7 @@ pub use write::write;
 use crate::data::transform::{AggOp, Transform};
 use crate::data::{ColumnKind, ReadOptions, SeriesKey, Table};
 use crate::error::{FigError, Pos, Result};
-use crate::json::Node;
+use crate::json::{self, Key, Kind, Node};
 use crate::style::FigStyle;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -513,6 +571,517 @@ pub struct Parsed {
 /// Parses a buffer's text: a fig file, a spec, or bare data (CSV, TSV, JSON rows, JSONL), which
 /// is read and given a guessed figure. `name` is the file name (for the format by extension),
 /// `dir` resolves relative paths.
-pub fn parse(_text: &str, _name: &str, _dir: &Path, _opt: &ReadOptions) -> Result<Parsed> {
-    todo!("P1-spec: spec::parse")
+pub fn parse(text: &str, name: &str, dir: &Path, opt: &ReadOptions) -> Result<Parsed> {
+    let mut cx = Cx::new(dir, opt);
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let first = body
+        .trim_start_matches([' ', '\t', '\r', '\n'])
+        .chars()
+        .next();
+    let Some(first) = first else {
+        return Err(FigError::at("nothing to draw: the buffer is empty", START));
+    };
+    let (figure, inferred) = match format_of_name(name) {
+        Some(f @ (DataFormat::Csv | DataFormat::Tsv)) => (bare_csv(text, f, true, opt)?, true),
+        Some(DataFormat::Jsonl) => (bare_jsonl(text, opt)?, true),
+        Some(DataFormat::Json) => json_text(text, &mut cx)?,
+        None if matches!(first, '{' | '[') => json_text(text, &mut cx)?,
+        None => (bare_csv(text, sniff(body), false, opt)?, true),
+    };
+    Ok(Parsed {
+        figure,
+        inferred,
+        warnings: cx.warnings,
+    })
+}
+
+/// Where a text starts: the place of an error about the whole of it.
+pub(crate) const START: Pos = Pos {
+    line: 1,
+    col: 1,
+    byte: 0,
+};
+
+/// The format a file's name says, by its extension in any case.
+pub fn format_of_name(name: &str) -> Option<DataFormat> {
+    let ext = Path::new(name).extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "csv" => Some(DataFormat::Csv),
+        "tsv" | "tab" => Some(DataFormat::Tsv),
+        "jsonl" | "ndjson" => Some(DataFormat::Jsonl),
+        "json" => Some(DataFormat::Json),
+        _ => None,
+    }
+}
+
+/// CSV or TSV by the first line: TSV when it has more tabs than commas.
+fn sniff(body: &str) -> DataFormat {
+    let line = body.lines().next().unwrap_or("");
+    let count = |c: char| line.chars().filter(|&x| x == c).count();
+    if count('\t') > count(',') {
+        DataFormat::Tsv
+    } else {
+        DataFormat::Csv
+    }
+}
+
+/// A JSON text: a spec, bare JSON rows, or JSONL that isn't one value.
+fn json_text(text: &str, cx: &mut Cx<'_>) -> Result<(Figure, bool)> {
+    match json::parse(text) {
+        Ok(node) if is_spec(&node) => Ok((figure(&node, cx)?, false)),
+        Ok(node) => {
+            let table = crate::data::rows::read_json(&node, cx.opt)?;
+            Ok((inferred(table, DataFormat::Json)?, true))
+        }
+        Err(e) if looks_like_jsonl(text) => match bare_jsonl(text, cx.opt) {
+            Ok(f) => Ok((f, true)),
+            Err(_) => Err(e),
+        },
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a text that isn't one JSON value is JSONL: more than one line that isn't blank, the
+/// first of them an object.
+fn looks_like_jsonl(text: &str) -> bool {
+    let lines = json::parse_lines(text);
+    lines.len() > 1 && matches!(&lines[0], Ok(n) if n.as_obj().is_some())
+}
+
+fn bare_csv(text: &str, f: DataFormat, by_name: bool, opt: &ReadOptions) -> Result<Figure> {
+    let mut o = opt.clone();
+    if by_name && f == DataFormat::Tsv && o.delimiter.is_none() {
+        o.delimiter = Some(b'\t');
+    }
+    let table = crate::data::csv::read_csv(text, &o)?;
+    inferred(table, f)
+}
+
+fn bare_jsonl(text: &str, opt: &ReadOptions) -> Result<Figure> {
+    let table = crate::data::rows::read_jsonl(text, opt)?;
+    inferred(table, DataFormat::Jsonl)
+}
+
+/// The guess at a table read from bare data, its format kept.
+fn inferred(table: Table, f: DataFormat) -> Result<Figure> {
+    let mut chart = guess(&table).map_err(|e| placed(e, START))?;
+    chart.data.format = Some(f);
+    Ok(Figure::Chart(chart))
+}
+
+/// An error given a place if it has none.
+pub(crate) fn placed(e: FigError, at: Pos) -> FigError {
+    match e.at {
+        Some(_) => e,
+        None => FigError::at(e.msg, at),
+    }
+}
+
+/// Whether a JSON value is a spec rather than data: see the module's docs.
+fn is_spec(node: &Node) -> bool {
+    let Some(obj) = node.as_obj() else {
+        return false;
+    };
+    let rows_of_objects = |k: &str| matches!(node.get(k).and_then(Node::as_arr), Some(a) if a.first().is_none_or(|e| e.as_obj().is_some()));
+    if node.get("type").and_then(Node::as_str).is_some()
+        || node
+            .get("mark")
+            .is_some_and(|m| m.as_str().is_some() || m.as_obj().is_some())
+        || rows_of_objects("layers")
+        || rows_of_objects("nodes")
+        || rows_of_objects("buckets")
+        || fig::is_line_series(node.get("series"))
+    {
+        return true;
+    }
+    obj.is_empty() || !obj.iter().all(|(_, v)| v.as_arr().is_some())
+}
+
+/// Every figure type, for messages.
+const TYPES: &str =
+    "chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter or dashboard";
+
+/// The figure a spec's object describes, by its `"type"` or, failing that, by fig's fields.
+pub(crate) fn figure(node: &Node, cx: &mut Cx<'_>) -> Result<Figure> {
+    obj(node, "a figure")?;
+    let ty = match node.get("type") {
+        Some(t) if !t.is_null() => Some((string(t, "type")?, t.at)),
+        _ => None,
+    };
+    let has = |k: &str| field(node, k).is_some();
+    let Some((ty, at)) = ty else {
+        return if has("nodes") {
+            fig::graph(node, cx).map(Figure::Graph)
+        } else if has("buckets") {
+            fig::histogram(node, cx).map(Figure::Chart)
+        } else if field(node, "series").is_some_and(|s| s.as_arr().is_some()) {
+            fig::line(node, cx).map(Figure::Chart)
+        } else if has("mark") || has("layers") {
+            chart::parse(node, chart::Shorthand::Chart, cx).map(Figure::Chart)
+        } else {
+            Err(FigError::at(
+                format!("a figure needs a \"type\": {TYPES}"),
+                node.at,
+            ))
+        };
+    };
+    match ty.as_str() {
+        "graph" => fig::graph(node, cx).map(Figure::Graph),
+        "line" if field(node, "series").is_some_and(|s| s.as_arr().is_some()) => {
+            fig::line(node, cx).map(Figure::Chart)
+        }
+        "histogram" if has("buckets") => fig::histogram(node, cx).map(Figure::Chart),
+        "stat" => dash::stat(node, cx).map(Figure::Stat),
+        "meter" => dash::meter(node, cx).map(Figure::Meter),
+        "dashboard" => dash::dashboard(node, cx).map(Figure::Dashboard),
+        other => match chart::Shorthand::from_name(other) {
+            Some(sh) => chart::parse(node, sh, cx).map(Figure::Chart),
+            None => Err(FigError::at(
+                format!("unknown figure type \"{other}\": expected {TYPES}"),
+                at,
+            )),
+        },
+    }
+}
+
+/// What reading a spec carries along: where it is, how data is read, the warnings so far, and
+/// whether it's a dashboard's panel and which data names it may use.
+pub(crate) struct Cx<'a> {
+    /// The spec's directory.
+    pub(crate) dir: &'a Path,
+    /// How data is read.
+    pub(crate) opt: &'a ReadOptions,
+    /// What was odd but not wrong.
+    pub(crate) warnings: Vec<FigError>,
+    /// The dashboard's data names, in a panel.
+    pub(crate) names: Option<Vec<String>>,
+    /// Whether the figure being read is a dashboard's panel, which may have a `span`.
+    pub(crate) panel: bool,
+}
+
+impl<'a> Cx<'a> {
+    pub(crate) fn new(dir: &'a Path, opt: &'a ReadOptions) -> Cx<'a> {
+        Cx {
+            dir,
+            opt,
+            warnings: Vec::new(),
+            names: None,
+            panel: false,
+        }
+    }
+
+    /// Warns of each key of `obj` that isn't `known` but is near a known one.
+    pub(crate) fn check(&mut self, obj: &[(Key, Node)], known: &[&str]) {
+        for (key, _) in obj {
+            if known.contains(&&*key.name) {
+                continue;
+            }
+            if let Some(near) = near(&key.name, known) {
+                self.warnings.push(FigError::at(
+                    format!("unknown field \"{}\"; did you mean \"{near}\"?", key.name),
+                    key.at,
+                ));
+            }
+        }
+    }
+
+    /// [`Cx::check`] for a figure's own object, which in a panel may also have `span`.
+    pub(crate) fn check_top(&mut self, obj: &[(Key, Node)], known: &[&str]) {
+        if self.panel {
+            let mut k = known.to_vec();
+            k.push("span");
+            self.check(obj, &k);
+        } else {
+            self.check(obj, known);
+        }
+    }
+}
+
+/// The known key `key` is a misspelling of, if any: within two edits, one for a known key of
+/// three or four chars, none for a shorter one; the nearest, the first of equals.
+fn near<'k>(key: &str, known: &[&'k str]) -> Option<&'k str> {
+    let mut best: Option<(usize, &str)> = None;
+    for k in known {
+        let len = k.chars().count();
+        let cap = match len {
+            0..=2 => 0,
+            3..=4 => 1,
+            _ => 2,
+        };
+        if key.chars().count().abs_diff(len) > cap {
+            continue;
+        }
+        let d = distance(key, k);
+        if d <= cap && best.is_none_or(|(b, _)| d < b) {
+            best = Some((d, k));
+        }
+    }
+    best.map(|(_, k)| k)
+}
+
+/// The edits from `a` to `b`, in chars: insertions, deletions, substitutions, and swaps of two
+/// neighbours (optimal string alignment).
+pub(crate) fn distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let w = b.len() + 1;
+    let mut d = vec![0usize; (a.len() + 1) * w];
+    for i in 0..=a.len() {
+        d[i * w] = i;
+    }
+    for (j, v) in d.iter_mut().enumerate().take(w) {
+        *v = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut v = (d[(i - 1) * w + j] + 1)
+                .min(d[i * w + j - 1] + 1)
+                .min(d[(i - 1) * w + j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(d[(i - 2) * w + j - 2] + 1);
+            }
+            d[i * w + j] = v;
+        }
+    }
+    d[a.len() * w + b.len()]
+}
+
+/// A JSON value's kind with its article, for a message: "a string", "an object", "null".
+pub(crate) fn a(n: &Node) -> &'static str {
+    match n.kind {
+        Kind::Null => "null",
+        Kind::Bool(_) => "a boolean",
+        Kind::Num(_) => "a number",
+        Kind::Str(_) => "a string",
+        Kind::Arr(_) => "an array",
+        Kind::Obj(_) => "an object",
+    }
+}
+
+/// The value under `key`, unless it's absent or `null`.
+pub(crate) fn field<'a>(n: &'a Node, key: &str) -> Option<&'a Node> {
+    n.get(key).filter(|v| !v.is_null())
+}
+
+/// An object's keys and values, or an error naming `what` it should have been.
+pub(crate) fn obj<'a>(n: &'a Node, what: &str) -> Result<&'a [(Key, Node)]> {
+    n.as_obj()
+        .ok_or_else(|| FigError::at(format!("{what} must be an object, not {}", a(n)), n.at))
+}
+
+/// The array under a key, or an error.
+pub(crate) fn arr<'a>(n: &'a Node, key: &str) -> Result<&'a [Node]> {
+    n.as_arr().ok_or_else(|| wrong(n, key, "an array"))
+}
+
+/// "`key` must be `want`, not …", at the value.
+pub(crate) fn wrong(n: &Node, key: &str, want: &str) -> FigError {
+    FigError::at(format!("\"{key}\" must be {want}, not {}", a(n)), n.at)
+}
+
+/// The string a value is, or an error.
+pub(crate) fn string(n: &Node, key: &str) -> Result<String> {
+    n.as_str()
+        .map(String::from)
+        .ok_or_else(|| wrong(n, key, "a string"))
+}
+
+/// The string under `key` in `o`, None if it's absent or `null`.
+pub(crate) fn opt_string(o: &Node, key: &str) -> Result<Option<String>> {
+    field(o, key).map(|v| string(v, key)).transpose()
+}
+
+/// The boolean a value is, or an error.
+pub(crate) fn boolean(n: &Node, key: &str) -> Result<bool> {
+    n.as_bool().ok_or_else(|| wrong(n, key, "true or false"))
+}
+
+/// The boolean under `key` in `o`, None if it's absent or `null`.
+pub(crate) fn opt_bool(o: &Node, key: &str) -> Result<Option<bool>> {
+    field(o, key).map(|v| boolean(v, key)).transpose()
+}
+
+/// The number a value is, or an error.
+pub(crate) fn number(n: &Node, key: &str) -> Result<f64> {
+    n.as_f64().ok_or_else(|| wrong(n, key, "a number"))
+}
+
+/// A whole number of at least `min`, or an error.
+pub(crate) fn whole(n: &Node, key: &str, min: u64) -> Result<u64> {
+    match n.as_f64() {
+        Some(v) if v.fract() == 0.0 && v >= min as f64 && v <= u32::MAX as f64 => Ok(v as u64),
+        _ => Err(FigError::at(
+            format!("\"{key}\" must be a whole number of at least {min}"),
+            n.at,
+        )),
+    }
+}
+
+/// A field's name or a list of them.
+pub(crate) fn strings(n: &Node, key: &str) -> Result<Vec<String>> {
+    match &n.kind {
+        Kind::Str(s) => Ok(vec![s.to_string()]),
+        Kind::Arr(a) => a.iter().map(|v| string(v, key)).collect(),
+        _ => Err(wrong(n, key, "a field's name or a list of them")),
+    }
+}
+
+/// A node's id: a string, or a number as JSON writes it (CSV ids).
+pub(crate) fn id_of(n: &Node, key: &str) -> Result<String> {
+    match &n.kind {
+        Kind::Str(s) => Ok(s.to_string()),
+        Kind::Num(_) => Ok(n.to_text()),
+        _ => Err(wrong(n, key, "a string")),
+    }
+}
+
+impl Mark {
+    /// A mark of this kind with its defaults: straight lines without points, bars and areas
+    /// stacked from zero, upright.
+    pub fn new(kind: MarkKind) -> Mark {
+        Mark {
+            kind,
+            curve: Curve::Linear,
+            points: false,
+            stack: MarkKind::default_stack(kind),
+            horizontal: false,
+        }
+    }
+}
+
+impl MarkKind {
+    /// Every kind, in the order the docs list them.
+    pub const ALL: [MarkKind; 8] = [
+        MarkKind::Line,
+        MarkKind::Area,
+        MarkKind::Bar,
+        MarkKind::Point,
+        MarkKind::Rect,
+        MarkKind::Rule,
+        MarkKind::Band,
+        MarkKind::Text,
+    ];
+
+    /// Its name in a spec.
+    pub fn name(self) -> &'static str {
+        match self {
+            MarkKind::Line => "line",
+            MarkKind::Area => "area",
+            MarkKind::Bar => "bar",
+            MarkKind::Point => "point",
+            MarkKind::Rect => "rect",
+            MarkKind::Rule => "rule",
+            MarkKind::Band => "band",
+            MarkKind::Text => "text",
+        }
+    }
+
+    /// How a mark of this kind stacks unless the spec says: bars and areas from zero.
+    pub fn default_stack(self) -> Stack {
+        match self {
+            MarkKind::Bar | MarkKind::Area => Stack::Zero,
+            _ => Stack::None,
+        }
+    }
+}
+
+impl ViewSettings {
+    /// A graph's defaults: no grid and no axes (fig's plane for a graph), the rest as a chart's.
+    pub fn graph() -> ViewSettings {
+        ViewSettings {
+            grid: false,
+            axes: false,
+            ..ViewSettings::default()
+        }
+    }
+}
+
+impl Figure {
+    /// The figure with every place in the text forgotten: channels', nodes' and edges' places,
+    /// and the places inside kept objects. Two readings of one figure from different texts
+    /// (a spec and [`write`]'s text of it) are equal this way.
+    pub fn without_places(&self) -> Figure {
+        let mut f = self.clone();
+        unplace_figure(&mut f);
+        f
+    }
+}
+
+fn unplace_figure(f: &mut Figure) {
+    match f {
+        Figure::Chart(c) => {
+            unplace_data(&mut c.data);
+            for l in &mut c.layers {
+                for ch in [
+                    &mut l.enc.x,
+                    &mut l.enc.y,
+                    &mut l.enc.y2,
+                    &mut l.enc.color,
+                    &mut l.enc.size,
+                    &mut l.enc.label,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    ch.at = None;
+                }
+                if let Some(d) = &mut l.data {
+                    unplace_data(d);
+                }
+            }
+        }
+        Figure::Graph(g) => {
+            for n in &mut g.nodes {
+                n.at = Pos::default();
+                unplace_node(&mut n.raw);
+            }
+            for e in &mut g.edges {
+                e.at = Pos::default();
+                unplace_node(&mut e.raw);
+            }
+        }
+        Figure::Stat(s) => unplace_data(&mut s.data),
+        Figure::Meter(m) => unplace_data(&mut m.data),
+        Figure::Dashboard(d) => {
+            for (_, data) in &mut d.data {
+                unplace_data(data);
+            }
+            for p in d.rows.iter_mut().flatten() {
+                if let Panel::Figure(f) = &mut p.panel {
+                    unplace_figure(f);
+                }
+            }
+        }
+    }
+}
+
+fn unplace_data(d: &mut DataSpec) {
+    if let DataRef::Inline(t) = &mut d.source
+        && let Some(raw) = &t.raw
+    {
+        let rows: Vec<Node> = raw
+            .iter()
+            .map(|n| {
+                let mut n = n.clone();
+                unplace_node(&mut n);
+                n
+            })
+            .collect();
+        Arc::make_mut(t).raw = Some(rows.into());
+    }
+}
+
+fn unplace_node(n: &mut Node) {
+    n.at = Pos::default();
+    match &mut n.kind {
+        Kind::Arr(a) => a.iter_mut().for_each(unplace_node),
+        Kind::Obj(o) => {
+            for (k, v) in o {
+                k.at = Pos::default();
+                unplace_node(v);
+            }
+        }
+        _ => {}
+    }
 }
