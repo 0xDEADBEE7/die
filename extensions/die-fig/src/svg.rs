@@ -6,11 +6,13 @@
 //! element that uses it, with an id `fig-` and a letter and a number. Hairlines are 1 px with
 //! `shape-rendering="crispEdges"` and a stroke that doesn't scale with the picture, so they stay
 //! one px when it's shown larger. A shadow is a black rounded rectangle under a Gaussian blur of
-//! σ = `blur / 2`, as the raster draws it. A text with a `max_width` is clipped to it, since a
-//! browser's font isn't the raster's and the cut was made by the layout. Pushes and pops nest
+//! σ = `blur / 2`, as the raster draws it, the blur at most [`MAX_BLUR`]. A text keeps its
+//! spaces (`xml:space="preserve"`), as the raster does, and one with a `max_width` is clipped to
+//! it, since a browser's font isn't the raster's and the cut was made by the layout. Pushes and pops nest
 //! as groups; a pop that doesn't match the innermost push closes the groups inside it and opens
 //! them again.
 
+use crate::raster::{MAX_BLUR, plain};
 use crate::scene::{Anchor, Cap, Item, Join, Paint, PathData, Rect, Scene, Stroke, Verb, Weight};
 use crate::theme::Color;
 use std::fmt::Write as _;
@@ -159,7 +161,7 @@ impl Writer {
                 let _ = write!(
                     self.out,
                     "<text x=\"{}\" y=\"{}\" font-family=\"{family}\" font-size=\"{}\" \
-                     font-weight=\"{weight}\" text-anchor=\"{anchor}\"{}",
+                     font-weight=\"{weight}\" text-anchor=\"{anchor}\" xml:space=\"preserve\"{}",
                     num(*x),
                     num(*y),
                     num(spec.size),
@@ -179,7 +181,11 @@ impl Writer {
                 alpha,
             } => {
                 let r = Rect::new(rect.x, rect.y + dy, rect.w, rect.h);
-                let blur = if blur.is_finite() { blur.max(0.0) } else { 0.0 };
+                let blur = if blur.is_nan() {
+                    0.0
+                } else {
+                    blur.clamp(0.0, MAX_BLUR)
+                };
                 let filter = if blur > 0.0 {
                     let id = self.id('s');
                     let _ = writeln!(
@@ -338,9 +344,11 @@ fn d(path: &PathData) -> String {
     out
 }
 
-/// Text as XML content: the markup's characters as entities, and the control characters XML
-/// can't hold left out.
+/// Text as XML content, as the raster draws it: the markup's characters as entities, a tab or
+/// a line break as a space, and the other characters XML can't hold (the control characters,
+/// U+FFFE and U+FFFF) left out.
 fn escape(text: &str) -> String {
+    let text = plain(text);
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {
@@ -349,7 +357,6 @@ fn escape(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            c if c.is_control() && c != '\t' => {}
             c => out.push(c),
         }
     }

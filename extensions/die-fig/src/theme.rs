@@ -3,8 +3,8 @@
 //! Chrome comes from the theme and stays quiet; the data is the only loud thing. Each face's
 //! colour is its foreground, whatever it paints (the grid's lines, the card's ground, the
 //! cursor's chip), as the whiteboard's dial faces are. A face the theme leaves unstyled takes the
-//! defaults below: the dark set when `default`'s background is dark (luminance under 0.5), else
-//! the light. The series and status faces are declared unstyled so the validated sets apply, and
+//! defaults below: the dark set when `default`'s background is dark (its Rec. 601 luma under
+//! 0.5, see [`is_dark`]), else the light. The series and status faces are declared unstyled so the validated sets apply, and
 //! a theme that styles `fig-series-N` wins.
 //!
 //! | Face | Field | Dark default | Light default |
@@ -125,7 +125,10 @@ pub fn register(reg: &mut Registry) {
 }
 
 /// Whether a background is dark: its luma (Rec. 601, on the colour as it's written, 0 to 1)
-/// under a half, as Ghostty decides a terminal's background is light or dark.
+/// under a half, as Ghostty decides a terminal's background is light or dark. Not relative
+/// luminance (linear Rec. 709), which is under a half up to grey `#bbbbbb`: by it the greys
+/// `#808080` to `#bbbbbb` would be dark and take the dark set's light text, which reads poorly
+/// on them; by luma they're light, and `#7f7f7f` is the lightest dark grey.
 pub fn is_dark(c: Color) -> bool {
     let luma = 0.299 * f32::from(c.0) + 0.587 * f32::from(c.1) + 0.114 * f32::from(c.2);
     luma / 255.0 < 0.5

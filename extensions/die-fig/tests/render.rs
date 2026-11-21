@@ -75,6 +75,52 @@ fn near(a: u8, b: u8, by: u8) -> bool {
     a.abs_diff(b) <= by
 }
 
+/// What `f` gives, on a thread of its own, failing if it takes more than `secs`: the raster
+/// runs on the editor's main thread, so one that never finishes freezes it.
+fn finishes<T: Send + 'static>(what: &str, secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(secs)) {
+        Ok(v) => v,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("{what} didn't finish in {secs} s")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("{what} panicked"),
+    }
+}
+
+/// A row's runs from `x0` to `x1`, left to right: whether each is inked, and how long it is.
+/// Fails on a pixel that is neither full nor empty.
+fn runs(shot: &Shot, y: u32, x0: u32, x1: u32) -> Vec<(bool, u32)> {
+    let mut out: Vec<(bool, u32)> = Vec::new();
+    for x in x0..x1 {
+        let a = shot.alpha(x, y);
+        assert!(
+            a == 0 || a == 255,
+            "({x}, {y}) is {a}, neither full nor empty"
+        );
+        match out.last_mut() {
+            Some((on, n)) if *on == (a == 255) => *n += 1,
+            _ => out.push((a == 255, 1)),
+        }
+    }
+    out
+}
+
+/// The same for column `x`, from `y0` to `y1`.
+fn col_runs(shot: &Shot, x: u32, y0: u32, y1: u32) -> Vec<(bool, u32)> {
+    let t = Shot {
+        w: shot.h,
+        h: shot.w,
+        px: (0..shot.w)
+            .flat_map(|xx| (0..shot.h).flat_map(move |yy| shot.at(xx, yy)))
+            .collect(),
+    };
+    runs(&t, x, y0, y1)
+}
+
 // ------------------------------------------------------------------ paths
 
 #[test]
@@ -152,102 +198,124 @@ fn rounded_rects_and_circles_leave_their_corners() {
     assert_eq!(shot.alpha(36, 10), 0, "past its right");
 }
 
+/// The scales the raster is checked at: whole, a fractional one, and Retina's.
+const SCALES: [f32; 3] = [1.0, 1.5, 2.0];
+
 #[test]
 fn a_gradient_runs_from_its_first_stop_to_its_last() {
-    let mut s = Scene::new(100.0, 20.0, 1.0);
-    // The stops out of order: they're sorted.
-    let colours = Paint::Linear {
-        from: (0.0, 0.0),
-        to: (100.0, 0.0),
-        stops: vec![(1.0, BLUE, 1.0), (0.0, RED, 1.0)],
-    };
-    s.push(Item::Path {
-        path: PathData::rect(Rect::new(0.0, 0.0, 100.0, 10.0)),
-        fill: Some(colours),
-        stroke: None,
-    });
-    let fade = Paint::Linear {
-        from: (0.0, 10.0),
-        to: (100.0, 10.0),
-        stops: vec![(0.0, GREEN, 0.0), (1.0, GREEN, 1.0)],
-    };
-    s.push(Item::Path {
-        path: PathData::rect(Rect::new(0.0, 10.0, 100.0, 10.0)),
-        fill: Some(fade),
-        stroke: None,
-    });
-    let shot = shoot(&s);
-    let [r, _, b, a] = shot.at(0, 5);
-    assert!(
-        r >= 250 && b <= 5 && a == 255,
-        "red at the start: {r} {b} {a}"
-    );
-    let [r, _, b, a] = shot.at(99, 5);
-    assert!(
-        r <= 5 && b >= 250 && a == 255,
-        "blue at the end: {r} {b} {a}"
-    );
-    let [r, _, b, _] = shot.at(50, 5);
-    assert!(near(r, 128, 6) && near(b, 128, 6), "halfway: {r} {b}");
-    assert!(shot.alpha(0, 15) <= 3, "transparent at the start");
-    assert!(shot.alpha(99, 15) >= 252, "opaque at the end");
-    assert!(near(shot.alpha(50, 15), 128, 6), "half at half");
+    for scale in SCALES {
+        let mut s = Scene::new(100.0, 20.0, scale);
+        // The stops out of order: they're sorted.
+        let colours = Paint::Linear {
+            from: (0.0, 0.0),
+            to: (100.0, 0.0),
+            stops: vec![(1.0, BLUE, 1.0), (0.0, RED, 1.0)],
+        };
+        s.push(Item::Path {
+            path: PathData::rect(Rect::new(0.0, 0.0, 100.0, 10.0)),
+            fill: Some(colours),
+            stroke: None,
+        });
+        let fade = Paint::Linear {
+            from: (0.0, 10.0),
+            to: (100.0, 10.0),
+            stops: vec![(0.0, GREEN, 0.0), (1.0, GREEN, 1.0)],
+        };
+        s.push(Item::Path {
+            path: PathData::rect(Rect::new(0.0, 10.0, 100.0, 10.0)),
+            fill: Some(fade),
+            stroke: None,
+        });
+        let shot = shoot(&s);
+        let p = |v: f32| (v * scale) as u32;
+        let last = shot.w - 1;
+        let [r, _, b, a] = shot.at(0, p(5.0));
+        assert!(
+            r >= 250 && b <= 5 && a == 255,
+            "red at the start at {scale}: {r} {b} {a}"
+        );
+        let [r, _, b, a] = shot.at(last, p(5.0));
+        assert!(
+            r <= 5 && b >= 250 && a == 255,
+            "blue at the end at {scale}: {r} {b} {a}"
+        );
+        let [r, _, b, _] = shot.at(p(50.0), p(5.0));
+        assert!(
+            near(r, 128, 6) && near(b, 128, 6),
+            "halfway at {scale}: {r} {b}"
+        );
+        assert!(shot.alpha(0, p(15.0)) <= 3, "transparent at the start");
+        assert!(shot.alpha(last, p(15.0)) >= 252, "opaque at the end");
+        assert!(near(shot.alpha(p(50.0), p(15.0)), 128, 6), "half at half");
+    }
 }
 
 #[test]
 fn caps_end_where_they_should() {
-    let row = |cap: Cap| {
-        let mut s = Scene::new(40.0, 20.0, 1.0);
-        let st = Stroke {
-            cap,
-            ..Stroke::solid(4.0, WHITE, 1.0)
+    for scale in SCALES {
+        let row = |cap: Cap| {
+            let mut s = Scene::new(40.0, 20.0, scale);
+            let st = Stroke {
+                cap,
+                ..Stroke::solid(4.0, WHITE, 1.0)
+            };
+            s.push(line(&[(10.0, 10.0), (30.0, 10.0)], st));
+            shoot(&s)
         };
-        s.push(line(&[(10.0, 10.0), (30.0, 10.0)], st));
-        shoot(&s)
-    };
-    let butt = row(Cap::Butt);
-    assert_eq!(butt.alpha(10, 10), 255, "its first pixel");
-    assert_eq!(butt.alpha(9, 10), 0, "nothing before it");
-    assert_eq!(butt.alpha(29, 10), 255);
-    assert_eq!(butt.alpha(30, 10), 0, "nothing past it");
-    assert_eq!(butt.alpha(20, 8), 255, "four px across: rows 8 to 11");
-    assert_eq!(butt.alpha(20, 11), 255);
-    assert_eq!(butt.alpha(20, 7), 0);
-    assert_eq!(butt.alpha(20, 12), 0);
-    let square = row(Cap::Square);
-    assert_eq!(square.alpha(8, 10), 255, "half the width past the start");
-    assert_eq!(square.alpha(7, 10), 0);
-    assert_eq!(square.alpha(31, 10), 255, "and past the end");
-    assert_eq!(square.alpha(32, 10), 0);
-    let round = row(Cap::Round);
-    assert!(round.alpha(9, 10) > 0, "round past the start");
-    assert_eq!(round.alpha(7, 10), 0);
-    assert_eq!(square.alpha(8, 8), 255, "a square cap's corner");
-    assert!(round.alpha(8, 8) < 128, "a round one's is mostly empty");
+        let p = |v: f32| (v * scale) as u32;
+        let butt = row(Cap::Butt);
+        let (y, at) = (p(10.0), format!("at {scale}"));
+        assert_eq!(butt.alpha(p(10.0), y), 255, "its first pixel {at}");
+        assert_eq!(butt.alpha(p(10.0) - 1, y), 0, "nothing before it {at}");
+        assert_eq!(butt.alpha(p(30.0) - 1, y), 255, "its last {at}");
+        assert_eq!(butt.alpha(p(30.0), y), 0, "nothing past it {at}");
+        // Four px across: from 8 to 12.
+        let mid = p(20.0);
+        assert_eq!(butt.alpha(mid, p(8.0)), 255, "its top row {at}");
+        assert_eq!(butt.alpha(mid, p(12.0) - 1), 255, "its bottom row {at}");
+        assert_eq!(butt.alpha(mid, p(8.0) - 1), 0, "above it {at}");
+        assert_eq!(butt.alpha(mid, p(12.0)), 0, "below it {at}");
+        let square = row(Cap::Square);
+        assert_eq!(
+            square.alpha(p(8.0), y),
+            255,
+            "half the width past the start {at}"
+        );
+        assert_eq!(square.alpha(p(8.0) - 1, y), 0, "{at}");
+        assert_eq!(square.alpha(p(32.0) - 1, y), 255, "and past the end {at}");
+        assert_eq!(square.alpha(p(32.0), y), 0, "{at}");
+        let round = row(Cap::Round);
+        assert!(round.alpha(p(9.0), y) > 0, "round past the start {at}");
+        assert_eq!(round.alpha(p(8.0) - 1, y), 0, "{at}");
+        assert_eq!(
+            square.alpha(p(8.0), p(8.0)),
+            255,
+            "a square cap's corner {at}"
+        );
+        assert!(
+            round.alpha(p(8.0), p(8.0)) < 128,
+            "a round one's is mostly empty {at}"
+        );
+    }
 }
 
 #[test]
 fn dashes_are_on_then_off() {
-    let mut s = Scene::new(40.0, 10.0, 1.0);
-    let st = Stroke {
-        dash: Some((6.0, 4.0)),
-        ..Stroke::solid(2.0, WHITE, 1.0)
-    };
-    s.push(line(&[(0.0, 5.0), (40.0, 5.0)], st));
-    let shot = shoot(&s);
-    for (x, on) in [
-        (1, true),
-        (5, true),
-        (7, false),
-        (9, false),
-        (11, true),
-        (17, false),
-    ] {
-        assert_eq!(shot.alpha(x, 5) == 255, on, "x {x}");
+    for scale in SCALES {
+        let mut s = Scene::new(40.0, 10.0, scale);
+        let st = Stroke {
+            dash: Some((6.0, 4.0)),
+            ..Stroke::solid(2.0, WHITE, 1.0)
+        };
+        s.push(line(&[(0.0, 5.0), (40.0, 5.0)], st));
+        let shot = shoot(&s);
+        // 6 on and 4 off a logical px, so 12 and 8 physical at 2; each edge on a whole pixel
+        // at these scales, so nothing between.
+        let (on, off) = ((6.0 * scale) as u32, (4.0 * scale) as u32);
         assert_eq!(
-            shot.alpha(x, 5) == 0,
-            !on,
-            "x {x}: on or off, nothing between"
+            runs(&shot, (5.0 * scale) as u32, 0, shot.w),
+            [(true, on), (false, off)].repeat(4),
+            "at {scale}"
         );
     }
 }
@@ -393,6 +461,137 @@ fn a_dashed_hairline_is_dashes_of_whole_pixels() {
 }
 
 #[test]
+fn a_dashed_hairline_finishes_at_any_scale_in_dashes_of_whole_pixels() {
+    // Scales and dashes whose physical lengths f32 can't hold exactly, and some it can.
+    let cases: [(f32, (f32, f32)); 9] = [
+        (1.1, (6.0, 4.0)),
+        (1.2, (6.0, 4.0)),
+        (4.0 / 3.0, (6.0, 4.0)),
+        (1.25, (6.0, 4.0)),
+        (1.5, (6.0, 4.0)),
+        (2.0, (1.2, 0.8)),
+        (2.0, (3.0, 1.2)),
+        (2.0, (6.0, 4.0)),
+        (1.0, (2.4, 1.6)),
+    ];
+    for (scale, (on, off)) in cases {
+        let shot = finishes(
+            &format!("a dashed hairline at {scale} with ({on}, {off})"),
+            10,
+            move || {
+                let mut s = Scene::new(1000.0, 20.0, scale);
+                let st = Stroke {
+                    dash: Some((on, off)),
+                    ..Stroke::hairline(WHITE, 1.0)
+                };
+                s.push(line(&[(0.0, 10.0), (1000.0, 10.0)], st));
+                shoot(&s)
+            },
+        );
+        let y = (10.0 * scale).floor() as u32;
+        let rs = runs(&shot, y, 0, shot.w);
+        let between =
+            |n: u32, v: f32| n >= (v * scale).floor() as u32 && n <= (v * scale).ceil() as u32;
+        // The first and last runs are cut by the line's ends and the picture's.
+        for &(lit, n) in &rs[1..rs.len() - 1] {
+            let want = if lit { on } else { off };
+            assert!(
+                between(n, want),
+                "a {} run of {n} px at {scale} with ({on}, {off}): {rs:?}",
+                if lit { "lit" } else { "dark" }
+            );
+        }
+        let dashes = rs.iter().filter(|r| r.0).count() as f32;
+        let want = 1000.0 / (on + off);
+        assert!(
+            (dashes - want).abs() <= 1.0,
+            "{dashes} dashes over 1000 px at {scale}, about {want}"
+        );
+    }
+}
+
+#[test]
+fn a_dashed_hairline_far_past_the_picture_dashes_only_what_shows() {
+    let dashed = Stroke {
+        dash: Some((6.0, 4.0)),
+        ..Stroke::hairline(WHITE, 1.0)
+    };
+    let solid = Stroke::hairline(WHITE, 1.0);
+    // At scale 2 a 6-on-4-off dash is 12 px lit and 8 dark wherever it starts, since every
+    // end is at a whole number of periods from 0.
+    for (from, to, clipped) in [
+        (-1e8f32, 1e8f32, true),
+        (-1e8, 1e8, false),
+        (0.0, f32::INFINITY, false),
+        (-1e8, 50.0, true),
+        (1e8, -1e8, false),
+    ] {
+        let st = dashed.clone();
+        let shot = finishes(
+            &format!("a dashed hairline from {from} to {to}"),
+            5,
+            move || {
+                let mut s = Scene::new(100.0, 100.0, 2.0);
+                if clipped {
+                    s.push(Item::PushClip(Rect::new(0.0, 0.0, 100.0, 100.0)));
+                }
+                s.push(line(&[(from, 10.0), (to, 10.0)], st.clone()));
+                s.push(line(&[(50.0, from), (50.0, to)], st));
+                if clipped {
+                    s.push(Item::PopClip);
+                }
+                shoot(&s)
+            },
+        );
+        let end = (from.max(to).clamp(0.0, 100.0) * 2.0) as u32;
+        let across = runs(&shot, 20, 0, end.min(90));
+        let down = col_runs(&shot, 100, 30, end.min(190));
+        for (what, rs) in [("across", &across), ("down", &down)] {
+            assert!(rs.len() > 4, "{what} from {from} to {to}: {rs:?}");
+            for &(lit, n) in &rs[1..rs.len() - 1] {
+                assert_eq!(
+                    n,
+                    if lit { 12 } else { 8 },
+                    "{what} from {from} to {to}: {rs:?}"
+                );
+            }
+        }
+        // Rightward, a dash starts at 0; leftward from 2e8, one ends there.
+        let first = if from < to { (true, 12) } else { (false, 8) };
+        assert_eq!(across[0], first, "from {from} to {to}: {across:?}");
+    }
+    // Plain hairlines to or from infinity show what's on screen; a dashed one from it has no
+    // place to start its pattern, so nothing.
+    let shot = finishes("a hairline to infinity", 5, move || {
+        let mut s = Scene::new(100.0, 50.0, 2.0);
+        s.push(line(&[(10.0, 10.0), (f32::INFINITY, 10.0)], solid.clone()));
+        s.push(line(&[(f32::NEG_INFINITY, 20.0), (50.0, 20.0)], solid));
+        s.push(line(&[(f32::NEG_INFINITY, 30.0), (50.0, 30.0)], dashed));
+        shoot(&s)
+    });
+    assert_eq!(runs(&shot, 20, 0, 200), vec![(false, 20), (true, 180)]);
+    assert_eq!(runs(&shot, 40, 0, 200), vec![(true, 100), (false, 100)]);
+    assert_eq!(runs(&shot, 60, 0, 200), vec![(false, 200)]);
+}
+
+#[test]
+fn a_dash_finer_than_a_pixel_is_drawn_solid() {
+    let shot = finishes("a dash of a millionth of a px", 5, || {
+        let mut s = Scene::new(100.0, 20.0, 1.0);
+        let st = Stroke {
+            dash: Some((1e-6, 1e-6)),
+            ..Stroke::hairline(WHITE, 1.0)
+        };
+        s.push(line(&[(10.0, 10.0), (90.0, 10.0)], st));
+        shoot(&s)
+    });
+    assert_eq!(
+        runs(&shot, 10, 0, 100),
+        vec![(false, 10), (true, 80), (false, 10)]
+    );
+}
+
+#[test]
 fn a_slanted_hairline_is_stroked() {
     let mut s = Scene::new(20.0, 20.0, 2.0);
     s.push(line(
@@ -408,55 +607,89 @@ fn a_slanted_hairline_is_stroked() {
 
 #[test]
 fn clips_cut_nest_and_pop() {
-    let mut s = Scene::new(30.0, 30.0, 1.0);
-    s.push(Item::PushClip(Rect::new(5.0, 5.0, 10.0, 10.0)));
-    s.push(rect(Rect::new(0.0, 0.0, 30.0, 30.0), RED, 1.0));
-    s.push(Item::PushClip(Rect::new(10.0, 0.0, 30.0, 30.0)));
-    s.push(rect(Rect::new(0.0, 0.0, 30.0, 30.0), BLUE, 1.0));
-    s.push(Item::PopClip);
-    s.push(Item::PopClip);
-    s.push(rect(Rect::new(20.0, 20.0, 5.0, 5.0), GREEN, 1.0));
-    let shot = shoot(&s);
-    assert_eq!(shot.alpha(4, 4), 0, "outside the clip");
-    assert_eq!(shot.at(5, 5), [255, 0, 0, 255], "inside it");
-    assert_eq!(shot.at(9, 14), [255, 0, 0, 255]);
-    assert_eq!(shot.alpha(15, 15), 0, "past it");
-    assert_eq!(shot.at(10, 5), [0, 0, 255, 255], "in both clips");
-    assert_eq!(shot.at(14, 14), [0, 0, 255, 255]);
-    assert_eq!(shot.alpha(16, 10), 0, "the inner clip is within the outer");
-    assert_eq!(shot.at(22, 22), [0, 255, 0, 255], "popped, nothing clips");
+    for scale in SCALES {
+        let mut s = Scene::new(30.0, 30.0, scale);
+        s.push(Item::PushClip(Rect::new(5.0, 5.0, 10.0, 10.0)));
+        s.push(rect(Rect::new(0.0, 0.0, 30.0, 30.0), RED, 1.0));
+        s.push(Item::PushClip(Rect::new(10.0, 0.0, 30.0, 30.0)));
+        s.push(rect(Rect::new(0.0, 0.0, 30.0, 30.0), BLUE, 1.0));
+        s.push(Item::PopClip);
+        s.push(Item::PopClip);
+        s.push(rect(Rect::new(20.0, 20.0, 5.0, 5.0), GREEN, 1.0));
+        let shot = shoot(&s);
+        // A clip's edges are at their nearest physical pixels.
+        let n = |v: f32| (v * scale).round() as u32;
+        let p = |v: f32| (v * scale) as u32;
+        let at = format!("at {scale}");
+        assert_eq!(shot.alpha(n(5.0) - 1, n(10.0)), 0, "left of the clip {at}");
+        assert_eq!(shot.alpha(n(10.0), n(5.0) - 1), 0, "above it {at}");
+        assert_eq!(shot.at(n(5.0), n(5.0)), [255, 0, 0, 255], "inside it {at}");
+        assert_eq!(shot.at(n(10.0) - 1, n(15.0) - 1), [255, 0, 0, 255], "{at}");
+        assert_eq!(shot.alpha(n(15.0), n(15.0)), 0, "past it {at}");
+        assert_eq!(shot.alpha(n(10.0), n(15.0)), 0, "under it {at}");
+        assert_eq!(
+            shot.at(n(10.0), n(5.0)),
+            [0, 0, 255, 255],
+            "in both clips {at}"
+        );
+        assert_eq!(shot.at(n(15.0) - 1, n(15.0) - 1), [0, 0, 255, 255], "{at}");
+        assert_eq!(
+            shot.alpha(n(15.0), n(10.0)),
+            0,
+            "the inner clip is within the outer {at}"
+        );
+        assert_eq!(
+            shot.at(p(22.0), p(22.0)),
+            [0, 255, 0, 255],
+            "popped, nothing clips {at}"
+        );
+    }
 }
 
 #[test]
 fn an_opacity_group_fades_once_and_nested_ones_multiply() {
-    let mut s = Scene::new(40.0, 30.0, 1.0);
-    s.push(Item::PushOpacity(0.5));
-    s.push(rect(Rect::new(0.0, 0.0, 10.0, 10.0), RED, 1.0));
-    s.push(rect(Rect::new(5.0, 0.0, 10.0, 10.0), RED, 1.0));
-    s.push(Item::PopOpacity);
-    s.push(Item::PushOpacity(0.5));
-    s.push(Item::PushOpacity(0.5));
-    s.push(rect(Rect::new(20.0, 0.0, 10.0, 10.0), RED, 1.0));
-    s.push(Item::PopOpacity);
-    s.push(Item::PopOpacity);
-    s.push(Item::PushOpacity(0.0));
-    s.push(rect(Rect::new(0.0, 15.0, 10.0, 10.0), RED, 1.0));
-    s.push(Item::PopOpacity);
-    s.push(Item::PopOpacity); // one too many: nothing
-    s.push(Item::PushOpacity(0.5)); // never popped: laid down at the end
-    s.push(rect(Rect::new(20.0, 15.0, 10.0, 10.0), BLUE, 1.0));
-    let shot = shoot(&s);
-    let half = shot.at(2, 5);
-    assert!(near(half[0], 128, 1) && near(half[3], 128, 1), "{half:?}");
-    assert_eq!(shot.at(7, 5), half, "where the two cross, no darker");
-    assert_eq!(shot.at(12, 5), half);
-    let quarter = shot.at(25, 5);
-    assert!(near(quarter[3], 64, 2), "half of a half: {quarter:?}");
-    assert_eq!(shot.alpha(5, 20), 0, "at no opacity, nothing");
-    assert!(
-        near(shot.alpha(25, 20), 128, 1),
-        "an open group is laid down at the end"
-    );
+    for scale in SCALES {
+        let mut s = Scene::new(40.0, 30.0, scale);
+        s.push(Item::PushOpacity(0.5));
+        s.push(rect(Rect::new(0.0, 0.0, 10.0, 10.0), RED, 1.0));
+        s.push(rect(Rect::new(5.0, 0.0, 10.0, 10.0), RED, 1.0));
+        s.push(Item::PopOpacity);
+        s.push(Item::PushOpacity(0.5));
+        s.push(Item::PushOpacity(0.5));
+        s.push(rect(Rect::new(20.0, 0.0, 10.0, 10.0), RED, 1.0));
+        s.push(Item::PopOpacity);
+        s.push(Item::PopOpacity);
+        s.push(Item::PushOpacity(0.0));
+        s.push(rect(Rect::new(0.0, 15.0, 10.0, 10.0), RED, 1.0));
+        s.push(Item::PopOpacity);
+        s.push(Item::PopOpacity); // one too many: nothing
+        s.push(Item::PushOpacity(0.5)); // never popped: laid down at the end
+        s.push(rect(Rect::new(20.0, 15.0, 10.0, 10.0), BLUE, 1.0));
+        let shot = shoot(&s);
+        let p = |v: f32| (v * scale) as u32;
+        let at = |x: f32, y: f32| shot.at(p(x), p(y));
+        let half = at(2.0, 5.0);
+        assert!(
+            near(half[0], 128, 1) && near(half[3], 128, 1),
+            "{half:?} at {scale}"
+        );
+        assert_eq!(
+            at(7.0, 5.0),
+            half,
+            "where the two cross, no darker at {scale}"
+        );
+        assert_eq!(at(12.0, 5.0), half);
+        assert_eq!(at(0.0, 0.0), half, "to the group's first pixel");
+        let past = (15.0 * scale).ceil() as u32;
+        assert_eq!(shot.alpha(past, p(5.0)), 0, "and nothing past its last");
+        let quarter = at(25.0, 5.0);
+        assert!(near(quarter[3], 64, 2), "half of a half: {quarter:?}");
+        assert_eq!(at(5.0, 20.0)[3], 0, "at no opacity, nothing");
+        assert!(
+            near(at(25.0, 20.0)[3], 128, 1),
+            "an open group is laid down at the end"
+        );
+    }
 }
 
 // ------------------------------------------------------------------ shadows
@@ -520,6 +753,192 @@ fn a_sharp_shadow_is_its_rounded_rect() {
     assert_eq!(shot.alpha(30, 50), 0, "and nothing past the clip");
 }
 
+#[test]
+fn a_shadow_past_any_size_never_overflows_and_a_huge_blur_is_held_to_the_most() {
+    let card = Rect::new(20.0, 20.0, 40.0, 20.0);
+    let cases = [
+        (card, 1e10f32, 0.0f32),
+        (card, f32::MAX, 0.0),
+        (card, f32::INFINITY, 0.0),
+        (card, 1e3, 0.0),
+        (Rect::new(-1e10, 20.0, 1e10, 20.0), 8.0, 0.0),
+        (Rect::new(1e10, 20.0, 40.0, 20.0), 8.0, 0.0),
+        (Rect::new(-1e30, -1e30, 2e30, 2e30), 8.0, 0.0),
+        (card, 8.0, 1e30),
+        (card, 8.0, -3e9),
+    ];
+    for (rect, blur, dy) in cases {
+        let shot = finishes(
+            &format!("a shadow of {rect:?} at blur {blur} and dy {dy}"),
+            10,
+            move || {
+                let mut s = Scene::new(100.0, 60.0, 2.0);
+                s.push(Item::Shadow {
+                    rect,
+                    radius: 4.0,
+                    blur,
+                    dy,
+                    alpha: 0.5,
+                });
+                shoot(&s)
+            },
+        );
+        if rect == card && dy == 0.0 {
+            // Each blur here is past the most, so it's drawn at the most: a haze over the card.
+            let most = raster::MAX_BLUR;
+            let mut s = Scene::new(100.0, 60.0, 2.0);
+            s.push(Item::Shadow {
+                rect,
+                radius: 4.0,
+                blur: most,
+                dy,
+                alpha: 0.5,
+            });
+            assert!(shot.alpha(80, 60) > 0, "something under the card at {blur}");
+            assert!(shot.px == shoot(&s).px, "blur {blur} is drawn at {most}");
+        }
+    }
+}
+
+#[test]
+fn an_opacity_group_lays_down_everything_it_drew() {
+    // Marks that reach past their paths, apart, in a group at a half: each as if drawn at half.
+    let marks = |alpha: f32| {
+        let thick = |cap, join| Stroke {
+            cap,
+            join,
+            ..Stroke::solid(6.0, WHITE, alpha)
+        };
+        vec![
+            // A mitre's spike, four half-widths past its corner.
+            line(
+                &[(10.0, 40.0), (25.0, 12.0), (40.0, 40.0)],
+                thick(Cap::Butt, Join::Miter),
+            ),
+            line(
+                &[(55.0, 20.0), (75.0, 20.0)],
+                thick(Cap::Square, Join::Round),
+            ),
+            line(
+                &[(55.0, 35.0), (75.0, 35.0)],
+                thick(Cap::Round, Join::Round),
+            ),
+            line(
+                &[(85.0, 5.0), (115.0, 5.0), (115.0, 30.0)],
+                Stroke {
+                    dash: Some((3.0, 2.0)),
+                    cap: Cap::Square,
+                    ..Stroke::hairline(WHITE, alpha)
+                },
+            ),
+            line(
+                &[(85.0, 45.0), (110.0, 38.0)],
+                Stroke::hairline(WHITE, alpha),
+            ),
+            Item::Path {
+                path: PathData::circle(20.0, 52.0, 5.5),
+                fill: Some(Paint::solid(WHITE, alpha)),
+                stroke: None,
+            },
+            Item::Shadow {
+                rect: Rect::new(50.0, 45.0, 20.0, 8.0),
+                radius: 3.0,
+                blur: 4.0,
+                dy: 1.0,
+                alpha: alpha * 0.8,
+            },
+        ]
+    };
+    for scale in [1.0f32, 1.5, 2.0] {
+        let mut grouped = Scene::new(120.0, 60.0, scale);
+        grouped.push(Item::PushOpacity(0.5));
+        for m in marks(1.0) {
+            grouped.push(m);
+        }
+        grouped.push(Item::PopOpacity);
+        let mut each = Scene::new(120.0, 60.0, scale);
+        for m in marks(0.5) {
+            each.push(m);
+        }
+        let (g, e) = (shoot(&grouped), shoot(&each));
+        for y in 0..g.h {
+            for x in 0..g.w {
+                let (a, b) = (g.at(x, y), e.at(x, y));
+                assert!(
+                    a.iter().zip(b).all(|(&p, q)| near(p, q, 2)),
+                    "({x}, {y}) at {scale}: {a:?} in the group, {b:?} alone"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "speed"]
+fn a_whole_redraw_with_faded_series_costs_about_what_one_without_does() {
+    // A chart 2880 × 1800: a legend's swatches and an axis outside the plot, and in its clip
+    // gridlines, 60 opaque bars and 20 series, each in a faded group or not.
+    let scene = |groups: bool| {
+        let mut s = Scene::new(1440.0, 900.0, 2.0);
+        for i in 0..20 {
+            s.push(rect(
+                Rect::new(60.0 + i as f32 * 60.0, 20.0, 10.0, 10.0),
+                BLUE,
+                1.0,
+            ));
+        }
+        s.push(line(
+            &[(50.0, 860.0), (1420.0, 860.0)],
+            Stroke::hairline(WHITE, 1.0),
+        ));
+        s.push(Item::PushClip(Rect::new(50.0, 50.0, 1370.0, 810.0)));
+        for i in 0..10 {
+            let y = 80.0 + i as f32 * 80.0;
+            s.push(line(
+                &[(50.0, y), (1420.0, y)],
+                Stroke::hairline(GREEN, 1.0),
+            ));
+        }
+        for i in 0..60 {
+            let h = 50.0 + (i * 37 % 300) as f32;
+            s.push(rect(
+                Rect::new(60.0 + i as f32 * 22.0, 860.0 - h, 16.0, h),
+                BLUE,
+                1.0,
+            ));
+        }
+        for i in 0..20 {
+            if groups {
+                s.push(Item::PushOpacity(0.3));
+            }
+            let pts: Vec<(f32, f32)> = (0..200)
+                .map(|k| {
+                    let x = 50.0 + k as f32 * 6.9;
+                    (x, 450.0 + 200.0 * ((x + i as f32 * 40.0) / 90.0).sin())
+                })
+                .collect();
+            s.push(line(&pts, Stroke::solid(2.0, RED, 1.0)));
+            if groups {
+                s.push(Item::PopOpacity);
+            }
+        }
+        s.push(Item::PopClip);
+        s
+    };
+    let time = |s: &Scene| {
+        let mut px = vec![0u8; 2880 * 1800 * 4];
+        let runs = 5;
+        let t = std::time::Instant::now();
+        for _ in 0..runs {
+            raster::draw(s, &mut px, 2880, 1800, 2880 * 4, None, Some(WHITE), None);
+        }
+        t.elapsed() / runs
+    };
+    let (plain, faded) = (time(&scene(false)), time(&scene(true)));
+    eprintln!("a whole redraw: {plain:?} with no groups, {faded:?} with 20");
+    assert!(faded < plain * 2, "{faded:?} against {plain:?}");
+}
+
 // ------------------------------------------------------------------ damage
 
 /// A scene with one of everything the raster draws without fonts.
@@ -562,6 +981,26 @@ fn busy(scale: f32) -> Scene {
         fill: Some(Paint::solid(BLUE, 0.9)),
         stroke: None,
     });
+    // Opaque and clipped by nothing, as a legend's swatch, a card's ground or a bar is: an
+    // opaque paint's edges are where tiny-skia, unmasked, would lay pixels down otherwise.
+    s.push(Item::Path {
+        path: PathData::circle(22.3, 37.1, 17.3),
+        fill: Some(Paint::solid(RED, 1.0)),
+        stroke: None,
+    });
+    s.push(line(
+        &[(2.0, 58.0), (37.5, 21.25), (61.0, 55.5), (79.0, 3.0)],
+        Stroke {
+            cap: Cap::Round,
+            join: Join::Round,
+            ..Stroke::solid(2.5, WHITE, 1.0)
+        },
+    ));
+    s.push(Item::Path {
+        path: PathData::rounded(Rect::new(62.3, 8.4, 13.1, 9.7), [3.0; 4]),
+        fill: Some(Paint::solid(GREEN, 1.0)),
+        stroke: Some(Stroke::solid(1.0, Color(0x3a, 0x3a, 0x3a), 1.0)),
+    });
     s
 }
 
@@ -569,9 +1008,13 @@ const SENTINEL: [u8; 4] = [1, 2, 3, 4];
 
 #[test]
 fn damage_is_cleared_and_drawn_and_nothing_else_is_touched() {
-    for scale in [1.0f32, 2.0] {
+    let grounds = [Some(Color(9, 9, 9)), None, Some(Color(0xc8, 0xdc, 0xf0))];
+    for (scale, ground) in [1.0f32, 2.0, 1.5]
+        .into_iter()
+        .flat_map(|s| grounds.map(|g| (s, g)))
+    {
         let scene = busy(scale);
-        let whole = shoot_on(&scene, Some(Color(9, 9, 9)));
+        let whole = shoot_on(&scene, ground);
         let (w, h) = (whole.w, whole.h);
         for (damage, pad) in [
             (
@@ -627,16 +1070,7 @@ fn damage_is_cleared_and_drawn_and_nothing_else_is_touched() {
                     p.copy_from_slice(&SENTINEL);
                 }
             }
-            raster::draw(
-                &scene,
-                &mut px,
-                w,
-                h,
-                stride,
-                Some(damage),
-                Some(Color(9, 9, 9)),
-                None,
-            );
+            raster::draw(&scene, &mut px, w, h, stride, Some(damage), ground, None);
             let inside = |x: u32, y: u32| {
                 x >= damage.x && x < damage.x + damage.w && y >= damage.y && y < damage.y + damage.h
             };
@@ -649,10 +1083,61 @@ fn damage_is_cleared_and_drawn_and_nothing_else_is_touched() {
                 for x in 0..w {
                     let p = &row[x as usize * 4..x as usize * 4 + 4];
                     if inside(x, y) {
-                        assert_eq!(p, whole.at(x, y), "({x}, {y}) in {damage:?} at {scale}");
+                        assert_eq!(
+                            p,
+                            whole.at(x, y),
+                            "({x}, {y}) in {damage:?} at {scale} on {ground:?}"
+                        );
                     } else {
                         assert_eq!(p, SENTINEL, "({x}, {y}) outside {damage:?} at {scale}");
                     }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_shadow_redrawn_in_any_box_is_what_a_whole_redraw_puts_there() {
+    // Boxes that start anywhere in a blur's rows and columns: its sums run from where each
+    // box's reach begins, so they must come to the same wherever that is.
+    let mut seed = 12345u64;
+    let mut next = |n: u32| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 33) as u32) % n
+    };
+    let ground = Some(Color(200, 220, 240));
+    for (scale, blur, radius) in [(1.0f32, 8.0f32, 4.0f32), (2.0, 12.0, 8.0), (1.5, 6.0, 3.0)] {
+        let mut s = Scene::new(150.0, 100.0, scale);
+        s.push(Item::Shadow {
+            rect: Rect::new(20.3, 15.7, 100.0, 60.0),
+            radius,
+            blur,
+            dy: 3.0,
+            alpha: 0.7,
+        });
+        let whole = shoot_on(&s, ground);
+        let (w, h) = (whole.w, whole.h);
+        for _ in 0..60 {
+            let (x, y) = (next(w), next(h));
+            let d = PixelBox {
+                x,
+                y,
+                w: 1 + next(w - x),
+                h: 1 + next(h - y),
+            };
+            let mut px = vec![0u8; (w * h * 4) as usize];
+            raster::draw(&s, &mut px, w, h, w as usize * 4, Some(d), ground, None);
+            let part = Shot { w, h, px };
+            for yy in d.y..d.y + d.h {
+                for xx in d.x..d.x + d.w {
+                    assert_eq!(
+                        part.at(xx, yy),
+                        whole.at(xx, yy),
+                        "({xx}, {yy}) in {d:?} at {scale}"
+                    );
                 }
             }
         }
@@ -888,8 +1373,15 @@ fn a_text_past_its_width_is_cut_as_the_measure_cuts_it() {
 
 #[test]
 fn book_measure_is_in_logical_px() {
-    let Some(mut fonts) = book() else { return };
+    let mut fonts = book().expect("fonts: copy fonts/ from the main checkout into this one");
     let spec = TextSpec::new(12.0);
+    // A line break or a tab is measured as the space the raster and the SVG draw for it.
+    let mut m = BookMeasure {
+        book: &mut fonts,
+        scale: 2.0,
+    };
+    assert_eq!(m.width("a\nb\tc", spec), m.width("a b c", spec));
+    assert_eq!(m.fit("a\nb", spec, 500.0), "a b");
     let at = |fonts: &mut die_draw::Book, scale: f32, t: &str| {
         BookMeasure { book: fonts, scale }.width(t, spec)
     };
@@ -1081,6 +1573,45 @@ fn svg_is_the_scene_as_elements() {
     assert_eq!(attr(num, "<text", "font-weight"), "600");
     assert_eq!(attr(num, "<text", "text-anchor"), "end");
     assert!(attr(num, "<text", "clip-path").starts_with("url(#fig-t"));
+}
+
+#[test]
+fn svg_text_keeps_its_spaces_and_only_what_xml_can_hold() {
+    let mut s = Scene::new(100.0, 40.0, 1.0);
+    for (i, t) in [
+        "  two  spaces ",
+        "nonchar\u{FFFF}\u{FFFE}\u{1}\u{7f}\u{85}!",
+        "nl\nline\ttab\rcr",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        s.push(Item::Text {
+            text: t.into(),
+            x: 1.0,
+            y: 10.0 * (i + 1) as f32,
+            spec: TextSpec::new(10.0),
+            anchor: Anchor::Start,
+            color: WHITE,
+            alpha: 1.0,
+            max_width: None,
+        });
+    }
+    let doc = svg::write(&s);
+    tags(&doc);
+    assert_eq!(
+        doc.matches("<text ").count(),
+        doc.matches("xml:space=\"preserve\"").count(),
+        "every text keeps its spaces: {doc}"
+    );
+    assert!(doc.contains(">  two  spaces </text>"), "{doc}");
+    assert!(doc.contains(">nonchar!</text>"), "{doc}");
+    assert!(doc.contains(">nl line tab cr</text>"), "{doc}");
+    // Every character in the document is one XML 1.0 can hold.
+    assert!(
+        doc.chars().all(|c| matches!(c, '\t' | '\n' | '\r' | ' '..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..)),
+        "{doc:?}"
+    );
 }
 
 #[test]
