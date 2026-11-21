@@ -39,7 +39,8 @@ type Seg = ((f32, f32), (f32, f32));
 type Shown = (super::NodeLabel, bool, Option<Rect>);
 
 /// How much of the surface the emphasis wash lays over the graph: the rest show at about 25 %.
-pub const WASH: f32 = 0.75;
+/// A whole step of 255 (192), so the surface over itself comes out as itself, not a level off.
+pub const WASH: f32 = 192.0 / 255.0;
 /// The focus ring's radius past a node's own, and its width.
 pub const FOCUS_RING: (f32, f32) = (4.5, 2.0);
 /// The most of a node's own fields its card lists.
@@ -182,11 +183,7 @@ pub fn overlay(
         m,
     );
     if emph.is_some() && !layout.ink.is_empty() {
-        scene.push(Item::Path {
-            path: PathData::rect(layout.ink),
-            fill: Some(Paint::solid(theme.surface, WASH)),
-            stroke: None,
-        });
+        wash(&mut scene, layout, theme);
     }
     if !layout.contained {
         scene.push(Item::PushClip(layout.region));
@@ -419,6 +416,18 @@ pub fn overlay(
         card.place(layout, &mut scene, anchor, reach, &avoid, &lines, theme, m);
     }
     scene
+}
+
+/// The emphasis wash: the surface at [`WASH`] over what the graph inks, within the region.
+fn wash(scene: &mut Scene, layout: &GraphLayout, theme: &Theme) {
+    let Some(r) = layout.ink.inflate(2.0).intersect(&layout.region) else {
+        return;
+    };
+    scene.push(Item::Path {
+        path: PathData::rect(r),
+        fill: Some(Paint::solid(theme.surface, WASH)),
+        stroke: None,
+    });
 }
 
 /// The middle of an edge's path, where its card goes with no pointer.

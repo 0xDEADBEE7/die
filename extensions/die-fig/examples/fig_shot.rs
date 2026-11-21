@@ -362,8 +362,12 @@ fn graph_shot(
     if let Some(r) = &ask.reference {
         view.reference = Some(model.cursor(node(r)?));
     }
-    let shot = |view: &View, scale: f32, book: &mut Book, say: bool| -> Result<Scene, String> {
-        let (mut scene, l) = lay(view, scale, book);
+    let shot = |view: &View,
+                scale: f32,
+                book: &mut Book,
+                say: bool|
+     -> Result<(Scene, Scene), String> {
+        let (scene, l) = lay(view, scale, book);
         let mut st = graph::OverlayState {
             cursor: cursor.clone(),
             cursor_card: true,
@@ -420,13 +424,56 @@ fn graph_shot(
                 took.as_secs_f64() * 1e3,
             );
         }
-        scene.items.extend(over.items);
-        Ok(scene)
+        Ok((scene, over))
     };
-    let scene = shot(&view, ask.scale, book, true)?;
-    write(&scene, output, ask, theme, book, |scale, book| {
-        shot(&view, scale, book, false).unwrap_or_default()
-    })
+    let (base, over) = shot(&view, ask.scale, book, true)?;
+    let bytes = composite(&base, &over, theme, book)?;
+    std::fs::write(output, bytes).map_err(|e| format!("{output}: {e}"))?;
+    if let Some(svg) = &ask.svg {
+        let (mut scene, over) = shot(&view, 1.0, book, false)?;
+        scene.items.extend(over.items);
+        std::fs::write(svg, die_fig::svg::write(&scene)).map_err(|e| format!("{svg}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The base and the overlay drawn into buffers of their own and laid one on the other as the
+/// host lays the window's overlay on its base (premultiplied, exact), as a PNG: drawn as one
+/// scene, the overlay's wash would round the surface under it a level off.
+fn composite(
+    base: &Scene,
+    over: &Scene,
+    theme: &Theme,
+    book: &mut Book,
+) -> Result<Vec<u8>, String> {
+    let s = base.scale;
+    let (w, h) = (
+        (base.width * s).ceil() as u32,
+        (base.height * s).ceil() as u32,
+    );
+    let len = w as usize * h as usize * 4;
+    let (mut under, mut top) = (vec![0u8; len], vec![0u8; len]);
+    raster::draw(
+        base,
+        &mut under,
+        w,
+        h,
+        w as usize * 4,
+        None,
+        Some(theme.surface),
+        Some(book),
+    );
+    raster::draw(over, &mut top, w, h, w as usize * 4, None, None, Some(book));
+    for (u, t) in under.chunks_exact_mut(4).zip(top.chunks_exact(4)) {
+        let keep = 1.0 - f32::from(t[3]) / 255.0;
+        for c in 0..3 {
+            u[c] = (f32::from(t[c]) + f32::from(u[c]) * keep)
+                .round()
+                .min(255.0) as u8;
+        }
+        u[3] = 255;
+    }
+    die_draw::image::encode(w, h, &under)
 }
 
 /// A file built by the job `\v` runs, its data read from disk, times in `zone`.
