@@ -459,8 +459,10 @@ pub enum Hit {
     ErrorFigure,
     /// An entry of the error figure's log, from 0.
     LogEntry(u32),
-    /// A row of the detail panel.
+    /// A row of the detail panel, by its index in the tree.
     Detail(u32),
+    /// A fold triangle of the detail panel: its branch's row, by its index in the tree.
+    DetailFold(u32),
     /// A legend key: its swatch and name.
     LegendKey(SeriesKey),
     /// A panel's x axis strip.

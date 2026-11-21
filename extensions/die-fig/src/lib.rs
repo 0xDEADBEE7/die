@@ -14,9 +14,9 @@
 //!   PNG and SVG;
 //! - [`algo`]: layouts, downsampling, envelopes, search and the hit index;
 //! - [`plot`] and [`interact`]: a chart drawn, and the keyboard's and pointer's ways with it;
-//! - [`detail`], [`graph`], [`figure`], [`dashboard`], [`source`], [`surface`] and [`cells`]:
-//!   the detail panel, the network figure, tiles, dashboards, where data comes from, the DIE
-//!   surface, and the braille fallback.
+//! - [`detail`], [`search`], [`graph`], [`figure`], [`dashboard`], [`source`], [`surface`] and
+//!   [`cells`]: the detail panel, search's model, the network figure, tiles, dashboards, where
+//!   data comes from, the DIE surface, and the braille fallback.
 //!
 //! Nothing of fig's runs until `fig-toggle` asks for a figure: no timer, no job.
 #![warn(missing_docs)]
@@ -38,6 +38,7 @@ pub mod plot;
 pub mod raster;
 pub mod scale;
 pub mod scene;
+pub mod search;
 pub mod source;
 pub mod spec;
 pub mod style;

@@ -7,13 +7,16 @@
 //! - [`marks`]: line, area, bar, point, rule, band, rect and text marks into the scene;
 //! - [`overlay`]: the crosshair, dots, card, chips, brush, reference and the emphasis wash;
 //! - [`nav`]: the cursor's motions and the view's zoom, pan, brush and reset, within limits;
-//! - [`hover`]: what the pointer is on.
+//! - [`hover`]: what the pointer is on;
+//! - [`detail`]: the detail panel's trees for a point, a series, a band and a cell, and the
+//!   names a search looks through.
 //!
 //! Positions are logical px in the figure's area. A model's x is its independent axis and its y
 //! the values, whichever way they're drawn: horizontal bars draw x (the bands) up the screen,
 //! and a [`View`]'s `x` and `y` are the model's, not the screen's. [`ChartLayout`]'s scales are
 //! the screen's.
 
+pub mod detail;
 pub mod errors;
 pub mod hover;
 pub mod layout;
@@ -113,6 +116,9 @@ pub struct ChartModel {
     pub chart: Chart,
     /// Its tables as given: the chart's, then each layer's own.
     pub tables: Vec<Arc<Table>>,
+    /// Each layer's table as drawn, its transforms applied: what a series' `rows` index, for
+    /// the detail panel's row of the data.
+    pub drawn: Vec<Arc<Table>>,
     /// Its series, in source order: each layer's in turn, the nth of a name across the chart
     /// (ruling 3). A band and a line of one name in two layers (a line and its band, coloured
     /// by one field) share a key: one series to the legend, the colour and the hidden set.
@@ -237,6 +243,7 @@ impl ChartModel {
             .find(|l| !annotation(l.mark.kind))
             .is_some_and(|l| l.mark.horizontal && l.mark.kind == MarkKind::Bar);
         let mut b = Builder::new(horizontal, opt);
+        let mut drawn = Vec::with_capacity(chart.layers.len());
         for (li, layer) in chart.layers.iter().enumerate() {
             let base = match &layer.data {
                 None => Arc::clone(&chart_table),
@@ -252,6 +259,7 @@ impl ChartModel {
             };
             let ts: Vec<&Transform> = chart.transform.iter().chain(&layer.transform).collect();
             b.layer(li as u16, layer, &t, &ts, &chart)?;
+            drawn.push(t);
         }
         let (x, y) = b.axes(&chart);
         let mut series = b.series;
@@ -259,6 +267,7 @@ impl ChartModel {
         Ok(ChartModel {
             chart,
             tables,
+            drawn,
             series,
             zone: zone.clone(),
             x,
@@ -736,8 +745,9 @@ impl ChartModel {
     }
 
     /// The data as TSV and the line (from 0, the header's) the cursor's sample is on: one row a
-    /// distinct x, or a band, and one column a visible series, on x-charts and band charts; on a
-    /// scatter, one row a point.
+    /// distinct x and one column a visible series on x-charts; one row a category, every one in
+    /// the axis's order, on band charts; on a heatmap, one row a y category and one column an x
+    /// category, the cells' values between; on a scatter, one row a point.
     pub fn tsv_at(&self, view: &View, cursor: Option<&Cursor>) -> (String, Option<usize>) {
         let keys: Vec<SeriesKey> = self
             .keys()
@@ -753,6 +763,9 @@ impl ChartModel {
         let mut text = String::new();
         let mut line = None;
         let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+        if self.is_heatmap() && self.y.kind == AxisKind::Band {
+            return self.tsv_cells(cursor);
+        }
         if self.is_scatter() || self.is_heatmap() {
             let yname = self
                 .y
@@ -796,13 +809,20 @@ impl ChartModel {
             }
         }
         text.push('\n');
-        // Every distinct x of the visible series, ascending, with each series' value there.
+        // Every distinct x of the visible series, ascending, with each series' value there;
+        // every category on a band chart, even one no visible series has.
         let mut rows: BTreeMap<u64, (f64, Vec<f64>)> = BTreeMap::new();
         let order = |x: f64| -> u64 {
             // Sorts floats in order as unsigned keys.
             let b = bits(x);
             if x < 0.0 { !b } else { b | (1 << 63) }
         };
+        if self.is_band() {
+            for b in 0..self.x.bands.len() {
+                let x = b as f64;
+                rows.insert(order(x), (x, vec![f64::NAN; keys.len()]));
+            }
+        }
         for (c, k) in keys.iter().enumerate() {
             let Some(si) = self.index_of(k) else { continue };
             let s = &self.series[si];
@@ -839,6 +859,51 @@ impl ChartModel {
             }
             text.push('\n');
         }
+        (text, line)
+    }
+
+    /// A heatmap as TSV: a row a y category, a column an x category, each cell's value (blank
+    /// where there's none); the cursor's cell's row.
+    fn tsv_cells(&self, cursor: Option<&Cursor>) -> (String, Option<usize>) {
+        let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+        let (nx, ny) = (self.x.bands.len(), self.y.bands.len());
+        let mut cells = vec![f64::NAN; nx * ny];
+        for s in self.series.iter().filter(|s| s.mark == MarkKind::Rect) {
+            for i in 0..s.xs.len().min(s.ys.len()) {
+                let (x, y) = (s.xs[i], s.ys[i]);
+                if x.is_nan() || y.is_nan() || x < 0.0 || y < 0.0 {
+                    continue;
+                }
+                let (c, r) = (x as usize, y as usize);
+                if c < nx && r < ny {
+                    cells[r * nx + c] = s.sizes.as_ref().map_or(f64::NAN, |v| v[i]);
+                }
+            }
+        }
+        let corner = self
+            .y
+            .title
+            .clone()
+            .or_else(|| self.y.field.clone())
+            .unwrap_or_else(|| "y".into());
+        let mut text = clean(&corner);
+        for b in &self.x.bands {
+            text.push('\t');
+            text.push_str(&clean(b));
+        }
+        text.push('\n');
+        for (r, b) in self.y.bands.iter().enumerate() {
+            text.push_str(&clean(b));
+            for c in 0..nx {
+                text.push('\t');
+                text.push_str(&tsv_number(cells[r * nx + c]));
+            }
+            text.push('\n');
+        }
+        let line = match cursor {
+            Some(Cursor::Cell { row, .. }) if (*row as usize) < ny => Some(*row as usize + 1),
+            _ => None,
+        };
         (text, line)
     }
 
