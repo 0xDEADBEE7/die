@@ -474,3 +474,78 @@ fn a_restart_reopens_each_fig_file_as_you_last_looked_at_it() {
         st.borrow().error
     );
 }
+
+#[test]
+fn a_fig_saved_under_its_name_or_new_and_empty_stays_text_and_a_jump_to_its_error_too() {
+    let dir = TempDir::new("errors-stay");
+    write(dir.path(), "rates.csv", &crossing());
+    let mut h = harness();
+    // Written in a buffer of its own and saved as a .fig: you're writing it, so it stays text.
+    let (b, win) = h.open_text("draft", "").unwrap();
+    let t = h.text_mut(b).unwrap();
+    t.tx(Origin::User).insert(0, RATES_FIG).commit().unwrap();
+    h.run_until_idle();
+    let path = dir.path().join("draft.fig");
+    h.save_to(b, &path, false, true).unwrap();
+    h.run_until_idle();
+    assert_eq!(
+        h.window_buffer(win),
+        Some(b),
+        "saved under the name: still text"
+    );
+    // A new .fig with nothing in it yet: text, to write.
+    let new = open(&mut h, &dir.path().join("new.fig"));
+    assert_eq!(
+        h.window_buffer(h.focused().unwrap()),
+        Some(new),
+        "new and empty: text"
+    );
+    // `:fig FILE` on a .fig no buffer visits, then ⏎ to its error: its text, and it stays so.
+    let broken = write(
+        dir.path(),
+        "broken.fig",
+        "{\"type\": \"line\",\n \"data\": \"rates.csv\", \"x\": \"x\", \"y\": \"nope\"}\n",
+    );
+    let args = Args {
+        text: Some(broken.display().to_string()),
+        ..Args::default()
+    };
+    h.run("fig", &args).unwrap();
+    h.run_until_idle();
+    let fig = h.window_buffer(h.focused().unwrap()).unwrap();
+    assert_eq!(h.buffer_name(fig), Some("broken.fig *fig*"));
+    keys(&mut h, "<CR>");
+    h.run_until_idle();
+    let shown = h.window_buffer(h.focused().unwrap()).unwrap();
+    assert_eq!(
+        h.buffer_name(shown),
+        Some("broken.fig"),
+        "its text, at the error"
+    );
+    keys(&mut h, "l");
+    assert_eq!(
+        h.window_buffer(h.focused().unwrap()),
+        Some(shown),
+        "and it stays so"
+    );
+}
+
+#[test]
+fn data_with_only_its_header_draws_nothing_to_draw_until_a_row_comes() {
+    let mut s = setup_with("data.csv", "x,a\n");
+    let st = state(&mut s);
+    assert!(st.borrow().model.is_none());
+    let first = st.borrow().error.as_ref().expect("why").first().clone();
+    assert_eq!(first.kind, ErrorKind::Empty);
+    assert_eq!(st.borrow().badge().as_deref(), Some("Empty"));
+    drop(st);
+    let (w, h) = state(&mut s).borrow().panes[&s.win].size();
+    assert_eq!(
+        state(&mut s).borrow().panes[&s.win].hit((w / 2.0, h / 2.0)),
+        Hit::ErrorFigure
+    );
+    edit(&mut s, "x,a\n1,2\n2,3\n");
+    let st = state(&mut s);
+    assert!(st.borrow().model.is_some(), "{:?}", st.borrow().error);
+    assert_eq!(st.borrow().badge(), None);
+}

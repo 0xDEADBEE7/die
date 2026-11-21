@@ -411,10 +411,18 @@ impl Fig {
     }
 
     /// A `.fig` buffer's mode came (it was opened, restored or saved under a figure's name):
-    /// it opens as its figure in the focused window if that shows it, or when it first does;
-    /// not where your options say text or the session says you left it as text.
+    /// it opens as its figure in the focused window if that shows it, or when it first does.
+    /// Not where your options say text, nor one the session says you left as text or you've
+    /// gone to as text already (a jump to its error); nor one saved under the name, whose
+    /// text you're writing (it has changes of its own), nor a new file with nothing in it yet.
     fn opened(&mut self, ctx: &mut Ctx, buf: BufferId) -> Result {
-        if self.options.open_fig_as == OpenAs::Text || self.as_text.remove(&buf) {
+        let as_text = self.as_text.remove(&buf);
+        let looked = self.views.get(&buf) == Some(&OpenAs::Text);
+        let fresh = ctx.text(buf).is_ok_and(|t| {
+            let blank = t.rope().chars().all(char::is_whitespace);
+            t.rev() == 0 && !blank
+        });
+        if self.options.open_fig_as == OpenAs::Text || as_text || looked || !fresh {
             return Ok(());
         }
         if !self.pending.contains(&buf) {
