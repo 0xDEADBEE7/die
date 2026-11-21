@@ -20,6 +20,8 @@ pub(crate) struct Geometry {
     start: f64,
     /// A band's width, signed with the range.
     width: f64,
+    /// The range's ends, lower first.
+    span: (f64, f64),
 }
 
 impl Geometry {
@@ -46,6 +48,7 @@ impl Geometry {
             step,
             start,
             width: step * (1.0 - inner),
+            span: (r0.min(r1), r0.max(r1)),
         }
     }
 
@@ -72,8 +75,12 @@ impl Geometry {
         Some((a.min(b) as f32, (b - a).abs() as f32))
     }
 
-    /// The band whose slot holds `px`.
+    /// The band whose slot holds `px`, inside the range: with less outer padding than half the
+    /// inner, the first and last slots would reach past it.
     pub(crate) fn at(&self, px: f32) -> Option<usize> {
+        if !(self.span.0..=self.span.1).contains(&(px as f64)) {
+            return None;
+        }
         let i = self.invert(px).floor();
         (i >= 0.0 && i < self.n as f64).then_some(i as usize)
     }

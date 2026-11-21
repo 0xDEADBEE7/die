@@ -26,6 +26,10 @@ const YEAR: f64 = 365.0 * DAY;
 /// A bound on steps walked for one call; a sane domain takes a few times `count`.
 const WALK: usize = 100_000;
 
+/// The longest step in years: jiff's calendar holds 19,999 of them (-9999 to 9999), so a longer
+/// one would have a tick or none, and past 19,998 jiff refuses the span.
+const MOST_YEARS: i64 = 10_000;
+
 /// A float of UTC seconds as a timestamp; None when it isn't finite or falls outside the years
 /// jiff knows (-9999 to 9999).
 ///
@@ -40,14 +44,20 @@ pub(crate) fn timestamp(v: f64) -> Option<Timestamp> {
     if !(-4.0e11..4.0e11).contains(&s) {
         return None;
     }
-    let ulp_ns = v.abs().max(1.0) * f64::EPSILON * 1e9;
-    let grain = 10f64.powf(ulp_ns.log10().ceil()).clamp(1.0, 1e9);
+    let grain = grain_ns(v);
     let mut ns = ((v - s) * 1e9 / grain).round() * grain;
     if ns >= 1e9 {
         s += 1.0;
         ns = 0.0;
     }
     Timestamp::new(s as i64, ns as i32).ok()
+}
+
+/// The finest power of ten of nanoseconds that floats of UTC seconds near `v` tell apart: a
+/// microsecond in 2026, a nanosecond near 1970.
+fn grain_ns(v: f64) -> f64 {
+    let ulp_ns = v.abs().max(1.0) * f64::EPSILON * 1e9;
+    10f64.powf(ulp_ns.log10().ceil()).clamp(1.0, 1e9)
 }
 
 /// `v` in `zone`.
@@ -78,12 +88,14 @@ pub(crate) enum Level {
 }
 
 /// The coarsest field `z` starts: a midnight on the 21st is a day, on the 1st of a month a month.
+/// A day starts at its first instant: 01:00 where a spring change swallows midnight, and only
+/// the first of two midnights an autumn change repeats.
 pub(crate) fn level_of(z: &Zoned) -> Level {
     if z.subsec_nanosecond() != 0 {
         Level::SubSecond
     } else if z.second() != 0 {
         Level::Second
-    } else if z.minute() != 0 || z.hour() != 0 {
+    } else if !starts_day(z) {
         Level::Clock
     } else if z.day() != 1 {
         Level::Day
@@ -91,6 +103,14 @@ pub(crate) fn level_of(z: &Zoned) -> Level {
         Level::Month
     } else {
         Level::Year
+    }
+}
+
+/// Whether `z` is its day's first instant in its zone (midnight, when the zone can't say).
+fn starts_day(z: &Zoned) -> bool {
+    match z.start_of_day() {
+        Ok(first) => first.timestamp() == z.timestamp(),
+        Err(_) => z.hour() == 0 && z.minute() == 0,
     }
 }
 
@@ -172,7 +192,7 @@ fn interval(lo: f64, hi: f64, count: usize) -> Option<(Unit, i64, f64)> {
     }
     if i == INTERVALS.len() {
         let n = match linear::spec(lo / YEAR, hi / YEAR, count.max(1) as f64) {
-            Some((_, _, Inc::Mul(m))) => (m as i64).max(1),
+            Some((_, _, Inc::Mul(m))) => (m as i64).clamp(1, MOST_YEARS),
             _ => 1,
         };
         return Some((Unit::Year, n, n as f64 * YEAR));
@@ -211,7 +231,8 @@ fn floor_clock(t: DateTime, unit: Unit, n: i64) -> Option<DateTime> {
     DateTime::new(t.year(), t.month(), t.day(), h, m, s, 0).ok()
 }
 
-/// The first day of a calendar step at or before `d`.
+/// The first day of a calendar step at or before `d`; for years in steps whose multiple falls
+/// before the calendar's first year, the first multiple inside it.
 fn floor_date(d: Date, unit: Unit, n: i64) -> Option<Date> {
     match unit {
         Unit::Week => d
@@ -223,10 +244,25 @@ fn floor_date(d: Date, unit: Unit, n: i64) -> Option<Date> {
         }
         Unit::Year => {
             let y = d.year() as i64;
-            Date::new((y - y.rem_euclid(n)) as i16, 1, 1).ok()
+            let first = y - y.rem_euclid(n);
+            let year = |y: i64| i16::try_from(y).ok().and_then(|y| Date::new(y, 1, 1).ok());
+            year(first).or_else(|| year(first + n))
         }
         _ => Some(d),
     }
+}
+
+/// The earliest the zone's clock reads from `t0` to `hi`: what it reads at `t0`, or less just
+/// after an autumn change on the way, when it turns back.
+fn least_civil(t0: Timestamp, hi: f64, zone: &TimeZone) -> DateTime {
+    let mut least = zone.to_datetime(t0);
+    for change in zone.following(t0) {
+        if seconds(change.timestamp()) > hi {
+            break;
+        }
+        least = least.min(zone.to_datetime(change.timestamp()));
+    }
+    least
 }
 
 /// The instants where the zone's calendar steps by `n` units, from the last at or before `lo`
@@ -244,13 +280,19 @@ fn steps(lo: f64, hi: f64, unit: Unit, n: i64, zone: &TimeZone) -> Vec<f64> {
                 Unit::Minute => n.minutes(),
                 _ => n.seconds(),
             };
-            // One step back, so a floor that lands in a gap still leaves one at or before `lo`.
-            let first = floor_clock(civil, unit, n).and_then(|dt| dt.checked_sub(span).ok());
+            // The walk is over the clock's readings, which an autumn change turns back: it
+            // starts from the earliest the clock reads in the domain, so the repeated readings'
+            // second instants are there even when `lo` is late in their first pass. One step
+            // back, so a floor that lands in a gap still leaves one at or before `lo`.
+            let least = least_civil(t0, hi, zone);
+            let first = floor_clock(least, unit, n).and_then(|dt| dt.checked_sub(span).ok());
             let mut at = first;
             for _ in 0..WALK {
                 let Some(dt) = at else { break };
                 let here = instants(zone, dt);
-                let done = here.iter().any(|&t| t >= hi);
+                // Done when every instant of this reading is past `hi`: in a fold the second
+                // is past it while the first, and the readings after it, are still due.
+                let done = !here.is_empty() && here.iter().all(|&t| t >= hi);
                 out.extend(here);
                 if done {
                     break;
@@ -265,7 +307,8 @@ fn steps(lo: f64, hi: f64, unit: Unit, n: i64, zone: &TimeZone) -> Vec<f64> {
                 Unit::Month => (n.months(), n.months()),
                 _ => (n.years(), n.years()),
             };
-            let first = floor_date(civil.date(), unit, n).and_then(|d| d.checked_sub(back).ok());
+            // One step back, or the floor itself at the calendar's first day.
+            let first = floor_date(civil.date(), unit, n).map(|d| d.checked_sub(back).unwrap_or(d));
             let mut at = first;
             for _ in 0..WALK {
                 let Some(d) = at else { break };
@@ -300,6 +343,10 @@ pub(crate) fn ticks(domain: (f64, f64), count: usize, zone: &TimeZone) -> Vec<Ti
     }
     let major_past = |v: f64, level: Level| zoned(v, zone).is_some_and(|z| level_of(&z) > level);
     let Some((unit, n, about)) = interval(lo, hi, count) else {
+        // No finer than the floats here tell apart (a microsecond in 2026), or the ticks would
+        // run together and their labels repeat.
+        let grain = grain_ns(lo.abs().max(hi.abs())) / 1e9;
+        let count = count.min(((hi - lo) / grain).floor().max(1.0) as usize);
         let Some((vals, step)) = linear::values(lo, hi, count) else {
             return Vec::new();
         };

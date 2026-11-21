@@ -218,6 +218,22 @@ fn a_band_scale_on_a_reversed_range_counts_from_its_start() {
 }
 
 #[test]
+fn a_band_is_found_only_inside_the_range() {
+    // Less outer padding than half the inner: the end slots reach past the range.
+    let s = band(&["a", "b", "c", "d"], (0.0, 100.0), 0.5, 0.0);
+    assert_eq!(s.band_of(0).map(|b| b.0), Some(0.0));
+    assert_eq!(s.band_at(0.0), Some(0));
+    assert_eq!(s.band_at(10.0), Some(0));
+    assert_eq!(s.band_at(100.0), Some(3));
+    assert_eq!(s.band_at(-5.0), None);
+    assert_eq!(s.band_at(105.0), None);
+    let r = band(&["a", "b", "c", "d"], (100.0, 0.0), 0.5, 0.0);
+    assert_eq!(r.band_at(100.0), Some(0));
+    assert_eq!(r.band_at(105.0), None);
+    assert_eq!(r.band_at(-5.0), None);
+}
+
+#[test]
 fn band_ticks_name_each_category_at_its_centre_or_every_nth() {
     let s = band(&["a", "b", "c", "d", "e"], (0.0, 100.0), 0.1, 0.0);
     let all = scale::ticks(&s, 10);
@@ -333,6 +349,16 @@ fn nice_scales_widen_to_their_own_units() {
     );
     let b = band(&["a"], (0.0, 1.0), 0.0, 0.0);
     assert_eq!(b.nice(5), b);
+}
+
+#[test]
+fn log_nice_keeps_an_end_whose_power_a_float_cannot_hold() {
+    // 10⁻³²¹ is zero as a float and 10³⁰⁹ infinite: those ends stay, the others widen.
+    assert_eq!(log(1e-320, 1.0).nice(5).domain(), (1e-320, 1.0));
+    assert_eq!(log(2.0, 1.5e308).nice(5).domain(), (1.0, 1.5e308));
+    assert_eq!(log(-1.5e308, -2.0).nice(5).domain(), (-1.5e308, -1.0));
+    let t = scale::ticks(&log(2.0, 1.5e308).nice(5), 5);
+    assert_eq!(labels(&t), ["1e0", "1e62", "1e124", "1e186", "1e248"]);
 }
 
 // ---------------------------------------------------------------------------------- time ticks
@@ -662,6 +688,155 @@ fn sydney_days_are_23_and_25_hours_at_the_changes() {
 }
 
 #[test]
+fn london_fall_back_keeps_every_tick_under_an_hour() {
+    let z = named("Europe/London");
+    // 25 October 2026: 02:00 BST (01:00Z) becomes 01:00 GMT, so 01:00 to 02:00 comes twice.
+    // Quarter hours inside the first pass: its second instants are past the domain.
+    let t = scale::ticks(
+        &time(at("2026-10-24T23:30:00Z"), at("2026-10-25T00:40:00Z"), &z),
+        5,
+    );
+    assert_eq!(labels(&t), ["00:30", "00:45", "01:00", "01:15", "01:30"]);
+    assert_eq!(t[4].value, at("2026-10-25T00:30:00Z"), "01:30 BST");
+    assert!(majors(&t).iter().all(|m| !m));
+    // Minutes and seconds inside it.
+    let t = scale::ticks(
+        &time(at("2026-10-25T00:01:00Z"), at("2026-10-25T00:09:00Z"), &z),
+        8,
+    );
+    assert_eq!(
+        labels(&t),
+        [
+            "01:01", "01:02", "01:03", "01:04", "01:05", "01:06", "01:07", "01:08", "01:09"
+        ]
+    );
+    let t = scale::ticks(
+        &time(at("2026-10-25T00:00:30Z"), at("2026-10-25T00:01:30Z"), &z),
+        4,
+    );
+    assert_eq!(labels(&t), [":30", ":45", "01:01", ":15", ":30"]);
+    // Across the change, from late in the first pass: 01:50 BST to 01:10 GMT.
+    let t = scale::ticks(
+        &time(at("2026-10-25T00:50:00Z"), at("2026-10-25T01:10:00Z"), &z),
+        4,
+    );
+    assert_eq!(labels(&t), ["01:50", "01:55", "01:00", "01:05", "01:10"]);
+    assert!(gaps(&t).iter().all(|&g| g == 300.0), "{:?}", gaps(&t));
+    let t = scale::ticks(
+        &time(at("2026-10-25T00:59:30Z"), at("2026-10-25T01:00:30Z"), &z),
+        4,
+    );
+    assert_eq!(labels(&t), [":30", ":45", "01:00", ":15", ":30"]);
+    assert!(gaps(&t).iter().all(|&g| g == 15.0), "{:?}", gaps(&t));
+    // Nice widens to the nearest quarter hour and five minutes, not past them.
+    let s = time(at("2026-10-24T23:30:00Z"), at("2026-10-25T00:40:00Z"), &z).nice(5);
+    assert_eq!(
+        s.domain(),
+        (at("2026-10-24T23:30:00Z"), at("2026-10-25T00:45:00Z"))
+    );
+    let s = time(at("2026-10-25T00:52:00Z"), at("2026-10-25T01:08:00Z"), &z).nice(4);
+    assert_eq!(
+        s.domain(),
+        (at("2026-10-25T00:50:00Z"), at("2026-10-25T01:10:00Z"))
+    );
+}
+
+#[test]
+fn sydney_fall_back_keeps_every_tick_under_an_hour() {
+    let z = named("Australia/Sydney");
+    // 5 April 2026: 03:00 AEDT (16:00Z on the 4th) becomes 02:00 AEST.
+    let t = scale::ticks(
+        &time(at("2026-04-04T15:10:00Z"), at("2026-04-04T15:40:00Z"), &z),
+        6,
+    );
+    assert_eq!(
+        labels(&t),
+        [
+            "02:10", "02:15", "02:20", "02:25", "02:30", "02:35", "02:40"
+        ]
+    );
+    // 02:40 AEDT to 02:20 AEST.
+    let t = scale::ticks(
+        &time(at("2026-04-04T15:40:00Z"), at("2026-04-04T16:20:00Z"), &z),
+        8,
+    );
+    assert_eq!(
+        labels(&t),
+        [
+            "02:40", "02:45", "02:50", "02:55", "02:00", "02:05", "02:10", "02:15", "02:20"
+        ]
+    );
+    assert!(gaps(&t).iter().all(|&g| g == 300.0), "{:?}", gaps(&t));
+}
+
+#[test]
+fn a_day_that_starts_at_one_is_major_and_named_among_hours() {
+    // Chile's rule, written out so the test doesn't depend on the system's tzdata: on the first
+    // Sunday of September the clock goes from 00:00 −04 to 01:00 −03, so 6 September 2026
+    // starts at 01:00.
+    let z = TimeZone::posix("<-04>4<-03>,M9.1.6/24,M4.1.6/24").unwrap();
+    let t = scale::ticks(
+        &time(at("2026-09-06T00:00:00Z"), at("2026-09-06T07:00:00Z"), &z),
+        7,
+    );
+    assert_eq!(
+        labels(&t),
+        [
+            "20:00", "21:00", "22:00", "23:00", "6 Sep", "02:00", "03:00", "04:00"
+        ]
+    );
+    assert_eq!(
+        majors(&t),
+        [false, false, false, false, true, false, false, false]
+    );
+    assert_eq!(reads(&z, t[4].value), "2026-09-06 01:00");
+}
+
+#[test]
+fn ticks_stop_where_the_floats_cannot_count() {
+    // At the count asked each would step past 2⁵³ in its unit: fewer ticks, distinct, and
+    // promptly.
+    fn within(f: impl FnOnce() -> Vec<Tick> + Send + 'static) -> Vec<Tick> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(f()));
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the ticks come back")
+    }
+    let ascending_inside = |t: &[Tick], lo: f64, hi: f64| {
+        assert!(!t.is_empty());
+        assert!(t.windows(2).all(|w| w[0].value < w[1].value), "{t:?}");
+        assert!(t.iter().all(|t| (lo..=hi).contains(&t.value)), "{t:?}");
+    };
+    let t = within(|| scale::ticks(&linear(1e16, 1e16 + 2.0), 10));
+    assert_eq!(values(&t), [1e16, 1e16 + 2.0]);
+    // Epoch milliseconds kept as numbers, zoomed to a microsecond.
+    let (lo, hi) = (1.763e12, 1.763e12 + 0.001);
+    let t = within(move || scale::ticks(&linear(lo, hi), 10));
+    ascending_inside(&t, lo, hi);
+    assert!(t.len() <= 11);
+    // A microsecond of time in 2026: a float there tells microseconds apart, no finer.
+    let t0 = at("2026-11-21T10:25:15Z");
+    let t = within(move || scale::ticks(&time(t0, t0 + 1e-6, &utc()), 10));
+    assert_eq!(labels(&t), [":15", ".000001"]);
+    // Ten of them still tick each one.
+    let t = within(move || scale::ticks(&time(t0, t0 + 1e-5, &utc()), 10));
+    assert_eq!(t.len(), 11);
+}
+
+#[test]
+fn years_past_the_calendars_reach_tick_without_panicking() {
+    let z = utc();
+    let (lo, hi) = (at("-008000-01-01T00:00:00Z"), at("9000-01-01T00:00:00Z"));
+    // A step of 20,000 years is longer than jiff's calendar.
+    let t = scale::ticks(&time(lo, hi, &z), 1);
+    assert!(t.iter().all(|t| (lo..=hi).contains(&t.value)), "{t:?}");
+    assert_eq!(time(lo, hi, &z).nice(1).domain(), (lo, hi));
+    // Multiples of 5,000 years from the first inside the calendar.
+    let t = scale::ticks(&time(lo, hi, &z), 5);
+    assert_eq!(labels(&t), ["-5000", "0", "5000"]);
+}
+
+#[test]
 fn degenerate_time_domains_tick_once_or_not_at_all() {
     let t0 = at("2025-11-21T10:25:00Z");
     assert_eq!(labels(&scale::ticks(&time(t0, t0, &utc()), 5)), ["10:25"]);
@@ -710,6 +885,89 @@ fn format_number_writes_an_axis_in_full_or_compact() {
     assert_eq!(
         format_number(f64::NEG_INFINITY, 1.0, NumberStyle::Compact),
         "−∞"
+    );
+}
+
+#[test]
+fn an_axis_is_scientific_throughout_or_not_at_all() {
+    let t = scale::ticks(&linear(0.0, 2e-6), 4);
+    assert_eq!(labels(&t), ["0", "5e−7", "1e−6", "1.5e−6", "2e−6"]);
+    let t = scale::ticks(&linear(0.0, 1e-6), 5);
+    assert_eq!(labels(&t), ["0", "2e−7", "4e−7", "6e−7", "8e−7", "1e−6"]);
+    let t = scale::ticks(&linear(0.0, 2e15), 4);
+    assert_eq!(labels(&t), ["0", "5e14", "1e15", "1.5e15", "2e15"]);
+    // The mantissa has the decimals the step needs at its power.
+    let t = scale::ticks(&linear(9e14, 1.1e15), 4);
+    assert_eq!(labels(&t), ["9e14", "9.5e14", "1e15", "1.05e15", "1.1e15"]);
+    let t = scale::ticks(&log(1e-8, 1e-3), 6);
+    assert_eq!(labels(&t), ["1e−8", "1e−7", "1e−6", "1e−5", "1e−4", "1e−3"]);
+    // An axis with no tick past the bounds stays in figures, however fine its step.
+    let t = scale::ticks(&linear(0.0, 2e-5), 4);
+    assert_eq!(
+        labels(&t),
+        ["0.000000", "0.000005", "0.000010", "0.000015", "0.000020"]
+    );
+    let t = scale::ticks(&linear(1.0, 1.000_001), 5);
+    assert_eq!(
+        labels(&t),
+        [
+            "1.0000000",
+            "1.0000002",
+            "1.0000004",
+            "1.0000006",
+            "1.0000008",
+            "1.0000010"
+        ]
+    );
+    assert_eq!(
+        format_number(0.000_003, 1e-6, NumberStyle::Full),
+        "0.000003"
+    );
+    assert!(!scale::axis_scientific(&[0.0, 0.5, 1.0]));
+    assert!(scale::axis_scientific(&[0.0, 5e-7, 1e-6]));
+    assert!(scale::axis_scientific(&[9e14, 1e15]));
+    assert_eq!(
+        scale::format_tick(-1.05e15, 5e13, NumberStyle::Compact, true),
+        "−1.05e15"
+    );
+    assert_eq!(
+        scale::format_tick(950.0, 50.0, NumberStyle::Full, false),
+        "950"
+    );
+}
+
+#[test]
+fn a_step_that_no_decimal_writes_gets_two_significant_digits() {
+    let third = 1.0 / 3.0;
+    assert_eq!(format_number(third, third, NumberStyle::Full), "0.33");
+    assert_eq!(
+        format_number(2.0 / 7.0, 1.0 / 7.0, NumberStyle::Full),
+        "0.29"
+    );
+    assert_eq!(
+        format_number(40_000.0 / 3.0, 10_000.0 / 3.0, NumberStyle::Compact),
+        "13.3K"
+    );
+    assert_eq!(format_number(50.0, 50.0 / 3.0, NumberStyle::Full), "50");
+    let pi = std::f64::consts::PI;
+    assert_eq!(format_number(pi, pi, NumberStyle::Full), "3.1");
+    // Gaps found by subtraction are still the decimals they nearly are.
+    let gap = 0.1 + 0.2 - 0.2;
+    assert_eq!(format_number(0.3, gap, NumberStyle::Full), "0.3");
+    let gap = (1e9 + 0.1) - 1e9;
+    assert_eq!(
+        format_number(1e9 + 0.3, gap, NumberStyle::Full),
+        "1,000,000,000.3"
+    );
+    // A log axis in base e.
+    let e = Scale::Log {
+        domain: (1.0, 60.0),
+        range: (0.0, 300.0),
+        base: std::f64::consts::E,
+    };
+    assert_eq!(
+        labels(&scale::ticks(&e, 10)),
+        ["1", "2.7", "7.4", "20", "55"]
     );
 }
 

@@ -6,7 +6,7 @@
 //! so a tick is `i / 10` and never `i × 0.1`: 0.3 comes out as 0.3, not 0.30000000000000004.
 
 use super::Tick;
-use super::format::{axis_style, format_number};
+use super::format::{axis_scientific, axis_style, format_number, format_tick};
 
 /// A tick step, kept exact: a multiple when it's 1 or more, a divisor when it's less.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,6 +59,10 @@ const E2: f64 = std::f64::consts::SQRT_2;
 /// More ticks than this from one call means the step underflowed; none is safer.
 const MOST: f64 = 1.0e6;
 
+/// 2⁵³: from here a float can't count by one (`i + 1.0 == i`), so a tick's index is no longer
+/// exact and a step finer than the floats around it would run its ticks together.
+const EXACT: f64 = 9_007_199_254_740_992.0;
+
 /// Ten to the `k`, exact while ten to the `|k|` is (to 22).
 pub(crate) fn pow10(k: i32) -> f64 {
     if (0..=22).contains(&k) {
@@ -71,8 +75,15 @@ pub(crate) fn pow10(k: i32) -> f64 {
 }
 
 /// The first and last tick's index and the step, for about `count` ticks over `lo ..= hi`
-/// (`lo < hi`, both finite). None when the step can't be written as a float.
+/// (`lo < hi`, both finite). None when the step can't be written as a float. Where about
+/// `count` would step finer than the floats there can count (2⁵³ steps from zero: 1e16 to
+/// 1e16 + 2 in tenths), it's half as many, until they can or there's one.
 pub(crate) fn spec(lo: f64, hi: f64, count: f64) -> Option<(f64, f64, Inc)> {
+    spec_in(lo, hi, count, true)
+}
+
+/// [`spec`]; `fewer` allows halving `count` (not after doubling it, so the two never take turns).
+fn spec_in(lo: f64, hi: f64, count: f64, fewer: bool) -> Option<(f64, f64, Inc)> {
     let raw = (hi - lo) / count;
     if !(raw.is_finite() && raw > 0.0) {
         return None;
@@ -117,10 +128,17 @@ pub(crate) fn spec(lo: f64, hi: f64, count: f64) -> Option<(f64, f64, Inc)> {
         (a, b, Inc::Mul(m))
     };
     if i2 < i1 && (0.5..2.0).contains(&count) {
-        return spec(lo, hi, count * 2.0);
+        return spec_in(lo, hi, count * 2.0, false);
     }
     if !(i1.is_finite() && i2.is_finite()) || i2 - i1 > MOST {
         return None;
+    }
+    if i1.abs().max(i2.abs()) >= EXACT {
+        return if fewer && count >= 2.0 {
+            spec_in(lo, hi, (count / 2.0).floor(), true)
+        } else {
+            None
+        };
     }
     Some((i1, i2, inc))
 }
@@ -128,13 +146,12 @@ pub(crate) fn spec(lo: f64, hi: f64, count: f64) -> Option<(f64, f64, Inc)> {
 /// The tick values over `lo ..= hi` (ascending, finite, `lo < hi`) and their step.
 pub(crate) fn values(lo: f64, hi: f64, count: usize) -> Option<(Vec<f64>, f64)> {
     let (i1, i2, inc) = spec(lo, hi, count.max(1) as f64)?;
-    let mut out = Vec::new();
-    let mut i = i1;
-    while i <= i2 {
-        // `+ 0.0` turns a -0 into 0.
-        out.push(inc.at(i) + 0.0);
-        i += 1.0;
-    }
+    // A whole-number count: [`spec`] keeps the indices exact and at most `MOST` apart.
+    let n = if i2 < i1 { 0 } else { (i2 - i1) as u64 + 1 };
+    // `+ 0.0` turns a -0 into 0.
+    let mut out: Vec<f64> = (0..n).map(|k| inc.at(i1 + k as f64) + 0.0).collect();
+    // Near the floats' limits two neighbours can round to one value.
+    out.dedup();
     Some((out, inc.step()))
 }
 
@@ -166,14 +183,15 @@ pub(crate) fn ticks(domain: (f64, f64), count: usize) -> Vec<Tick> {
     labelled(&vals, step)
 }
 
-/// Ticks at `vals`, labelled in one style for the axis at `step`.
+/// Ticks at `vals`, labelled in one style for the axis at `step`: all scientific or none.
 pub(crate) fn labelled(vals: &[f64], step: f64) -> Vec<Tick> {
     let reach = vals.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     let style = axis_style(reach, step);
+    let sci = axis_scientific(vals);
     vals.iter()
         .map(|&v| Tick {
             value: v,
-            label: format_number(v, step, style),
+            label: format_tick(v, step, style, sci),
             major: false,
         })
         .collect()

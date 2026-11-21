@@ -4,7 +4,7 @@
 //! or crosses zero has no logarithm, so it maps everything to NaN and has no ticks.
 
 use super::Tick;
-use super::format::{axis_style, format_number};
+use super::format::{axis_scientific, axis_style, format_tick};
 use super::linear::{self, ascending, pow10};
 
 /// Slack for a power that a logarithm misses by an ulp: log₂(8) can be 2.9999999999999996.
@@ -159,16 +159,19 @@ pub(crate) fn ticks(domain: (f64, f64), base: f64, count: usize) -> Vec<Tick> {
     }
     let reach = ts.iter().fold(0.0f64, |m, t| m.max(t.0.abs()));
     let style = axis_style(reach, f64::NAN);
+    let vals: Vec<f64> = ts.iter().map(|t| t.0).collect();
+    let sci = axis_scientific(&vals);
     ts.into_iter()
         .map(|(v, p, major)| Tick {
             value: v,
-            label: format_number(v, p, style),
+            label: format_tick(v, p, style, sci),
             major,
         })
         .collect()
 }
 
-/// A log domain widened to powers of its base; one that touches zero comes back as it was.
+/// A log domain widened to powers of its base; one that touches zero comes back as it was, and
+/// an end whose power a float can't hold (10⁻³²⁴, 10³⁰⁹) stays where it was.
 pub(crate) fn nice(domain: (f64, f64), base: f64) -> (f64, f64) {
     let Some(s) = sign(domain) else {
         return domain;
@@ -181,7 +184,8 @@ pub(crate) fn nice(domain: (f64, f64), base: f64) -> (f64, f64) {
         } else {
             (l + SLACK).floor()
         };
-        s * value(base, 1.0, k as i32)
+        let p = value(base, 1.0, k as i32);
+        if p.is_finite() && p > 0.0 { s * p } else { v }
     };
     let (d0, d1) = domain;
     // The end nearer zero rounds towards it, the other away, whichever way round the domain is.

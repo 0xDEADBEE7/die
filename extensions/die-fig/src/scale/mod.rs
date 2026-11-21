@@ -14,8 +14,8 @@ pub mod log;
 pub mod time;
 
 pub use format::{
-    NumberStyle, axis_style, data_decimals, format_fixed, format_number, format_time,
-    format_time_full, format_time_point, format_value, format_with,
+    NumberStyle, axis_scientific, axis_style, data_decimals, format_fixed, format_number,
+    format_tick, format_time, format_time_full, format_time_point, format_value, format_with,
 };
 
 /// A mapping from a domain of data to a range of logical px.
@@ -112,8 +112,8 @@ impl Scale {
     }
 
     /// The band at a place, for a band scale: its band and half the inner padding on each side,
-    /// so a place between two bars finds the nearer. None in the outer padding, and on other
-    /// scales.
+    /// so a place between two bars finds the nearer. None in the outer padding, outside the
+    /// range, and on other scales.
     pub fn band_at(&self, px: f32) -> Option<usize> {
         match self {
             Scale::Band {
@@ -202,13 +202,16 @@ pub struct Tick {
 /// ascending order of value, none for a `count` of 0.
 ///
 /// - Linear: steps of 1, 2 or 5 times a power of ten, labelled in one [`NumberStyle`] for the
-///   axis ([`axis_style`]: compact when it reaches 10,000). None are major.
+///   axis ([`axis_style`]: compact when it reaches 10,000), and all in scientific notation or
+///   none ([`axis_scientific`]). None are major. Where the floats can't count in the step
+///   (1e16 to 1e16 + 2 in tenths) there are fewer.
 /// - Log: powers of the base, with 2 and 5 between them in base 10 when there's room, or every
 ///   second or third power when there isn't; linear ticks inside a single decade. The powers
-///   are major.
+///   are major; scientific all or none, as linear ones.
 /// - Time: seconds, minutes, hours, days, Monday weeks, months, quarters or years in the zone,
 ///   each label as short as its place allows (":15", "10:25", "21 Nov", "Nov", "2026"); a tick
 ///   that starts a larger unit than the step's (a midnight among hours) is major and says so.
+///   Under a second, linear ones, no finer than the floats there tell apart.
 /// - Band: each category at its band's centre (`i + 0.5`), every nth when there are more than
 ///   `count`.
 pub fn ticks(scale: &Scale, count: usize) -> Vec<Tick> {

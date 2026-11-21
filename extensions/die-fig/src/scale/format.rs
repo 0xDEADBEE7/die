@@ -65,17 +65,19 @@ pub fn axis_style(reach: f64, step: f64) -> NumberStyle {
 /// 1,284 / 12.9K / 4.2M; one style per axis: Compact when the axis reaches 10,000.
 ///
 /// Decimals come from `step`, the distance between neighbours on the axis: a step of 0.25
-/// writes two, of 2,500 compact one (2.5K). Full keeps them all, so a column's points line up
-/// ("0.0", "0.5", "1.0"); Compact drops trailing zeros, as the design's ticks do ("2.5K", "5K").
-/// Compact writes under a thousand as it is, then K, M, B and T. A `step` that isn't a positive
-/// number gives a figure on its own: in full as [`format_value`], compact to three significant
-/// digits (12.9K, 1.28M). From 10¹⁵, and under 10⁻⁶, either style is scientific (1.5e−7).
+/// writes two, of 2,500 compact one (2.5K), of a third two significant digits (0.33). Full
+/// keeps them all, so a column's points line up ("0.0", "0.5", "1.0"); Compact drops trailing
+/// zeros, as the design's ticks do ("2.5K", "5K"). Compact writes under a thousand as it is,
+/// then K, M, B and T. A `step` that isn't a positive number gives a figure on its own: in full
+/// as [`format_value`], compact to three significant digits (12.9K, 1.28M). From 10¹⁵, and
+/// under 10⁻⁶, a value is scientific in either style (1.5e−7); an axis decides that once for
+/// all its ticks, with [`axis_scientific`] and [`format_tick`], as [`super::ticks`] does.
 pub fn format_number(v: f64, step: f64, style: NumberStyle) -> String {
     if let Some(s) = special(v) {
         return s;
     }
     if far(v.abs()) {
-        return scientific(v);
+        return scientific(v, step);
     }
     match style {
         NumberStyle::Full => match step_decimals(step) {
@@ -84,6 +86,30 @@ pub fn format_number(v: f64, step: f64, style: NumberStyle) -> String {
         },
         NumberStyle::Compact => compact(v, step),
     }
+}
+
+/// Whether an axis with ticks at `values` writes them all in scientific notation: when any one
+/// of them would be on its own, from 10¹⁵ or under 10⁻⁶ (zero aside). So an axis from 0 to
+/// 2 µs reads "0", "5e−7", "1e−6", "1.5e−6", "2e−6", never "5e−7" among "0.0000010"s, and one
+/// from 900T to 1.1e15 is scientific throughout.
+pub fn axis_scientific(values: &[f64]) -> bool {
+    values.iter().any(|v| v.is_finite() && far(v.abs()))
+}
+
+/// A tick's label on an axis: [`format_number`] in the axis's `style`, or, on an axis that
+/// [`axis_scientific`] makes scientific, 1.5e−7 with the mantissa's decimals that `step` needs
+/// at the value's power (1.05e15 among steps of 5e13), and zero as "0".
+pub fn format_tick(v: f64, step: f64, style: NumberStyle, scientific_axis: bool) -> String {
+    if !scientific_axis {
+        return format_number(v, step, style);
+    }
+    if let Some(s) = special(v) {
+        return s;
+    }
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    scientific(v, step)
 }
 
 /// A value in full for the card: thousands separators, decimals from the data's precision.
@@ -275,7 +301,7 @@ impl Numeric {
     fn apply(self, v: f64) -> String {
         let fixed_or_own = |w: f64| match self.precision {
             // d3's bound: past 10²¹ even a fixed format is scientific.
-            Some(_) if w.abs() >= 1e21 => scientific(w),
+            Some(_) if w.abs() >= 1e21 => scientific(w, f64::NAN),
             Some(p) => {
                 let s = fixed(w, p.min(15), self.group);
                 if self.trim { trim(s) } else { s }
@@ -344,8 +370,17 @@ fn trim(s: String) -> String {
     t.to_string()
 }
 
+/// How far from a whole number a step scaled by its decimals may be and still be one: the
+/// float noise in a gap found by subtraction (0.10000000000000009, or 0.10000002384 between
+/// values near 10⁹), and never the third or two thirds a step of a third leaves.
+const STEP_SLACK: f64 = 1e-6;
+/// The most a step may be scaled to by its decimals: past nine digits a float's fraction is
+/// too coarse for [`STEP_SLACK`] to tell a decimal from one that only rounds to it (π × 10¹⁵
+/// is a whole float).
+const STEP_DIGITS: f64 = 1e9;
+
 /// The decimals that write every multiple of `step` exactly: 0.25 two, 2,500 none. A step that
-/// no decimal writes exactly (a third) gets two significant digits. None when `step` isn't a
+/// no decimal writes exactly (a third, π) gets two significant digits. None when `step` isn't a
 /// positive number.
 fn step_decimals(step: f64) -> Option<usize> {
     if !(step.is_finite() && step > 0.0) {
@@ -353,7 +388,12 @@ fn step_decimals(step: f64) -> Option<usize> {
     }
     for d in 0..=15 {
         let scaled = step * pow10(d);
-        if (scaled - scaled.round()).abs() <= scaled * 1e-9 {
+        if d > 0 && scaled >= STEP_DIGITS {
+            break;
+        }
+        // A whole number of units at `d` decimals, and at least one: 1e-7 is near no whole
+        // number of ones, only of ten-millionths.
+        if scaled.round() >= 1.0 && (scaled - scaled.round()).abs() <= STEP_SLACK {
             return Some(d as usize);
         }
     }
@@ -381,7 +421,7 @@ fn shortest(v: f64, group: bool) -> String {
     }
     let a = v.abs();
     if far(a) {
-        return scientific(v);
+        return scientific(v, f64::NAN);
     }
     trim(fixed(v, own_decimals(a), group))
 }
@@ -392,9 +432,12 @@ fn far(a: f64) -> bool {
     a != 0.0 && !(1e-6..1e15).contains(&a)
 }
 
-/// `v` as 1.5e−7: six significant digits, trailing zeros dropped.
-fn scientific(v: f64) -> String {
-    let body = format!("{:.5e}", v.abs());
+/// `v` (finite, not zero) as 1.5e−7, trailing zeros dropped: the mantissa's decimals that
+/// `step` needs at `v`'s power, or six significant digits when `step` isn't a positive number.
+fn scientific(v: f64, step: f64) -> String {
+    let power = v.abs().log10().floor() as i32;
+    let decimals = step_decimals(step / pow10(power)).unwrap_or(5);
+    let body = format!("{:.*e}", decimals, v.abs());
     let (m, e) = body.split_once('e').unwrap_or((body.as_str(), "0"));
     let m = trim(m.to_string());
     let e = e.replace('-', &MINUS.to_string());
@@ -453,7 +496,7 @@ fn si(v: f64, p: Option<usize>, trimmed: bool) -> String {
     }
     let a = v.abs();
     if !(1e-24..1e27).contains(&a) {
-        return scientific(v);
+        return scientific(v, f64::NAN);
     }
     let mut e = ((a.log10() / 3.0).floor() as i32).clamp(-8, 8);
     let mut bumped = false;
