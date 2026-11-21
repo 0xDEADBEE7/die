@@ -163,6 +163,12 @@ fn backslash_v_shows_fig_graph_json_and_a_csv_tree_as_graphs() {
     assert!(status(&mut s).contains("18 nodes"), "{}", status(&mut s));
     assert_ne!(base, over);
     assert_eq!(s.h.next_timer(), None, "at rest, nothing runs");
+    // fig's own graph shape, with its fig blocks.
+    let mut f = graph_with("fig-graph.json", &fixture("fig-graph.json"), 200, 50);
+    assert!(
+        state(&mut f).borrow().model.is_none(),
+        "a graph, not a chart"
+    );
     // A table with an id and a parent column: a tree.
     let mut t = graph_with("org.csv", &fixture("org.csv"), 200, 50);
     let st = state(&mut t);

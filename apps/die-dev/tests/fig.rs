@@ -6,7 +6,9 @@
 //! as you'd make it: a CSV, `\v`, a hover bringing a series forward with its card, a brush, the
 //! wheel, ⌘-wheel and `+`, an edit of the CSV in a split that the chart follows, and `\v` back.
 //! And a `.fig` file through your config: it opens as its figure, `\v` flips it to its text and
-//! back, and one that can't draw shows the symbolic error figure, its log a `!` away.
+//! back, and one that can't draw shows the symbolic error figure, its log a `!` away. And a
+//! graph: `\v` on a graph's JSON, a node's hover and its dwell, a click, the detail panel and a
+//! yank through die-vim's kill ring, back to the text, and a `.fig` of a graph opening as it.
 
 use die_test_cap as _;
 
@@ -600,5 +602,108 @@ fn a_fig_file_that_cannot_draw_shows_the_symbolic_figure_and_its_log() {
         "said in *messages*: {:?}",
         h.messages
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// One of die-fig's graph fixtures, read at run time.
+fn graph_fixture(name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../extensions/die-fig/examples/data/graphs")
+        .join(name);
+    std::fs::read_to_string(path).unwrap()
+}
+
+/// Where a node is in a window's area, as last drawn.
+fn node_at(st: &Shared, win: WindowId, id: &str) -> (f32, f32) {
+    let st = st.borrow();
+    let g = st.graph.as_ref().expect("a graph");
+    let i = g.index_of(id).expect("the node");
+    st.panes[&win]
+        .graph
+        .as_ref()
+        .expect("drawn")
+        .node(i)
+        .unwrap()
+        .at
+}
+
+#[test]
+fn a_graph_round_trip_its_hover_a_click_the_panel_a_yank_and_back() {
+    let d = dir("graph");
+    let path = d.join("services.json");
+    std::fs::write(&path, graph_fixture("services.json")).unwrap();
+    let mut h = harness();
+    let src = open(&mut h, &path);
+    keys(&mut h, "\\v");
+    let fig = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(fig), Some("services.json *fig*"));
+    let placed = placed(&mut h);
+    assert_eq!(placed.iter().map(|p| p.1).collect::<Vec<_>>(), vec![-2, -1]);
+    let st = h.with_ext(|f: &mut Fig, _| f.figure(fig)).unwrap().unwrap();
+    assert!(st.borrow().graph.is_some(), "{:?}", st.borrow().error);
+    let win = h.focused().unwrap();
+    // Hover on worker draws the overlay alone; after its dwell it's in focus.
+    h.fake_pixels().take_calls();
+    let at = node_at(&st, win, "worker");
+    pointer(&mut h, win, PointerKind::Move, at, Mods::default(), 0);
+    let p = presents(&mut h);
+    assert!(
+        !p.is_empty() && p.iter().all(|(id, _)| *id == placed[1].0),
+        "{p:?}"
+    );
+    h.advance(Duration::from_millis(150));
+    assert!(
+        st.borrow().panes[&win].dwell.is_some(),
+        "in focus after the dwell"
+    );
+    // A click puts the cursor there; ⏎ opens its panel, Tab gives it the keys, y copies.
+    pointer(
+        &mut h,
+        win,
+        PointerKind::Press(Button::Left),
+        at,
+        Mods::default(),
+        1,
+    );
+    pointer(
+        &mut h,
+        win,
+        PointerKind::Release(Button::Left),
+        at,
+        Mods::default(),
+        1,
+    );
+    assert_eq!(
+        st.borrow().panes[&win].cursor,
+        Some(Cursor::Node("worker".into()))
+    );
+    keys(&mut h, "<CR><Tab>");
+    let title = (st.borrow().panes[&win].panel.as_ref()).map(|p| p.tree.title.clone());
+    assert_eq!(title.as_deref(), Some("worker"));
+    keys(&mut h, "y");
+    let r = h.register('"').map(|r| r.text.clone());
+    assert_eq!(
+        r.as_deref(),
+        Some("worker"),
+        "y copied the id, into the kill ring"
+    );
+    assert_eq!(
+        h.register('1').map(|r| r.text.clone()).as_deref(),
+        Some("worker")
+    );
+    keys(&mut h, "<Esc>");
+    assert!(st.borrow().panes[&win].panel.is_none());
+    // Back to the text, the figure gone with what it ran.
+    keys(&mut h, "\\v");
+    assert_eq!(h.focused_buffer(), Some(src));
+    assert!(!h.is_live(fig));
+    // A `.fig` holding a graph opens as its figure.
+    let spec = d.join("services.fig");
+    std::fs::write(&spec, graph_fixture("services.json")).unwrap();
+    open(&mut h, &spec);
+    let fig = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(fig), Some("services.fig *fig*"));
+    let st = h.with_ext(|f: &mut Fig, _| f.figure(fig)).unwrap().unwrap();
+    assert!(st.borrow().graph.is_some());
     let _ = std::fs::remove_dir_all(&d);
 }

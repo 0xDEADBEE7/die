@@ -1590,6 +1590,7 @@ impl FigState {
             // it moves again. The keyboard's cursor stays.
             (p.pointer, p.hovering) = (None, false);
             (p.hover, p.near, p.legend, p.strip) = (None, None, None, None);
+            (p.target, p.row_hover) = (None, None);
             // What the overlay drew at the old size stays in its buffer, which never shrinks,
             // where the new layout draws something else: the next draw clears it all.
             p.over_wipe |= p.over_bounds.is_some() || !p.over_items.is_empty();
@@ -1959,6 +1960,7 @@ impl FigState {
         if let Some(p) = self.panes.get_mut(&w) {
             p.pointer = None;
             p.hovering = false;
+            p.row_hover = None;
             p.rehover = true;
         }
     }
