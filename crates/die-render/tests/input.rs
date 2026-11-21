@@ -3,7 +3,10 @@
 
 use die_test_cap as _;
 
-use die_core::{Button, Key, KeyEvent, KeyKind, ModifierKey, Mods, PointerEvent, PointerKind};
+use die_core::{
+    Button, Frame, Harness, Input, Key, KeyEvent, KeyKind, ModifierKey, Mods, PointerEvent,
+    PointerKind, RenderInfo, ShowIn, Side, Surface,
+};
 use die_render::font::{CellMetrics, FaceMetrics};
 use die_render::input::{Held, KeyFacts, Pointer, caps_event, key_event};
 use std::time::{Duration, Instant};
@@ -243,7 +246,9 @@ fn a_second_button_coming_and_going_leaves_the_drag_and_its_click_count() {
     p.button(MouseButton::Left, true, now, mods).unwrap();
     p.button(MouseButton::Right, true, now, mods).unwrap();
     p.button(MouseButton::Right, false, now, mods).unwrap();
-    let moved = p.moved((100.0, 100.0), &cell(), (80, 24), mods).unwrap();
+    let moved = p
+        .moved((100.0, 100.0), &cell(), (80, 24), mods, false)
+        .unwrap();
     assert_eq!(moved.kind, PointerKind::Drag(Button::Left));
     let up = p.button(MouseButton::Left, false, now, mods).unwrap();
     assert_eq!(
@@ -279,7 +284,8 @@ fn clicks_count_up_while_they_are_quick_on_one_cell_with_one_button() {
     p.button(MouseButton::Right, false, soon, mods).unwrap();
     // Another cell.
     click(&mut p, soon);
-    p.moved((100.0, 100.0), &cell(), (80, 24), mods).unwrap();
+    p.moved((100.0, 100.0), &cell(), (80, 24), mods, false)
+        .unwrap();
     assert_eq!(click(&mut p, soon).0.clicks, 1);
     // No name in die-core.
     assert_eq!(p.button(MouseButton::Back, true, soon, mods), None);
@@ -291,8 +297,12 @@ fn moving_gives_an_event_per_cell_clamped_to_the_frame_with_its_pixel_and_drags_
     let (c, grid, mods) = (cell(), (80, 24), ctrl());
     let (w, h) = (f64::from(c.w), f64::from(c.h));
     let mut p = Pointer::new(Duration::ZERO);
-    assert_eq!(p.moved((1.0, 1.0), &c, grid, mods), None, "the same cell");
-    let moved = p.moved((w * 3.5, h * 2.5), &c, grid, mods).unwrap();
+    assert_eq!(
+        p.moved((1.0, 1.0), &c, grid, mods, false),
+        None,
+        "the same cell"
+    );
+    let moved = p.moved((w * 3.5, h * 2.5), &c, grid, mods, false).unwrap();
     let want = PointerEvent {
         kind: PointerKind::Move,
         row: 2,
@@ -302,7 +312,7 @@ fn moving_gives_an_event_per_cell_clamped_to_the_frame_with_its_pixel_and_drags_
         px: Some(((w * 3.5) as f32, (h * 2.5) as f32)),
     };
     assert_eq!(moved, want);
-    assert_eq!(p.moved((w * 3.9, h * 2.9), &c, grid, mods), None);
+    assert_eq!(p.moved((w * 3.9, h * 2.9), &c, grid, mods, false), None);
     let at = Instant::now();
     let down = p.button(MouseButton::Left, true, at, mods).unwrap();
     assert_eq!((down.row, down.col), (2, 3));
@@ -311,26 +321,28 @@ fn moving_gives_an_event_per_cell_clamped_to_the_frame_with_its_pixel_and_drags_
         down.px, within,
         "a move within the cell isn't an event, but it's where the press is"
     );
-    let drag = p.moved((w * 4.0, h * 2.0), &c, grid, mods).unwrap();
+    let drag = p.moved((w * 4.0, h * 2.0), &c, grid, mods, false).unwrap();
     assert_eq!(drag.kind, PointerKind::Drag(Button::Left));
     assert_eq!(drag.clicks, 0);
     p.button(MouseButton::Left, false, at, mods).unwrap();
-    let past = p.moved((1e6, -5.0), &c, grid, mods).unwrap();
+    let past = p.moved((1e6, -5.0), &c, grid, mods, false).unwrap();
     assert_eq!((past.kind, past.row, past.col), (PointerKind::Move, 0, 79));
 }
 
 #[test]
-fn with_a_button_held_every_sample_is_a_drag_and_without_one_a_move_comes_per_cell() {
+fn with_a_button_held_every_sample_is_a_drag_and_without_one_a_move_comes_per_cell_or_when_fine() {
     let (c, grid, mods) = (cell(), (80, 24), Mods::default());
     let (w, h) = (f64::from(c.w), f64::from(c.h));
     let mut p = Pointer::new(Duration::ZERO);
-    p.moved((w * 2.5, h * 1.5), &c, grid, mods).unwrap();
+    p.moved((w * 2.5, h * 1.5), &c, grid, mods, false).unwrap();
     p.button(MouseButton::Left, true, Instant::now(), mods)
         .unwrap();
     // Ink: three samples inside one cell, each an event with its own pixel.
     let samples = [(w * 2.6, h * 1.5), (w * 2.7, h * 1.6), (w * 2.9, h * 1.9)];
     for (x, y) in samples {
-        let drag = p.moved((x, y), &c, grid, mods).expect("a drag per sample");
+        let drag = p
+            .moved((x, y), &c, grid, mods, false)
+            .expect("a drag per sample");
         assert_eq!(drag.kind, PointerKind::Drag(Button::Left));
         assert_eq!((drag.row, drag.col), (1, 2), "still that cell");
         assert_eq!(drag.px, Some((x as f32, y as f32)));
@@ -339,10 +351,62 @@ fn with_a_button_held_every_sample_is_a_drag_and_without_one_a_move_comes_per_ce
         .button(MouseButton::Left, false, Instant::now(), mods)
         .unwrap();
     assert_eq!(release.kind, PointerKind::Release(Button::Left));
-    // A hover: only crossing into another cell is an event.
-    assert_eq!(p.moved((w * 2.95, h * 1.95), &c, grid, mods), None);
-    let moved = p.moved((w * 3.05, h * 1.95), &c, grid, mods).unwrap();
+    // A hover: only crossing into another cell is an event, unless the surface there wants
+    // every sample.
+    assert_eq!(p.moved((w * 2.95, h * 1.95), &c, grid, mods, false), None);
+    let fine = p.moved((w * 2.97, h * 1.9), &c, grid, mods, true).unwrap();
+    assert_eq!((fine.kind, fine.row, fine.col), (PointerKind::Move, 1, 2));
+    assert_eq!(fine.px, Some(((w * 2.97) as f32, (h * 1.9) as f32)));
+    let moved = p
+        .moved((w * 3.05, h * 1.95), &c, grid, mods, false)
+        .unwrap();
     assert_eq!((moved.kind, moved.col), (PointerKind::Move, 3));
+}
+
+/// A surface that wants every pointer sample, as a chart's crosshair does.
+struct Chart;
+
+impl Surface for Chart {
+    fn kind(&self) -> &'static str {
+        "chart"
+    }
+    fn render(&mut self, _: &mut Frame, _: &RenderInfo) {}
+    fn fine_motion(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_move_within_a_cell_is_sent_only_where_core_says_the_surface_wants_every_sample() {
+    let mut h = Harness::new(vec![]).unwrap();
+    h.open_text("t", "text\n").unwrap();
+    let buf = h.create_surface("chart", Chart);
+    let chart = h.show(buf, ShowIn::Split(Side::Right)).unwrap().unwrap();
+    h.send(Input::Resize { cols: 80, rows: 24 });
+    let at = h.placements().into_iter().find(|p| p.window == chart);
+    let left = at.unwrap().col;
+    let (c, grid, mods) = (cell(), (80, 24), Mods::default());
+    let (w, ht) = (f64::from(c.w), f64::from(c.h));
+    // As window.rs's CursorMoved arm does: ask core of the cell it's on, then move.
+    let px = |(row, col): (usize, usize), dx: f64| ((col as f64 + dx) * w, (row as f64 + 0.5) * ht);
+    let within = |(row, col): (usize, usize)| {
+        let mut p = Pointer::new(Duration::ZERO);
+        let px = |dx: f64| px((row, col), dx);
+        p.moved(px(0.2), &c, grid, mods, false).unwrap();
+        let fine = h.fine_motion_at(row, col);
+        p.moved(px(0.6), &c, grid, mods, fine)
+    };
+    let on_chart = within((2, left + 3)).expect("a sample over the chart");
+    assert_eq!((on_chart.kind, on_chart.row), (PointerKind::Move, 2));
+    let (x, y) = px((2, left + 3), 0.6);
+    assert_eq!(on_chart.px, Some((x as f32, y as f32)), "its own pixel");
+    for at in [(2, 3), (22, left + 3), (23, left + 3)] {
+        assert_eq!(
+            within(at),
+            None,
+            "a move per cell at {at:?}: text, status line, command line"
+        );
+    }
 }
 
 #[test]

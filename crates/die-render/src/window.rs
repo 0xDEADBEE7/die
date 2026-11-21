@@ -855,9 +855,12 @@ impl ApplicationHandler<Wake> for Shell {
                 let Some(live) = &self.live else { return };
                 let px = (position.x, position.y);
                 let cell = live.renderer.cell();
+                // Asked first, so a sample no surface wants runs no turn.
+                let (row, col) = self.pointer.at;
+                let fine = self.host.ctx.fine_motion_at(row, col);
                 let event = self
                     .pointer
-                    .moved(px, cell, self.host.grid, self.held.mods());
+                    .moved(px, cell, self.host.grid, self.held.mods(), fine);
                 return self.point(event);
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -866,6 +869,7 @@ impl ApplicationHandler<Wake> for Shell {
                 let event = self.pointer.wheel(delta, cell, self.held.mods());
                 return self.point(event);
             }
+            WindowEvent::CursorLeft { .. } => self.host.ctx.handle(Input::PointerLeft),
             _ => return,
         }
         self.settle();

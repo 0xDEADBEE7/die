@@ -217,7 +217,8 @@ pub fn caps_event(held: &Held) -> KeyEvent {
 #[derive(Clone, Debug)]
 pub struct Pointer {
     double_click: Duration,
-    at: (usize, usize),
+    /// The cell it's on: (row, column).
+    pub(crate) at: (usize, usize),
     /// Where it is in physical pixels, for a surface that wants more than the cell.
     px: Option<(f32, f32)>,
     /// The buttons held, oldest first, each with the click count of its press.
@@ -240,15 +241,17 @@ impl Pointer {
     }
 
     /// It moved to `px` in a frame of `grid` (columns, rows). With a button held, every sample
-    /// is a `Drag`, since ink on a pixel buffer follows the hand (M3a); otherwise a `Move` only
-    /// when it's on another cell, since nothing else DIE does depends on where in a cell it is.
-    /// Each event says the pixel.
+    /// is a `Drag`, since ink on a pixel buffer follows the hand (M3a); otherwise a `Move` when
+    /// it's on another cell, and within the cell only if `fine`: the surface under it wants every
+    /// sample, as a chart's crosshair does (`Ctx::fine_motion_at`), since nothing else DIE does
+    /// depends on where in a cell it is. Each event says the pixel.
     pub fn moved(
         &mut self,
         px: (f64, f64),
         cell: &CellMetrics,
         grid: (usize, usize),
         mods: Mods,
+        fine: bool,
     ) -> Option<PointerEvent> {
         let along = |p: f64, size: u32, cells: usize| {
             ((p.max(0.0) / f64::from(size.max(1))) as usize).min(cells.saturating_sub(1))
@@ -256,7 +259,7 @@ impl Pointer {
         let at = (along(px.1, cell.h, grid.1), along(px.0, cell.w, grid.0));
         self.px = Some((px.0 as f32, px.1 as f32));
         let dragging = self.held.first().map(|&(button, _)| button);
-        if at == self.at && dragging.is_none() {
+        if at == self.at && dragging.is_none() && !fine {
             return None;
         }
         self.at = at;
