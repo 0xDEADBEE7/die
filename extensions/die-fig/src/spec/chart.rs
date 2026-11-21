@@ -146,7 +146,27 @@ pub(crate) fn parse(node: &Node, sh: Shorthand, cx: &mut Cx<'_>) -> Result<Chart
     if sh == Shorthand::Histogram {
         known.extend(["step", "bins"]);
     }
+    // fig's axis titles, which a chart says another way.
+    known.extend(["x_label", "y_label"]);
+    let before = cx.warnings.len();
     cx.check_top(o, &known);
+    for (k, _) in o {
+        if let Some(axis) = k
+            .name
+            .strip_suffix("_label")
+            .filter(|a| ["x", "y"].contains(a))
+        {
+            cx.warnings.push(FigError::at(
+                format!(
+                    "\"{}\" is fig's line's and histogram's; a chart's axis title is the channel's \"title\", as \"{axis}\": {{\"field\": …, \"title\": …}}",
+                    k.name
+                ),
+                k.at,
+            ));
+        }
+    }
+    // The top's warnings in the order of their keys.
+    cx.warnings[before..].sort_by_key(|w| w.at.map(|a| a.byte));
     let title = opt_string(node, "title")?;
     let subtitle = opt_string(node, "subtitle")?;
     let data = data_of(node, cx)?;
@@ -197,7 +217,8 @@ pub(crate) fn parse(node: &Node, sh: Shorthand, cx: &mut Cx<'_>) -> Result<Chart
             ));
         };
         let color = l.enc.color.as_ref().and_then(|c| c.field.clone());
-        let (ts, x, y) = binned(x, l.enc.y.clone(), color.as_deref(), step, bins, &[]);
+        let taken = taken_names(&data, &transform);
+        let (ts, x, y) = binned(x, l.enc.y.clone(), color.as_deref(), step, bins, &taken);
         l.transform = ts;
         l.enc.x = Some(x);
         l.enc.y = Some(y);
@@ -274,6 +295,26 @@ pub(crate) fn binned(
         ..y.unwrap_or_default()
     };
     (ts, x, y)
+}
+
+/// The columns known to be there before a histogram's bins: inline data's, and those the
+/// chart's transforms make. A file's columns aren't known until it is read.
+fn taken_names<'a>(data: &'a DataSpec, ts: &'a [Transform]) -> Vec<&'a str> {
+    let mut taken: Vec<&str> = match &data.source {
+        DataRef::Inline(t) => t.columns.iter().map(|c| &*c.name).collect(),
+        _ => Vec::new(),
+    };
+    for t in ts {
+        match t {
+            Transform::Fold { key, value, .. } => taken.extend([key.as_str(), value.as_str()]),
+            Transform::Bin { start, end, .. } => taken.extend([start.as_str(), end.as_str()]),
+            Transform::Aggregate { out, .. }
+            | Transform::Cumulative { out, .. }
+            | Transform::Window { out, .. } => taken.push(out),
+            Transform::Filter { .. } | Transform::Sort { .. } | Transform::Top { .. } => {}
+        }
+    }
+    taken
 }
 
 /// `base`, or `base_2`, `base_3` … whichever isn't `taken`.
@@ -786,27 +827,45 @@ pub fn with_hints(opt: &ReadOptions, h: &ReadHints) -> ReadOptions {
     o
 }
 
-/// `values`: JSON rows, or CSV, TSV or JSONL text.
+/// `values`: JSON rows, or text: CSV, TSV, JSONL, or JSON with `"format": "json"`. An error in
+/// the text is placed at the string, with its place in the text in the message.
 fn values(n: &Node, spec: &DataSpec, opt: &ReadOptions) -> Result<crate::data::Table> {
-    let o = with_hints(opt, &spec.read);
-    match (&n.kind, spec.format) {
-        (Kind::Str(s), Some(DataFormat::Jsonl)) => crate::data::rows::read_jsonl(s, &o),
-        (Kind::Str(s), f) => {
-            let mut o = o;
+    use crate::data::rows::{read_json, read_jsonl};
+    let mut o = with_hints(opt, &spec.read);
+    let s = match &n.kind {
+        Kind::Arr(_) | Kind::Obj(_) => return read_json(n, &o),
+        Kind::Str(s) => s,
+        _ => return Err(wrong(n, "values", "rows, or CSV text")),
+    };
+    let table = match spec.format {
+        Some(DataFormat::Jsonl) => read_jsonl(s, &o),
+        Some(DataFormat::Json) => crate::json::parse(s).and_then(|v| read_json(&v, &o)),
+        f => {
             if f == Some(DataFormat::Tsv) && o.delimiter.is_none() {
                 o.delimiter = Some(b'\t');
             }
             crate::data::csv::read_csv(s, &o)
         }
-        (Kind::Arr(_) | Kind::Obj(_), _) => crate::data::rows::read_json(n, &o),
-        _ => Err(wrong(n, "values", "rows, or CSV text")),
-    }
+    };
+    table.map_err(|e| {
+        let msg = match e.at {
+            Some(at) => format!(
+                "in \"values\", line {}, column {}: {}",
+                at.line, at.col, e.msg
+            ),
+            None => format!("in \"values\": {}", e.msg),
+        };
+        FigError::at(msg, n.at)
+    })
 }
+
+/// The longest a duration may be, in milliseconds: some 31,000 years.
+const MAX_MS: f64 = 1e15;
 
 /// `every`: a duration more than nothing, as a string or a number of seconds.
 fn every(n: &Node) -> Result<Duration> {
     let d = match &n.kind {
-        Kind::Num(v) if *v > 0.0 && v.is_finite() => {
+        Kind::Num(v) if *v > 0.0 && v * 1000.0 < MAX_MS => {
             Some(Duration::from_millis((v * 1000.0).round() as u64))
         }
         Kind::Str(s) => parse_duration(s),
@@ -849,7 +908,7 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
         ms += v * unit;
         rest = &rest[u..];
     }
-    (ms.is_finite() && ms < 1e15).then(|| Duration::from_millis(ms.round() as u64))
+    (ms < MAX_MS).then(|| Duration::from_millis(ms.round() as u64))
 }
 
 /// A duration as [`parse_duration`] reads it: in the largest unit it's a whole number of.

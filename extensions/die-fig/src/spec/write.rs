@@ -13,9 +13,14 @@
 //!   default, a channel's field alone when it has nothing else, a view's settings that differ;
 //! - a node or an edge as its object in the spec when that object still says what the node or
 //!   edge is, else its fields and then the object's other keys;
-//! - inline data as `values`: its rows' objects if it came from JSON, else a row an object,
-//!   times in RFC 3339, missing cells `null`;
-//! - a file by its path, absolute once read; a command with its `every`; the buffer as `"-"`.
+//! - inline data as `values`: its rows' objects if it came from JSON objects; else its columns,
+//!   a key a column of its cells (and `fig`, the rows' blocks, if it has them), or, when a
+//!   column is named `fig`, a header row and a row a list; numbers as numbers, times in RFC 3339
+//!   to the fewest decimals that read back as the same seconds, missing cells `null`;
+//! - a file by its path, as it was resolved against the spec's (absolute) directory; a command
+//!   with its `every`; the buffer as `"-"`.
+//!
+//! Lists of numbers and strings fill their lines rather than taking a line each.
 
 use super::chart::{MAX_BINS, agg_name, format_duration, format_name, kind_name, scale_name};
 use super::graph::{edge_extras, layout_name, node_extras};
@@ -26,7 +31,7 @@ use super::{
     ViewSettings, field, id_of, opt_string,
 };
 use crate::data::transform::{AggOp, FilterOp, Transform};
-use crate::data::{SeriesKey, Table, Values};
+use crate::data::{Column, SeriesKey, Table, Values};
 use crate::error::Pos;
 use crate::json::{Kind, Node};
 use crate::style::FigStyle;
@@ -398,46 +403,71 @@ fn data_j(d: &DataSpec, names: &[String]) -> J {
     o.done()
 }
 
-/// A table's rows: the objects they came from, or a row an object of its cells.
+/// A table's rows: the objects they came from; else its columns, a key a column of its cells
+/// and `fig` the rows' blocks, which the reader reads back with no objects; or, with a column
+/// named `fig`, which as a key would be the blocks, a header row and a row a list (a table with
+/// that column came from text, and has no blocks).
 fn rows_j(t: &Table) -> J {
     if let Some(raw) = &t.raw {
         return J::Arr(raw.iter().map(node_j).collect());
     }
-    let rows = (0..t.rows).map(|r| {
-        let mut row: Vec<(String, J)> = t
-            .columns
-            .iter()
-            .map(|c| {
-                let v = match &c.values {
-                    Values::Number(_) => finite(c.f64_at(r)),
-                    Values::Time(_) => time_j(c.f64_at(r)),
-                    _ => c.str_at(r).map_or(J::Null, J::s),
-                };
-                (c.name.to_string(), v)
-            })
-            .collect();
-        if let Some(st) = t.styles.as_ref().and_then(|s| s.get(r))
-            && *st != FigStyle::default()
-        {
-            row.push(("fig".into(), style_j(st)));
-        }
-        J::Map(row)
-    });
-    J::Arr(rows.collect())
+    if t.column("fig").is_some() {
+        let head = J::Arr(t.columns.iter().map(|c| J::s(&c.name)).collect());
+        let rows = (0..t.rows).map(|r| J::Arr(t.columns.iter().map(|c| cell_j(c, r)).collect()));
+        return J::Arr(std::iter::once(head).chain(rows).collect());
+    }
+    let mut m: Vec<(String, J)> = t
+        .columns
+        .iter()
+        .map(|c| {
+            let cells = (0..t.rows).map(|r| cell_j(c, r)).collect();
+            (c.name.to_string(), J::Arr(cells))
+        })
+        .collect();
+    if let Some(st) = &t.styles {
+        m.push(("fig".into(), J::Arr(st.iter().map(style_j).collect())));
+    }
+    J::Map(m)
+}
+
+/// One cell: a number, a time's text, a string, or `null` for a missing one.
+fn cell_j(c: &Column, r: usize) -> J {
+    match &c.values {
+        Values::Number(_) => finite(c.f64_at(r)),
+        Values::Time(_) => time_j(c.f64_at(r)),
+        _ => c.str_at(r).map_or(J::Null, J::s),
+    }
 }
 
 fn finite(v: f64) -> J {
     if v.is_finite() { J::Num(v) } else { J::Null }
 }
 
-/// A time as RFC 3339 in UTC, to the nanosecond it's near.
+/// A time as RFC 3339 in UTC, in whole seconds, milliseconds, microseconds or nanoseconds,
+/// the first that reads back as the same seconds (as the time reader makes them), else to the
+/// nearest nanosecond; `null` for a time outside the years a timestamp has, which as a number
+/// would make its column no longer one of times.
 fn time_j(v: f64) -> J {
-    if !v.is_finite() {
+    // Beyond jiff's years (±9999), and far enough inside i128's nanoseconds.
+    if !v.is_finite() || v.abs() >= 1e12 {
         return J::Null;
     }
-    match jiff::Timestamp::from_nanosecond((v * 1e9).round() as i128) {
-        Ok(ts) => J::Str(ts.to_string()),
-        Err(_) => J::Num(v),
+    let secs = v.floor();
+    // Exact where `v` is at least 1 from zero (it and its floor are within a factor of two) or
+    // in [0, 1); in (-1, 0) only digits far finer than a nanosecond are lost.
+    let frac = v - secs;
+    let at = |digits: i32| {
+        let n = (frac * 10f64.powi(digits)).round() as i128;
+        let nanos = secs as i128 * 1_000_000_000 + n * 10i128.pow((9 - digits) as u32);
+        jiff::Timestamp::from_nanosecond(nanos).ok()
+    };
+    let exact = [0, 3, 6, 9]
+        .into_iter()
+        .filter_map(at)
+        .find(|ts| ts.as_duration().as_secs_f64() == v);
+    match exact.or_else(|| at(9)) {
+        Some(ts) => J::Str(ts.to_string()),
+        None => J::Null,
     }
 }
 
@@ -873,7 +903,8 @@ fn node_of(n: &GraphNode) -> J {
     if n.fig != FigStyle::default() {
         m.push(("fig".into(), style_j(&n.fig)));
     }
-    m.extend(others(&n.raw, super::fig::NODE));
+    // Every other key, `metadata` among them, as the object had it.
+    m.extend(others(&n.raw, &["id", "label", "group", "size", "fig"]));
     J::Map(m)
 }
 
@@ -894,6 +925,7 @@ fn edge_of(e: &GraphEdge, directed: bool) -> J {
     if e.fig != FigStyle::default() {
         m.push(("fig".into(), style_j(&e.fig)));
     }
+    // Every other key but the ends' aliases, which `from` and `to` are now.
     m.extend(others(&e.raw, super::fig::EDGE));
     J::Map(m)
 }
@@ -1031,7 +1063,8 @@ fn compact(j: &J) -> String {
     format!("{{ {} }}", inner.join(", "))
 }
 
-/// `j` at column `col`, its inner lines indented from `indent`: on one line if it fits.
+/// `j` at column `col`, its inner lines indented from `indent`: on one line if it fits; a list
+/// of scalars as many to a line as fit, any other list or object a value a line.
 fn pretty(j: &J, indent: usize, col: usize, out: &mut String) {
     let flat = compact(j);
     if scalar(j).is_some() || col + flat.chars().count() <= WIDTH {
@@ -1039,7 +1072,31 @@ fn pretty(j: &J, indent: usize, col: usize, out: &mut String) {
         return;
     }
     let pad = " ".repeat(indent + 2);
-    if let J::Arr(a) = j {
+    if let J::Arr(a) = j
+        && let Some(items) = a.iter().map(scalar).collect::<Option<Vec<String>>>()
+    {
+        out.push_str("[\n");
+        let mut line = String::new();
+        for (i, mut item) in items.into_iter().enumerate() {
+            if i + 1 < a.len() {
+                item.push(',');
+            }
+            let wide = pad.len() + line.chars().count() + 1 + item.chars().count();
+            if !line.is_empty() && wide > WIDTH {
+                out.push_str(&pad);
+                out.push_str(&line);
+                out.push('\n');
+                line.clear();
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(&item);
+        }
+        out.push_str(&pad);
+        out.push_str(&line);
+        out.push('\n');
+    } else if let J::Arr(a) = j {
         out.push_str("[\n");
         for (i, v) in a.iter().enumerate() {
             out.push_str(&pad);

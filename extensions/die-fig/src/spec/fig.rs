@@ -13,7 +13,8 @@
 //!
 //! A graph checks fig's rules (and ref's empty id) and points at the place: `a graph needs at
 //! least one node`, `node IDs cannot be empty`, `node ids must be unique`, `unknown edge
-//! source: …`, `unknown edge target: …`. An id may be a number, as a CSV's are.
+//! source: …`, `unknown edge target: …`. An id may be a number, as a CSV's are. A node's and an
+//! edge's other keys are kept, unwarned: they are its data, for the detail panel.
 
 use super::chart::{self, FIG};
 use super::{
@@ -40,9 +41,11 @@ pub const HISTOGRAM: &[&str] = &[
 pub const GRAPH: &[&str] = &[
     "type", "title", "subtitle", "nodes", "edges", "layout", "directed", "fig", "view",
 ];
-/// A node's keys: fig's, then the graph spec's.
+/// A node's keys: fig's, then the graph spec's. A node may have any others, its data, and isn't
+/// warned of a key near one of these (`level`, `groups`).
 pub const NODE: &[&str] = &["id", "label", "fig", "metadata", "group", "size"];
-/// An edge's keys: fig's (with their aliases), then the graph spec's.
+/// An edge's keys: fig's (with their aliases), then the graph spec's; others are its data, as a
+/// node's are.
 pub const EDGE: &[&str] = &[
     "from", "to", "source", "target", "fig", "label", "weight", "directed",
 ];
@@ -356,8 +359,7 @@ pub(crate) fn graph(node: &Node, cx: &mut Cx<'_>) -> Result<GraphSpec> {
     let mut nodes = Vec::with_capacity(list.len());
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for n in list {
-        let no = obj(n, "a node")?;
-        cx.check(no, NODE);
+        obj(n, "a node")?;
         let Some(idn) = field(n, "id") else {
             return Err(FigError::at("a node needs an \"id\"", n.at));
         };
@@ -405,7 +407,6 @@ pub(crate) fn graph(node: &Node, cx: &mut Cx<'_>) -> Result<GraphSpec> {
 /// One edge: `from` (or `source`) and `to` (or `target`), both known nodes.
 fn edge(e: &Node, directed: bool, ids: &BTreeSet<String>, cx: &mut Cx<'_>) -> Result<GraphEdge> {
     let eo = obj(e, "an edge")?;
-    cx.check(eo, EDGE);
     let end = |name: &str, alias: &str| -> Result<(String, Node)> {
         match (field(e, name), field(e, alias)) {
             (Some(_), Some(_)) => {

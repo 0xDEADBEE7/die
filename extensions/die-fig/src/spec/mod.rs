@@ -13,7 +13,8 @@
 //! `graph`, `stat`, `meter` and `dashboard`. Unknown fields are tolerated: a node's and an
 //! edge's are kept in their `raw` object, and data rows keep theirs in [`Table::raw`]. A key
 //! within two edits of a known one (one for a known key of three or four letters, none for one
-//! or two) is a warning that names the key it may have meant. Every error has its place.
+//! or two) is a warning that names the key it may have meant, but in a node or an edge, whose
+//! other keys are its data. Every error has its place.
 //!
 //! # What a buffer is
 //!
@@ -22,7 +23,13 @@
 //! isn't one value but its first line is an object, else CSV or TSV. A JSON object is a spec
 //! when it has a string `"type"`, a `"mark"`, `"layers"`, `"nodes"` or `"buckets"`, or fig's
 //! `"series"` with `"points"`; an object whose every value is an array is data, as is a JSON
-//! array. Bare data is read and [`guess`]ed, and the guess's data is the table itself.
+//! array. One line of JSONL whose `"type"` is no figure's and that has none of a figure's
+//! `data`, `mark`, `layers`, `nodes`, `edges`, `series`, `buckets` or `rows` is a row of data,
+//! when it makes a figure; else the spec's error stands. Bare data is read and [`guess`]ed, and
+//! the guess's data is the table itself.
+//!
+//! `dir` is made absolute against the working directory first (an empty one stays empty), so a
+//! file's path, which [`write`] gives as it was resolved, reads back as the same path.
 //!
 //! # The grammar
 //!
@@ -570,9 +577,10 @@ pub struct Parsed {
 
 /// Parses a buffer's text: a fig file, a spec, or bare data (CSV, TSV, JSON rows, JSONL), which
 /// is read and given a guessed figure. `name` is the file name (for the format by extension),
-/// `dir` resolves relative paths.
+/// `dir` resolves relative paths, made absolute against the working directory first.
 pub fn parse(text: &str, name: &str, dir: &Path, opt: &ReadOptions) -> Result<Parsed> {
-    let mut cx = Cx::new(dir, opt);
+    let dir = absolute(dir);
+    let mut cx = Cx::new(&dir, opt);
     let body = text.strip_prefix('\u{feff}').unwrap_or(text);
     let first = body
         .trim_start_matches([' ', '\t', '\r', '\n'])
@@ -593,6 +601,15 @@ pub fn parse(text: &str, name: &str, dir: &Path, opt: &ReadOptions) -> Result<Pa
         inferred,
         warnings: cx.warnings,
     })
+}
+
+/// `dir` against the working directory if it's relative; an empty one, or one that can't be,
+/// as it is.
+fn absolute(dir: &Path) -> PathBuf {
+    if dir.is_absolute() {
+        return dir.to_path_buf();
+    }
+    std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf())
 }
 
 /// Where a text starts: the place of an error about the whole of it.
@@ -628,7 +645,20 @@ fn sniff(body: &str) -> DataFormat {
 /// A JSON text: a spec, bare JSON rows, or JSONL that isn't one value.
 fn json_text(text: &str, cx: &mut Cx<'_>) -> Result<(Figure, bool)> {
     match json::parse(text) {
-        Ok(node) if is_spec(&node) => Ok((figure(&node, cx)?, false)),
+        Ok(node) if is_spec(&node) => {
+            let before = cx.warnings.len();
+            match figure(&node, cx) {
+                Ok(f) => Ok((f, false)),
+                Err(e) if is_row(&node) => match bare_jsonl(text, cx.opt) {
+                    Ok(f) => {
+                        cx.warnings.truncate(before);
+                        Ok((f, true))
+                    }
+                    Err(_) => Err(e),
+                },
+                Err(e) => Err(e),
+            }
+        }
         Ok(node) => {
             let table = crate::data::rows::read_json(&node, cx.opt)?;
             Ok((inferred(table, DataFormat::Json)?, true))
@@ -700,6 +730,22 @@ fn is_spec(node: &Node) -> bool {
 /// Every figure type, for messages.
 const TYPES: &str =
     "chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter or dashboard";
+
+/// Whether an object with a `"type"` is more likely a row of data than a spec: its type is no
+/// figure's, and it has none of the keys a figure draws from.
+fn is_row(node: &Node) -> bool {
+    let figure_type = |t: &str| {
+        chart::Shorthand::from_name(t).is_some()
+            || ["graph", "stat", "meter", "dashboard"].contains(&t)
+    };
+    let draws = [
+        "data", "mark", "layers", "nodes", "edges", "series", "buckets", "rows",
+    ];
+    node.get("type")
+        .and_then(Node::as_str)
+        .is_some_and(|t| !figure_type(t))
+        && draws.iter().all(|k| node.get(k).is_none())
+}
 
 /// The figure a spec's object describes, by its `"type"` or, failing that, by fig's fields.
 pub(crate) fn figure(node: &Node, cx: &mut Cx<'_>) -> Result<Figure> {

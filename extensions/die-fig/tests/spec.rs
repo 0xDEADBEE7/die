@@ -1704,7 +1704,7 @@ fn ordered_numbers_make_lines_unordered_ones_points_and_one_a_histogram() {
 // Writing.
 
 /// Write, read, write: the figure read back is the figure but for places, and its text is the
-/// same text.
+/// same text. Compared as their debug text, where a missing number (NaN) is equal to itself.
 fn round_trip(f: &Figure) -> String {
     let text = write(f);
     let back = match parse(&text, "spec.fig.json", Path::new(DIR), &opt()) {
@@ -1712,7 +1712,11 @@ fn round_trip(f: &Figure) -> String {
         Err(e) => panic!("{e} in\n{text}"),
     };
     assert_eq!(back.warnings, [], "{text}");
-    assert_eq!(back.figure.without_places(), f.without_places(), "{text}");
+    assert_eq!(
+        format!("{:?}", back.figure.without_places()),
+        format!("{:?}", f.without_places()),
+        "{text}"
+    );
     assert_eq!(write(&back.figure), text);
     text
 }
@@ -1839,7 +1843,7 @@ fn a_guess_written_with_its_file_reads_back_as_itself() {
 #[test]
 fn nodes_and_edges_whose_objects_no_longer_fit_are_written_from_their_fields() {
     let Figure::Graph(mut g) = read(
-        r#"{"type": "graph", "nodes": [{"note": "kept", "id": "a"}, {"id": "b"}], "edges": [{"from": "a", "to": "b", "why": "x"}]}"#,
+        r#"{"type": "graph", "nodes": [{"note": "kept", "id": "a", "metadata": {"owner": "x"}}, {"id": "b"}], "edges": [{"from": "a", "to": "b", "why": "x"}]}"#,
     )
     .figure
     else {
@@ -1861,7 +1865,12 @@ fn nodes_and_edges_whose_objects_no_longer_fit_are_written_from_their_fields() {
         .iter()
         .map(|(k, _)| &*k.name)
         .collect();
-    assert_eq!(keys, ["id", "label", "note"]);
+    assert_eq!(keys, ["id", "label", "note", "metadata"]);
+    // fig's metadata, which the detail panel shows, is the node's still.
+    assert_eq!(
+        back.nodes[0].raw.get("metadata").map(|m| m.to_text()),
+        Some(r#"{"owner":"x"}"#.to_string())
+    );
     let keys: Vec<&str> = back.edges[0]
         .raw
         .as_obj()
@@ -1891,6 +1900,175 @@ fn durations_read_and_write_in_the_largest_whole_unit() {
         [f(30_000), f(5_400_000), f(86_400_000), f(1500), f(0)],
         ["30s", "90m", "1d", "1500ms", "0ms"]
     );
+    // A number of seconds has the same bound as the text, so whatever reads is written as text
+    // that reads again.
+    for big in ["1000000000000", "1e308"] {
+        let text = format!(
+            r#"{{"type": "line", "data": {{"run": "x", "every": {big}}}, "x": "t", "y": "v"}}"#
+        );
+        assert_eq!(
+            fails(&text),
+            (
+                "\"every\" must be a time like \"30s\", \"5m\" or \"1h\"".to_string(),
+                place(&text, big)
+            )
+        );
+    }
+    let c = chart(
+        r#"{"type": "line", "data": {"run": "x", "every": 999999999999}, "x": "t", "y": "v"}"#,
+    );
+    round_trip(&Figure::Chart(c));
+}
+
+#[test]
+fn a_relative_dir_is_made_absolute_so_paths_read_back_the_same() {
+    let text = r#"{"type": "dashboard", "data": {"d": "d.csv"}, "rows": [[{"type": "line", "x": "t", "y": "v"}, {"file": "p.fig.json"}]]}"#;
+    let read_in = |text: &str| {
+        parse(text, "f.json", Path::new("specs"), &opt())
+            .unwrap()
+            .figure
+    };
+    let f = read_in(text);
+    let Figure::Dashboard(d) = &f else { panic!() };
+    let DataRef::File(p) = &d.data[0].1.source else {
+        panic!()
+    };
+    assert!(p.is_absolute() && p.ends_with("specs/d.csv"), "{p:?}");
+    let Panel::File(p) = &d.rows[0][1].panel else {
+        panic!()
+    };
+    assert!(p.is_absolute() && p.ends_with("specs/p.fig.json"), "{p:?}");
+    let back = read_in(&write(&f));
+    assert_eq!(back.without_places(), f.without_places());
+    // No directory: the paths stay as they are given.
+    let f = parse(text, "f.json", Path::new(""), &opt()).unwrap().figure;
+    let Figure::Dashboard(d) = &f else { panic!() };
+    assert_eq!(d.data[0].1.source, DataRef::File(PathBuf::from("d.csv")));
+}
+
+#[test]
+fn a_nodes_and_an_edges_other_keys_are_data_and_figs_axis_labels_are_pointed_to_titles() {
+    // fig keeps any key a node or an edge has; near ones aren't misspellings.
+    let p = read(
+        r#"{"type": "graph", "nodes": [{"id": "a", "level": 1, "groups": 2, "sizes": 3, "lable": "A"}, {"id": "b"}],
+            "edges": [{"from": "a", "to": "b", "height": 2}]}"#,
+    );
+    assert_eq!(p.warnings, []);
+    // A chart's axis titles are its channels'.
+    let text = r#"{"type": "line", "data": "d.csv", "titel": "T", "x": "t", "y_label": "ms", "y": "v", "x_label": "time"}"#;
+    let p = read(text);
+    let warned: Vec<(String, (u32, u32))> = p
+        .warnings
+        .iter()
+        .map(|w| (w.msg.clone(), w.at.map(|a| (a.line, a.col)).unwrap()))
+        .collect();
+    assert_eq!(
+        warned,
+        [
+            (
+                "unknown field \"titel\"; did you mean \"title\"?".to_string(),
+                place(text, "\"titel\"")
+            ),
+            (
+                "\"y_label\" is fig's line's and histogram's; a chart's axis title is the channel's \"title\", as \"y\": {\"field\": …, \"title\": …}".to_string(),
+                place(text, "\"y_label\"")
+            ),
+            (
+                "\"x_label\" is fig's line's and histogram's; a chart's axis title is the channel's \"title\", as \"x\": {\"field\": …, \"title\": …}".to_string(),
+                place(text, "\"x_label\"")
+            ),
+        ]
+    );
+    let Figure::Chart(c) = p.figure else { panic!() };
+    assert_eq!(unplaced(&c.layers[0].enc.x), Some(on("t")));
+}
+
+#[test]
+fn a_table_without_its_objects_is_written_as_its_columns() {
+    // Times to the fewest decimals that read back as the same seconds, a missing cell null,
+    // and the rows' blocks under "fig".
+    let mut t = table(vec![
+        Column::time(
+            "time",
+            vec![1_763_704_800.123, 1_700_000_000.999, f64::NAN, 0.0],
+        ),
+        Column {
+            name: "k".into(),
+            values: Values::Category {
+                codes: vec![0, 1, 0, u32::MAX].into(),
+                dict: vec!["a".into(), "b".into()].into(),
+            },
+        },
+        Column::number("v", vec![1.0, 2.5, f64::NAN, -3.0]),
+    ]);
+    t.styles = Some(
+        vec![
+            FigStyle {
+                dash: true,
+                ..FigStyle::default()
+            },
+            FigStyle::default(),
+            FigStyle::default(),
+            FigStyle::default(),
+        ]
+        .into(),
+    );
+    let text = write(&Figure::Chart(guess(&t).unwrap()));
+    assert!(
+        text.contains(
+            r#""time": ["2025-11-21T06:00:00.123Z", "2023-11-14T22:13:20.999Z", null, "1970-01-01T00:00:00Z"],"#
+        ),
+        "{text}"
+    );
+    assert!(text.contains(r#""k": ["a", "b", "a", null],"#), "{text}");
+    assert!(text.contains(r#""v": [1, 2.5, null, -3],"#), "{text}");
+    assert!(
+        text.contains(r#""fig": [{ "dash": true }, {}, {}, {}]"#),
+        "{text}"
+    );
+    // A column named "fig", which as a key would be the blocks: a header row, then a list a row.
+    let t = table(vec![
+        Column::category("k", &["a", "b"]),
+        Column::number("fig", vec![1.0, 2.0]),
+    ]);
+    let text = write(&Figure::Chart(guess(&t).unwrap()));
+    assert!(
+        text.contains(r#""values": [["k", "fig"], ["a", 1], ["b", 2]]"#),
+        "{text}"
+    );
+    // No rows: the columns are kept by their names.
+    let t = table(vec![
+        Column::number("a", vec![]),
+        Column::number("b", vec![]),
+    ]);
+    let mut c = guess(&table(vec![
+        Column::number("a", vec![1.0]),
+        Column::number("b", vec![2.0]),
+    ]))
+    .unwrap();
+    c.data.source = DataRef::Inline(Arc::new(t));
+    assert!(write(&Figure::Chart(c)).contains(r#""values": { "a": [], "b": [] }"#));
+    // To the nanosecond where it takes them; a time no timestamp holds is null, not a number
+    // among times.
+    let t = table(vec![
+        Column::time("t", vec![1.5e-6, -0.5, 1e15]),
+        Column::number("v", vec![1.0, 2.0, 3.0]),
+    ]);
+    let text = write(&Figure::Chart(guess(&t).unwrap()));
+    assert!(
+        text.contains(r#""t": ["1970-01-01T00:00:00.0000015Z", "1969-12-31T23:59:59.5Z", null]"#),
+        "{text}"
+    );
+    // A long column fills its lines.
+    let t = table(vec![Column::number("ms", (0..40).map(f64::from).collect())]);
+    let text = write(&Figure::Chart(guess(&t).unwrap()));
+    assert!(
+        text.contains(
+            "\"ms\": [\n        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,\n        25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39\n      ]"
+        ),
+        "{text}"
+    );
+    assert!(text.lines().all(|l| l.chars().count() <= 100), "{text}");
 }
 
 // Bare data, through the data module's readers.
@@ -1959,13 +2137,127 @@ fn inline_values_are_read_and_written_back() {
     let csv =
         chart(r#"{"type": "line", "data": {"values": "x,y\n1,2\n2,3\n"}, "x": "x", "y": "y"}"#);
     assert_eq!(inline(&csv).rows, 2);
-    // A guess's table, written as rows of its cells.
+    // CSV text, written as its columns, reads back with no objects, as it was.
+    let text = round_trip(&Figure::Chart(csv));
+    assert!(
+        text.contains(r#""values": { "x": [1, 2], "y": [2, 3] }"#),
+        "{text}"
+    );
+    // A header and no rows keeps its columns; a column named "fig" stays a column; a missing
+    // cell is null.
+    for spec in [
+        r#"{"type": "line", "data": {"values": "x,y\n1,\n2,3\n"}, "x": "x", "y": "y"}"#,
+        r#"{"type": "line", "data": {"values": "k,v\n"}, "x": "k", "y": "v"}"#,
+        r#"{"type": "bar", "data": {"values": "k,fig\na,1\nb,2\n"}, "x": "k", "y": "fig"}"#,
+    ] {
+        let c = chart(spec);
+        assert_eq!(inline(&c).columns.len(), 2, "{spec}");
+        round_trip(&Figure::Chart(c));
+    }
+    // Columns with their blocks, and JSON text read as JSON.
+    let c = chart(
+        r#"{"type": "bar", "data": {"values": {"k": ["a", "b"], "v": [1, 2], "fig": [{"color": "red"}, {}]}}, "x": "k", "y": "v"}"#,
+    );
+    assert!(inline(&c).styles.is_some() && inline(&c).raw.is_none());
+    round_trip(&Figure::Chart(c));
+    let c = chart(
+        r#"{"type": "bar", "data": {"values": "[{\"k\": \"a\", \"v\": 1}]", "format": "json"}, "x": "k", "y": "v"}"#,
+    );
+    assert_eq!((inline(&c).rows, inline(&c).columns.len()), (1, 2));
+    round_trip(&Figure::Chart(c));
+    // A guess's table, written as its columns, times exact.
     let t = table(vec![
-        Column::time("time", vec![1_763_704_800.0, 1_763_705_100.0]),
+        Column::time("time", vec![1_763_704_800.123, 1_763_705_100.0]),
         Column::category("k", &["a", "b"]),
         Column::number("v", vec![1.0, 2.5]),
     ]);
     round_trip(&Figure::Chart(guess(&t).unwrap()));
+    // And a bare buffer's, a column named "fig" among them.
+    for (name, text) in [
+        ("d.csv", "a,fig\nx,1\ny,2\nz,3\n"),
+        ("d.json", r#"{"k": ["a", "b"], "v": [1, 2]}"#),
+    ] {
+        let p = parse(text, name, Path::new(DIR), &opt()).unwrap();
+        round_trip(&p.figure);
+    }
+}
+
+#[test]
+#[ignore = "needs fig/data"]
+fn an_error_in_values_text_is_at_the_string_with_its_place_in_the_text() {
+    let cases = [
+        (
+            "{\n  \"type\": \"line\", \"x\": \"x\", \"y\": \"y\",\n  \"data\": {\"values\": \"x,y\\n1,\\\"2\\n\"}\n}",
+            "in \"values\", line 2, column 3: unterminated quoted field",
+        ),
+        (
+            "{\n  \"type\": \"line\", \"x\": \"x\", \"y\": \"y\",\n\n  \"data\": {\"values\": \"{\\\"x\\\": 1}\\n{3}\\n\", \"format\": \"jsonl\"}\n}",
+            "in \"values\", line 2, column 2: expected a string key",
+        ),
+        (
+            r#"{"type": "bar", "x": "k", "y": "v", "data": {"values": "[{\"k\": 1,]", "format": "json"}}"#,
+            "in \"values\", line 1, column 10: expected a string key",
+        ),
+    ];
+    for (text, msg) in cases {
+        let at = text.find("\"values\": \"").unwrap() + "\"values\": ".len();
+        assert_eq!(
+            fails(text),
+            (msg.to_string(), place(text, &text[at..at + 3])),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs fig/data"]
+fn a_histograms_bins_are_named_clear_of_its_inline_columns() {
+    use die_fig::data::transform::apply;
+    let c = chart(
+        r#"{"type": "histogram", "data": {"values": "ms,ms_start,count\n1,a,x\n2,b,y\n9,c,z\n"}, "x": "ms"}"#,
+    );
+    let l = &c.layers[0];
+    assert_eq!(
+        unplaced(&l.enc.x).and_then(|x| x.field),
+        Some("ms_start_2".into())
+    );
+    assert_eq!(
+        unplaced(&l.enc.y).and_then(|y| y.field),
+        Some("count_2".into())
+    );
+    let binned = apply(inline(&c), &l.transform).unwrap();
+    assert!(binned.column("ms_start_2").is_some() && binned.column("count_2").is_some());
+    round_trip(&Figure::Chart(c));
+}
+
+#[test]
+#[ignore = "needs fig/data"]
+fn one_line_of_jsonl_with_a_type_no_figure_has_is_a_row() {
+    for name in ["log", "log.json", "log.jsonl"] {
+        let p = parse(
+            "{\"type\": \"request\", \"ms\": 5}\n",
+            name,
+            Path::new(DIR),
+            &opt(),
+        )
+        .unwrap();
+        let Figure::Chart(c) = p.figure else { panic!() };
+        assert_eq!(
+            (p.inferred, c.data.format, inline(&c).rows),
+            (true, Some(DataFormat::Jsonl), 1),
+            "{name}"
+        );
+    }
+    // A spec with a type no figure has is still an error: it draws from something, or it makes
+    // no figure as a row.
+    for text in [
+        r#"{"type": "pie", "data": "d"}"#,
+        r#"{"type": "bars"}"#,
+        "{\n  \"type\": \"bars\",\n  \"n\": 1\n}",
+    ] {
+        let (msg, _) = fails(text);
+        assert!(msg.starts_with("unknown figure type"), "{text}: {msg}");
+    }
 }
 
 #[test]
