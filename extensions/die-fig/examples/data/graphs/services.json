@@ -1,0 +1,261 @@
+{
+  "type": "graph",
+  "title": "Services",
+  "nodes": [
+    {
+      "id": "api",
+      "group": "platform",
+      "port": 8443,
+      "replicas": 7,
+      "owner": "platform-team",
+      "region": "us-east-1"
+    },
+    {
+      "id": "web",
+      "group": "edge",
+      "port": 8080,
+      "replicas": 2,
+      "owner": "edge-team",
+      "region": "ap-southeast-2"
+    },
+    {
+      "id": "db",
+      "group": "data",
+      "port": 7000,
+      "replicas": 4,
+      "owner": "data-team",
+      "region": "ap-southeast-2"
+    },
+    {
+      "id": "worker",
+      "group": "platform",
+      "port": 8080,
+      "replicas": 6,
+      "owner": "platform-team",
+      "region": "eu-west-1",
+      "deploy": {
+        "image": "worker:4.2",
+        "strategy": "rolling",
+        "max_surge": 2
+      },
+      "alerts": [
+        "queue depth",
+        "error rate"
+      ]
+    },
+    {
+      "id": "queue",
+      "group": "platform",
+      "port": 6379,
+      "replicas": 3,
+      "owner": "platform-team",
+      "region": "ap-southeast-2"
+    },
+    {
+      "id": "scheduler",
+      "group": "platform",
+      "port": 5432,
+      "replicas": 8,
+      "owner": "platform-team",
+      "region": "us-east-1"
+    },
+    {
+      "id": "cache",
+      "group": "data",
+      "port": 9200,
+      "replicas": 6,
+      "owner": "data-team",
+      "region": "eu-west-1"
+    },
+    {
+      "id": "search",
+      "group": "data",
+      "port": 3000,
+      "replicas": 2,
+      "owner": "data-team",
+      "region": "us-east-1"
+    },
+    {
+      "id": "warehouse",
+      "group": "data",
+      "port": 4000,
+      "replicas": 7,
+      "owner": "data-team",
+      "region": "eu-west-1"
+    },
+    {
+      "id": "analytics",
+      "group": "data",
+      "port": 5000,
+      "replicas": 5,
+      "owner": "data-team",
+      "region": "ap-southeast-2"
+    },
+    {
+      "id": "auth",
+      "group": "platform",
+      "port": 8080,
+      "replicas": 3,
+      "owner": "platform-team",
+      "region": "us-east-1"
+    },
+    {
+      "id": "billing",
+      "group": "platform",
+      "port": 8443,
+      "replicas": 8,
+      "owner": "platform-team",
+      "region": "eu-west-1"
+    },
+    {
+      "id": "mailer",
+      "group": "platform",
+      "port": 9090,
+      "replicas": 6,
+      "owner": "platform-team",
+      "region": "ap-southeast-2"
+    },
+    {
+      "id": "cdn",
+      "group": "edge",
+      "port": 6379,
+      "replicas": 4,
+      "owner": "edge-team",
+      "region": "us-east-1"
+    },
+    {
+      "id": "mobile",
+      "group": "edge",
+      "port": 5432,
+      "replicas": 2,
+      "owner": "edge-team",
+      "region": "eu-west-1"
+    },
+    {
+      "id": "legacy",
+      "group": "edge",
+      "port": 9200,
+      "replicas": 7,
+      "owner": "edge-team",
+      "region": "ap-southeast-2"
+    },
+    {
+      "id": "gateway",
+      "group": "edge",
+      "port": 7000,
+      "replicas": 5,
+      "owner": "edge-team",
+      "region": "us-east-1"
+    },
+    {
+      "id": "metrics",
+      "group": "data",
+      "port": 3000,
+      "replicas": 3,
+      "owner": "data-team",
+      "region": "eu-west-1"
+    }
+  ],
+  "edges": [
+    {
+      "from": "web",
+      "to": "cdn"
+    },
+    {
+      "from": "web",
+      "to": "api"
+    },
+    {
+      "from": "mobile",
+      "to": "api"
+    },
+    {
+      "from": "api",
+      "to": "auth"
+    },
+    {
+      "from": "api",
+      "to": "billing"
+    },
+    {
+      "from": "api",
+      "to": "worker"
+    },
+    {
+      "from": "worker",
+      "to": "queue"
+    },
+    {
+      "from": "worker",
+      "to": "scheduler"
+    },
+    {
+      "from": "worker",
+      "to": "cache"
+    },
+    {
+      "from": "worker",
+      "to": "db"
+    },
+    {
+      "from": "auth",
+      "to": "db"
+    },
+    {
+      "from": "billing",
+      "to": "db"
+    },
+    {
+      "from": "billing",
+      "to": "mailer"
+    },
+    {
+      "from": "queue",
+      "to": "mailer"
+    },
+    {
+      "from": "db",
+      "to": "search"
+    },
+    {
+      "from": "db",
+      "to": "warehouse"
+    },
+    {
+      "from": "warehouse",
+      "to": "analytics"
+    },
+    {
+      "from": "search",
+      "to": "analytics"
+    },
+    {
+      "from": "legacy",
+      "to": "api"
+    },
+    {
+      "from": "scheduler",
+      "to": "queue"
+    },
+    {
+      "from": "cache",
+      "to": "db"
+    },
+    {
+      "from": "gateway",
+      "to": "api"
+    },
+    {
+      "from": "gateway",
+      "to": "mobile"
+    },
+    {
+      "from": "metrics",
+      "to": "worker"
+    },
+    {
+      "from": "metrics",
+      "to": "analytics"
+    }
+  ]
+}
