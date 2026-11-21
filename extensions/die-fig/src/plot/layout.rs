@@ -36,9 +36,14 @@ const KEY_GAP: f32 = 6.0;
 /// The least room between two x labels' centres, and between their ends.
 const X_SPACING: f32 = 64.0;
 const X_CLEAR: f32 = 12.0;
-/// About how far apart y ticks are, and the least.
+/// About how far apart y ticks are, and the least. A grid from 48 to 64 px apart is calm; one
+/// denser reads busier than one as much sparser (`DENSE_COST`).
 const Y_SPACING: f32 = 48.0;
+const Y_CALM: f32 = 64.0;
 const Y_MIN_GAP: f32 = 32.0;
+const DENSE_COST: f32 = 1.25;
+/// What a domain's headroom over the tightest one costs, against a grid's calm.
+const HEADROOM_COST: f32 = 4.0;
 /// How far a mark may reach past the plot's edges at fit before it's clipped: a point's ring.
 pub const BLEED: f32 = 6.0;
 
@@ -201,6 +206,9 @@ pub struct ChartLayout {
     pub scale: f32,
     /// The model's x and y domains shown (bands in band units).
     pub domain: ((f64, f64), (f64, f64)),
+    /// The model's fit under the view the layout is of ([`ChartModel::fit`]), which `domain`
+    /// refines: y niced to the plot's ticks, a scatter's padded for its points.
+    pub fit: ((f64, f64), (f64, f64)),
     /// Bars across: `y` is the bands' scale and `x` the values'.
     pub horizontal: bool,
     /// The ticks across the screen, and up it.
@@ -223,6 +231,8 @@ pub struct ChartLayout {
     pub clip: Rect,
     /// The bars and their segments, where they're drawn.
     pub bars: Vec<super::marks::BarGeom>,
+    /// The bands' totals past their bars, where they're drawn: each band and its label's box.
+    pub totals: Vec<(u32, Rect)>,
     /// Whether the card was last put left of its anchor, for its hysteresis.
     pub(crate) flipped: Cell<bool>,
 }
@@ -598,8 +608,9 @@ fn attempt(
             .min(w * 0.25);
     }
 
-    // The y axis's title, above its ticks.
-    let axes = model.chart.view.axes;
+    // The y axis's title, above its ticks. With every series hidden there's nothing to read
+    // off an axis: no ticks, no grid, the plot left to say so.
+    let axes = model.chart.view.axes && !nothing_shown(model, view);
     let (xd, mut yd) = domain;
     let vertical_values = !model.horizontal;
     let value_title = if vertical_values {
@@ -653,8 +664,10 @@ fn attempt(
         .floor()
         .max(plot_top + 1.0);
     let plot_h = plot_bottom - plot_top;
+    let whole = model.whole_values(view);
     // A fitted y is niced for the ticks the plot has room for, so its top is a tick: of the
-    // counts near the room's, the tightest nice domain whose ticks stay apart.
+    // counts near the room's, the one whose grid is calmest (48 to 64 px apart), its headroom
+    // over the tightest counting against it; whole steps only for whole numbers.
     let mut y_count = ((plot_h / Y_SPACING).round() as usize).max(2);
     if vertical_values
         && view.y.is_none()
@@ -662,7 +675,7 @@ fn attempt(
         && model.y.kind == AxisKind::Linear
         && (model.is_x_chart() || model.is_band())
     {
-        let mut best: Option<((f64, f64), usize, f32)> = None;
+        let mut cands: Vec<((f64, f64), usize, f32, f64)> = Vec::new();
         for c in 2..=y_count + 3 {
             let d = model.fit_ticks(view, c).1;
             let span = d.1 - d.0;
@@ -674,30 +687,45 @@ fn attempt(
             if ts.len() < 2 || span.is_nan() || span <= 0.0 {
                 continue;
             }
-            let gap = plot_h * ((ts[1].value - ts[0].value) / span).abs() as f32;
-            if gap < Y_MIN_GAP {
+            let step = (ts[1].value - ts[0].value).abs();
+            if whole && step < 1.0 - 1e-9 {
                 continue;
             }
-            // Ticks no further apart than twice the spacing, where any are.
-            let sparse = gap > 2.0 * Y_SPACING;
-            let better = match best {
-                None => true,
-                Some((_, _, bg)) if (bg > 2.0 * Y_SPACING) != sparse => !sparse,
-                Some((bd, _, bg)) => {
-                    let bs = bd.1 - bd.0;
-                    span < bs * (1.0 - 1e-9)
-                        || ((span - bs).abs() <= bs * 1e-9
-                            && (gap - Y_SPACING).abs() < (bg - Y_SPACING).abs())
-                }
-            };
-            if better {
-                best = Some((d, c, gap));
+            let gap = plot_h * (step / span) as f32;
+            if gap >= Y_MIN_GAP {
+                cands.push((d, c, gap, span));
             }
         }
-        if let Some((d, c, _)) = best {
+        let tightest = cands.iter().map(|c| c.3).fold(f64::INFINITY, f64::min);
+        let cost = |&(_, _, gap, span): &((f64, f64), usize, f32, f64)| -> f32 {
+            let grid = if gap < Y_SPACING {
+                DENSE_COST * (Y_SPACING / gap).ln()
+            } else if gap > Y_CALM {
+                (gap / Y_CALM).ln()
+            } else {
+                0.0
+            };
+            grid + HEADROOM_COST * (span / tightest).ln() as f32
+        };
+        let best = cands.iter().min_by(|a, b| {
+            cost(a)
+                .total_cmp(&cost(b))
+                .then(a.3.total_cmp(&b.3))
+                .then((a.2 - Y_SPACING).abs().total_cmp(&(b.2 - Y_SPACING).abs()))
+        });
+        if let Some(&(d, c, _, _)) = best {
             yd = d;
             y_count = c;
         }
+    }
+    // A scatter's points keep their whole dot inside the plot at its fit.
+    let reach = point_reach(model, view);
+    if model.is_scatter()
+        && view.y.is_none()
+        && model.y.domain.is_none()
+        && let Some(ext) = points_extent(model, view, false)
+    {
+        yd = pad_for(yd, ext, plot_h, reach, model.y.kind);
     }
 
     // Up the screen: the values' ticks, or the bands'.
@@ -751,7 +779,7 @@ fn attempt(
         } else {
             ((plot_h / Y_SPACING).round() as usize).max(2)
         };
-        for t in scale::ticks(&up_scale, count) {
+        for t in whole_ticks(&up_scale, count, vertical_values && whole) {
             let py = up_scale.map(t.value);
             if py < plot_top - 0.5 || py > plot_bottom + 0.5 {
                 continue;
@@ -831,11 +859,18 @@ fn attempt(
                 .any(|(py, _)| *py < plot_top - 4.0 || *py > plot_bottom + 4.0);
         if !collide && !cands.is_empty() {
             let vspec = TextSpec::new(BODY).tabular();
+            // An end label is read against the axis: one decimal past its ticks' at most (the
+            // card keeps the data's own precision).
+            let tick_decimals = match y_ticks.as_slice() {
+                [a, b, ..] => scale::data_decimals(&[(b.value - a.value).abs()]),
+                _ => 6,
+            };
             let widths: Vec<(String, String, f32, f32)> = cands
                 .iter()
                 .map(|&(si, _, v)| {
                     let name = m.fit(&model.series[si].name, body, w * 0.18);
-                    let value = model.value_label(v, model.series[si].decimals);
+                    let decimals = model.series[si].decimals.min(tick_decimals + 1);
+                    let value = model.value_label(v, decimals);
                     let (nw, vw) = (m.width(&name, body), m.width(&value, vspec));
                     (name, value, nw, vw)
                 })
@@ -882,6 +917,14 @@ fn attempt(
     let plot = Rect::new(plot_x, plot_top, plot_right - plot_x, plot_h);
 
     // Across the screen: the independent axis (or the values for horizontal bars).
+    let mut xd = xd;
+    if model.is_scatter()
+        && view.x.is_none()
+        && model.x.domain.is_none()
+        && let Some(ext) = points_extent(model, view, true)
+    {
+        xd = pad_for(xd, ext, plot.w, reach, model.x.kind);
+    }
     let (across_kind, across_domain, across_bands) = if vertical_values {
         (model.x.kind, xd, &model.x.bands)
     } else {
@@ -901,7 +944,7 @@ fn attempt(
         let placed = if across_kind == AxisKind::Band {
             band_labels(&across, across_bands, &plot, tick_plain, m)
         } else {
-            value_ticks(model, &across, &plot, tick, vertical_values, w, m)
+            value_ticks(model, &across, &plot, tick, vertical_values, whole, w, m)
         };
         for (t, text, x, anchor) in placed {
             let spec = if across_kind == AxisKind::Band {
@@ -1016,12 +1059,9 @@ fn attempt(
         }
     }
 
-    // The marks bleed past the plot's edges where the data reaches them at fit.
-    let (xs_scale, ys_scale) = if vertical_values {
-        (across, up_scale)
-    } else {
-        (up_scale, across)
-    };
+    // The marks bleed past the plot's edges where the data reaches them at fit. The scales
+    // are the screen's: across it, and up it.
+    let (xs_scale, ys_scale) = (across, up_scale);
     let fit_x = view.x.is_none();
     let fit_y = view.y.is_none();
     let (bx, by) = if vertical_values {
@@ -1046,6 +1086,7 @@ fn attempt(
         size,
         scale,
         domain: (xd, yd),
+        fit: domain,
         horizontal: model.horizontal,
         x_ticks,
         y_ticks,
@@ -1056,6 +1097,7 @@ fn attempt(
         labels,
         clip,
         bars: Vec::new(),
+        totals: Vec::new(),
         flipped: Cell::new(false),
     }
 }
@@ -1142,21 +1184,89 @@ fn band_labels(
     out
 }
 
+/// About `count` ticks over a scale, at whole steps when `whole` (fewer, rather than 0.5s).
+fn whole_ticks(s: &Scale, count: usize, whole: bool) -> Vec<Tick> {
+    let mut c = count.max(1);
+    loop {
+        let ts = scale::ticks(s, c);
+        let fine = matches!(ts.as_slice(), [a, b, ..] if (b.value - a.value).abs() < 1.0 - 1e-9);
+        if !(whole && fine) || c <= 1 {
+            return ts;
+        }
+        c -= 1;
+    }
+}
+
+/// Whether the chart has series and every one is hidden.
+pub(crate) fn nothing_shown(model: &ChartModel, view: &View) -> bool {
+    !model.series.is_empty() && model.keys().iter().all(|k| !model.visible(view, k))
+}
+
+/// How far past its centre a scatter's point reaches, in px: its radius and its ring, a
+/// bubble's largest.
+fn point_reach(model: &ChartModel, view: &View) -> f32 {
+    let bubbles = super::marks::size_extent(model).is_some();
+    model
+        .series
+        .iter()
+        .filter(|s| s.mark == MarkKind::Point && model.visible(view, &s.key))
+        .map(|s| {
+            if bubbles && s.sizes.is_some() {
+                super::marks::BUBBLE_MAX + 1.0
+            } else {
+                model.point_size(s) / 2.0 + super::marks::RING
+            }
+        })
+        .fold(0.0, f32::max)
+        + 1.0
+}
+
+/// The visible points' extent along x (or y).
+fn points_extent(model: &ChartModel, view: &View, x: bool) -> Option<(f64, f64)> {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for s in model
+        .series
+        .iter()
+        .filter(|s| s.mark == MarkKind::Point && model.visible(view, &s.key))
+    {
+        for (a, b) in s.xs.iter().zip(s.ys.iter()) {
+            if a.is_finite() && b.is_finite() {
+                let v = if x { *a } else { *b };
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+        }
+    }
+    (lo <= hi).then_some((lo, hi))
+}
+
+/// A domain widened so that data from `data.0` to `data.1`, over `len` px, keeps `reach` px
+/// inside each end: its ticks stay where they were, inside it.
+fn pad_for(d: (f64, f64), data: (f64, f64), len: f32, reach: f32, kind: AxisKind) -> (f64, f64) {
+    if kind != AxisKind::Linear || len <= 4.0 * reach || d.1 <= d.0 {
+        return d;
+    }
+    let need = f64::from(reach) * (d.1 - d.0) / f64::from(len - 2.0 * reach);
+    (d.0.min(data.0 - need), d.1.max(data.1 + need))
+}
+
 /// The ticks of a number or time axis across the plot: as many as keep labels 64 px apart and
 /// clear of each other, the end ones kept inside the area.
+#[allow(clippy::too_many_arguments)]
 fn value_ticks(
     model: &ChartModel,
     s: &Scale,
     plot: &Rect,
     spec: TextSpec,
     independent: bool,
+    whole: bool,
     area_w: f32,
     m: &mut dyn Measure,
 ) -> Vec<(Tick, String, f32, Anchor)> {
     let mut count = ((plot.w / 90.0).round() as usize).max(2);
     loop {
         let mut placed: Vec<(Tick, String, f32, Anchor, Rect)> = Vec::new();
-        for t in scale::ticks(s, count) {
+        for t in whole_ticks(s, count, !independent && whole) {
             let px = s.map(t.value);
             if px < plot.x - 0.5 || px > plot.right() + 0.5 {
                 continue;
@@ -1210,7 +1320,8 @@ pub(crate) fn chrome(
     _m: &mut dyn Measure,
 ) {
     let p = l.plot;
-    let grid = model.chart.view.grid && !model.is_heatmap();
+    let nothing = nothing_shown(model, view);
+    let grid = model.chart.view.grid && !model.is_heatmap() && !nothing;
     if grid {
         // Hairlines along the value axis's ticks: across the plot, or up it for bars across.
         if model.horizontal {
@@ -1228,7 +1339,7 @@ pub(crate) fn chrome(
             }
         }
     }
-    if model.chart.view.axes && !model.is_heatmap() {
+    if model.chart.view.axes && !model.is_heatmap() && !nothing {
         let val = l.val();
         let (lo, hi) = val.domain();
         let zero = lo.min(hi) <= 0.0
@@ -1254,7 +1365,6 @@ pub(crate) fn chrome(
         scene.push(e.name.item(theme));
         scene.push(e.value.item(theme));
     }
-    let _ = view;
 }
 
 /// A legend key: a line, a rounded square or a dot; hollow when its series is hidden.

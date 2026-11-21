@@ -108,11 +108,7 @@ pub fn overlay(
             (false, Cursor::Band { series, .. }) => series.clone(),
             _ => None,
         };
-        let anchor_y = if hover.is_some() {
-            st.pointer.map(|p| p.1)
-        } else {
-            None
-        };
+        let anchor = if hover.is_some() { st.pointer } else { None };
         moment(
             model,
             view,
@@ -122,7 +118,7 @@ pub fn overlay(
             t,
             mark.as_ref(),
             hover.is_none(),
-            anchor_y,
+            anchor,
             m,
         );
     } else if let Some(c) = cursor.filter(|_| brushing) {
@@ -139,7 +135,7 @@ pub fn overlay(
         }
     }
     if let Some((kind, from, to)) = st.brush {
-        brush(model, layout, theme, &mut scene, kind, from, to, m);
+        brush(model, view, layout, theme, &mut scene, kind, from, to, m);
     }
     scene
 }
@@ -226,24 +222,31 @@ fn moment(
     t: &Cursor,
     mark: Option<&SeriesKey>,
     keyboard: bool,
-    anchor_y: Option<f32>,
+    pointer: Option<(f32, f32)>,
     m: &mut dyn Measure,
 ) {
     let p = l.plot;
+    let anchor_y = pointer.map(|a| a.1);
     match t {
         Cursor::Band { band, .. } => {
-            let Some(slot) = band_slot(model, l, *band) else {
+            let Some(slot) = band_step(l, *band).or_else(|| band_slot(model, l, *band)) else {
                 return;
             };
-            // A faint column behind the band, then its bars lifted.
+            // A faint column over the band's whole slot (the target is the slot, mouse-ux
+            // §4.2), then its bars lifted.
             let col = if l.horizontal {
-                Rect::new(p.x - 6.0, slot.y - 2.0, p.w + 6.0, slot.h + 4.0)
+                Rect::new(p.x - 6.0, slot.y, p.w + 6.0, slot.h)
             } else {
-                Rect::new(slot.x - 2.0, p.y - 6.0, slot.w + 4.0, p.h + 6.0)
+                Rect::new(slot.x, p.y - 6.0, slot.w, p.h + 6.0)
             };
             let col = col.intersect(&l.clip.inflate(6.0)).unwrap_or(col);
+            let radii = if l.horizontal {
+                [6.0, 0.0, 0.0, 6.0]
+            } else {
+                [6.0, 6.0, 0.0, 0.0]
+            };
             scene.push(Item::Path {
-                path: PathData::rounded(col, [6.0, 6.0, 0.0, 0.0]),
+                path: PathData::rounded(col, radii),
                 fill: Some(Paint::solid(
                     theme.text,
                     if theme.dark { 0.035 } else { 0.05 },
@@ -258,35 +261,53 @@ fn moment(
             scene.push(Item::PopClip);
             bright_tick(l, theme, scene, f64::from(*band) + 0.5);
             if keyboard {
-                let name = model
-                    .x
-                    .bands
-                    .get(*band as usize)
-                    .map_or(String::new(), |b| b.to_string());
-                chip_x(l, theme, scene, l.ix(f64::from(*band)), &name, true, m);
+                let name = band_name(model, *band);
+                let at = l.ix(f64::from(*band));
+                if l.horizontal {
+                    chip_y(l, theme, scene, at, &name, true, m);
+                } else {
+                    chip_x(l, theme, scene, at, &name, true, m);
+                }
             }
-            let rows = band_rows(model, view, l, *band, mark);
+            let reference = view.reference.as_ref().and_then(|r| cursor_data(model, r));
+            let rows = band_rows(model, view, l, *band, mark, reference.map(|r| r.0));
             let header = model.x_label(f64::from(*band), 0.0);
             let total = stacked_total(model, view, l, &rows);
-            let delta = view.reference.as_ref().and_then(|r| cursor_data(model, r));
-            let card = Card::new(
+            let mut card = Card::new(
                 model,
-                view,
+                l,
                 header,
                 rows,
                 total,
-                delta.map(|(x, _)| x),
+                reference.map(|(x, _)| x),
                 f64::from(*band) + 0.5,
                 theme,
                 m,
             );
-            let (left, right) = if l.horizontal {
-                (slot.right(), slot.right())
+            // What the card keeps clear of: the band's bars, from their ends to the baseline.
+            let bars = l
+                .bars
+                .iter()
+                .filter(|b| b.band == *band)
+                .fold(None, |r: Option<Rect>, b| {
+                    Some(r.map_or(b.rect, |o| o.union(&b.rect)))
+                });
+            if l.horizontal {
+                // Bands go down the screen: the card goes past the bar's end and its total,
+                // level with the band, or under the band (or over it) where that's no room.
+                let end = bars.map_or(p.x, |b| b.right());
+                let end = l
+                    .totals
+                    .iter()
+                    .filter(|t| t.0 == *band)
+                    .fold(end, |e, t| e.max(t.1.right()));
+                let ax = pointer.map_or(end, |a| a.0.max(end));
+                card.place_level(l, scene, (slot.y, slot.bottom()), ax, theme, m);
             } else {
-                (slot.x - 2.0, slot.right() + 2.0)
-            };
-            let ay = anchor_y.unwrap_or(if l.horizontal { slot.y } else { p.y + 4.0 });
-            card.place_beside(l, scene, left, right, ay, theme, m);
+                let ay = anchor_y.unwrap_or(p.y + 4.0);
+                let span = bars.map_or((p.y, p.bottom()), |b| (b.y, b.bottom()));
+                card.place_beside(l, scene, slot.x, slot.right(), ay, span, theme, m);
+            }
         }
         Cursor::Cell { row, col } => {
             let Some(si) = model.series.iter().position(|s| s.mark == MarkKind::Rect) else {
@@ -324,13 +345,14 @@ fn moment(
                 name: s.name.clone(),
                 value: format_fixed(v, s.decimals),
                 raw: v,
+                base: f64::NAN,
                 decimals: s.decimals,
                 marked: false,
                 missing: v.is_nan(),
             }];
-            let card = Card::new(
+            let mut card = Card::new(
                 model,
-                view,
+                l,
                 format!("{x} · {y}"),
                 rows,
                 None,
@@ -372,15 +394,17 @@ fn moment(
             chip_y(l, theme, scene, pt.1, &model.y_label(s.ys[i]), keyboard, m);
             let rows = point_rows(model, view, si, i, theme);
             let mut header = s.name.clone();
+            // Δx and Δy from the reference, each at its own axis's precision. No distance: a
+            // scatter's two axes rarely share a unit.
             if let Some(ref_xy) = view.reference.as_ref().and_then(|r| cursor_data(model, r)) {
                 let d = (s.xs[i] - ref_xy.0, s.ys[i] - ref_xy.1);
                 header = format!(
                     "{header} · Δ {}, {}",
-                    signed(d.0, s.decimals.max(1)),
-                    signed(d.1, s.decimals.max(1))
+                    signed(d.0, s.x_decimals),
+                    signed(d.1, s.decimals)
                 );
             }
-            let card = Card::new(model, view, header, rows, None, None, 0.0, theme, m);
+            let mut card = Card::new(model, l, header, rows, None, None, 0.0, theme, m);
             card.place_point(l, scene, pt, r + 2.0, theme, m);
         }
         Cursor::Point { .. } => {
@@ -405,6 +429,8 @@ fn moment(
                     marks::bar(scene, b, lift(c, theme));
                 }
             }
+            // The marked series' dot last, over any it meets.
+            let mut dots: Vec<((f32, f32), bool, Color)> = Vec::new();
             for &(si, i) in &col.samples {
                 let (Some(i), s) = (i, &model.series[si]) else {
                     continue;
@@ -417,17 +443,31 @@ fn moment(
                 if !pt.1.is_finite() {
                     continue;
                 }
-                let big = mark == Some(&s.key);
-                dot(
-                    scene,
-                    pt,
-                    if big { DOT_BIG } else { DOT },
-                    model.color(s, theme),
-                    theme.surface,
-                    2.0,
-                );
+                dots.push((pt, mark == Some(&s.key), model.color(s, theme)));
+            }
+            dots.sort_by_key(|d| d.1);
+            for &(pt, big, color) in &dots {
+                let r = if big { DOT_BIG } else { DOT };
+                dot(scene, pt, r, color, theme.surface, 2.0);
             }
             scene.push(Item::PopClip);
+            // The dots' span, rings and all, and the lifted bars': what the card keeps clear of.
+            let mut span = dots
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), d| {
+                    let r = if d.1 { DOT_BIG } else { DOT } + 2.0;
+                    (a.min(d.0.1 - r), b.max(d.0.1 + r))
+                });
+            for b in l
+                .bars
+                .iter()
+                .filter(|b| (model.series[b.series].xs[b.sample] - col.x).abs() < 1e-9)
+            {
+                span = (span.0.min(b.rect.y), span.1.max(b.rect.bottom()));
+            }
+            if span.0 > span.1 {
+                span = (p.y, p.bottom());
+            }
             if keyboard {
                 let step = interval(model, &col);
                 chip_x(
@@ -440,17 +480,20 @@ fn moment(
                     m,
                 );
             }
-            let rows = column_rows(model, view, l, &col, mark, theme);
-            let header = model.x_label(col.x, interval(model, &col));
-            let total = stacked_total(model, view, l, &rows);
             let delta = view
                 .reference
                 .as_ref()
                 .and_then(|r| cursor_data(model, r))
                 .map(|(x, _)| x);
-            let card = Card::new(model, view, header, rows, total, delta, col.x, theme, m);
+            let rows = column_rows(model, view, l, &col, mark, theme, delta);
+            let header = model.x_label(col.x, interval(model, &col));
+            let total = stacked_total(model, view, l, &rows);
+            let mut card = Card::new(model, l, header, rows, total, delta, col.x, theme, m);
             let ay = anchor_y.unwrap_or(p.y + 4.0 - CARD_GAP);
-            card.place_beside(l, scene, x, x, ay, theme, m);
+            // Beside the crosshair, clear of its dots (CARD_GAP is more than a dot's reach) and
+            // of any bar it lifted.
+            let reach = lifted_half(l, model, col.x, x);
+            card.place_beside(l, scene, x - reach, x + reach, ay, span, theme, m);
         }
         Cursor::Node(_) => {}
     }
@@ -519,12 +562,10 @@ fn marker(
                     ..Stroke::solid(1.0, theme.text, 0.6)
                 }),
             });
-            let name = model
-                .x
-                .bands
-                .get(*band as usize)
-                .map_or(String::new(), |b| b.to_string());
-            if !l.horizontal {
+            let name = band_name(model, *band);
+            if l.horizontal {
+                chip_y(l, theme, scene, slot.y + slot.h / 2.0, &name, true, m);
+            } else {
                 chip_x(l, theme, scene, slot.x + slot.w / 2.0, &name, true, m);
             }
         }
@@ -608,6 +649,41 @@ fn band_slot(model: &ChartModel, l: &ChartLayout, band: u32) -> Option<Rect> {
     })
 }
 
+/// A band's whole slot: its band and half the gap to each neighbour, less a pixel each side so
+/// two slots never touch.
+fn band_step(l: &ChartLayout, band: u32) -> Option<Rect> {
+    let s = l.ind();
+    let crate::scale::Scale::Band { inner, .. } = s else {
+        return None;
+    };
+    let (a, w) = s.band_of(band as usize)?;
+    let step = if *inner < 1.0 { w / (1.0 - inner) } else { w };
+    let (a, w) = (a - (step - w) / 2.0 + 1.0, (step - 2.0).max(w));
+    Some(if l.horizontal {
+        Rect::new(l.plot.x, a, l.plot.w, w)
+    } else {
+        Rect::new(a, l.plot.y, w, l.plot.h)
+    })
+}
+
+/// A band's name.
+fn band_name(model: &ChartModel, band: u32) -> String {
+    model
+        .x
+        .bands
+        .get(band as usize)
+        .map_or(String::new(), |b| b.to_string())
+}
+
+/// How far either side of the crosshair at `x` (model `at`) the bars it lifts reach.
+fn lifted_half(l: &ChartLayout, model: &ChartModel, at: f64, x: f32) -> f32 {
+    l.bars
+        .iter()
+        .filter(|b| (model.series[b.series].xs[b.sample] - at).abs() < 1e-9)
+        .map(|b| (x - b.rect.x).abs().max((b.rect.right() - x).abs()))
+        .fold(0.0, f32::max)
+}
+
 /// The tick label at a band brightened: the hovered category reads as the target.
 fn bright_tick(l: &ChartLayout, theme: &Theme, scene: &mut Scene, at: f64) {
     let px = l.ix(at - 0.5);
@@ -680,7 +756,7 @@ fn chip_y(
     let w = m.width(text, spec) + 2.0 * CHIP_PAD;
     let right = l.plot.x - 4.0;
     let left = (right - w).max(INSET);
-    let top = (y - CHIP_H / 2.0).clamp(INSET, l.size.1 - INSET - CHIP_H);
+    let top = (y - CHIP_H / 2.0).clamp(INSET, (l.size.1 - INSET - CHIP_H).max(INSET));
     let r = Rect::new(left, top, right - left, CHIP_H);
     cover(l, theme, scene, r, Role::YTick, m);
     chip(theme, scene, r, text, spec, inverted, m);
@@ -699,6 +775,35 @@ fn cover(
     for label in l.labels.iter().filter(|lb| lb.role == role) {
         let b = label.bounds(m).inflate(1.0);
         if b.intersect(&clear).is_some() {
+            scene.push(Item::Path {
+                path: PathData::rect(b),
+                fill: Some(Paint::solid(theme.surface, 1.0)),
+                stroke: None,
+            });
+        }
+    }
+}
+
+/// The surface over every tick label, end label and bar total a card at `r` would cut, so none
+/// shows a fragment (a "200" cut to "20"): a label it meets is hidden whole.
+fn clear_ticks(l: &ChartLayout, theme: &Theme, scene: &mut Scene, r: Rect, m: &mut dyn Measure) {
+    let mut cut: Vec<Rect> = Vec::new();
+    if !l.plot.contains(r.x, r.y) || !l.plot.contains(r.right(), r.bottom()) {
+        for label in l
+            .labels
+            .iter()
+            .filter(|lb| matches!(lb.role, Role::YTick | Role::XTick))
+        {
+            cut.push(label.bounds(m));
+        }
+        for e in &l.ends {
+            cut.push(e.name.bounds(m).union(&e.value.bounds(m)));
+        }
+    }
+    cut.extend(l.totals.iter().map(|t| t.1));
+    for b in cut {
+        let b = b.inflate(1.0);
+        if b.intersect(&r).is_some() {
             scene.push(Item::Path {
                 path: PathData::rect(b),
                 fill: Some(Paint::solid(theme.surface, 1.0)),
@@ -743,9 +848,12 @@ fn chip(
     });
 }
 
-/// The reference: a dashed rule at 40 % with an outlined chip `A` on the x axis (a dashed ring
-/// for a point on a scatter), and the measure band from it to the target; the Δx label for its
-/// top, and its box, to draw once the card is placed.
+/// The reference: a dashed rule at 40 % with an outlined chip `A` on the independent axis (a
+/// dashed ring for a point on a scatter), and the measure band from it to the target; the Δx
+/// label for its top, and its box, to draw once the card is placed. On a band axis the chip
+/// says the band's name after the `A`, so the name it covers still reads, and the rule breaks
+/// around the band's total.
+#[allow(clippy::too_many_arguments)]
 fn reference(
     model: &ChartModel,
     l: &ChartLayout,
@@ -769,28 +877,35 @@ fn reference(
         });
         return None;
     }
-    let at = |v: f64| {
-        if model.is_band() {
-            l.ix(v - 0.5)
-        } else {
-            l.ix(v)
-        }
+    let band = model.is_band();
+    let across = l.horizontal;
+    let at = |v: f64| if band { l.ix(v - 0.5) } else { l.ix(v) };
+    // Along the independent axis: the plot's extent that way.
+    let (lo_edge, hi_edge) = if across {
+        (p.y, p.bottom())
+    } else {
+        (p.x, p.right())
     };
     let x = at(rx);
     let mut label = None;
     if let Some((tx, _)) = target.and_then(|t| cursor_data(model, t)) {
         let t = at(tx);
-        let (a, b) = (x.min(t).max(p.x), x.max(t).min(p.right()));
+        let (a, b) = (x.min(t).max(lo_edge), x.max(t).min(hi_edge));
         if b - a >= 1.0 {
+            let rect = if across {
+                Rect::new(p.x, a, p.w, b - a)
+            } else {
+                Rect::new(a, p.y, b - a, p.h)
+            };
             scene.push(Item::Path {
-                path: PathData::rect(Rect::new(a, p.y, b - a, p.h)),
+                path: PathData::rect(rect),
                 fill: Some(Paint::solid(theme.text, 0.06)),
                 stroke: None,
             });
             let spec = TextSpec::new(TICK).tabular();
             let text = delta_x(model, rx, tx);
             let w = m.width(&text, spec);
-            if !text.is_empty() && w + 10.0 <= b - a {
+            if !across && !text.is_empty() && w + 10.0 <= b - a {
                 let (asc, desc) = (m.ascent(spec), m.descent(spec));
                 let y = p.y + 6.0 + asc;
                 let bounds = Rect::new((a + b - w) / 2.0, y - asc, w, asc + desc);
@@ -808,16 +923,71 @@ fn reference(
             }
         }
     }
-    if x >= p.x - 1.0 && x <= p.right() + 1.0 {
+    if x < lo_edge - 1.0 || x > hi_edge + 1.0 {
+        return label;
+    }
+    // The rule, broken around the band's total so its figures read.
+    let mut cuts: Vec<(f32, f32)> = Vec::new();
+    if band {
+        let me = (rx - 0.5).round() as u32;
+        for &(b, r) in &l.totals {
+            if b == me {
+                let r = r.inflate(3.0);
+                cuts.push(if across {
+                    (r.x, r.right())
+                } else {
+                    (r.y, r.bottom())
+                });
+            }
+        }
+    }
+    let (from, to) = if across {
+        (p.x, p.right())
+    } else {
+        (p.y, p.bottom())
+    };
+    cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut pieces: Vec<(f32, f32)> = Vec::new();
+    let mut start = from;
+    for (a, b) in cuts {
+        if a > start {
+            pieces.push((start, a.min(to)));
+        }
+        start = start.max(b);
+    }
+    if start < to {
+        pieces.push((start, to));
+    }
+    for (a, b) in pieces {
+        if b - a < 1.0 {
+            continue;
+        }
+        let ends = if across {
+            [(a, x), (b, x)]
+        } else {
+            [(x, a), (x, b)]
+        };
         scene.push(Item::Path {
-            path: PathData::polyline(&[(x, p.y), (x, p.bottom())]),
+            path: PathData::polyline(&ends),
             fill: None,
             stroke: Some(Stroke {
                 dash: Some((4.0, 3.0)),
                 ..Stroke::hairline(theme.text, 0.4)
             }),
         });
-        chip_x(l, theme, scene, x, "A", false, m);
+    }
+    let name = if band {
+        format!(
+            "A · {}",
+            band_name(model, (rx - 0.5).round().max(0.0) as u32)
+        )
+    } else {
+        "A".to_string()
+    };
+    if across {
+        chip_y(l, theme, scene, x, &name, false, m);
+    } else {
+        chip_x(l, theme, scene, x, &name, false, m);
     }
     label
 }
@@ -836,7 +1006,9 @@ fn delta_x(model: &ChartModel, from: f64, to: f64) -> String {
             if n == 0 {
                 String::new()
             } else {
-                format!("{}{} bands", if n > 0 { "+" } else { "\u{2212}" }, n.abs())
+                let sign = if n > 0 { "+" } else { "\u{2212}" };
+                let unit = if n.abs() == 1 { "band" } else { "bands" };
+                format!("{sign}{} {unit}", n.abs())
             }
         }
         _ => format!("Δ {}", format_value(d)),
@@ -865,10 +1037,12 @@ pub fn duration(secs: f64) -> String {
 }
 
 /// A brush's preview: a band (or box) in the foreground at 8 % with 1 px edges at 40 %, and its
-/// readout chip at its top.
+/// readout chip at its top. A bands brush snaps to the whole bands it touches; where the bands
+/// already show at full width it can't zoom, and its chip says so over no band at all.
 #[allow(clippy::too_many_arguments)]
 fn brush(
     model: &ChartModel,
+    view: &View,
     l: &ChartLayout,
     theme: &Theme,
     scene: &mut Scene,
@@ -882,6 +1056,7 @@ fn brush(
     let cy = |y: f32| y.clamp(p.y, p.bottom());
     let (mut x0, mut x1) = (cx(from.0).min(cx(to.0)), cx(from.0).max(cx(to.0)));
     let (mut y0, mut y1) = (cy(from.1).min(cy(to.1)), cy(from.1).max(cy(to.1)));
+    let mut bands = None;
     match kind {
         BrushKind::X => {
             y0 = p.y;
@@ -892,10 +1067,14 @@ fn brush(
             x1 = p.right();
         }
         BrushKind::Bands => {
-            // Snapped to whole bands as it goes.
-            let (a, b) = if l.horizontal { (y0, y1) } else { (x0, x1) };
-            let (da, db) = (l.ind().invert(a).floor(), l.ind().invert(b).ceil());
-            let (sa, sb) = (l.ind().map(da), l.ind().map(db));
+            // Snapped to the whole bands it touches, as the zoom will read them.
+            let Some((i, j)) = super::nav::brush_bands(model, l, view, from, to) else {
+                let text = "Every band shows";
+                readout_chip(l, theme, scene, (x0 + x1) / 2.0, y0, text, m);
+                return;
+            };
+            bands = Some((i, j));
+            let (sa, sb) = (l.ind().map(i as f64), l.ind().map(j as f64));
             if l.horizontal {
                 (y0, y1) = (sa.min(sb).max(p.y), sa.max(sb).min(p.bottom()));
                 (x0, x1) = (p.x, p.right());
@@ -928,14 +1107,29 @@ fn brush(
         hair(scene, a, b, theme.text, 0.4);
     }
     // The readout: the span selected.
-    let text = readout(model, l, kind, (x0, y0), (x1, y1));
-    if text.is_empty() {
-        return;
+    let text = match bands {
+        Some((i, j)) => bands_readout(model, i, j),
+        None => readout(model, view, l, kind, (x0, y0), (x1, y1)),
+    };
+    if !text.is_empty() {
+        readout_chip(l, theme, scene, (x0 + x1) / 2.0, y0, &text, m);
     }
+}
+
+/// A brush's readout: a chip centred on `cx`, its top 6 px under `top`.
+fn readout_chip(
+    l: &ChartLayout,
+    theme: &Theme,
+    scene: &mut Scene,
+    cx: f32,
+    top: f32,
+    text: &str,
+    m: &mut dyn Measure,
+) {
     let spec = TextSpec::new(TICK).tabular();
-    let w = m.width(&text, spec) + 2.0 * CHIP_PAD;
-    let left = ((x0 + x1) / 2.0 - w / 2.0).clamp(INSET, (l.size.0 - INSET - w).max(INSET));
-    let chip_r = Rect::new(left, y0 + 6.0, w, CHIP_H);
+    let w = m.width(text, spec) + 2.0 * CHIP_PAD;
+    let left = (cx - w / 2.0).clamp(INSET, (l.size.0 - INSET - w).max(INSET));
+    let chip_r = Rect::new(left, top + 6.0, w, CHIP_H);
     scene.push(Item::Path {
         path: PathData::rounded(chip_r, [4.0; 4]),
         fill: Some(Paint::solid(theme.tooltip, 1.0)),
@@ -953,9 +1147,51 @@ fn brush(
     });
 }
 
+/// Bands `i` to `j` (not included), written: "b – e · 4 bands", or the one band's name.
+fn bands_readout(model: &ChartModel, i: usize, j: usize) -> String {
+    let name = |k: usize| band_name(model, k as u32);
+    let n = j.saturating_sub(i);
+    if n <= 1 {
+        name(i)
+    } else {
+        format!("{} – {} · {n} bands", name(i), name(j - 1))
+    }
+}
+
+/// A time rounded to the data's step in the zone's own clock and calendar: to the day at a
+/// local midnight, to the hour at a local hour (a half-hour zone's 07:00, not 07:30).
+fn round_time(v: f64, step: f64, zone: &jiff::tz::TimeZone) -> f64 {
+    use jiff::{RoundMode, Unit, ZonedRound};
+    let Some(z) = crate::scale::time::zoned(v, zone) else {
+        return v;
+    };
+    let whole = |unit: f64, per: i64| -> i64 {
+        let n = (step / unit).round().max(1.0) as i64;
+        if per % n == 0 { n } else { 1 }
+    };
+    let (unit, increment) = if step >= 86_400.0 {
+        (Unit::Day, 1)
+    } else if step >= 3600.0 {
+        (Unit::Hour, whole(3600.0, 24))
+    } else if step >= 60.0 {
+        (Unit::Minute, whole(60.0, 60))
+    } else if step >= 1.0 {
+        (Unit::Second, whole(1.0, 60))
+    } else {
+        return v;
+    };
+    let how = ZonedRound::new()
+        .smallest(unit)
+        .increment(increment)
+        .mode(RoundMode::HalfExpand);
+    z.round(how)
+        .map_or(v, |r| crate::scale::time::seconds(r.timestamp()))
+}
+
 /// What a brush selects, written: "06:05 – 06:40 · 35m", "12 – 48", "b – e · 4 bands".
 fn readout(
     model: &ChartModel,
+    view: &View,
     l: &ChartLayout,
     kind: BrushKind,
     a: (f32, f32),
@@ -964,21 +1200,18 @@ fn readout(
     let span_x = |lo: f64, hi: f64| -> String {
         match model.x.kind {
             AxisKind::Time => {
-                let step = model.min_interval(&View::default());
+                let step = model.min_interval(view);
                 let step = if step.is_finite() && step > 0.0 {
                     step
                 } else {
                     (hi - lo) / 100.0
                 };
-                // At the data's own step, rounded to it, so a brush from 06:05 reads 06:05.
-                let round = |v: f64| {
-                    if step > 0.0 {
-                        (v / step).round() * step
-                    } else {
-                        v
-                    }
-                };
-                let (lo, hi) = (round(lo), round(hi));
+                // At the data's own step, rounded to it in the zone, so a brush from 06:05
+                // reads 06:05 and one from a local midnight reads that day.
+                let (lo, hi) = (
+                    round_time(lo, step, &model.zone),
+                    round_time(hi, step, &model.zone),
+                );
                 format!(
                     "{} – {} · {}",
                     format_time_point(lo, step, &model.zone),
@@ -987,23 +1220,10 @@ fn readout(
                 )
             }
             AxisKind::Band => {
-                let (i, j) = (
-                    lo.floor().max(0.0) as usize,
-                    (hi.ceil() as usize).saturating_sub(1),
-                );
-                let name = |k: usize| {
-                    model
-                        .x
-                        .bands
-                        .get(k)
-                        .map_or(String::new(), |s| s.to_string())
-                };
-                let n = j + 1 - i.min(j + 1);
-                if n <= 1 {
-                    name(i)
-                } else {
-                    format!("{} – {} · {n} bands", name(i), name(j))
-                }
+                let n = model.x.bands.len();
+                let i = ((lo + 1e-6).floor().max(0.0) as usize).min(n.saturating_sub(1));
+                let j = ((hi - 1e-6).ceil().max(0.0) as usize).clamp(i + 1, n.max(i + 1));
+                bands_readout(model, i, j)
             }
             _ => format!("{} – {}", model.x_value(lo), model.x_value(hi)),
         }
@@ -1047,6 +1267,8 @@ struct Row {
     name: String,
     value: String,
     raw: f64,
+    /// The same quantity at the reference, for the delta: NaN without one.
+    base: f64,
     decimals: usize,
     marked: bool,
     missing: bool,
@@ -1071,8 +1293,26 @@ fn card_value(model: &ChartModel, v: f64, decimals: usize) -> String {
     format_fixed(v, decimals)
 }
 
+/// Whether the chart's stacks are normalised: its values are shares.
+fn normalised(model: &ChartModel) -> bool {
+    model.series.iter().any(|s| s.stack == Stack::Normalize)
+}
+
+/// The value a card shows for a sample: a normalised stack's share of its column, else its own.
+fn shown_value(model: &ChartModel, l: &ChartLayout, si: usize, i: usize) -> f64 {
+    let s = &model.series[si];
+    if normalised(model)
+        && let (Some(lo), Some(hi)) = (&l.stacks.lo[si], &l.stacks.hi[si])
+        && i < lo.len()
+    {
+        return hi[i] - lo[i];
+    }
+    s.ys.get(i).copied().unwrap_or(f64::NAN)
+}
+
 /// The rows of an x-chart's column: unstacked series by value, high first; stacked ones top to
 /// bottom as drawn.
+#[allow(clippy::too_many_arguments)]
 fn column_rows(
     model: &ChartModel,
     view: &View,
@@ -1080,21 +1320,15 @@ fn column_rows(
     col: &Column,
     mark: Option<&SeriesKey>,
     theme: &Theme,
+    reference: Option<f64>,
 ) -> Vec<Row> {
     let mut rows: Vec<(f64, usize, Row)> = Vec::new();
     for &(si, i) in &col.samples {
         let s = &model.series[si];
-        let raw = i.map_or(f64::NAN, |i| {
-            if model.series.iter().any(|o| o.stack == Stack::Normalize) {
-                // A normalised stack's card says each series' share.
-                match (&l.stacks.lo[si], &l.stacks.hi[si]) {
-                    (Some(lo), Some(hi)) => hi[i] - lo[i],
-                    _ => s.ys[i],
-                }
-            } else {
-                s.ys[i]
-            }
-        });
+        let raw = i.map_or(f64::NAN, |i| shown_value(model, l, si, i));
+        let base = reference
+            .and_then(|rx| sample_near(model, None, si, rx))
+            .map_or(f64::NAN, |j| shown_value(model, l, si, j));
         let order = i.map_or(f64::NEG_INFINITY, |i| model.top(&l.stacks, si, i));
         rows.push((
             if order.is_nan() {
@@ -1110,6 +1344,7 @@ fn column_rows(
                 name: s.name.clone(),
                 value: card_value(model, raw, s.decimals),
                 raw,
+                base,
                 decimals: s.decimals,
                 marked: mark == Some(&s.key),
                 missing: i.is_none() || raw.is_nan(),
@@ -1128,12 +1363,19 @@ fn band_rows(
     l: &ChartLayout,
     band: u32,
     mark: Option<&SeriesKey>,
+    reference: Option<f64>,
 ) -> Vec<Row> {
     let mut rows: Vec<(f64, usize, Row)> = Vec::new();
     for si in super::hover::walked(model, view) {
         let s = &model.series[si];
-        let i = (0..s.xs.len()).find(|&i| s.xs[i] as u32 == band && !s.xs[i].is_nan());
-        let raw = i.map_or(f64::NAN, |i| s.ys[i]);
+        let at =
+            |b: f64| (0..s.xs.len()).find(|&i| !s.xs[i].is_nan() && (s.xs[i] - b).abs() < 1e-9);
+        let i = at(f64::from(band));
+        let raw = i.map_or(f64::NAN, |i| shown_value(model, l, si, i));
+        // The reference is at a band's centre.
+        let base = reference
+            .and_then(|rx| at(rx - 0.5))
+            .map_or(f64::NAN, |j| shown_value(model, l, si, j));
         let order = match (i, &l.stacks.hi[si]) {
             (Some(i), Some(hi)) => hi[i],
             _ => -(si as f64),
@@ -1152,6 +1394,7 @@ fn band_rows(
                 name: s.name.clone(),
                 value: card_value(model, raw, s.decimals),
                 raw,
+                base,
                 decimals: s.decimals,
                 marked: mark == Some(&s.key),
                 missing: raw.is_nan(),
@@ -1188,6 +1431,7 @@ fn point_rows(model: &ChartModel, view: &View, si: usize, i: usize, theme: &Them
             name: xname,
             value: model.x_value(s.xs[i]),
             raw: s.xs[i],
+            base: f64::NAN,
             decimals: 0,
             marked: false,
             missing: false,
@@ -1199,6 +1443,7 @@ fn point_rows(model: &ChartModel, view: &View, si: usize, i: usize, theme: &Them
             name: yname,
             value: card_value(model, s.ys[i], s.decimals),
             raw: s.ys[i],
+            base: f64::NAN,
             decimals: s.decimals,
             marked: false,
             missing: false,
@@ -1212,6 +1457,7 @@ fn point_rows(model: &ChartModel, view: &View, si: usize, i: usize, theme: &Them
             name: "size".into(),
             value: format_value(sz[i]),
             raw: sz[i],
+            base: f64::NAN,
             decimals: 0,
             marked: false,
             missing: sz[i].is_nan(),
@@ -1267,6 +1513,8 @@ struct Card {
     deltas: Vec<String>,
     val_w: f32,
     delta_w: f32,
+    name_w: f32,
+    header_w: f32,
     w: f32,
     h: f32,
 }
@@ -1274,12 +1522,26 @@ struct Card {
 const PAD: f32 = 12.0;
 const KEY_W: f32 = 14.0;
 const GAP: f32 = 9.0;
+/// The least a card's name column narrows to, its names cut with '…', before the Δ column goes.
+const NAME_MIN: f32 = 44.0;
+/// A card's height past its rows: its header above them and its padding under.
+const CARD_CHROME: f32 = 12.0 + 13.0 + 7.0 + 7.0;
+
+/// Where a card goes beside its anchor.
+#[derive(Clone, Copy, PartialEq)]
+enum Side {
+    Right,
+    Left,
+}
 
 impl Card {
+    /// A card's rows measured, at most twelve and no more than the area's height holds (the
+    /// marked row always among them, the rest as "+N more"), with Δs against the reference at
+    /// `reference_x` when there's one.
     #[allow(clippy::too_many_arguments)]
     fn new(
         model: &ChartModel,
-        view: &View,
+        l: &ChartLayout,
         header: String,
         mut rows: Vec<Row>,
         total: Option<String>,
@@ -1297,17 +1559,29 @@ impl Card {
                 r.color = model.color(s, theme);
             }
         }
-        // At most twelve, the marked one among them.
+        let total_h = if total.is_some() { 9.0 + CARD_ROW } else { 0.0 };
+        let room = ((l.size.1 - 2.0 * INSET - CARD_CHROME - total_h) / CARD_ROW).floor();
+        let room = if room.is_finite() {
+            room.max(1.0) as usize
+        } else {
+            1
+        };
+        let cap = if rows.len() <= CARD_ROWS.min(room) {
+            rows.len()
+        } else {
+            // Room for "+N more" under them.
+            CARD_ROWS.min(room.saturating_sub(1)).max(1)
+        };
         let mut more = 0;
-        if rows.len() > CARD_ROWS {
-            more = rows.len() - CARD_ROWS;
+        if rows.len() > cap {
+            more = rows.len() - cap;
             if let Some(k) = rows.iter().position(|r| r.marked)
-                && k >= CARD_ROWS
+                && k >= cap
             {
                 let r = rows.remove(k);
-                rows.insert(CARD_ROWS - 1, r);
+                rows.insert(cap - 1, r);
             }
-            rows.truncate(CARD_ROWS);
+            rows.truncate(cap);
         }
         let mut header = header;
         let mut deltas = Vec::new();
@@ -1320,23 +1594,11 @@ impl Card {
             if !dx.is_empty() {
                 header = format!("{header} · {dx}");
             }
+            let points = normalised(model);
             for r in &rows {
-                let Some(si) = model.index_of(&r.key) else {
-                    deltas.push(String::new());
-                    continue;
-                };
-                let base = if model.is_band() {
-                    let s = &model.series[si];
-                    (0..s.xs.len())
-                        .find(|&i| (s.xs[i] + 0.5 - rx).abs() < 1e-9)
-                        .map_or(f64::NAN, |i| s.ys[i])
-                } else {
-                    sample_near(model, None, si, rx).map_or(f64::NAN, |i| model.series[si].ys[i])
-                };
-                deltas.push(delta(r.raw, base, r.decimals));
+                deltas.push(delta(r.raw, r.base, r.decimals, points));
             }
         }
-        let _ = view;
         let vspec = TextSpec::new(13.0).weight(Weight::Semibold).tabular();
         let nspec = TextSpec::new(BODY);
         let dspec = TextSpec::new(BODY).tabular();
@@ -1355,24 +1617,10 @@ impl Card {
             name_w = name_w.max(m.width(&format!("+{more} more"), nspec));
         }
         let delta_w = deltas.iter().map(|d| m.width(d, dspec)).fold(0.0, f32::max);
-        let name_w = name_w.min(260.0);
-        let body_w = PAD
-            + KEY_W
-            + GAP
-            + val_w
-            + if delta_w > 0.0 { GAP + delta_w } else { 0.0 }
-            + GAP
-            + name_w
-            + 14.0;
-        let w = body_w.max(m.width(&header, hspec) + 2.0 * PAD).ceil();
+        let header_w = m.width(&header, hspec);
         let n = rows.len() + usize::from(more > 0);
-        let h = 12.0
-            + 13.0
-            + 7.0
-            + n as f32 * CARD_ROW
-            + if total.is_some() { 9.0 + CARD_ROW } else { 0.0 }
-            + 7.0;
-        Card {
+        let h = CARD_CHROME + n as f32 * CARD_ROW + total_h;
+        let mut card = Card {
             header,
             rows,
             more,
@@ -1380,48 +1628,113 @@ impl Card {
             deltas,
             val_w,
             delta_w,
-            w,
+            name_w: name_w.min(260.0),
+            header_w,
+            w: 0.0,
             h,
-        }
+        };
+        card.w = card.natural();
+        card
     }
 
-    /// Beside a crosshair or a band: right of `right` (or left of `left` once it would pass the
-    /// area's edge, back only with a cell to spare), its top `CARD_GAP` below `ay`, slid up to
-    /// fit the area.
+    /// The width its columns ask for, the header's too.
+    fn natural(&self) -> f32 {
+        self.body(self.name_w).max(self.header_w + 2.0 * PAD).ceil()
+    }
+
+    /// The width of its rows with the names `name_w` wide.
+    fn body(&self, name_w: f32) -> f32 {
+        PAD + KEY_W
+            + GAP
+            + self.val_w
+            + if self.delta_w > 0.0 {
+                GAP + self.delta_w
+            } else {
+                0.0
+            }
+            + GAP
+            + name_w
+            + 14.0
+    }
+
+    /// The narrowest it can be: names cut to `NAME_MIN` (or their own width), no Δ column.
+    fn narrowest(&self) -> f32 {
+        let names = self.name_w.min(NAME_MIN);
+        let deltas = if self.delta_w > 0.0 {
+            GAP + self.delta_w
+        } else {
+            0.0
+        };
+        self.body(names) - deltas
+    }
+
+    /// Narrowed to `max` if it can be: the names cut first (the header with them), then the Δ
+    /// column dropped. False when even that won't fit, the card left as it was.
+    fn narrow(&mut self, max: f32) -> bool {
+        if self.w <= max {
+            return true;
+        }
+        if self.body(self.name_w.min(NAME_MIN)) <= max {
+            self.w = max.floor();
+            return true;
+        }
+        if self.narrowest() <= max {
+            self.deltas.clear();
+            self.delta_w = 0.0;
+            self.w = max.floor();
+            return true;
+        }
+        false
+    }
+
+    /// Beside a crosshair or a band, never over what's between `left` and `right` from `span.0`
+    /// to `span.1` (its dots, its bars): right of `right` (left of `left` once it would pass the
+    /// plot's right edge, back only with a cell to spare), its top `CARD_GAP` below `ay`, slid
+    /// up to fit the area. Where neither side has room for it whole, it narrows; where neither
+    /// has room for it narrowed, it goes under the span or over it.
     #[allow(clippy::too_many_arguments)]
     fn place_beside(
-        &self,
+        &mut self,
         l: &ChartLayout,
         scene: &mut Scene,
         left: f32,
         right: f32,
         ay: f32,
+        span: (f32, f32),
         theme: &Theme,
         m: &mut dyn Measure,
     ) {
         let (aw, ah) = l.size;
         // The plot's right edge, so the card leaves the end labels be, unless only past it does
         // the card fit.
-        let limit = (l.plot.right() + 8.0).min(aw - INSET);
-        let fits_right = |spare: f32| right + CARD_GAP + self.w + spare <= limit;
-        let flipped = if l.flipped.get() {
-            !fits_right(l.cell_width)
+        let soft = (l.plot.right() + 8.0).min(aw - INSET);
+        let room_right = |limit: f32| limit - (right + CARD_GAP);
+        let room_left = left - CARD_GAP - INSET;
+        let spare = if l.flipped.get() { l.cell_width } else { 0.0 };
+        let side = if self.w + spare <= room_right(soft) {
+            Some(Side::Right)
+        } else if self.w <= room_left {
+            Some(Side::Left)
+        } else if self.w <= room_right(aw - INSET) {
+            Some(Side::Right)
         } else {
-            !fits_right(0.0)
-        };
-        let x = if flipped && left - CARD_GAP - self.w >= INSET {
-            left - CARD_GAP - self.w
-        } else if flipped {
-            // Neither side has room: the side with more, clamped.
-            if left > aw - right {
-                INSET
+            // Narrowed, on the side with more room.
+            let (side, room) = if room_left >= room_right(aw - INSET) {
+                (Side::Left, room_left)
             } else {
-                (aw - INSET - self.w).max(INSET)
-            }
-        } else {
-            right + CARD_GAP
+                (Side::Right, room_right(aw - INSET))
+            };
+            self.narrow(room).then_some(side)
         };
-        l.flipped.set(flipped);
+        let Some(side) = side else {
+            self.place_off(l, scene, span, right, theme, m);
+            return;
+        };
+        l.flipped.set(side == Side::Left);
+        let x = match side {
+            Side::Right => right + CARD_GAP,
+            Side::Left => left - CARD_GAP - self.w,
+        };
         // Over the plot, not the axis under it, where it fits.
         let floor = if self.h <= l.plot.bottom() - INSET {
             l.plot.bottom()
@@ -1429,17 +1742,70 @@ impl Card {
             ah - INSET
         };
         let y = (ay + CARD_GAP).min(floor - self.h).max(INSET);
-        self.draw(
-            scene,
-            Rect::new(x.round(), y.round(), self.w, self.h),
-            theme,
-            m,
-        );
+        let r = Rect::new(x.round(), y.round(), self.w, self.h);
+        clear_ticks(l, theme, scene, r, m);
+        self.draw(scene, r, theme, m);
+    }
+
+    /// Right of `ax`, level with the span from `span.0` to `span.1` down the screen (a band
+    /// across), where it fits there; else under the span or over it.
+    #[allow(clippy::too_many_arguments)]
+    fn place_level(
+        &mut self,
+        l: &ChartLayout,
+        scene: &mut Scene,
+        span: (f32, f32),
+        ax: f32,
+        theme: &Theme,
+        m: &mut dyn Measure,
+    ) {
+        let (aw, ah) = l.size;
+        let x = ax + CARD_GAP;
+        if x + self.w > aw - INSET {
+            self.place_off(l, scene, span, ax.min(l.plot.x + l.plot.w / 2.0), theme, m);
+            return;
+        }
+        let mid = (span.0 + span.1) / 2.0;
+        let y = (mid - self.h / 2.0).min(ah - INSET - self.h).max(INSET);
+        let r = Rect::new(x.round(), y.round(), self.w, self.h);
+        clear_ticks(l, theme, scene, r, m);
+        self.draw(scene, r, theme, m);
+    }
+
+    /// Under the span from `span.0` to `span.1` down the screen (a band across, a crosshair's
+    /// dots), or over it where there's more room there, starting right of `ax`.
+    #[allow(clippy::too_many_arguments)]
+    fn place_off(
+        &mut self,
+        l: &ChartLayout,
+        scene: &mut Scene,
+        span: (f32, f32),
+        ax: f32,
+        theme: &Theme,
+        m: &mut dyn Measure,
+    ) {
+        let (aw, ah) = l.size;
+        self.narrow(aw - 2.0 * INSET);
+        let below = span.1 + CARD_GAP;
+        let above = span.0 - CARD_GAP - self.h;
+        let y = if below + self.h <= ah - INSET {
+            below
+        } else if above >= INSET {
+            above
+        } else if ah - span.1 >= span.0 {
+            below.min(ah - INSET - self.h).max(INSET)
+        } else {
+            above.max(INSET)
+        };
+        let x = (ax + CARD_GAP).min(aw - INSET - self.w).max(INSET);
+        let r = Rect::new(x.round(), y.round(), self.w, self.h);
+        clear_ticks(l, theme, scene, r, m);
+        self.draw(scene, r, theme, m);
     }
 
     /// Beside a point, never over it: right-below, right-above, left-below, then left-above.
     fn place_point(
-        &self,
+        &mut self,
         l: &ChartLayout,
         scene: &mut Scene,
         p: (f32, f32),
@@ -1448,6 +1814,7 @@ impl Card {
         m: &mut dyn Measure,
     ) {
         let (aw, ah) = l.size;
+        self.narrow(aw - 2.0 * INSET);
         let g = CARD_GAP + r;
         let tries = [
             (p.0 + g, p.1 + g),
@@ -1465,12 +1832,9 @@ impl Card {
                 y.min(ah - INSET - self.h).max(INSET),
             )
         });
-        self.draw(
-            scene,
-            Rect::new(x.round(), y.round(), self.w, self.h),
-            theme,
-            m,
-        );
+        let rect = Rect::new(x.round(), y.round(), self.w, self.h);
+        clear_ticks(l, theme, scene, rect, m);
+        self.draw(scene, rect, theme, m);
     }
 
     fn draw(&self, scene: &mut Scene, r: Rect, theme: &Theme, m: &mut dyn Measure) {
@@ -1624,8 +1988,9 @@ fn key(scene: &mut Scene, shape: KeyShape, x: f32, mid: f32, color: Color) {
     });
 }
 
-/// A delta against the reference: "▲ 38 (6.3 %)", "▼ 12 (1.9 %)", "= 0".
-fn delta(v: f64, base: f64, decimals: usize) -> String {
+/// A delta against the reference: "▲ 38 (6.3 %)", "▼ 12 (1.9 %)", "= 0"; between two shares
+/// (`points`), in percentage points: "▲ 25 pp".
+fn delta(v: f64, base: f64, decimals: usize, points: bool) -> String {
     if !(v.is_finite() && base.is_finite()) {
         return String::new();
     }
@@ -1634,6 +1999,10 @@ fn delta(v: f64, base: f64, decimals: usize) -> String {
         return "= 0".into();
     }
     let arrow = if d > 0.0 { "▲" } else { "▼" };
+    if points {
+        let pp = (d.abs() * 1000.0).round() / 10.0;
+        return format!("{arrow} {} pp", format_value(pp));
+    }
     let amount = format_fixed(d.abs(), decimals);
     if base != 0.0 {
         let pct = d.abs() / base.abs() * 100.0;

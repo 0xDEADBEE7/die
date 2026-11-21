@@ -91,10 +91,13 @@ fn point_motion(
     let ((x0, x1), (y0, y1)) = model.fit(view);
     let (x0, x1) = (x0.min(x1), x0.max(x1));
     let mid_y = (y0 + y1) / 2.0;
+    // A cursor on a row the data no longer has (a re-parse took it) is no cursor.
     let current = cursor.and_then(|c| match c {
         Cursor::Point { series: k, row } => {
             let si = model.index_of(k)?;
-            series.contains(&si).then_some((si, *row as usize))
+            let s = &model.series[si];
+            let i = *row as usize;
+            (series.contains(&si) && i < s.xs.len().min(s.ys.len())).then_some((si, i))
         }
         _ => None,
     });
@@ -140,6 +143,9 @@ fn point_motion(
                 return place(0.0, if *d >= 0 { -1 } else { 1 });
             };
             let all: Vec<usize> = present(model, si).collect();
+            if all.is_empty() {
+                return None;
+            }
             let at = all.partition_point(|&j| j < i);
             let to = (at as i64 + i64::from(*d) * n).clamp(0, all.len() as i64 - 1) as usize;
             (all.get(to) != Some(&i)).then(|| point(si, all[to]))
@@ -373,17 +379,24 @@ fn band_motion(
         }
         Action::Peak(d) => {
             let (b, s) = current?;
-            let totals: Vec<f64> = (0..count)
-                .map(|i| {
-                    layout
-                        .bars
-                        .iter()
-                        .filter(|g| g.band as usize == i)
-                        .map(|g| model.series[g.series].ys[g.sample])
-                        .filter(|v| v.is_finite())
-                        .sum()
-                })
+            // Each band's total over every band, in view or not: the visible bars', else the
+            // visible series'.
+            let walked = walked(model, view);
+            let bars: Vec<usize> = walked
+                .iter()
+                .copied()
+                .filter(|&si| model.series[si].mark == MarkKind::Bar)
                 .collect();
+            let counted = if bars.is_empty() { walked } else { bars };
+            let mut totals = vec![0.0; count];
+            for &si in &counted {
+                let sr = &model.series[si];
+                for (x, y) in sr.xs.iter().zip(sr.ys.iter()) {
+                    if x.is_finite() && y.is_finite() && *x >= 0.0 && (*x as usize) < count {
+                        totals[*x as usize] += y;
+                    }
+                }
+            }
             let peak = |i: usize| {
                 let left = i == 0 || totals[i - 1] < totals[i];
                 let right = i + 1 == count || totals[i + 1] <= totals[i];
@@ -536,16 +549,17 @@ fn axes_of(model: &ChartModel, view: &View, axis: Option<Axis>) -> (bool, bool) 
     }
 }
 
-/// The domains on screen: the view's, or the fit, y as the layout niced it for its ticks when
-/// the layout is of this x.
+/// The domains on screen: the view's, or the fit as the layout refined it (y niced for its
+/// ticks, a scatter's padded for its points) when the layout is of this view.
 fn shown(model: &ChartModel, layout: &ChartLayout, view: &View) -> ((f64, f64), (f64, f64)) {
     let (x, y) = model.fit(view);
-    let y = if view.y.is_none() && same(layout.domain.0, x) {
-        layout.domain.1
-    } else {
-        y
-    };
-    (x, y)
+    if !same(layout.fit.0, x) {
+        return (x, y);
+    }
+    (
+        if view.x.is_none() { layout.domain.0 } else { x },
+        if view.y.is_none() { layout.domain.1 } else { y },
+    )
 }
 
 /// The fit's domains with nothing zoomed: what x and y show with None.
@@ -651,9 +665,11 @@ fn follow(model: &ChartModel, layout: &ChartLayout, v: &mut View, on: bool) {
     let ((x0, x1), _) = model.fit(v);
     let (x0, x1) = (x0.min(x1), x0.max(x1));
     let px = (x1 - x0) / f64::from(layout.lengths().0.max(1.0));
+    // The data's end: the newest sample, or past it the half interval a bar there takes.
+    let end = model.extent().0.1;
     if newest > x1 + px * 0.5 {
         v.follow = false;
-    } else if on && (x1 - newest).abs() <= px {
+    } else if on && ((x1 - newest).abs() <= px || (x1 - end).abs() <= px) {
         v.follow = true;
     }
 }
@@ -819,12 +835,9 @@ pub fn brush(
         let (lo, hi) = (d0.min(d1), d0.max(d1));
         let d = if kind == BrushKind::Bands || model.is_band() {
             let n = model.x.bands.len() as f64;
-            let (blo, bhi) = (lo.floor().max(0.0), hi.ceil().min(n));
+            let (i, j) = brush_bands(model, layout, view, from, to)?;
+            let (blo, bhi) = (i as f64, j as f64);
             let min = min_span_x(model, layout, view);
-            let shown = model.fit(view).0;
-            if (shown.1 - shown.0).abs() <= min + 1e-9 {
-                return None;
-            }
             let span = (bhi - blo).max(min.ceil().min(n));
             let mid = ((blo + bhi) / 2.0 - span / 2.0).round();
             clamp_into((mid, mid + span), (0.0, n))
@@ -860,6 +873,36 @@ pub fn brush(
     }
     follow(model, layout, &mut v, false);
     (v != *view).then_some(v)
+}
+
+/// The bands a brush from `from` to `to` touches, as `[i, j)`: read from its raw corners,
+/// clamped to the plot, so the preview's band, its readout and the zoom agree. None when the
+/// bands already show at full width, where a brush can't zoom.
+pub fn brush_bands(
+    model: &ChartModel,
+    layout: &ChartLayout,
+    view: &View,
+    from: (f32, f32),
+    to: (f32, f32),
+) -> Option<(usize, usize)> {
+    let n = model.x.bands.len();
+    if n == 0 {
+        return None;
+    }
+    let min = min_span_x(model, layout, view);
+    let shown = model.fit(view).0;
+    if (shown.1 - shown.0).abs() <= min + 1e-9 {
+        return None;
+    }
+    let p = layout.plot;
+    let c = |q: (f32, f32)| (q.0.clamp(p.x, p.right()), q.1.clamp(p.y, p.bottom()));
+    let (a, b) = (c(from), c(to));
+    let (d0, d1) = (layout.data_x(a.0, a.1), layout.data_x(b.0, b.1));
+    let (lo, hi) = (d0.min(d1), d0.max(d1));
+    // A corner a hair past a band's edge, from float rounding, doesn't take the next band.
+    let i = ((lo + 1e-6).floor().max(0.0) as usize).min(n - 1);
+    let j = ((hi - 1e-6).ceil().max(0.0) as usize).clamp(i + 1, n);
+    Some((i, j))
 }
 
 /// The brush a left drag on the plot makes here: X on x-charts, Box on scatter, Bands on bands.

@@ -69,7 +69,9 @@ pub fn hover(
         return Some(Cursor::Point { series, row });
     }
     let at = snap(model, layout, hits, view, x, y)?;
-    let (key, row) = nearest_y(model, layout, &at, y, None)?;
+    // The values run across for bars across.
+    let along = if layout.horizontal { x } else { y };
+    let (key, row) = nearest_y(model, layout, &at, along, None)?;
     Some(Cursor::Point { series: key, row })
 }
 
@@ -109,7 +111,8 @@ pub fn nearest_series(
         Cursor::Point { series, .. } if model.is_scatter() => Some(series),
         Cursor::Point { .. } => {
             let at = snap(model, layout, hits, view, x, y)?;
-            nearest_y(model, layout, &at, y, Some(NEAREST_SERIES)).map(|(k, _)| k)
+            let along = if layout.horizontal { x } else { y };
+            nearest_y(model, layout, &at, along, Some(NEAREST_SERIES)).map(|(k, _)| k)
         }
         _ => None,
     }

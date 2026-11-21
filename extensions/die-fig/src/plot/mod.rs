@@ -22,7 +22,7 @@ pub mod overlay;
 
 pub use hover::{hover, nearest_series};
 pub use layout::{ChartLayout, banner, empty};
-pub use nav::{brush, brush_kind, centre, motion, pan, reset, reveal, tween, zoom};
+pub use nav::{brush, brush_bands, brush_kind, centre, motion, pan, reset, reveal, tween, zoom};
 pub use overlay::{OverlayState, overlay};
 
 use crate::algo::{HitIndex, Pyramid};
@@ -111,8 +111,9 @@ pub struct ChartModel {
     pub chart: Chart,
     /// Its tables as given: the chart's, then each layer's own.
     pub tables: Vec<Arc<Table>>,
-    /// Its series, in source order: each layer's in turn. A key coloured in two layers (a line
-    /// and its band) is one series to the legend, the colour and the hidden set.
+    /// Its series, in source order: each layer's in turn, the nth of a name across the chart
+    /// (ruling 3). A band and a line of one name in two layers (a line and its band, coloured
+    /// by one field) share a key: one series to the legend, the colour and the hidden set.
     pub series: Vec<SeriesInfo>,
     /// The zone its times are shown in.
     pub zone: TimeZone,
@@ -547,10 +548,17 @@ impl ChartModel {
             if !all && !self.visible(view, &s.key) {
                 continue;
             }
+            // A bar over a number or a time is centred on its x and an interval wide: the fit
+            // takes in half of one past each end, so the first and last are drawn whole.
+            let half = if s.mark == MarkKind::Bar && s.ends.is_none() && !self.is_band() {
+                s.interval / 2.0
+            } else {
+                0.0
+            };
             for (i, &x) in s.xs.iter().enumerate() {
                 if x.is_finite() && !s.ys[i].is_nan() {
-                    lo = lo.min(x);
-                    hi = hi.max(s.ends.as_ref().map_or(x, |e| e[i].max(x)));
+                    lo = lo.min(x - half);
+                    hi = hi.max(s.ends.as_ref().map_or(x, |e| e[i].max(x)) + half);
                 }
             }
         }
@@ -611,10 +619,12 @@ impl ChartModel {
                 (p.saturating_sub(1), (q + 1).min(s.xs.len()))
             };
             for i in 0..s.xs.len() {
-                let (l, h) = self.span(&stacks, si, i);
-                if !(l.is_finite() && h.is_finite()) {
+                let (u, v) = self.span(&stacks, si, i);
+                if !(u.is_finite() && v.is_finite()) {
                     continue;
                 }
+                // A bar or segment below zero runs from its top down to its bottom.
+                let (l, h) = (u.min(v), u.max(v));
                 whole_lo = whole_lo.min(l);
                 whole_hi = whole_hi.max(h);
                 let x = s.xs[i];
@@ -675,6 +685,10 @@ impl ChartModel {
                 continue;
             };
             let s = &self.series[si];
+            // A series with no sample has nowhere for the cursor: a search can't find it.
+            let Some((_, last)) = s.present_ends() else {
+                continue;
+            };
             let label = if key.nth == 0 {
                 s.name.clone()
             } else {
@@ -691,10 +705,9 @@ impl ChartModel {
                     series: Some(key.clone()),
                 }
             } else {
-                let row = s.present_ends().map_or(0, |(_, last)| last as u32);
                 Cursor::Point {
                     series: key.clone(),
-                    row,
+                    row: last as u32,
                 }
             };
             out.push((label, cursor));
@@ -912,6 +925,34 @@ impl ChartModel {
         scale::format_fixed(y, decimals)
     }
 
+    /// Whether every value the visible series show is a whole number (counts): the value axis
+    /// then ticks at whole steps, never at 0.5. Not on a log axis, a normalised stack or an
+    /// axis with its own format.
+    pub fn whole_values(&self, view: &View) -> bool {
+        if self.y.kind != AxisKind::Linear
+            || self.y.format.is_some()
+            || self.series.iter().any(|s| s.stack == Stack::Normalize)
+        {
+            return false;
+        }
+        let mut any = false;
+        for s in self.series.iter().filter(|s| self.visible(view, &s.key)) {
+            if s.mark == MarkKind::Rect {
+                return false;
+            }
+            let more = s.y2s.iter().flat_map(|v| v.iter());
+            for &v in s.ys.iter().chain(more) {
+                if v.is_finite() {
+                    if v.fract() != 0.0 {
+                        return false;
+                    }
+                    any = true;
+                }
+            }
+        }
+        any
+    }
+
     /// The smallest interval between samples of the visible series, for the zoom's limit.
     pub fn min_interval(&self, view: &View) -> f64 {
         self.series
@@ -1016,8 +1057,8 @@ struct Builder {
     yband_of: BTreeMap<Box<str>, usize>,
     xch: Option<Channel>,
     ych: Option<Channel>,
-    /// How many series each name has had in each layer, for keys.
-    names: usize,
+    /// How many keys each display name has had, across the layers in source order (ruling 3).
+    names: BTreeMap<String, u32>,
 }
 
 impl Builder {
@@ -1036,8 +1077,25 @@ impl Builder {
             yband_of: BTreeMap::new(),
             xch: None,
             ych: None,
-            names: 0,
+            names: BTreeMap::new(),
         }
+    }
+
+    /// The key of the `k`th series named `name` in layer `li`: the next of its name across the
+    /// chart (ruling 3), but a band and a line of one name, the `k`th of it in their layers,
+    /// are one series, the line's band, so they share the key the first of them took.
+    fn key_for(&mut self, name: &str, k: u32, band: bool, li: u16) -> SeriesKey {
+        let pair = SeriesKey::new(name, k);
+        let mut holders = self.series.iter().filter(|s| s.key == pair);
+        if let (Some(h), None) = (holders.next(), holders.next())
+            && (h.mark == MarkKind::Band) != band
+            && h.layer != li
+        {
+            return pair;
+        }
+        let n = self.names.entry(name.to_string()).or_default();
+        *n += 1;
+        SeriesKey::new(name, *n - 1)
     }
 
     /// The axes, from the first layer that decided each and its channel.
@@ -1120,9 +1178,24 @@ impl Builder {
             || matches!(ch.kind, Some(ColumnKind::Category | ColumnKind::Text));
         Ok(match (&col.values, as_strings) {
             (Values::Number(v) | Values::Time(v), false) => Read::Numbers(v.to_vec()),
-            (Values::Number(v) | Values::Time(v), true) => Read::Strings(
+            (Values::Time(v), true) => {
+                // Times as categories: each at the precision their spacing needs.
+                let mut sorted: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
+                sorted.sort_by(f64::total_cmp);
+                sorted.dedup();
+                let step = median_interval(&sorted);
+                Read::Strings(
+                    v.iter()
+                        .map(|x| {
+                            (!x.is_nan())
+                                .then(|| scale::format_time(*x, step, &self.opt.zone).into())
+                        })
+                        .collect(),
+                )
+            }
+            (Values::Number(v), true) => Read::Strings(
                 v.iter()
-                    .map(|x| (!x.is_nan()).then(|| format_value(*x).into()))
+                    .map(|x| (!x.is_nan()).then(|| tsv_number(*x).into()))
                     .collect(),
             ),
             (Values::Category { .. } | Values::Text(_), _) => Read::Strings(
@@ -1153,6 +1226,9 @@ impl Builder {
             let c = ich.expect("decides needs a channel");
             let col = c.field.as_deref().and_then(|f| t.column(f));
             let k = match (c.scale, c.kind, col.map(Column::kind)) {
+                // Bars across put their categories down the screen, whatever the field holds:
+                // the crosshair and the brush run along x only.
+                _ if self.horizontal && kind == MarkKind::Bar => AxisKind::Band,
                 (Some(ScaleKind::Band), _, _) => AxisKind::Band,
                 (Some(ScaleKind::Log), _, _) => AxisKind::Log,
                 (Some(ScaleKind::Time), _, _) | (_, Some(ColumnKind::Time), _) => AxisKind::Time,
@@ -1249,12 +1325,12 @@ impl Builder {
         };
         let mut seen: BTreeMap<String, u32> = BTreeMap::new();
         for (name, rows) in groups {
-            let nth = {
+            let k = {
                 let c = seen.entry(name.clone()).or_default();
                 *c += 1;
                 *c - 1
             };
-            let key = SeriesKey::new(&name, nth);
+            let key = self.key_for(&name, k, kind == MarkKind::Band, li);
             let style = series_style(chart, layer, &key);
             let mut order = rows;
             let sort = !xband && kind != MarkKind::Rect;
@@ -1286,7 +1362,11 @@ impl Builder {
                 srows = per.values().map(|v| v.1).collect();
             }
             let interval = median_interval(&sx);
-            let decimals = scale::data_decimals(&sy);
+            // A heatmap's values are its colour field's; its y is the rows' places.
+            let decimals = match &rect_value {
+                Some(v) => scale::data_decimals(&pick(v)),
+                None => scale::data_decimals(&sy),
+            };
             let x_decimals = if xband { 0 } else { scale::data_decimals(&sx) };
             let mark = kind;
             let pyramid = (sort && matches!(mark, MarkKind::Line | MarkKind::Area))
@@ -1324,7 +1404,6 @@ impl Builder {
                 decimals,
                 x_decimals,
             });
-            self.names += 1;
         }
         // A layer of one series doesn't stack.
         let members: Vec<usize> = (0..self.series.len())
@@ -1614,6 +1693,10 @@ pub fn base(
 ) -> (Scene, ChartLayout, HitIndex) {
     let mut layout = layout::lay_out(model, view, size, scale, m);
     layout.bars = marks::bars(model, view, &layout);
+    layout.totals = marks::bar_totals(model, view, &layout, theme, m)
+        .into_iter()
+        .map(|(b, _, r)| (b, r))
+        .collect();
     let mut scene = Scene::new(size.0, size.1, scale);
     let mut hits = HitIndex::new();
     layout::regions_under(&layout, &mut scene);

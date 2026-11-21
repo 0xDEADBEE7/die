@@ -29,6 +29,9 @@ const FIXTURES: &[&str] = &[
     "stacked-area.json",
     "thresholds.json",
     "gaps.csv",
+    "hbars.json",
+    "profit.csv",
+    "deploys.json",
 ];
 const SIZES: &[(f32, f32)] = &[(400.0, 240.0), (880.0, 470.0), (1800.0, 1000.0)];
 
@@ -315,8 +318,15 @@ fn x_labels_are_at_least_64_px_apart_and_y_ticks_about_48() {
                 let ys: Vec<f32> = l.y_ticks.iter().map(|t| l.y.map(t.value)).collect();
                 assert!(ys.len() >= 2, "{name} {size:?}: {ys:?}");
                 let gap = (ys[0] - ys[1]).abs();
+                // Counts tick at whole steps however much room there is.
+                let step = (l.y_ticks[1].value - l.y_ticks[0].value).abs();
+                let most = if model.whole_values(&View::default()) && step == 1.0 {
+                    f32::INFINITY
+                } else {
+                    110.0
+                };
                 assert!(
-                    (24.0..=110.0).contains(&gap),
+                    gap >= 24.0 && gap <= most,
                     "{name} {size:?}: y ticks {gap} apart"
                 );
             }
@@ -1714,4 +1724,1021 @@ fn the_banner_and_the_empty_figure() {
     );
     assert!(has_text(&e, "No data in requests.csv"));
     assert_eq!(e.hit(300.0, 150.0), Some(&Hit::Chrome));
+}
+
+// ---------------------------------------------------------------- after the review
+
+/// What the pointer at `p` shows: the hover, the series it brings forward, the overlay.
+fn hovered(
+    model: &ChartModel,
+    l: &ChartLayout,
+    hits: &die_fig::algo::HitIndex,
+    view: &View,
+    p: (f32, f32),
+) -> (Option<Cursor>, Scene) {
+    let hover = plot::hover(model, l, hits, view, p.0, p.1);
+    let emphasis = plot::nearest_series(model, l, hits, view, p.0, p.1);
+    let o = overlay(
+        model,
+        l,
+        view,
+        &OverlayState {
+            hover: hover.clone(),
+            pointer: Some(p),
+            emphasis,
+            ..state()
+        },
+    );
+    (hover, o)
+}
+
+/// Each circle a scene draws, as its centre and radius, with its item's index.
+fn circles(scene: &Scene) -> Vec<(usize, (f32, f32), f32)> {
+    scene
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(k, i)| match i {
+            Item::Path { path, fill, .. }
+                if fill.is_some()
+                    && path.verbs.last() == Some(&Verb::Close)
+                    && path
+                        .verbs
+                        .iter()
+                        .filter(|v| matches!(v, Verb::Cubic(..)))
+                        .count()
+                        == 4
+                    && path.verbs.len() == 6 =>
+            {
+                let b = path.bounds()?;
+                Some((k, (b.x + b.w / 2.0, b.y + b.h / 2.0), b.w / 2.0))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn bands_spec(n: usize, horizontal: bool) -> String {
+    let rows: Vec<String> = (0..n)
+        .map(|i| format!("{{\"k\": \"c{i:02}\", \"v\": {}}}", 10 + (i * 7) % 23))
+        .collect();
+    let (x, y) = if horizontal { ("v", "k") } else { ("k", "v") };
+    format!(
+        "{{\"type\": \"bar\", \"data\": {{\"values\": [{}]}}, \"x\": \"{x}\", \"y\": \"{y}\", \
+         \"mark\": {{\"type\": \"bar\", \"horizontal\": {horizontal}}}}}",
+        rows.join(", ")
+    )
+}
+
+#[test]
+fn horizontal_bars_lay_their_bands_down_the_screen_and_their_values_across() {
+    let model = load("hbars.json");
+    assert!(model.horizontal && model.is_band());
+    let view = View::default();
+    for &size in SIZES {
+        let (scene, l, hits) = lay(&model, &view, size);
+        assert!(
+            matches!(l.y, die_fig::scale::Scale::Band { .. })
+                && matches!(l.x, die_fig::scale::Scale::Linear { .. }),
+            "{size:?}: x across is the values', y up the bands'"
+        );
+        assert_eq!(l.bars.len(), 6, "{size:?}: a bar a service");
+        let p = l.plot;
+        for b in &l.bars {
+            let r = b.rect;
+            assert!(
+                r.x >= p.x - 0.5
+                    && r.right() <= p.right() + 0.5
+                    && r.y >= p.y - 0.5
+                    && r.bottom() <= p.bottom() + 0.5,
+                "{size:?}: {r:?} inside {p:?}"
+            );
+            assert!((r.x - p.x).abs() < 0.5, "{size:?}: from the zero baseline");
+        }
+        // The longest bar is inventory's (144), across most of the plot.
+        let widest = l.bars.iter().map(|b| b.rect.w).fold(0.0, f32::max);
+        assert!(widest > p.w * 0.6, "{size:?}: {widest} of {}", p.w);
+        // The value ticks run across under the plot, the bands' names down its left.
+        assert!(
+            l.labels
+                .iter()
+                .any(|x| x.role == Role::YTick && x.text == "auth")
+        );
+        assert!(
+            l.labels
+                .iter()
+                .any(|x| x.role == Role::XTick && x.text == "100")
+        );
+        // The grid runs up the plot at the value ticks, never across the bands' names.
+        for item in &scene.items {
+            if let Item::Path {
+                path,
+                stroke: Some(st),
+                ..
+            } = item
+                && st.hairline
+                && let Some(b) = path.bounds()
+            {
+                assert!(
+                    b.x >= p.x - 0.5,
+                    "{size:?}: a hairline at {b:?} left of the plot"
+                );
+            }
+        }
+        // Hover finds each bar, and its card keeps clear of it.
+        for b in &l.bars {
+            let at = (b.rect.x + b.rect.w * 0.6, b.rect.y + b.rect.h / 2.0);
+            let (h, o) = hovered(&model, &l, &hits, &view, at);
+            assert_eq!(
+                h,
+                Some(Cursor::Band {
+                    band: b.band,
+                    series: Some(key("errors"))
+                }),
+                "{size:?}"
+            );
+            let card = shadow(&o).expect("a card");
+            assert!(
+                card.intersect(&b.rect.inflate(-0.5)).is_none(),
+                "{size:?}: the card {card:?} over the bar {:?}",
+                b.rect
+            );
+            let a = Rect::new(0.0, 0.0, size.0, size.1);
+            assert!(a.inflate(0.5).contains(card.x, card.y), "{size:?}");
+            assert!(card.right() <= size.0 + 0.5 && card.bottom() <= size.1 + 0.5);
+        }
+    }
+    // A number field on the bands' axis is read as categories, in data order.
+    let years = from_spec(
+        r#"{"type": "bar", "data": {"values": [{"year": 2021, "n": 4}, {"year": 2022, "n": 9},
+            {"year": 2023, "n": 7}, {"year": 2024, "n": 12}]}, "y": "year", "x": "n",
+            "mark": {"type": "bar", "horizontal": true}}"#,
+    );
+    assert!(years.is_band() && years.horizontal);
+    assert_eq!(years.x.bands.len(), 4);
+    let (_, l, _) = lay(&years, &View::default(), (880.0, 470.0));
+    assert_eq!(l.bars.len(), 4);
+    assert!(
+        l.bars
+            .iter()
+            .all(|b| l.plot.inflate(0.5).contains(b.rect.x, b.rect.y))
+    );
+    assert!(
+        l.labels
+            .iter()
+            .any(|x| x.role == Role::YTick && x.text == "2024")
+    );
+}
+
+#[test]
+fn horizontal_bars_brush_along_y() {
+    let model = from_spec(&bands_spec(40, true));
+    let view = View::default();
+    let (_, l, _) = lay(&model, &view, (400.0, 240.0));
+    assert_eq!(plot::brush_kind(&model), BrushKind::Bands);
+    let centre = |i: u32| {
+        let b = l.bars.iter().find(|b| b.band == i).expect("a bar");
+        (l.plot.x + 20.0, b.rect.y + b.rect.h / 2.0)
+    };
+    let (from, to) = (centre(10), centre(20));
+    let v = plot::brush(&model, &l, &view, BrushKind::Bands, from, to).expect("a zoom");
+    assert_eq!(v.x, Some((10.0, 21.0)), "the bands it touched, whole");
+    assert_eq!(v.y, None, "the values never zoom");
+    // The preview spans those bands down the plot, across it.
+    let o = overlay(
+        &model,
+        &l,
+        &view,
+        &OverlayState {
+            brush: Some((BrushKind::Bands, from, to)),
+            ..state()
+        },
+    );
+    assert!(has_text(&o, "c10 – c20 · 11 bands"), "{:?}", texts(&o));
+}
+
+#[test]
+fn the_overlay_never_panics_in_a_tiny_or_odd_area() {
+    let actions = [
+        Action::Step(1),
+        Action::Step(-1),
+        Action::Series(1),
+        Action::Series(-1),
+        Action::Peak(1),
+        Action::First,
+        Action::Last,
+        Action::ViewEdge(0),
+        Action::ViewEdge(1),
+    ];
+    for name in FIXTURES {
+        let model = load(name);
+        let view = model.initial_view();
+        for size in [
+            (300.0, 21.0),
+            (300.0, 26.0),
+            (60.0, 40.0),
+            (1.0, 1.0),
+            (120.0, 60.0),
+        ] {
+            let (_, l, hits) = lay(&model, &view, size);
+            let p = l.plot;
+            let kind = plot::brush_kind(&model);
+            let mut cursor = None;
+            for a in &actions {
+                if let Some(c) = plot::motion(&model, &l, &view, cursor.as_ref(), a, 1) {
+                    cursor = Some(c);
+                }
+            }
+            for fx in 0..=6 {
+                for fy in 0..=3 {
+                    let at = (p.x + p.w * fx as f32 / 6.0, p.y + p.h * fy as f32 / 3.0);
+                    let hover = plot::hover(&model, &l, &hits, &view, at.0, at.1);
+                    let emphasis = plot::nearest_series(&model, &l, &hits, &view, at.0, at.1);
+                    let mut v = view.clone();
+                    v.reference = cursor.clone();
+                    for brush in [None, Some((kind, (p.x, p.y), at))] {
+                        overlay(
+                            &model,
+                            &l,
+                            &v,
+                            &OverlayState {
+                                hover: hover.clone(),
+                                cursor: cursor.clone(),
+                                pointer: Some(at),
+                                brush,
+                                emphasis: emphasis.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_series_with_no_samples_has_no_cursor_and_a_stale_one_moves_nowhere_wrong() {
+    let nan = f64::NAN;
+    let t = Table::new(vec![
+        Column::time("t", vec![0.0, 60.0, 120.0]),
+        Column::number("a", vec![1.0, 2.0, 3.0]),
+        Column::number("b", vec![nan, nan, nan]),
+    ])
+    .expect("a table");
+    let model = guessed(t);
+    let view = View::default();
+    let (_, l, _) = lay(&model, &view, (880.0, 470.0));
+    assert!(
+        model.labels().iter().all(|(n, _)| n != "b"),
+        "nothing to put a cursor on: {:?}",
+        model.labels()
+    );
+    let on_b = Cursor::Point {
+        series: key("b"),
+        row: 0,
+    };
+    for d in [1, -1] {
+        assert_eq!(
+            plot::motion(&model, &l, &view, Some(&on_b), &Action::Step(d), 1),
+            None
+        );
+    }
+    // A cursor whose row a re-parse took away.
+    let stale = Cursor::Point {
+        series: key("a"),
+        row: 7,
+    };
+    for a in [
+        Action::Step(1),
+        Action::Step(-1),
+        Action::Series(1),
+        Action::Series(-1),
+        Action::Peak(1),
+        Action::First,
+        Action::Last,
+        Action::ViewEdge(-1),
+    ] {
+        let to = plot::motion(&model, &l, &view, Some(&stale), &a, 1);
+        if let Some(Cursor::Point { row, .. }) = to {
+            assert!(row < 3, "{a:?} to row {row}");
+        }
+    }
+}
+
+#[test]
+fn a_brush_over_times_reads_in_the_zone() {
+    let day = |zone: &TimeZone, d: i8, h: i8| {
+        jiff::civil::date(2026, 11, d)
+            .at(h, 0, 0, 0)
+            .to_zoned(zone.clone())
+            .expect("a time")
+            .timestamp()
+            .as_second() as f64
+    };
+    let brushed = |zone: &TimeZone, ts: Vec<f64>, a: f64, b: f64| {
+        let t = Table::new(vec![
+            Column::time("t", ts.clone()),
+            Column::number("v", (0..ts.len()).map(|i| (i % 4) as f64).collect()),
+        ])
+        .expect("a table");
+        let chart = spec::guess(&t).expect("a guess");
+        let model = ChartModel::build(chart, vec![Arc::new(t)], zone).expect("a model");
+        let (_, l, _) = lay(&model, &View::default(), (880.0, 470.0));
+        let (pa, pb) = (l.x.map(a), l.x.map(b));
+        let o = overlay(
+            &model,
+            &l,
+            &View::default(),
+            &OverlayState {
+                brush: Some((BrushKind::X, (pa, l.plot.y), (pb, l.plot.bottom()))),
+                ..state()
+            },
+        );
+        texts(&o).into_iter().map(|(t, _)| t).collect::<Vec<_>>()
+    };
+    let ny = TimeZone::get("America/New_York").expect("the system's zoneinfo");
+    let days: Vec<f64> = (16..24).map(|d| day(&ny, d, 0)).collect();
+    let t = brushed(&ny, days, day(&ny, 19, 0), day(&ny, 21, 0));
+    assert!(t.iter().any(|s| s == "19 Nov – 21 Nov · 2d"), "{t:?}");
+    let kolkata = TimeZone::fixed(jiff::tz::Offset::from_seconds(5 * 3600 + 1800).expect("+5:30"));
+    let hours: Vec<f64> = (0..12).map(|h| day(&kolkata, 21, h)).collect();
+    let t = brushed(&kolkata, hours, day(&kolkata, 21, 7), day(&kolkata, 21, 9));
+    assert!(t.iter().any(|s| s == "07:00 – 09:00 · 2h"), "{t:?}");
+}
+
+/// Two line layers, both of a field "latency", and a band layer under a line by colour.
+const TWO_LATENCIES: &str = r#"{"type": "chart",
+  "data": {"values": [{"t": 0, "latency": 10}, {"t": 1, "latency": 11}, {"t": 2, "latency": 12}]},
+  "x": "t", "y": "latency", "mark": "line",
+  "layers": [{"mark": "line", "data": {"values": [{"t": 0, "latency": 40}, {"t": 1, "latency": 42},
+              {"t": 2, "latency": 41}]}}]}"#;
+
+#[test]
+fn a_name_in_two_layers_is_two_series_but_a_band_shares_its_line_s() {
+    let model = from_spec(TWO_LATENCIES);
+    assert_eq!(model.series.len(), 2);
+    assert_eq!(
+        model.keys(),
+        [SeriesKey::new("latency", 0), SeriesKey::new("latency", 1)]
+    );
+    let view = View::default();
+    let (_, l, hits) = lay(&model, &view, (880.0, 470.0));
+    assert_eq!(l.items.len(), 2, "both in the legend");
+    let labels: Vec<String> = model.labels().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(labels, ["latency", "latency ‹2›"]);
+    let upper = l.at(1.0, 42.0);
+    let (h, o) = hovered(&model, &l, &hits, &view, upper);
+    assert_eq!(
+        h,
+        Some(Cursor::Point {
+            series: SeriesKey::new("latency", 1),
+            row: 1
+        })
+    );
+    assert!(has_text(&o, "42") && has_text(&o, "11"), "{:?}", texts(&o));
+    // A band coloured as its line, in a layer after it, is the line's series.
+    let banded = from_spec(
+        r#"{"type": "chart",
+  "data": {"values": [{"t": 0, "s": "api", "v": 10, "lo": 8, "hi": 12},
+                      {"t": 1, "s": "api", "v": 11, "lo": 9, "hi": 14},
+                      {"t": 0, "s": "web", "v": 20, "lo": 18, "hi": 23},
+                      {"t": 1, "s": "web", "v": 21, "lo": 19, "hi": 22}]},
+  "x": "t", "color": "s", "mark": "line", "y": "v",
+  "layers": [{"mark": "band", "y": "lo", "y2": "hi"}]}"#,
+    );
+    assert_eq!(banded.series.len(), 4);
+    assert_eq!(banded.keys(), [key("api"), key("web")]);
+}
+
+#[test]
+fn a_band_peak_looks_past_the_view() {
+    let n = 40;
+    let rows: Vec<String> = (0..n)
+        .map(|i| {
+            let v = match i {
+                1 => 90,
+                35 => 80,
+                _ => 10,
+            };
+            format!("{{\"k\": \"c{i:02}\", \"v\": {v}}}")
+        })
+        .collect();
+    let model = from_spec(&format!(
+        "{{\"type\": \"bar\", \"data\": {{\"values\": [{}]}}, \"x\": \"k\", \"y\": \"v\"}}",
+        rows.join(", ")
+    ));
+    let view = View {
+        x: Some((0.0, 28.0)),
+        ..View::default()
+    };
+    let (_, l, _) = lay(&model, &view, (880.0, 470.0));
+    let at = |b: u32| Cursor::Band {
+        band: b,
+        series: None,
+    };
+    for from in [1, 20] {
+        assert_eq!(
+            plot::motion(&model, &l, &view, Some(&at(from)), &Action::Peak(1), 1),
+            Some(at(35)),
+            "w from band {from}"
+        );
+    }
+    assert_eq!(
+        plot::motion(&model, &l, &view, Some(&at(35)), &Action::Peak(-1), 1),
+        Some(at(1))
+    );
+}
+
+#[test]
+fn a_normalised_stack_s_card_gives_shares_and_its_deltas_in_points() {
+    let area = from_spec(
+        r#"{"type": "chart", "data": {"values": [{"t": 0, "s": "a", "v": 100}, {"t": 0, "s": "b", "v": 100},
+            {"t": 1, "s": "a", "v": 300}, {"t": 1, "s": "b", "v": 100}]},
+            "x": "t", "y": "v", "color": "s", "mark": {"type": "area", "stack": "normalize"}}"#,
+    );
+    let view = View {
+        reference: Some(Cursor::Point {
+            series: key("a"),
+            row: 0,
+        }),
+        ..View::default()
+    };
+    let (_, l, _) = lay(&area, &view, (880.0, 470.0));
+    let o = overlay(
+        &area,
+        &l,
+        &view,
+        &OverlayState {
+            cursor: Some(Cursor::Point {
+                series: key("a"),
+                row: 1,
+            }),
+            ..state()
+        },
+    );
+    for t in ["75 %", "25 %", "▲ 25 pp", "▼ 25 pp"] {
+        assert!(has_text(&o, t), "{t}: {:?}", texts(&o));
+    }
+    let bars = from_spec(
+        r#"{"type": "bar", "data": {"values": [
+            {"week": "W1", "status": "ok", "n": 120}, {"week": "W1", "status": "slow", "n": 108},
+            {"week": "W1", "status": "error", "n": 82}, {"week": "W2", "status": "ok", "n": 191},
+            {"week": "W2", "status": "slow", "n": 41}, {"week": "W2", "status": "error", "n": 111}]},
+            "x": "week", "y": "n", "color": "status", "mark": {"type": "bar", "stack": "normalize"}}"#,
+    );
+    let view = View {
+        reference: Some(Cursor::Band {
+            band: 0,
+            series: None,
+        }),
+        ..View::default()
+    };
+    let (_, l, _) = lay(&bars, &view, (880.0, 470.0));
+    let o = overlay(
+        &bars,
+        &l,
+        &view,
+        &OverlayState {
+            cursor: Some(Cursor::Band {
+                band: 1,
+                series: None,
+            }),
+            ..state()
+        },
+    );
+    // W2: ok 191 of 343, slow 41, error 111; W1: ok 120 of 310.
+    for t in ["55.7 %", "12 %", "32.4 %", "▲ 17 pp"] {
+        assert!(has_text(&o, t), "{t}: {:?}", texts(&o));
+    }
+}
+
+#[test]
+fn bars_over_time_and_below_zero_are_drawn_whole_inside_the_plot() {
+    for name in ["deploys.json", "profit.csv"] {
+        let model = load(name);
+        for &size in SIZES {
+            let (_, l, _) = lay(&model, &View::default(), size);
+            assert_eq!(
+                l.bars.len(),
+                if name == "profit.csv" { 8 } else { 6 },
+                "{name}"
+            );
+            let p = l.plot.inflate(0.5);
+            for b in &l.bars {
+                let r = b.rect;
+                assert!(
+                    r.x >= p.x && r.right() <= p.right() && r.y >= p.y && r.bottom() <= p.bottom(),
+                    "{name} {size:?}: {r:?} past {p:?}"
+                );
+            }
+        }
+    }
+    let model = load("profit.csv");
+    let (scene, l, _) = lay(&model, &View::default(), (880.0, 470.0));
+    let (lo, _) = l.y.domain();
+    assert!(
+        lo <= -160.0,
+        "the domain reaches the lowest: {:?}",
+        l.y.domain()
+    );
+    let zero = l.y.map(0.0);
+    assert!(
+        zero < l.plot.bottom() - 20.0,
+        "the baseline is zero, above the plot's foot"
+    );
+    // Feb, Apr and Jul hang down from it.
+    let down: Vec<u32> = l
+        .bars
+        .iter()
+        .filter(|b| (b.rect.y - zero).abs() < 0.5 && b.rect.bottom() > zero + 5.0)
+        .map(|b| b.band)
+        .collect();
+    assert_eq!(down, [1, 3, 6]);
+    assert!(
+        texts(&scene).iter().any(|(t, _)| t == "−160"),
+        "its label under it"
+    );
+    // Integer counts get whole ticks.
+    let deploys = load("deploys.json");
+    for &size in SIZES {
+        let (_, l, _) = lay(&deploys, &View::default(), size);
+        assert!(
+            l.y_ticks.iter().all(|t| t.value.fract() == 0.0),
+            "{size:?}: {:?}",
+            l.y_ticks
+        );
+    }
+}
+
+#[test]
+fn a_band_brush_reads_the_bands_it_zooms_to_or_says_it_cannot() {
+    let model = from_spec(&bands_spec(40, false));
+    let view = View::default();
+    for scale in [1.0, 2.0] {
+        let (_, l, _) = plot::base(
+            &model,
+            &view,
+            (400.0, 240.0),
+            scale,
+            &Theme::mono_dark(),
+            &mut FixedMeasure,
+        );
+        let p = l.plot;
+        for k in 0..30 {
+            let a = p.x + 3.0 + k as f32 * 7.3;
+            let b = (a + 41.7 + k as f32 * 3.1).min(p.right());
+            let (from, to) = ((a, p.y + 10.0), (b, p.bottom() - 10.0));
+            let (i, j) = plot::nav::brush_bands(&model, &l, &view, from, to).expect("zoomable");
+            let v = plot::brush(&model, &l, &view, BrushKind::Bands, from, to).expect("a zoom");
+            let (x0, x1) = v.x.expect("x zoomed");
+            assert!(
+                x0 <= i as f64 && x1 >= j as f64,
+                "{scale}: {i}..{j} in {x0}..{x1}"
+            );
+            let o = overlay(
+                &model,
+                &l,
+                &view,
+                &OverlayState {
+                    brush: Some((BrushKind::Bands, from, to)),
+                    ..state()
+                },
+            );
+            let want = format!("c{i:02} – c{:02} · {} bands", j - 1, j - i);
+            assert!(has_text(&o, &want), "{scale}: {want} in {:?}", texts(&o));
+        }
+    }
+    // Bands already at full width can't zoom: the preview says so and promises nothing.
+    let latency = load("latency.json");
+    let (_, l, _) = lay(&latency, &view, (880.0, 470.0));
+    let p = l.plot;
+    let (from, to) = ((p.x + 100.0, p.y + 10.0), (p.x + 400.0, p.y + 50.0));
+    assert_eq!(
+        plot::brush(&latency, &l, &view, BrushKind::Bands, from, to),
+        None
+    );
+    let o = overlay(
+        &latency,
+        &l,
+        &view,
+        &OverlayState {
+            brush: Some((BrushKind::Bands, from, to)),
+            ..state()
+        },
+    );
+    assert!(
+        texts(&o).iter().all(|(t, _)| !t.contains("bands")),
+        "{:?}",
+        texts(&o)
+    );
+    assert!(has_text(&o, "Every band shows"), "{:?}", texts(&o));
+}
+
+#[test]
+fn a_card_never_covers_its_crosshair_or_its_dots_and_never_slices_a_tick() {
+    let theme = Theme::mono_dark();
+    for name in [
+        "requests.fig.json",
+        "sine.json",
+        "gaps.csv",
+        "thresholds.json",
+        "requests.csv",
+    ] {
+        let model = load(name);
+        let first = model.keys()[0].clone();
+        let view = View {
+            reference: Some(Cursor::Point {
+                series: first,
+                row: 5,
+            }),
+            ..model.initial_view()
+        };
+        for size in [(400.0, 240.0), (880.0, 470.0)] {
+            let (_, l, hits) = lay(&model, &view, size);
+            let p = l.plot;
+            for k in 1..20 {
+                for fy in [0.2, 0.5, 0.8] {
+                    let at = (p.x + p.w * k as f32 / 20.0, p.y + p.h * fy);
+                    let (h, o) = hovered(&model, &l, &hits, &view, at);
+                    let Some(Cursor::Point { series, row }) = h else {
+                        continue;
+                    };
+                    let si = model.index_of(&series).expect("its series");
+                    let x = l.x.map(model.series[si].xs[row as usize]);
+                    let card = shadow(&o).expect("a card");
+                    // The dots on the crosshair: the circles centred on it.
+                    let dots: Vec<(f32, f32)> = circles(&o)
+                        .into_iter()
+                        .filter(|(_, c, _)| (c.0 - x).abs() < 0.5)
+                        .map(|(_, c, r)| (c.1, r))
+                        .collect();
+                    assert!(!dots.is_empty(), "{name} {size:?} at {at:?}");
+                    let clear_x = card.right() <= x - 6.0 || card.x >= x + 6.0;
+                    let clear_y = dots
+                        .iter()
+                        .all(|&(y, r)| card.bottom() <= y - r || card.y >= y + r);
+                    assert!(
+                        clear_x || clear_y,
+                        "{name} {size:?} at {at:?}: the card {card:?} over the crosshair at {x}"
+                    );
+                    // A tick label the card meets is wholly under it or wholly covered.
+                    for t in l.labels.iter().filter(|t| t.role == Role::YTick) {
+                        let b = t.bounds(&mut FixedMeasure);
+                        let Some(i) = card.intersect(&b) else {
+                            continue;
+                        };
+                        let under = (i.w - b.w).abs() < 0.5 && (i.h - b.h).abs() < 0.5;
+                        let covered = o.items.iter().any(|it| {
+                            matches!(it,
+                            Item::Path { fill: Some(Paint::Solid { color, alpha }), path, .. }
+                            if *color == theme.surface && *alpha == 1.0
+                                && path.bounds().is_some_and(|pb| pb.inflate(0.5).contains(b.x, b.y)
+                                    && pb.inflate(0.5).contains(b.right(), b.bottom())))
+                        });
+                        assert!(
+                            under || covered,
+                            "{name} {size:?}: the tick {:?} sliced by the card {card:?}",
+                            t.text
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_card_stays_inside_a_small_area_and_keeps_the_marked_row() {
+    let model = load("many.json");
+    let view = View::default();
+    let (_, l, hits) = lay(&model, &view, (400.0, 240.0));
+    let area = Rect::new(0.0, 0.0, 400.0, 240.0);
+    let p = l.plot;
+    for k in 1..10 {
+        for fy in [0.1, 0.5, 0.9] {
+            let at = (p.x + p.w * k as f32 / 10.0, p.y + p.h * fy);
+            let (_, o) = hovered(&model, &l, &hits, &view, at);
+            let card = shadow(&o).expect("a card");
+            assert!(
+                card.x >= 0.0 && card.y >= 0.0 && card.right() <= 400.0 && card.bottom() <= 240.0,
+                "at {at:?}: {card:?}"
+            );
+            for (t, b) in texts(&o) {
+                assert!(
+                    area.inflate(0.5).contains(b.x, b.y)
+                        && b.right() <= 400.5
+                        && b.bottom() <= 240.5,
+                    "{t:?} at {b:?}"
+                );
+            }
+            assert!(texts(&o).iter().any(|(t, _)| t.ends_with(" more")));
+        }
+    }
+    // The keyboard's cursor on the first series: its row is in the card.
+    let first = model.keys()[0].clone();
+    let name = model.series_of(&first).expect("a series").name.clone();
+    let o = overlay(
+        &model,
+        &l,
+        &view,
+        &OverlayState {
+            cursor: Some(Cursor::Point {
+                series: first,
+                row: 3,
+            }),
+            ..state()
+        },
+    );
+    assert!(has_text(&o, &name), "{name}: {:?}", texts(&o));
+    let card = shadow(&o).expect("a card");
+    assert!(card.bottom() <= 240.0);
+}
+
+#[test]
+fn y_ticks_keep_a_calm_grid() {
+    let model = load("requests.csv");
+    for &size in SIZES {
+        let (_, l, _) = lay(&model, &View::default(), size);
+        let ys: Vec<f32> = l.y_ticks.iter().map(|t| l.y.map(t.value)).collect();
+        let gap = (ys[0] - ys[1]).abs();
+        assert!((40.0..=100.0).contains(&gap), "{size:?}: {gap}");
+        if size.0 == 880.0 {
+            assert!(
+                gap >= 48.0,
+                "0 to 1,200 by 200 over 0 to 1,100 by 100: {gap}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_step_line_s_markers_sit_on_its_samples() {
+    let model = from_spec(
+        r#"{"type": "chart", "data": {"values": [{"t": 0, "n": 0}, {"t": 1, "n": 5}, {"t": 2, "n": 2},
+            {"t": 3, "n": 5}, {"t": 4, "n": 1}, {"t": 5, "n": 3}]},
+            "x": "t", "y": "n", "mark": {"type": "line", "curve": "step", "points": true}}"#,
+    );
+    let (scene, l, _) = lay(&model, &View::default(), (880.0, 470.0));
+    let s = &model.series[0];
+    let markers: Vec<(f32, f32)> = circles(&scene)
+        .into_iter()
+        .filter(|(_, _, r)| (*r - 3.0).abs() < 0.01)
+        .map(|(_, c, _)| c)
+        .collect();
+    assert_eq!(markers.len(), 6, "{markers:?}");
+    for (i, m) in markers.iter().enumerate() {
+        let want = l.at(s.xs[i], s.ys[i]);
+        assert!((m.0 - want.0).abs() < 0.5 && (m.1 - want.1).abs() < 0.5);
+    }
+    assert!(
+        l.y_ticks.iter().all(|t| t.value.fract() == 0.0),
+        "{:?}",
+        l.y_ticks
+    );
+}
+
+#[test]
+fn the_marked_dot_is_drawn_over_the_others() {
+    let model = load("thresholds.json");
+    let view = View::default();
+    let (_, l, _) = lay(&model, &view, (880.0, 470.0));
+    for k in model.keys() {
+        let o = overlay(
+            &model,
+            &l,
+            &view,
+            &OverlayState {
+                cursor: Some(Cursor::Point {
+                    series: k.clone(),
+                    row: 12,
+                }),
+                ..state()
+            },
+        );
+        let cs = circles(&o);
+        let big = cs
+            .iter()
+            .filter(|(_, _, r)| (*r - 5.5).abs() < 0.01)
+            .map(|(i, _, _)| *i)
+            .max()
+            .expect("the cursor's dot");
+        for (i, _, r) in &cs {
+            if (*r - 4.0).abs() < 0.01 {
+                assert!(*i < big, "{k:?}: a dot over the cursor's");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_band_reference_keeps_its_name_and_clear_of_the_totals() {
+    let model = load("latency.json");
+    let last = model.x.bands.len() as u32 - 1;
+    let view = View {
+        reference: Some(Cursor::Band {
+            band: last,
+            series: None,
+        }),
+        ..View::default()
+    };
+    let (scene, l, _) = lay(&model, &view, (880.0, 470.0));
+    let o = overlay(
+        &model,
+        &l,
+        &view,
+        &OverlayState {
+            cursor: Some(Cursor::Band {
+                band: last - 1,
+                series: None,
+            }),
+            ..state()
+        },
+    );
+    let name = model.x.bands[last as usize].to_string();
+    assert!(has_text(&o, &format!("A · {name}")), "{:?}", texts(&o));
+    assert!(
+        texts(&o)
+            .iter()
+            .any(|(t, _)| t.ends_with("· \u{2212}1 band")),
+        "{:?}",
+        texts(&o)
+    );
+    // The reference's rule stops short of the band's total.
+    let total: Vec<Rect> = texts(&scene)
+        .into_iter()
+        .filter(|(t, b)| {
+            t.chars().all(|c| c.is_ascii_digit() || c == ',')
+                && b.y < l.plot.bottom()
+                && b.y > l.plot.y - 2.0
+        })
+        .map(|(_, b)| b)
+        .collect();
+    assert!(!total.is_empty());
+    for item in &o.items {
+        if let Item::Path {
+            path,
+            stroke: Some(st),
+            ..
+        } = item
+            && st.dash == Some((4.0, 3.0))
+        {
+            let b = path.bounds().expect("a rule");
+            for t in &total {
+                assert!(
+                    b.intersect(t).is_none_or(|i| i.h < 0.5),
+                    "{b:?} through {t:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn every_series_hidden_draws_no_grid_and_no_ticks() {
+    let model = from_spec(
+        r#"{"type": "line", "series": [
+            {"label": "a", "fig": {"hidden": true}, "points": [{"x": 0, "y": 0}, {"x": 1, "y": 4}]},
+            {"label": "b", "fig": {"hidden": true}, "points": [{"x": 0, "y": 1}, {"x": 1, "y": 2}]}]}"#,
+    );
+    let theme = Theme::mono_dark();
+    let view = model.initial_view();
+    let (scene, l, _) = lay(&model, &view, (880.0, 470.0));
+    assert!(has_text(&scene, "All series hidden"));
+    assert!(
+        l.labels
+            .iter()
+            .all(|t| !matches!(t.role, Role::XTick | Role::YTick)),
+        "no ticks"
+    );
+    let grid = scene.items.iter().any(|i| {
+        matches!(i, Item::Path { stroke: Some(st), .. }
+            if matches!(st.paint, Paint::Solid { color, .. } if color == theme.grid))
+    });
+    assert!(!grid, "no grid");
+    assert_eq!(l.items.len(), 2, "the legend stays, to bring them back");
+}
+
+#[test]
+fn bubbles_stay_whole_inside_the_plot() {
+    let rows: Vec<String> = (0..30)
+        .map(|i| {
+            let x = f64::from(i * 37 % 100);
+            let y = f64::from(i * 53 % 50) + 0.4;
+            let n = (i * 97) % 450 + 10;
+            format!("{{\"x\": {x}, \"y\": {y}, \"n\": {n}}}")
+        })
+        .collect();
+    let model = from_spec(&format!(
+        "{{\"type\": \"scatter\", \"data\": {{\"values\": [{}]}}, \"x\": \"x\", \"y\": \"y\", \"size\": \"n\"}}",
+        rows.join(", ")
+    ));
+    for &size in SIZES {
+        let (scene, l, _) = lay(&model, &View::default(), size);
+        let p = l.plot.inflate(1.0);
+        let bubbles: Vec<_> = circles(&scene)
+            .into_iter()
+            .filter(|(_, _, r)| *r > 3.5)
+            .collect();
+        assert_eq!(bubbles.len(), 30, "{size:?}");
+        for (_, c, r) in bubbles {
+            assert!(
+                c.0 - r >= p.x && c.0 + r <= p.right() && c.1 - r >= p.y && c.1 + r <= p.bottom(),
+                "{size:?}: a bubble at {c:?} r {r} past {p:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_hovered_band_is_tinted_across_its_slot() {
+    let model = load("services-bars.csv");
+    let view = View::default();
+    let theme = Theme::mono_dark();
+    let (_, l, hits) = lay(&model, &view, (880.0, 470.0));
+    let (a, w) = l.x.band_of(2).expect("billing");
+    let step = w / 0.8;
+    let (h, o) = hovered(
+        &model,
+        &l,
+        &hits,
+        &view,
+        (a + w + step * 0.08, l.plot.y + 20.0),
+    );
+    assert!(matches!(h, Some(Cursor::Band { band: 2, .. })), "{h:?}");
+    let tint = o
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Path {
+                path,
+                fill: Some(Paint::Solid { color, .. }),
+                stroke: None,
+            } if *color == theme.text => path.bounds(),
+            _ => None,
+        })
+        .expect("the band's tint");
+    assert!(tint.w >= 0.85 * step, "{} of {step}", tint.w);
+}
+
+#[test]
+fn a_heatmap_card_keeps_its_value_s_decimals_and_end_labels_the_axis_s() {
+    let model = from_spec(
+        r#"{"type": "heatmap", "data": {"values": [{"day": "Mon", "hour": "00", "load": 90.6},
+            {"day": "Mon", "hour": "02", "load": 18.2}, {"day": "Tue", "hour": "00", "load": 80.4},
+            {"day": "Tue", "hour": "02", "load": 51}]}, "x": "hour", "y": "day", "color": "load"}"#,
+    );
+    let (_, l, _) = lay(&model, &View::default(), (880.0, 470.0));
+    let o = overlay(
+        &model,
+        &l,
+        &View::default(),
+        &OverlayState {
+            cursor: Some(Cursor::Cell { row: 1, col: 0 }),
+            ..state()
+        },
+    );
+    assert!(has_text(&o, "80.4"), "{:?}", texts(&o));
+    let sine = load("sine.json");
+    let (_, l, _) = lay(&sine, &View::default(), (880.0, 470.0));
+    assert!(!l.ends.is_empty());
+    for e in &l.ends {
+        let decimals = e.value.text.split_once('.').map_or(0, |(_, f)| f.len());
+        assert!(decimals <= 2, "{:?}", e.value.text);
+    }
+}
+
+#[test]
+fn a_scatter_reference_gives_dx_at_x_s_precision() {
+    let model = load("scatter.csv");
+    let view = View {
+        reference: Some(Cursor::Point {
+            series: model.keys()[0].clone(),
+            row: 0,
+        }),
+        ..View::default()
+    };
+    let (_, l, _) = lay(&model, &view, (880.0, 470.0));
+    let k = model.keys()[0].clone();
+    let s = model.series_of(&k).expect("a series");
+    let o = overlay(
+        &model,
+        &l,
+        &view,
+        &OverlayState {
+            cursor: Some(Cursor::Point {
+                series: k.clone(),
+                row: 3,
+            }),
+            ..state()
+        },
+    );
+    let dx = s.xs[3] - s.xs[0];
+    let want = format!("{}{:.1}", if dx < 0.0 { "\u{2212}" } else { "+" }, dx.abs());
+    assert!(
+        texts(&o)
+            .iter()
+            .any(|(t, _)| t.contains(&format!("Δ {want}, "))),
+        "{want}: {:?}",
+        texts(&o)
+    );
 }

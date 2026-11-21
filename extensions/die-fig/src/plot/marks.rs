@@ -34,6 +34,10 @@ pub const STACK_WASH: f32 = 0.16;
 pub const BAND_ALPHA: f32 = 0.12;
 /// A point's ring in the surface colour.
 pub const RING: f32 = 2.0;
+/// A bubble's radius at the smallest size and at the largest.
+pub const BUBBLE_MIN: f32 = 4.0;
+/// The largest bubble's radius.
+pub const BUBBLE_MAX: f32 = 18.0;
 /// A threshold's dashes.
 pub const RULE_DASH: (f32, f32) = (4.0, 3.0);
 /// A dashed series' dashes (`dash: true`, ruling 15).
@@ -337,10 +341,16 @@ fn line(
             }),
         });
         if marked {
-            // Markers where the samples are far enough apart to tell.
-            let spaced = pts.windows(2).all(|w| (w[1].0 - w[0].0).abs() >= 8.0);
+            // Markers on the samples (not a step's corners), where they're far enough apart
+            // to tell.
+            let samples: Vec<(f32, f32)> = run
+                .iter()
+                .map(|&i| l.at(s.xs[i], value(model, l, si, i)))
+                .filter(|p| p.0.is_finite() && p.1.is_finite())
+                .collect();
+            let spaced = samples.windows(2).all(|w| (w[1].0 - w[0].0).abs() >= 8.0);
             if spaced {
-                for &p in &pts {
+                for &p in &samples {
                     dot(scene, p, 3.0, color, theme.surface, 1.5);
                 }
             }
@@ -510,7 +520,7 @@ pub(crate) fn point_radius(
             } else {
                 0.5
             };
-            4.0 + 14.0 * t.sqrt() as f32
+            BUBBLE_MIN + (BUBBLE_MAX - BUBBLE_MIN) * t.sqrt() as f32
         }
         _ => model.point_size(s) / 2.0,
     }
@@ -916,11 +926,26 @@ fn bar_labels(
     scene: &mut Scene,
     m: &mut dyn Measure,
 ) {
+    for (_, item, _) in bar_totals(model, view, l, theme, m) {
+        scene.push(item);
+    }
+}
+
+/// The bands' totals past their bars, as [`bar_labels`] draws them: each band, its text and
+/// its box. None at all when one doesn't fit.
+pub(crate) fn bar_totals(
+    model: &ChartModel,
+    view: &View,
+    l: &ChartLayout,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> Vec<(u32, Item, Rect)> {
+    let none = Vec::new();
     if !model.is_band() || l.bars.is_empty() || model.chart.view.labels == Labels::None {
-        return;
+        return none;
     }
     if model.series.iter().any(|s| s.stack == Stack::Normalize) {
-        return;
+        return none;
     }
     // One column a band: a stacked layer, or one series.
     let mut columns = 0;
@@ -939,11 +964,11 @@ fn bar_labels(
         }
     }
     if columns != 1 {
-        return;
+        return none;
     }
     let spec = TextSpec::new(TICK).tabular();
     let step = l.ind().band_of(0).map_or(0.0, |(_, w)| w / 0.8);
-    let mut placed: Vec<(String, f32, f32, Anchor, Color)> = Vec::new();
+    let mut placed: Vec<(u32, String, f32, f32, Anchor, Color)> = Vec::new();
     for b in l.bars.iter().filter(|b| b.end) {
         // The band's total of what's visible.
         let total: f64 = l
@@ -956,15 +981,16 @@ fn bar_labels(
         let text = model.y_label(total);
         let tw = m.width(&text, spec);
         if tw + 6.0 > step && !l.horizontal {
-            return;
+            return none;
         }
         let (a, d) = (m.ascent(spec), m.descent(spec));
         if l.horizontal {
             let x = b.rect.right() + 6.0;
             if x + tw > l.plot.right() + 2.0 {
-                return;
+                return none;
             }
             placed.push((
+                b.band,
                 text,
                 x,
                 b.rect.y + b.rect.h / 2.0 + m.cap(spec) / 2.0,
@@ -983,26 +1009,38 @@ fn bar_labels(
                 // No room past the bar: inside it if it's tall enough, else none at all.
                 if b.rect.h >= a + d + 10.0 && b.rect.w >= tw + 4.0 {
                     let fill = model.color(&model.series[b.series], theme);
-                    placed.push((text, cx, b.rect.y + 5.0 + a, Anchor::Middle, on_fill(fill)));
+                    placed.push((
+                        b.band,
+                        text,
+                        cx,
+                        b.rect.y + 5.0 + a,
+                        Anchor::Middle,
+                        on_fill(fill),
+                    ));
                     continue;
                 }
-                return;
+                return none;
             }
-            placed.push((text, cx, y, Anchor::Middle, theme.muted));
+            placed.push((b.band, text, cx, y, Anchor::Middle, theme.muted));
         }
     }
-    for (text, x, y, anchor, color) in placed {
-        scene.push(Item::Text {
-            text: text.into(),
-            x,
-            y,
-            spec,
-            anchor,
-            color,
-            alpha: 1.0,
-            max_width: None,
-        });
-    }
+    placed
+        .into_iter()
+        .map(|(band, text, x, y, anchor, color)| {
+            let r = super::layout::text_box(&text, x, y, spec, anchor, m);
+            let item = Item::Text {
+                text: text.into(),
+                x,
+                y,
+                spec,
+                anchor,
+                color,
+                alpha: 1.0,
+                max_width: None,
+            };
+            (band, item, r)
+        })
+        .collect()
 }
 
 /// Text on a filled mark: white, or near black on a light fill (ruling 18).
