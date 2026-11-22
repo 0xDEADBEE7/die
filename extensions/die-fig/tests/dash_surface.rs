@@ -1210,3 +1210,500 @@ fn an_edit_of_the_spec_is_followed_and_the_panels_never_flash_to_waiting() {
     assert_eq!(title(&mut s), (Some("Service wealth".into()), true));
     assert_eq!(focused(&mut s), Some(4), "the focus kept");
 }
+
+// ------------------------------------------------------------------ after the phase 4 review
+
+/// Panel `i`'s pane's hover.
+fn sub_hover(s: &mut Setup, i: usize) -> Option<Cursor> {
+    let st = state(s);
+    let st = st.borrow();
+    st.panes[&s.win].dash.as_ref().unwrap().subs[i]
+        .hover
+        .clone()
+}
+
+/// The panel shown full size.
+fn full(s: &mut Setup) -> Option<usize> {
+    let st = state(s);
+    let st = st.borrow();
+    st.panes[&s.win].dash.as_ref().unwrap().view.full
+}
+
+/// Panel `i`'s error figure's state.
+fn panel_error(s: &mut Setup, i: usize) -> die_fig::plot::ErrorView {
+    let st = state(s);
+    let st = st.borrow();
+    st.panes[&s.win].dash.as_ref().unwrap().view.panels[i].error
+}
+
+/// What the overlay has drawn, in the area's px.
+fn over_bounds(s: &mut Setup) -> Option<Rect> {
+    let st = state(s);
+    let st = st.borrow();
+    st.panes[&s.win].overlay_bounds()
+}
+
+/// Whether the shared time follows the newest sample.
+fn following(s: &mut Setup) -> bool {
+    let st = state(s);
+    let st = st.borrow();
+    st.panes[&s.win].dash.as_ref().unwrap().follow
+}
+
+/// What each panel of the dashboard is, briefly: `drew`, `waiting: …`, `failed: …`.
+fn panel_states(s: &mut Setup) -> Vec<String> {
+    let st = state(s);
+    let st = st.borrow();
+    let m = st.dash.as_ref().unwrap().model.as_ref().unwrap();
+    m.panels
+        .iter()
+        .map(|p| match &p.state {
+            die_fig::dashboard::PanelState::Waiting(w) => format!("waiting: {w}"),
+            die_fig::dashboard::PanelState::Failed(f) => format!("failed: {}", f.errors[0].msg),
+            _ => "drew".into(),
+        })
+        .collect()
+}
+
+/// The header's live status, as it reads.
+fn live_text(s: &mut Setup) -> Option<String> {
+    let st = state(s);
+    let st = st.borrow();
+    let m = st.dash.as_ref()?.model.as_ref()?;
+    m.live.as_ref().map(|l| l.text.clone())
+}
+
+#[test]
+fn a_size_change_drops_every_panels_hover_until_the_pointer_moves() {
+    let mut s = health();
+    let p = plot_of(&mut s, 4);
+    mv(&mut s, mid(p));
+    assert_eq!(hovered(&mut s), Some(4));
+    assert!(sub_hover(&mut s, 4).is_some());
+    s.h.set_window_size(150, 61);
+    s.h.run_until_idle();
+    s.h.scene();
+    assert_eq!(hovered(&mut s), None);
+    assert!(sub_hover(&mut s, 4).is_none(), "contract-p2b §4.4");
+}
+
+#[test]
+fn tab_and_shift_tab_in_full_size_go_on_in_reading_order() {
+    let mut s = health();
+    keys(&mut s.h, "<Tab><Tab><Tab><Tab><Tab>f");
+    assert_eq!(full(&mut s), Some(4));
+    keys(&mut s.h, "<Tab>");
+    assert_eq!((focused(&mut s), full(&mut s)), (Some(5), Some(5)));
+    keys(&mut s.h, "<S-Tab><S-Tab>");
+    assert_eq!((focused(&mut s), full(&mut s)), (Some(3), Some(3)));
+}
+
+#[test]
+fn a_length_typed_at_t_is_taken_as_typed_and_a_preset_by_its_name() {
+    let mut s = health();
+    for (typed, secs) in [
+        ("2h", 7200.0),
+        ("5m", 300.0),
+        ("90m", 5400.0),
+        ("24", 86_400.0),
+    ] {
+        keys(&mut s.h, "T");
+        keys(&mut s.h, &format!("{typed}<CR>"));
+        settle(&mut s);
+        let (a, b) = time(&mut s).unwrap();
+        assert!((b - a - secs).abs() < 1e-6, "{typed}: {}", b - a);
+    }
+}
+
+/// The failed panels of the dashboard, by number.
+fn failed_panels(s: &mut Setup) -> Vec<usize> {
+    let st = state(s);
+    let st = st.borrow();
+    let m = st.dash.as_ref().unwrap().model.as_ref().unwrap();
+    (0..m.panels.len())
+        .filter(|&i| matches!(m.panels[i].state, die_fig::dashboard::PanelState::Failed(_)))
+        .collect()
+}
+
+#[test]
+fn a_failed_panels_error_figure_answers_a_click_its_log_keys_the_wheel_and_return() {
+    let mut s = open_at(&fixture("dash/broken-panel.fig"), 176, 61);
+    let failed = failed_panels(&mut s);
+    // The mismatch: its place is in the dashboard's own spec.
+    let i = *failed.last().unwrap();
+    let f = frame(&mut s, i);
+    let at = (f.x + f.w / 2.0, f.y + f.h * 0.6);
+    click(&mut s, at);
+    assert_eq!(focused(&mut s), Some(i));
+    assert!(
+        matches!(panel_error(&mut s, i), die_fig::plot::ErrorView::Log { .. }),
+        "a click turns it over, as alone"
+    );
+    // The log's keys are its own while it's up, and the wheel scrolls it.
+    for k in ["j", "k", "G", "gg", "<C-d>", "<C-u>"] {
+        let errors = keys_errors(&mut s.h, k);
+        assert!(errors.is_empty(), "{k}: {errors:?}");
+    }
+    scroll(&mut s, at, (0.0, 3.0), Mods::default());
+    settle(&mut s);
+    assert!(matches!(
+        panel_error(&mut s, i),
+        die_fig::plot::ErrorView::Log { .. }
+    ));
+    // ⏎ goes to the error's place in the spec, as alone.
+    let errors = keys_errors(&mut s.h, "<CR>");
+    assert!(errors.is_empty(), "{errors:?}");
+    s.h.run_until_idle();
+    let shown = s.h.window_buffer(s.win).unwrap();
+    assert_ne!(shown, s.buf, "the source shows");
+    assert!(
+        s.h.buffer_name(shown)
+            .is_some_and(|n| n.ends_with("broken-panel.fig")),
+        "{:?}",
+        s.h.buffer_name(shown)
+    );
+}
+
+#[test]
+fn bang_and_the_badge_show_a_stale_panels_error_as_a_log_over_its_figure() {
+    let dir = TempDir::new("dash-stale");
+    let csv = dir.path().join("a.csv");
+    std::fs::write(&csv, "t,v\n1,2\n2,3\n3,5\n").unwrap();
+    let spec = dir.path().join("d.fig");
+    std::fs::write(
+        &spec,
+        r#"{"type": "dashboard", "data": {"a": "a.csv"}, "rows": [[
+            {"type": "line", "title": "A", "data": "a", "x": "t", "y": "v"},
+            {"type": "line", "title": "B", "data": "a", "x": "t", "y": "v"}]]}"#,
+    )
+    .unwrap();
+    let mut s = open_at(&spec, 176, 61);
+    assert_eq!(panel_states(&mut s), ["drew", "drew"]);
+    // Broken on disk: both keep their charts, with the stale badge.
+    std::fs::write(&csv, "t,w\n1,2\n2,3\n3,5\n").unwrap();
+    s.h.advance(Duration::from_millis(1100));
+    s.h.run_until_idle();
+    s.h.scene();
+    let stale = {
+        let st = state(&mut s);
+        let st = st.borrow();
+        let m = st.dash.as_ref().unwrap().model.as_ref().unwrap();
+        m.panels
+            .iter()
+            .map(|p| p.stale.is_some())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(stale, [true, true]);
+    keys(&mut s.h, "<Tab>");
+    let errors = keys_errors(&mut s.h, "!");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(matches!(
+        panel_error(&mut s, 0),
+        die_fig::plot::ErrorView::Log { .. }
+    ));
+    let shows_log = |s: &mut Setup, i: usize| {
+        let st = state(s);
+        let st = st.borrow();
+        let dp = st.panes[&s.win].dash.as_ref().unwrap();
+        matches!(
+            dp.layout.as_ref().unwrap().panel(i).unwrap().figure,
+            PanelFigure::Failed
+        )
+    };
+    assert!(shows_log(&mut s, 0), "its log over its figure");
+    keys(&mut s.h, "!");
+    assert!(!shows_log(&mut s, 0), "and its figure again");
+    // A click on the other panel's badge opens its log.
+    let badge = {
+        let st = state(&mut s);
+        let st = st.borrow();
+        let dp = st.panes[&s.win].dash.as_ref().unwrap();
+        let p = dp.layout.as_ref().unwrap().panel(1).unwrap();
+        let r = (p.scene.regions.iter())
+            .find(|r| r.hit == die_fig::scene::Hit::Badge)
+            .expect("a badge")
+            .rect;
+        (p.frame.x + r.x + r.w / 2.0, p.frame.y + r.y + r.h / 2.0)
+    };
+    click(&mut s, badge);
+    assert!(matches!(
+        panel_error(&mut s, 1),
+        die_fig::plot::ErrorView::Log { .. }
+    ));
+    assert!(shows_log(&mut s, 1));
+}
+
+#[test]
+fn a_tiles_keyboard_cursor_drives_the_linked_moment_in_the_charts() {
+    let mut s = health();
+    let t = frame(&mut s, 1);
+    let p4 = frame(&mut s, 4);
+    click(&mut s, mid(t));
+    s.h.send(die_core::Input::PointerLeft);
+    keys(&mut s.h, "hhh");
+    s.h.scene();
+    let b = over_bounds(&mut s);
+    assert!(
+        b.is_some_and(|b| b.bottom() > p4.y + 20.0),
+        "the moment drawn in the charts below: {b:?}"
+    );
+}
+
+#[test]
+fn return_on_a_tile_shows_its_numbers_and_keys_that_dont_apply_say_so_for_its_kind() {
+    let mut s = health();
+    let t = frame(&mut s, 0);
+    click(&mut s, mid(t));
+    let errors = keys_errors(&mut s.h, "<CR>");
+    assert!(errors.is_empty(), "{errors:?}");
+    let rows = {
+        let st = state(&mut s);
+        let st = st.borrow();
+        let p = st.panes[&s.win].panel.as_ref().expect("the detail panel");
+        assert_eq!(p.tree.title, "Requests");
+        p.tree
+            .rows
+            .iter()
+            .map(|r| r.key.clone())
+            .collect::<Vec<_>>()
+    };
+    assert!(rows.iter().any(|k| k == "value") && rows.iter().any(|k| k == "range"));
+    keys(&mut s.h, "<CR>");
+    for k in ["/", "t", "s"] {
+        let errors = keys_errors(&mut s.h, k);
+        assert!(
+            errors.iter().any(|e| e.contains("this panel is a stat")),
+            "{k}: {errors:?}"
+        );
+        keys(&mut s.h, "<Esc>");
+    }
+}
+
+#[test]
+fn s_on_a_graph_panel_turns_its_labels_and_its_layout() {
+    let mut s = open_at(&fixture("dash/ops.fig"), 176, 81);
+    let g = {
+        let st = state(&mut s);
+        let st = st.borrow();
+        let m = st.dash.as_ref().unwrap().model.as_ref().unwrap();
+        (0..m.panels.len())
+            .find(|&i| m.panels[i].graph().is_some())
+            .expect("a graph")
+    };
+    let f = frame(&mut s, g);
+    click(&mut s, (f.x + 30.0, f.y + 22.0));
+    assert_eq!(focused(&mut s), Some(g));
+    keys(&mut s.h, "s");
+    keys(&mut s.h, "labels<CR>");
+    s.h.run_until_idle();
+    keys(&mut s.h, "s");
+    keys(&mut s.h, "layout: force<CR>");
+    s.h.run_until_idle();
+    let (t, layout) = {
+        let st = state(&mut s);
+        let st = st.borrow();
+        let d = st.dash.as_ref().unwrap();
+        let gm = d.model.as_ref().unwrap().panels[g].graph().unwrap();
+        (d.toggles[g], gm.layout.clone())
+    };
+    assert_eq!(t.labels, Some(false));
+    assert_eq!(t.layout, Some(die_fig::interact::LayoutPick::Force));
+    assert_eq!(layout, die_fig::spec::Layout::Force, "laid out again");
+}
+
+#[test]
+fn a_find_brings_its_series_forward_on_a_dashboard_until_esc() {
+    let mut s = health();
+    let at = plot_mid(&mut s, 4);
+    click(&mut s, at);
+    s.h.send(die_core::Input::PointerLeft);
+    keys(&mut s.h, "/work<CR>");
+    s.h.scene();
+    let p = plot_of(&mut s, 4);
+    let (_, over) = buffers(&mut s);
+    let k = CELL.scale as f32;
+    let corner = (((p.x + 3.0) * k) as u32, ((p.y + 3.0) * k) as u32);
+    assert!(pixel(&s.h, over, corner)[3] > 0, "the wash over the plot");
+    keys(&mut s.h, "<Esc>");
+    s.h.scene();
+    assert_eq!(pixel(&s.h, over, corner)[3], 0, "gone with Esc");
+}
+
+#[test]
+fn a_key_in_the_focused_panel_takes_another_panels_card_away() {
+    let mut s = health();
+    let f = frame(&mut s, 4);
+    click(&mut s, (f.x + 30.0, f.y + 22.0));
+    let at = plot_mid(&mut s, 5);
+    mv(&mut s, at);
+    assert!(sub_hover(&mut s, 5).is_some());
+    keys(&mut s.h, "l");
+    assert!(panel_cursor(&mut s, 4).is_some());
+    assert_eq!(sub_hover(&mut s, 5), None, "one card: the last input's");
+}
+
+#[test]
+fn a_second_window_on_a_dashboard_opens_on_the_first_windows_view() {
+    let mut s = health();
+    keys(&mut s.h, "T");
+    keys(&mut s.h, "1h<CR>");
+    settle(&mut s);
+    keys(&mut s.h, "<Tab>");
+    let t = time(&mut s);
+    keys(&mut s.h, "<C-w>v");
+    s.h.run_until_idle();
+    s.h.scene();
+    let w2 = s.h.focused().unwrap();
+    assert_ne!(w2, s.win);
+    let st = state(&mut s);
+    let st = st.borrow();
+    let dp = st.panes[&w2]
+        .dash
+        .as_ref()
+        .expect("a dashboard in the new window");
+    assert_eq!((dp.view.time, dp.view.focused), (t, Some(0)));
+}
+
+#[test]
+fn one_command_named_by_two_data_specs_fills_both() {
+    let dir = TempDir::new("dash-two-specs");
+    let spec = dir.path().join("two.fig");
+    std::fs::write(
+        &spec,
+        r#"{"type": "dashboard", "data": {
+  "fast": {"run": "echo t,v; echo 1,2; echo 2,3", "every": "5s"},
+  "slow": {"run": "echo t,v; echo 1,2; echo 2,3", "every": "30s"}},
+  "rows": [[{"type": "line", "title": "Fast", "data": "fast", "x": "t", "y": "v"},
+            {"type": "line", "title": "Slow", "data": "slow", "x": "t", "y": "v"}]]}"#,
+    )
+    .unwrap();
+    let mut s = open_at(&spec, 176, 61);
+    assert!(s.h.screen().contains("(y/n)"));
+    keys(&mut s.h, "y<CR>");
+    assert!(!s.h.screen().contains("(y/n)"), "one yes covers both");
+    let both = wait_for(&mut s, |s| ready(s, 0) && ready(s, 1));
+    let states = panel_states(&mut s);
+    s.h.shutdown();
+    assert!(both, "{states:?}");
+}
+
+#[test]
+fn r_in_one_figure_asks_only_its_own_questions_again() {
+    let dir = TempDir::new("dash-two-figs");
+    let (a, b) = (dir.path().join("alpha.fig"), dir.path().join("beta.fig"));
+    let text = |tag: &str| {
+        format!(
+            r#"{{"type": "dashboard", "data": {{"s": {{"stream": "sleep 30 # {tag}"}}}}, "rows": [[{{"type": "line", "title": "S", "data": "s", "x": "t", "y": "v"}}]]}}"#
+        )
+    };
+    std::fs::write(&a, text("alpha")).unwrap();
+    std::fs::write(&b, text("beta")).unwrap();
+    let mut s = open_at(&a, 176, 61);
+    assert!(s.h.screen().contains("for alpha.fig? (y/n)"));
+    keys(&mut s.h, "n<CR>");
+    keys(&mut s.h, "<C-w>v");
+    s.h.run_until_idle();
+    let args = Args {
+        text: Some(b.display().to_string()),
+        ..Args::default()
+    };
+    s.h.run("fig", &args).unwrap();
+    s.h.run_until_idle();
+    s.h.scene();
+    assert!(s.h.screen().contains("for beta.fig? (y/n)"));
+    keys(&mut s.h, "n<CR>");
+    keys(&mut s.h, "R");
+    assert!(
+        s.h.screen().contains("for beta.fig? (y/n)"),
+        "beta asks again"
+    );
+    keys(&mut s.h, "n<CR>");
+    s.h.run_until_idle();
+    s.h.scene();
+    let alpha_again = s.h.screen().contains("for alpha.fig? (y/n)");
+    if alpha_again {
+        keys(&mut s.h, "n<CR>");
+    }
+    s.h.shutdown();
+    assert!(!alpha_again, "alpha's no holds");
+}
+
+#[test]
+fn the_header_says_asking_then_not_run_and_a_refused_file_panel_says_so() {
+    let mut s = open_at(&fixture("live/live.fig"), 176, 61);
+    assert_eq!(live_text(&mut s).as_deref(), Some("asking\u{2026}"));
+    keys(&mut s.h, "n<CR>n<CR>");
+    s.h.scene();
+    assert_eq!(live_text(&mut s).as_deref(), Some("not run"));
+    s.h.shutdown();
+    // A file panel out of the spec's directory, refused: it says so, as a command does.
+    let dir = TempDir::new("dash-refused");
+    let (dash, other) = (dir.path().join("dash"), dir.path().join("other"));
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(
+        other.join("x.fig"),
+        r#"{"type": "stat", "label": "X", "data": {"values": [{"a": 1}]}, "value": {"sum": "a"}}"#,
+    )
+    .unwrap();
+    let spec = dash.join("d.fig");
+    std::fs::write(
+        &spec,
+        r#"{"type": "dashboard", "rows": [[{"file": "../other/x.fig"}]]}"#,
+    )
+    .unwrap();
+    let mut s = open_at(&spec, 176, 61);
+    assert!(
+        s.h.screen().contains("x.fig\" for d.fig? (y/n)"),
+        "{}",
+        s.h.screen()
+    );
+    keys(&mut s.h, "n<CR>");
+    s.h.run_until_idle();
+    assert_eq!(panel_states(&mut s), ["failed: not opened: you said no"]);
+    s.h.shutdown();
+}
+
+#[test]
+fn a_brush_held_on_a_following_dashboard_holds_still_as_rows_come() {
+    let mut s = open_at(&fixture("live/live.fig"), 176, 61);
+    keys(&mut s.h, "y<CR>y<CR>");
+    assert!(wait_for(&mut s, |s| ready(s, 2)), "rows came");
+    // Enough rows to brush through (a time zooms to a second at the least), four seconds of
+    // them shown.
+    std::thread::sleep(Duration::from_millis(4500));
+    s.h.advance(Duration::from_millis(40));
+    keys(&mut s.h, "T");
+    keys(&mut s.h, "-4s<CR>");
+    settle(&mut s);
+    assert!(following(&mut s));
+    let p = plot_of(&mut s, 2);
+    let y = p.y + p.h / 2.0;
+    let (a, b) = (p.x + p.w * 0.25, p.x + p.w * 0.75);
+    press(&mut s, (a, y));
+    drag(&mut s, (a + 20.0, y));
+    drag(&mut s, (b, y));
+    let held = time(&mut s).unwrap();
+    let newest = |s: &mut Setup| {
+        let st = state(s);
+        let st = st.borrow();
+        st.dash.as_ref()?.model.as_ref()?.newest()
+    };
+    let before = newest(&mut s);
+    assert!(
+        wait_for(&mut s, |s| newest(s) > before),
+        "new rows while it's held"
+    );
+    assert_eq!(time(&mut s), Some(held), "the brush's time holds still");
+    release(&mut s, (b, y));
+    settle(&mut s);
+    let (t0, t1) = time(&mut s).unwrap();
+    let want = (held.1 - held.0) * 0.5;
+    assert!(
+        ((t1 - t0) - want).abs() < want * 0.1,
+        "zoomed to what was brushed: {} vs {want}",
+        t1 - t0
+    );
+    assert!(t0 >= held.0 && t1 <= held.1, "inside what was shown");
+    s.h.shutdown();
+}

@@ -273,7 +273,12 @@ pub fn overlay(
         Some(h) => h.time.map(|t| (h.panel, t)),
         None => focused.and_then(|f| {
             let p = model.panels.get(f).filter(|p| p.linked)?;
-            let c = view.panels.get(f)?.cursor.as_ref()?;
+            let pv = view.panels.get(f)?;
+            // A linked tile's cursor on its trend is a moment as a chart's cursor is.
+            if let (Some(point), Some(tm)) = (pv.point, layout.panel(f).and_then(|l| l.tile())) {
+                return tm.trend.get(point).map(|t| (f, t.x));
+            }
+            let c = pv.cursor.as_ref()?;
             let (x, _) = plot::nav::cursor_data(p.chart()?, c)?;
             Some((f, x))
         }),
@@ -308,6 +313,11 @@ pub fn overlay(
                     }
                     _ => (None, None),
                 };
+                // A search's find, or the detail panel's row, brings its series forward where
+                // the pointer brings none.
+                if emphasis.is_none() {
+                    emphasis = view.panels.get(i).and_then(|v| v.emphasis.clone());
+                }
                 let mut brush = mine.and_then(|h| h.brush).map(|(a, b)| {
                     let kind = plot::brush_kind(cm);
                     (kind, p.local(a.0, a.1), p.local(b.0, b.1))

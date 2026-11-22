@@ -56,10 +56,10 @@ use die_core::{
     Args, BufferId, Ctx, Error, Extension, Mode, Origin, Prefix, PromptSpec, Registry, Result,
     ShowIn, Side, State,
 };
-use interact::{Action, Cursor, LayoutPick, Setting, View};
+use interact::{Action, Cursor, LayoutPick, Setting, Toggles, View};
 use jiff::tz::TimeZone;
 use source::Source;
-use spec::{DataRef, Figure};
+use spec::{DataRef, Figure, GraphSpec};
 use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -555,7 +555,11 @@ fn in_log(
     f: impl FnOnce(&mut FigState, die_core::WindowId) -> Result,
 ) -> Option<Result> {
     let (state, w) = here(ctx, a).ok()?;
-    if state.borrow().panes.get(&w).is_none_or(|p| p.log.is_none()) {
+    let up = {
+        let st = state.borrow();
+        st.panes.get(&w).is_some_and(|p| p.log.is_some()) || st.dash_log_up(w)
+    };
+    if !up {
         return None;
     }
     Some(on_fig(ctx, a, true, |st, w, _| f(st, w)))
@@ -565,17 +569,34 @@ fn in_log(
 /// last, each brought into view; `C-d` and `C-u` half a page down and up, the mark kept on the
 /// page. Other motions do nothing in the log.
 fn log_move(st: &mut FigState, w: die_core::WindowId, action: &Action, n: u32) -> Result {
+    // A dashboard's focused panel's log, where the window's own isn't up.
+    if st.panes.get(&w).is_some_and(|p| p.log.is_none()) && st.dash_log_up(w) {
+        st.dash_log_move(w, action, n);
+        return Ok(());
+    }
     let lines = st.log_layout();
     let Some(p) = st.panes.get_mut(&w) else {
         return Ok(());
     };
-    let Some((top, mark)) = p.log else {
+    let Some(at) = p.log else {
         return Ok(());
     };
     let page = plot::log_page(p.size());
+    p.log = Some(log_step(&lines, page, at, action, n));
+    Ok(())
+}
+
+/// Where a log's keys take its first line shown and its marked entry: see [`log_move`].
+pub fn log_step(
+    lines: &plot::LogLayout,
+    page: usize,
+    (top, mark): (usize, usize),
+    action: &Action,
+    n: u32,
+) -> (usize, usize) {
     let last = lines.starts.len().saturating_sub(1);
     let n = n as usize;
-    let (top, mark) = match action {
+    match action {
         Action::Series(by) if *by > 0 => {
             let mark = (mark + n).min(last);
             (lines.reveal(top, mark, page), mark)
@@ -606,9 +627,7 @@ fn log_move(st: &mut FigState, w: die_core::WindowId, action: &Action, n: u32) -
             (top, mark)
         }
         _ => (top, mark),
-    };
-    p.log = Some((top, mark));
-    Ok(())
+    }
 }
 
 /// The figure a command was typed on, and its window's pane.
@@ -1173,7 +1192,13 @@ fn table(ctx: &mut Ctx, a: &Args) -> Result {
         let dash = st.dash_drawn(w).then(|| st.dash_table(w));
         let (text, line) = match (&st.graph, &st.model) {
             _ if dash.is_some() => dash.flatten().ok_or_else(|| {
-                Error::Msg("fig: t shows the focused panel's data: Tab focuses a chart".into())
+                Error::Msg(match st.dash_focused_kind(w) {
+                    None => "fig: t shows the focused panel's data: Tab or a click focuses one"
+                        .into(),
+                    Some(k) => format!(
+                        "fig: t shows a chart's or a graph's data; this panel is {k} (⏎ shows its numbers)"
+                    ),
+                })
             })?,
             (Some(g), _) => {
                 let t = g.tsv(&view, cursor.as_ref());
@@ -1318,8 +1343,16 @@ fn settings(ctx: &mut Ctx, a: &Args) -> Result {
 /// `s` on a dashboard: the focused chart panel's settings as a menu, each answer one setting of
 /// that panel turned over, its model built again.
 fn dash_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result {
-    let (i, toggles, chart) = state.borrow().dash_settings(w).ok_or_else(|| {
-        Error::Msg("fig: s turns the focused chart's settings: Tab focuses one".into())
+    let graph = state.borrow().dash_graph_settings(w);
+    if let Some((i, toggles, spec, layout)) = graph {
+        return dash_graph_settings(ctx, state, w, i, toggles, spec, layout);
+    }
+    let found = state.borrow().dash_settings(w);
+    let (i, toggles, chart) = found.ok_or_else(|| {
+        Error::Msg(match state.borrow().dash_focused_kind(w) {
+            None => "fig: s turns the focused panel's settings: Tab or a click focuses one".into(),
+            Some(k) => format!("fig: s turns a chart's or a graph's settings; this panel is {k}"),
+        })
     })?;
     let items: Vec<String> = Setting::ALL
         .iter()
@@ -1352,6 +1385,65 @@ fn dash_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result 
     Ok(())
 }
 
+/// `s` on a dashboard's focused graph: its labels on or off, its layout, `relayout`; the
+/// panel laid out again through the dashboard's job, as a chart panel's settings are.
+fn dash_graph_settings(
+    ctx: &mut Ctx,
+    state: Shared,
+    w: die_core::WindowId,
+    i: usize,
+    toggles: Toggles,
+    spec: GraphSpec,
+    layout: Option<spec::Layout>,
+) -> Result {
+    let on = toggles.graph_labels(&spec);
+    let now = layout.as_ref().and_then(LayoutPick::of);
+    let mut items = vec![format!("labels: {}", if on { "on" } else { "off" })];
+    for l in LayoutPick::ALL {
+        let mark = if Some(l) == now { " (now)" } else { "" };
+        items.push(format!("layout: {}{mark}", l.name()));
+    }
+    items.push("relayout: let every pin go".into());
+    let prompt = PromptSpec::new("Settings: ")
+        .candidates(items)
+        .require_match();
+    ctx.prompt(prompt, move |ctx, answer| {
+        let Some(answer) = answer else {
+            return Ok(());
+        };
+        let (name, rest) = answer.split_once(':').unwrap_or((&answer, ""));
+        let mut st = state.borrow_mut();
+        let said = match name.trim() {
+            "labels" => {
+                st.dash_graph_turn(ctx, i, |t, spec| t.flip_graph_labels(spec));
+                format!("settings: labels {}", if on { "off" } else { "on" })
+            }
+            "layout" => {
+                let Some(pick) = rest
+                    .split_whitespace()
+                    .next()
+                    .and_then(LayoutPick::from_name)
+                else {
+                    return Ok(());
+                };
+                match st.dash_graph_turn(ctx, i, |t, _| t.layout = Some(pick)) {
+                    _ if now == Some(pick) => format!("settings: layout {} already", pick.name()),
+                    _ => format!("settings: layout {}", pick.name()),
+                }
+            }
+            "relayout" => match st.dash_unpin(w) {
+                true => "settings: every pin let go".to_string(),
+                false => "settings: nothing is pinned".to_string(),
+            },
+            _ => return Ok(()),
+        };
+        ctx.messages.push(said);
+        st.refresh(ctx);
+        Ok(())
+    });
+    Ok(())
+}
+
 /// `/`: find a series, a category or a node by name with fig's fuzzy match (search's model;
 /// the prompt's list in the same order, fig's score over byte order, so its first row is the
 /// best match). As you type, the cursor goes to the best match and the figure lights what
@@ -1363,8 +1455,17 @@ fn search(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, w) = here(ctx, a)?;
     let (names, before) = {
         let st = state.borrow();
-        let names =
-            search_names(&st, w).ok_or_else(|| Error::Msg("fig: nothing is drawn yet".into()))?;
+        let names = search_names(&st, w).ok_or_else(|| {
+            Error::Msg(match (st.dash_drawn(w), st.dash_focused_kind(w)) {
+                (true, Some(k)) => {
+                    format!("fig: / finds in a chart or a graph; this panel is {k}")
+                }
+                (true, None) => {
+                    "fig: / finds in the focused panel: Tab or a click focuses one".into()
+                }
+                _ => "fig: nothing is drawn yet".into(),
+            })
+        })?;
         (names, Before::of(&st, w))
     };
     let mut labels: Vec<String> = Vec::new();
@@ -1479,9 +1580,13 @@ fn goto_error(ctx: &mut Ctx, a: &Args) -> Result {
         let st = state.borrow();
         let log = st.panes.get(&w).and_then(|p| p.log);
         let entry = a.count.map(|n| n.saturating_sub(1)).or(log.map(|l| l.1));
-        let target = match entry {
-            Some(i) => st.log_errors().get(i).cloned(),
-            None => st.error.as_ref().map(|f| f.first().clone()),
+        // A dashboard's focused panel's error figure first: its own errors.
+        let target = match st.dash_error(w, a.count.map(|n| n.saturating_sub(1))) {
+            Some(e) => Some(e),
+            None => match entry {
+                Some(i) => st.log_errors().get(i).cloned(),
+                None => st.error.as_ref().map(|f| f.first().clone()),
+            },
         };
         (target, st.source.clone())
     };
@@ -2054,7 +2159,12 @@ impl Extension for Fig {
                 let to_error = {
                     let st = state.borrow();
                     let log = st.panes.get(&w).is_some_and(|p| p.log.is_some());
-                    log || (st.error.is_some() && st.model.is_none() && st.graph.is_none())
+                    let lone = st.error.is_some()
+                        && st.model.is_none()
+                        && st.graph.is_none()
+                        && !st.dash_drawn(w);
+                    // A dashboard's focused panel that failed, or has its log up.
+                    log || lone || st.dash_error(w, None).is_some()
                 };
                 if to_error {
                     return goto_error(ctx, a);

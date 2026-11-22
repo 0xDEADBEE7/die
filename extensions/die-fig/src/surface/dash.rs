@@ -27,8 +27,8 @@
 use super::{Act, FigState, GraphAct, Keys, Kit, Pane, changed, key_card, measured, ms, target};
 use crate::dashboard::layout::{DashLayout, PanelFigure, PanelLayout};
 use crate::dashboard::{
-    self, DashHit, DashHover, DashModel, DashView, LiveStatus, Origin, PanelHover, PanelState,
-    RANGES, SourceState, Sources, Want,
+    self, DashHit, DashHover, DashModel, DashView, LiveState, LiveStatus, Origin, PanelHover,
+    PanelState, RANGES, SourceState, Sources, Want,
 };
 use crate::data::ReadOptions;
 use crate::detail::Item;
@@ -241,19 +241,44 @@ impl DashJob {
     }
 }
 
-/// Each chart panel's settings (`s`) applied: its model built again from its tables with them.
+/// Each panel's settings (`s`) applied: a chart's model built again from its tables with them,
+/// a graph's laid out again (its labels, its layout).
 fn apply_toggles(model: &mut DashModel, toggles: &[Toggles], zone: &TimeZone) {
     for (p, t) in model.panels.iter_mut().zip(toggles) {
         if *t == Toggles::default() {
             continue;
         }
-        if let PanelState::Chart(cm) = &p.state
-            && let Ok(m) =
-                crate::plot::ChartModel::build(t.apply(&cm.chart), cm.tables.clone(), zone)
-        {
-            p.state = PanelState::Chart(m);
+        match &p.state {
+            PanelState::Chart(cm) => {
+                if let Ok(m) =
+                    crate::plot::ChartModel::build(t.apply(&cm.chart), cm.tables.clone(), zone)
+                {
+                    p.state = PanelState::Chart(m);
+                }
+            }
+            PanelState::Graph(g) => {
+                let spec = t.apply_graph(&g.spec);
+                if let Ok(m) = crate::graph::GraphModel::build_as(spec, t.graph_layout_for(&g.spec))
+                {
+                    p.state = PanelState::Graph(Arc::new(m));
+                }
+            }
+            _ => {}
         }
     }
+}
+
+/// A graph panel's spec as the dashboard gave it, before its settings turned its labels.
+fn spec_before(g: &crate::graph::GraphModel, t: &Toggles) -> crate::spec::GraphSpec {
+    let mut spec = g.spec.clone();
+    if let Some(on) = t.labels {
+        // Turned to `on` only where the spec said otherwise.
+        spec.view.labels = match on {
+            true => crate::spec::Labels::None,
+            false => crate::spec::Labels::Auto,
+        };
+    }
+    spec
 }
 
 /// One data file a dashboard wants, read: from its buffer if one visits it (followed), else
@@ -504,6 +529,9 @@ enum Page {
     Live((f32, f32)),
     /// On the scrollbar's thumb: a drag scrolls, from where it was.
     Thumb { from: f32, then: f32 },
+    /// On a panel's error figure (its symbolic figure or its log's header): a click turns it
+    /// over.
+    Error { panel: usize, at: (f32, f32) },
 }
 
 /// A scroll burst on a dashboard: its first event's meaning (the page, a panel, or nothing),
@@ -526,6 +554,8 @@ pub(super) enum Then {
     Rerun,
     /// A graph node's or edge's detail, a double click's.
     Open(Item),
+    /// To the place of the focused panel's error: its log's entry, else its first.
+    GotoError(Option<usize>),
 }
 
 /// What a dashboard window's base shows: drawn again when this changes.
@@ -552,6 +582,7 @@ struct OverKey {
     base: u64,
     hover: Option<DashHover>,
     cursors: Vec<Option<Cursor>>,
+    emphasis: Vec<Option<crate::data::SeriesKey>>,
     tiles: Vec<Option<usize>>,
     help: bool,
     strip: Option<Rect>,
@@ -587,6 +618,12 @@ pub struct DashPane {
     drawn: Option<DashKey>,
     over_key: Option<OverKey>,
     tile_hover: Option<(usize, TileHover)>,
+    /// The panels in reading order as the dashboard lays them out whole (Tab's order, kept
+    /// while one is full size).
+    order: Vec<usize>,
+    /// New data came while a linked chart's press was held: the following time slides once
+    /// the press lets go, so a brush never moves under the hand.
+    follow_due: bool,
 }
 
 impl DashPane {
@@ -616,9 +653,70 @@ impl DashPane {
             drawn: None,
             over_key: None,
             tile_hover: None,
+            order: Vec::new(),
+            follow_due: false,
         };
         dp.sync_linked(model);
         dp
+    }
+
+    /// The pointer's hover gone from every panel until it moves again (the window changed
+    /// size, or a key moved another panel's cursor): each pane's hover, card and emphasis.
+    pub(super) fn drop_hover(&mut self) {
+        self.hover_to(None);
+        self.tile_hover = None;
+        for s in &mut self.subs {
+            (s.hover, s.near, s.legend, s.strip, s.target) = (None, None, None, None, None);
+            s.row_hover = None;
+        }
+    }
+
+    /// Whether panel `i` shows its error figure: it failed, or its log is up over the figure it
+    /// kept with the stale badge.
+    fn error_shown(&self, model: &DashModel, i: usize) -> bool {
+        let Some(p) = model.panels.get(i) else {
+            return false;
+        };
+        let log = matches!(
+            self.view.panels.get(i).map(|v| v.error),
+            Some(ErrorView::Log { .. })
+        );
+        matches!(p.state, PanelState::Failed(_)) || (p.stale.is_some() && log)
+    }
+
+    /// Panel `i`'s error figure turned over, symbolic and log (a panel with the stale badge:
+    /// its log over the figure, or the figure again). False where it has no error.
+    fn flip_error(&mut self, model: &DashModel, i: usize) -> bool {
+        if model.panels.get(i).and_then(|p| p.errors()).is_none() {
+            return false;
+        }
+        let Some(pv) = self.view.panels.get_mut(i) else {
+            return false;
+        };
+        pv.error = match pv.error {
+            ErrorView::Symbolic => ErrorView::Log { top: 0, mark: 0 },
+            ErrorView::Log { .. } => ErrorView::Symbolic,
+        };
+        self.drawn = None;
+        true
+    }
+
+    /// A following time slid to the newest after a press let go, where new data came while it
+    /// was held.
+    fn catch_up(&mut self, model: &DashModel) {
+        if !std::mem::take(&mut self.follow_due) || self.held.is_some() || !self.follow {
+            return;
+        }
+        let f = live::follow(
+            self.view.time,
+            model.newest(),
+            true,
+            0.0,
+            FollowChange::Data,
+        );
+        self.view.time = f.x;
+        self.sync_linked(model);
+        self.drawn = None;
     }
 
     /// What it drew is to be drawn again: something else drew over it (the log).
@@ -736,8 +834,12 @@ impl DashPane {
         if !had_data && self.view.time.is_none() && new.newest().is_some() {
             self.view.time = DashView::initial(new).time;
         }
-        // New data slides a following time to the newest, its width kept.
-        if self.follow {
+        // New data slides a following time to the newest, its width kept; not under a press
+        // held on a linked chart (a brush, a pan), which slides it once it lets go.
+        let holding = self.held.is_some_and(|h| is_linked_chart(new, h));
+        if self.follow && holding {
+            self.follow_due = true;
+        } else if self.follow {
             let f = live::follow(self.view.time, new.newest(), true, 0.0, FollowChange::Data);
             self.view.time = f.x;
         }
@@ -779,6 +881,8 @@ impl DashPane {
                     view: s.shown(now),
                     cursor: s.cursor.clone(),
                     error: self.view.panels.get(i).map(|p| p.error).unwrap_or_default(),
+                    point: self.tile_points.get(i).copied().flatten(),
+                    emphasis: s.found.clone(),
                 })
                 .collect(),
             ..self.view.clone()
@@ -1111,11 +1215,26 @@ impl DashPane {
                 if self.held.is_some() || self.page != Page::None {
                     return Then::None;
                 }
-                let over = match dashboard::hit(layout, at.0, at.1) {
-                    Some(DashHit::Panel { panel, at, .. }) => Some((panel, at)),
+                let hit = dashboard::hit(layout, at.0, at.1);
+                let over = match &hit {
+                    Some(DashHit::Panel { panel, at, .. }) => Some((*panel, *at)),
                     _ => None,
                 };
                 self.hover_to(over);
+                // A log's entry under the pointer is marked, as alone.
+                if let Some(DashHit::Panel {
+                    panel,
+                    hit: Hit::LogEntry(e),
+                    ..
+                }) = hit
+                    && let Some(pv) = self.view.panels.get_mut(panel)
+                    && let ErrorView::Log { top, .. } = pv.error
+                {
+                    pv.error = ErrorView::Log {
+                        top,
+                        mark: e as usize,
+                    };
+                }
                 if let Some((i, at)) = over
                     && let Some(tm) = layout.panel(i).and_then(|pl| pl.tile())
                 {
@@ -1187,6 +1306,7 @@ impl DashPane {
                     if self.subs.get(i).is_none_or(|s| s.held.is_none()) {
                         self.held = None;
                     }
+                    self.catch_up(model);
                     let _ = b;
                     return then;
                 }
@@ -1195,6 +1315,17 @@ impl DashPane {
                 match (page, dashboard::hit(layout, at.0, at.1)) {
                     (Page::Chip(a), Some(DashHit::Chip)) if near(a) => Then::Range,
                     (Page::Live(a), Some(DashHit::Live)) if near(a) => Then::Rerun,
+                    (
+                        Page::Error { panel, at: a },
+                        Some(DashHit::Panel {
+                            panel: q,
+                            hit: Hit::ErrorFigure,
+                            ..
+                        }),
+                    ) if near(a) && q == panel => {
+                        self.flip_error(model, panel);
+                        Then::None
+                    }
                     _ => Then::None,
                 }
             }
@@ -1250,6 +1381,42 @@ impl DashPane {
                 self.page = Page::Swallowed;
                 return Then::None;
             }
+        }
+        // A panel's error figure answers as alone: the badge opens its log over the figure, a
+        // click on the symbolic figure or the log's header turns it over, a press on an entry
+        // marks it and a double click goes to its place.
+        match hit {
+            Hit::Badge if b == Button::Left => {
+                self.flip_error(model, i);
+                self.page = Page::Swallowed;
+                return Then::None;
+            }
+            Hit::ErrorFigure if b == Button::Left => {
+                let o = layout.panel(i).map_or((0.0, 0.0), |pl| pl.origin());
+                self.page = Page::Error {
+                    panel: i,
+                    at: (l.0 + o.0, l.1 + o.1),
+                };
+                return Then::None;
+            }
+            Hit::LogEntry(e) if b == Button::Left => {
+                let e = e as usize;
+                self.page = Page::Swallowed;
+                if let Some(pv) = self.view.panels.get_mut(i)
+                    && let ErrorView::Log { top, mark } = pv.error
+                {
+                    pv.error = ErrorView::Log { top, mark: e };
+                    if p.clicks >= 2 && mark == e {
+                        return Then::GotoError(Some(e));
+                    }
+                }
+                return Then::None;
+            }
+            _ if self.error_shown(model, i) => {
+                self.page = Page::Swallowed;
+                return Then::None;
+            }
+            _ => {}
         }
         if tile {
             if let Some(tm) = layout.panel(i).and_then(|pl| pl.tile())
@@ -1400,6 +1567,25 @@ impl DashPane {
             return Then::None;
         };
         let pm = &model.panels[i];
+        if self.error_shown(model, i) {
+            own_timer(self, arm);
+            // Its log scrolls by lines, the rest carried; the symbolic figure doesn't move.
+            if let (Some(ErrorView::Log { top, mark }), Some((errors, name)), Some(pl)) = (
+                self.view.panels.get(i).map(|v| v.error),
+                pm.errors(),
+                layout.panel(i),
+            ) {
+                let lines = plot::log_layout(&errors, "", &name);
+                let page = plot::log_page((pl.body.w, pl.body.h));
+                let rows = cell.height as f32 / layout.scale.max(0.01);
+                let by = dy * rows / plot::errors::LOG_LINE + self.carry;
+                let whole = by.trunc();
+                self.carry = by - whole;
+                let top = (top as f32 + whole).clamp(0.0, lines.max_top(page) as f32) as usize;
+                self.view.panels[i].error = ErrorView::Log { top, mark };
+            }
+            return Then::None;
+        }
         if pm.chart().is_some() || pm.graph().is_some() {
             let l = layout.panel(i).map_or(at, |pl| pl.local(at.0, at.1));
             return self.on_panel(layout, model, toggles, i, p, l, false, now, kit, arm);
@@ -1473,6 +1659,7 @@ impl DashPane {
         take_back(&mut layout, i, sub);
         self.layout = Some(layout);
         self.after_act(model, i, before, had, shared);
+        self.catch_up(model);
     }
 
     /// `Esc` (mouse-ux §8): a brush is dropped, a pan or a node's drag goes back; else the full
@@ -1500,6 +1687,16 @@ impl DashPane {
                     self.sync_linked(model);
                 }
             }
+            self.catch_up(model);
+            return true;
+        }
+        // A search's find goes before full size does, as it goes before the detail alone.
+        if let Some(sub) = self.view.focused.and_then(|f| self.subs.get_mut(f))
+            && (sub.found.is_some() || sub.found_band.is_some() || sub.found_node.is_some())
+        {
+            (sub.found, sub.found_band, sub.found_node) = (None, None, None);
+            (sub.matches, sub.lit, sub.lit_bands) = (vec![], vec![], vec![]);
+            sub.rehover = true;
             return true;
         }
         if self.view.full.take().is_some() {
@@ -1544,7 +1741,9 @@ pub(super) fn draw(
     };
     // A live dashboard not following says so where it says it's live.
     model.live = match (live, dp.follow) {
-        (Some(_), false) => Some(LiveStatus::paused()),
+        (Some(l), false) if matches!(l.state, LiveState::Live | LiveState::Updating) => {
+            Some(LiveStatus::paused())
+        }
         (l, _) => l,
     };
     let model: &DashModel = model;
@@ -1574,13 +1773,26 @@ pub(super) fn draw(
             y: None,
             ..sub.view.clone()
         };
+        let tile = (dp.layout.as_ref())
+            .and_then(|l| l.panel(f))
+            .and_then(|pl| pl.tile())
+            .or_else(|| pm.tile().map(|t| &t.model));
         let src = super::panel::Source {
             chart: pm.chart(),
             graph: pm.graph(),
+            tile,
         };
         p.sync_panel(src, d.version);
     }
-    let shown = dp.shown(now);
+    let mut shown = dp.shown(now);
+    // The detail panel's row under the pointer brings its series forward in the focused panel.
+    if let (Some(f), Some(k)) = (
+        shown.focused,
+        p.row_hover.as_ref().and_then(|i| i.series().cloned()),
+    ) && let Some(pv) = shown.panels.get_mut(f)
+    {
+        pv.emphasis = Some(k);
+    }
     let scale = p.scale();
     let key = DashKey {
         version: d.version,
@@ -1670,6 +1882,9 @@ fn draw_base(
         sub.scene = layout.panel(i).map(regions_of);
         sub.rehover = true;
     }
+    if layout.full.is_none() {
+        dp.order = layout.lines.iter().flatten().copied().collect();
+    }
     let mut layout = layout;
     for pl in layout.panels.iter_mut().flatten() {
         if let PanelFigure::Chart { layout: c, .. } = &mut pl.figure {
@@ -1739,6 +1954,7 @@ fn draw_overlay(
         base: p.base_gen,
         hover: hover.clone(),
         cursors: shown.panels.iter().map(|v| v.cursor.clone()).collect(),
+        emphasis: shown.panels.iter().map(|v| v.emphasis.clone()).collect(),
         tiles: dp.tile_points.clone(),
         help: p.help,
         strip,
@@ -1931,6 +2147,15 @@ impl FigState {
                     ctx.messages.push(why);
                 }
             }
+            Then::GotoError(entry) => {
+                let args = die_core::Args {
+                    window: Some(w),
+                    buffer: self.buf,
+                    count: entry.map(|e| e + 1),
+                    ..die_core::Args::default()
+                };
+                ctx.defer(move |ctx| ctx.run("fig-goto-error", &args));
+            }
         }
     }
 
@@ -2001,6 +2226,11 @@ impl FigState {
                 i
             }
         };
+        // A key in the focused panel is the last input: another panel's hover and card go
+        // until the pointer moves (one card at a time, mouse-ux §3.3).
+        if dp.hovered.is_some_and(|h| h != i) {
+            dp.drop_hover();
+        }
         let mut layout = dp.layout.take()?;
         let before = dp.snapshot();
         let shared = dp.view.shared(model);
@@ -2099,10 +2329,15 @@ impl FigState {
         if n == 0 {
             return false;
         }
-        // Reading order on screen: the lines as laid out, top to bottom.
-        let mut order: Vec<usize> = (dp.layout.as_ref())
-            .map(|l| l.lines.iter().flatten().copied().collect())
-            .unwrap_or_default();
+        // Reading order on screen: the lines as laid out whole, top to bottom (kept while a
+        // panel is full size, whose layout has only it).
+        let mut order: Vec<usize> = match dp.order.is_empty() {
+            false => dp.order.clone(),
+            true => (dp.layout.as_ref())
+                .filter(|l| l.full.is_none())
+                .map(|l| l.lines.iter().flatten().copied().collect())
+                .unwrap_or_default(),
+        };
         for i in 0..n {
             if !order.contains(&i) {
                 order.push(i);
@@ -2189,28 +2424,89 @@ impl FigState {
         let (Some(model), Some(dp)) = (d.model.as_ref(), pane.dash.as_mut()) else {
             return false;
         };
-        let failed = |i: usize| {
-            matches!(
-                model.panels.get(i).map(|p| &p.state),
-                Some(PanelState::Failed(_))
-            )
-        };
+        // A failed panel's, or one kept with the stale badge (its log over its figure).
+        let erred = |i: usize| model.panels.get(i).is_some_and(|p| p.errors().is_some());
         let Some(i) = [dp.view.focused, dp.hovered]
             .into_iter()
             .flatten()
-            .find(|&i| failed(i))
+            .find(|&i| erred(i))
         else {
             return false;
         };
-        let Some(pv) = dp.view.panels.get_mut(i) else {
+        if !dp.flip_error(model, i) {
             return false;
-        };
-        pv.error = match pv.error {
-            ErrorView::Symbolic => ErrorView::Log { top: 0, mark: 0 },
-            ErrorView::Log { .. } => ErrorView::Symbolic,
-        };
+        }
         self.rev += 1;
         true
+    }
+
+    /// The error a focused panel's error figure goes to (`⏎`, a double click): its log's entry
+    /// `entry` (from 0), else its marked one, else its first. None unless the focused panel
+    /// failed or has its log up over the figure it kept.
+    pub fn dash_error(
+        &self,
+        w: die_core::WindowId,
+        entry: Option<usize>,
+    ) -> Option<crate::error::FigError> {
+        if !self.dash_drawn(w) {
+            return None;
+        }
+        let model = self.dash.as_ref()?.model.as_ref()?;
+        let dp = self.panes.get(&w)?.dash.as_ref()?;
+        let i = dp.view.focused?;
+        if !dp.error_shown(model, i) {
+            return None;
+        }
+        let (errors, _) = model.panels.get(i)?.errors()?;
+        let mark = match dp.view.panels.get(i).map(|v| v.error) {
+            Some(ErrorView::Log { mark, .. }) => Some(mark),
+            _ => None,
+        };
+        let at = entry.or(mark).unwrap_or(0);
+        errors.get(at).or(errors.first()).cloned()
+    }
+
+    /// Whether the focused panel's log is up in window `w`: its keys are the log's.
+    pub fn dash_log_up(&self, w: die_core::WindowId) -> bool {
+        let model = self.dash.as_ref().and_then(|d| d.model.as_ref());
+        let dp = self.panes.get(&w).and_then(|p| p.dash.as_ref());
+        match (model, dp, self.dash_drawn(w)) {
+            (Some(m), Some(dp), true) => dp.view.focused.is_some_and(|f| {
+                dp.error_shown(m, f)
+                    && matches!(
+                        dp.view.panels.get(f).map(|v| v.error),
+                        Some(ErrorView::Log { .. })
+                    )
+            }),
+            _ => false,
+        }
+    }
+
+    /// A move in the focused panel's log, as the log's keys move in a figure's own
+    /// ([`crate::log_step`]).
+    pub fn dash_log_move(&mut self, w: die_core::WindowId, action: &Action, n: u32) {
+        let FigState { dash, panes, .. } = &mut *self;
+        let (Some(d), Some(pane)) = (dash.as_ref(), panes.get_mut(&w)) else {
+            return;
+        };
+        let (Some(model), Some(dp)) = (d.model.as_ref(), pane.dash.as_mut()) else {
+            return;
+        };
+        let Some(i) = dp.view.focused else { return };
+        let (Some(ErrorView::Log { top, mark }), Some((errors, name))) = (
+            dp.view.panels.get(i).map(|v| v.error),
+            model.panels.get(i).and_then(|p| p.errors()),
+        ) else {
+            return;
+        };
+        let body = (dp.layout.as_ref())
+            .and_then(|l| l.panel(i))
+            .map_or((0.0, 0.0), |pl| (pl.body.w, pl.body.h));
+        let lines = plot::log_layout(&errors, "", &name);
+        let page = plot::log_page(body);
+        let (top, mark) = crate::log_step(&lines, page, (top, mark), action, n);
+        dp.view.panels[i].error = ErrorView::Log { top, mark };
+        self.rev += 1;
     }
 
     /// The dashboard's view of window `w` with a new shared time, eased, one undo step: a
@@ -2254,11 +2550,103 @@ impl FigState {
         let model = d.model.as_ref()?;
         let (i, sub) = self.dash_focused(w)?;
         let pm = model.panels.get(i)?;
+        // A tile's numbers as drawn (over the visible time), else as built.
+        let tile = (self.panes.get(&w)?.dash.as_ref())
+            .and_then(|dp| dp.layout.as_ref())
+            .and_then(|l| l.panel(i))
+            .and_then(|pl| pl.tile())
+            .or_else(|| pm.tile().map(|t| &t.model));
         let src = super::panel::Source {
             chart: pm.chart(),
             graph: pm.graph(),
+            tile,
         };
-        (src.chart.is_some() || src.graph.is_some()).then_some((src, sub, d.version))
+        (src.chart.is_some() || src.graph.is_some() || src.tile.is_some())
+            .then_some((src, sub, d.version))
+    }
+
+    /// What the focused panel of window `w` is, for a key that doesn't apply to it to say so:
+    /// `a stat`, `a meter`, `a heatmap`, `waiting`.
+    pub fn dash_focused_kind(&self, w: die_core::WindowId) -> Option<&'static str> {
+        let model = self.dash.as_ref()?.model.as_ref()?;
+        let (i, _) = self.dash_focused(w)?;
+        let p = model.panels.get(i)?;
+        Some(match &p.state {
+            PanelState::Chart(_) => "a chart",
+            PanelState::Graph(_) => "a graph",
+            PanelState::Tile(t) => match t.model.kind {
+                figure::TileKind::Stat => "a stat",
+                figure::TileKind::Meter => "a meter",
+                figure::TileKind::Sparkline => "a sparkline",
+            },
+            PanelState::Waiting(_) => "still waiting for its data",
+            PanelState::Failed(_) => "an error",
+        })
+    }
+
+    /// The focused graph panel's settings (`s`): its number, its toggles and its spec.
+    pub fn dash_graph_settings(
+        &self,
+        w: die_core::WindowId,
+    ) -> Option<(
+        usize,
+        Toggles,
+        crate::spec::GraphSpec,
+        Option<crate::spec::Layout>,
+    )> {
+        let d = self.dash.as_ref()?;
+        let (i, _) = self.dash_focused(w)?;
+        let g = d.model.as_ref()?.panels.get(i)?.graph()?;
+        let t = d.toggles.get(i).copied().unwrap_or_default();
+        Some((i, t, spec_before(g, &t), Some(g.layout.clone())))
+    }
+
+    /// The focused graph panel's settings turned by `f`, its model built again; whether they
+    /// changed.
+    pub fn dash_graph_turn(
+        &mut self,
+        ctx: &mut die_core::Ctx,
+        i: usize,
+        f: impl FnOnce(&mut Toggles, &crate::spec::GraphSpec),
+    ) -> bool {
+        let Some(d) = self.dash.as_mut() else {
+            return false;
+        };
+        let Some(g) = d.model.as_ref().and_then(|m| m.panels.get(i)?.graph()) else {
+            return false;
+        };
+        let t = d.toggles.get(i).copied().unwrap_or_default();
+        let spec = spec_before(g, &t);
+        if d.toggles.len() <= i {
+            d.toggles.resize(i + 1, Toggles::default());
+        }
+        let before = d.toggles[i];
+        f(&mut d.toggles[i], &spec);
+        if d.toggles[i] == before {
+            return false;
+        }
+        self.rev += 1;
+        self.dash_rebuild(ctx);
+        true
+    }
+
+    /// `relayout` on the focused graph panel: every pin let go, one undo step. Whether one was.
+    pub fn dash_unpin(&mut self, w: die_core::WindowId) -> bool {
+        let Some(dp) = self.panes.get_mut(&w).and_then(|p| p.dash.as_mut()) else {
+            return false;
+        };
+        let Some(i) = dp.view.focused else {
+            return false;
+        };
+        let before = dp.snapshot();
+        let Some(sub) = dp.subs.get_mut(i).filter(|s| !s.view.pinned.is_empty()) else {
+            return false;
+        };
+        sub.view.pinned.clear();
+        sub.rehover = true;
+        dp.undo.push(before);
+        self.rev += 1;
+        true
     }
 
     /// The cursor a search's or the detail panel's item names on the focused panel.
@@ -2411,10 +2799,23 @@ pub fn time_prompt(ctx: &mut die_core::Ctx, state: super::Shared, w: die_core::W
         .map(|r| format!("{}: {}", r.key, r.label))
         .collect();
     items.push("custom…".into());
+    // What's typed, kept: a range of its own (`2h`, `-90m`, `10:00-11:30`) is taken as typed,
+    // never as the preset it happens to match (`2h` isn't `24h`).
+    let typed = std::rc::Rc::new(RefCell::new(String::new()));
+    let keep = typed.clone();
     let spec = die_core::PromptSpec::new("Time range: ")
         .candidates(items)
-        .history("fig-time");
+        .history("fig-time")
+        .on_change(move |_, text| {
+            *keep.borrow_mut() = text.to_string();
+            Ok(())
+        });
     ctx.prompt(spec, move |ctx, answer| {
+        let own = typed.borrow().trim().to_string();
+        let answer = match own_range(&own) {
+            true => Some(own),
+            false => answer,
+        };
         let Some(answer) = answer
             .map(|a| a.trim().to_string())
             .filter(|a| !a.is_empty())
@@ -2433,6 +2834,15 @@ pub fn time_prompt(ctx: &mut die_core::Ctx, state: super::Shared, w: die_core::W
         }
         choose_range(ctx, &state, w, &answer)
     });
+}
+
+/// Whether typed text is a range of its own, not a preset's name: a length (`2h`, `-90m`) or
+/// two times of day (`10:00-11:30`).
+pub fn own_range(t: &str) -> bool {
+    let t = t.trim();
+    let length = crate::spec::chart::parse_duration(t.trim_start_matches('-').trim()).is_some();
+    let times = t.contains(':') && t.contains(['-', '–']) && !t.starts_with("custom");
+    (length || times) && !RANGES.iter().any(|r| r.key == t)
 }
 
 /// A range's answer applied to window `w`'s dashboard, or why not.

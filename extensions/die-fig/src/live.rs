@@ -80,6 +80,9 @@ pub struct LiveKey {
     pub spec: Option<PathBuf>,
     /// The command line.
     pub cmd: String,
+    /// Which of the spec's sources with this command line (another `every`, format or reading
+    /// hints make another source): 0 for the first. One yes covers them all.
+    pub nth: u32,
 }
 
 impl LiveKey {
@@ -88,7 +91,13 @@ impl LiveKey {
         LiveKey {
             spec: spec.map(lexical),
             cmd: cmd.to_string(),
+            nth: 0,
         }
+    }
+
+    /// The key of the `nth` source of the same spec and command line.
+    pub fn nth(self, nth: u32) -> LiveKey {
+        LiveKey { nth, ..self }
     }
 }
 

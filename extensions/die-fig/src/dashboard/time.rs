@@ -87,6 +87,12 @@ pub struct PanelView {
     pub cursor: Option<Cursor>,
     /// Its error figure's state, when it shows one (`!` turns it over).
     pub error: ErrorView,
+    /// A tile's keyboard cursor on its trend: the point, which drives the linked moment as a
+    /// chart's cursor does.
+    pub point: Option<usize>,
+    /// The series brought forward past the pointer's say: a search's find (until `Esc`), or
+    /// the series of the detail panel's row under the pointer.
+    pub emphasis: Option<crate::data::SeriesKey>,
 }
 
 /// What a dashboard shows of its data.
@@ -195,7 +201,11 @@ impl DashView {
     pub fn chip(&self, model: &DashModel) -> Option<String> {
         model.time.as_ref()?;
         let Some((a, b)) = self.time else {
-            return Some(RANGES[6].label.to_string());
+            // No data yet to end a range at (a live source still coming): the spec's range.
+            return Some(match (model.range, model.newest()) {
+                (Some(r), None) => last_label(r),
+                _ => RANGES[6].label.to_string(),
+            });
         };
         if let Some(n) = model.newest() {
             let span = b - a;

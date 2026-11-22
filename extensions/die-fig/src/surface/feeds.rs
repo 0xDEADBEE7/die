@@ -50,31 +50,35 @@ impl FigState {
             let Some(m) = d.model.as_ref() else {
                 return out;
             };
-            for ask in m.trust() {
+            // Every source a command fills, each its own (two specs of one command, another
+            // `every` or format, are two), asked by its spec and command line once.
+            for want in m.wants().iter().filter(|w| w.is_command()) {
+                let ask = m.trust().iter().find(|t| match t {
+                    NeedsTrust::Command { spec, cmd, .. } => {
+                        let dir = spec
+                            .as_deref()
+                            .and_then(Path::parent)
+                            .map_or_else(|| d.dir.clone(), Path::to_path_buf);
+                        *cmd == want.name() && dir == want.dir
+                    }
+                    NeedsTrust::File { .. } => false,
+                });
+                let (Some(ask), Some(live)) = (ask, LiveSpec::of(&want.data, &want.dir)) else {
+                    continue;
+                };
                 let NeedsTrust::Command { spec, cmd, .. } = ask else {
                     continue;
                 };
-                let dir = spec
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .map_or_else(|| d.dir.clone(), Path::to_path_buf);
-                let Some(want) =
-                    (m.wants().iter()).find(|w| w.is_command() && w.name() == *cmd && w.dir == dir)
-                else {
-                    continue;
-                };
-                let Some(live) = LiveSpec::of(&want.data, &want.dir) else {
-                    continue;
-                };
                 let key = LiveKey::new(spec.as_deref(), cmd.as_str());
-                if !out.iter().any(|w| w.key == key) {
-                    out.push(Wanted {
-                        key,
-                        spec: live,
-                        ask: ask.clone(),
-                        want: Some(want.clone()),
-                    });
-                }
+                let nth = (out.iter())
+                    .filter(|w| w.key.spec == key.spec && w.key.cmd == key.cmd)
+                    .count() as u32;
+                out.push(Wanted {
+                    key: key.nth(nth),
+                    spec: live,
+                    ask: ask.clone(),
+                    want: Some(want.clone()),
+                });
             }
             return out;
         }
@@ -129,6 +133,7 @@ impl FigState {
         let mut ask: Option<NeedsTrust> = None;
         let mut noes = vec![];
         let mut opened: Vec<PathBuf> = vec![];
+        let mut refused: Vec<PathBuf> = vec![];
         {
             let trust = self.trust.borrow();
             for w in &wanted {
@@ -155,7 +160,7 @@ impl FigState {
                 };
                 match answer {
                     Answer::Yes => opened.push(path.clone()),
-                    Answer::No => {}
+                    Answer::No => refused.push(path.clone()),
                     Answer::Ask => {
                         ask.get_or_insert_with(|| f.clone());
                     }
@@ -164,6 +169,16 @@ impl FigState {
         }
         for path in opened {
             self.file_trusted(ctx, &path);
+        }
+        // A file you said no to says so on its panel (`not opened: you said no`) until `R`.
+        let mut changed = false;
+        if let Some(d) = self.dash.as_mut() {
+            for path in refused {
+                changed |= d.sources.refuse_file(path);
+            }
+        }
+        if changed {
+            self.dash_rebuild(ctx);
         }
         for w in noes {
             self.not_run(ctx, &w);
@@ -382,7 +397,13 @@ impl FigState {
     /// `R`: every run source run now and every ended stream started again, the noes forgotten so
     /// they're asked again.
     pub fn rerun(&mut self, ctx: &mut Ctx) {
-        self.trust.borrow_mut().ask_again();
+        // Only this figure's noes go: another figure's questions aren't asked again for it.
+        let specs = self.own_specs();
+        self.trust.borrow_mut().ask_again_for(&specs);
+        self.files_said.retain(|(_, yes)| *yes);
+        if let Some(d) = self.dash.as_mut() {
+            d.sources.forget_refusals();
+        }
         self.trust_rev += 1;
         // A no's `not run` goes: the source waits again until it runs, or you say no again.
         let commands = self.wanted_keys();
@@ -412,6 +433,20 @@ impl FigState {
         self.rev += 1;
     }
 
+    /// The specs this figure's questions are by: each command's and each file panel's spec,
+    /// for `R` to forget only their noes.
+    fn own_specs(&self) -> Vec<Option<PathBuf>> {
+        let mut out: Vec<Option<PathBuf>> = vec![];
+        let asks = self.wanted().into_iter().map(|w| w.ask);
+        for ask in asks.chain(self.wanted_files()) {
+            let (NeedsTrust::Command { spec, .. } | NeedsTrust::File { spec, .. }) = ask;
+            if !out.contains(&spec) {
+                out.push(spec);
+            }
+        }
+        out
+    }
+
     /// The dashboard's sources that are commands'.
     fn wanted_keys(&self) -> Vec<Want> {
         self.wanted().into_iter().filter_map(|w| w.want).collect()
@@ -423,12 +458,12 @@ impl FigState {
         if !self.dash_live() {
             return None;
         }
-        let Some(l) = self.live.as_ref() else {
-            return Some(LiveStatus::paused());
+        let all: Vec<Status> = match self.live.as_ref() {
+            Some(l) => l.keys().iter().filter_map(|k| l.status(k)).collect(),
+            None => vec![],
         };
-        let all: Vec<Status> = l.keys().iter().filter_map(|k| l.status(k)).collect();
         if all.is_empty() {
-            return Some(LiveStatus::paused());
+            return Some(self.idle_status());
         }
         if all.iter().any(|s| s.running && !s.stream) {
             return Some(LiveStatus::updating());
@@ -444,6 +479,24 @@ impl FigState {
         match all.iter().filter_map(|s| s.updated).max() {
             Some(at) => Some(LiveStatus::updated(secs(at))),
             None => Some(LiveStatus::updating()),
+        }
+    }
+
+    /// What the header says while no command runs: `not run` when you said no to every one,
+    /// else `asking…` (a question is up, or waits its turn).
+    fn idle_status(&self) -> LiveStatus {
+        let trust = self.trust.borrow();
+        let wanted = self.wanted();
+        let refused = !wanted.is_empty()
+            && wanted.iter().all(|w| match &w.ask {
+                NeedsTrust::Command { spec, cmd, .. } => {
+                    trust.command(spec.as_deref(), cmd) == Answer::No
+                }
+                NeedsTrust::File { .. } => false,
+            });
+        match refused {
+            true => LiveStatus::quiet("not run"),
+            false => LiveStatus::quiet("asking\u{2026}"),
         }
     }
 

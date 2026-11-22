@@ -1749,6 +1749,13 @@ impl FigState {
         self.kit.borrow_mut().ensure(ctx);
         if !self.panes.contains_key(&w) {
             let seed = self.last.and_then(|l| self.panes.get(&l));
+            // A dashboard's new window opens on the last window's view (its time, focus, full
+            // size and each panel's own), as a chart's new window takes the last one's.
+            if let Some(v) = seed.and_then(|p| p.dash.as_deref()).map(dash::keep_view)
+                && let Some(d) = self.dash.as_mut()
+            {
+                d.seed = Some(v);
+            }
             let pane = match (seed, self.parked.take()) {
                 (Some(p), _) => Pane::new(p.view.clone(), p.cursor.clone(), Steps::default()),
                 (None, Some((v, c, u))) => Pane::new(v, c, u),
@@ -1769,6 +1776,10 @@ impl FigState {
             (p.pointer, p.hovering) = (None, false);
             (p.hover, p.near, p.legend, p.strip) = (None, None, None, None);
             (p.target, p.row_hover) = (None, None);
+            // A dashboard's panels let go of theirs too, until the pointer moves.
+            if let Some(dp) = p.dash.as_mut() {
+                dp.drop_hover();
+            }
             // What the overlay drew at the old size stays in its buffer, which never shrinks,
             // where the new layout draws something else: the next draw clears it all.
             p.over_wipe |= p.over_bounds.is_some() || !p.over_items.is_empty();
@@ -1824,6 +1835,7 @@ impl FigState {
         let src = panel::Source {
             chart: model.as_deref(),
             graph: graph.as_deref(),
+            tile: None,
         };
         let me = self.me.clone();
         let model_gen = self.model_gen;
