@@ -719,7 +719,8 @@ pub(crate) fn data_spec(n: &Node, cx: &mut Cx<'_>) -> Result<DataSpec> {
 }
 
 /// A file's name as a source: `-` the buffer itself, a dashboard's data name if `named` may be
-/// one, else the file relative to the spec's directory.
+/// one, another dashboard's data as `x.fig#name` if it may be a name, else the file relative to
+/// the spec's directory.
 fn path_ref(s: &str, n: &Node, cx: &Cx<'_>, named: bool) -> Result<DataRef> {
     if s.is_empty() {
         return Err(FigError::at("\"data\" must name a file", n.at));
@@ -734,6 +735,13 @@ fn path_ref(s: &str, n: &Node, cx: &Cx<'_>, named: bool) -> Result<DataRef> {
             .is_some_and(|ns| ns.iter().any(|k| k == s))
     {
         return Ok(DataRef::Named(s.to_string()));
+    }
+    if named && let Some((file, name)) = super::dash::borrowed(s) {
+        return Ok(DataRef::Borrow {
+            file: resolve(cx.dir, file),
+            name: name.to_string(),
+            at: n.at,
+        });
     }
     Ok(DataRef::File(resolve(cx.dir, s)))
 }

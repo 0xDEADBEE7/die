@@ -1750,6 +1750,9 @@ pub fn read_data(d: &DataSpec, source: Option<&str>, opt: &ReadOptions) -> Resul
         DataRef::Named(n) => Err(FigError::new(format!(
             "\"{n}\" names a dashboard's data, which a chart alone can't read"
         ))),
+        DataRef::Borrow { name, .. } => Err(FigError::new(format!(
+            "\"#{name}\" borrows a dashboard's data, which a chart alone can't read"
+        ))),
     }
 }
 

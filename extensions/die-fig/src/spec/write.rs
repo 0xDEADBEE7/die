@@ -18,7 +18,9 @@
 //!   column is named `fig`, a header row and a row a list; numbers as numbers, times in RFC 3339
 //!   to the fewest decimals that read back as the same seconds, missing cells `null`;
 //! - a file by its path, as it was resolved against the spec's (absolute) directory; a command
-//!   with its `every`; the buffer as `"-"`.
+//!   with its `every`; the buffer as `"-"`; another dashboard's data as `"x.fig#name"`;
+//! - a dashboard's rows as lists of panels, or `{"height", "panels"}` where a row has a height;
+//!   a column of panels as `{"column": […]}`, and a panel's `span` where it isn't 1.
 //!
 //! Lists of numbers and strings fill their lines rather than taking a line each.
 
@@ -27,7 +29,7 @@ use super::graph::{edge_extras, layout_name, node_extras};
 use super::{
     Aggregate, Channel, ChannelValue, Chart, Curve, DashboardSpec, DataRef, DataSpec, Delta,
     Encoding, Figure, GoodWhen, GraphEdge, GraphNode, GraphSpec, Labels, Layer, Layout, LegendPos,
-    Mark, MarkKind, MeterSpec, Panel, PanelSpec, ReadHints, ScaleKind, Stack, StatSpec,
+    Mark, MarkKind, MeterSpec, Panel, PanelSpec, ReadHints, ScaleKind, Stack, StatSpec, Tooltip,
     ViewSettings, field, id_of, opt_string,
 };
 use crate::data::transform::{AggOp, FilterOp, Transform};
@@ -385,6 +387,9 @@ fn data_j(d: &DataSpec, names: &[String]) -> J {
             }
         }
         DataRef::Stream { cmd } => o.put("stream", J::s(cmd)),
+        DataRef::Borrow { file, name, .. } => {
+            return J::Str(format!("{}#{name}", file.to_string_lossy()));
+        }
     }
     if let Some(f) = d.format {
         o.put("format", J::s(format_name(f)));
@@ -988,10 +993,19 @@ fn dashboard_j(d: &DashboardSpec) -> J {
         to.opt("range", &t.range);
         o.put("time", to.done());
     }
+    if d.tooltip == Tooltip::Shared {
+        o.put("tooltip", J::s("shared"));
+    }
     let rows = d
         .rows
         .iter()
-        .map(|r| J::Arr(r.iter().map(|p| panel_j(p, &names)).collect()))
+        .map(|r| {
+            let panels = J::Arr(r.panels.iter().map(|p| panel_j(p, &names)).collect());
+            match r.height {
+                None => panels,
+                Some(h) => J::Obj(vec![("height", J::Num(h)), ("panels", panels)]),
+            }
+        })
         .collect();
     o.put("rows", J::Arr(rows));
     o.done()
@@ -1001,6 +1015,10 @@ fn panel_j(p: &PanelSpec, names: &[String]) -> J {
     let mut j = match &p.panel {
         Panel::Figure(f) => figure_j(f, names),
         Panel::File(path) => J::Obj(vec![("file", J::Str(path.to_string_lossy().into_owned()))]),
+        Panel::Column(ps) => J::Obj(vec![(
+            "column",
+            J::Arr(ps.iter().map(|q| panel_j(q, names)).collect()),
+        )]),
     };
     if p.span != 1 {
         let span = J::Num(f64::from(p.span));

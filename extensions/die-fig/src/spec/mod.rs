@@ -121,6 +121,16 @@ pub enum DataRef {
     Named(String),
     /// The buffer itself is the data.
     Source,
+    /// Another dashboard's data, by its key: `"x.fig#req"`, the file relative to the spec's
+    /// directory, resolved. A dashboard's panels and data may borrow it.
+    Borrow {
+        /// The `.fig` file whose dashboard has the data.
+        file: PathBuf,
+        /// Its key in that dashboard's `data`.
+        name: String,
+        /// Where the reference is in the spec.
+        at: Pos,
+    },
 }
 
 /// A figure's data: where from, in what format, and how to read it.
@@ -519,17 +529,44 @@ pub struct MeterSpec {
 pub enum Panel {
     /// A figure in the spec.
     Figure(Box<Figure>),
-    /// A spec in another file, relative to this one's directory.
+    /// A spec in another file, relative to this one's directory: that whole figure, its paths
+    /// from its own directory, a dashboard drawn as a nested group.
     File(PathBuf),
+    /// Panels stacked down one column of the row.
+    Column(Vec<PanelSpec>),
 }
 
-/// A dashboard panel and how many columns of its row it spans.
+/// A dashboard panel and its share of its row's width.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PanelSpec {
     /// What it shows.
     pub panel: Panel,
-    /// The columns it spans.
+    /// Its share of the row's width, against the other panels' (1 by default).
     pub span: u16,
+    /// Where it is in the spec.
+    pub at: Pos,
+}
+
+/// A row of a dashboard: its panels, left to right, and its share of the height.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    /// Its panels.
+    pub panels: Vec<PanelSpec>,
+    /// Its share of the height left after the rows of tiles, against the other rows' (1 when
+    /// None: the shorthand, a row written as a list of panels).
+    pub height: Option<f64>,
+    /// Where it is in the spec.
+    pub at: Pos,
+}
+
+/// Which panels show a card when the pointer is over a linked panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Tooltip {
+    /// The hovered panel alone; the others draw the moment's line and dots.
+    #[default]
+    Single,
+    /// Every linked panel (`"tooltip": "shared"`).
+    Shared,
 }
 
 /// A dashboard: rows of panels over shared data and a shared time range.
@@ -541,8 +578,10 @@ pub struct DashboardSpec {
     pub data: Vec<(String, DataSpec)>,
     /// The time range its panels share.
     pub time: Option<TimeSpec>,
+    /// Which panels show a card on a hover.
+    pub tooltip: Tooltip,
     /// Its rows of panels.
-    pub rows: Vec<Vec<PanelSpec>>,
+    pub rows: Vec<Row>,
 }
 
 /// A dashboard's shared time range.
@@ -1105,16 +1144,27 @@ fn unplace_figure(f: &mut Figure) {
             for (_, data) in &mut d.data {
                 unplace_data(data);
             }
-            for p in d.rows.iter_mut().flatten() {
-                if let Panel::Figure(f) = &mut p.panel {
-                    unplace_figure(f);
-                }
+            for r in &mut d.rows {
+                r.at = Pos::default();
+                r.panels.iter_mut().for_each(unplace_panel);
             }
         }
     }
 }
 
+fn unplace_panel(p: &mut PanelSpec) {
+    p.at = Pos::default();
+    match &mut p.panel {
+        Panel::Figure(f) => unplace_figure(f),
+        Panel::Column(ps) => ps.iter_mut().for_each(unplace_panel),
+        Panel::File(_) => {}
+    }
+}
+
 fn unplace_data(d: &mut DataSpec) {
+    if let DataRef::Borrow { at, .. } = &mut d.source {
+        *at = Pos::default();
+    }
     if let DataRef::Inline(t) = &mut d.source
         && let Some(raw) = &t.raw
     {

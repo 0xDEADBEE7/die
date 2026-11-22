@@ -612,6 +612,10 @@ impl Reader<'_> {
             DataRef::Source => Err(FigError::new(
                 "\"data\": \"-\" is the buffer itself, which is the spec here",
             )),
+            DataRef::Borrow { name, at, .. } => Err(FigError::at(
+                format!("\"#{name}\" borrows a dashboard's data, outside a dashboard"),
+                *at,
+            )),
         })
     }
 
