@@ -11,10 +11,14 @@
 //!
 //! A stat's `value` aggregates its field over the rows whose time is inside the range: count,
 //! sum, mean, min, max, p50, p95, or `last`, the newest row's by the trend's field. The time is
-//! the `trend` field's, else the table's first time column; with neither, the range is not
-//! applied. `delta: "previous"` is the same aggregate over the equal-length range just before
-//! (with no range given, the data's own span is the range, so the period before has no rows and
-//! the tile says so); `delta: 12.5` compares with that number. The change is written
+//! the column the caller names (a dashboard's `time.field`, [`TileModel::build_on`]), else the
+//! `trend` field's, else the table's first time column; with none, the range is not applied. A
+//! range given holds the rows after its start up to and with its end, `(lo, hi]`: the newest
+//! sample is in, and a range and the one just before it never share a row, so equal ranges of
+//! evenly spaced rows hold as many each. `delta: "previous"` is the same aggregate over the
+//! equal-length range just before (with no range given, the data's own span is the range, so
+//! the period before has no rows and the tile says so); `delta: 12.5` compares with that
+//! number. The change is written
 //! relatively (`4.2 %`) for a value with no unit, in points for a unit of `%` (`0.08 pt`), and
 //! in the unit for another (`12 ms`), and it is good, bad or neither by `good`.
 //!
@@ -24,14 +28,18 @@
 //! zeros dropped; a spec's `format` overrides. The card and the detail panel give it
 //! in full.
 //!
-//! A stat's trend is twelve points: the aggregate over twelve equal parts of the range, or one
-//! point a distinct time when the rows have no more than twelve. A sparkline's are its rows,
+//! A stat's trend is at most twelve points, one a distinct place when the rows have no more
+//! than twelve. Otherwise each point is the aggregate over a part of the range that holds a
+//! whole number of the data's sampling steps (its median spacing), the parts laid back from the
+//! newest sample, so a sum or a count over evenly spaced rows is flat when the data is, whatever
+//! the range; an oldest part with fewer steps than the rest is left out of a sum's or a count's
+//! trend, which would dip for want of rows. A sparkline's are its rows,
 //! those sharing an `x` summed. A meter fills to `value / max`, its fill in the status of the
 //! highest threshold passed.
 
 pub mod draw;
 
-pub use draw::{TileHover, base, hit, hover_at, overlay, overlay_in};
+pub use draw::{RowFit, TileHover, base, hit, hover_at, overlay, overlay_in};
 
 use crate::data::transform::{AggOp, quantile};
 use crate::data::{Column, Table, Values};
@@ -138,10 +146,13 @@ pub struct TileModel {
     pub range: Option<(f64, f64)>,
     /// Whether `range` was given (the dashboard's visible time) rather than the data's own.
     pub given: bool,
-    /// Whether the trend's field (the range's) is a time.
+    /// Whether the column the range is along is a time.
     pub time: bool,
-    /// The field the trend runs along, or the time column the range was applied to.
+    /// The column the range was applied to (the trend's field, the dashboard's time field, or
+    /// the table's first time column).
     pub along: Option<String>,
+    /// The field the trend runs along, and whether it holds times; None without a trend.
+    pub trend_along: Option<(String, bool)>,
     /// The change shown under the value: a stat's with a `delta`.
     pub change: Option<Change>,
     /// The trend's points, in order along their field.
@@ -154,6 +165,9 @@ pub struct TileModel {
     pub thresholds: Vec<Threshold>,
     /// The zone its times are written in.
     pub zone: TimeZone,
+    /// What its row of tiles agreed on (the value's size, a meter's word): the default for a
+    /// tile alone; a dashboard sets it so a row's tiles read alike.
+    pub fit: RowFit,
 }
 
 /// The system's zone, looked up once: the zone [`TileModel::build`] writes times in (ruling 2's
@@ -179,11 +193,26 @@ impl TileModel {
         range: Option<(f64, f64)>,
         zone: &TimeZone,
     ) -> Result<TileModel> {
+        TileModel::build_on(fig, table, range, None, zone)
+    }
+
+    /// [`TileModel::build_in`] with `range` along the column `field` (a dashboard's
+    /// `time.field`) where the table has it, rather than the trend's field or the first time
+    /// column: the value, the period before and the rows are counted by it; the trend's points
+    /// and `last` still go by the trend's own field.
+    pub fn build_on(
+        fig: &Figure,
+        table: &Table,
+        range: Option<(f64, f64)>,
+        field: Option<&str>,
+        zone: &TimeZone,
+    ) -> Result<TileModel> {
         let range = range.filter(|(a, b)| a.is_finite() && b.is_finite() && b >= a);
+        let on = field.and_then(|f| table.column(f));
         match fig {
-            Figure::Stat(s) => stat(s, table, range, zone),
-            Figure::Meter(m) => meter(m, table, range, zone),
-            Figure::Sparkline(s) => sparkline(s, table, range, zone),
+            Figure::Stat(s) => stat(s, table, range, on, zone),
+            Figure::Meter(m) => meter(m, table, range, on, zone),
+            Figure::Sparkline(s) => sparkline(s, table, range, on, zone),
             Figure::Chart(_) => Err(not_a_tile("a chart")),
             Figure::Graph(_) => Err(not_a_tile("a graph")),
             Figure::Dashboard(_) => Err(not_a_tile("a dashboard")),
@@ -278,11 +307,16 @@ impl TileModel {
         }
     }
 
-    /// A span along the trend's field, written: two times, or two numbers.
+    /// A span along the range's column, written: two times, or two numbers.
     pub fn span_text(&self, a: f64, b: f64) -> String {
-        if !self.time {
+        self.span_along(a, b, self.time, self.along.as_deref())
+    }
+
+    /// A span along a column `name` that holds times (`time`) or numbers, written.
+    fn span_along(&self, a: f64, b: f64, time: bool, name: Option<&str>) -> String {
+        if !time {
             let (x, y) = (format_value(a), format_value(b));
-            let name = self.along.as_deref().unwrap_or("x");
+            let name = name.unwrap_or("x");
             return if a == b {
                 format!("{name} {x}")
             } else {
@@ -309,10 +343,15 @@ impl TileModel {
         }
     }
 
-    /// A trend point's place, written for its card: its span, or its own place.
+    /// A trend point's place, written for its card: its span, or its own place, along the
+    /// trend's field.
     pub fn point_text(&self, i: usize) -> String {
+        let (name, time) = match &self.trend_along {
+            Some((n, t)) => (Some(n.as_str()), *t),
+            None => (self.along.as_deref(), self.time),
+        };
         match self.trend.get(i) {
-            Some(p) => self.span_text(p.span.0, p.span.1),
+            Some(p) => self.span_along(p.span.0, p.span.1, time, name),
             None => String::new(),
         }
     }
@@ -535,9 +574,14 @@ fn ordered<'a>(table: &'a Table, name: &str, what: &str) -> Result<&'a Column> {
     }
 }
 
-/// The column the range applies to: `along` (a trend's field), else the first time column.
-fn time_column<'a>(table: &'a Table, along: Option<&'a Column>) -> Option<&'a Column> {
-    along.or_else(|| {
+/// The column the range applies to: `on` (the caller's), else `along` (a trend's field), else
+/// the first time column.
+fn time_column<'a>(
+    table: &'a Table,
+    on: Option<&'a Column>,
+    along: Option<&'a Column>,
+) -> Option<&'a Column> {
+    on.or(along).or_else(|| {
         table
             .columns
             .iter()
@@ -545,26 +589,31 @@ fn time_column<'a>(table: &'a Table, along: Option<&'a Column>) -> Option<&'a Co
     })
 }
 
-/// The rows whose value along `t` is within `[lo, hi]` (both ends in), in table order; every
-/// row with no range or no column to apply it to.
+/// The rows whose value along `t` is in the range `(lo, hi]` (after its start, up to and with
+/// its end), in table order; every row with no range or no column to apply it to.
 fn rows_in(table: &Table, t: Option<&Column>, range: Option<(f64, f64)>) -> Vec<usize> {
     match (t, range) {
         (Some(c), Some((lo, hi))) => (0..table.rows)
             .filter(|&r| {
                 let v = c.f64_at(r);
-                v >= lo && v <= hi
+                v > lo && v <= hi
             })
             .collect(),
         _ => (0..table.rows).collect(),
     }
 }
 
-/// The rows whose value along `t` is within `[lo, hi)`.
-fn rows_before(table: &Table, t: &Column, lo: f64, hi: f64) -> Vec<usize> {
+/// The rows of the period `len` long just before a range starting at `lo`: `(lo - len, lo]`
+/// after a range given (which left `lo` out), else `[lo - len, lo)` (the data's own span has
+/// `lo` in).
+fn rows_before(table: &Table, t: &Column, lo: f64, len: f64, given: bool) -> Vec<usize> {
     (0..table.rows)
         .filter(|&r| {
             let v = t.f64_at(r);
-            v >= lo && v < hi
+            match given {
+                true => v > lo - len && v <= lo,
+                false => v >= lo - len && v < lo,
+            }
         })
         .collect()
 }
@@ -621,14 +670,17 @@ fn aggregate(op: AggOp, field: Option<&Column>, along: Option<&Column>, rows: &[
 }
 
 /// The trend's points over `rows`: one a distinct place along `along` when there are no more
-/// than [`TREND_POINTS`], else the aggregate over that many equal parts of `span` (parts with
-/// no rows left out). With the domain its ends are drawn at.
+/// than [`TREND_POINTS`], else the aggregate over parts of `span` (the range, else the rows'
+/// own) that each hold a whole number of the data's sampling steps, laid back from the newest
+/// sample ([`sample_parts`]); equal parts of time where the places have no steady spacing.
+/// Parts with no rows left out. With the domain its ends are drawn at.
 fn trend_points(
     op: AggOp,
     field: Option<&Column>,
     along: &Column,
     rows: &[usize],
     span: Option<(f64, f64)>,
+    open_left: bool,
 ) -> (Vec<TrendPoint>, (f64, f64)) {
     let mut places: Vec<f64> = rows
         .iter()
@@ -657,6 +709,9 @@ fn trend_points(
         return (out, (first, last));
     }
     let (lo, hi) = span.unwrap_or((first, last));
+    if let Some(parts) = sample_parts(&places, (lo, hi), open_left) {
+        return parts.points(op, field, along, rows);
+    }
     let step = (hi - lo) / TREND_POINTS as f64;
     let mut parts: Vec<Vec<usize>> = vec![Vec::new(); TREND_POINTS];
     for &r in rows {
@@ -686,10 +741,121 @@ fn trend_points(
     (out, (lo + step / 2.0, hi - step / 2.0))
 }
 
+/// A trend's parts that each hold `per` sampling steps of `step`, laid back from `anchor` (the
+/// newest sample at or before the range's end): part 0 the newest. `slots` steps lie in the
+/// range, so the oldest part holds what's left of them.
+struct SampleParts {
+    step: f64,
+    anchor: f64,
+    per: usize,
+    slots: usize,
+}
+
+/// The parts for places sampled evenly (their median spacing, which most of the gaps keep to
+/// within a tenth of it), over the range `(lo, hi]` (`[lo, hi]` when not `open_left`); None
+/// where the places have no such spacing.
+fn sample_parts(places: &[f64], (lo, hi): (f64, f64), open_left: bool) -> Option<SampleParts> {
+    let mut gaps: Vec<f64> = places.windows(2).map(|w| w[1] - w[0]).collect();
+    gaps.sort_by(f64::total_cmp);
+    let step = *gaps.get(gaps.len() / 2)?;
+    let steady = gaps
+        .iter()
+        .filter(|g| (*g - step).abs() <= 0.1 * step)
+        .count();
+    if step <= 0.0 || !step.is_finite() || steady * 2 < gaps.len() || hi <= lo || hi.is_nan() {
+        return None;
+    }
+    // The newest sample at or before the range's end, on the samples' grid past the data.
+    let newest = places.iter().copied().filter(|&v| v <= hi + step * 1e-6);
+    let base = newest.fold(f64::NAN, f64::max);
+    let base = if base.is_nan() { places[0] } else { base };
+    let anchor = base + step * ((hi - base) / step + 1e-6).floor();
+    let span = (anchor - lo) / step;
+    let slots = if open_left {
+        (span - 1e-6).ceil()
+    } else {
+        (span + 1e-6).floor() + 1.0
+    };
+    if !(1.0..=1e7).contains(&slots) {
+        return None;
+    }
+    let slots = slots as usize;
+    let per = slots.div_ceil(TREND_POINTS).max(1);
+    Some(SampleParts {
+        step,
+        anchor,
+        per,
+        slots,
+    })
+}
+
+impl SampleParts {
+    /// The points: each part's aggregate, oldest first; a sum's or a count's oldest part left
+    /// out where it holds fewer steps than the rest. With the domain its ends are drawn at.
+    fn points(
+        &self,
+        op: AggOp,
+        field: Option<&Column>,
+        along: &Column,
+        rows: &[usize],
+    ) -> (Vec<TrendPoint>, (f64, f64)) {
+        let n = self.slots.div_ceil(self.per);
+        let short = !self.slots.is_multiple_of(self.per);
+        let additive = matches!(op, AggOp::Sum | AggOp::Count);
+        let kept = if short && additive && n > 1 { n - 1 } else { n };
+        let mut parts: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for &r in rows {
+            let v = along.f64_at(r);
+            if !v.is_finite() {
+                continue;
+            }
+            let slot = ((self.anchor - v) / self.step).round();
+            if slot < 0.0 {
+                continue;
+            }
+            let k = (slot as usize) / self.per;
+            if k < n {
+                parts[k].push(r);
+            }
+        }
+        let width = self.per as f64 * self.step;
+        let ends = |k: usize| {
+            let b = self.anchor - k as f64 * width;
+            let a = match k + 1 == n && short {
+                true => self.anchor - self.slots as f64 * self.step,
+                false => b - width,
+            };
+            (a, b)
+        };
+        let mut out = Vec::new();
+        for k in (0..kept).rev() {
+            if parts[k].is_empty() {
+                continue;
+            }
+            let y = aggregate(op, field, Some(along), &parts[k]);
+            if y.is_nan() {
+                continue;
+            }
+            let (a, b) = ends(k);
+            out.push(TrendPoint {
+                x: (a + b) / 2.0,
+                span: (a, b),
+                y,
+            });
+        }
+        let mid = |k: usize| {
+            let (a, b) = ends(k);
+            (a + b) / 2.0
+        };
+        (out, (mid(kept.saturating_sub(1)), mid(0)))
+    }
+}
+
 fn stat(
     s: &StatSpec,
     table: &Table,
     range: Option<(f64, f64)>,
+    on: Option<&Column>,
     zone: &TimeZone,
 ) -> Result<TileModel> {
     let field = match &s.value.field {
@@ -700,9 +866,10 @@ fn stat(
         Some(t) => Some(ordered(table, t, "the trend's field")?),
         None => None,
     };
-    let t = time_column(table, along);
+    let t = time_column(table, on, along);
     let rows = rows_in(table, t, range);
-    let value = aggregate(s.value.op, field, t, &rows);
+    let given = range.is_some() && t.is_some();
+    let value = aggregate(s.value.op, field, along.or(t), &rows);
     let shown = match (range, t) {
         (Some(r), Some(_)) => Some(r),
         (_, Some(c)) => extent(c, &rows),
@@ -716,11 +883,11 @@ fn stat(
                 Delta::Previous => match (t, shown) {
                     (Some(c), Some((lo, hi))) => {
                         let len = hi - lo;
-                        let before = rows_before(table, c, lo - len, lo);
+                        let before = rows_before(table, c, lo, len, given);
                         let v = if before.is_empty() || len <= 0.0 {
                             f64::NAN
                         } else {
-                            aggregate(s.value.op, field, Some(c), &before)
+                            aggregate(s.value.op, field, along.or(Some(c)), &before)
                         };
                         let what = if matches!(c.values, Values::Time(_)) {
                             duration_text(len)
@@ -735,8 +902,12 @@ fn stat(
             Some(compare(value, against, period, s.good))
         }
     };
+    // The trend's parts span the range where it runs along the range's column, else its
+    // field's own extent over the rows.
+    let same = |a: &Column| t.is_some_and(|c| std::ptr::eq(a, c));
     let (trend, trend_domain) = match along {
-        Some(a) => trend_points(s.value.op, field, a, &rows, shown),
+        Some(a) if same(a) => trend_points(s.value.op, field, a, &rows, shown, given),
+        Some(a) => trend_points(s.value.op, field, a, &rows, None, false),
         None => (Vec::new(), (0.0, 0.0)),
     };
     Ok(TileModel {
@@ -749,15 +920,17 @@ fn stat(
         field: s.value.field.clone(),
         rows: rows.len(),
         range: shown,
-        given: range.is_some() && t.is_some(),
+        given,
         time: t.is_some_and(|c| matches!(c.values, Values::Time(_))),
         along: t.map(|c| c.name.to_string()),
+        trend_along: along.map(|a| (a.name.to_string(), matches!(a.values, Values::Time(_)))),
         change,
         trend,
         trend_domain,
         max: f64::NAN,
         thresholds: Vec::new(),
         zone: zone.clone(),
+        fit: RowFit::default(),
     })
 }
 
@@ -789,13 +962,14 @@ fn meter(
     s: &MeterSpec,
     table: &Table,
     range: Option<(f64, f64)>,
+    on: Option<&Column>,
     zone: &TimeZone,
 ) -> Result<TileModel> {
     let field = match &s.value.field {
         Some(f) => Some(numbers(table, f, "the value's field")?),
         None => None,
     };
-    let t = time_column(table, None);
+    let t = time_column(table, on, None);
     let rows = rows_in(table, t, range);
     let value = aggregate(s.value.op, field, t, &rows);
     let shown = match (range, t) {
@@ -814,14 +988,16 @@ fn meter(
         rows: rows.len(),
         range: shown,
         given: range.is_some() && t.is_some(),
-        time: t.is_some(),
+        time: t.is_some_and(|c| matches!(c.values, Values::Time(_))),
         along: t.map(|c| c.name.to_string()),
+        trend_along: None,
         change: None,
         trend: Vec::new(),
         trend_domain: (0.0, 0.0),
         max: s.max,
         thresholds: s.thresholds.clone(),
         zone: zone.clone(),
+        fit: RowFit::default(),
     })
 }
 
@@ -829,12 +1005,21 @@ fn sparkline(
     s: &SparklineSpec,
     table: &Table,
     range: Option<(f64, f64)>,
+    on: Option<&Column>,
     zone: &TimeZone,
 ) -> Result<TileModel> {
     let x = ordered(table, &s.x, "the sparkline's x")?;
     let y = numbers(table, &s.y, "the sparkline's y")?;
     let time = matches!(x.values, Values::Time(_));
-    let rows = rows_in(table, time.then_some(x), range);
+    // The range goes along the caller's column, else the x when it's a time: a range's start
+    // is in (a sparkline shows the samples a chart would over it).
+    let t = on.or(time.then_some(x));
+    let rows = match (t, range) {
+        (Some(c), Some((lo, hi))) => (0..table.rows)
+            .filter(|&r| (lo..=hi).contains(&c.f64_at(r)))
+            .collect(),
+        _ => (0..table.rows).collect::<Vec<usize>>(),
+    };
     // Rows sharing an x summed, in x order.
     let mut pts: Vec<(f64, f64)> = rows
         .iter()
@@ -858,8 +1043,8 @@ fn sparkline(
         (Some(a), Some(b)) => (a.x, b.x),
         _ => (0.0, 0.0),
     };
-    let shown = match (range, time) {
-        (Some(r), true) => Some(r),
+    let shown = match (range, t) {
+        (Some(r), Some(_)) => Some(r),
         _ => (!trend.is_empty()).then_some(domain),
     };
     Ok(TileModel {
@@ -872,15 +1057,17 @@ fn sparkline(
         field: Some(s.y.clone()),
         rows: rows.len(),
         range: shown,
-        given: range.is_some() && time,
-        time,
-        along: Some(s.x.clone()),
+        given: range.is_some() && t.is_some(),
+        time: t.map_or(time, |c| matches!(c.values, Values::Time(_))),
+        along: Some(t.map_or_else(|| s.x.clone(), |c| c.name.to_string())),
+        trend_along: Some((s.x.clone(), time)),
         change: None,
         trend,
         trend_domain: domain,
         max: f64::NAN,
         thresholds: Vec::new(),
         zone: zone.clone(),
+        fit: RowFit::default(),
     })
 }
 

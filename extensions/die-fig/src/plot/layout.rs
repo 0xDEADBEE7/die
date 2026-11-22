@@ -50,6 +50,10 @@ const DENSE_COST: f32 = 1.25;
 /// rather than filling with lines, a wide one's labels rather than crowding.
 const Y_MOST: usize = 10;
 const X_MOST: usize = 12;
+/// A plot shorter than this whose fitted y would reach past the data by more than this share
+/// of it ends at the data's top instead of a tick.
+const SHORT_PLOT: f32 = 120.0;
+const SHORT_HEADROOM: f64 = 1.3;
 /// What a domain's headroom over the tightest one costs, against a grid's calm.
 const HEADROOM_COST: f32 = 4.0;
 /// How far a mark may reach past the plot's edges at fit before it's clipped: a point's ring.
@@ -428,6 +432,9 @@ fn shape_of(model: &ChartModel, key: &SeriesKey) -> KeyShape {
     }
 }
 
+/// What a dashboard panel's chart leaves over its top tick, past a chart's own room (m4's).
+const PANEL_GAP: f32 = 7.0;
+
 /// The least plot a layout keeps by dropping the legend, the axes' titles and the title.
 const MIN_PLOT: f32 = 48.0;
 
@@ -440,6 +447,9 @@ struct Keep {
     ends: bool,
     /// The axes' titles.
     axis_titles: bool,
+    /// A heatmap's colour legend, which outlasts the series legend and the axes' titles (its
+    /// colours can't be read without it).
+    ramp: bool,
     title: bool,
 }
 
@@ -460,6 +470,7 @@ pub(crate) fn lay_out(
         legend_rows: 3,
         ends: true,
         axis_titles: true,
+        ramp: true,
         title: true,
     };
     let levels = [
@@ -497,6 +508,15 @@ pub(crate) fn lay_out(
             legend_rows: 0,
             ends: false,
             axis_titles: false,
+            ramp: false,
+            ..full
+        },
+        Keep {
+            subtitle: false,
+            legend_rows: 0,
+            ends: false,
+            axis_titles: false,
+            ramp: false,
             title: false,
         },
     ];
@@ -694,7 +714,7 @@ fn attempt(
 
     // A heatmap's colour legend, where the legend goes: under the title, or (placed once the
     // plot is) at the right.
-    let ramp_scale = (keep.legend_rows > 0 && model.chart.view.legend != LegendPos::None)
+    let ramp_scale = (keep.ramp && model.chart.view.legend != LegendPos::None)
         .then(|| super::ramp::scale_of(model))
         .flatten();
     let mut ramp = None;
@@ -745,12 +765,16 @@ fn attempt(
         });
         y = base + 12.0 - m.ascent(tick_plain) * 0.0;
     } else {
-        // Room for the top tick label's upper half.
+        // Room for the top tick label's upper half; in a dashboard's panel, as much again as
+        // m4 leaves under its legend or subtitle, so the top tick doesn't crowd them.
         y += if axes {
             m.ascent(tick) * 0.6 + 2.0
         } else {
             4.0
         };
+        if insets.is_some() && axes {
+            y += PANEL_GAP;
+        }
     }
     let plot_top = y.ceil();
 
@@ -819,6 +843,19 @@ fn attempt(
         if let Some(&(d, c, _, _)) = best {
             yd = loosened(model, view, d, c, (plot_bottom, plot_top), whole);
             y_count = c;
+        }
+        // A short plot whose calmest grid would leave much of it empty over the data (an 84 px
+        // panel's 0 to 2,000 for data to 1,060): the data's own top, a little over, its ticks
+        // the nice ones under it, so the marks keep the plot's height.
+        let (dlo, dhi) = domain.1;
+        let floor = yd.0.min(dlo);
+        if plot_h < SHORT_PLOT
+            && dhi > floor
+            && dhi.is_finite()
+            && (yd.1 - floor) > SHORT_HEADROOM * (dhi - floor)
+        {
+            yd = (yd.0, dhi + (dhi - floor) * 0.04);
+            y_count = 2;
         }
     }
     // A scatter's points keep their whole dot inside the plot at its fit, and its top tick

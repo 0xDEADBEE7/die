@@ -555,6 +555,166 @@ fn commands_and_files_outside_wait_for_a_yes() {
 }
 
 #[test]
+fn a_file_or_a_borrow_out_of_the_directory_by_dotdot_or_a_link_asks_first() {
+    let x =
+        r#"{"type": "stat", "label": "X", "data": {"values": [{"a": 1}]}, "value": {"sum": "a"}}"#;
+    let o = r#"{"type": "dashboard", "data": {"d": {"values": [{"a": 1}, {"a": 2}]}}, "rows": [[{"type": "stat", "data": "d", "value": "count"}]]}"#;
+    let main = r#"{"type": "dashboard", "rows": [[
+        {"file": "../outside/x.fig"},
+        {"type": "stat", "label": "Borrowed", "data": "/elsewhere/o.fig#d", "value": "count"},
+        {"file": "inside/../x.fig"}]]}"#;
+    let files = [
+        ("/outside/x.fig", x),
+        ("/elsewhere/o.fig", o),
+        ("/specs/x.fig", x),
+    ];
+    let m = model_from(main, &files, &Sources::new());
+    let asked: Vec<String> = m.trust().iter().map(|t| t.question("this")).collect();
+    assert_eq!(
+        asked,
+        [
+            "Open \"/outside/x.fig\" for main.fig? (y/n)",
+            "Open \"/elsewhere/o.fig\" for main.fig? (y/n)",
+        ],
+        "`..` out of /specs and a borrow from elsewhere ask; `inside/..` stays in"
+    );
+    let state = |i: usize| match &m.panels[i].state {
+        PanelState::Waiting(w) => w.clone(),
+        PanelState::Failed(f) => format!("failed: {}", f.errors[0].msg),
+        _ => "drew".to_string(),
+    };
+    assert_eq!(state(0), "waiting for your yes to open x.fig");
+    assert_eq!(state(1), "waiting for your yes to read o.fig#d");
+    // A no says so on the panel, as a command's does, until R.
+    let mut no = Sources::new();
+    no.refuse_file("/specs/../outside/x.fig");
+    let m = model_from(main, &files, &no);
+    let e = failure(&m, 0);
+    assert_eq!(
+        (e.msg.as_str(), e.kind),
+        ("not opened: you said no", ErrorKind::Unreadable)
+    );
+    assert!(no.forget_refusals());
+    // A link in the directory to a file outside it asks too (on disk, links followed).
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("dash-links");
+    let _ = std::fs::remove_dir_all(&base);
+    let (dash, out) = (base.join("dash"), base.join("elsewhere"));
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("x.fig"), x).unwrap();
+    std::fs::write(dash.join("own.fig"), x).unwrap();
+    std::os::unix::fs::symlink(out.join("x.fig"), dash.join("link.fig")).unwrap();
+    let text = r#"{"type": "dashboard", "rows": [[{"file": "link.fig"}, {"file": "own.fig"}]]}"#;
+    let Figure::Dashboard(spec) = spec::parse(text, "main.fig", &dash, &opt()).unwrap().figure
+    else {
+        panic!("a dashboard")
+    };
+    let (zone, o2) = (TimeZone::UTC, opt());
+    let resolve = |p: &Path| dashboard::open(p, &o2);
+    let file = dash.join("main.fig");
+    let origin = Origin {
+        file: Some(&file),
+        dir: &dash,
+        zone: &zone,
+    };
+    let m = DashModel::build(&spec, &Sources::new(), &resolve, &origin);
+    let _ = std::fs::remove_dir_all(&base);
+    assert!(
+        matches!(m.trust(), [NeedsTrust::File { path, .. }] if path.ends_with("link.fig")),
+        "{:?}",
+        m.trust()
+    );
+    assert!(!m.panels[0].ready() && m.panels[1].ready());
+}
+
+#[test]
+fn files_nest_four_deep_with_or_without_a_file_of_its_own() {
+    let chain: Vec<(String, String)> = (0..7)
+        .map(|i| {
+            (
+                format!("/specs/d{i}.fig"),
+                format!(
+                    r#"{{"type": "dashboard", "rows": [[{{"file": "d{}.fig"}}]]}}"#,
+                    i + 1
+                ),
+            )
+        })
+        .collect();
+    let text = r#"{"type": "dashboard", "rows": [[{"file": "d0.fig"}]]}"#;
+    let Figure::Dashboard(spec) = spec::parse(text, "", Path::new("/specs"), &opt())
+        .unwrap()
+        .figure
+    else {
+        panic!("a dashboard")
+    };
+    let resolve = |p: &Path| -> Result<Figure> {
+        let (_, t) = (chain.iter().find(|(f, _)| Path::new(f) == p))
+            .ok_or_else(|| FigError::new("no such file"))?;
+        spec::parse(t, "x.fig", p.parent().unwrap(), &opt()).map(|p| p.figure)
+    };
+    let zone = TimeZone::UTC;
+    let origin = Origin {
+        file: None,
+        dir: Path::new("/specs"),
+        zone: &zone,
+    };
+    let m = DashModel::build(&spec, &Sources::new(), &resolve, &origin);
+    assert_eq!(failure(&m, 0).msg, "files nest at most 4 deep");
+    assert_eq!(
+        failure(&m, 0).file.as_deref(),
+        Some(Path::new("/specs/d3.fig")),
+        "as deep as with a file of its own"
+    );
+}
+
+/// A day of minutes with two time columns, `created` a day before `time`, an `hour` number and
+/// a `v` of one.
+fn two_times() -> die_fig::data::Table {
+    use die_fig::data::{Column, Table};
+    let n = 24 * 60;
+    let time: Vec<f64> = (0..n).map(|i| at(0, 0) + 60.0 * i as f64).collect();
+    Table::new(vec![
+        Column::time("created", time.iter().map(|t| t - 86_400.0).collect()),
+        Column::time("time", time),
+        Column::number("hour", (0..n).map(|i| (i / 60) as f64).collect()),
+        Column::number("v", vec![1.0; n]),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn a_tiles_range_goes_on_the_dashboards_time_field() {
+    let main = r#"{"type": "dashboard", "data": {"d": "d.csv"}, "time": {"field": "time", "range": "6h"},
+      "rows": [[
+        {"type": "line", "title": "V", "data": "d", "x": "time", "y": "v"},
+        {"type": "stat", "label": "no trend", "data": "d", "value": {"sum": "v"}},
+        {"type": "stat", "label": "trend hour", "data": "d", "value": {"sum": "v"}, "trend": "hour"},
+        {"type": "stat", "label": "trend time", "data": "d", "value": {"sum": "v"}, "trend": "time"},
+        {"type": "meter", "label": "meter", "data": "d", "value": {"sum": "v"}, "max": 1000}
+      ]]}"#;
+    let first = model_from(main, &[], &Sources::new());
+    let mut s = Sources::new();
+    for w in first.wants() {
+        s.ready(w.clone(), std::sync::Arc::new(two_times()));
+    }
+    let m = model_from(main, &[], &s);
+    let v = DashView::initial(&m);
+    let l = lay(&m, &v, (1400.0, 600.0));
+    for i in 1..5 {
+        let PanelFigure::Tile { model } = &l.panel(i).unwrap().figure else {
+            panic!("tile {i}")
+        };
+        // The last six hours of minutes on `time`: 360 rows after 18:00 to 23:59.
+        assert_eq!(
+            (model.value, model.rows, model.along.as_deref()),
+            (360.0, 360, Some("time")),
+            "{}",
+            model.label
+        );
+    }
+}
+
+#[test]
 fn the_rows_scroll_when_their_least_heights_overflow() {
     let m = model_of("tall.fig");
     let mut v = DashView::initial(&m);

@@ -11,12 +11,16 @@
 //! the dashboard's panel: [`base`] draws inside `rect` and nothing on its edge.
 //!
 //! It degrades as the tile narrows or shortens: the trend goes first, then the delta (its
-//! period, then all of it), then the unit; the value never ellipsizes, shrinking to 18 px
-//! before the label goes. A taller tile centres m4's block.
+//! period, then all of it), then the unit; the value never ellipsizes, shrinking to 18 px to
+//! keep its unit, and to keep the label above it in a short tile, before either goes. The
+//! content hangs from the top as m4's does (the label's baseline 26 px down, whatever else the
+//! tile has), so the labels of a row's tiles line up; a row's tiles share one value size, the
+//! smallest any of them needs ([`RowFit`]).
 //!
 //! A meter: the label at the left, the value's share and `7.2 of 10 GB` at the right on its
-//! baseline, the status of the highest threshold passed before them with its icon, and under
-//! them a track (the grid colour, 8 px, 4 px radius) filled to the share in slot 1 or that
+//! baseline, the status of the highest threshold passed before them with its icon (and its
+//! word where every meter of the row has room for its own with its label whole, so the words
+//! go all at once), and under them a track (the grid colour, 8 px, 4 px radius) filled to the share in slot 1 or that
 //! status's colour, a 1 px tick at each threshold. A sparkline: its label at the left, its
 //! newest value at the right and the line between, a faint wash (slot 1 at 12 %) under it; in
 //! a tile 84 px tall or more (a tile row's) the label and value go on top and the line fills
@@ -192,6 +196,56 @@ fn delta_spec() -> TextSpec {
     TextSpec::new(DELTA)
 }
 
+/// What the tiles of one row agree on so they read alike: the value's size (the smallest any
+/// of them needs) and whether meters say their status's word (only where every one has room
+/// for its own). A tile alone takes the default: 26 px at most, and its word where it fits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowFit {
+    /// The most the value's size may be.
+    pub value: f32,
+    /// Whether a meter may say its status's word.
+    pub words: bool,
+}
+
+impl Default for RowFit {
+    fn default() -> RowFit {
+        RowFit {
+            value: VALUE,
+            words: true,
+        }
+    }
+}
+
+impl RowFit {
+    /// What a row whose tiles each need these agrees on: the smallest value, words only if
+    /// every one has room.
+    pub fn meet(self, other: RowFit) -> RowFit {
+        RowFit {
+            value: self.value.min(other.value),
+            words: self.words && other.words,
+        }
+    }
+}
+
+/// What `model` needs in `rect` alone: the value's size it takes, and whether its status's
+/// word (a meter's) fits with its label whole.
+pub fn needs(model: &TileModel, rect: Rect, m: &mut dyn Measure) -> RowFit {
+    let alone = TileModel {
+        fit: RowFit::default(),
+        ..model.clone()
+    };
+    let l = layout(&alone, rect, m);
+    RowFit {
+        value: match model.kind {
+            TileKind::Meter => VALUE,
+            _ => l.value_size,
+        },
+        words: model.kind != TileKind::Meter
+            || model.status().is_none()
+            || l.pieces.iter().any(|p| p.role == Role::Status),
+    }
+}
+
 /// Where `model`'s pieces land in `rect`.
 pub fn layout(model: &TileModel, rect: Rect, m: &mut dyn Measure) -> TileLayout {
     match model.kind {
@@ -201,44 +255,89 @@ pub fn layout(model: &TileModel, rect: Rect, m: &mut dyn Measure) -> TileLayout 
     }
 }
 
-/// The value's size and whether its unit shows, in `room` across: 26 px with the unit, else
-/// without it, else shrunk to fit, never under 18 px.
+/// The value's size and whether its unit shows, in `room` across, at most `cap`: the largest
+/// size down to 18 px that keeps the unit, else without it, shrunk to fit and never under 18
+/// px (a value that lost its unit stays at the 18 px it shrank to, so it never grows as the
+/// tile narrows). With the value's width and the unit's (its gap in).
 fn value_row(
     text: &str,
     unit: Option<&str>,
     room: f32,
+    cap: f32,
     m: &mut dyn Measure,
 ) -> (f32, bool, f32, f32) {
-    let vw = m.width(text, value_spec(VALUE));
+    let cap = cap.clamp(VALUE_MIN, VALUE);
     let uw = unit
         .filter(|u| !u.is_empty())
         .map_or(0.0, |u| UNIT_GAP + m.width(u, unit_spec()));
-    if uw > 0.0 && vw + uw <= room {
-        return (VALUE, true, vw, uw);
+    let at_cap = m.width(text, value_spec(cap));
+    let fit = |m: &mut dyn Measure, room: f32| -> Option<(f32, f32)> {
+        // The largest whole size that fits, from the width's proportion, checked down.
+        let mut size = (cap * room / at_cap.max(1.0)).floor().min(cap);
+        while size >= VALUE_MIN {
+            let w = m.width(text, value_spec(size));
+            if w <= room {
+                return Some((size, w));
+            }
+            size -= 1.0;
+        }
+        None
+    };
+    if uw > 0.0 {
+        if let Some((size, w)) = fit(m, room - uw) {
+            return (size, true, w, uw);
+        }
+        return (VALUE_MIN, false, m.width(text, value_spec(VALUE_MIN)), 0.0);
     }
-    if vw <= room {
-        return (VALUE, false, vw, 0.0);
+    match fit(m, room) {
+        Some((size, w)) => (size, false, w, 0.0),
+        None => (VALUE_MIN, false, m.width(text, value_spec(VALUE_MIN)), 0.0),
     }
-    let size = (VALUE * room / vw.max(1.0)).clamp(VALUE_MIN, VALUE).floor();
-    (size, false, m.width(text, value_spec(size)), 0.0)
 }
 
 fn stat_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
     let inner = (r.w - 2.0 * PAD).max(0.0);
     let x = r.x + PAD;
     let text = model.text();
-    let (size, show_unit, vw, uw) = value_row(&text, model.unit.as_deref(), inner, m);
+    let unit = model.unit.as_deref().filter(|u| !u.is_empty());
+    let (mut size, mut show_unit, mut vw, uw) = value_row(&text, unit, inner, model.fit.value, m);
+    let cap_l = m.cap(label_spec());
+    // The value's cap top sits as far under the label's baseline as m4's does.
+    let base_gap = LABEL_TO_VALUE - m.cap(value_spec(VALUE));
+    let label_to = |m: &mut dyn Measure, size: f32| base_gap + m.cap(value_spec(size));
+    let two_h = |m: &mut dyn Measure, size: f32| cap_l + label_to(m, size) + 2.0 * 12.0;
+    // A short tile shrinks the value to keep the label over it, before the label goes.
+    let mut label = r.h >= two_h(m, size);
+    if !label {
+        let mut s2 = size - 1.0;
+        while s2 >= VALUE_MIN {
+            if r.h >= two_h(m, s2) {
+                size = s2;
+                vw = m.width(&text, value_spec(size));
+                label = true;
+                break;
+            }
+            s2 -= 1.0;
+        }
+    }
+    if show_unit && vw + uw > inner {
+        show_unit = false;
+    }
     let row_w = vw + if show_unit { uw } else { 0.0 };
     let trend_w = (inner * 0.35).clamp(TREND_W, 200.0);
     let has_trend = model.trend.len() >= 2 && !model.value.is_nan();
     let trend_fits = has_trend && PAD + row_w + TREND_GAP + trend_w + PAD <= r.w;
-    // The delta line: the arrow and its text whole, else the amount alone, else nothing.
+    // The delta line: the arrow and its text whole, else the amount alone, else nothing; and
+    // it goes before the unit does (a change in points beside a value that lost its `%`
+    // misreads).
     let dspec = delta_spec();
     let lead = ARROW_W + ARROW_GAP;
+    let unit_kept = unit.is_none() || show_unit;
     let delta: Option<(Option<i8>, String)> = if model.value.is_nan() {
         Some((None, "no data".to_string()))
     } else {
         match (&model.change, model.change_text()) {
+            (Some(_), Some(_)) if !unit_kept => None,
             (Some(c), Some((amount, line))) => {
                 let dir = c.direction();
                 if lead + m.width(&line, dspec) <= inner {
@@ -257,23 +356,17 @@ fn stat_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
             (None, _) => None,
         }
     };
-    let cap_l = m.cap(label_spec());
     let cap_v = m.cap(value_spec(size));
-    // The value's cap top sits as far under the label's baseline as m4's does.
-    let label_to_value = (LABEL_TO_VALUE - m.cap(value_spec(VALUE))) + cap_v;
+    let label_to_value = label_to(m, size);
     let full_h = 92.0;
-    let two_h = cap_l + label_to_value + 2.0 * 12.0;
-    let (label_y, value_y, delta_y) = if delta.is_some() && r.h >= full_h {
-        let off = r.y + (r.h - 100.0) / 2.0;
-        (
-            Some(off + LABEL_Y),
-            off + LABEL_Y + label_to_value,
-            Some(off + DELTA_Y + (label_to_value - LABEL_TO_VALUE)),
-        )
-    } else if r.h >= two_h {
+    // Hung from the top as m4's tiles are: the label's baseline 26 px down whether or not a
+    // delta follows; a tile too short for that centres the label and the value.
+    let (label_y, value_y, delta_y) = if label {
         let block = cap_l + label_to_value;
-        let top = r.y + (r.h - block) / 2.0;
-        (Some(top + cap_l), top + cap_l + label_to_value, None)
+        let ly = r.y + LABEL_Y.min((r.h - block) / 2.0 + cap_l);
+        let dy = (delta.is_some() && r.h >= full_h)
+            .then_some(r.y + DELTA_Y + (label_to_value - LABEL_TO_VALUE));
+        (Some(ly), ly + label_to_value, dy)
     } else {
         (None, r.y + (r.h + cap_v) / 2.0, None)
     };
@@ -304,10 +397,10 @@ fn stat_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
         spec: value_spec(size),
         anchor: Anchor::Start,
     });
-    if show_unit && let Some(u) = &model.unit {
+    if show_unit && let Some(u) = unit {
         l.pieces.push(Piece {
             role: Role::Quiet,
-            text: u.clone(),
+            text: u.to_string(),
             x: x + vw + UNIT_GAP,
             y: value_y,
             spec: unit_spec(),
@@ -353,21 +446,11 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
     let share_spec = TextSpec::new(13.0).weight(Weight::Semibold);
     let of_spec = TextSpec::new(LABEL);
     let cap_l = m.cap(lspec);
-    let block = cap_l + TRACK_GAP + TRACK_H;
-    let (label_y, track_y) = if r.h >= block + 2.0 * 8.0 {
-        let top = r.y + (r.h - block) / 2.0;
-        (Some(top + cap_l), top + cap_l + TRACK_GAP)
-    } else {
-        (None, r.y + (r.h - TRACK_H) / 2.0)
-    };
+    let cap_s = m.cap(share_spec);
     let mut l = TileLayout {
         rect: r,
         value_size: 13.0,
-        track: Some(Rect::new(x, track_y, inner, TRACK_H)),
         ..TileLayout::default()
-    };
-    let Some(ly) = label_y else {
-        return l;
     };
     let share = if model.value.is_nan() {
         "no data".to_string()
@@ -400,26 +483,52 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
         0.0
     };
     let lw = m.width(&model.label, lspec);
-    // What the right side keeps, widest first, with room for the label (whole up to 96 px):
-    // `of max` goes first, then the status's word; its icon stays while the fill wears its
-    // colour, so the status never rests on colour alone (the label is cut instead).
-    let label_min = lw.min(96.0);
-    let fits = |w: f32| label_min + 16.0 + w <= inner;
-    let (show_of, show_word) = if fits(icon_w + ww + sw + ow) {
-        (true, status.is_some())
-    } else if fits(icon_w + ww + sw) {
-        (false, status.is_some())
+    // What the right side keeps, widest first: `of max` goes first, then the status's word
+    // (which a row's meters give up together), each only with the label whole (up to 96 px);
+    // then the label is cut to its first letters; and where even that doesn't leave room, the
+    // label goes on a line of its own over the rest. The icon stays while the fill wears the
+    // status's colour, so the status never rests on colour alone.
+    let label_whole = lw.min(96.0);
+    let label_short = lw.min(m.width(&first_letters(&model.label, 3), lspec));
+    let gap = 12.0;
+    let fits = |label: f32, w: f32| label + gap + w <= inner;
+    let words = model.fit.words && status.is_some();
+    let (show_of, show_word, stacked) = if words && fits(label_whole, icon_w + ww + sw + ow) {
+        (true, true, false)
+    } else if words && fits(label_whole, icon_w + ww + sw) {
+        (false, true, false)
+    } else if fits(label_short, icon_w + sw) {
+        (false, false, false)
     } else {
-        (false, false)
+        (false, false, true)
     };
-    let show_icon = status.is_some();
+    // Two lines and the track (the narrow one), or one line and the track, centred down.
+    let two = cap_l + 8.0 + cap_s + TRACK_GAP + TRACK_H;
+    let stacked = stacked && r.h >= two + 2.0 * 8.0;
+    let block = if stacked {
+        two
+    } else {
+        cap_l + TRACK_GAP + TRACK_H
+    };
+    let (label_y, line_y, track_y) = if r.h >= block + 2.0 * 8.0 {
+        let top = r.y + (r.h - block) / 2.0;
+        let ly = top + cap_l;
+        let line = if stacked { ly + 8.0 + cap_s } else { ly };
+        (Some(ly), line, line + TRACK_GAP)
+    } else {
+        (None, 0.0, r.y + (r.h - TRACK_H) / 2.0)
+    };
+    l.track = Some(Rect::new(x, track_y, inner, TRACK_H));
+    let Some(ly) = label_y else {
+        return l;
+    };
     let mut right = r.right() - PAD;
     if show_of && !of.is_empty() {
         l.pieces.push(Piece {
             role: Role::Quiet,
             text: of.clone(),
             x: right,
-            y: ly,
+            y: line_y,
             spec: of_spec,
             anchor: Anchor::End,
         });
@@ -433,28 +542,31 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
         },
         text: share,
         x: right,
-        y: ly,
+        y: line_y,
         spec: share_spec,
         anchor: Anchor::End,
     });
     right -= sw;
-    if let Some(s) = status.filter(|_| show_icon) {
+    if let Some(s) = status {
         right -= STATUS_GAP;
         if show_word {
             l.pieces.push(Piece {
                 role: Role::Status,
                 text: word.to_string(),
                 x: right,
-                y: ly,
+                y: line_y,
                 spec: lspec,
                 anchor: Anchor::End,
             });
             right -= ww;
         }
-        l.icon = Some((s, (right - ICON_R, ly - cap_l / 2.0)));
+        l.icon = Some((s, (right - ICON_R, line_y - cap_s / 2.0)));
         right -= 2.0 * ICON_R;
     }
-    let room = (right - 16.0 - x).max(0.0);
+    let room = match stacked {
+        true => inner,
+        false => (right - gap - x).max(0.0),
+    };
     let label = m.fit(&model.label, lspec, room);
     if !label.is_empty() {
         l.pieces.insert(
@@ -472,6 +584,14 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
     l
 }
 
+/// A text's first `n` letters and an ellipsis, or all of it when it's no longer.
+fn first_letters(text: &str, n: usize) -> String {
+    match text.char_indices().nth(n) {
+        Some((i, _)) => format!("{}\u{2026}", &text[..i]),
+        None => text.to_string(),
+    }
+}
+
 fn spark_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
     let inner = (r.w - 2.0 * PAD).max(0.0);
     let x = r.x + PAD;
@@ -484,7 +604,7 @@ fn spark_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
     let unit = model.unit.as_deref().filter(|u| !u.is_empty());
     if r.h >= BLOCK_H {
         // The label and the value on top, the line under them.
-        let (size, show_unit, vw, uw) = value_row(&text, unit, inner * 0.6, m);
+        let (size, show_unit, vw, uw) = value_row(&text, unit, inner * 0.6, model.fit.value, m);
         let cap_l = m.cap(lspec);
         let ly = r.y + 26.0;
         let vy = ly - cap_l + m.cap(value_spec(size));

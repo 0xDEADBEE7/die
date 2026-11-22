@@ -114,6 +114,15 @@ impl Trust {
         self.no_files.clear();
     }
 
+    /// `R` in one figure: the noes to its own specs forgotten (its commands', and its file
+    /// panels'), so only its questions are asked again; another figure's noes hold.
+    pub fn ask_again_for(&mut self, specs: &[Option<PathBuf>]) {
+        let specs: Vec<Option<PathBuf>> = specs.iter().map(|s| s.as_deref().map(lexical)).collect();
+        self.no_commands.retain(|(s, _)| !specs.contains(s));
+        self.no_files
+            .retain(|(s, _)| !specs.contains(&Some(s.clone())));
+    }
+
     /// Whether there's no yes to keep.
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty() && self.files.is_empty()
@@ -167,12 +176,18 @@ pub fn not_run(cmd: &str) -> FigError {
         .note(format!("{cmd} needs your yes to run; R asks again"))
 }
 
-/// Whether `file` is inside the directory of the spec at `spec`: by their paths on disk where
-/// both are there (so a link out of it is out), else by name.
+/// Whether `file` is inside the directory of the spec at `spec` ([`inside_dir`]).
 fn inside(spec: &Path, file: &Path) -> bool {
-    let Some(dir) = spec.parent() else {
+    spec.parent().is_some_and(|dir| inside_dir(dir, file))
+}
+
+/// Whether `file` is inside `dir`: by their paths on disk where both are there (so a link out of
+/// it is out, and `..` goes where it goes), else by name once `.` and `..` are taken out. An
+/// empty `dir` holds nothing.
+pub fn inside_dir(dir: &Path, file: &Path) -> bool {
+    if dir.as_os_str().is_empty() {
         return false;
-    };
+    }
     match (std::fs::canonicalize(dir), std::fs::canonicalize(file)) {
         (Ok(d), Ok(f)) => f.starts_with(d),
         _ => lexical(file).starts_with(lexical(dir)),

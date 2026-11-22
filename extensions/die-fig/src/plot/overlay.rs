@@ -706,13 +706,20 @@ fn marker(
     }
 }
 
-/// A heatmap cell lifted: a 2 px ring in the text colour round it, filling the surface gap to
-/// its neighbours, for the hover and the keyboard's cursor alike.
-fn cell_ring(scene: &mut Scene, r: Rect, theme: &Theme) {
+/// A heatmap cell lifted, for the hover and the keyboard's cursor alike: a 2 px ring in the
+/// strong foreground outside it, a 2 px band of the surface between (the gap to its
+/// neighbours, kept clear), so the ring reads against the hottest cell and the coldest alike:
+/// the band parts it from the cell, whatever the cell's colour.
+pub fn cell_ring(scene: &mut Scene, r: Rect, theme: &Theme) {
     scene.push(Item::Path {
         path: PathData::rounded(r.inflate(1.0), [marks::CELL_RADIUS + 1.0; 4]),
         fill: None,
-        stroke: Some(Stroke::solid(2.0, theme.text, 1.0)),
+        stroke: Some(Stroke::solid(2.0, theme.surface, 1.0)),
+    });
+    scene.push(Item::Path {
+        path: PathData::rounded(r.inflate(3.0), [marks::CELL_RADIUS + 3.0; 4]),
+        fill: None,
+        stroke: Some(Stroke::solid(2.0, theme.strong, 1.0)),
     });
 }
 
@@ -2315,7 +2322,7 @@ impl Card {
             }
             let mid = y0 + 10.0;
             if row.color != Color::default() {
-                key(scene, row.shape, r.x + PAD, mid, row.color);
+                key(scene, row.shape, r.x + PAD, mid, row.color, theme);
             }
             let base = y0 + 14.5;
             scene.push(Item::Text {
@@ -2401,17 +2408,20 @@ impl Card {
     }
 }
 
-/// A key in the card: a short line, a 10 px rounded square, or a dot.
-fn key(scene: &mut Scene, shape: KeyShape, x: f32, mid: f32, color: Color) {
+/// A key in the card: a short line, a 10 px rounded square, or a dot. A square that would
+/// barely show on the card's ground (a diverging scale's cell near its midpoint, on dark) gets
+/// a faint ring in the text colour.
+fn key(scene: &mut Scene, shape: KeyShape, x: f32, mid: f32, color: Color, theme: &Theme) {
     let path = match shape {
         KeyShape::Line => PathData::rounded(Rect::new(x, mid - 1.0, KEY_W, 2.0), [1.0; 4]),
         KeyShape::Square => PathData::rounded(Rect::new(x + 2.0, mid - 5.0, 10.0, 10.0), [2.0; 4]),
         KeyShape::Dot => PathData::circle(x + 7.0, mid, 4.5),
     };
+    let faint = shape == KeyShape::Square && super::errors::contrast(color, theme.tooltip) < 1.6;
     scene.push(Item::Path {
         path,
         fill: Some(Paint::solid(color, 1.0)),
-        stroke: None,
+        stroke: faint.then(|| Stroke::hairline(theme.text, 0.45)),
     });
 }
 

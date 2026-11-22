@@ -54,7 +54,7 @@ fn build(spec_text: &str, table: &Table, range: Option<(f64, f64)>) -> TileModel
     TileModel::build_in(&figure_of(spec_text), table, range, &TimeZone::UTC).expect("a tile")
 }
 
-/// The last six hours of [`day`], both ends in: 06:00 to 12:00.
+/// The last six hours of [`day`]: after 06:00, up to and with 12:00.
 fn last6() -> Option<(f64, f64)> {
     Some((T0 + 6.0 * HOUR, T0 + 12.0 * HOUR))
 }
@@ -94,21 +94,22 @@ fn a_stat_aggregates_over_the_range() {
             last6(),
         )
     };
-    // 06:00 to 12:00: minutes 360 to 720, rpm 460 to 820, 361 rows.
-    assert_eq!(s("sum").rows, 361);
-    assert_eq!(s("sum").value, (460..=820).map(f64::from).sum::<f64>());
-    assert_eq!(s("mean").value, 640.0);
-    assert_eq!(s("min").value, 460.0);
+    // After 06:00 to 12:00: minutes 361 to 720, rpm 461 to 820, 360 rows (the range's start
+    // is the period before's end).
+    assert_eq!(s("sum").rows, 360);
+    assert_eq!(s("sum").value, (461..=820).map(f64::from).sum::<f64>());
+    assert_eq!(s("mean").value, 640.5);
+    assert_eq!(s("min").value, 461.0);
     assert_eq!(s("max").value, 820.0);
-    assert_eq!(s("p50").value, 640.0);
-    assert!((s("p95").value - 802.0).abs() < 1e-9);
+    assert_eq!(s("p50").value, 640.5);
+    assert!((s("p95").value - 802.05).abs() < 1e-9);
     assert_eq!(s("last").value, 820.0);
     let count = build(
         r#"{"type": "stat", "data": "x.csv", "value": "count"}"#,
         &t,
         last6(),
     );
-    assert_eq!(count.value, 361.0);
+    assert_eq!(count.value, 360.0);
     // Every row without a range.
     let all = build(
         r#"{"type": "stat", "data": "x.csv", "value": {"max": "rpm"}}"#,
@@ -142,15 +143,15 @@ fn the_delta_compares_with_the_range_before_or_a_number() {
         &t,
         last6(),
     );
-    // 00:00 to 05:59: rpm 100 to 459, mean 279.5.
+    // After 00:00 to 06:00: rpm 101 to 460, mean 280.5.
     let c = m.change.as_ref().expect("a change");
-    assert_eq!(c.against, 279.5);
+    assert_eq!(c.against, 280.5);
     assert_eq!(c.period, "previous 6h");
     assert_eq!(c.direction(), 1);
     assert_eq!(c.good, Some(true));
     assert_eq!(
         m.change_text(),
-        Some(("129 %".into(), "129 % vs previous 6h".into()))
+        Some(("128 %".into(), "128 % vs previous 6h".into()))
     );
     // Down is good for errors; neither says nothing.
     let down = build(
@@ -167,7 +168,7 @@ fn the_delta_compares_with_the_range_before_or_a_number() {
     assert_eq!(neither.change.unwrap().good, None);
     // Against a number, in the unit: points for a percentage, the unit otherwise.
     let fixed = build(
-        r#"{"type": "stat", "data": "x.csv", "value": {"mean": "errors"}, "unit": "%", "delta": 1.077, "good": "down"}"#,
+        r#"{"type": "stat", "data": "x.csv", "value": {"mean": "errors"}, "unit": "%", "delta": 1.08, "good": "down"}"#,
         &t,
         last6(),
     );
@@ -214,6 +215,133 @@ fn the_trend_is_twelve_parts_of_the_range() {
         })
     );
     assert_eq!(figure::hover_at(&m, T0 - 2.0 * HOUR), None);
+}
+
+/// Twelve hours five minutes apart, every value `v` the same: flat data, as health.fig's
+/// samples are spaced.
+fn flat(v: f64) -> Table {
+    let n = 145;
+    Table::new(vec![
+        Column::time("time", (0..n).map(|i| T0 + 300.0 * i as f64).collect()),
+        Column::number("rpm", vec![v; n]),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn a_range_and_the_one_before_it_share_no_row_so_a_sum_compares_like_with_like() {
+    // Six hours ending on the newest sample: 72 rows after 06:00, and 72 after 00:00 before it.
+    let m = build(
+        r#"{"type": "stat", "data": "x.csv", "value": {"sum": "rpm"}, "trend": "time", "delta": "previous"}"#,
+        &flat(10.0),
+        last6(),
+    );
+    assert_eq!((m.rows, m.value), (72, 720.0));
+    let c = m.change.as_ref().unwrap();
+    assert_eq!((c.against, c.direction()), (720.0, 0));
+    // The newest part holds as many samples as the rest: flat data, a flat trend.
+    assert_eq!(m.trend.len(), 12);
+    assert!(m.trend.iter().all(|p| p.y == 60.0), "{:?}", m.trend);
+    let count = build(
+        r#"{"type": "stat", "data": "x.csv", "value": "count", "trend": "time", "delta": "previous"}"#,
+        &flat(10.0),
+        last6(),
+    );
+    assert!(count.trend.iter().all(|p| p.y == 6.0), "{:?}", count.trend);
+    assert_eq!(count.change.unwrap().diff, 0.0);
+}
+
+#[test]
+fn a_sum_trend_over_a_range_of_any_length_is_flat_when_the_data_is() {
+    // 09:10 to 11:40 (a brush's custom time): 30 samples, 10 parts of 3 rather than twelve
+    // parts of 2 and 3.
+    for (a, b) in [
+        (9.0 + 10.0 / 60.0, 11.0 + 40.0 / 60.0),
+        (7.0, 12.0),
+        (2.0 + 1.0 / 60.0, 9.5),
+        (0.0, 12.0),
+    ] {
+        let range = Some((T0 + a * HOUR, T0 + b * HOUR));
+        for op in [r#"{"sum": "rpm"}"#, r#""count""#] {
+            let m = build(
+                &format!(r#"{{"type": "stat", "data": "x.csv", "value": {op}, "trend": "time"}}"#),
+                &flat(10.0),
+                range,
+            );
+            assert!(
+                m.trend.len() >= 6 && m.trend.len() <= 12,
+                "{a}-{b}: {:?}",
+                m.trend
+            );
+            let first = m.trend[0].y;
+            assert!(
+                m.trend.iter().all(|p| p.y == first),
+                "{a}-{b} {op}: {:?}",
+                m.trend.iter().map(|p| p.y).collect::<Vec<_>>()
+            );
+            // The parts end on the newest sample, oldest first, and touch.
+            assert!(m.trend.windows(2).all(|w| w[0].span.1 == w[1].span.0));
+            assert!(m.trend.last().unwrap().span.1 <= T0 + b * HOUR);
+        }
+    }
+    // Every row, no range: the same.
+    let all = build(
+        r#"{"type": "stat", "data": "x.csv", "value": {"sum": "rpm"}, "trend": "time"}"#,
+        &flat(10.0),
+        None,
+    );
+    assert!(
+        all.trend.iter().all(|p| p.y == all.trend[0].y),
+        "{:?}",
+        all.trend
+    );
+}
+
+/// A day of minutes with two time columns, `created` a day before `time`, an `hour` number and
+/// a `v` of one: a range on `time` holds no `created` at all.
+fn two_times() -> Table {
+    let n = 24 * 60;
+    let time: Vec<f64> = (0..n).map(|i| T0 + 60.0 * i as f64).collect();
+    Table::new(vec![
+        Column::time("created", time.iter().map(|t| t - 86_400.0).collect()),
+        Column::time("time", time),
+        Column::number("hour", (0..n).map(|i| (i / 60) as f64).collect()),
+        Column::number("v", vec![1.0; n]),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn a_range_goes_on_the_column_named_whatever_the_trend_is() {
+    let t = two_times();
+    let range = Some((T0 + 6.0 * HOUR, T0 + 12.0 * HOUR));
+    let on = |text: &str| {
+        TileModel::build_on(&figure_of(text), &t, range, Some("time"), &TimeZone::UTC).unwrap()
+    };
+    let none = on(r#"{"type": "stat", "data": "x.csv", "value": {"sum": "v"}}"#);
+    let hour = on(r#"{"type": "stat", "data": "x.csv", "value": {"sum": "v"}, "trend": "hour"}"#);
+    let time = on(r#"{"type": "stat", "data": "x.csv", "value": {"sum": "v"}, "trend": "time"}"#);
+    let meter = on(r#"{"type": "meter", "data": "x.csv", "value": {"sum": "v"}, "max": 1000}"#);
+    for m in [&none, &hour, &time, &meter] {
+        assert_eq!((m.value, m.rows), (360.0, 360), "{:?}", m.trend_along);
+        assert_eq!(m.along.as_deref(), Some("time"));
+        assert!(
+            m.range_text().starts_with("06:00 \u{2013} 12:00"),
+            "{}",
+            m.range_text()
+        );
+    }
+    // The trend still runs along its own field: a point an hour (12:00's alone in its hour).
+    let hours: Vec<f64> = hour.trend.iter().map(|p| p.x).collect();
+    assert_eq!(hours, vec![6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+    assert_eq!(hour.point_text(0), "hour 6");
+    // Without the column named, the first time column is `created`, which the range misses.
+    let first = build(
+        r#"{"type": "stat", "data": "x.csv", "value": {"sum": "v"}}"#,
+        &t,
+        range,
+    );
+    assert_eq!(first.rows, 0);
 }
 
 #[test]
@@ -411,6 +539,139 @@ fn tiles_degrade_with_their_size_and_the_value_never_cuts() {
 }
 
 #[test]
+fn a_rows_tiles_hang_from_the_top_and_share_one_value_size() {
+    let t = m4_tiles();
+    let no_delta = TileModel {
+        change: None,
+        ..t[0].clone()
+    };
+    for h in [100.0, 140.0, 214.0] {
+        for m in [&t[0], &t[1], &no_delta] {
+            let l = draw::layout(m, Rect::new(0.0, 0.0, 197.0, h), &mut FixedMeasure);
+            let label = l.pieces.iter().find(|p| p.role == Role::Label).unwrap();
+            assert_eq!(
+                label.y, 26.0,
+                "{} at {h}: the label's baseline 26 px down",
+                m.label
+            );
+        }
+    }
+    // At half m4's width, each tile alone takes its own size; as a row, the smallest of them.
+    let r = Rect::new(0.0, 0.0, 98.0, 100.0);
+    let needs: Vec<figure::RowFit> = t
+        .iter()
+        .map(|m| draw::needs(m, r, &mut FixedMeasure))
+        .collect();
+    let fit = needs
+        .iter()
+        .copied()
+        .fold(figure::RowFit::default(), figure::RowFit::meet);
+    assert!(needs.iter().any(|n| n.value > fit.value), "{needs:?}");
+    for m in &t {
+        let row = TileModel { fit, ..m.clone() };
+        let l = draw::layout(&row, r, &mut FixedMeasure);
+        assert_eq!(l.value_size, fit.value, "{}", m.label);
+    }
+}
+
+#[test]
+fn a_value_shrinks_to_keep_its_unit_and_its_label_before_either_goes() {
+    let t = m4_tiles();
+    // Half m4's width: `0.41 %` and `182 ms` keep their units, a smaller value for it; the
+    // delta's amount stays with them.
+    for m in [&t[1], &t[2]] {
+        let l = draw::layout(m, Rect::new(0.0, 0.0, 98.0, 100.0), &mut FixedMeasure);
+        let unit = l.pieces.iter().find(|p| p.role == Role::Quiet);
+        assert_eq!(
+            unit.map(|p| p.text.as_str()),
+            m.unit.as_deref(),
+            "{}",
+            m.label
+        );
+        assert!(l.value_size < 26.0 && l.value_size >= 18.0);
+        assert!(
+            l.pieces.iter().any(|p| p.role == Role::Delta),
+            "{}",
+            m.label
+        );
+    }
+    // 120 × 64: the label stays over a value shrunk for it.
+    for m in &t {
+        let l = draw::layout(m, Rect::new(0.0, 0.0, 120.0, 64.0), &mut FixedMeasure);
+        assert!(
+            l.pieces.iter().any(|p| p.role == Role::Label),
+            "{}",
+            m.label
+        );
+        assert!(
+            l.value_size >= 18.0 && l.value_size < 26.0,
+            "{}",
+            l.value_size
+        );
+    }
+    // Where the unit can't be kept at 18 px, the delta goes with it.
+    let narrow = draw::layout(&t[2], Rect::new(0.0, 0.0, 64.0, 100.0), &mut FixedMeasure);
+    assert!(!narrow.pieces.iter().any(|p| p.role == Role::Delta));
+}
+
+/// The four meters of the meter fixtures, one per status.
+fn meters() -> Vec<TileModel> {
+    let opt = ReadOptions::new(TimeZone::UTC);
+    let text = std::fs::read_to_string(tiles_dir().join("hosts.csv")).unwrap();
+    let table = die_fig::data::csv::read_csv(&text, &opt).unwrap();
+    [
+        "meter-good.json",
+        "meter-warning.json",
+        "meter-serious.json",
+        "meter-critical.json",
+    ]
+    .iter()
+    .map(|f| {
+        let spec = std::fs::read_to_string(tiles_dir().join(f)).unwrap();
+        TileModel::build_in(&figure_of(&spec), &table, None, &TimeZone::UTC).unwrap()
+    })
+    .collect()
+}
+
+#[test]
+fn a_rows_meters_say_their_status_words_all_or_none_and_keep_their_labels() {
+    let ms = meters();
+    for w in [420.0, 300.0, 197.0, 150.0, 120.0, 98.0] {
+        let r = Rect::new(0.0, 0.0, w, 64.0);
+        let fit = (ms.iter())
+            .map(|m| draw::needs(m, r, &mut FixedMeasure))
+            .fold(figure::RowFit::default(), figure::RowFit::meet);
+        let words: Vec<bool> = ms
+            .iter()
+            .map(|m| {
+                let l = draw::layout(&TileModel { fit, ..m.clone() }, r, &mut FixedMeasure);
+                // The label stays, whole or its first letters, with every status's icon.
+                let label = l.pieces.iter().find(|p| p.role == Role::Label);
+                assert!(
+                    label.is_some_and(|p| p.text.chars().count() >= 3),
+                    "{} at {w}: {:?}",
+                    m.label,
+                    l.pieces
+                );
+                assert!(l.icon.is_some(), "{} at {w}", m.label);
+                let boxes = text_boxes(&l);
+                for (i, (ta, a)) in boxes.iter().enumerate() {
+                    assert!(a.right() <= w - 16.0 + 0.5, "{w}: {ta}");
+                    for (tb, b) in &boxes[i + 1..] {
+                        assert!(!overlaps(a, b), "{w}: {ta} over {tb}");
+                    }
+                }
+                l.pieces.iter().any(|p| p.role == Role::Status)
+            })
+            .collect();
+        assert!(
+            words.iter().all(|&x| x) || words.iter().all(|&x| !x),
+            "{w}: {words:?}"
+        );
+    }
+}
+
+#[test]
 fn a_meter_keeps_its_status_icon_at_every_width() {
     let t = Table::new(vec![Column::number("gb", vec![14.6])]).unwrap();
     let m = build(
@@ -485,7 +746,7 @@ fn the_cards_say_what_the_value_is_and_keep_off_the_tile() {
         &mut FixedMeasure,
     );
     let t = scene_texts(&over);
-    for want in ["1,281,437", "sum of rpm", "previous 6h", "change, good"] {
+    for want in ["1,278,035", "sum of rpm", "previous 6h", "change, good"] {
         assert!(t.iter().any(|s| s.contains(want)), "{want} in {t:?}");
     }
     let card = over.items.iter().find_map(|i| match i {

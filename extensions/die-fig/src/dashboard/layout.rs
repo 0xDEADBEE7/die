@@ -26,11 +26,11 @@
 
 use super::{Cell, CellKind, DashModel, DashView, Group, LiveState, PanelKind, PanelState};
 use crate::algo::HitIndex;
-use crate::figure::{self, TileModel};
+use crate::figure::{self, RowFit, TileModel};
 use crate::graph::{self, GraphLayout};
 use crate::interact::View;
 use crate::plot::layout::{Ink, Insets, text_box};
-use crate::plot::{self, ChartLayout};
+use crate::plot::{self, ChartLayout, ErrorView};
 use crate::scene::{Anchor, Hit, Item, Measure, Rect, Scene, TextSpec, Weight};
 use crate::spec::Tooltip;
 use crate::theme::Theme;
@@ -62,6 +62,8 @@ pub const CHIP_RADIUS: f32 = 6.0;
 pub const MIN_FIGURE: f32 = 180.0;
 /// The least width of a chart's or a graph's panel before its row wraps.
 pub const MIN_WIDTH: f32 = 220.0;
+/// A graph panel's height over its plot: its title and subtitle, its legend, its foot.
+const GRAPH_CHROME: f32 = 104.0;
 /// A tile panel's height when it has no model to say (waiting, failed).
 pub const TILE_HEIGHT: f32 = 100.0;
 /// The scrollbar's width.
@@ -399,6 +401,7 @@ fn lay_out(
         panels: (0..model.panels.len()).map(|_| None).collect(),
         groups: Vec::new(),
         lines: Vec::new(),
+        fits: vec![RowFit::default(); model.panels.len()],
     };
     let across = (w - 2.0 * margin).max(0.0);
     let (content, max_scroll, scroll);
@@ -575,6 +578,8 @@ struct Cx<'a, 'm> {
     panels: Vec<Option<PanelLayout>>,
     groups: Vec<GroupLayout>,
     lines: Vec<Vec<usize>>,
+    /// What each tile's line agreed on, by panel: one value size, a meter's word or none.
+    fits: Vec<RowFit>,
 }
 
 /// One line of cells across: a row, or part of one that wrapped.
@@ -593,6 +598,12 @@ impl Cx<'_, '_> {
                 (n, Some(n))
             }
             (_, PanelKind::Tile) => (TILE_HEIGHT, Some(TILE_HEIGHT)),
+            // A tree's or layers' ranks need their room, or their nodes overlap: its title,
+            // legend and foot over the plot it needs.
+            (PanelState::Graph(g), _) => {
+                let plot = graph::geom::least_plot_height(g);
+                (MIN_FIGURE.max((GRAPH_CHROME + plot).ceil()), None)
+            }
             _ => (MIN_FIGURE, None),
         }
     }
@@ -793,8 +804,38 @@ impl Cx<'_, '_> {
         }
     }
 
-    /// The charts placed on one line share their plots' top and bottom.
+    /// The charts placed on one line share their plots' top and bottom; its tiles share one
+    /// value size (the smallest any needs) and a meter's word (all or none).
     fn align(&mut self, placed: &[usize]) {
+        self.align_tiles(placed);
+        self.align_charts(placed);
+    }
+
+    /// A line's tiles drawn alike: see [`figure::draw::RowFit`].
+    fn align_tiles(&mut self, placed: &[usize]) {
+        let tiles: Vec<(usize, Rect, RowFit)> = placed
+            .iter()
+            .filter_map(|&i| {
+                let p = self.panels[i].as_ref()?;
+                let tm = p.tile()?;
+                let whole = Rect::new(0.0, 0.0, p.frame.w, p.frame.h);
+                Some((i, p.frame, figure::draw::needs(tm, whole, self.m)))
+            })
+            .collect();
+        if tiles.len() < 2 {
+            return;
+        }
+        let fit = (tiles.iter().map(|t| t.2)).fold(RowFit::default(), RowFit::meet);
+        for (i, frame, need) in tiles {
+            self.fits[i] = fit;
+            if need != fit {
+                self.panel(i, frame, (0.0, 0.0));
+            }
+        }
+    }
+
+    /// The charts placed on one line share their plots' top and bottom.
+    fn align_charts(&mut self, placed: &[usize]) {
         let plots: Vec<(usize, f32, f32, Rect)> = placed
             .iter()
             .filter_map(|&i| {
@@ -890,7 +931,28 @@ impl Cx<'_, '_> {
             )
         };
         let whole = Rect::new(0.0, 0.0, frame.w, frame.h);
+        let error_view = (self.view.panels.get(i))
+            .map(|v| v.error)
+            .unwrap_or_default();
+        // A panel kept with the stale badge shows its rebuild's error as a log over it while
+        // `!` (or a click on the badge) has it up, as a figure alone does.
+        let stale_log = p.stale.is_some() && matches!(error_view, ErrorView::Log { .. });
         let (body, inner, figure) = match &p.state {
+            _ if stale_log => {
+                let body = under(if title.is_some() { head } else { PAD });
+                let (errors, name) = p.errors().unwrap_or_default();
+                let scene = plot::error_figure(
+                    &errors,
+                    "",
+                    &name,
+                    error_view,
+                    (body.w, body.h),
+                    scale,
+                    theme,
+                    self.m,
+                );
+                (body, Some(scene), PanelFigure::Failed)
+            }
             PanelState::Chart(cm) => {
                 let insets = Insets {
                     x: PAD,
@@ -922,13 +984,18 @@ impl Cx<'_, '_> {
                 (body, Some(scene), PanelFigure::Graph { layout })
             }
             PanelState::Tile(t) => {
-                let has_time =
-                    (model.time.as_ref()).is_some_and(|ts| t.table.column(&ts.field).is_some());
-                let tm = match self.time.filter(|_| has_time) {
-                    Some(r) => TileModel::build_in(&t.figure, &t.table, Some(r), &model.zone)
-                        .unwrap_or_else(|_| t.model.clone()),
+                // Over the visible time along the dashboard's time field, where the tile's
+                // table has it; all of its rows when the time is all of the data.
+                let field = model.time.as_ref().map(|ts| ts.field.as_str());
+                let has_time = field.is_some_and(|f| t.table.column(f).is_some());
+                let mut tm = match self.view.time.filter(|_| has_time) {
+                    Some(r) => {
+                        TileModel::build_on(&t.figure, &t.table, Some(r), field, &model.zone)
+                            .unwrap_or_else(|_| t.model.clone())
+                    }
                     None => t.model.clone(),
                 };
+                tm.fit = self.fits[i];
                 let scene = figure::base(&tm, whole, theme, self.m);
                 (whole, Some(scene), PanelFigure::Tile { model: tm })
             }
@@ -966,7 +1033,7 @@ impl Cx<'_, '_> {
                 title_box = Some(Rect::new(b.x + frame.x, b.y + frame.y, b.w, b.h));
             }
         }
-        if let Some(e) = &p.stale {
+        if let Some(e) = p.stale.as_ref().filter(|_| !stale_log) {
             plot::stale_badge(&mut scene, e, theme, self.m);
         }
         self.panels[i] = Some(PanelLayout {

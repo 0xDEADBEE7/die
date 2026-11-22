@@ -269,6 +269,58 @@ fn the_legend_goes_right_when_asked_and_away_when_there_is_no_room() {
 }
 
 #[test]
+fn the_colour_legend_outlasts_the_axes_titles_at_small_sizes() {
+    // At 400 × 240 both heatmaps keep their ramp: its colours can't be read without it. The
+    // axes' titles go first.
+    for name in ["heatmap.json", "heatmap-diverging.json"] {
+        for theme in [Theme::mono_dark(), Theme::light()] {
+            let (scene, l) = lay(&load(name), &View::default(), (400.0, 240.0), &theme);
+            assert!(l.ramp.is_some(), "{name}: a legend at 400 x 240");
+            let t = texts(&scene);
+            for (i, (ta, a)) in t.iter().enumerate() {
+                for (tb, b) in &t[i + 1..] {
+                    assert!(!overlaps(a, b), "{name}: {ta:?} over {tb:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_swatch_that_barely_shows_on_the_card_gets_a_faint_ring() {
+    // The diverging scale's cell nearest its midpoint, on dark: its key in the card is rung.
+    let model = load("heatmap-diverging.json");
+    let theme = Theme::mono_dark();
+    let (_, l) = lay(&model, &View::default(), (880.0, 470.0), &theme);
+    let sc = ramp::scale_of(&model).expect("a ramp");
+    let s = &model.series[0];
+    let sizes = s.sizes.as_ref().expect("cell values");
+    let (_, i) = (0..sizes.len())
+        .filter(|&i| sizes[i].is_finite())
+        .map(|i| (sizes[i].abs(), i))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("a cell");
+    let cell = (0..model.y.bands.len() as u32)
+        .flat_map(|row| (0..model.x.bands.len() as u32).map(move |col| (row, col)))
+        .find(|&(row, col)| model.cell_at(row, col) == Some((0, i)))
+        .expect("its place");
+    let st = state(
+        Some(Cursor::Cell {
+            row: cell.0,
+            col: cell.1,
+        }),
+        None,
+    );
+    let over = plot::overlay(&model, &l, &View::default(), &st, &theme, &mut FixedMeasure);
+    let swatch = sc.color(sizes[i], &theme).unwrap();
+    let rung = over.items.iter().any(|it| matches!(
+        it,
+        Item::Path { fill: Some(Paint::Solid { color, .. }), stroke: Some(_), .. } if *color == swatch
+    ));
+    assert!(rung, "the near-midpoint swatch {swatch:?} is rung");
+}
+
+#[test]
 fn cells_keep_a_two_pixel_surface_gap_on_whole_pixels() {
     let model = load("heatmap.json");
     for scale in [1.0, 2.0] {
@@ -364,12 +416,16 @@ fn the_hovered_cell_lifts_with_a_ring_and_its_card_says_what_it_is() {
     let mut st = state(hover, None);
     st.pointer = Some(at);
     let over = plot::overlay(&model, &l, &View::default(), &st, &theme, &mut FixedMeasure);
-    // A 2 px ring in the text colour.
-    assert!(over.items.iter().any(|i| matches!(
-        i,
-        Item::Path { fill: None, stroke: Some(Stroke { width, paint: Paint::Solid { color, .. }, .. }), .. }
-            if *width == 2.0 && *color == theme.text
-    )));
+    // A 2 px ring in the strong foreground, outside a 2 px band of the surface that parts it
+    // from the cell: it reads on the hottest cell as on the coldest.
+    let stroked = |c: Color| {
+        over.items.iter().any(|i| matches!(
+            i,
+            Item::Path { fill: None, stroke: Some(Stroke { width, paint: Paint::Solid { color, .. }, .. }), .. }
+                if *width == 2.0 && *color == c
+        ))
+    };
+    assert!(stroked(theme.strong) && stroked(theme.surface));
     let t: Vec<String> = texts(&over).into_iter().map(|t| t.0).collect();
     assert!(t.iter().any(|s| s == "Hour 10 \u{b7} Thu"), "{t:?}");
     assert!(t.iter().any(|s| s == "requests"), "{t:?}");
@@ -393,12 +449,14 @@ fn the_cursor_is_the_same_ring_with_its_categories_in_chips() {
     let (_, l) = lay(&model, &View::default(), (880.0, 470.0), &theme);
     let st = state(None, Some(Cursor::Cell { row: 4, col: 15 }));
     let over = plot::overlay(&model, &l, &View::default(), &st, &theme, &mut FixedMeasure);
-    let rings = over.items.iter().filter(|i| {
+    let ring = |i: &&Item| {
         matches!(
             i,
-            Item::Path { fill: None, stroke: Some(Stroke { width, .. }), .. } if *width == 2.0
+            Item::Path { fill: None, stroke: Some(Stroke { width, paint: Paint::Solid { color, .. }, .. }), .. }
+                if *width == 2.0 && *color == theme.strong
         )
-    });
+    };
+    let rings = over.items.iter().filter(ring);
     assert_eq!(rings.count(), 1);
     let t: Vec<String> = texts(&over).into_iter().map(|t| t.0).collect();
     assert!(t.iter().any(|s| s == "Fri"), "the y chip: {t:?}");
@@ -409,13 +467,41 @@ fn the_cursor_is_the_same_ring_with_its_categories_in_chips() {
         Some(Cursor::Cell { row: 4, col: 15 }),
     );
     let over = plot::overlay(&model, &l, &View::default(), &st, &theme, &mut FixedMeasure);
-    let rings = over.items.iter().filter(|i| {
-        matches!(
-            i,
-            Item::Path { fill: None, stroke: Some(Stroke { width, .. }), .. } if *width == 2.0
-        )
-    });
+    let rings = over.items.iter().filter(ring);
     assert_eq!(rings.count(), 2);
+}
+
+#[test]
+fn the_ring_reads_on_every_step_of_the_ramp_dark_and_light() {
+    // Each step's cell, then the surface band, then the ring: the band parts the ring from
+    // the cell at 3 to 1 or more however hot the cell, and the ring reads on the band.
+    let lum = |c: Color| {
+        let ch = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(c.0) + 0.7152 * ch(c.1) + 0.0722 * ch(c.2)
+    };
+    let contrast = |a: Color, b: Color| {
+        let (a, b) = (lum(a), lum(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    };
+    for theme in [Theme::mono_dark(), Theme::light()] {
+        assert!(contrast(theme.strong, theme.surface) >= 3.0);
+        for file in ["heatmap.json", "heatmap-diverging.json"] {
+            let model = load(file);
+            let sc = ramp::scale_of(&model).expect("a ramp");
+            for &c in sc.steps(&theme) {
+                // The ring on the cell where it reads, else the band round the cell.
+                let best = contrast(c, theme.strong).max(contrast(c, theme.surface));
+                assert!(best >= 3.0, "{file}: {c:?} on {}", theme.dark);
+            }
+        }
+    }
 }
 
 #[test]

@@ -167,7 +167,13 @@ fn pair(v: &str, sep: char) -> Result<Vec<f32>, String> {
 }
 
 fn run() -> Result<(), String> {
-    let (dash, rest) = dash_flags(std::env::args().skip(1))?;
+    // The dashboard flags are a dashboard's only: a tile's `--range` is the tile's.
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    let is_dash = all.first().is_some_and(|f| is_dashboard(Path::new(f)));
+    let (dash, rest) = match is_dash {
+        true => dash_flags(all.into_iter())?,
+        false => (DashAsk::default(), all),
+    };
     let mut args = rest.into_iter();
     let usage = "fig_shot <file> <out.png> [--size WxH] [--scale S] [--light] [--cursor N] \
                  [--hover X,Y] [--brush X0,X1[,Y0,Y1]] [--reference N|ID] [--svg OUT.svg] [--log] \
@@ -993,6 +999,13 @@ fn tile_shot(
         let mut m = BookMeasure { book, scale };
         let mut scene = Scene::new(size.0, size.1, scale);
         let mut over = Scene::new(size.0, size.1, scale);
+        // A row's tiles agree on one value size and a meter's word, as a dashboard's do.
+        let fit = (models.iter().enumerate())
+            .map(|(i, t)| figure::draw::needs(t, rect(i), &mut m))
+            .fold(figure::RowFit::default(), figure::RowFit::meet);
+        let models: Vec<TileModel> = (models.iter())
+            .map(|t| TileModel { fit, ..t.clone() })
+            .collect();
         for (i, model) in models.iter().enumerate() {
             let r = rect(i);
             if !ask.no_frame {
@@ -1093,6 +1106,18 @@ fn dash_flags(args: impl Iterator<Item = String>) -> Result<(DashAsk, Vec<String
         }
     }
     Ok((d, rest))
+}
+
+/// Whether a file parses as a dashboard, said quietly.
+fn is_dashboard(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let opt = ReadOptions::new(TimeZone::UTC);
+    die_fig::spec::parse(&text, name, dir, &opt)
+        .is_ok_and(|p| matches!(p.figure, Figure::Dashboard(_)))
 }
 
 /// The dashboard a file is, if it parses as one.

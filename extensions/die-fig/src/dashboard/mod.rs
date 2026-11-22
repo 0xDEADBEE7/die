@@ -106,6 +106,7 @@ pub enum SourceState {
 pub struct Sources {
     entries: Vec<(Want, SourceState)>,
     trusted: Vec<PathBuf>,
+    refused: Vec<PathBuf>,
     /// What the header says of live sources, if any is live.
     pub live: Option<LiveStatus>,
 }
@@ -147,6 +148,29 @@ impl Sources {
         self.trusted
             .iter()
             .any(|p| crate::source::same_path(p, path))
+    }
+
+    /// A file outside the spec's directory you said no to: its panel says so until `R`. False
+    /// if it was refused already.
+    pub fn refuse_file(&mut self, path: impl Into<PathBuf>) -> bool {
+        let p = path.into();
+        if self.refused(&p) {
+            return false;
+        }
+        self.refused.push(p);
+        true
+    }
+
+    /// Whether you said no to opening this file.
+    pub fn refused(&self, path: &Path) -> bool {
+        self.refused
+            .iter()
+            .any(|p| crate::source::same_path(p, path))
+    }
+
+    /// `R`: every no to a file forgotten, so each is asked again. Whether there was one.
+    pub fn forget_refusals(&mut self) -> bool {
+        !std::mem::take(&mut self.refused).is_empty()
     }
 }
 
@@ -257,9 +281,15 @@ impl LiveStatus {
 
     /// `paused`.
     pub fn paused() -> LiveStatus {
+        LiveStatus::quiet("paused")
+    }
+
+    /// A muted dot and `text`: `asking…` while a command waits for your yes, `not run` after
+    /// your no.
+    pub fn quiet(text: &str) -> LiveStatus {
         LiveStatus {
             state: LiveState::Paused,
-            text: "paused".into(),
+            text: text.into(),
         }
     }
 
@@ -396,6 +426,19 @@ impl PanelModel {
         }
     }
 
+    /// What its error figure shows: a failed panel's errors and the name it gives, or, for
+    /// one kept with the stale badge, the error its rebuild failed with.
+    pub fn errors(&self) -> Option<(Vec<FigError>, String)> {
+        match (&self.state, &self.stale) {
+            (PanelState::Failed(f), _) => Some((f.errors.clone(), f.name.clone())),
+            (_, Some(e)) => {
+                let name = self.title.clone().unwrap_or_else(|| "this panel".into());
+                Some((vec![e.clone()], name))
+            }
+            _ => None,
+        }
+    }
+
     /// Whether it draws a figure (not waiting, not failed).
     pub fn ready(&self) -> bool {
         matches!(
@@ -487,6 +530,16 @@ impl Scope<'_> {
             _ => e,
         }
     }
+}
+
+/// What [`Builder::ask_file`] found.
+enum Asked {
+    /// It may be read.
+    Open,
+    /// It waits for your answer.
+    Waiting,
+    /// You said no: the error its panel shows.
+    Refused(FigError),
 }
 
 struct Builder<'a> {
@@ -685,31 +738,29 @@ impl Builder<'_> {
             let e = FigError::at(format!("{name} includes itself: {}", names.join(" → ")), at);
             return failed(self, scope.placed(e));
         }
-        if chain.len() > MAX_DEPTH {
+        // How many files deep this one is: the dashboard's own spec is level 0, with a file of
+        // its own (first in the chain) or not.
+        let depth = chain.len() - usize::from(self.origin_file.is_some() && !chain.is_empty());
+        if depth >= MAX_DEPTH {
             let e = FigError::at(format!("files nest at most {MAX_DEPTH} deep"), at);
             return failed(self, scope.placed(e));
         }
-        let inside = path.starts_with(&scope.dir) && !scope.dir.as_os_str().is_empty();
-        if !inside && !self.sources.trusted(path) {
-            let ask = NeedsTrust::File {
-                spec: scope.file.clone(),
-                path: path.to_path_buf(),
-                at,
-            };
-            if !self.trust.contains(&ask) {
-                self.trust.push(ask);
+        match self.ask_file(path, at, scope) {
+            Asked::Open => {}
+            Asked::Waiting => {
+                let i = self.push(PanelModel {
+                    title: None,
+                    subtitle: None,
+                    kind: PanelKind::Other,
+                    state: PanelState::Waiting(format!("waiting for your yes to open {name}")),
+                    linked: false,
+                    file: Some(path.to_path_buf()),
+                    at,
+                    stale: None,
+                });
+                return CellKind::Panel(i);
             }
-            let i = self.push(PanelModel {
-                title: None,
-                subtitle: None,
-                kind: PanelKind::Other,
-                state: PanelState::Waiting(format!("waiting for your yes to open {name}")),
-                linked: false,
-                file: Some(path.to_path_buf()),
-                at,
-                stale: None,
-            });
-            return CellKind::Panel(i);
+            Asked::Refused(e) => return failed(self, e),
         }
         let figure = match (self.resolve)(path) {
             Ok(f) => f,
@@ -748,6 +799,35 @@ impl Builder<'_> {
                 CellKind::Panel(i)
             }
         }
+    }
+
+    /// Whether a file outside the spec's directory may be read (ruling 13): one inside it
+    /// (on disk, links followed and `..` gone where both are there, else by name) or one you
+    /// said yes to opens; one you said no to says so; else it's asked for, and waits.
+    fn ask_file(&mut self, path: &Path, at: Pos, scope: &Scope<'_>) -> Asked {
+        if crate::live::trust::inside_dir(&scope.dir, path) || self.sources.trusted(path) {
+            return Asked::Open;
+        }
+        if self.sources.refused(path) {
+            let e = FigError::new("not opened: you said no")
+                .with_kind(ErrorKind::Unreadable)
+                .in_file(path, None)
+                .note(format!(
+                    "{} is outside {}: it needs your yes to open; R asks again",
+                    path.display(),
+                    scope.dir.display()
+                ));
+            return Asked::Refused(e);
+        }
+        let ask = NeedsTrust::File {
+            spec: scope.file.clone(),
+            path: path.to_path_buf(),
+            at,
+        };
+        if !self.trust.contains(&ask) {
+            self.trust.push(ask);
+        }
+        Asked::Waiting
     }
 
     fn push(&mut self, p: PanelModel) -> usize {
@@ -864,17 +944,19 @@ impl Builder<'_> {
                 };
                 panel.title = Some(label).filter(|l| !l.is_empty());
                 match self.table(data, scope, &[]) {
-                    Got::Table(t, note) => match TileModel::build_in(fig, &t, None, self.zone) {
-                        Ok(model) => PanelState::Tile(Tile {
-                            figure: fig.clone(),
-                            table: t,
-                            model,
-                        }),
-                        Err(e) => {
-                            let e = note.into_iter().fold(scope.placed(e), FigError::note);
-                            fail(vec![e], &name)
+                    Got::Table(t, note) => {
+                        match TileModel::build_on(fig, &t, None, field.as_deref(), self.zone) {
+                            Ok(model) => PanelState::Tile(Tile {
+                                figure: fig.clone(),
+                                table: t,
+                                model,
+                            }),
+                            Err(e) => {
+                                let e = note.into_iter().fold(scope.placed(e), FigError::note);
+                                fail(vec![e], &name)
+                            }
                         }
-                    },
+                    }
                     Got::Waiting(w) => PanelState::Waiting(w),
                     Got::Failed(e) => fail(vec![e], &name),
                 }
@@ -1007,6 +1089,13 @@ impl Builder<'_> {
         }
         if refs.len() >= MAX_DEPTH {
             return err(format!("data references nest at most {MAX_DEPTH} deep"));
+        }
+        match self.ask_file(file, at, scope) {
+            Asked::Open => {}
+            Asked::Waiting => {
+                return Got::Waiting(format!("waiting for your yes to read {what}"));
+            }
+            Asked::Refused(e) => return Got::Failed(e.note(format!("borrowing {what}"))),
         }
         let figure = match (self.resolve)(file) {
             Ok(f) => f,

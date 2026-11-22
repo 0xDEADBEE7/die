@@ -659,11 +659,19 @@ pub(crate) fn fit(
     let right_w = edge_w(m, &|x| x >= hi - near);
     let label_room = (left_w.max(right_w) / 2.0).min(80.0);
     let mx = (rmax + RING + 4.0 + label_room).min(plot.w * 0.25);
-    let my = (rmax + RING + 4.0 + 16.0).min(plot.h * 0.25);
-    let iw = f64::from((plot.w - 2.0 * mx).max(1.0));
-    let ih = f64::from((plot.h - 2.0 * my).max(1.0));
     let bw = b.1 - b.0;
     let bh = b.3 - b.2;
+    // Room above and below for a label's line, unless that would bring a tree's or layers'
+    // ranks closer than its nodes need (they'd overlap): their labels go beside them anyway.
+    let roomy = (rmax + RING + 4.0 + 16.0).min(plot.h * 0.25);
+    let tight = (rmax + RING + 4.0).min(plot.h * 0.25);
+    let gap = f64::from(rank_gap(rmax));
+    let my = match model.uniform() || bh <= 1e-9 {
+        false if f64::from(plot.h - 2.0 * roomy) / bh < gap => tight,
+        _ => roomy,
+    };
+    let iw = f64::from((plot.w - 2.0 * mx).max(1.0));
+    let ih = f64::from((plot.h - 2.0 * my).max(1.0));
     let eps = 1e-9;
     let (kx, ky) = if model.uniform() {
         let k = match (bw > eps, bh > eps) {
@@ -682,6 +690,28 @@ pub(crate) fn fit(
     let hx = f64::from(plot.w) / 2.0 / kx;
     let hy = f64::from(plot.h) / 2.0 / ky;
     ((c.0 - hx, c.0 + hx), (c.1 - hy, c.1 + hy))
+}
+
+/// The least distance between a tree's or layers' ranks, in px, for nodes up to `rmax` across
+/// their middle: their rings apart with a little room between.
+pub fn rank_gap(rmax: f32) -> f32 {
+    2.0 * (rmax + RING) + 4.0
+}
+
+/// The least plot height a graph's ranks need at rest so its nodes don't overlap (a tree's or
+/// layers' rank a unit apart, each [`rank_gap`] tall, with a node's room above and below);
+/// none for a stress layout, which keeps its shape at any size.
+pub fn least_plot_height(model: &GraphModel) -> f32 {
+    if model.uniform() || model.positions.is_empty() {
+        return 0.0;
+    }
+    let (lo, hi) = (model.positions.iter())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+            (a.min(p.1), b.max(p.1))
+        });
+    let rmax = model.radius.iter().copied().fold(0.0_f32, f32::max);
+    let span = (hi - lo).max(0.0) as f32;
+    span * rank_gap(rmax) + 2.0 * (rmax + RING + 4.0)
 }
 
 /// Edge `k`'s path, width, arrowhead and colour.
