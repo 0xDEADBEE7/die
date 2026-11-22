@@ -1,7 +1,8 @@
 //! Label placement: each node's name beside it, on the first free side.
 //!
 //! The sides are tried in order: right, left, below, above, then the four corners between
-//! them, and for a hub or a label that must show two rings further out. A side is free when its
+//! them and right and left raised or lowered a little, and for a hub or a label that must show
+//! two rings further out. A side is free when its
 //! label crosses no other label (and keeps a space's width from one level with it), no node
 //! (its ring included) and no edge, stays inside the graph's region, and is clearly nearer its
 //! own node than any other, a dimmed one too (by [`OWN_MARGIN`], so it never reads as
@@ -36,6 +37,9 @@ const LABEL_CLEAR_X: f32 = 7.0;
 /// How much nearer a label must be to its own node's ring than to any other's: this many px,
 /// or this share of its own distance, whichever is more.
 pub const OWN_MARGIN: (f32, f32) = (4.0, 0.3);
+/// How near a node level with a label seems, as a share of how near it is: a label beside a
+/// node at its middle reads as that node's.
+const LEVEL_SHARE: f32 = 0.6;
 /// What going out to the first and second further ring costs, in edges crossed: more than a
 /// few edges or a dimmed node near, less than a bright one.
 const RING_COST: [f32; 3] = [0.0, 15.0, 30.0];
@@ -45,6 +49,9 @@ const BRIGHT_NEAR: (f32, f32) = (50.0, 50.0);
 const DIM_NEAR: (f32, f32) = (12.0, 24.0);
 /// What a corner costs over a side, in edges crossed.
 const CORNER_COST: f32 = 0.4;
+/// What a side raised or lowered costs over a side: less than a corner, since it's still level
+/// with its node.
+const SHIFT_COST: f32 = 0.2;
 /// What crossing an edge drawn bright costs: it cuts the edge, on its ground.
 const HARD_EDGE_COST: f32 = 2.5;
 /// What hiding a dimmed node under a label's ground costs, in edges crossed: more than two
@@ -90,7 +97,9 @@ pub struct NodeLabel {
     pub rect: Rect,
     /// Whether it crosses an edge, and so sits on a ground of the surface's colour.
     pub backed: bool,
-    /// Which side of its node it's on, from 0: right, left, below, above, then the corners.
+    /// Which side of its node it's on, from 0: right, left, below, above, then the corners
+    /// (below right, above right, below left, above left), then right and left raised and
+    /// lowered (right raised, right lowered, left raised, left lowered).
     pub side: u8,
     /// How far out: 0 beside its node, 1 and 2 the further rings.
     pub ring: u8,
@@ -342,11 +351,17 @@ impl Field {
         if let Some(Some((own_at, own_reach))) = self.node_at.get(own) {
             let mine = (rect_distance(*own_at, &r) - own_reach).max(0.0);
             let clear = mine + OWN_MARGIN.0.max(mine * OWN_MARGIN.1);
+            let own_level = own_at.1 >= r.y - 1.0 && own_at.1 <= r.bottom() + 1.0;
             let mut seen: Vec<u32> = Vec::new();
             for c in self.cells(r.inflate(clear + ASSOCIATION)) {
                 for &k in &self.cell_nodes[c] {
                     let (at, reach, i) = self.nodes[k as usize];
-                    let gap = rect_distance(at, &r) - reach;
+                    // Beside a node at its middle is where a label usually sits for its own
+                    // node: a node level with a label that isn't level with its own reads as
+                    // the owner, nearer than it is.
+                    let level = !own_level && at.1 >= r.y - 1.0 && at.1 <= r.bottom() + 1.0;
+                    let share = if level { LEVEL_SHARE } else { 1.0 };
+                    let gap = (rect_distance(at, &r) - reach) * share;
                     // A dimmed node the label's ground meets is hidden under it, not beside it:
                     // what it costs is what it crosses.
                     let under =
@@ -521,6 +536,9 @@ pub(crate) fn spots(
         }
     };
     let mid = c.1 + cap / 2.0;
+    // Beside it, raised or lowered by most of a cap: still level with its node, clear of an
+    // edge that leaves it just above or below the middle.
+    let lift = cap * 0.9;
     vec![
         mk(c.0 + edge, mid, Anchor::Start, 0),
         mk(c.0 - edge, mid, Anchor::End, 1),
@@ -530,6 +548,10 @@ pub(crate) fn spots(
         mk(c.0 + diag, c.1 - diag - d, Anchor::Start, 5),
         mk(c.0 - diag, c.1 + diag + cap, Anchor::End, 6),
         mk(c.0 - diag, c.1 - diag - d, Anchor::End, 7),
+        mk(c.0 + edge, mid - lift, Anchor::Start, 8),
+        mk(c.0 + edge, mid + lift, Anchor::Start, 9),
+        mk(c.0 - edge, mid - lift, Anchor::End, 10),
+        mk(c.0 - edge, mid + lift, Anchor::End, 11),
     ]
 }
 
@@ -578,7 +600,11 @@ pub(crate) fn choose(
     let mut best: Option<(f32, Clash, NodeLabel)> = None;
     for (n, s) in spots.into_iter().enumerate() {
         let c = field.clash(s.rect, own);
-        let corner = if s.side >= 4 { CORNER_COST } else { 0.0 };
+        let corner = match s.side {
+            0..=3 => 0.0,
+            4..=7 => CORNER_COST,
+            _ => SHIFT_COST,
+        };
         let covering = if block_ok == u32::MAX {
             c.covers as f32 * COVER_COST
         } else {

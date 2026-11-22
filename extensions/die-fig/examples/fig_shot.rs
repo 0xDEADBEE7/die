@@ -104,6 +104,24 @@ struct DetailAsk {
     unfold: bool,
 }
 
+/// Halfway along a polyline by its length: where a pointer on an edge is.
+fn halfway(pts: &[(f32, f32)]) -> (f32, f32) {
+    let seg = |w: &[(f32, f32)]| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+    let mut left = pts.windows(2).map(seg).sum::<f32>() / 2.0;
+    for w in pts.windows(2) {
+        let d = seg(w);
+        if d >= left && d > 0.0 {
+            let t = left / d;
+            return (
+                w[0].0 + (w[1].0 - w[0].0) * t,
+                w[0].1 + (w[1].1 - w[0].1) * t,
+            );
+        }
+        left -= d;
+    }
+    pts[pts.len() / 2]
+}
+
 fn pair(v: &str, sep: char) -> Result<Vec<f32>, String> {
     v.split(sep)
         .map(|s| {
@@ -459,7 +477,7 @@ fn graph_shot(
                 .position(|&e| e == (a, b) || e == (b, a))
                 .ok_or("no such edge")?;
             let e = l.edges[k].as_ref().ok_or("that edge isn't drawn")?;
-            st.pointer = Some(e.pts[e.pts.len() / 2]);
+            st.pointer = Some(halfway(&e.pts));
             st.hover = Some(Target::Edge(k as u32));
         }
         if let Some((x, y)) = ask.hover {

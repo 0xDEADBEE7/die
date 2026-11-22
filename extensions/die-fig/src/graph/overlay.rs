@@ -637,6 +637,24 @@ fn edge_middle(layout: &GraphLayout, k: usize) -> (f32, f32) {
     let Some(e) = layout.edges.get(k).and_then(Option::as_ref) else {
         return (layout.size.0 / 2.0, layout.size.1 / 2.0);
     };
+    // Halfway along it by length (a straight edge has only its two ends).
+    let len: f32 = e
+        .pts
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum();
+    let mut left = len / 2.0;
+    for w in e.pts.windows(2) {
+        let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        if d >= left && d > 0.0 {
+            let t = left / d;
+            return (
+                w[0].0 + (w[1].0 - w[0].0) * t,
+                w[0].1 + (w[1].1 - w[0].1) * t,
+            );
+        }
+        left -= d;
+    }
     e.pts[e.pts.len() / 2]
 }
 
