@@ -972,7 +972,11 @@ fn cover(
     role: Role,
     m: &mut dyn Measure,
 ) {
-    let clear = Rect::new(r.x - 6.0, r.y - 4.0, r.w + 12.0, r.h + 8.0);
+    // Up the y axis the labels can be a band apart (a heatmap's rows): the chip hides only
+    // those it overlaps, not a neighbour whose box (its ascent has the font's leading) only
+    // grazes it.
+    let dy = if role == Role::YTick { -1.5 } else { 4.0 };
+    let clear = Rect::new(r.x - 6.0, r.y - dy, r.w + 12.0, r.h + 2.0 * dy);
     for label in l.labels.iter().filter(|lb| lb.role == role) {
         let b = label.bounds(m).inflate(1.0);
         if b.intersect(&clear).is_some() {

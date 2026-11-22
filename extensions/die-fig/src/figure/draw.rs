@@ -19,7 +19,8 @@
 //! them a track (the grid colour, 8 px, 4 px radius) filled to the share in slot 1 or that
 //! status's colour, a 1 px tick at each threshold. A sparkline: its label at the left, its
 //! newest value at the right and the line between, a faint wash (slot 1 at 12 %) under it; in
-//! a tile taller than 120 px the label and value go on top and the line fills the rest.
+//! a tile 84 px tall or more (a tile row's) the label and value go on top and the line fills
+//! the rest.
 //!
 //! The overlay: over the trend, a mini crosshair at the nearest point with its dot and a card
 //! of its value and time; elsewhere on the tile, a card with the value in full and its unit,
@@ -83,8 +84,9 @@ const STATUS_GAP: f32 = 10.0;
 const TICK_OUT: f32 = 3.0;
 /// A sparkline's wash under its line.
 pub const WASH: f32 = 0.12;
-/// A sparkline taller than this puts its label and value on top.
-const BLOCK_H: f32 = 120.0;
+/// A sparkline this tall or more (a tile row's 100 px) puts its label and value on top and
+/// the line under them across the tile; a shorter one is a row: label, line, value.
+const BLOCK_H: f32 = 84.0;
 
 /// What the pointer is over on a tile.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -398,10 +400,10 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
         0.0
     };
     let lw = m.width(&model.label, lspec);
-    // What the right side keeps, widest first, with room for the label's start: `of max` goes
-    // first, then the status's word; its icon stays while the fill wears its colour, so the
-    // status never rests on colour alone (the label is cut instead).
-    let label_min = lw.min(48.0);
+    // What the right side keeps, widest first, with room for the label (whole up to 96 px):
+    // `of max` goes first, then the status's word; its icon stays while the fill wears its
+    // colour, so the status never rests on colour alone (the label is cut instead).
+    let label_min = lw.min(96.0);
     let fits = |w: f32| label_min + 16.0 + w <= inner;
     let (show_of, show_word) = if fits(icon_w + ww + sw + ow) {
         (true, status.is_some())

@@ -43,6 +43,7 @@
 //! card is left under the row when something's hovered.
 //!
 //! A heatmap takes `--cursor-cell R,C` (the keyboard's cursor on a cell) and `--hover X,Y`.
+//! `--brushed` releases the `--brush`: the figure is drawn zoomed to it, without the brush.
 //!
 //! `--detail` opens the detail panel for what the cursor is on (else the hover), beside the
 //! figure as the surface lays it out (`detail::split`): the chart in what's left, the panel at
@@ -59,7 +60,7 @@ use die_fig::data::ReadOptions;
 use die_fig::detail::{self, Item, PanelState};
 use die_fig::graph::{self, GraphLayout, GraphModel, Target};
 use die_fig::interact::{BrushKind, Cursor, Toggles, View};
-use die_fig::plot::{self, ChartModel, ErrorView, OverlayState};
+use die_fig::plot::{self, ChartLayout, ChartModel, ErrorView, OverlayState};
 use die_fig::raster::{self, BookMeasure};
 use die_fig::scene::Scene;
 use die_fig::source::{self, Built, Failed, Job, Text};
@@ -114,6 +115,8 @@ struct Ask {
     no_frame: bool,
     /// A heatmap's cursor on a cell.
     cursor_cell: Option<(u32, u32)>,
+    /// The brush released: its zoom drawn, not the brush.
+    brushed: bool,
 }
 
 /// What the detail flags ask for.
@@ -162,7 +165,7 @@ fn run() -> Result<(), String> {
                  [--hover-edge A,B] [--pin ID@X,Y] [--zoom F] [--layout L] [--labels off] [--ghost] \
                  [--detail] [--detail-series] [--detail-row N] [--detail-top N] [--detail-focus] \
                  [--detail-unfold] [--search Q] [--also FILE] [--range D] [--trend N] \
-                 [--linked N] [--no-frame] [--cursor-cell R,C]";
+                 [--linked N] [--no-frame] [--cursor-cell R,C] [--brushed]";
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage.to_owned());
     };
@@ -196,6 +199,7 @@ fn run() -> Result<(), String> {
         trend: None,
         no_frame: false,
         cursor_cell: None,
+        brushed: false,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
@@ -278,6 +282,7 @@ fn run() -> Result<(), String> {
             "--trend" => ask.trend = Some((pair(&value()?, ',')?[0] as usize, true)),
             "--linked" => ask.trend = Some((pair(&value()?, ',')?[0] as usize, false)),
             "--no-frame" => ask.no_frame = true,
+            "--brushed" => ask.brushed = true,
             "--cursor-cell" => {
                 let v = pair(&value()?, ',')?;
                 if v.len() != 2 {
@@ -402,6 +407,20 @@ fn run() -> Result<(), String> {
         .as_deref()
         .and_then(|r| r.parse::<usize>().ok())
         .and_then(cursor_at);
+    if ask.brushed
+        && let Some(b) = ask.brush.take()
+    {
+        let mut m = BookMeasure {
+            book: &mut book,
+            scale: ask.scale,
+        };
+        let (_, layout, _) = plot::base(&model, &view, ask.size, ask.scale, &theme, &mut m);
+        let (kind, from, to) = brush_of(&model, &layout, &b);
+        if let Some(v) = plot::brush(&model, &layout, &view, kind, from, to) {
+            println!("brushed to x {:?}, y {:?}", v.x, v.y);
+            view = v;
+        }
+    }
     let badge = |scene: &mut Scene, scale: f32, book: &mut Book| {
         if let Some(e) = &stale {
             let mut m = BookMeasure { book, scale };
@@ -816,21 +835,7 @@ fn draw(
     let emphasis = ask
         .hover
         .and_then(|(x, y)| plot::nearest_series(model, &layout, &hits, view, x, y));
-    let brush = ask.brush.as_ref().map(|b| {
-        let p = layout.plot;
-        let kind = plot::brush_kind(model);
-        let (y0, y1) = match b.as_slice() {
-            [_, _, y0, y1, ..] => (*y0, *y1),
-            _ => (p.y + p.h * 0.25, p.y + p.h * 0.75),
-        };
-        let x1 = b.get(1).copied().unwrap_or(b[0]);
-        let kind = if b.len() >= 4 && kind == BrushKind::X {
-            BrushKind::Box
-        } else {
-            kind
-        };
-        (kind, (b[0], y0), (x1, y1))
-    });
+    let brush = ask.brush.as_ref().map(|b| brush_of(model, &layout, b));
     let st = OverlayState {
         hover: hover.clone(),
         cursor: ask
@@ -863,6 +868,27 @@ fn draw(
     }
     scene.items.extend(over.items);
     Ok(scene)
+}
+
+/// The brush `--brush` asks for: its kind (a box when it gives y too) and its corners.
+fn brush_of(
+    model: &ChartModel,
+    layout: &ChartLayout,
+    b: &[f32],
+) -> (BrushKind, (f32, f32), (f32, f32)) {
+    let p = layout.plot;
+    let kind = plot::brush_kind(model);
+    let (y0, y1) = match b {
+        [_, _, y0, y1, ..] => (*y0, *y1),
+        _ => (p.y + p.h * 0.25, p.y + p.h * 0.75),
+    };
+    let x1 = b.get(1).copied().unwrap_or(b[0]);
+    let kind = if b.len() >= 4 && kind == BrushKind::X {
+        BrushKind::Box
+    } else {
+        kind
+    };
+    (kind, (b[0], y0), (x1, y1))
 }
 
 /// A tile: its figure and table, read as `\v` reads a spec (its data from its directory).
@@ -943,7 +969,7 @@ fn tile_shot(
     let gap = 12.0;
     let n = models.len() as f32;
     let hovering = ask.hover.is_some() || ask.trend.is_some_and(|t| t.1);
-    let room = if hovering { 150.0 } else { 0.0 };
+    let room = if hovering { 210.0 } else { 0.0 };
     let size = (
         2.0 * margin + n * w + (n - 1.0) * gap,
         2.0 * margin + h + room,
