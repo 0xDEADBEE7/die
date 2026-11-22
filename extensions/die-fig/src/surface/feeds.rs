@@ -13,7 +13,7 @@ use super::{FigState, Pane};
 use crate::dashboard::{LiveStatus, NeedsTrust, SourceState, Want};
 use crate::data::Table;
 use crate::error::FigError;
-use crate::live::{Answer, Event, Live, LiveKey, LiveSpec, PathFrom, Rerun, Status, not_run};
+use crate::live::{Answer, Event, Live, LiveKey, LiveSpec, Rerun, Status, not_run};
 use crate::source::{Failed, Source};
 use die_core::{Ctx, PromptSpec};
 use std::path::{Path, PathBuf};
@@ -184,10 +184,8 @@ impl FigState {
             self.not_run(ctx, &w);
         }
         let now = ctx.now();
-        let zone = self.zone.clone();
-        let live = self
-            .live
-            .get_or_insert_with(|| Live::new(zone, PathFrom::Login));
+        let (zone, path) = (self.zone.clone(), self.path);
+        let live = self.live.get_or_insert_with(|| Live::new(zone, path));
         live.set(&yes, now);
         if let Some(ask) = ask
             && !self.asking

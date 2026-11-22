@@ -217,6 +217,32 @@ fn backslash_v_from_a_fig_files_figure_goes_to_the_files_text_not_where_it_came_
 }
 
 #[test]
+fn a_tests_commands_take_its_own_path_and_never_a_login_shells() {
+    // The owner's rule: a test starts no shell under the real HOME, and a figure's commands
+    // (`:fig !cmd`, a spec's run and stream) would ask `$SHELL -l` for a PATH. `with_zone`
+    // is the tests' Fig.
+    let mut h = harness();
+    h.open_text("notes", "notes\n").unwrap();
+    let args = Args {
+        text: Some("!printf 'x,y\\n1,2\\n2,4\\n'".into()),
+        ..Args::default()
+    };
+    h.run("fig", &args).unwrap();
+    h.run_until_idle();
+    let w = h.focused().unwrap();
+    let buf = h.window_buffer(w).unwrap();
+    let mut s = Setup {
+        h,
+        src: buf,
+        buf,
+        win: w,
+    };
+    let st = state(&mut s);
+    assert_eq!(st.borrow().path, die_fig::live::PathFrom::Inherited);
+    assert!(st.borrow().model.is_some(), "{:?}", st.borrow().error);
+}
+
+#[test]
 fn fig_bang_charts_what_a_command_prints() {
     let mut h = harness();
     h.open_text("notes", "notes\n").unwrap();

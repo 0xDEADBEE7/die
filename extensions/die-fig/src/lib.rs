@@ -155,6 +155,9 @@ pub struct Fig {
     /// Your yeses to a spec's commands and outside files (ruling 13), shared by every figure,
     /// kept by the session.
     trust: Rc<RefCell<live::Trust>>,
+    /// Whether a figure's commands take DIE's own PATH rather than your login shell's: set by
+    /// [`Fig::with_zone`], so a test never starts your login shell under your HOME.
+    inherit_path: bool,
 }
 
 impl Fig {
@@ -168,10 +171,12 @@ impl Fig {
     }
 
     /// The extension with the default options, times in `zone` rather than the system's: for
-    /// tests, which use a fixed zone (ruling 2).
+    /// tests, which use a fixed zone (ruling 2). A figure's commands take the test's own PATH
+    /// ([`live::PathFrom::Inherited`]), so no login shell is started to find one.
     pub fn with_zone(zone: TimeZone) -> Fig {
         Fig {
             zone: OnceCell::from(zone),
+            inherit_path: true,
             ..Fig::default()
         }
     }
@@ -248,6 +253,9 @@ impl Fig {
             (st.buf, st.from, st.file, st.behind) = (Some(buf), from, file, true);
             st.kill = self.kill;
             st.trust = self.trust.clone();
+            if self.inherit_path {
+                st.path = live::PathFrom::Inherited;
+            }
             if st.dash_seed.is_none() {
                 st.dash_seed = dash_seed;
             }

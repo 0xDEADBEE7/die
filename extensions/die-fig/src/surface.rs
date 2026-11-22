@@ -924,6 +924,9 @@ pub struct FigState {
     pub dash: Option<dash::DashState>,
     /// The figure's commands, run and streamed while a window shows it.
     pub live: Option<crate::live::Live>,
+    /// Where its commands' PATH comes from (these and `:fig !cmd`'s): your login shell's, but a
+    /// test's own.
+    pub path: crate::live::PathFrom,
     live_timer: Option<Sub>,
     /// Your yeses (ruling 13), shared by every figure and kept by the session.
     pub trust: Rc<RefCell<crate::live::Trust>>,
@@ -1007,6 +1010,7 @@ impl FigState {
                 auto_pick: None,
                 dash: None,
                 live: None,
+                path: crate::live::PathFrom::Login,
                 live_timer: None,
                 trust: Rc::new(RefCell::new(crate::live::Trust::new())),
                 trust_rev: 0,
@@ -1232,14 +1236,23 @@ impl FigState {
         let Source::Command { cmd, dir, .. } = &self.source else {
             return;
         };
-        let (cmd, dir) = (cmd.clone(), dir.clone());
+        let (cmd, dir, path) = (cmd.clone(), dir.clone(), self.path);
         let me = self.me.clone();
         self.builds += 1;
         self.building = Some(ctx.spawn(
             move || -> std::result::Result<String, FigError> {
-                let mut c = die_core::process::shell(&cmd, &dir);
-                c.env("PATH", die_core::process::path())
-                    .stdin(std::process::Stdio::null());
+                // Your shell with your login PATH; a test's /bin/sh with its own, so no
+                // startup file under your HOME is read.
+                let mut c = if path == crate::live::PathFrom::Login {
+                    let mut c = die_core::process::shell(&cmd, &dir);
+                    c.env("PATH", die_core::process::path());
+                    c
+                } else {
+                    let mut c = std::process::Command::new("/bin/sh");
+                    c.arg("-c").arg(&cmd).current_dir(&dir);
+                    c
+                };
+                c.stdin(std::process::Stdio::null());
                 let ran = format!("ran `{cmd}` in {}", dir.display());
                 let unreadable = |msg: String| FigError::new(msg).with_kind(ErrorKind::Unreadable);
                 let out = c
