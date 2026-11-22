@@ -1,0 +1,20 @@
+{
+  "type": "dashboard",
+  "title": "One bad panel",
+  "data": { "req": "requests.csv" },
+  "time": { "field": "time", "range": "6h" },
+  "rows": [
+    [
+      { "type": "stat", "label": "Requests", "data": "req", "value": { "sum": "total" }, "trend": "time" },
+      { "type": "stat", "label": "Deploys", "data": "deploys-missing.csv", "value": "count" },
+      { "type": "stat", "label": "Batch", "data": "req", "value": { "mean": "batch" }, "trend": "time" }
+    ],
+    [
+      { "type": "line", "title": "Requests per minute", "data": "req",
+        "transform": [{ "fold": ["api", "worker"], "as": ["service", "rpm"] }],
+        "x": "time", "y": { "field": "rpm", "title": "" }, "color": "service" },
+      { "type": "line", "title": "Batch jobs", "data": "req", "x": "time", "y": { "field": "batch", "title": "" } },
+      { "type": "line", "title": "Throughput", "data": "req", "x": "time", "y": "rpm" }
+    ]
+  ]
+}

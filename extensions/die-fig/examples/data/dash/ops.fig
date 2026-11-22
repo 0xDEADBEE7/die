@@ -1,0 +1,45 @@
+{
+  "type": "dashboard",
+  "title": "Operations",
+  "data": { "hosts": "hosts.csv" },
+  "time": { "field": "time" },
+  "rows": [
+    [
+      { "type": "meter", "label": "CPU · web-1", "data": "hosts", "value": { "mean": "web-1" },
+        "max": 100, "format": ".0f" },
+      { "type": "meter", "label": "Memory", "data": { "values": [{ "used": 7.2 }] },
+        "value": { "max": "used" }, "max": 10 },
+      { "type": "meter", "label": "Disk", "data": { "values": [{ "used": 412 }] },
+        "value": { "max": "used" }, "max": 500 }
+    ],
+    { "height": 1.6, "panels": [
+      { "type": "graph", "title": "Services", "subtitle": "who calls whom",
+        "directed": true,
+        "nodes": [
+          { "id": "web", "group": "edge" }, { "id": "cdn", "group": "edge" },
+          { "id": "api", "group": "platform" }, { "id": "auth", "group": "platform" },
+          { "id": "worker", "group": "platform" }, { "id": "search", "group": "platform" },
+          { "id": "db", "group": "data" }, { "id": "cache", "group": "data" },
+          { "id": "queue", "group": "data" }
+        ],
+        "edges": [
+          { "from": "cdn", "to": "web" }, { "from": "web", "to": "api" },
+          { "from": "api", "to": "auth" }, { "from": "api", "to": "search" },
+          { "from": "api", "to": "db" }, { "from": "api", "to": "cache" },
+          { "from": "api", "to": "queue" }, { "from": "queue", "to": "worker" },
+          { "from": "worker", "to": "db" }, { "from": "search", "to": "cache" },
+          { "from": "auth", "to": "db" }
+        ] },
+      { "type": "heatmap", "title": "Requests by hour", "subtitle": "a week, per weekday",
+        "data": "load.csv", "x": { "field": "hour", "type": "category" }, "y": "day",
+        "color": "requests" },
+      { "column": [
+        { "type": "line", "title": "CPU by host", "data": "hosts",
+          "transform": [{ "fold": ["web-1", "web-2", "db-1"], "as": ["host", "cpu"] }],
+          "x": "time", "y": { "field": "cpu", "title": "" }, "color": "host" },
+        { "type": "area", "title": "Queue depth", "data": "hosts", "x": "time",
+          "y": { "field": "queue", "title": "" } }
+      ] }
+    ] }
+  ]
+}

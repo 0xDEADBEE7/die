@@ -324,6 +324,22 @@ impl ChartLayout {
     }
 }
 
+/// Paddings a caller gives in place of the area's own: a dashboard's panel, whose frame and
+/// title are its own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Insets {
+    /// Across, each side.
+    pub x: f32,
+    /// At the top: where the legend, or the plot, starts.
+    pub top: f32,
+    /// At the bottom.
+    pub bottom: f32,
+    /// Whether end labels show where the chart's own rule would put them (`labels` auto);
+    /// false keeps them to a spec that asks (`"labels": "ends"`), as a panel's legend says the
+    /// same in less room.
+    pub ends: bool,
+}
+
 /// The area's paddings: across, at the top and at the bottom.
 pub(crate) fn paddings(w: f32, h: f32) -> (f32, f32, f32) {
     (
@@ -435,6 +451,7 @@ pub(crate) fn lay_out(
     view: &View,
     size: (f32, f32),
     pad_w: f32,
+    insets: Option<Insets>,
     scale: f32,
     m: &mut dyn Measure,
 ) -> ChartLayout {
@@ -487,7 +504,9 @@ pub(crate) fn lay_out(
     let domain = model.fit(view);
     let mut last = None;
     for (n, keep) in levels.into_iter().enumerate() {
-        let l = attempt(model, view, size, pad_w, scale, keep, &stacks, domain, m);
+        let l = attempt(
+            model, view, size, pad_w, insets, scale, keep, &stacks, domain, m,
+        );
         let (w, h) = size;
         // The first four levels hold out for a good share of the area; past them, only for a
         // plot that can be read at all.
@@ -509,6 +528,7 @@ fn attempt(
     view: &View,
     size: (f32, f32),
     pad_w: f32,
+    insets: Option<Insets>,
     scale: f32,
     keep: Keep,
     stacks: &Stacks,
@@ -516,11 +536,17 @@ fn attempt(
     m: &mut dyn Measure,
 ) -> ChartLayout {
     let (w, h) = size;
-    let (_, pad_top, pad_bottom) = paddings(w, h);
-    let pad = paddings(pad_w.max(w), h)
-        .0
-        .min(w * 0.06)
-        .max(paddings(w, h).0);
+    let (pad, pad_top, pad_bottom) = match insets {
+        Some(i) => (i.x, i.top, i.bottom),
+        None => {
+            let (_, top, bottom) = paddings(w, h);
+            let pad = paddings(pad_w.max(w), h)
+                .0
+                .min(w * 0.06)
+                .max(paddings(w, h).0);
+            (pad, top, bottom)
+        }
+    };
     let title_spec = TextSpec::new(TITLE).weight(Weight::Semibold);
     let body = TextSpec::new(BODY);
     let tick = TextSpec::new(TICK).tabular();
@@ -932,7 +958,9 @@ fn attempt(
         && match labels_rule {
             crate::spec::Labels::None => false,
             crate::spec::Labels::Ends => true,
-            crate::spec::Labels::Auto => lines.len() <= 4 && legend_keys(model).len() >= 2,
+            crate::spec::Labels::Auto => {
+                insets.is_none_or(|i| i.ends) && lines.len() <= 4 && legend_keys(model).len() >= 2
+            }
         };
     let mut right = w
         - pad
