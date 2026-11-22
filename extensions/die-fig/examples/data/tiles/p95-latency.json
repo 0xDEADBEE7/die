@@ -1,0 +1,12 @@
+{
+  "type": "stat",
+  "label": "p95 latency",
+  "data": "service.csv",
+  "value": {
+    "p95": "latency_ms"
+  },
+  "unit": "ms",
+  "delta": "previous",
+  "trend": "time",
+  "good": "down"
+}

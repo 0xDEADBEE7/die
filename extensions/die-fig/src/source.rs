@@ -502,6 +502,7 @@ fn kind_plural(f: &Figure) -> &'static str {
         Figure::Chart(_) => "charts",
         Figure::Graph(_) => "graphs",
         Figure::Stat(_) | Figure::Meter(_) => "stat and meter tiles",
+        Figure::Sparkline(_) => "sparklines",
         Figure::Dashboard(_) => "dashboards",
     }
 }

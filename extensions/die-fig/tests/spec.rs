@@ -1148,7 +1148,7 @@ fn every_transform_reads_with_its_defaults() {
         ),
         (
             r#"{"type": "line", "data": "d", "transform": [{"aggregate": "sum"}]}"#,
-            "\"aggregate\" must be \"count\" or one of count, sum, mean, min, max, p50 and p95 over a field, as {\"sum\": \"rpm\"}",
+            "\"aggregate\" must be \"count\" or one of count, sum, mean, min, max, p50, p95 and last over a field, as {\"sum\": \"rpm\"}",
             "\"sum\"",
         ),
         (
@@ -1244,7 +1244,7 @@ fn every_error_has_its_place() {
     let cases: [(&str, &str, &str); 6] = [
         (
             r#"{"type": "pie", "data": "d"}"#,
-            "unknown figure type \"pie\": expected chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter or dashboard",
+            "unknown figure type \"pie\": expected chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter, sparkline or dashboard",
             "\"pie\"",
         ),
         (
@@ -1259,7 +1259,7 @@ fn every_error_has_its_place() {
         ),
         (
             r#"{"title": "no type", "x": 1}"#,
-            "a figure needs a \"type\": chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter or dashboard",
+            "a figure needs a \"type\": chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter, sparkline or dashboard",
             "{",
         ),
         // The reader's own errors keep their places.

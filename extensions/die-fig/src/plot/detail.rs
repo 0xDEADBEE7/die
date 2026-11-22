@@ -357,6 +357,40 @@ impl ChartModel {
         rows.extend(out);
     }
 
+    /// A sample's row's other fields as a card lists them: each top-level field and its value
+    /// (a nested object summed up), in the row's order, leaving out those the chart draws the
+    /// sample by. Each with whether its value is quiet ("no data").
+    pub(crate) fn other_fields(&self, s: &SeriesInfo, i: usize) -> Vec<(String, String, bool)> {
+        let mut rows = Vec::new();
+        self.data_rows(s, i, &mut rows);
+        // A JSON row's numbers as the card writes values: "4,828", not as the JSON has them.
+        let raw = self
+            .drawn
+            .get(usize::from(s.layer))
+            .and_then(|t| t.raw.as_ref())
+            .zip(s.rows.get(i))
+            .and_then(|(raw, &r)| raw.get(r as usize));
+        rows.into_iter()
+            .filter(|r| {
+                r.depth == 0
+                    && matches!(
+                        r.kind,
+                        crate::detail::RowKind::Field | crate::detail::RowKind::Branch
+                    )
+            })
+            .map(|r| {
+                let number = raw.and_then(|n| n.get(&r.key)).and_then(|n| match n.kind {
+                    crate::json::Kind::Num(v) => Some(v),
+                    _ => None,
+                });
+                match number {
+                    Some(v) => (r.key, format_value(v), r.quiet),
+                    None => (r.key, r.value, r.quiet),
+                }
+            })
+            .collect()
+    }
+
     /// A series' tree.
     pub fn series_detail(&self, key: &SeriesKey) -> Option<DetailTree> {
         let si = self.index_of(key)?;

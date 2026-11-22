@@ -1,0 +1,7 @@
+{
+  "type": "sparkline",
+  "label": "Requests per minute",
+  "data": "service.csv",
+  "x": "time",
+  "y": "rpm"
+}

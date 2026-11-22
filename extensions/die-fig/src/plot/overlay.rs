@@ -391,50 +391,64 @@ fn moment(
             }
         }
         Cursor::Cell { row, col } => {
-            let Some(si) = model.series.iter().position(|s| s.mark == MarkKind::Rect) else {
+            let Some((si, i)) = model.cell_at(*row, *col) else {
                 return;
             };
             let s = &model.series[si];
-            let Some(i) =
-                (0..s.xs.len()).find(|&i| s.xs[i] as u32 == *col && s.ys[i] as u32 == *row)
-            else {
-                return;
-            };
             let Some(r) = marks::cell_rect(l, s, i) else {
                 return;
             };
-            scene.push(Item::Path {
-                path: PathData::rounded(r.inflate(1.0), [3.0; 4]),
-                fill: None,
-                stroke: Some(Stroke::solid(1.5, theme.strong, 0.85)),
-            });
-            let x = model
-                .x
-                .bands
-                .get(*col as usize)
-                .map_or(String::new(), |b| b.to_string());
-            let y = model
-                .y
-                .bands
-                .get(*row as usize)
-                .map_or(String::new(), |b| b.to_string());
+            cell_ring(scene, r, theme);
+            let (xb, yb) = cell_names(model, *row, *col);
+            if keyboard {
+                chip_x(l, theme, scene, r.x + r.w / 2.0, &xb, true, m);
+                chip_y(l, theme, scene, r.y + r.h / 2.0, &yb, true, m);
+            } else {
+                bright_tick(l, theme, scene, f64::from(*col) + 0.5);
+                bright_y_tick(l, theme, scene, r.y + r.h / 2.0, m);
+            }
+            // The value first, keyed by its cell's colour, then the row's other fields.
             let v = s.sizes.as_ref().map_or(f64::NAN, |v| v[i]);
-            let rows = vec![Row {
+            let color = super::ramp::scale_of(model)
+                .and_then(|sc| sc.color(v, theme))
+                .unwrap_or_default();
+            let name = Some(super::ramp::field_name(model))
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "value".into());
+            let mut rows = vec![Row {
                 key: s.key.clone(),
-                color: model.color(s, theme),
-                shape: KeyShape::Square,
-                name: s.name.clone(),
-                value: format_fixed(v, s.decimals),
+                color,
+                shape: if v.is_nan() {
+                    KeyShape::Dot
+                } else {
+                    KeyShape::Square
+                },
+                name,
+                value: cell_value(model, v, s.decimals),
                 raw: v,
                 base: f64::NAN,
                 decimals: s.decimals,
                 marked: false,
                 missing: v.is_nan(),
             }];
+            for (key, value, quiet) in model.other_fields(s, i) {
+                rows.push(Row {
+                    key: s.key.clone(),
+                    color: Color::default(),
+                    shape: KeyShape::Dot,
+                    name: key,
+                    value,
+                    raw: f64::NAN,
+                    base: f64::NAN,
+                    decimals: 0,
+                    marked: false,
+                    missing: quiet,
+                });
+            }
             let mut card = Card::new(
                 model,
                 l,
-                format!("{x} · {y}"),
+                cell_header(model, &xb, &yb),
                 rows,
                 None,
                 None,
@@ -443,11 +457,23 @@ fn moment(
                 m,
             );
             card.shown = card_shown;
+            // Where there's room it leaves its cell, the title, the colour legend and the axes'
+            // titles clear, covering other cells rather than what names them.
+            card.avoid = vec![r.inflate(2.0)];
+            if !l.title.is_empty() {
+                card.avoid.push(l.title);
+            }
+            if let Some(legend) = &l.ramp {
+                card.avoid.push(legend.bounds);
+            }
+            for t in l.labels.iter().filter(|t| t.role == Role::AxisTitle) {
+                card.avoid.push(t.bounds(m));
+            }
             card.place_point(
                 l,
                 scene,
                 (r.x + r.w / 2.0, r.y + r.h / 2.0),
-                r.w.max(r.h) / 2.0,
+                r.w.max(r.h) / 2.0 + 2.0,
                 theme,
                 m,
             );
@@ -664,7 +690,90 @@ fn marker(
                 chip_x(l, theme, scene, slot.x + slot.w / 2.0, &name, true, m);
             }
         }
+        Cursor::Cell { row, col } => {
+            let Some((si, i)) = model.cell_at(*row, *col) else {
+                return;
+            };
+            let Some(r) = marks::cell_rect(l, &model.series[si], i) else {
+                return;
+            };
+            cell_ring(scene, r, theme);
+            let (xb, yb) = cell_names(model, *row, *col);
+            chip_x(l, theme, scene, r.x + r.w / 2.0, &xb, true, m);
+            chip_y(l, theme, scene, r.y + r.h / 2.0, &yb, true, m);
+        }
         _ => {}
+    }
+}
+
+/// A heatmap cell lifted: a 2 px ring in the text colour round it, filling the surface gap to
+/// its neighbours, for the hover and the keyboard's cursor alike.
+fn cell_ring(scene: &mut Scene, r: Rect, theme: &Theme) {
+    scene.push(Item::Path {
+        path: PathData::rounded(r.inflate(1.0), [marks::CELL_RADIUS + 1.0; 4]),
+        fill: None,
+        stroke: Some(Stroke::solid(2.0, theme.text, 1.0)),
+    });
+}
+
+/// A heatmap cell's x and y categories.
+fn cell_names(model: &ChartModel, row: u32, col: u32) -> (String, String) {
+    let name = |bands: &[Box<str>], i: u32| {
+        bands
+            .get(i as usize)
+            .map_or(String::new(), |b| b.to_string())
+    };
+    (name(&model.x.bands, col), name(&model.y.bands, row))
+}
+
+/// A heatmap cell's card header: its x and y categories, a bare number with its axis's name
+/// ("Hour 10 · Thu"), as quiet as a chart's time.
+fn cell_header(model: &ChartModel, x: &str, y: &str) -> String {
+    let named = |axis: &super::AxisInfo, b: &str| -> String {
+        let name = axis.title.as_deref().or(axis.field.as_deref());
+        match name {
+            Some(n) if b.trim().parse::<f64>().is_ok() => format!("{n} {b}"),
+            _ => b.to_string(),
+        }
+    };
+    format!("{} \u{b7} {}", named(&model.x, x), named(&model.y, y))
+}
+
+/// A heatmap cell's value as its card writes it: the colour channel's format, else in full at
+/// the data's precision; "no data" for a missing one.
+fn cell_value(model: &ChartModel, v: f64, decimals: usize) -> String {
+    if v.is_nan() {
+        return NO_DATA.into();
+    }
+    let format = model
+        .series
+        .iter()
+        .find(|s| s.mark == MarkKind::Rect)
+        .and_then(|s| model.chart.layers.get(usize::from(s.layer)))
+        .and_then(|layer| layer.enc.color.as_ref())
+        .and_then(|c| c.format.clone());
+    match format {
+        Some(f) => format_with(v, &f, &model.zone),
+        None => format_fixed(v, decimals),
+    }
+}
+
+/// The y tick label level with `y` brightened: a hovered cell's row reads as the target.
+fn bright_y_tick(l: &ChartLayout, theme: &Theme, scene: &mut Scene, y: f32, m: &mut dyn Measure) {
+    let near = l
+        .labels
+        .iter()
+        .filter(|lb| lb.role == Role::YTick)
+        .map(|lb| (lb, (lb.y - m.cap(lb.spec) / 2.0 - y).abs()))
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((label, d)) = near
+        && d < 2.0
+    {
+        let mut item = label.item(theme);
+        if let Item::Text { color, .. } = &mut item {
+            *color = theme.strong;
+        }
+        scene.push(item);
     }
 }
 
@@ -875,7 +984,11 @@ fn cover(
     role: Role,
     m: &mut dyn Measure,
 ) {
-    let clear = Rect::new(r.x - 6.0, r.y - 4.0, r.w + 12.0, r.h + 8.0);
+    // Up the y axis the labels can be a band apart (a heatmap's rows): the chip hides only
+    // those it overlaps, not a neighbour whose box (its ascent has the font's leading) only
+    // grazes it.
+    let dy = if role == Role::YTick { -1.5 } else { 4.0 };
+    let clear = Rect::new(r.x - 6.0, r.y - dy, r.w + 12.0, r.h + 2.0 * dy);
     for label in l.labels.iter().filter(|lb| lb.role == role) {
         let b = label.bounds(m).inflate(1.0);
         if b.intersect(&clear).is_some() {
@@ -1161,6 +1274,7 @@ fn brush(
     let (mut x0, mut x1) = (cx(from.0).min(cx(to.0)), cx(from.0).max(cx(to.0)));
     let (mut y0, mut y1) = (cy(from.1).min(cy(to.1)), cy(from.1).max(cy(to.1)));
     let mut bands = None;
+    let mut cells = None;
     match kind {
         BrushKind::X => {
             y0 = p.y;
@@ -1187,7 +1301,16 @@ fn brush(
                 (y0, y1) = (p.y, p.bottom());
             }
         }
-        BrushKind::Box => {}
+        BrushKind::Box => {
+            // A heatmap's box snapped to the whole cells it takes, as the zoom will read them.
+            if let Some(((c0, c1), (r0, r1))) = super::nav::brush_cells(model, l, view, from, to) {
+                let (xa, xb) = (l.x.map(c0 as f64), l.x.map(c1 as f64));
+                let (ya, yb) = (l.y.map(r0 as f64), l.y.map(r1 as f64));
+                (x0, x1) = (xa.min(xb).max(p.x), xa.max(xb).min(p.right()));
+                (y0, y1) = (ya.min(yb).max(p.y), ya.max(yb).min(p.bottom()));
+                cells = Some(((c0, c1), (r0, r1)));
+            }
+        }
     }
     let r = Rect::new(x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0));
     scene.push(Item::Path {
@@ -1211,9 +1334,10 @@ fn brush(
         hair(scene, a, b, theme.text, 0.4);
     }
     // The readout: the span selected.
-    let text = match bands {
-        Some((i, j)) => bands_readout(model, i, j),
-        None => readout(model, view, l, kind, (x0, y0), (x1, y1)),
+    let text = match (bands, cells) {
+        (Some((i, j)), _) => bands_readout(model, i, j),
+        (None, Some((cols, rows))) => cells_readout(model, cols, rows),
+        (None, None) => readout(model, view, l, kind, (x0, y0), (x1, y1)),
     };
     if !text.is_empty() {
         readout_chip(l, theme, scene, (x0 + x1) / 2.0, y0, &text, m);
@@ -1260,6 +1384,24 @@ fn bands_readout(model: &ChartModel, i: usize, j: usize) -> String {
     } else {
         format!("{} – {} · {n} bands", name(i), name(j - 1))
     }
+}
+
+/// The cells a heatmap's brush takes, written: "09 – 16 · Mon – Fri", a single category by its
+/// name.
+fn cells_readout(model: &ChartModel, cols: (usize, usize), rows: (usize, usize)) -> String {
+    let span = |bands: &[Box<str>], (i, j): (usize, usize)| -> String {
+        let name = |k: usize| bands.get(k).map_or(String::new(), |b| b.to_string());
+        if j <= i + 1 {
+            name(i)
+        } else {
+            format!("{} \u{2013} {}", name(i), name(j - 1))
+        }
+    };
+    format!(
+        "{} \u{b7} {}",
+        span(&model.x.bands, cols),
+        span(&model.y.bands, rows)
+    )
 }
 
 /// A time rounded to the data's step in the zone's own clock and calendar: to the day at a

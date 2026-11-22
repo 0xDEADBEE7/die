@@ -8,6 +8,7 @@
 //! - [`overlay`]: the crosshair, dots, card, chips, brush, reference and the emphasis wash;
 //! - [`nav`]: the cursor's motions and the view's zoom, pan, brush and reset, within limits;
 //! - [`hover`]: what the pointer is on;
+//! - [`ramp`]: a heatmap's colour scale, sequential or diverging, and its legend;
 //! - [`detail`]: the detail panel's trees for a point, a series, a band and a cell, and the
 //!   names a search looks through.
 //!
@@ -23,6 +24,7 @@ pub mod layout;
 pub mod marks;
 pub mod nav;
 pub mod overlay;
+pub mod ramp;
 
 pub use errors::{ErrorView, LogLayout, error_figure, log_layout, log_page, stale_badge};
 pub use hover::{hover, nearest_series};

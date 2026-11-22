@@ -2,10 +2,13 @@
 //! tiles that show one number.
 //!
 //! - a stat: `label`, `data`, `value` (`"count"` or `{"sum": "rpm"}`, as an aggregate
-//!   transform's), `delta` (`"previous"` or a number), `trend` (the field a sparkline runs
-//!   along), `format` and `good` (`up`, the default, `down` or `neither`). Without a label it
-//!   is the value's field, or "count";
-//! - a meter: `label`, `data`, `value`, `max` (above 0) and `format`;
+//!   transform's, or `{"last": "rpm"}`, the newest by `trend`'s field), `delta` (`"previous"`
+//!   or a number), `trend` (the field a sparkline runs along: a time or a number), `format`,
+//!   `unit` (`"ms"`, `"%"`) and `good` (`up`, the default, `down` or `neither`). Without a
+//!   label it is the value's field, or "count";
+//! - a meter: `label`, `data`, `value`, `max` (above 0), `format`, `unit` and `thresholds`, a
+//!   list of `{"at": 0.8, "status": "warning"}`, `at` a fraction of `max` from 0 to 1 and
+//!   `status` one of `good`, `warning`, `serious` and `critical`;
 //! - a dashboard: `title`, `data` (names, each a data spec, in the spec's order), `time`
 //!   (`field`, and `range` as `"6h"`) and `rows`, each a list of panels: a figure (any but a
 //!   dashboard) with a `span` (columns, 1 by default), or `{"file": "x.fig.json", "span": …}`,
@@ -15,17 +18,27 @@
 use super::chart::{self, parse_duration};
 use super::{
     Aggregate, Cx, DashboardSpec, Delta, Figure, GoodWhen, MeterSpec, Panel, PanelSpec, StatSpec,
-    TimeSpec, arr, field, figure, number, obj, opt_string, string, whole, wrong,
+    Threshold, TimeSpec, arr, field, figure, number, obj, opt_string, string, whole, wrong,
 };
 use crate::error::{FigError, Result};
 use crate::json::{Kind, Node};
+use crate::style::Status;
 
 /// A stat's keys.
 pub const STAT: &[&str] = &[
-    "type", "label", "data", "value", "delta", "trend", "format", "good",
+    "type", "label", "data", "value", "delta", "trend", "format", "unit", "good",
 ];
 /// A meter's keys.
-pub const METER: &[&str] = &["type", "label", "data", "value", "max", "format"];
+pub const METER: &[&str] = &[
+    "type",
+    "label",
+    "data",
+    "value",
+    "max",
+    "format",
+    "unit",
+    "thresholds",
+];
 /// A dashboard's keys.
 pub const DASHBOARD: &[&str] = &["type", "title", "data", "time", "rows"];
 
@@ -64,6 +77,7 @@ pub(crate) fn stat(node: &Node, cx: &mut Cx<'_>) -> Result<StatSpec> {
         delta,
         trend: opt_string(node, "trend")?,
         format: opt_string(node, "format")?,
+        unit: opt_string(node, "unit")?,
         good,
     })
 }
@@ -81,13 +95,59 @@ pub(crate) fn meter(node: &Node, cx: &mut Cx<'_>) -> Result<MeterSpec> {
             _ => return Err(FigError::at("\"max\" must be a number above 0", m.at)),
         },
     };
+    let thresholds = match field(node, "thresholds") {
+        None => Vec::new(),
+        Some(t) => thresholds(t, cx)?,
+    };
     Ok(MeterSpec {
         label: label_of(node, &value)?,
         data,
         value,
         max,
         format: opt_string(node, "format")?,
+        unit: opt_string(node, "unit")?,
+        thresholds,
     })
+}
+
+/// A meter's thresholds, lowest first.
+fn thresholds(t: &Node, cx: &mut Cx<'_>) -> Result<Vec<Threshold>> {
+    let mut out = Vec::new();
+    for th in arr(t, "thresholds")? {
+        let o = obj(th, "a threshold")?;
+        cx.check(o, &["at", "status"]);
+        let Some(at) = field(th, "at") else {
+            return Err(FigError::at(
+                "a threshold needs an \"at\", a fraction of the max",
+                th.at,
+            ));
+        };
+        let v = number(at, "at")?;
+        if !(0.0..=1.0).contains(&v) {
+            return Err(FigError::at(
+                "\"at\" is a fraction of the max, from 0 to 1",
+                at.at,
+            ));
+        }
+        let Some(st) = field(th, "status") else {
+            return Err(FigError::at("a threshold needs a \"status\"", th.at));
+        };
+        let status = match st.as_str() {
+            Some("good") => Status::Good,
+            Some("warning") => Status::Warning,
+            Some("serious") => Status::Serious,
+            Some("critical") => Status::Critical,
+            _ => {
+                return Err(FigError::at(
+                    "\"status\" must be \"good\", \"warning\", \"serious\" or \"critical\"",
+                    st.at,
+                ));
+            }
+        };
+        out.push(Threshold { at: v, status });
+    }
+    out.sort_by(|a, b| a.at.total_cmp(&b.at));
+    Ok(out)
 }
 
 /// A tile's `value`.

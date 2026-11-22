@@ -1,0 +1,12 @@
+{
+  "type": "stat",
+  "label": "Error rate",
+  "data": "service.csv",
+  "value": {
+    "mean": "error_pct"
+  },
+  "unit": "%",
+  "delta": "previous",
+  "trend": "time",
+  "good": "down"
+}

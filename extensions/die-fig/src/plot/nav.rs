@@ -574,6 +574,10 @@ fn fit_of(model: &ChartModel, view: &View) -> ((f64, f64), (f64, f64)) {
 fn min_span_x(model: &ChartModel, layout: &ChartLayout, view: &View) -> f64 {
     let ext = fwd2(model.x.kind, model.extent().0);
     let whole = (ext.1 - ext.0).abs();
+    if model.is_heatmap() && model.x.kind == AxisKind::Band {
+        // A heatmap's cells grow as far as one fills the plot.
+        return 1.0;
+    }
     if model.is_band() || model.x.kind == AxisKind::Band {
         let n = model.x.bands.len().max(1) as f64;
         let full = f64::from(layout.lengths().0 / FULL_BAND);
@@ -598,6 +602,9 @@ fn min_span_x(model: &ChartModel, layout: &ChartLayout, view: &View) -> f64 {
 
 /// The narrowest y may get.
 fn min_span_y(model: &ChartModel, view: &View) -> f64 {
+    if model.is_heatmap() && model.y.kind == AxisKind::Band {
+        return 1.0;
+    }
     let fit = fwd2(model.y.kind, fit_of(model, view).1);
     let span = (fit.1 - fit.0).abs();
     if two_d(model) {
@@ -830,6 +837,13 @@ pub fn brush(
         return None;
     }
     let mut v = view.clone();
+    if heat_cells(model) {
+        // A heatmap's box takes the whole cells it touches, on both axes.
+        let ((c0, c1), (r0, r1)) = brush_cells(model, layout, view, from, to)?;
+        set_x(model, view, &mut v, (c0 as f64, c1 as f64));
+        set_y(model, view, &mut v, (r0 as f64, r1 as f64));
+        return (v != *view).then_some(v);
+    }
     if along_x {
         let (d0, d1) = (layout.data_x(a.0, a.1), layout.data_x(b.0, b.1));
         let (lo, hi) = (d0.min(d1), d0.max(d1));
@@ -903,6 +917,69 @@ pub fn brush_bands(
     let i = ((lo + 1e-6).floor().max(0.0) as usize).min(n - 1);
     let j = ((hi - 1e-6).ceil().max(0.0) as usize).clamp(i + 1, n);
     Some((i, j))
+}
+
+/// Whether a chart is a heatmap over two band axes, whose brush snaps to its cells.
+fn heat_cells(model: &ChartModel) -> bool {
+    model.is_heatmap() && model.x.kind == AxisKind::Band && model.y.kind == AxisKind::Band
+}
+
+/// The cells a box brush from `from` to `to` takes on a heatmap: columns `[c0, c1)` and rows
+/// `[r0, r1)`, every cell it touches, read from its corners clamped to the plot (so the
+/// preview and the zoom agree). Along an axis the brush is shorter than BRUSH_MIN, the cells
+/// that show stay. None on another chart, for a brush shorter than BRUSH_MIN both ways, or for
+/// the cells that already show.
+#[allow(clippy::type_complexity)]
+pub fn brush_cells(
+    model: &ChartModel,
+    layout: &ChartLayout,
+    view: &View,
+    from: (f32, f32),
+    to: (f32, f32),
+) -> Option<((usize, usize), (usize, usize))> {
+    if !heat_cells(model) {
+        return None;
+    }
+    let (nc, nr) = (model.x.bands.len(), model.y.bands.len());
+    if nc == 0 || nr == 0 {
+        return None;
+    }
+    let p = layout.plot;
+    let c = |q: (f32, f32)| (q.0.clamp(p.x, p.right()), q.1.clamp(p.y, p.bottom()));
+    let (a, b) = (c(from), c(to));
+    let (w, h) = ((a.0 - b.0).abs(), (a.1 - b.1).abs());
+    if w < BRUSH_MIN && h < BRUSH_MIN {
+        return None;
+    }
+    // Whole cells from a span in band units: a corner a hair past a cell's edge, from float
+    // rounding, doesn't take the next cell.
+    let whole = |lo: f64, hi: f64, n: usize| -> (usize, usize) {
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
+        let i = ((lo + 1e-6).floor().max(0.0) as usize).min(n - 1);
+        let j = ((hi - 1e-6).ceil().max(0.0) as usize).clamp(i + 1, n);
+        (i, j)
+    };
+    let (sx, sy) = model.fit(view);
+    let shown = |d: (f64, f64), n: usize| {
+        let (lo, hi) = (d.0.min(d.1).max(0.0), d.0.max(d.1).min(n as f64));
+        (
+            lo.floor() as usize,
+            (hi.ceil() as usize).max(lo.floor() as usize + 1),
+        )
+    };
+    let cols = if w >= BRUSH_MIN {
+        whole(layout.x.invert(a.0), layout.x.invert(b.0), nc)
+    } else {
+        shown(sx, nc)
+    };
+    let rows = if h >= BRUSH_MIN {
+        whole(layout.y.invert(a.1), layout.y.invert(b.1), nr)
+    } else {
+        shown(sy, nr)
+    };
+    let same_x = (cols.0 as f64 - sx.0).abs() < 1e-9 && (cols.1 as f64 - sx.1).abs() < 1e-9;
+    let same_y = (rows.0 as f64 - sy.0).abs() < 1e-9 && (rows.1 as f64 - sy.1).abs() < 1e-9;
+    (!(same_x && same_y)).then_some((cols, rows))
 }
 
 /// The brush a left drag on the plot makes here: X on x-charts, Box on scatter, Bands on bands.
