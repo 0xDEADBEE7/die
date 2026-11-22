@@ -6,9 +6,10 @@
 //! (its ring included) and no edge, stays inside the graph's region, and is clearly nearer its
 //! own node than any other, a dimmed one too (by [`OWN_MARGIN`], so it never reads as
 //! another's). Each spot is scored: a label or a node it covers, or a node nearer it than its
-//! own, blocks it; each edge it crosses (a bright one more) costs a little, a corner a little
-//! more than a side, and a further ring more again, so a label crosses an edge on its ground
-//! beside its node before it goes out to float on a far ring. Labels are placed busiest node
+//! own, blocks it; each edge it crosses (a bright one more) costs a little, a dimmed node its
+//! ground would hide more than a couple of edges, a corner a little more than a side, and a
+//! further ring more again, so a label crosses an edge on its ground beside its node before it
+//! hides a node or goes out to float on a far ring. Labels are placed busiest node
 //! first (degree, then node order), so where there's room for only some, the hubs keep theirs;
 //! one with no free side but a side that only crosses a few edges (two, or a hub's own count up
 //! to six) goes there on a ground of the surface's colour, which parts the edges under it; one
@@ -46,6 +47,12 @@ const DIM_NEAR: (f32, f32) = (12.0, 24.0);
 const CORNER_COST: f32 = 0.4;
 /// What crossing an edge drawn bright costs: it cuts the edge, on its ground.
 const HARD_EDGE_COST: f32 = 2.5;
+/// What hiding a dimmed node under a label's ground costs, in edges crossed: more than two
+/// bright edges, so a label crosses those beside its node before a node goes from the picture.
+const NODE_UNDER_COST: f32 = 6.0;
+/// What covering a label or a bright node costs a label that must show (the focused one's, a
+/// `show-label: true` one), over every other cost: it goes anywhere else first.
+const COVER_COST: f32 = 1000.0;
 /// The grid's cell, in px.
 const CELL: f32 = 32.0;
 /// The most edges a label at rest crosses (on its ground) rather than be culled; a hub's may
@@ -96,6 +103,8 @@ pub struct NodeLabel {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Clash {
     blocked: u32,
+    /// How many labels and bright nodes it covers (of `blocked`).
+    covers: u32,
     cost: f32,
     crossed: f32,
 }
@@ -300,6 +309,7 @@ impl Field {
         {
             return Clash {
                 blocked: Clash::OUT,
+                covers: 0,
                 cost: 1e9,
                 crossed: 0.0,
             };
@@ -414,9 +424,10 @@ impl Field {
                 }
             }
         }
-        crossed += nodes_under.len() as f32;
+        crossed += nodes_under.len() as f32 * NODE_UNDER_COST;
         Clash {
             blocked,
+            covers: (labels.len() + nodes.len()) as u32,
             cost,
             crossed,
         }
@@ -547,9 +558,11 @@ pub(crate) fn further(
 }
 
 /// The best of `spots` for node `own`, by score: what it crosses (an edge 1, a bright edge
-/// [`HARD_EDGE_COST`], a dimmed label or node it lies over 1), a corner [`CORNER_COST`] more,
-/// a further ring [`RING_COST`] more, and what blocks it (100 for each label or bright node it
-/// covers, 20 to 100 for a node nearer it than its own by how near, less for a dimmed one). A
+/// [`HARD_EDGE_COST`], a dimmed label it lies over 1, a dimmed node it hides
+/// [`NODE_UNDER_COST`]), a corner [`CORNER_COST`] more, a further ring [`RING_COST`] more, and
+/// what blocks it (100 for each label or bright node it covers, 20 to 100 for a node nearer it
+/// than its own by how near, less for a dimmed one; a label that must show pays
+/// [`COVER_COST`] for each it covers, so it goes anywhere free of them first). A
 /// free spot (nothing crossed) goes as it is; one crossing edges goes on a ground (backed)
 /// when they're at most `edges_ok` or the label is forced (`block_ok` above 0); a blocked one
 /// only when its blocks, at 100 each, come to at most `block_ok` (`u32::MAX` takes the least
@@ -566,8 +579,17 @@ pub(crate) fn choose(
     for (n, s) in spots.into_iter().enumerate() {
         let c = field.clash(s.rect, own);
         let corner = if s.side >= 4 { CORNER_COST } else { 0.0 };
-        let cost =
-            c.cost + c.crossed + corner + RING_COST[usize::from(s.ring.min(2))] + n as f32 * 1e-3;
+        let covering = if block_ok == u32::MAX {
+            c.covers as f32 * COVER_COST
+        } else {
+            0.0
+        };
+        let cost = c.cost
+            + c.crossed
+            + covering
+            + corner
+            + RING_COST[usize::from(s.ring.min(2))]
+            + n as f32 * 1e-3;
         if c.blocked == 0 && c.crossed == 0.0 && s.ring == 0 && s.side < 4 {
             // The first free side: nothing does better.
             return Some(s);

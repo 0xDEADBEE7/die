@@ -21,7 +21,7 @@
 //!   It never covers its node, and flips at the area's edges with a cell's hysteresis.
 
 use super::draw::{edge, label, node, pin};
-use super::geom::{GraphLayout, RING};
+use super::geom::{GraphLayout, RING, arrow_into};
 use super::label::{Field, LABEL_GAP, choose, focus_spec, further, label_spec, seg_meets, spots};
 use super::{Emphasis, GraphModel, Target};
 use crate::data::SeriesKey;
@@ -224,34 +224,40 @@ pub fn overlay(
     // Where what the overlay draws again over the base starts: the base's labels the card
     // cuts are cleared here, under it.
     let redrawn_at = scene.items.len();
+    // How each edge shows: the hovered one thicker and lighter, a path's in the strong text, a
+    // neighbour's in mid grey, what opts out in its colour, a dimmed one under the wash.
+    let on_path = path.is_some();
+    let style = |k: usize, e: &super::EdgeGeom| -> (Color, f32, f32) {
+        if hover_edge == Some(k) {
+            let c = if model.edge_opts_out(k) {
+                lift(e.color, theme)
+            } else {
+                theme.text
+            };
+            return (c, 1.0, 1.0);
+        }
+        match emph.as_ref().map(|(_, ee)| ee[k]) {
+            Some(Emphasis::Related) if on_path => (theme.strong, 0.9, 1.0),
+            Some(Emphasis::Related) if model.edge_opts_out(k) => (e.color, 1.0, 0.5),
+            Some(Emphasis::Related) => (theme.muted, 1.0, 0.5),
+            Some(Emphasis::Dimmed) => (mix(e.color, theme.surface, WASH), 1.0, 0.0),
+            _ => (e.color, 1.0, 0.0),
+        }
+    };
     if let Some((_, edges_e)) = &emph {
-        let on_path = path.is_some();
         for (k, e) in layout.edges.iter().enumerate() {
             let Some(e) = e else { continue };
-            match edges_e[k] {
-                Emphasis::Related if on_path => edge(&mut scene, e, theme.strong, 0.9, 1.0),
-                Emphasis::Related => {
-                    let c = if model.edge_opts_out(k) {
-                        e.color
-                    } else {
-                        theme.muted
-                    };
-                    edge(&mut scene, e, c, 1.0, 0.5)
-                }
-                Emphasis::Normal => edge(&mut scene, e, e.color, 1.0, 0.0),
-                _ => {}
+            if matches!(edges_e[k], Emphasis::Related | Emphasis::Normal) {
+                let (c, a, wider) = style(k, e);
+                edge(&mut scene, e, c, a, wider);
             }
         }
     }
     if let Some(k) = hover_edge
         && let Some(e) = &layout.edges[k]
     {
-        let c = if model.edge_opts_out(k) {
-            lift(e.color, theme)
-        } else {
-            theme.text
-        };
-        edge(&mut scene, e, c, 1.0, 1.0);
+        let (c, a, wider) = style(k, e);
+        edge(&mut scene, e, c, a, wider);
         // Its ends come forward with it.
         let (a, b) = model.ends[k];
         for i in [a as usize, b as usize] {
@@ -272,6 +278,59 @@ pub fn overlay(
             fill: Some(Paint::solid(g.color, 0.12)),
             stroke: Some(s),
         });
+    }
+    // A ring's room: inside a ring nothing shows but its node, so the edges stop at the ring
+    // (as in m3) and nothing of the base (a pin's dot, an edge's end) peeks between them. An
+    // arrowhead into a ringed node moves out with its tip at the ring's outside, its old one
+    // cleared.
+    let ring_r = |g: &super::NodeGeom| g.r + FOCUS_RING.0;
+    let mut rung: Vec<usize> = ringed.clone();
+    rung.extend(reference.filter(|r| !ringed.contains(r)));
+    for &i in &rung {
+        if let Some(g) = layout.node(i) {
+            scene.push(Item::Path {
+                path: PathData::circle(g.at.0, g.at.1, ring_r(g) + FOCUS_RING.1 * 0.5),
+                fill: Some(Paint::solid(theme.surface, 1.0)),
+                stroke: None,
+            });
+        }
+    }
+    let into_ring: Vec<(usize, &super::EdgeGeom)> = layout
+        .edges
+        .iter()
+        .enumerate()
+        .filter_map(|(k, e)| Some((k, e.as_ref()?)))
+        .filter(|(k, e)| e.arrow.is_some() && rung.contains(&(model.ends[*k].1 as usize)))
+        .collect();
+    // Every old arrowhead cleared first, so none clears another's new line.
+    for (_, e) in &into_ring {
+        let Some([tip, l, r]) = e.arrow else { continue };
+        let mut old = PathData::polyline(&[tip, l, r]);
+        old.verbs.push(crate::scene::Verb::Close);
+        scene.push(Item::Path {
+            path: old,
+            fill: Some(Paint::solid(theme.surface, 1.0)),
+            stroke: Some(Stroke::solid(1.8, theme.surface, 1.0)),
+        });
+    }
+    for &(k, e) in &into_ring {
+        let (from, to) = model.ends[k];
+        let (Some([tip, _, _]), Some(g)) = (e.arrow, layout.node(to as usize)) else {
+            continue;
+        };
+        let mut pts = e.pts.clone();
+        pts.push(tip);
+        let start = layout.node(from as usize).map_or(pts[0], |n| n.at);
+        let out = ring_r(g) + FOCUS_RING.1 * 0.5 + 0.75;
+        if let Some(arrow) = arrow_into(&mut pts, start, g.at, out, e.width) {
+            let moved = super::EdgeGeom {
+                pts,
+                arrow: Some(arrow),
+                ..e.clone()
+            };
+            let (c, a, wider) = style(k, e);
+            edge(&mut scene, &moved, c, a, wider);
+        }
     }
     // Nodes drawn again: what opts out, then the related, then the focused last.
     let mut redrawn: Vec<usize> = Vec::new();
@@ -313,7 +372,6 @@ pub fn overlay(
         }
     }
     // Rings: the reference's dashed, the focused and the cursor's solid.
-    let ring_r = |g: &super::NodeGeom| g.r + FOCUS_RING.0;
     if let Some(r) = reference
         && let Some(g) = layout.node(r)
         && !ringed.contains(&r)
@@ -344,8 +402,9 @@ pub fn overlay(
         if let Some(g) = layout.node(i)
             && g.pinned
         {
+            // On the ring's line, as at rest it sits on the node's edge: a badge on the outline.
             let at = if ring_of(i) {
-                ring_r(g) + FOCUS_RING.1 * 0.5 + 1.0
+                ring_r(g)
             } else {
                 g.r + RING * 0.5
             };
@@ -459,7 +518,13 @@ pub fn overlay(
         let again = shown_labels
             .iter()
             .any(|(s, _, e)| *e == Some(l.rect) || s.rect == l.rect);
-        if !again && hover_node != Some(i) && cuts(&l.rect) {
+        // A label whose node the card covers goes too: a name left beside nothing.
+        let orphan = card_rect.is_some_and(|r| {
+            layout
+                .node(i)
+                .is_some_and(|g| r.inflate(-1.0).contains(g.at.0, g.at.1))
+        });
+        if !again && hover_node != Some(i) && (cuts(&l.rect) || orphan) {
             covers.push(Item::Path {
                 path: PathData::rect(l.rect.inflate(1.0)),
                 fill: Some(Paint::solid(theme.surface, 1.0)),
@@ -496,10 +561,59 @@ impl Keep {
     /// Whether a card at `r` covers some of it.
     fn covered(&self, r: &Rect) -> bool {
         match self {
-            Keep::Rect(a) => a.intersect(r).is_some_and(|i| i.w > 0.5 && i.h > 0.5),
+            Keep::Rect(a) => meets(a, r),
             Keep::Disc(c, rad) => circle_meets(*c, *rad, r),
         }
     }
+}
+
+/// The room a card keeps from a label or the header, in px: a card's edge against a label
+/// reads as cramped as a label cut.
+const KEEP_CLEAR: f32 = 8.0;
+
+/// Whether two rectangles overlap by more than a sliver.
+fn meets(a: &Rect, b: &Rect) -> bool {
+    a.intersect(b).is_some_and(|i| i.w > 0.5 && i.h > 0.5)
+}
+
+/// The rectangles of `avoid` a card at `r` comes within [`KEEP_CLEAR`] of without covering.
+fn near_misses<'a>(
+    r: &'a Rect,
+    avoid: &'a [(Keep, f32)],
+) -> impl Iterator<Item = (Rect, f32)> + 'a {
+    avoid.iter().filter_map(move |(k, w)| match k {
+        Keep::Rect(a) if !meets(a, r) && meets(&a.inflate(KEEP_CLEAR), r) => Some((*a, *w)),
+        _ => None,
+    })
+}
+
+/// `r` moved the least way off each rectangle of `avoid` it comes within [`KEEP_CLEAR`] of,
+/// so its edge keeps a little room from the label beside it.
+fn nudged(r: Rect, avoid: &[(Keep, f32)]) -> Rect {
+    let mut out = r;
+    let misses: Vec<(Rect, f32)> = near_misses(&r, avoid).collect();
+    for (a, _) in misses {
+        let dx = if a.right() <= out.x + 0.5 {
+            a.right() + KEEP_CLEAR - out.x
+        } else if a.x >= out.right() - 0.5 {
+            a.x - KEEP_CLEAR - out.right()
+        } else {
+            0.0
+        };
+        let dy = if a.bottom() <= out.y + 0.5 {
+            a.bottom() + KEEP_CLEAR - out.y
+        } else if a.y >= out.bottom() - 0.5 {
+            a.y - KEEP_CLEAR - out.bottom()
+        } else {
+            0.0
+        };
+        if dx != 0.0 && (dy == 0.0 || dx.abs() <= dy.abs()) {
+            out.x += dx;
+        } else {
+            out.y += dy;
+        }
+    }
+    out
 }
 
 /// What a row the card leaves out to stay clear costs, against what covering costs: less than
@@ -605,8 +719,10 @@ fn labels(
                 cands.insert(0, c);
             }
             cands.extend(further(&text, g.at, g.r, gap, spec, m));
-            // The focused label shows whatever it covers; a neighbour's covers no label and no
-            // node drawn bright, or doesn't show (it's lit, and named in the card and the panel).
+            // The focused label always shows, where it covers least (anywhere free of a label
+            // or a bright node first, and hiding no dimmed node where it can); a neighbour's
+            // covers no label and no node drawn bright, or doesn't show (it's lit, and named in
+            // the card and the panel).
             let block_ok = if focus { u32::MAX } else { 99 };
             if let Some(l) = choose(&mut field, cands, i, u32::MAX, block_ok) {
                 field.add_label(l.rect);
@@ -880,8 +996,17 @@ impl Card {
                 && r.right() + spare <= aw - INSET
                 && r.bottom() <= ah - INSET
         };
+        // Each spot as it is and moved off the labels it would touch.
+        let tries: Vec<(usize, Rect, bool)> = tries
+            .iter()
+            .enumerate()
+            .flat_map(|(n, &(r, left))| {
+                let off = nudged(r, avoid);
+                std::iter::once((n, r, left)).chain((off != r).then_some((n, off, left)))
+            })
+            .collect();
         let mut best: Option<(f32, Rect, bool, f32)> = None;
-        for (n, &(r, left)) in tries.iter().enumerate() {
+        for &(n, r, left) in &tries {
             let spare = if flipped && !left {
                 layout.cell_width
             } else {
@@ -906,8 +1031,13 @@ impl Card {
             let ny = ay.clamp(r.y, r.bottom());
             let d = ((ax - nx).hypot(ay - ny) - reach).max(0.0);
             let far = d * 0.04 + (d - STRAY).max(0.0) * 0.3;
-            let cost =
-                covered + far + (n as f32).min(8.0) * 0.6 + if left != flipped { 2.0 } else { 0.0 };
+            // Against a label it matters to keep off, a little.
+            let cramped: f32 = near_misses(&r, avoid).map(|(_, w)| w * 0.25).sum();
+            let cost = covered
+                + cramped
+                + far
+                + (n as f32).min(8.0) * 0.6
+                + if left != flipped { 2.0 } else { 0.0 };
             if best.is_none_or(|(b, _, _, _)| cost < b) {
                 best = Some((cost, r, left, covered));
             }

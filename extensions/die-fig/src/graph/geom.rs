@@ -702,24 +702,11 @@ fn edge_geom(
     } else {
         route(model, view, frame, nodes, k, na.at, nb.at)
     };
-    let mut arrow = None;
-    if directed {
-        let (len, half) = (ARROW.0 + 1.5 * (width - 1.0), ARROW.1 + 0.8 * (width - 1.0));
-        if let Some(tip) = cut_at(&mut pts, nb.at, nb.r + RING * 0.5) {
-            let back = pts.len().checked_sub(2).map_or(na.at, |i| pts[i]);
-            let (dx, dy) = (tip.0 - back.0, tip.1 - back.1);
-            let d = dx.hypot(dy).max(1e-3);
-            let (ux, uy) = (dx / d, dy / d);
-            let base = (tip.0 - ux * len, tip.1 - uy * len);
-            arrow = Some([
-                tip,
-                (base.0 - uy * half, base.1 + ux * half),
-                (base.0 + uy * half, base.1 - ux * half),
-            ]);
-            // The line stops under the arrowhead, short of its tip.
-            cut_at(&mut pts, nb.at, nb.r + RING * 0.5 + len * 0.6);
-        }
-    }
+    let arrow = if directed {
+        arrow_into(&mut pts, na.at, nb.at, nb.r + RING * 0.5, width)
+    } else {
+        None
+    };
     Some(EdgeGeom {
         pts,
         width,
@@ -985,6 +972,33 @@ fn cubic(
             )
         })
         .collect()
+}
+
+/// The arrowhead of an edge `width` wide whose path `pts` (from `from`) points at the node
+/// centred at `c`: its tip where the path last enters the circle of radius `r` about `c`, then
+/// its back corners; the path is cut to stop under it, short of the tip. None (the path as it
+/// was) where the path never enters the circle.
+pub(crate) fn arrow_into(
+    pts: &mut Vec<(f32, f32)>,
+    from: (f32, f32),
+    c: (f32, f32),
+    r: f32,
+    width: f32,
+) -> Option<[(f32, f32); 3]> {
+    let (len, half) = (ARROW.0 + 1.5 * (width - 1.0), ARROW.1 + 0.8 * (width - 1.0));
+    let tip = cut_at(pts, c, r)?;
+    let back = pts.len().checked_sub(2).map_or(from, |i| pts[i]);
+    let (dx, dy) = (tip.0 - back.0, tip.1 - back.1);
+    let d = dx.hypot(dy).max(1e-3);
+    let (ux, uy) = (dx / d, dy / d);
+    let base = (tip.0 - ux * len, tip.1 - uy * len);
+    // The line stops under the arrowhead, short of its tip.
+    cut_at(pts, c, r + len * 0.6);
+    Some([
+        tip,
+        (base.0 - uy * half, base.1 + ux * half),
+        (base.0 + uy * half, base.1 - ux * half),
+    ])
 }
 
 /// Cuts a path where it last enters the circle of radius `r` about `c`, coming from outside,

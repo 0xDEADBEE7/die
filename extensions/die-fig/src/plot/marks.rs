@@ -124,7 +124,7 @@ pub(crate) fn draw(
     }
     cells(model, view, l, scene);
     for r in &model.rules {
-        rule_label(model, l, theme, scene, r, m);
+        rule_label(model, view, l, theme, scene, r, m);
     }
     for t in &model.texts {
         let (x, y) = l.at(t.x, t.y);
@@ -831,9 +831,44 @@ fn rule_line(l: &ChartLayout, theme: &Theme, scene: &mut Scene, r: &super::RuleM
     });
 }
 
-/// A rule's label at its end, in the text's colours.
+/// How many visible unstacked lines and areas run through `r` on the screen.
+fn crossings(model: &ChartModel, view: &View, l: &ChartLayout, r: &Rect) -> usize {
+    if l.horizontal {
+        return 0;
+    }
+    let r = r.inflate(1.5);
+    let through = |s: &SeriesInfo| {
+        let mut prev: Option<(f32, f32)> = None;
+        for (&x, &y) in s.xs.iter().zip(s.ys.iter()) {
+            if !y.is_finite() || !x.is_finite() {
+                prev = None;
+                continue;
+            }
+            let p = l.at(x, y);
+            if let Some(q) = prev
+                && !(q.0 < r.x && p.0 < r.x)
+                && !(q.0 > r.right() && p.0 > r.right())
+                && crate::graph::label::seg_meets(q, p, &r)
+            {
+                return true;
+            }
+            prev = Some(p);
+        }
+        false
+    };
+    model
+        .series
+        .iter()
+        .filter(|s| matches!(s.mark, MarkKind::Line | MarkKind::Area) && s.stack == Stack::None)
+        .filter(|s| model.visible(view, &s.key) && through(s))
+        .count()
+}
+
+/// A rule's label at its end, in the text's colours: a horizontal one's at the right end above
+/// the line, else below it, else at the left end, wherever the fewest lines run through it.
 fn rule_label(
-    _model: &ChartModel,
+    model: &ChartModel,
+    view: &View,
     l: &ChartLayout,
     theme: &Theme,
     scene: &mut Scene,
@@ -874,21 +909,38 @@ fn rule_label(
         }
         let text = m.fit(text, spec, p.w * 0.5);
         let w = m.width(&text, spec);
-        // Above the line unless that leaves the plot; a surface plate under it so a line
-        // crossing it doesn't cut the words.
-        let above = y - 4.0 - m.ascent(spec) >= p.y;
-        let base = if above {
-            y - 4.0
-        } else {
-            y + 4.0 + m.ascent(spec)
+        let (asc, desc) = (m.ascent(spec), m.descent(spec));
+        // Above the line or below it, at the right end or the left, where it stays in the plot
+        // and the fewest lines cross it; a surface plate under it so a line that still crosses
+        // it doesn't cut the words.
+        let spot = |above: bool, right: bool| {
+            let base = if above { y - 4.0 } else { y + 4.0 + asc };
+            let (x, anchor) = if right {
+                (p.right() - 4.0, Anchor::End)
+            } else {
+                (p.x + 4.0, Anchor::Start)
+            };
+            let left = if right { x - w } else { x };
+            let plate = Rect::new(left - 3.0, base - asc - 1.0, w + 6.0, asc + desc + 2.0);
+            (base, x, anchor, plate)
         };
-        let x = p.right() - 4.0;
-        let plate = Rect::new(
-            x - w - 3.0,
-            base - m.ascent(spec) - 1.0,
-            w + 6.0,
-            m.ascent(spec) + m.descent(spec) + 2.0,
-        );
+        let fits = |plate: &Rect| plate.y >= p.y && plate.bottom() <= p.bottom();
+        let mut best: Option<(usize, (f32, f32, Anchor, Rect))> = None;
+        for (above, right) in [(true, true), (false, true), (true, false), (false, false)] {
+            let s = spot(above, right);
+            if !fits(&s.3) {
+                continue;
+            }
+            let n = crossings(model, view, l, &s.3);
+            if best.as_ref().is_none_or(|(b, _)| n < *b) {
+                best = Some((n, s));
+            }
+            if n == 0 {
+                break;
+            }
+        }
+        let (base, x, anchor, plate) =
+            best.map_or_else(|| spot(y - 4.0 - asc >= p.y, true), |(_, s)| s);
         scene.push(Item::Path {
             path: PathData::rounded(plate, [3.0; 4]),
             fill: Some(Paint::solid(theme.surface, 0.85)),
@@ -899,7 +951,7 @@ fn rule_label(
             x,
             y: base,
             spec,
-            anchor: Anchor::End,
+            anchor,
             color: theme.text,
             alpha: 1.0,
             max_width: None,
