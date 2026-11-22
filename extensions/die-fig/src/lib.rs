@@ -133,8 +133,10 @@ pub struct Fig {
     kit: SharedKit,
     /// Every figure there is.
     figs: Vec<Shared>,
-    /// What a figure `\v` put away left: its view and cursor, by its source, for the next.
-    parked: Vec<(Source, View, Option<Cursor>)>,
+    /// What a figure `\v` put away left: its view and cursor (and a dashboard's view), by its
+    /// source, for the next.
+    #[allow(clippy::type_complexity)]
+    parked: Vec<(Source, View, Option<Cursor>, Option<Value>)>,
     /// What the session was last given, and what it was made from (call 1175's cache): the
     /// figures' revisions, how many there were, the views' revision, and the focused buffer.
     #[allow(clippy::type_complexity)]
@@ -226,7 +228,9 @@ impl Fig {
         seed: Option<(View, Option<Cursor>)>,
     ) -> Result<Shared> {
         let parked = self.parked.iter().position(|p| p.0.same(&source));
-        let seed = seed.or_else(|| parked.map(|i| self.parked.remove(i)).map(|p| (p.1, p.2)));
+        let parked = parked.map(|i| self.parked.remove(i));
+        let dash_seed = parked.as_ref().and_then(|p| p.3.clone());
+        let seed = seed.or_else(|| parked.map(|p| (p.1, p.2)));
         let zone = self.zone().clone();
         let state = FigState::new(
             source,
@@ -244,6 +248,9 @@ impl Fig {
             (st.buf, st.from, st.file, st.behind) = (Some(buf), from, file, true);
             st.kill = self.kill;
             st.trust = self.trust.clone();
+            if st.dash_seed.is_none() {
+                st.dash_seed = dash_seed;
+            }
         }
         self.figs.push(state.clone());
         Ok(state)
@@ -331,8 +338,9 @@ impl Fig {
             // not its output. A selection's text was a moment's, and isn't kept at all.
             if let Some(source) = source.identity() {
                 let (view, cursor) = state.borrow().kept_view();
+                let dash = state.borrow().kept_dash();
                 self.parked.retain(|p| !p.0.same(&source));
-                self.parked.push((source, view, cursor));
+                self.parked.push((source, view, cursor, dash));
                 if self.parked.len() > PARKED {
                     self.parked.remove(0);
                 }

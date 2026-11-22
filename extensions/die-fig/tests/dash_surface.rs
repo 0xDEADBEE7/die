@@ -916,7 +916,30 @@ fn renders_for_the_look() {
     let p = plot_of(&mut s, 2);
     mv(&mut s, (p.x + p.w * 0.8, p.y + p.h * 0.5));
     shoot(&mut s, &dir.join("live.png"));
+    // The same, its time zoomed to the rows' own few seconds.
+    std::thread::sleep(Duration::from_millis(3000));
+    s.h.advance(Duration::from_millis(40));
+    keys(&mut s.h, "T");
+    keys(&mut s.h, "-6s<CR>");
+    settle(&mut s);
+    let p = plot_of(&mut s, 2);
+    mv(&mut s, (p.x + p.w * 0.6, p.y + p.h * 0.5));
+    shoot(&mut s, &dir.join("live-zoomed.png"));
     s.h.shutdown();
+    // The dashboard's keys.
+    let mut s = health();
+    keys(&mut s.h, "?");
+    shoot(&mut s, &dir.join("health-keys.png"));
+    // A stat alone: a dashboard of one tile.
+    let mut s = open_at(&fixture("tiles/requests.json"), 120, 30);
+    let f = frame(&mut s, 0);
+    mv(&mut s, (f.x + f.w * 0.8, f.y + f.h * 0.5));
+    shoot(&mut s, &dir.join("stat-alone.png"));
+    // A graph beside a heatmap, a column of two charts, a row of meters; the heatmap hovered.
+    let mut s = open_at(&fixture("dash/ops.fig"), 176, 61);
+    let f = frame(&mut s, 4);
+    mv(&mut s, (f.x + f.w * 0.5, f.y + f.h * 0.55));
+    shoot(&mut s, &dir.join("ops.png"));
     // A tall dashboard scrolled, and a broken one with a panel's log.
     let mut s = open_at(&fixture("dash/tall.fig"), 176, 61);
     for _ in 0..5 {
@@ -1118,4 +1141,17 @@ impl Setup {
             .allow_command(Some(Path::new("/x/y.fig")), "./a.sh");
         st.borrow_mut().trust_rev += 1;
     }
+}
+
+#[test]
+fn a_stat_alone_is_a_dashboard_of_one_tile_with_its_card() {
+    let mut s = open_at(&fixture("tiles/requests.json"), 120, 30);
+    assert!(ready(&mut s, 0), "the tile draws");
+    let f = frame(&mut s, 0);
+    mv(&mut s, (f.x + f.w * 0.3, f.y + f.h * 0.5));
+    assert_eq!(hovered(&mut s), Some(0));
+    presents(&mut s.h);
+    mv(&mut s, (f.x + f.w * 0.35, f.y + f.h * 0.5));
+    click(&mut s, (f.x + f.w * 0.3, f.y + f.h * 0.5));
+    assert_eq!(focused(&mut s), Some(0));
 }

@@ -376,7 +376,10 @@ pub fn overlay(
                     _ => None,
                 };
                 if th.is_some() {
-                    let over = figure::overlay(tm, th, local_rect, theme, m);
+                    // The card kept inside the window's area, as a chart's is (mouse-ux §3.5).
+                    let (ox, oy) = p.origin();
+                    let area = Rect::new(-ox, -oy, w, h);
+                    let over = figure::overlay_in(tm, th, local_rect, area, theme, m);
                     put(&mut scene, over, p.origin(), None);
                 }
             }
