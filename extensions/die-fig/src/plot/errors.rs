@@ -208,8 +208,9 @@ fn symbolic(
             + lines as f32 * MSG_LINE
             + if hint { HINT_GAP + HINT_H } else { 0.0 }
     };
-    // Words want room to be read: below 260 px across, the glyph and the title at most.
-    let wordy = aw >= 260.0;
+    // Words want room to be read: below 230 px across, the glyph and the title at most (a
+    // third of an 880 px dashboard still says what went wrong).
+    let wordy = aw >= 230.0;
     let one = msg_lines.len().min(1);
     // The hint goes before the message's second line: what went wrong matters more than how
     // to see more of it.

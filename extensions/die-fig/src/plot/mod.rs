@@ -1801,7 +1801,35 @@ pub fn base_beside(
     theme: &Theme,
     m: &mut dyn Measure,
 ) -> (Scene, ChartLayout, HitIndex) {
-    let mut layout = layout::lay_out(model, view, size, area_w, scale, m);
+    base_with(model, view, size, area_w, None, scale, theme, m)
+}
+
+/// [`base`] with the paddings given ([`layout::Insets`]) rather than the area's own: a
+/// dashboard's panel, whose frame and title are the panel's.
+pub fn base_inset(
+    model: &ChartModel,
+    view: &View,
+    size: (f32, f32),
+    insets: layout::Insets,
+    scale: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> (Scene, ChartLayout, HitIndex) {
+    base_with(model, view, size, size.0, Some(insets), scale, theme, m)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn base_with(
+    model: &ChartModel,
+    view: &View,
+    size: (f32, f32),
+    area_w: f32,
+    insets: Option<layout::Insets>,
+    scale: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> (Scene, ChartLayout, HitIndex) {
+    let mut layout = layout::lay_out(model, view, size, area_w, insets, scale, m);
     layout.bars = marks::bars(model, view, &layout);
     layout.totals = marks::bar_totals(model, view, &layout, theme, m)
         .into_iter()
