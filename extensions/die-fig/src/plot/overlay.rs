@@ -457,6 +457,18 @@ fn moment(
                 m,
             );
             card.shown = card_shown;
+            // Where there's room it leaves its cell, the title, the colour legend and the axes'
+            // titles clear, covering other cells rather than what names them.
+            card.avoid = vec![r.inflate(2.0)];
+            if !l.title.is_empty() {
+                card.avoid.push(l.title);
+            }
+            if let Some(legend) = &l.ramp {
+                card.avoid.push(legend.bounds);
+            }
+            for t in l.labels.iter().filter(|t| t.role == Role::AxisTitle) {
+                card.avoid.push(t.bounds(m));
+            }
             card.place_point(
                 l,
                 scene,
