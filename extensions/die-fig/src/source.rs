@@ -8,7 +8,9 @@
 //! job, [`build`], off the main thread: the job is given the text of every buffer that visits a
 //! file, so a data file open in a buffer is read from the buffer and follows its edits, and the
 //! rest from disk, polled. A chart's model is built there, and so is a graph's, laid out once
-//! (fig's stress layout is `O(n²)`); tiles and dashboards arrive in a later build.
+//! (fig's stress layout is `O(n²)`). A dashboard (or a tile alone, a dashboard of one panel)
+//! is parsed here and its panels are built by the editor in jobs of their own, each as its
+//! data comes ([`crate::surface::dash`]).
 //!
 //! A chart whose data is a command's (`run`, `stream`) is built by [`build_with`] from the
 //! tables its commands have printed so far, which [`crate::live::Live`] gives the editor. The
@@ -293,10 +295,22 @@ pub fn build_with(job: Job, live: &[(LiveSpec, Arc<Table>)]) -> std::result::Res
                 Err(e) => Err(failed(vec![e], warnings, files)),
             };
         }
+        // A dashboard, or a tile alone: its data is read and its panels built by the editor,
+        // each in a job as its data comes, the panels still waiting drawn as frames.
         other => {
-            let why = format!("{} arrive in a later build", kind_plural(&other));
-            let e = FigError::new(why).with_kind(ErrorKind::Empty);
-            return Err(failed(vec![e], warnings, files));
+            return Ok(Built {
+                figure: other,
+                inferred,
+                chart: None,
+                tables: vec![],
+                model: None,
+                graph: None,
+                warnings,
+                files,
+                followed: vec![],
+                feeds: vec![],
+                text,
+            });
         }
     };
     let mut reader = Reader {
@@ -573,17 +587,6 @@ pub fn graph_model(
         true => model,
         false => model.named(name),
     })
-}
-
-/// A figure's kind in the plural, for what arrives later.
-fn kind_plural(f: &Figure) -> &'static str {
-    match f {
-        Figure::Chart(_) => "charts",
-        Figure::Graph(_) => "graphs",
-        Figure::Stat(_) | Figure::Meter(_) => "stat and meter tiles",
-        Figure::Sparkline(_) => "sparklines",
-        Figure::Dashboard(_) => "dashboards",
-    }
 }
 
 /// A data file read: which table it made, its path, text and format, and how many rows.

@@ -397,6 +397,58 @@ impl GraphAct<'_> {
         }
     }
 
+    /// A pointer event on the graph at `at` (logical px in its area), as its window has it, or a
+    /// dashboard's panel: as a chart's ([`super::Act::pointer`]), with a graph's gestures. The
+    /// item a double click opens the detail of, if one.
+    pub fn pointer(
+        &mut self,
+        p: &SurfacePointer,
+        at: (f32, f32),
+        swallow: bool,
+        arm: impl FnOnce() -> Sub,
+    ) -> Option<Item> {
+        match p.kind {
+            PointerKind::Move => {
+                self.pane.hovering = true;
+                self.pane.rehover = true;
+            }
+            PointerKind::Press(b @ (Button::Left | Button::Middle)) => {
+                self.pane.help = false;
+                if self.pane.gesturing() && self.pane.held != Some(b) {
+                    return None;
+                }
+                if self.pane.gesturing() {
+                    self.finish();
+                }
+                self.pane.held = Some(b);
+                self.pane.drag_mods = p.mods;
+                if swallow {
+                    self.pane.gesture = Gesture::Swallowed;
+                    return None;
+                }
+                let hit = self.pane.hit_at(at);
+                if p.clicks >= 2 && b == Button::Left {
+                    let open = self.double(&hit, at);
+                    self.pane.gesture = Gesture::Swallowed;
+                    return open;
+                }
+                self.pane.gesture = Gesture::Pressed {
+                    at,
+                    hit,
+                    button: b,
+                    mods: p.mods,
+                    clicks: p.clicks,
+                };
+                self.pane.drag_last = at;
+            }
+            PointerKind::Press(Button::Right) => {}
+            PointerKind::Drag(_) => self.drag(at),
+            PointerKind::Release(b) => self.release(b, at),
+            PointerKind::Scroll { dx, dy } => self.scroll(dx, dy, at, p.mods, arm),
+        }
+        None
+    }
+
     /// The wheel: a burst keeps the meaning of its first event; plain pans in two dimensions
     /// by whole physical pixels with the rest carried, ⌘ (or Ctrl) zooms about the pointer.
     pub fn scroll(
@@ -719,57 +771,16 @@ impl FigState {
             kit: &mut kit,
             say: None,
         };
-        let mut open = None;
-        match p.kind {
-            PointerKind::Move => {
-                g.pane.hovering = true;
-                g.pane.rehover = true;
-            }
-            PointerKind::Press(b @ (Button::Left | Button::Middle)) => {
-                g.pane.help = false;
-                if g.pane.gesturing() && g.pane.held != Some(b) {
-                    return;
+        let open = g.pointer(p, at, swallow, || {
+            ctx.after(Duration::from_millis(SCROLL_BURST_MS), move |ctx| {
+                if let Some(s) = me.upgrade() {
+                    let mut st = s.borrow_mut();
+                    st.end_burst(w);
+                    st.refresh(ctx);
                 }
-                if g.pane.gesturing() {
-                    g.finish();
-                }
-                g.pane.held = Some(b);
-                g.pane.drag_mods = p.mods;
-                if swallow {
-                    g.pane.gesture = Gesture::Swallowed;
-                    return;
-                }
-                let hit = g.pane.hit_at(at);
-                if p.clicks >= 2 && b == Button::Left {
-                    open = g.double(&hit, at);
-                    g.pane.gesture = Gesture::Swallowed;
-                } else {
-                    g.pane.gesture = Gesture::Pressed {
-                        at,
-                        hit,
-                        button: b,
-                        mods: p.mods,
-                        clicks: p.clicks,
-                    };
-                    g.pane.drag_last = at;
-                }
-            }
-            PointerKind::Press(Button::Right) => {}
-            PointerKind::Drag(_) => g.drag(at),
-            PointerKind::Release(b) => g.release(b, at),
-            PointerKind::Scroll { dx, dy } => {
-                g.scroll(dx, dy, at, p.mods, || {
-                    ctx.after(Duration::from_millis(SCROLL_BURST_MS), move |ctx| {
-                        if let Some(s) = me.upgrade() {
-                            let mut st = s.borrow_mut();
-                            st.end_burst(w);
-                            st.refresh(ctx);
-                        }
-                        Ok(())
-                    })
-                });
-            }
-        }
+                Ok(())
+            })
+        });
         if let Some(said) = g.say.take() {
             ctx.messages.push(said);
         }

@@ -335,7 +335,10 @@ pub fn overlay(
                     cursor_card: card,
                     ..Lit::default()
                 };
-                let quiet = st.hover.is_none() && st.cursor.is_none() && st.brush.is_none();
+                let quiet = st.hover.is_none()
+                    && st.cursor.is_none()
+                    && st.brush.is_none()
+                    && st.emphasis.is_none();
                 if !quiet {
                     let over = plot::overlay::overlay_lit(cm, cl, &p.view, &st, &lit, theme, m);
                     put(&mut scene, over, p.origin(), None);

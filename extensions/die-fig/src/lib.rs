@@ -150,6 +150,9 @@ pub struct Fig {
     views_rev: u64,
     /// How a yank from the detail panel reaches the registers, as your config gives it.
     kill: Option<Kill>,
+    /// Your yeses to a spec's commands and outside files (ruling 13), shared by every figure,
+    /// kept by the session.
+    trust: Rc<RefCell<live::Trust>>,
 }
 
 impl Fig {
@@ -240,6 +243,7 @@ impl Fig {
             let mut st = state.borrow_mut();
             (st.buf, st.from, st.file, st.behind) = (Some(buf), from, file, true);
             st.kill = self.kill;
+            st.trust = self.trust.clone();
         }
         self.figs.push(state.clone());
         Ok(state)
@@ -1135,7 +1139,11 @@ fn table(ctx: &mut Ctx, a: &Args) -> Result {
         let p = st.panes.get(&w);
         let view = p.map(|p| p.view.clone()).unwrap_or_default();
         let cursor = p.and_then(|p| p.cursor.clone());
+        let dash = st.dash_drawn(w).then(|| st.dash_table(w));
         let (text, line) = match (&st.graph, &st.model) {
+            _ if dash.is_some() => dash.flatten().ok_or_else(|| {
+                Error::Msg("fig: t shows the focused panel's data: Tab focuses a chart".into())
+            })?,
             (Some(g), _) => {
                 let t = g.tsv(&view, cursor.as_ref());
                 (format!("{}\n{}", t.nodes, t.edges), t.line)
@@ -1576,6 +1584,16 @@ fn view_value(v: &View, c: &Option<Cursor>) -> Value {
     })
 }
 
+/// [`view_value`], for a dashboard's panels.
+pub(crate) fn view_value_of(v: &View, c: &Option<Cursor>) -> Value {
+    view_value(v, c)
+}
+
+/// [`view_of`], for a dashboard's panels.
+pub(crate) fn view_of_value(v: &Value) -> (View, Option<Cursor>) {
+    view_of(v)
+}
+
 /// A graph's pinned nodes as the session keeps them.
 fn pins_of(v: Option<&Value>) -> std::collections::BTreeMap<Box<str>, (f64, f64)> {
     let mut out = std::collections::BTreeMap::new();
@@ -1638,6 +1656,9 @@ impl Fig {
             if st.kept_panel() {
                 v["panel"] = Value::Bool(true);
             }
+            if let Some(d) = st.kept_dash() {
+                v["dash"] = d;
+            }
             match &st.source {
                 Source::Buffer(b) => {
                     buffers.insert(*b, v);
@@ -1672,9 +1693,12 @@ impl Fig {
             };
             buffers.entry(*b).or_insert_with(|| json!({}))["as"] = json!(how);
         }
-        let state = match figures.is_empty() {
-            true => Value::Null,
-            false => json!({ "figures": figures }),
+        let trust = self.trust.borrow().to_value();
+        let state = match (figures.is_empty(), trust.is_null()) {
+            (true, true) => Value::Null,
+            (false, true) => json!({ "figures": figures }),
+            (true, false) => json!({ "trust": trust }),
+            (false, false) => json!({ "figures": figures, "trust": trust }),
         };
         Kept {
             state,
@@ -1716,6 +1740,10 @@ impl Extension for Fig {
             "!: every error and warning of the last build as a log, or the figure again: on a figure that can't draw, on one kept with the stale badge, or on one with warnings.",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, _| {
+                    let up = st.panes.get(&w).is_some_and(|p| p.log.is_some());
+                    if st.dash_drawn(w) && !up && st.dash_log(w) {
+                        return Ok(());
+                    }
                     let something = st.error.is_some() || !st.warnings().is_empty();
                     let Some(p) = st.panes.get_mut(&w) else {
                         return Ok(());
@@ -1752,8 +1780,17 @@ impl Extension for Fig {
                 if let Some(done) = panel_key_of(name).and_then(|k| in_panel(ctx, a, k)) {
                     return done;
                 }
-                act(ctx, a, move |act, a| {
-                    act.move_cursor(&action, count(a));
+                let last = action == Action::Last;
+                on_fig(ctx, a, false, move |st, w, ctx| {
+                    let now = ctx.now();
+                    st.keys(w, now, |k| {
+                        k.move_cursor(&action, count(a));
+                    });
+                    // G on a dashboard: the shared time follows the newest again.
+                    if last && st.dash_drawn(w) {
+                        st.dash_follow(w, now);
+                    }
+                    Ok(())
                 })
             });
         }
@@ -1972,12 +2009,19 @@ impl Extension for Fig {
                 "S-Tab: the keys back to the figure from the detail panel, or to it.",
             ),
         ] {
-            reg.command(name, doc, |ctx, a| {
-                on_fig(ctx, a, true, |st, w, _| match st.focus_panel(w) {
-                    true => Ok(()),
-                    false => Err(Error::Msg(
-                        "fig: no detail panel: ⏎ opens one for the cursor".into(),
-                    )),
+            let by = if name == "fig-focus-next" { 1 } else { -1 };
+            reg.command(name, doc, move |ctx, a| {
+                on_fig(ctx, a, true, |st, w, _| {
+                    if st.dash_drawn(w) {
+                        st.dash_focus_step(w, by);
+                        return Ok(());
+                    }
+                    match st.focus_panel(w) {
+                        true => Ok(()),
+                        false => Err(Error::Msg(
+                            "fig: no detail panel: ⏎ opens one for the cursor".into(),
+                        )),
+                    }
                 })
             });
         }
@@ -2000,6 +2044,54 @@ impl Extension for Fig {
                 )),
             });
         }
+        reg.command(
+            "fig-full",
+            "f: on a dashboard, the focused panel full size, or the dashboard again.",
+            |ctx, a| {
+                on_fig(ctx, a, false, |st, w, _| {
+                    if !st.dash_drawn(w) {
+                        return Err(Error::Msg(
+                            "fig: f shows a dashboard's panel full size".into(),
+                        ));
+                    }
+                    match st.dash_full(w) {
+                        true => Ok(()),
+                        false => Err(Error::Msg(
+                            "fig: no panel has the focus: Tab or a click gives it one".into(),
+                        )),
+                    }
+                })
+            },
+        );
+        reg.command(
+            "fig-time-range",
+            "T: on a dashboard, the time range its linked panels show: 15m, 1h, 6h, 24h, 7d, 30d, all, or custom (10:00-11:30, -2h).",
+            |ctx, a| {
+                let (state, w) = here(ctx, a)?;
+                let ok = {
+                    let st = state.borrow();
+                    st.dash_drawn(w) && st.dash.as_ref().is_some_and(|d| d.spec.time.is_some())
+                };
+                if !ok {
+                    return Err(Error::Msg(
+                        "fig: T sets the time range of a dashboard with a time".into(),
+                    ));
+                }
+                state.borrow_mut().finish(w, ctx.now());
+                surface::dash::time_prompt(ctx, state, w);
+                Ok(())
+            },
+        );
+        reg.command(
+            "fig-rerun",
+            "R: run the figure's commands again now (a stream that ended starts again), asking again for any you said no to.",
+            |ctx, a| {
+                on_fig(ctx, a, false, |st, _, ctx| {
+                    st.rerun(ctx);
+                    Ok(())
+                })
+            },
+        );
         reg.command("fig-find", "/: find a series or category by name.", search);
         reg.command(
             "fig-find-next",
@@ -2082,6 +2174,9 @@ impl Extension for Fig {
             .bind(Normal, "<Down>", "fig-down")
             .bind(Normal, "<Up>", "fig-up")
             .bind(Normal, "!", "fig-log")
+            .bind(Normal, "f", "fig-full")
+            .bind(Normal, "T", "fig-time-range")
+            .bind(Normal, "R", "fig-rerun")
             .bind(Normal, "<C-d>", "fig-log-page-down")
             .bind(Normal, "<C-u>", "fig-log-page-up")
             .bind(Normal, "<leader>v", "fig-toggle")
@@ -2136,7 +2231,8 @@ impl Extension for Fig {
     /// Each figure, by its source, with its view and cursor (ruling 16). Cached by the figures'
     /// revisions and the focused buffer, since this is asked twice a second.
     fn save_session(&self, ctx: &Ctx) -> Kept {
-        let revs = self.figs.iter().map(|s| s.borrow().rev).sum::<u64>();
+        let revs = self.figs.iter().map(|s| s.borrow().rev).sum::<u64>()
+            + self.figs.iter().map(|s| s.borrow().trust_rev).sum::<u64>();
         let rev = (revs, self.figs.len(), self.views_rev, ctx.focused_buffer());
         if let Some((at, kept)) = &*self.kept.borrow()
             && *at == rev
@@ -2153,6 +2249,9 @@ impl Extension for Fig {
     /// showed a surface). The pixels come at its first `Resize`, the host's sink being connected
     /// after this.
     fn restore_session(&mut self, ctx: &mut Ctx, kept: Kept) -> Result {
+        if let Some(t) = kept.state.get("trust") {
+            *self.trust.borrow_mut() = live::Trust::from_value(t);
+        }
         let mut show = None;
         let mut again = |fig: &mut Fig, ctx: &mut Ctx, source: Source, v: &Value| -> Result {
             let (title, name, dir, file) = match &source {
@@ -2191,6 +2290,7 @@ impl Extension for Fig {
                     (v.get("layout").and_then(Value::as_str)).and_then(LayoutPick::from_name);
                 st.toggles.labels = v.get("labels").and_then(Value::as_bool);
                 st.panel_seed = v.get("panel") == Some(&Value::Bool(true));
+                st.dash_seed = v.get("dash").cloned();
             }
             if v.get("shown") == Some(&Value::Bool(true)) {
                 show = state.borrow().buf;
@@ -2245,9 +2345,17 @@ impl Extension for Fig {
         Ok(())
     }
 
-    /// The figures' children would be killed here; phase 2 runs none that outlive a job.
+    /// Every figure's commands stopped (their process groups sent SIGTERM, then SIGKILL after a
+    /// second), and waited for, briefly, so none outlives DIE.
     fn shutdown(&mut self, _ctx: &mut Ctx) {
+        let mut stopped = live::Stopped::default();
+        for s in &self.figs {
+            if let Some(l) = s.borrow_mut().live.as_mut() {
+                stopped.join(l.stop_all());
+            }
+        }
         self.figs.clear();
+        stopped.wait(live::KILL_GRACE * 2);
     }
 }
 

@@ -158,7 +158,9 @@ pub struct Header {
 }
 
 /// What a panel's figure is, laid out: what the pointer needs of it. Its pixels are in the
-/// panel's scene.
+/// panel's scene. (A chart's layout is the big one; one is made a panel a base, and the editor
+/// lends it to the panel's pane by moving it, so it isn't boxed.)
+#[allow(clippy::large_enum_variant)]
 pub enum PanelFigure {
     /// A chart: its layout and hit index, in the figure's own px.
     Chart {

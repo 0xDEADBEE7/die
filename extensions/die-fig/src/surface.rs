@@ -20,8 +20,13 @@
 //! Ctrl-click open nothing: there is no dial (the owner, 2026-11-22).
 //!
 //! A graph is shown as a chart is, with a graph's gestures and keys ([`graph`]); the detail
-//! panel opens beside either, the figure laid out in what it leaves ([`panel`]).
+//! panel opens beside either, the figure laid out in what it leaves ([`panel`]). A dashboard (or
+//! a tile alone) is a figure of figures, each panel driven as it would be alone ([`dash`]); the
+//! commands a figure's data comes from are asked for, run and streamed while it shows
+//! ([`feeds`]).
 
+pub mod dash;
+mod feeds;
 pub mod graph;
 pub mod panel;
 
@@ -334,6 +339,8 @@ pub struct Pane {
     pub row_hover: Option<Mark>,
     /// The press under way began on the panel: its drags and release are the panel's.
     panel_press: bool,
+    /// The dashboard in this window, when the figure is one.
+    pub dash: Option<Box<dash::DashPane>>,
 }
 
 impl Pane {
@@ -394,6 +401,7 @@ impl Pane {
             fig_regions: 0,
             row_hover: None,
             panel_press: false,
+            dash: None,
         }
     }
 
@@ -912,6 +920,26 @@ pub struct FigState {
     /// The layout `auto` picked for the graph, kept while its spec still says `auto` and no
     /// setting chooses one, so an edit that follows the source doesn't lay it out anew.
     auto_pick: Option<Layout>,
+    /// The dashboard, when the figure is one (or a tile alone).
+    pub dash: Option<dash::DashState>,
+    /// The figure's commands, run and streamed while a window shows it.
+    pub live: Option<crate::live::Live>,
+    live_timer: Option<Sub>,
+    /// Your yeses (ruling 13), shared by every figure and kept by the session.
+    pub trust: Rc<RefCell<crate::live::Trust>>,
+    /// Goes up with each answer: the session's cache key.
+    pub trust_rev: u64,
+    /// A question is open in the prompt.
+    asking: bool,
+    /// The `file` panels of a dashboard with no file of its own, and what you said, this
+    /// session.
+    files_said: Vec<(PathBuf, bool)>,
+    /// What a restart kept of a dashboard's view, for when it's built.
+    pub dash_seed: Option<die_core::session::Value>,
+    /// The chart's tables that come from commands.
+    chart_feeds: Vec<source::Feed>,
+    /// What each command has printed so far, for a build of the chart.
+    live_tables: Vec<(crate::live::LiveSpec, Arc<Table>)>,
 }
 
 /// A figure's state, shared by its surface, the extension and its timers.
@@ -977,6 +1005,16 @@ impl FigState {
                 rev: 1,
                 pending: vec![],
                 auto_pick: None,
+                dash: None,
+                live: None,
+                live_timer: None,
+                trust: Rc::new(RefCell::new(crate::live::Trust::new())),
+                trust_rev: 0,
+                asking: false,
+                files_said: vec![],
+                dash_seed: None,
+                chart_feeds: vec![],
+                live_tables: vec![],
             })
         })
     }
@@ -1081,6 +1119,24 @@ impl FigState {
                 }
             }
         }
+        if let Some(d) = self.dash.as_ref().and_then(|d| d.model.as_ref()) {
+            let n = d.panels.len();
+            let pane = self.last.and_then(|w| self.panes.get(&w));
+            match pane
+                .and_then(|p| p.dash.as_ref())
+                .and_then(|dp| dp.view.focused)
+            {
+                Some(f) => s.push_str(&format!("  panel {}/{n}", f + 1)),
+                None => s.push_str(&format!("  {n} panels")),
+            }
+            if d.is_live() && pane.is_some_and(Pane::following) {
+                s.push_str("  following");
+            }
+        }
+        for n in self.live_notes() {
+            s.push_str("  ");
+            s.push_str(&n);
+        }
         if let Some(m) = &self.model {
             let n = m.keys().len();
             s.push_str(&format!("  {n} series"));
@@ -1141,8 +1197,9 @@ impl FigState {
         // This build applies the settings as they are now: a rebuild for them is no more use.
         self.rebuilding = None;
         let me = self.me.clone();
+        let live = self.live_tables.clone();
         self.building = Some(ctx.spawn(
-            move || source::build(job),
+            move || source::build_with(job, &live),
             move |ctx, out| {
                 if let Some(s) = me.upgrade() {
                     let mut st = s.borrow_mut();
@@ -1310,6 +1367,7 @@ impl FigState {
                     }
                     self.warned = b.warnings.clone();
                 }
+                let dash = dash::spec_of(&b.figure);
                 self.figure = Some(b.figure);
                 self.inferred = b.inferred;
                 self.chart = b.chart;
@@ -1329,10 +1387,30 @@ impl FigState {
                         .filter(|_| !self.warned.is_empty())
                         .map(|(top, mark)| (top, mark.min(lines.starts.len().saturating_sub(1))));
                 }
-                match (b.model, b.graph) {
-                    (Some(m), _) => self.new_model(m, ctx.now()),
-                    (None, Some(g)) => self.new_graph(g),
-                    (None, None) => {
+                self.chart_feeds = b.feeds;
+                match (dash, b.model, b.graph) {
+                    (Some(spec), ..) => {
+                        if self.model.is_some() || self.graph.is_some() {
+                            (self.model, self.graph) = (None, None);
+                            self.model_gen += 1;
+                            for p in self.panes.values_mut() {
+                                (p.layout, p.graph, p.hover, p.target) = (None, None, None, None);
+                                (p.cursor, p.panel, p.ease) = (None, None, None);
+                                p.gesture = Gesture::None;
+                            }
+                        }
+                        self.dash_built(ctx, spec);
+                    }
+                    (None, Some(m), _) => {
+                        self.leave_dash();
+                        self.new_model(m, ctx.now());
+                    }
+                    (None, None, Some(g)) => {
+                        self.leave_dash();
+                        self.new_graph(g);
+                    }
+                    (None, None, None) => {
+                        self.leave_dash();
                         (self.model, self.graph) = (None, None);
                         self.model_gen += 1;
                     }
@@ -1346,10 +1424,25 @@ impl FigState {
                         self.files.push((p.clone(), *t));
                     }
                 }
+                if !f.feeds.is_empty() {
+                    self.chart_feeds = f.feeds.clone();
+                }
                 self.failed(ctx, f);
             }
         }
         self.keep_polling(ctx);
+        self.live_sync(ctx);
+    }
+
+    /// The figure is no dashboard (any more): its windows' dashboards go.
+    fn leave_dash(&mut self) {
+        if self.dash.take().is_some() {
+            for p in self.panes.values_mut() {
+                p.dash = None;
+                p.drawn = None;
+                p.over_key = None;
+            }
+        }
     }
 
     /// A build failed: the error figure or the badge says so from now on, and `*messages*` does
@@ -1383,6 +1476,15 @@ impl FigState {
     /// cell let go, a zoomed view the data has left fits it again, and a view that follows
     /// live data slides to its newest.
     fn new_model(&mut self, model: ChartModel, now: Duration) {
+        // Live data moves rows: a cursor stays on its sample, by its series and x.
+        if let (false, Some(old)) = (self.chart_feeds.is_empty(), self.model.as_deref()) {
+            for p in self.panes.values_mut() {
+                p.cursor =
+                    (p.cursor.take()).and_then(|c| crate::live::keep_cursor(old, &model, &c));
+                p.view.reference = (p.view.reference.take())
+                    .and_then(|c| crate::live::keep_cursor(old, &model, &c));
+            }
+        }
         let keys = model.keys();
         let len = |key: &SeriesKey| {
             let s = model.series.iter().find(|s| &s.key == key);
@@ -1627,6 +1729,7 @@ impl FigState {
             self.build(ctx);
         }
         self.keep_polling(ctx);
+        self.live_sync(ctx);
         self.refresh(ctx);
     }
 
@@ -1724,11 +1827,23 @@ impl FigState {
         };
         let me = self.me.clone();
         let model_gen = self.model_gen;
+        let live = self.live_status(ctx.now());
         let mut kit = self.kit.borrow_mut();
         let mut easing = false;
         for (w, p) in &mut self.panes {
             if ctx.window_buffer(*w) != Some(buf) || p.base.is_none() {
                 continue;
+            }
+            if p.log.is_none()
+                && let Some(d) = self.dash.as_mut().filter(|d| d.model.is_some())
+            {
+                let gens = (self.theme_gen, self.fail_gen);
+                let failed = self.error.as_ref().filter(|f| !f.is_waiting());
+                easing |= dash::draw(p, d, live.clone(), gens, failed, &self.theme, &mut kit, now);
+                continue;
+            }
+            if let Some(dp) = p.dash.as_mut() {
+                dp.forget();
             }
             if let Some(e) = &p.ease
                 && e.tween.done(now)
@@ -1821,7 +1936,11 @@ impl FigState {
         if matches!(p.kind, PointerKind::Drag(_) | PointerKind::Release(_)) {
             pane.drag_mods = p.mods;
         }
-        let drawn = model.is_some() || self.graph.is_some();
+        let dashboard = self.dash_drawn(p.window);
+        let Some(pane) = self.panes.get_mut(&p.window) else {
+            return;
+        };
+        let drawn = model.is_some() || self.graph.is_some() || dashboard;
         if pane.log.is_none() && drawn {
             // The panel takes what's over it, then a graph's gestures, else a chart's.
             if self.panel_pointer(ctx, p, at, swallow) {
@@ -1836,6 +1955,9 @@ impl FigState {
             {
                 panel.state.focused = false;
                 panel.rev += 1;
+            }
+            if dashboard {
+                return self.dash_pointer(ctx, p, at, swallow);
             }
             if self.graph.is_some() {
                 return self.graph_pointer(ctx, p, at, swallow);
@@ -1872,67 +1994,26 @@ impl FigState {
             motion,
             now,
         };
-        match p.kind {
-            PointerKind::Move => {
-                cx.pane.hovering = true;
-                cx.pane.rehover = true;
-            }
-            PointerKind::Press(b @ (Button::Left | Button::Middle)) => {
-                cx.pane.help = false;
-                if cx.pane.gesturing() && cx.pane.held != Some(b) {
-                    // A second button mid-drag: it ends nothing and starts nothing.
-                    return;
+        let w = p.window;
+        cx.pointer(p, at, swallow, || {
+            let me = me.clone();
+            ctx.after(Duration::from_millis(SCROLL_BURST_MS), move |ctx| {
+                if let Some(s) = me.upgrade() {
+                    let mut st = s.borrow_mut();
+                    st.end_burst(w);
+                    st.refresh(ctx);
                 }
-                if cx.pane.gesturing() {
-                    // The same button again: its release was lost. What it did stays.
-                    cx.finish();
-                }
-                cx.pane.held = Some(b);
-                (cx.pane.frozen, cx.pane.drag_mods) = (None, p.mods);
-                if swallow {
-                    cx.pane.gesture = Gesture::Swallowed;
-                    return;
-                }
-                let hit = cx.pane.hit_at(at);
-                if p.clicks >= 2 && b == Button::Left {
-                    cx.double(&hit);
-                    cx.pane.gesture = Gesture::Swallowed;
-                    return;
-                }
-                cx.pane.gesture = Gesture::Pressed {
-                    at,
-                    hit,
-                    button: b,
-                    mods: p.mods,
-                    clicks: p.clicks,
-                };
-                cx.pane.drag_last = at;
-            }
-            // The right button opens nothing: there is no dial.
-            PointerKind::Press(Button::Right) => {}
-            PointerKind::Drag(_) => cx.drag(at),
-            PointerKind::Release(b) => {
-                cx.release(b, at);
-            }
-            PointerKind::Scroll { dx, dy } => {
-                let w = p.window;
-                cx.scroll(dx, dy, at, p.mods, || {
-                    let me = me.clone();
-                    ctx.after(Duration::from_millis(SCROLL_BURST_MS), move |ctx| {
-                        if let Some(s) = me.upgrade() {
-                            let mut st = s.borrow_mut();
-                            st.end_burst(w);
-                            st.refresh(ctx);
-                        }
-                        Ok(())
-                    })
-                });
-            }
-        }
+                Ok(())
+            })
+        });
     }
 
     /// The scroll burst in a window ends: one undo step for what it did.
     pub fn end_burst(&mut self, w: WindowId) {
+        if self.dash_end_burst(w) {
+            self.rev += 1;
+            return;
+        }
         let toggles = self.toggles;
         if let Some(p) = self.panes.get_mut(&w)
             && let Some(b) = p.burst.take()
@@ -1975,6 +2056,10 @@ impl FigState {
             (p.gesture, p.held) = (Gesture::Swallowed, None);
             return;
         }
+        if self.dash_drawn(w) {
+            self.dash_finish(w, now);
+            return;
+        }
         if self.graph.is_some() {
             self.graph_act(w, now, |g| g.finish());
             return;
@@ -2003,6 +2088,28 @@ impl FigState {
     /// was nothing.
     pub fn cancel(&mut self, w: WindowId, now: Duration) -> bool {
         self.end_burst(w);
+        if self.dash_drawn(w) {
+            let Some(p) = self.panes.get_mut(&w) else {
+                return false;
+            };
+            let held = p.dash.as_ref().is_some_and(|d| d.gesturing());
+            let done = if held {
+                return self.dash_cancel(w);
+            } else if p.help {
+                p.help = false;
+                true
+            } else if p.panel.take().is_some() {
+                p.row_hover = None;
+                true
+            } else {
+                return self.dash_cancel(w) && {
+                    self.rev += 1;
+                    true
+                };
+            };
+            self.rev += 1;
+            return done;
+        }
         let graph = self.graph.is_some();
         if let Some(p) = self.panes.get_mut(&w)
             && p.log.is_none()
@@ -2069,6 +2176,7 @@ impl FigState {
 
     /// The pointer left a window's area: its hover, card and emphasis go.
     fn left(&mut self, w: WindowId) {
+        self.dash_left(w);
         if let Some(p) = self.panes.get_mut(&w) {
             p.pointer = None;
             p.hovering = false;
@@ -2118,6 +2226,9 @@ impl FigState {
     /// nothing to undo or redo.
     pub fn undo(&mut self, ctx: &mut Ctx, w: WindowId, redo: bool) -> bool {
         let now = ctx.now();
+        if self.dash_drawn(w) {
+            return self.dash_undo(w, now, redo);
+        }
         let toggles = self.toggles;
         let step = |pane: &mut Pane| {
             let current = Snap {
@@ -2358,6 +2469,62 @@ impl Act<'_> {
         };
         let px = (b - a) / f64::from(l.plot.w.max(1.0));
         self.pane.view.follow = (n - b).abs() <= px;
+    }
+
+    /// A pointer event on the chart at `at` (logical px in its area), as its window has it, or
+    /// a dashboard's panel: hover needs no click, a press is held by its button (a second
+    /// button mid-drag ends nothing and starts nothing; the same again ends what its lost
+    /// release left), the focusing press (`swallow`) only focuses, a double click acts at
+    /// once, and the wheel's burst ends on the timer `arm` sets.
+    pub fn pointer(
+        &mut self,
+        p: &SurfacePointer,
+        at: (f32, f32),
+        swallow: bool,
+        arm: impl FnOnce() -> Sub,
+    ) {
+        match p.kind {
+            PointerKind::Move => {
+                self.pane.hovering = true;
+                self.pane.rehover = true;
+            }
+            PointerKind::Press(b @ (Button::Left | Button::Middle)) => {
+                self.pane.help = false;
+                if self.pane.gesturing() && self.pane.held != Some(b) {
+                    // A second button mid-drag: it ends nothing and starts nothing.
+                    return;
+                }
+                if self.pane.gesturing() {
+                    // The same button again: its release was lost. What it did stays.
+                    self.finish();
+                }
+                self.pane.held = Some(b);
+                (self.pane.frozen, self.pane.drag_mods) = (None, p.mods);
+                if swallow {
+                    self.pane.gesture = Gesture::Swallowed;
+                    return;
+                }
+                let hit = self.pane.hit_at(at);
+                if p.clicks >= 2 && b == Button::Left {
+                    self.double(&hit);
+                    self.pane.gesture = Gesture::Swallowed;
+                    return;
+                }
+                self.pane.gesture = Gesture::Pressed {
+                    at,
+                    hit,
+                    button: b,
+                    mods: p.mods,
+                    clicks: p.clicks,
+                };
+                self.pane.drag_last = at;
+            }
+            // The right button opens nothing: there is no dial.
+            PointerKind::Press(Button::Right) => {}
+            PointerKind::Drag(_) => self.drag(at),
+            PointerKind::Release(b) => self.release(b, at),
+            PointerKind::Scroll { dx, dy } => self.scroll(dx, dy, at, p.mods, arm),
+        }
     }
 
     fn finish(&mut self) {
@@ -3005,6 +3172,9 @@ impl FigState {
         now: Duration,
         f: impl FnOnce(&mut dyn Keys) -> R,
     ) -> Option<R> {
+        if self.dash_drawn(w) {
+            return self.dash_keys(w, now, f);
+        }
         if self.graph.is_some() {
             return self.graph_act(w, now, |g| f(g));
         }
@@ -3020,6 +3190,8 @@ impl FigState {
 /// What a job draws a figure's picture from: everything a model is built of (or a graph's model,
 /// laid out), the view, the size and the colours, with fonts of its own (ruling 12).
 pub struct Picture {
+    /// A dashboard, laid out on the main thread at 2× and 1×.
+    dash: Option<(Scene, Scene)>,
     graph: Option<Arc<GraphModel>>,
     chart: Option<Chart>,
     tables: Vec<Arc<Table>>,
@@ -3034,6 +3206,11 @@ pub struct Picture {
 impl Picture {
     /// The chart's base scene at `scale`, with the fonts loaded for it.
     fn scene(&self, scale: f32) -> std::result::Result<(Scene, Option<Book>), String> {
+        if let Some((two, one)) = &self.dash {
+            let book = Book::load(self.fonts.as_deref()).ok();
+            let scene = if scale >= 1.5 { two } else { one };
+            return Ok((scene.clone(), book));
+        }
         if let Some(g) = &self.graph {
             let mut book = Book::load(self.fonts.as_deref()).ok();
             let (scene, _) = measured(book.as_mut(), scale, |m| {
@@ -3073,6 +3250,21 @@ impl Picture {
 impl FigState {
     /// What a job needs to draw the figure as a window shows it (or at 880 × 470 with no window).
     pub fn picture(&self, w: Option<WindowId>) -> Option<Picture> {
+        if let Some(scenes) = self.dash_scenes(w) {
+            let pane = w.and_then(|w| self.panes.get(&w));
+            return Some(Picture {
+                dash: Some(scenes),
+                graph: None,
+                chart: None,
+                tables: vec![],
+                toggles: self.toggles,
+                zone: self.zone.clone(),
+                view: View::default(),
+                size: pane.map_or((880.0, 610.0), Pane::size),
+                theme: self.theme.clone(),
+                fonts: self.kit.borrow().fonts.clone(),
+            });
+        }
         let graph = self.graph.clone();
         let chart = match (&graph, &self.chart, &self.model) {
             (Some(_), ..) => None,
@@ -3086,6 +3278,7 @@ impl FigState {
         });
         let size = pane.map_or((880.0, 470.0), Pane::size);
         Some(Picture {
+            dash: None,
             graph,
             chart,
             tables: self.tables.clone(),
@@ -3162,6 +3355,9 @@ fn draw_base(
                 }
                 (s, Some(l), Some(h))
             }
+            (None, Shows::Nothing, Some(f)) if f.is_waiting() => {
+                (waiting(size, scale, f, theme, m), None, None)
+            }
             (None, Shows::Nothing, Some(f)) => {
                 (figure(&f.all(), ErrorView::Symbolic, m), None, None)
             }
@@ -3225,6 +3421,27 @@ fn draw_base(
     });
     p.hits = hits;
     p.base_gen += 1;
+}
+
+/// A figure waiting for its commands to print (not a failure): quiet, a muted line where a
+/// title would be (`waiting for ./ticker.sh`), and nothing else, no spinner.
+fn waiting(size: (f32, f32), scale: f32, f: &Failed, theme: &Theme, m: &mut dyn Measure) -> Scene {
+    let mut s = Scene::new(size.0, size.1, scale);
+    s.region(Rect::new(0.0, 0.0, size.0, size.1), Hit::Chrome);
+    let spec = TextSpec::new(12.0);
+    let x = crate::dashboard::layout::margin(size.0);
+    let text = m.fit(&f.first().msg, spec, (size.0 - 2.0 * x).max(0.0));
+    s.push(Item::Text {
+        text: text.into(),
+        x,
+        y: 38.0,
+        spec,
+        anchor: Anchor::Start,
+        color: theme.muted,
+        alpha: 1.0,
+        max_width: None,
+    });
+    s
 }
 
 /// Draw a pane's overlay where what it shows changed: it clears and draws the union of what it

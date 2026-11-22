@@ -338,8 +338,8 @@ pub struct Failure {
 pub enum PanelState {
     /// A chart.
     Chart(ChartModel),
-    /// A graph, laid out.
-    Graph(GraphModel),
+    /// A graph, laid out (shared with the editor's panes, which ease its pins).
+    Graph(Arc<GraphModel>),
     /// A tile.
     Tile(Tile),
     /// Its data is still coming: its frame and title only.
@@ -834,7 +834,7 @@ impl Builder<'_> {
                 panel.title = g.title.take().filter(|t| !t.is_empty());
                 panel.subtitle = g.subtitle.take().filter(|t| !t.is_empty());
                 match GraphModel::build(g) {
-                    Ok(m) => PanelState::Graph(m),
+                    Ok(m) => PanelState::Graph(Arc::new(m)),
                     Err(e) => fail(vec![scope.placed(e)], &name),
                 }
             }
