@@ -3829,3 +3829,26 @@ fn a_rules_label_goes_where_no_line_crosses_it() {
         }
     }
 }
+
+#[test]
+fn a_short_plot_ends_its_y_at_the_data_rather_than_doubling_it() {
+    // requests.csv in a plot under 120 px tall: the calmest grid would run to 2,000 for data to
+    // about 1,060; the domain keeps within a fifth of the data instead.
+    let m = load("requests.csv");
+    let mut checked = 0;
+    for h in [130.0, 150.0, 160.0, 180.0] {
+        let (_, l, _) = lay(&m, &View::default(), (400.0, h));
+        if l.plot.h >= 120.0 {
+            continue;
+        }
+        checked += 1;
+        let (_, dy) = m.fit(&View::default());
+        let (lo, hi) = l.y.domain();
+        assert!(
+            hi - lo <= 1.2 * (dy.1 - lo.min(dy.0)),
+            "at {h}: {lo}..{hi} for data to {}",
+            dy.1
+        );
+    }
+    assert!(checked > 0, "a plot under 120 px");
+}

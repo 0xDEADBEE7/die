@@ -1155,3 +1155,37 @@ fn a_brush_on_a_linked_chart_shows_in_every_linked_chart() {
     // No card while brushing, nor a moment's line.
     assert!(!o.items.iter().any(|i| matches!(i, Item::Shadow { .. })));
 }
+
+#[test]
+fn the_chip_names_the_specs_range_while_a_live_source_is_still_coming() {
+    let main = r#"{"type": "dashboard", "data": {"t": {"stream": "./ticker.sh"}},
+        "time": {"field": "time", "range": "15m"},
+        "rows": [[{"type": "line", "title": "T", "data": "t", "x": "time", "y": "v"}]]}"#;
+    let m = model_from(main, &[], &Sources::new());
+    let v = DashView::initial(&m);
+    assert_eq!(v.time, None, "no data to end a range at yet");
+    assert_eq!(v.chip(&m).as_deref(), Some("Last 15 minutes"));
+}
+
+#[test]
+fn a_graph_panel_is_as_tall_as_its_ranks_need_and_its_nodes_never_meet() {
+    // ops.fig at 400 px wide: the services graph's six ranks get their room, every node clear
+    // of every other, and every one labelled.
+    let m = model_of("ops.fig");
+    let l = lay(&m, &DashView::initial(&m), (400.0, 600.0));
+    let g = (0..m.panels.len())
+        .find(|&i| m.panels[i].graph().is_some())
+        .expect("a graph");
+    let p = l.panel(g).unwrap();
+    assert!(p.frame.h > 180.0, "{:?}", p.frame);
+    let gl = p.graph().expect("its layout");
+    let nodes: Vec<_> = gl.nodes.iter().flatten().collect();
+    for (i, a) in nodes.iter().enumerate() {
+        for b in &nodes[i + 1..] {
+            let d = (a.at.0 - b.at.0).hypot(a.at.1 - b.at.1);
+            assert!(d >= a.r + b.r + 4.0, "{:?} and {:?} meet", a.at, b.at);
+        }
+    }
+    let labelled = gl.labels.iter().flatten().count();
+    assert_eq!(labelled, nodes.len(), "every node labelled");
+}
