@@ -1,0 +1,8 @@
+{
+  "type": "area",
+  "title": "Errors per minute",
+  "subtitle": "from parts/errors.fig",
+  "data": "../service.csv",
+  "x": "time",
+  "y": { "field": "errors", "title": "" }
+}

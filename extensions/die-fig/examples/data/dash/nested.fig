@@ -1,0 +1,15 @@
+{
+  "type": "dashboard",
+  "title": "Nested figures",
+  "data": { "req": "health.fig#req" },
+  "time": { "field": "time", "range": "6h" },
+  "rows": [
+    [
+      { "type": "line", "title": "Requests per minute", "subtitle": "data borrowed from health.fig#req",
+        "data": "req", "transform": [{ "fold": ["api", "worker", "batch"], "as": ["service", "rpm"] }],
+        "x": "time", "y": { "field": "rpm", "title": "" }, "color": "service" },
+      { "file": "parts/errors.fig" }
+    ],
+    { "height": 1.2, "panels": [{ "file": "parts/latency.fig" }] }
+  ]
+}
