@@ -1,6 +1,6 @@
 //! Where a figure's text and data come from, and how they're followed: the source buffer's
-//! edits, a file's changes by poll; and in phase 4 commands run and streamed, each asked for
-//! once by name (ruling 13).
+//! edits, a file's changes by poll, and commands run and streamed ([`crate::live`]), each asked
+//! for once by name (ruling 13).
 //!
 //! A figure's own text is a buffer's (followed as it's edited), a file's (`:fig FILE`, polled
 //! while a window shows it), a command's output (`:fig !cmd`, run once), or a selection's lines
@@ -8,13 +8,19 @@
 //! job, [`build`], off the main thread: the job is given the text of every buffer that visits a
 //! file, so a data file open in a buffer is read from the buffer and follows its edits, and the
 //! rest from disk, polled. A chart's model is built there, and so is a graph's, laid out once
-//! (fig's stress layout is `O(n²)`); a spec whose data is a command's (`run`, `stream`) says
-//! those arrive in a later build, as do tiles and dashboards.
+//! (fig's stress layout is `O(n²)`); tiles and dashboards arrive in a later build.
+//!
+//! A chart whose data is a command's (`run`, `stream`) is built by [`build_with`] from the
+//! tables its commands have printed so far, which [`crate::live::Live`] gives the editor. The
+//! build says which tables come from which command ([`Built::feeds`]), so a stream's fold or a
+//! run's new output need only [`rebuild`] the model from the tables in hand; a command that
+//! hasn't printed yet leaves the figure waiting for it ([`Failed::waiting`]), not failed.
 
 use crate::data::{ReadOptions, Table};
 use crate::error::{ErrorKind, FigError, Pos, Result};
 use crate::graph::GraphModel;
 use crate::interact::Toggles;
+use crate::live::LiveSpec;
 use crate::plot::ChartModel;
 use crate::spec::chart::with_hints;
 use crate::spec::{
@@ -26,9 +32,6 @@ use std::fmt::Display;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
-
-/// What a phase-2 build says of a source it can't read yet.
-pub const LATER_RUN: &str = "run and stream sources arrive in a later build";
 
 /// Where a figure's own text comes from.
 #[derive(Clone, Debug, PartialEq)]
@@ -122,6 +125,18 @@ pub struct Job {
     pub auto: Option<Layout>,
 }
 
+/// A command one of a chart's tables comes from, run or streamed by [`crate::live`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Feed {
+    /// The table it fills, as [`Built::tables`] numbers them: 0 the chart's data, then each
+    /// layer's own in order.
+    pub table: usize,
+    /// The command, where it runs, and how what it prints is read.
+    pub spec: LiveSpec,
+    /// It hasn't printed yet: the build had no table of it, and the figure waits for it.
+    pub waiting: bool,
+}
+
 /// What a build job made.
 pub struct Built {
     /// The figure as parsed.
@@ -143,6 +158,8 @@ pub struct Built {
     pub files: Vec<(PathBuf, Option<SystemTime>)>,
     /// The data files read from buffers: followed as they're edited.
     pub followed: Vec<PathBuf>,
+    /// The commands its tables come from: kept running while it shows.
+    pub feeds: Vec<Feed>,
     /// The figure's own text as the build read it, for the log's caret lines.
     pub text: Arc<str>,
 }
@@ -160,6 +177,10 @@ pub struct Failed {
     pub text: Arc<str>,
     /// The files read from disk before it failed: polled, so fixing one brings the figure back.
     pub files: Vec<(PathBuf, Option<SystemTime>)>,
+    /// The commands its tables come from, as far as the build got: started (once you've said
+    /// yes) so their output can bring it back, or bring it at all. Those that haven't printed
+    /// yet are waited for ([`Failed::waiting`]).
+    pub feeds: Vec<Feed>,
 }
 
 impl Failed {
@@ -170,7 +191,19 @@ impl Failed {
             warnings: vec![],
             text: Arc::from(""),
             files: vec![],
+            feeds: vec![],
         }
+    }
+
+    /// The commands it waits for, which haven't printed yet: not a failure, so the figure waits
+    /// quietly (its errors say what for, an empty kind each).
+    pub fn waiting(&self) -> Vec<&LiveSpec> {
+        waited(&self.feeds)
+    }
+
+    /// Whether it only waits for commands to print: nothing went wrong.
+    pub fn is_waiting(&self) -> bool {
+        self.feeds.iter().any(|f| f.waiting)
     }
 
     /// The error the badge and the symbolic figure name.
@@ -188,8 +221,17 @@ impl Failed {
 /// Parse a figure's text, read its data and build its chart's model: off the main thread.
 /// A failure has every error the build could find: the parse's (with its place), a data file's
 /// (naming it), each field the data hasn't and each cell of text where the spec says numbers,
-/// the model's; each with what was tried on the way.
+/// the model's; each with what was tried on the way. A chart of a command's data waits for it:
+/// see [`build_with`].
 pub fn build(job: Job) -> std::result::Result<Built, Failed> {
+    build_with(job, &[])
+}
+
+/// [`build`], with the tables commands have printed so far (`live`, each by the [`LiveSpec`]
+/// it was read by, as [`crate::live::Live`]'s data gives them). A command's table not among
+/// them leaves the figure waiting: [`Failed::waiting`] names each, and [`Failed::feeds`] says
+/// what to start.
+pub fn build_with(job: Job, live: &[(LiveSpec, Arc<Table>)]) -> std::result::Result<Built, Failed> {
     let mut files = vec![];
     let text = match &job.text {
         Text::Of(r) => r.to_string(),
@@ -214,6 +256,7 @@ pub fn build(job: Job) -> std::result::Result<Built, Failed> {
         warnings,
         text: text.clone(),
         files,
+        feeds: vec![],
     };
     let opt = ReadOptions::new(job.zone.clone());
     let Parsed {
@@ -244,6 +287,7 @@ pub fn build(job: Job) -> std::result::Result<Built, Failed> {
                     warnings,
                     files,
                     followed: vec![],
+                    feeds: vec![],
                     text,
                 }),
                 Err(e) => Err(failed(vec![e], warnings, files)),
@@ -260,34 +304,45 @@ pub fn build(job: Job) -> std::result::Result<Built, Failed> {
         opt: &opt,
         dir: &job.dir,
         spec: if inferred { None } else { Some(&text) },
+        live,
         files: std::mem::take(&mut files),
         followed: vec![],
         read: vec![],
+        feeds: vec![],
     };
-    let tables = match reader.tables(&chart) {
-        Ok(Ok(t)) => t,
-        Ok(Err(error)) => return Err(failed(vec![error], warnings, reader.files)),
-        Err(Later) => {
-            let e = FigError::new(LATER_RUN).with_kind(ErrorKind::Empty);
-            return Err(failed(vec![e], warnings, reader.files));
-        }
+    let tables = reader.tables(&chart);
+    // From here a failure carries the commands' feeds too: started, their output can bring
+    // the figure back.
+    let fail = |errors, warnings, reader: Reader<'_>| Failed {
+        feeds: reader.feeds,
+        ..failed(errors, warnings, reader.files)
     };
+    let tables = match tables {
+        Ok(t) => t,
+        Err(error) => return Err(fail(vec![error], warnings, reader)),
+    };
+    let waits = waited(&reader.feeds);
+    if !waits.is_empty() {
+        let errors = waits.into_iter().map(waiting_for).collect();
+        return Err(fail(errors, warnings, reader));
+    }
     // Data that's all there but has no rows: nothing to draw, whatever the spec says.
     if !tables.is_empty() && tables.iter().all(|t| t.rows == 0) {
-        let named = reader.read.first().map(|r| shown(&r.path));
+        let named = (reader.read.first().map(|r| shown(&r.path)))
+            .or_else(|| reader.feeds.first().map(|f| f.spec.cmd().to_string()));
         let what = named.unwrap_or_else(|| "the data".into());
         let mut e = FigError::new(format!("nothing to draw: {what} has no rows"))
             .with_kind(ErrorKind::Empty);
         for r in &reader.read {
             e = e.note(r.said());
         }
-        return Err(failed(vec![e], warnings, reader.files));
+        return Err(fail(vec![e], warnings, reader));
     }
     let model = match ChartModel::build(job.toggles.apply(&chart), tables.clone(), &job.zone) {
         Ok(m) => m,
         Err(e) => {
             let errors = problems(&chart, &tables, &reader, e);
-            return Err(failed(errors, warnings, reader.files));
+            return Err(fail(errors, warnings, reader));
         }
     };
     // Rows read, and none left to chart (a filter that keeps nothing): nothing to draw too.
@@ -310,7 +365,7 @@ pub fn build(job: Job) -> std::result::Result<Built, Failed> {
         for r in &reader.read {
             e = e.note(r.said());
         }
-        return Err(failed(vec![e], warnings, reader.files));
+        return Err(fail(vec![e], warnings, reader));
     }
     Ok(Built {
         figure,
@@ -322,8 +377,32 @@ pub fn build(job: Job) -> std::result::Result<Built, Failed> {
         warnings,
         files: reader.files,
         followed: reader.followed,
+        feeds: reader.feeds,
         text,
     })
+}
+
+/// The commands of these feeds that haven't printed yet, each once, in order.
+fn waited(feeds: &[Feed]) -> Vec<&LiveSpec> {
+    let mut out: Vec<&LiveSpec> = vec![];
+    for f in feeds.iter().filter(|f| f.waiting) {
+        if !out.contains(&&f.spec) {
+            out.push(&f.spec);
+        }
+    }
+    out
+}
+
+/// What a figure waiting for a command says: `waiting for ./ticker.sh`, with how it's run.
+fn waiting_for(spec: &LiveSpec) -> FigError {
+    let how = match (spec.is_stream(), spec.every()) {
+        (true, _) => "streamed".to_string(),
+        (false, Some(e)) => format!("run every {}", crate::spec::chart::format_duration(e)),
+        (false, None) => "run once".to_string(),
+    };
+    FigError::new(format!("waiting for {}", spec.cmd()))
+        .with_kind(ErrorKind::Empty)
+        .note(format!("{how} in {}", spec.dir.display()))
 }
 
 /// How a figure's own text was read, for the log: `read NAME as JSON`.
@@ -506,9 +585,6 @@ fn kind_plural(f: &Figure) -> &'static str {
     }
 }
 
-/// A source the build can't read yet: a command's.
-struct Later;
-
 /// A data file read: which table it made, its path, text and format, and how many rows.
 struct ReadFile {
     table: usize,
@@ -575,44 +651,47 @@ struct Reader<'a> {
     dir: &'a Path,
     /// The spec's own text, where the figure's text is one: a data path's place is in it.
     spec: Option<&'a str>,
+    /// What commands have printed so far.
+    live: &'a [(LiveSpec, Arc<Table>)],
     files: Vec<(PathBuf, Option<SystemTime>)>,
     followed: Vec<PathBuf>,
     read: Vec<ReadFile>,
+    feeds: Vec<Feed>,
 }
 
 impl Reader<'_> {
-    /// The chart's data's table, then each layer's own, in order.
-    fn tables(
-        &mut self,
-        chart: &Chart,
-    ) -> std::result::Result<std::result::Result<Vec<Arc<Table>>, FigError>, Later> {
-        let mut out = vec![];
+    /// The chart's data's table, then each layer's own, in order. A command's that hasn't
+    /// printed yet is an empty table, its feed waiting.
+    fn tables(&mut self, chart: &Chart) -> Result<Vec<Arc<Table>>> {
         let own = chart.layers.iter().filter_map(|l| l.data.as_ref());
-        for (i, spec) in std::iter::once(&chart.data).chain(own).enumerate() {
-            match self.table(i, spec)? {
-                Ok(t) => out.push(t),
-                Err(e) => return Ok(Err(e)),
-            }
-        }
-        Ok(Ok(out))
+        (std::iter::once(&chart.data).chain(own).enumerate())
+            .map(|(i, spec)| self.table(i, spec))
+            .collect()
     }
 
-    fn table(
-        &mut self,
-        i: usize,
-        spec: &DataSpec,
-    ) -> std::result::Result<Result<Arc<Table>>, Later> {
-        Ok(match &spec.source {
+    fn table(&mut self, i: usize, spec: &DataSpec) -> Result<Arc<Table>> {
+        match &spec.source {
             DataRef::Inline(t) => Ok(t.clone()),
             DataRef::File(path) => self.file(i, path, spec),
-            DataRef::Run { .. } | DataRef::Stream { .. } => return Err(Later),
+            DataRef::Run { .. } | DataRef::Stream { .. } => {
+                let Some(live) = LiveSpec::of(spec, self.dir) else {
+                    return Ok(Arc::default());
+                };
+                let had = self.live.iter().find(|(s, _)| *s == live).map(|(_, t)| t);
+                self.feeds.push(Feed {
+                    table: i,
+                    spec: live,
+                    waiting: had.is_none(),
+                });
+                Ok(had.cloned().unwrap_or_default())
+            }
             DataRef::Named(name) => Err(FigError::new(format!(
                 "\"{name}\" names a dashboard's data, outside a dashboard"
             ))),
             DataRef::Source => Err(FigError::new(
                 "\"data\": \"-\" is the buffer itself, which is the spec here",
             )),
-        })
+        }
     }
 
     fn file(&mut self, i: usize, path: &Path, spec: &DataSpec) -> Result<Arc<Table>> {
@@ -694,7 +773,7 @@ pub fn relative(path: &Path, dir: &Path) -> String {
 }
 
 /// A data format as the log names it.
-fn format_label(f: DataFormat) -> &'static str {
+pub(crate) fn format_label(f: DataFormat) -> &'static str {
     match f {
         DataFormat::Csv => "CSV",
         DataFormat::Tsv => "TSV",
@@ -785,7 +864,7 @@ pub fn read_data(text: &str, spec: &DataSpec, name: &str, opt: &ReadOptions) -> 
 
 /// JSON by its first character, else TSV when the first line has more tabs than commas, else
 /// CSV.
-fn sniff(text: &str) -> DataFormat {
+pub(crate) fn sniff(text: &str) -> DataFormat {
     let body = text.trim_start_matches(['\u{feff}', ' ', '\t', '\r', '\n']);
     if body.starts_with(['{', '[']) {
         return if body.starts_with('{')

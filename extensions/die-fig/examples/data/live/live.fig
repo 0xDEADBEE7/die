@@ -1,0 +1,48 @@
+{
+  "type": "dashboard",
+  "title": "Live",
+  "data": {
+    "ticks": {"stream": "./ticker.sh"},
+    "errors": {"run": "./errors.sh", "every": "5s"}
+  },
+  "time": {"field": "time", "range": "15m"},
+  "rows": [
+    [
+      {
+        "type": "stat",
+        "label": "Requests per minute",
+        "data": "ticks",
+        "value": {"mean": "rpm"},
+        "trend": "time"
+      },
+      {
+        "type": "stat",
+        "label": "Errors",
+        "data": "ticks",
+        "value": {"sum": "errors"},
+        "trend": "time",
+        "good": "down"
+      }
+    ],
+    [
+      {
+        "type": "line",
+        "title": "Requests per minute",
+        "subtitle": "ticker.sh, streamed",
+        "data": "ticks",
+        "x": "time",
+        "y": {"field": "rpm", "title": "req / min"},
+        "span": 2
+      },
+      {
+        "type": "bar",
+        "title": "Errors per minute",
+        "subtitle": "errors.sh, every 5 s",
+        "data": "errors",
+        "x": "time",
+        "y": "errors",
+        "color": "service"
+      }
+    ]
+  ]
+}

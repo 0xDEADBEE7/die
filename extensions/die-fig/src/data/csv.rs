@@ -100,6 +100,25 @@ pub fn read_csv(text: &str, opt: &ReadOptions) -> Result<Table> {
     Table::new(columns)
 }
 
+/// One line's fields, split as [`read_csv`] splits a record (quotes, `""`, the blanks around a
+/// field): a stream's row, a line each. A quote left open is an error at its column.
+pub(crate) fn fields(line: &str, delim: u8) -> Result<Vec<Cow<'_, str>>> {
+    let mut p = Parser {
+        text: line,
+        bytes: line.as_bytes(),
+        i: 0,
+        delim,
+    };
+    let mut rec = Vec::new();
+    p.record(&mut rec)?;
+    Ok(rec.into_iter().map(|f| f.text).collect())
+}
+
+/// The delimiter a line uses most outside quotes: `,`, tab or `;`, `,` on a tie.
+pub(crate) fn sniff_line(line: &str) -> u8 {
+    sniff(line)
+}
+
 /// Where the cell of column `name` in row `row` (from 0, the header not counted) is in `text`,
 /// read as [`read_csv`] reads it, and how many chars wide it is: for an error that names a cell,
 /// so the error figure's caret can sit under it. None where there's no such cell.
