@@ -10,8 +10,10 @@
 //!   share its width by `span`; a row whose panels can't all have their least width wraps
 //!   onto as few lines as let them, its panels shared evenly between the lines. A line of tiles only (or of columns of tiles) takes the
 //!   tiles' natural height; the other lines share what's left by their row's `height`, each at
-//!   least its panels' least (charts and graphs 180 px). When the least heights don't fit, the
-//!   rows scroll under the header, with a 4 px scrollbar in the right margin.
+//!   least its panels' least (charts and graphs 180 px) and at least 45 % of the room under
+//!   the header (up to 320 px), so a narrow area that stacks its charts scrolls rather than
+//!   squeezing each to a strip. When the least heights don't fit, the rows scroll under the
+//!   header, with a 4 px scrollbar in the right margin.
 //! - **A panel** is a rounded frame. Its title (13 px semibold) and subtitle (12 px muted) sit
 //!   16 px in; its figure lays out in the rest by its own layout (a chart with the panel's
 //!   insets, a graph and an error figure under the title, a tile over the whole frame), so it
@@ -66,6 +68,9 @@ pub const MIN_WIDTH: f32 = 220.0;
 const GRAPH_CHROME: f32 = 104.0;
 /// A tile panel's height when it has no model to say (waiting, failed).
 pub const TILE_HEIGHT: f32 = 100.0;
+/// The share of the room under the header a line of figures takes at least, and the most that
+/// comes to: a chart stacked on a narrow area stays readable, and the page scrolls.
+pub const LINE_SHARE: (f32, f32) = (0.45, 320.0);
 /// The scrollbar's width.
 pub const SCROLLBAR: f32 = 4.0;
 /// A panel's title baseline and its subtitle's, from the frame's top (m4).
@@ -411,7 +416,8 @@ fn lay_out(
         (content, max_scroll, scroll) = (room + FOOT, 0.0, 0.0);
     } else {
         let lines = cx.lines_of(&model.rows, across);
-        let heights = cx.distribute(&lines, room, ROW_GAP);
+        let floor = (room * LINE_SHARE.0).min(LINE_SHARE.1).floor();
+        let heights = cx.distribute(&lines, room, ROW_GAP, floor);
         let total: f32 =
             heights.iter().sum::<f32>() + ROW_GAP * lines.len().saturating_sub(1) as f32;
         max_scroll = (total - room).max(0.0).round();
@@ -697,8 +703,8 @@ impl Cx<'_, '_> {
     }
 
     /// The lines' heights in `room`: tiles' lines their natural height, the others what's
-    /// left by weight, each at least its least.
-    fn distribute(&mut self, lines: &[Line<'_>], room: f32, gap: f32) -> Vec<f32> {
+    /// left by weight, each at least its least and `floor`.
+    fn distribute(&mut self, lines: &[Line<'_>], room: f32, gap: f32, floor: f32) -> Vec<f32> {
         let mut fixed: Vec<Option<f32>> = Vec::with_capacity(lines.len());
         let mut mins = Vec::with_capacity(lines.len());
         for l in lines {
@@ -710,6 +716,9 @@ impl Cx<'_, '_> {
                     _ => None,
                 };
                 min = min.max(self.min_h(c));
+            }
+            if f.is_none() {
+                min = min.max(floor);
             }
             fixed.push(f);
             mins.push(min);
@@ -756,7 +765,7 @@ impl Cx<'_, '_> {
                         weight: 1.0,
                     })
                     .collect();
-                let heights = self.distribute(&lines, rect.h, GAP);
+                let heights = self.distribute(&lines, rect.h, GAP, 0.0);
                 let mut y = rect.y;
                 for (l, lh) in lines.iter().zip(heights) {
                     self.place_line(l, Rect::new(rect.x, y, rect.w, lh), false);
@@ -796,7 +805,7 @@ impl Cx<'_, '_> {
             (frame.h - head - GROUP_PAD).max(0.0),
         );
         let lines = self.lines_of(&g.rows, inner.w);
-        let heights = self.distribute(&lines, inner.h, ROW_GAP);
+        let heights = self.distribute(&lines, inner.h, ROW_GAP, 0.0);
         let mut y = inner.y;
         for (l, lh) in lines.iter().zip(heights) {
             self.place_line(l, Rect::new(inner.x, y, inner.w, lh), true);

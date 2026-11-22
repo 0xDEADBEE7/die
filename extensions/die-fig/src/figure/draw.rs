@@ -178,6 +178,9 @@ pub struct TileLayout {
     pub icon: Option<(Status, (f32, f32))>,
     /// The value's size, after any shrinking.
     pub value_size: f32,
+    /// How much of its period a stat's delta line says, for want of room: 0 all of it (`▲ 4.2
+    /// % vs previous 6h`), 1 its short form (`vs prior 6h`), 2 none (`▲ 4.2 %`).
+    pub period: u8,
 }
 
 fn label_spec() -> TextSpec {
@@ -197,14 +200,19 @@ fn delta_spec() -> TextSpec {
 }
 
 /// What the tiles of one row agree on so they read alike: the value's size (the smallest any
-/// of them needs) and whether meters say their status's word (only where every one has room
-/// for its own). A tile alone takes the default: 26 px at most, and its word where it fits.
+/// of them needs), whether meters say their status's word (only where every one has room for
+/// its own) and how much of their period stats' deltas say (as little as any of them has room
+/// for, so one tile's `▲ 4.2 %` doesn't sit beside another's `▲ 9 % vs previous 6h`). A tile
+/// alone takes the default: 26 px at most, its word and its period where they fit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowFit {
     /// The most the value's size may be.
     pub value: f32,
     /// Whether a meter may say its status's word.
     pub words: bool,
+    /// The most of its period a stat's delta may say: 0 all, 1 its short form, 2 none (as
+    /// [`TileLayout::period`]).
+    pub period: u8,
 }
 
 impl Default for RowFit {
@@ -212,17 +220,19 @@ impl Default for RowFit {
         RowFit {
             value: VALUE,
             words: true,
+            period: 0,
         }
     }
 }
 
 impl RowFit {
     /// What a row whose tiles each need these agrees on: the smallest value, words only if
-    /// every one has room.
+    /// every one has room, the least of the period.
     pub fn meet(self, other: RowFit) -> RowFit {
         RowFit {
             value: self.value.min(other.value),
             words: self.words && other.words,
+            period: self.period.max(other.period),
         }
     }
 }
@@ -243,6 +253,7 @@ pub fn needs(model: &TileModel, rect: Rect, m: &mut dyn Measure) -> RowFit {
         words: model.kind != TileKind::Meter
             || model.status().is_none()
             || l.pieces.iter().any(|p| p.role == Role::Status),
+        period: l.period,
     }
 }
 
@@ -333,6 +344,7 @@ fn stat_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
     let dspec = delta_spec();
     let lead = ARROW_W + ARROW_GAP;
     let unit_kept = unit.is_none() || show_unit;
+    let mut period = 0;
     let delta: Option<(Option<i8>, String)> = if model.value.is_nan() {
         Some((None, "no data".to_string()))
     } else {
@@ -340,13 +352,18 @@ fn stat_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
             (Some(_), Some(_)) if !unit_kept => None,
             (Some(c), Some((amount, line))) => {
                 let dir = c.direction();
-                if lead + m.width(&line, dspec) <= inner {
-                    Some((Some(dir), line))
-                } else if lead + m.width(&amount, dspec) <= inner {
-                    Some((Some(dir), amount))
-                } else {
-                    None
-                }
+                // All of the period, its short form, or the amount alone: the first that fits
+                // of those the row allows.
+                let short = (c.period.strip_prefix("previous "))
+                    .map(|p| format!("{amount} vs prior {p}"))
+                    .unwrap_or_else(|| line.clone());
+                let forms = [line, short, amount];
+                let pick = (usize::from(model.fit.period.min(2))..3)
+                    .find(|&i| lead + m.width(&forms[i], dspec) <= inner);
+                pick.map(|i| {
+                    period = i as u8;
+                    (Some(dir), forms[i].clone())
+                })
             }
             (Some(c), None) => {
                 let note = format!("no data for {}", c.period);
@@ -373,6 +390,7 @@ fn stat_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
     let mut l = TileLayout {
         rect: r,
         value_size: size,
+        period,
         ..TileLayout::default()
     };
     if let Some(ly) = label_y {
@@ -457,7 +475,10 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
     } else {
         format!("{} %", short_number(model.fraction() * 100.0))
     };
-    let of = if model.value.is_nan() {
+    // `of max` says nothing the share doesn't where the max is 100 of nothing in particular
+    // (a share of a hundred is the value itself).
+    let plain_hundred = model.max == 100.0 && model.unit.as_deref().is_none_or(str::is_empty);
+    let of = if model.value.is_nan() || plain_hundred {
         String::new()
     } else {
         let u = model.unit.as_deref();
@@ -493,7 +514,10 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
     let gap = 12.0;
     let fits = |label: f32, w: f32| label + gap + w <= inner;
     let words = model.fit.words && status.is_some();
-    let (show_of, show_word, stacked) = if words && fits(label_whole, icon_w + ww + sw + ow) {
+    // A meter with no status has no word to give up first: its `of max` shows where it fits.
+    let (show_of, show_word, stacked) = if status.is_none() && fits(label_whole, sw + ow) {
+        (true, false, false)
+    } else if words && fits(label_whole, icon_w + ww + sw + ow) {
         (true, true, false)
     } else if words && fits(label_whole, icon_w + ww + sw) {
         (false, true, false)
@@ -602,6 +626,62 @@ fn spark_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
         ..TileLayout::default()
     };
     let unit = model.unit.as_deref().filter(|u| !u.is_empty());
+    let lw = m.width(&model.label, lspec);
+    let fits_on_top = |m: &mut dyn Measure| {
+        let (_, show_unit, vw, uw) = value_row(&text, unit, inner * 0.6, model.fit.value, m);
+        lw + 16.0 + vw + if show_unit { uw } else { 0.0 } <= inner
+    };
+    if r.h >= BLOCK_H && !model.label.is_empty() && !fits_on_top(m) {
+        // The label too long to share the top with the value: the label alone on top, whole,
+        // and under it the line with the value at its right, level with the line's middle (as
+        // a stat's trend sits level with its value).
+        let ly = r.y + LABEL_Y;
+        l.pieces.push(Piece {
+            role: Role::Label,
+            text: m.fit(&model.label, lspec, inner),
+            x,
+            y: ly,
+            spec: lspec,
+            anchor: Anchor::Start,
+        });
+        // Clear of the label by its newest dot's reach.
+        let top = ly + 16.0;
+        let bottom = r.bottom() - PAD;
+        let (size, show_unit, vw, uw) = value_row(&text, unit, inner * 0.45, model.fit.value, m);
+        let mid = (top + bottom) / 2.0;
+        let vy = (mid + m.cap(value_spec(size)) / 2.0).round();
+        let right = r.right() - PAD;
+        let uw = if show_unit { uw } else { 0.0 };
+        let vx = right - uw - vw;
+        l.value_size = size;
+        l.pieces.push(Piece {
+            role: if model.value.is_nan() {
+                Role::Quiet
+            } else {
+                Role::Value
+            },
+            text,
+            x: vx,
+            y: vy,
+            spec: value_spec(size),
+            anchor: Anchor::Start,
+        });
+        if show_unit && let Some(u) = unit {
+            l.pieces.push(Piece {
+                role: Role::Quiet,
+                text: u.to_string(),
+                x: vx + vw + UNIT_GAP,
+                y: vy,
+                spec: unit_spec(),
+                anchor: Anchor::Start,
+            });
+        }
+        let x1 = vx - TREND_GAP;
+        if model.trend.len() >= 2 && x1 - x >= 24.0 && bottom - top >= 16.0 {
+            l.trend = Some(Rect::new(x, top, x1 - x, bottom - top));
+        }
+        return l;
+    }
     if r.h >= BLOCK_H {
         // The label and the value on top, the line under them.
         let (size, show_unit, vw, uw) = value_row(&text, unit, inner * 0.6, model.fit.value, m);
@@ -1105,9 +1185,13 @@ pub fn overlay_in(
                 let header = model.point_text(point);
                 let size = card_size(&header, &rows, m);
                 let near = Rect::new(p.0 - 6.0, p.1 - 6.0, 12.0, 12.0);
-                let r = if model.kind == TileKind::Sparkline && rect.h >= BLOCK_H {
-                    // A sparkline drawn large: beside the crosshair at the line's top, as a
-                    // chart's card goes, never over the tile's edge.
+                let r = if model.kind == TileKind::Sparkline
+                    && rect.h >= BLOCK_H
+                    && t.h >= size.1 + 8.0
+                {
+                    // A sparkline drawn large, its line tall enough to hold the card: beside
+                    // the crosshair at the line's top, as a chart's card goes, never over the
+                    // tile's edge. A shorter one's card goes under the tile, off its value.
                     beside(size, p.0, t.y + 4.0, rect.intersect(&area).unwrap_or(rect))
                 } else {
                     place(size, rect, near, p.0, area)

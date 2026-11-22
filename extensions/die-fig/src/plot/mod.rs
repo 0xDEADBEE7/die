@@ -1186,10 +1186,14 @@ impl Builder {
         let ykind = self.ykind.unwrap_or(AxisKind::Linear);
         // Titles are shown where the spec gives them; a scatter's axes and a lone series' values
         // are named by their fields, which nothing else on screen names.
+        // A heatmap's two axes are alike: each named by its field, as its colour legend is.
+        let cells = self.series.iter().all(|s| s.mark == MarkKind::Rect) && !self.series.is_empty();
         let x_title = x.title.clone().or_else(|| {
-            (points || (xkind == AxisKind::Linear && self.series.iter().any(|s| s.ends.is_some())))
-                .then(|| x.field.clone())
-                .flatten()
+            (points
+                || cells
+                || (xkind == AxisKind::Linear && self.series.iter().any(|s| s.ends.is_some())))
+            .then(|| x.field.clone())
+            .flatten()
         });
         let y_title = y.title.clone().or_else(|| {
             (points || (one && chart.layers.len() == 1))

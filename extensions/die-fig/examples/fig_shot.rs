@@ -58,8 +58,10 @@
 //! sample's day), `--scroll PX`, `--live live|updating|paused|error` (the header's status),
 //! `--hover-at N,HH:MM` (the pointer over panel N's plot at that time, halfway up),
 //! `--panel-cursor N,I` (panel N's keyboard cursor on its first series' sample I), `--shared`
-//! (`"tooltip": "shared"`) and `--panel-log N` (panel N's error figure as its log). `--hover
-//! X,Y` is the pointer at a place in the area. It prints where each panel landed.
+//! (`"tooltip": "shared"`), `--panel-log N` (panel N's error figure as its log) and `--feed
+//! CMD=FILE` (a run or stream source's command taken as having printed FILE, so a live
+//! dashboard draws as a still frame). `--hover X,Y` is the pointer at a place in the area. It
+//! prints where each panel landed.
 
 use die_test_cap as _;
 
@@ -1067,6 +1069,8 @@ struct DashAsk {
     cursor: Option<(usize, usize)>,
     shared: bool,
     log: Option<usize>,
+    /// Commands' output read from files, as if they'd run: (the command, the file).
+    feed: Vec<(String, String)>,
 }
 
 /// The dashboard flags taken out of the arguments, the rest left for the figure's.
@@ -1102,6 +1106,11 @@ fn dash_flags(args: impl Iterator<Item = String>) -> Result<(DashAsk, Vec<String
             }
             "--shared" => d.shared = true,
             "--panel-log" => d.log = Some(num(&value()?)?),
+            "--feed" => {
+                let v = value()?;
+                let (cmd, file) = v.split_once('=').ok_or("--feed is CMD=FILE")?;
+                d.feed.push((cmd.to_string(), file.to_string()));
+            }
             _ => rest.push(flag),
         }
     }
@@ -1179,6 +1188,17 @@ fn dash_shot(
     };
     let first = DashModel::build(&spec, &dashboard::Sources::new(), &resolve, &origin);
     let mut sources = dashboard::read(first.wants(), &opt);
+    for (cmd, file) in &d.feed {
+        let want = first
+            .wants()
+            .iter()
+            .find(|w| w.is_command() && w.name() == *cmd)
+            .ok_or(format!("--feed {cmd}: no source runs it"))?;
+        let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+        let table = die_fig::source::read_data(&text, &want.data, cmd, &opt)
+            .map_err(|e| format!("{file}: {e}"))?;
+        sources.ready(want.clone(), std::sync::Arc::new(table));
+    }
     sources.live = match d.live.as_deref() {
         None => None,
         Some("live") => Some(LiveStatus::updated(12.0)),
