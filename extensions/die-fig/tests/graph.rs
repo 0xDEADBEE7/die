@@ -1322,3 +1322,178 @@ fn beside_the_panel_a_graph_keeps_the_areas_paddings() {
         "the title doesn't move as the panel opens"
     );
 }
+
+/// The look pass after phase 3: worker's semibold label once hid billing under its ground, and
+/// in a dense cluster covered a neighbour.
+#[test]
+fn a_focused_label_covers_and_hides_no_node_where_there_is_room() {
+    for f in [
+        "services.json",
+        "fig-graph.json",
+        "pipeline.json",
+        "cycle.json",
+    ] {
+        let m = fixture(f);
+        let (_, l) = base(&m, &View::default(), (880.0, 470.0));
+        for c in 0..m.len() {
+            let st = OverlayState {
+                cursor: Some(m.cursor(c)),
+                ..Default::default()
+            };
+            let o = graph::overlay(
+                &m,
+                &l,
+                &View::default(),
+                &st,
+                &Theme::mono_dark(),
+                &mut FixedMeasure,
+            );
+            let label = o.items.iter().find_map(|i| match i {
+                Item::Text {
+                    text,
+                    x,
+                    y,
+                    spec,
+                    anchor,
+                    ..
+                } if spec.weight == die_fig::scene::Weight::Semibold && **text == *m.label(c) => {
+                    Some(die_fig::plot::layout::text_box(
+                        text,
+                        *x,
+                        *y,
+                        *spec,
+                        *anchor,
+                        &mut FixedMeasure,
+                    ))
+                }
+                _ => None,
+            });
+            let Some(r) = label else { continue };
+            let r = Rect::new(r.x, r.y + r.h * 0.2, r.w, r.h * 0.6);
+            for (i, g) in l.nodes.iter().enumerate() {
+                let Some(g) = g else { continue };
+                assert!(
+                    i == c || !circle_meets(g.at, g.r + graph::geom::RING * 0.5, &r),
+                    "{f}, cursor {}: its label lies over {}",
+                    m.id(c),
+                    m.id(i)
+                );
+            }
+        }
+    }
+}
+
+/// The look pass after phase 3: inside a ring only its node shows, so an arrowhead into the
+/// cursor's node moves out to touch the ring rather than run under it.
+#[test]
+fn an_arrowhead_into_the_cursors_node_ends_at_its_ring() {
+    use die_fig::graph::overlay::FOCUS_RING;
+    use die_fig::scene::Verb;
+    let m = fixture("pipeline.json");
+    let (_, l) = base(&m, &View::default(), (880.0, 470.0));
+    for c in 0..m.len() {
+        let st = OverlayState {
+            cursor: Some(m.cursor(c)),
+            ..Default::default()
+        };
+        let o = graph::overlay(
+            &m,
+            &l,
+            &View::default(),
+            &st,
+            &Theme::mono_dark(),
+            &mut FixedMeasure,
+        );
+        let g = l.node(c).unwrap();
+        let ring_out = g.r + FOCUS_RING.0 + FOCUS_RING.1 * 0.5;
+        let dist = |p: (f32, f32)| (p.0 - g.at.0).hypot(p.1 - g.at.1);
+        // The arrowheads drawn (a filled triangle with no stroke, its tip first), less those a
+        // triangle of the surface's colour clears after.
+        let tip = |path: &die_fig::scene::PathData| match (path.verbs.len(), path.verbs[0]) {
+            (4, Verb::Move(x, y)) if matches!(path.verbs[3], Verb::Close) => Some((x, y)),
+            _ => None,
+        };
+        let cleared: Vec<(f32, f32)> = o
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Path {
+                    path,
+                    stroke: Some(_),
+                    ..
+                } => tip(path),
+                _ => None,
+            })
+            .collect();
+        let tips: Vec<(f32, f32)> = o
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Path {
+                    path,
+                    fill: Some(_),
+                    stroke: None,
+                } => tip(path),
+                _ => None,
+            })
+            .filter(|&p| dist(p) < ring_out + 3.0)
+            .filter(|p| {
+                !cleared
+                    .iter()
+                    .any(|q| (q.0 - p.0).abs() + (q.1 - p.1).abs() < 0.01)
+            })
+            .collect();
+        let incoming = (0..m.ends.len())
+            .filter(|&k| m.ends[k].1 as usize == c && l.edges[k].is_some())
+            .count();
+        assert_eq!(tips.len(), incoming, "{}: an arrowhead each", m.id(c));
+        for t in tips {
+            assert!(
+                dist(t) >= ring_out - 0.01,
+                "{}: an arrowhead's tip at {} runs under the ring at {ring_out}",
+                m.id(c),
+                dist(t)
+            );
+        }
+    }
+}
+
+/// The look pass after phase 3: the card's edge once sat against a neighbour's label (Ben's
+/// card against Priya).
+#[test]
+fn a_cards_edge_keeps_room_from_a_neighbours_label_it_doesnt_cover() {
+    let m = fixture("org.csv");
+    let (_, l) = base(&m, &View::default(), (880.0, 470.0));
+    for c in 0..m.len() {
+        let id = m.id(c);
+        let st = OverlayState {
+            cursor: Some(m.cursor(c)),
+            cursor_card: true,
+            ..Default::default()
+        };
+        let o = graph::overlay(
+            &m,
+            &l,
+            &View::default(),
+            &st,
+            &Theme::mono_dark(),
+            &mut FixedMeasure,
+        );
+        let card = card_rect(&o).expect("the cursor's card");
+        // The neighbours' labels, at full strength beside it.
+        let (nodes, _) = m.emphasis(Some(c));
+        let lit = (0..m.len()).filter(|&i| nodes[i] == Emphasis::Related);
+        for lab in lit.filter_map(|i| l.labels[i].as_ref()) {
+            let r = lab.rect;
+            let apart = (r.x - card.right())
+                .max(card.x - r.right())
+                .max(r.y - card.bottom())
+                .max(card.y - r.bottom());
+            assert!(
+                overlaps(&r, &card) || apart >= 7.5,
+                "{id}: the card comes {apart} px from {}",
+                lab.text
+            );
+        }
+    }
+}

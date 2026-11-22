@@ -3770,3 +3770,62 @@ fn beside_the_panel_a_chart_keeps_the_areas_paddings() {
         "the title doesn't move as the panel opens"
     );
 }
+
+/// The look pass after phase 3: at 200x120 the SLO's label sat over checkout's spike.
+#[test]
+fn a_rules_label_goes_where_no_line_crosses_it() {
+    let model = load("thresholds.json");
+    for size in [(200.0, 120.0), (400.0, 240.0), (880.0, 470.0)] {
+        let (scene, l, _) = lay(&model, &View::default(), size);
+        let plate = scene
+            .items
+            .iter()
+            .find_map(|i| match i {
+                Item::Path {
+                    path,
+                    fill: Some(Paint::Solid { alpha, .. }),
+                    stroke: None,
+                } if (*alpha - 0.85).abs() < 1e-3 => {
+                    let pts: Vec<(f32, f32)> = path
+                        .verbs
+                        .iter()
+                        .flat_map(|v| match *v {
+                            Verb::Move(x, y) | Verb::Line(x, y) => vec![(x, y)],
+                            Verb::Quad(a, b, x, y) => vec![(a, b), (x, y)],
+                            Verb::Cubic(a, b, c, d, x, y) => vec![(a, b), (c, d), (x, y)],
+                            Verb::Close => vec![],
+                        })
+                        .collect();
+                    let x0 = pts.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
+                    let x1 = pts.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
+                    let y0 = pts.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+                    let y1 = pts.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+                    Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+                }
+                _ => None,
+            })
+            .expect("the SLO's label on its plate");
+        for s in &model.series {
+            let pts: Vec<(f32, f32)> =
+                s.xs.iter()
+                    .zip(s.ys.iter())
+                    .map(|(&x, &y)| l.at(x, y))
+                    .collect();
+            for w in pts.windows(2) {
+                // Sampled along the segment: none of it inside the plate.
+                for k in 0..=16 {
+                    let t = k as f32 / 16.0;
+                    let p = (
+                        w[0].0 + (w[1].0 - w[0].0) * t,
+                        w[0].1 + (w[1].1 - w[0].1) * t,
+                    );
+                    assert!(
+                        !plate.contains(p.0, p.1),
+                        "{size:?}: {} runs through the SLO's label",
+                        s.name
+                    );
+                }
+            }
+        }
+    }
+}
