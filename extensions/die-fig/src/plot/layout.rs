@@ -5,7 +5,9 @@
 //! ticks, then the plot with its ticks (11 px muted tabular figures, y about every 48 px, x
 //! labels at least 64 px apart) and the x axis's title under the x labels. End labels take a
 //! column right of the plot when they fit. Small areas degrade in order: the subtitle goes, then
-//! the legend keeps one row with "+N more", then the end labels, so nothing overlaps.
+//! the legend keeps one row with "+N more", then the end labels, then (where the plot would
+//! still be a sliver: beside the detail panel, in a tile) the legend, the axes' titles and the
+//! title, so nothing overlaps and nothing is cut at the area's edge.
 
 use super::{AxisKind, ChartModel, Stacks};
 use crate::data::SeriesKey;
@@ -407,51 +409,90 @@ fn shape_of(model: &ChartModel, key: &SeriesKey) -> KeyShape {
     }
 }
 
+/// The least plot a layout keeps by dropping the legend, the axes' titles and the title.
+const MIN_PLOT: f32 = 48.0;
+
 /// How much a layout attempt keeps: each level drops one more thing.
 #[derive(Clone, Copy)]
 struct Keep {
     subtitle: bool,
+    /// The legend's rows at most; none, no legend.
     legend_rows: usize,
     ends: bool,
+    /// The axes' titles.
+    axis_titles: bool,
+    title: bool,
 }
 
-/// The layout of `model` under `view` in an area of `size`.
+/// The layout of `model` under `view` in an area of `size`, its paddings across those of an
+/// area `pad_w` wide (the whole window's beside the detail panel, so nothing moves as the
+/// panel opens).
 pub(crate) fn lay_out(
     model: &ChartModel,
     view: &View,
     size: (f32, f32),
+    pad_w: f32,
     scale: f32,
     m: &mut dyn Measure,
 ) -> ChartLayout {
+    let full = Keep {
+        subtitle: true,
+        legend_rows: 3,
+        ends: true,
+        axis_titles: true,
+        title: true,
+    };
     let levels = [
-        Keep {
-            subtitle: true,
-            legend_rows: 3,
-            ends: true,
-        },
+        full,
         Keep {
             subtitle: false,
-            legend_rows: 3,
-            ends: true,
+            ..full
         },
         Keep {
             subtitle: false,
             legend_rows: 1,
-            ends: true,
+            ..full
         },
         Keep {
             subtitle: false,
             legend_rows: 1,
             ends: false,
+            ..full
+        },
+        Keep {
+            subtitle: false,
+            legend_rows: 0,
+            ends: false,
+            ..full
+        },
+        Keep {
+            subtitle: false,
+            legend_rows: 0,
+            ends: false,
+            axis_titles: false,
+            ..full
+        },
+        Keep {
+            subtitle: false,
+            legend_rows: 0,
+            ends: false,
+            axis_titles: false,
+            title: false,
         },
     ];
     let stacks = model.stacks(view);
     let domain = model.fit(view);
     let mut last = None;
-    for keep in levels {
-        let l = attempt(model, view, size, scale, keep, &stacks, domain, m);
+    for (n, keep) in levels.into_iter().enumerate() {
+        let l = attempt(model, view, size, pad_w, scale, keep, &stacks, domain, m);
         let (w, h) = size;
-        if l.plot.h >= (0.42 * h).max(40.0).min(h * 0.8) && l.plot.w >= 0.5 * w {
+        // The first four levels hold out for a good share of the area; past them, only for a
+        // plot that can be read at all.
+        let enough = match n {
+            0..4 => (0.42 * h).max(40.0).min(h * 0.8),
+            _ => MIN_PLOT.min(h * 0.5),
+        };
+        if l.plot.h >= enough && (l.plot.w >= 0.5 * w || n >= 4) {
             return l;
         }
         last = Some(l);
@@ -464,6 +505,7 @@ fn attempt(
     model: &ChartModel,
     view: &View,
     size: (f32, f32),
+    pad_w: f32,
     scale: f32,
     keep: Keep,
     stacks: &Stacks,
@@ -471,7 +513,11 @@ fn attempt(
     m: &mut dyn Measure,
 ) -> ChartLayout {
     let (w, h) = size;
-    let (pad, pad_top, pad_bottom) = paddings(w, h);
+    let (_, pad_top, pad_bottom) = paddings(w, h);
+    let pad = paddings(pad_w.max(w), h)
+        .0
+        .min(w * 0.06)
+        .max(paddings(w, h).0);
     let title_spec = TextSpec::new(TITLE).weight(Weight::Semibold);
     let body = TextSpec::new(BODY);
     let tick = TextSpec::new(TICK).tabular();
@@ -481,7 +527,10 @@ fn attempt(
     let mut y = pad_top;
     let mut header = false;
     let wide = (w - 2.0 * pad).max(0.0);
-    if let Some(t) = model.chart.title.as_deref().filter(|t| !t.is_empty()) {
+    if let Some(t) = (model.chart.title.as_deref())
+        .filter(|t| !t.is_empty())
+        .filter(|_| keep.title)
+    {
         let text = m.fit(t, title_spec, wide);
         let base = y + m.ascent(title_spec);
         let l = Label {
@@ -534,7 +583,7 @@ fn attempt(
     let mut legend: Vec<(SeriesKey, Rect)> = Vec::new();
     let right_legend = model.chart.view.legend == LegendPos::Right;
     let mut right_w = 0.0;
-    if !keys.is_empty() && !right_legend {
+    if !keys.is_empty() && !right_legend && keep.legend_rows > 0 {
         let max_name = (wide - KEY_W - KEY_GAP).clamp(0.0, 220.0);
         let entries: Vec<(SeriesKey, String, f32)> = keys
             .iter()
@@ -601,7 +650,7 @@ fn attempt(
             });
         }
         y += rows.len() as f32 * ROW;
-    } else if !keys.is_empty() {
+    } else if !keys.is_empty() && keep.legend_rows > 0 {
         right_w = keys
             .iter()
             .map(|k| {
@@ -630,7 +679,10 @@ fn attempt(
         &model.y.title
     };
     let mut ytitle: Option<Label> = None;
-    if axes && let Some(t) = value_title.as_deref().filter(|t| !t.is_empty()) {
+    if axes
+        && keep.axis_titles
+        && let Some(t) = value_title.as_deref().filter(|t| !t.is_empty())
+    {
         let gap = if header || !items.is_empty() {
             6.0
         } else {
@@ -660,11 +712,12 @@ fn attempt(
 
     // The bottom: the x labels, then the x title.
     let line = m.ascent(tick) + m.descent(tick);
-    let x_title_h = if axes && across_title.as_deref().is_some_and(|t| !t.is_empty()) {
-        6.0 + line
-    } else {
-        0.0
-    };
+    let x_title_h =
+        if axes && keep.axis_titles && across_title.as_deref().is_some_and(|t| !t.is_empty()) {
+            6.0 + line
+        } else {
+            0.0
+        };
     let labels_h = if axes { TICK_GAP + line } else { 0.0 };
     let plot_bottom = (h - pad_bottom - x_title_h - labels_h)
         .floor()
@@ -809,6 +862,24 @@ fn attempt(
             y_text.push((text, py));
             y_ticks.push(t);
         }
+        // In a short plot the ticks come closer than a line of their text: they drop from the
+        // bottom up until each clears the one below it (call 1432).
+        let clear = m.ascent(tick) + m.descent(tick) + 1.0;
+        let mut order: Vec<usize> = (0..y_text.len()).collect();
+        order.sort_by(|a, b| y_text[*b].1.total_cmp(&y_text[*a].1));
+        let mut kept = vec![false; y_text.len()];
+        let mut last: Option<f32> = None;
+        for i in order {
+            let py = y_text[i].1;
+            if last.is_none_or(|l| l - py >= clear) {
+                kept[i] = true;
+                last = Some(py);
+            }
+        }
+        let mut k = kept.iter();
+        y_text.retain(|_| *k.next().unwrap_or(&true));
+        let mut k = kept.iter();
+        y_ticks.retain(|_| *k.next().unwrap_or(&true));
     }
     let ytick_spec = if up_kind == AxisKind::Band {
         tick_plain
@@ -1014,7 +1085,10 @@ fn attempt(
             }
             labels.push(l);
         }
-        if let Some(t) = across_title.as_deref().filter(|t| !t.is_empty()) {
+        if let Some(t) = (across_title.as_deref())
+            .filter(|t| !t.is_empty())
+            .filter(|_| keep.axis_titles)
+        {
             let b = base_y + m.descent(tick) + 6.0 + m.ascent(tick_plain);
             labels.push(Label {
                 role: Role::AxisTitle,
@@ -1032,7 +1106,7 @@ fn attempt(
     let y_axis = Rect::new(0.0, plot.y, plot.x, plot.h);
 
     // The legend on the right, a key a row from the plot's top.
-    if right_legend && !keys.is_empty() {
+    if right_legend && !keys.is_empty() && keep.legend_rows > 0 {
         let x0 = plot.right() + 16.0;
         let fit_rows = ((plot.h / ROW).floor() as usize).max(1);
         let shown = if keys.len() > fit_rows {
@@ -1460,20 +1534,28 @@ fn value_ticks(
             };
             placed.push((t, text, x, anchor, Rect::new(left, 0.0, tw, 1.0)));
         }
-        let ok = placed.windows(2).all(|p| {
-            let (a, b) = (&p[0], &p[1]);
-            s.map(b.0.value) - s.map(a.0.value) >= X_SPACING && b.4.x - a.4.right() >= X_CLEAR
-        });
+        type Placed = (Tick, String, f32, Anchor, Rect);
+        let clear = |p: &[Placed]| {
+            p.windows(2).all(|p| {
+                let (a, b) = (&p[0], &p[1]);
+                s.map(b.0.value) - s.map(a.0.value) >= X_SPACING && b.4.x - a.4.right() >= X_CLEAR
+            })
+        };
+        let ok = clear(&placed);
         if ok || count <= 2 {
-            let mut out: Vec<(Tick, String, f32, Anchor)> = placed
+            if !ok {
+                // The fewest the scale gives still collide: every other one, every third...,
+                // while two at least clear; else the first alone.
+                let thinned = (2..placed.len().max(2)).find_map(|by| {
+                    let pick: Vec<Placed> = placed.iter().step_by(by).cloned().collect();
+                    (pick.len() >= 2 && clear(&pick)).then_some(pick)
+                });
+                placed = thinned.unwrap_or_else(|| placed.into_iter().take(1).collect());
+            }
+            return placed
                 .into_iter()
                 .map(|(t, l, x, a, _)| (t, l, x, a))
                 .collect();
-            if !ok {
-                // Even two collide: keep the ends' first.
-                out.truncate(1);
-            }
-            return out;
         }
         count -= 1;
     }

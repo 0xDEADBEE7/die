@@ -12,7 +12,8 @@
 //! missing value is 0), drawn as bars stacked from zero on a band x, a band a bucket.
 //!
 //! A graph checks fig's rules (and ref's empty id) and points at the place: `a graph needs at
-//! least one node`, `node IDs cannot be empty`, `node ids must be unique`, `unknown edge
+//! least one node` (nothing to draw), `node IDs cannot be empty`, `node ids must be unique: a
+//! is given twice`, `unknown edge
 //! source: …`, `unknown edge target: …`. An id may be a number, as a CSV's are. A node's and an
 //! edge's other keys are kept, unwarned: they are its data, for the detail panel.
 
@@ -351,10 +352,12 @@ pub(crate) fn graph(node: &Node, cx: &mut Cx<'_>) -> Result<GraphSpec> {
         None => &[],
     };
     if list.is_empty() {
+        // Nothing to draw, as the model says of the same: the empty figure, not a mismatch.
         return Err(FigError::at(
             "a graph needs at least one node",
             nodes_node.map_or(node.at, |n| n.at),
-        ));
+        )
+        .with_kind(crate::error::ErrorKind::Empty));
     }
     let mut nodes = Vec::with_capacity(list.len());
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -368,7 +371,10 @@ pub(crate) fn graph(node: &Node, cx: &mut Cx<'_>) -> Result<GraphSpec> {
             return Err(FigError::at("node IDs cannot be empty", idn.at));
         }
         if !seen.insert(id.clone()) {
-            return Err(FigError::at("node ids must be unique", idn.at));
+            return Err(FigError::at(
+                format!("node ids must be unique: {id} is given twice"),
+                idn.at,
+            ));
         }
         let fig = field(n, "fig")
             .map(|f| chart::fig_block(f, cx))

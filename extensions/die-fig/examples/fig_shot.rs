@@ -5,7 +5,8 @@
 //! cargo run --release -p die-fig --example fig_shot -- <file> <out.png> [--size 880x470] \
 //!     [--scale 2] [--light] [--cursor <n>] [--hover <x>,<y>] [--brush <x0>,<x1>[,<y0>,<y1>]] \
 //!     [--reference <n>] [--svg <out.svg>] [--log] [--log-top <n>] [--log-mark <n>] \
-//!     [--stale <bad file>]
+//!     [--stale <bad file>] [--detail] [--detail-series] [--detail-row <n>] [--detail-top <n>] \
+//!     [--detail-focus] [--detail-unfold]
 //! ```
 //!
 //! The size is the area's in logical px, the scale the display's. `--cursor` puts the keyboard's
@@ -16,21 +17,43 @@
 //! Times without an offset are in the system's zone. It prints where the plot landed and what
 //! the overlay shows.
 //!
+//! A graph (fig's graph JSON, a graph spec, or a CSV with an id and a parent column) takes these
+//! too: `--cursor-node ID` (the cursor on a node, its card shown), `--hover-node ID` (the
+//! pointer on a node after its dwell: it's in focus), `--hover-edge A,B`, `--reference ID` (with
+//! `--cursor-node` or `--hover-node`, the path between), `--pin ID@X,Y` (a node dragged to a
+//! place in the area and pinned; again for more), `--zoom F` (about the cursor's node, else the
+//! middle), `--layout force|tree|layered|auto`, `--labels off` and `--ghost` (with one `--pin`,
+//! the drag still under way: its ghost where it was). `--hover X,Y` finds what's there.
+//! `--search Q` shows the search as it's typed: the nodes matching Q lit, the best in focus
+//! with the cursor on it. `--detail` opens the panel for the cursor's node (else the hovered
+//! one) beside the graph, as the surface lays it out, with the detail flags below.
+//!
 //! The file is built by the job `\v` runs (`source::build`), so a file that can't be drawn
 //! draws the error figure: symbolic, or with `--log` its log (`--log-top` its first line shown,
 //! `--log-mark` the entry lit). A file that draws, with `--log`, shows its warnings' log. With
 //! `--stale BAD`, the file's figure is drawn with BAD's stale badge, as a figure kept while its
 //! source fails to parse.
+//!
+//! `--detail` opens the detail panel for what the cursor is on (else the hover), beside the
+//! figure as the surface lays it out (`detail::split`): the chart in what's left, the panel at
+//! the right, or the bottom of an area under 560 px wide. `--detail-series` shows the cursor's
+//! series instead. `--detail-row` puts the panel's cursor on a row (its index in the tree, as
+//! printed), `--detail-top` scrolls it, `--detail-focus` gives it focus and `--detail-unfold`
+//! opens every branch. It prints the tree.
 
 use die_test_cap as _;
 
 use die_draw::Book;
 use die_fig::FigError;
+use die_fig::data::ReadOptions;
+use die_fig::detail::{self, Item, PanelState};
+use die_fig::graph::{self, GraphLayout, GraphModel, Target};
 use die_fig::interact::{BrushKind, Cursor, Toggles, View};
 use die_fig::plot::{self, ChartModel, ErrorView, OverlayState};
 use die_fig::raster::{self, BookMeasure};
 use die_fig::scene::Scene;
 use die_fig::source::{self, Built, Failed, Job, Text};
+use die_fig::spec::{Figure, GraphSpec, Labels, Layout};
 use die_fig::theme::Theme;
 use jiff::tz::TimeZone;
 use std::path::Path;
@@ -49,7 +72,15 @@ struct Ask {
     scale: f32,
     light: bool,
     cursor: Option<usize>,
-    reference: Option<usize>,
+    reference: Option<String>,
+    cursor_node: Option<String>,
+    hover_node: Option<String>,
+    hover_edge: Option<(String, String)>,
+    pins: Vec<(String, f32, f32)>,
+    zoom: Option<f64>,
+    layout: Option<Layout>,
+    labels_off: bool,
+    ghost: bool,
     hover: Option<(f32, f32)>,
     brush: Option<Vec<f32>>,
     svg: Option<String>,
@@ -57,6 +88,38 @@ struct Ask {
     log_top: usize,
     log_mark: usize,
     stale: Option<String>,
+    detail: Option<DetailAsk>,
+    search: Option<String>,
+    /// The whole area's width, where the figure is drawn beside the detail panel: its paddings.
+    area_w: Option<f32>,
+}
+
+/// What the detail flags ask for.
+#[derive(Clone, Copy, Default)]
+struct DetailAsk {
+    series: bool,
+    row: Option<usize>,
+    top: usize,
+    focus: bool,
+    unfold: bool,
+}
+
+/// Halfway along a polyline by its length: where a pointer on an edge is.
+fn halfway(pts: &[(f32, f32)]) -> (f32, f32) {
+    let seg = |w: &[(f32, f32)]| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+    let mut left = pts.windows(2).map(seg).sum::<f32>() / 2.0;
+    for w in pts.windows(2) {
+        let d = seg(w);
+        if d >= left && d > 0.0 {
+            let t = left / d;
+            return (
+                w[0].0 + (w[1].0 - w[0].0) * t,
+                w[0].1 + (w[1].1 - w[0].1) * t,
+            );
+        }
+        left -= d;
+    }
+    pts[pts.len() / 2]
 }
 
 fn pair(v: &str, sep: char) -> Result<Vec<f32>, String> {
@@ -72,8 +135,11 @@ fn pair(v: &str, sep: char) -> Result<Vec<f32>, String> {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let usage = "fig_shot <file> <out.png> [--size WxH] [--scale S] [--light] [--cursor N] \
-                 [--hover X,Y] [--brush X0,X1[,Y0,Y1]] [--reference N] [--svg OUT.svg] [--log] \
-                 [--log-top N] [--log-mark N] [--stale BAD]";
+                 [--hover X,Y] [--brush X0,X1[,Y0,Y1]] [--reference N|ID] [--svg OUT.svg] [--log] \
+                 [--log-top N] [--log-mark N] [--stale BAD] [--cursor-node ID] [--hover-node ID] \
+                 [--hover-edge A,B] [--pin ID@X,Y] [--zoom F] [--layout L] [--labels off] [--ghost] \
+                 [--detail] [--detail-series] [--detail-row N] [--detail-top N] [--detail-focus] \
+                 [--detail-unfold] [--search Q]";
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage.to_owned());
     };
@@ -83,6 +149,14 @@ fn run() -> Result<(), String> {
         light: false,
         cursor: None,
         reference: None,
+        cursor_node: None,
+        hover_node: None,
+        hover_edge: None,
+        pins: vec![],
+        zoom: None,
+        layout: None,
+        labels_off: false,
+        ghost: false,
         hover: None,
         brush: None,
         svg: None,
@@ -90,6 +164,9 @@ fn run() -> Result<(), String> {
         log_top: 0,
         log_mark: 0,
         stale: None,
+        detail: None,
+        search: None,
+        area_w: None,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
@@ -104,7 +181,35 @@ fn run() -> Result<(), String> {
             "--scale" => ask.scale = pair(&value()?, ',')?[0],
             "--light" => ask.light = true,
             "--cursor" => ask.cursor = Some(pair(&value()?, ',')?[0] as usize),
-            "--reference" => ask.reference = Some(pair(&value()?, ',')?[0] as usize),
+            "--reference" => ask.reference = Some(value()?),
+            "--cursor-node" => ask.cursor_node = Some(value()?),
+            "--hover-node" => ask.hover_node = Some(value()?),
+            "--hover-edge" => {
+                let v = value()?;
+                let (a, b) = v.split_once(',').ok_or("--hover-edge is A,B")?;
+                ask.hover_edge = Some((a.to_string(), b.to_string()));
+            }
+            "--pin" => {
+                let v = value()?;
+                let (id, at) = v.rsplit_once('@').ok_or("--pin is ID@X,Y")?;
+                let xy = pair(at, ',')?;
+                if xy.len() != 2 {
+                    return Err("--pin is ID@X,Y".into());
+                }
+                ask.pins.push((id.to_string(), xy[0], xy[1]));
+            }
+            "--zoom" => ask.zoom = Some(f64::from(pair(&value()?, ',')?[0])),
+            "--layout" => {
+                ask.layout = Some(match value()?.as_str() {
+                    "force" => Layout::Force,
+                    "tree" => Layout::Tree { root: None },
+                    "layered" => Layout::Layered,
+                    "auto" => Layout::Auto,
+                    other => return Err(format!("--layout {other}: force, tree, layered or auto")),
+                })
+            }
+            "--labels" => ask.labels_off = value()? == "off",
+            "--ghost" => ask.ghost = true,
             "--hover" => {
                 let v = pair(&value()?, ',')?;
                 if v.len() != 2 {
@@ -118,6 +223,21 @@ fn run() -> Result<(), String> {
             "--log-top" => ask.log_top = pair(&value()?, ',')?[0] as usize,
             "--log-mark" => ask.log_mark = pair(&value()?, ',')?[0] as usize,
             "--stale" => ask.stale = Some(value()?),
+            "--detail" => {
+                ask.detail.get_or_insert_with(DetailAsk::default);
+            }
+            "--detail-series" => ask.detail.get_or_insert_with(DetailAsk::default).series = true,
+            "--detail-row" => {
+                let n = pair(&value()?, ',')?[0] as usize;
+                ask.detail.get_or_insert_with(DetailAsk::default).row = Some(n);
+            }
+            "--detail-top" => {
+                let n = pair(&value()?, ',')?[0] as usize;
+                ask.detail.get_or_insert_with(DetailAsk::default).top = n;
+            }
+            "--detail-focus" => ask.detail.get_or_insert_with(DetailAsk::default).focus = true,
+            "--detail-unfold" => ask.detail.get_or_insert_with(DetailAsk::default).unfold = true,
+            "--search" => ask.search = Some(value()?),
             other => return Err(format!("{other}: no such flag\n{usage}")),
         }
     }
@@ -141,6 +261,9 @@ fn run() -> Result<(), String> {
         },
         false => ErrorView::Symbolic,
     };
+    if let Some(g) = graph_of(path, &zone) {
+        return graph_shot(g, &name, &output, &ask, &theme, &mut book);
+    }
     let built = match build(path, &zone) {
         Ok(b) => b,
         Err(f) => {
@@ -224,23 +347,346 @@ fn run() -> Result<(), String> {
             row: n.min(len.saturating_sub(1)) as u32,
         })
     };
-    view.reference = ask.reference.and_then(cursor_at);
+    view.reference = ask
+        .reference
+        .as_deref()
+        .and_then(|r| r.parse::<usize>().ok())
+        .and_then(cursor_at);
     let badge = |scene: &mut Scene, scale: f32, book: &mut Book| {
         if let Some(e) = &stale {
             let mut m = BookMeasure { book, scale };
             plot::stale_badge(scene, e, &theme, &mut m);
         }
     };
-    let mut scene = draw(
+    let mut scene = beside(
         &model, &view, &ask, &theme, ask.scale, &mut book, &cursor_at, true,
     )?;
     badge(&mut scene, ask.scale, &mut book);
     write(&scene, &output, &ask, &theme, &mut book, |scale, book| {
         let mut s =
-            draw(&model, &view, &ask, &theme, scale, book, &cursor_at, false).unwrap_or_default();
+            beside(&model, &view, &ask, &theme, scale, book, &cursor_at, false).unwrap_or_default();
         badge(&mut s, scale, book);
         s
     })
+}
+
+/// The graph a file is, read as `\v` reads it (`spec::parse` with its directory); None when
+/// it's another figure or doesn't parse (the build then says why).
+fn graph_of(path: &Path, zone: &TimeZone) -> Option<GraphSpec> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let parsed = die_fig::spec::parse(&text, name, dir, &ReadOptions::new(zone.clone())).ok()?;
+    match parsed.figure {
+        Figure::Graph(g) => Some(g),
+        _ => None,
+    }
+}
+
+/// A graph drawn as the flags ask: see the docs at the top.
+fn graph_shot(
+    spec: GraphSpec,
+    name: &str,
+    output: &str,
+    ask: &Ask,
+    theme: &Theme,
+    book: &mut Book,
+) -> Result<(), String> {
+    let mut spec = spec;
+    if ask.labels_off {
+        spec.view.labels = Labels::None;
+    }
+    let t0 = std::time::Instant::now();
+    let model = GraphModel::build_as(spec, ask.layout.clone())
+        .map_err(|e| e.to_string())?
+        .named(name);
+    let laid = t0.elapsed();
+    let node =
+        |id: &str| -> Result<usize, String> { model.index_of(id).ok_or(format!("no node {id}")) };
+    let mut view = model.initial_view();
+    // Beside the detail panel, the graph lays out in what it leaves.
+    let split = ask.detail.map(|_| detail::split(ask.size));
+    let fsize = split.map_or(ask.size, |(f, _, _)| (f.w, f.h));
+    let lay = |view: &View, scale: f32, book: &mut Book| -> (Scene, GraphLayout) {
+        let mut m = BookMeasure { book, scale };
+        graph::base_beside(&model, view, fsize, ask.size.0, scale, theme, &mut m)
+    };
+    let mut ghost = None;
+    for (id, x, y) in &ask.pins {
+        let i = node(id)?;
+        let (_, l) = lay(&view, ask.scale, book);
+        ghost = Some((id.as_str().into(), model.position(&view, i)));
+        view = graph::nav::drag_node(&model, &l, &view, id, (*x, *y), (0.0, 0.0));
+    }
+    let found = ask.search.as_deref().map(|q| {
+        let s = die_fig::search::Search::with(model.search_names(), q);
+        let lit: Vec<usize> = (s.matches().iter())
+            .filter_map(|m| match &m.item {
+                Item::Node { id, .. } => model.index_of(id),
+                _ => None,
+            })
+            .collect();
+        let best = s.best().and_then(|m| m.item.cursor());
+        println!(
+            "search {q:?}: {} matches, best {:?}",
+            s.matches().len(),
+            best
+        );
+        (lit, best)
+    });
+    let cursor = match (&ask.cursor_node, &found) {
+        (Some(id), _) => Some(model.cursor(node(id)?)),
+        (None, Some((_, best))) => best.clone(),
+        _ => None,
+    };
+    if let Some(f) = ask.zoom {
+        let (_, l) = lay(&view, ask.scale, book);
+        view = graph::nav::zoom_about(&model, &l, &view, f, None, cursor.as_ref());
+    }
+    if let Some(r) = &ask.reference {
+        view.reference = Some(model.cursor(node(r)?));
+    }
+    let shot = |view: &View,
+                scale: f32,
+                book: &mut Book,
+                say: bool|
+     -> Result<(Scene, Scene), String> {
+        let (scene, l) = lay(view, scale, book);
+        let mut st = graph::OverlayState {
+            cursor: cursor.clone(),
+            cursor_card: split.is_none(),
+            ghost: if ask.ghost { ghost.clone() } else { None },
+            ..Default::default()
+        };
+        if let Some((lit, best)) = &found {
+            st.matches = lit.clone();
+            st.emphasis = best.clone();
+        }
+        if let Some(id) = &ask.hover_node {
+            let i = node(id)?;
+            let g = l.node(i).ok_or(format!("{id} isn't drawn"))?;
+            st.pointer = Some((g.at.0 + g.r * 0.3, g.at.1 + g.r * 0.3));
+            st.hover = Some(Target::Node(i as u32));
+            st.emphasis = Some(model.cursor(i));
+        }
+        if let Some((a, b)) = &ask.hover_edge {
+            let (a, b) = (node(a)? as u32, node(b)? as u32);
+            let k = model
+                .ends
+                .iter()
+                .position(|&e| e == (a, b) || e == (b, a))
+                .ok_or("no such edge")?;
+            let e = l.edges[k].as_ref().ok_or("that edge isn't drawn")?;
+            st.pointer = Some(halfway(&e.pts));
+            st.hover = Some(Target::Edge(k as u32));
+        }
+        if let Some((x, y)) = ask.hover {
+            st.pointer = Some((x, y));
+            st.hover = graph::hover(&model, &l, x, y);
+            if let Some(Target::Node(i)) = st.hover {
+                st.emphasis = Some(model.cursor(i as usize));
+            }
+        }
+        let mut m = BookMeasure { book, scale };
+        let t1 = std::time::Instant::now();
+        let over = graph::overlay(&model, &l, view, &st, theme, &mut m);
+        let took = t1.elapsed();
+        if say {
+            let placed = l.labels.iter().flatten().count();
+            let backed = l.labels.iter().flatten().filter(|x| x.backed).count();
+            let shown = l.nodes.iter().flatten().count();
+            println!(
+                "graph {} nodes ({} shown), {} edges; layout {:?} in {:.1} ms; plot {:.1},{:.1} {:.1}x{:.1}; labels {placed} ({backed} backed), {} culled; hover {:?}; overlay {:?} in {:.2} ms",
+                model.len(),
+                shown,
+                model.ends.len(),
+                model.layout,
+                laid.as_secs_f64() * 1e3,
+                l.plot.x,
+                l.plot.y,
+                l.plot.w,
+                l.plot.h,
+                shown - placed,
+                st.hover,
+                over.bounds(),
+                took.as_secs_f64() * 1e3,
+            );
+        }
+        let mut scene = scene;
+        if let (Some((_, rect, _)), Some(d)) = (split, ask.detail) {
+            // The panel for the cursor's node, else the hovered one, beside the graph.
+            let at = cursor
+                .as_ref()
+                .and_then(|c| model.node_of(c))
+                .or(st.hover.and_then(Target::node))
+                .ok_or("--detail needs --cursor-node or --hover-node")?;
+            let mut tree = model.node_detail(at);
+            if d.unfold {
+                tree.unfold_all();
+            }
+            let mut state = PanelState::open(&tree, Some(&model.item(at)));
+            if let Some(r) = d.row {
+                state.row = r.min(tree.rows.len().saturating_sub(1));
+            }
+            state.top = d.top;
+            state.focused = d.focus;
+            detail::reveal(&tree, &mut state, rect);
+            let mut m = BookMeasure { book, scale };
+            let panel = detail::panel(&tree, state, rect, scale, theme, &mut m);
+            if say {
+                println!(
+                    "detail {} at {rect:?}: {} — {}",
+                    model.id(at),
+                    tree.title,
+                    tree.kind
+                );
+                for (i, r) in tree.rows.iter().enumerate() {
+                    println!(
+                        "  {i:>3} {}{:?} {} = {}{}",
+                        "  ".repeat(usize::from(r.depth)),
+                        r.kind,
+                        r.key,
+                        r.value,
+                        if i == state.row { "  <" } else { "" }
+                    );
+                }
+            }
+            (scene.width, scene.height) = ask.size;
+            scene.items.extend(panel.items);
+            scene.regions.extend(panel.regions);
+        }
+        Ok((scene, over))
+    };
+    let (base, over) = shot(&view, ask.scale, book, true)?;
+    let bytes = composite(&base, &over, theme, book)?;
+    std::fs::write(output, bytes).map_err(|e| format!("{output}: {e}"))?;
+    if let Some(svg) = &ask.svg {
+        let (mut scene, over) = shot(&view, 1.0, book, false)?;
+        scene.items.extend(over.items);
+        std::fs::write(svg, die_fig::svg::write(&scene)).map_err(|e| format!("{svg}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The base and the overlay drawn into buffers of their own and laid one on the other as the
+/// host lays the window's overlay on its base (premultiplied, exact), as a PNG: drawn as one
+/// scene, the overlay's wash would round the surface under it a level off.
+fn composite(
+    base: &Scene,
+    over: &Scene,
+    theme: &Theme,
+    book: &mut Book,
+) -> Result<Vec<u8>, String> {
+    let s = base.scale;
+    let (w, h) = (
+        (base.width * s).ceil() as u32,
+        (base.height * s).ceil() as u32,
+    );
+    let len = w as usize * h as usize * 4;
+    let (mut under, mut top) = (vec![0u8; len], vec![0u8; len]);
+    raster::draw(
+        base,
+        &mut under,
+        w,
+        h,
+        w as usize * 4,
+        None,
+        Some(theme.surface),
+        Some(book),
+    );
+    raster::draw(over, &mut top, w, h, w as usize * 4, None, None, Some(book));
+    for (u, t) in under.chunks_exact_mut(4).zip(top.chunks_exact(4)) {
+        let keep = 1.0 - f32::from(t[3]) / 255.0;
+        for c in 0..3 {
+            u[c] = (f32::from(t[c]) + f32::from(u[c]) * keep)
+                .round()
+                .min(255.0) as u8;
+        }
+        u[3] = 255;
+    }
+    die_draw::image::encode(w, h, &under)
+}
+
+/// The figure, and the detail panel beside it where asked: the chart laid out in what the
+/// panel leaves, as the surface does.
+#[allow(clippy::too_many_arguments)]
+fn beside(
+    model: &ChartModel,
+    view: &View,
+    ask: &Ask,
+    theme: &Theme,
+    scale: f32,
+    book: &mut Book,
+    cursor_at: &dyn Fn(usize) -> Option<Cursor>,
+    say: bool,
+) -> Result<Scene, String> {
+    let Some(d) = ask.detail else {
+        return draw(model, view, ask, theme, scale, book, cursor_at, say);
+    };
+    let (fig, rect, _) = detail::split(ask.size);
+    let small = Ask {
+        size: (fig.w, fig.h),
+        area_w: Some(ask.size.0),
+        ..ask.clone()
+    };
+    let chart = draw(model, view, &small, theme, scale, book, cursor_at, say)?;
+    let target = ask.cursor.and_then(cursor_at).or_else(|| {
+        let mut m = BookMeasure { book, scale };
+        let (_, layout, hits) =
+            plot::base_beside(model, view, small.size, ask.size.0, scale, theme, &mut m);
+        ask.hover
+            .and_then(|(x, y)| plot::hover(model, &layout, &hits, view, x, y))
+    });
+    let Some(target) = target else {
+        return Err("--detail needs --cursor or --hover on a mark".into());
+    };
+    let mut tree = if d.series {
+        let key = match &target {
+            Cursor::Point { series, .. } => Some(series.clone()),
+            Cursor::Band { series, .. } => series.clone().or_else(|| model.keys().first().cloned()),
+            _ => None,
+        };
+        key.and_then(|k| model.series_detail(&k))
+    } else {
+        model.detail(view, &target)
+    }
+    .ok_or("the cursor names nothing with a detail")?;
+    if d.unfold {
+        tree.unfold_all();
+    }
+    let mut state = PanelState::open(&tree, Item::of_cursor(&target).as_ref());
+    if let Some(r) = d.row {
+        state.row = r.min(tree.rows.len().saturating_sub(1));
+    }
+    state.top = d.top;
+    state.focused = d.focus;
+    if d.row.is_some() || d.top == 0 {
+        detail::reveal(&tree, &mut state, rect);
+    }
+    let mut m = BookMeasure { book, scale };
+    let panel = detail::panel(&tree, state, rect, scale, theme, &mut m);
+    if say {
+        println!(
+            "detail {:?} at {rect:?}: {} — {}",
+            target, tree.title, tree.kind
+        );
+        for (i, r) in tree.rows.iter().enumerate() {
+            println!(
+                "  {i:>3} {}{:?} {} = {}{}",
+                "  ".repeat(usize::from(r.depth)),
+                r.kind,
+                r.key,
+                r.value,
+                if i == state.row { "  <" } else { "" }
+            );
+        }
+    }
+    let mut scene = Scene::new(ask.size.0, ask.size.1, scale);
+    scene.items = chart.items;
+    scene.regions = chart.regions;
+    scene.items.extend(panel.items);
+    scene.regions.extend(panel.regions);
+    Ok(scene)
 }
 
 /// A file built by the job `\v` runs, its data read from disk, times in `zone`.
@@ -255,6 +701,7 @@ fn build(path: &Path, zone: &TimeZone) -> Result<Built, Failed> {
         zone: zone.clone(),
         open: vec![],
         toggles: Toggles::default(),
+        auto: None,
     })
 }
 
@@ -310,7 +757,9 @@ fn draw(
     say: bool,
 ) -> Result<Scene, String> {
     let mut m = BookMeasure { book, scale };
-    let (mut scene, layout, hits) = plot::base(model, view, ask.size, scale, theme, &mut m);
+    let area_w = ask.area_w.unwrap_or(ask.size.0);
+    let (mut scene, layout, hits) =
+        plot::base_beside(model, view, ask.size, area_w, scale, theme, &mut m);
     let hover = ask
         .hover
         .and_then(|(x, y)| plot::hover(model, &layout, &hits, view, x, y));
@@ -339,7 +788,12 @@ fn draw(
         brush,
         emphasis: emphasis.clone(),
     };
-    let over = plot::overlay(model, &layout, view, &st, theme, &mut m);
+    // Beside the detail panel, the cursor's card goes, as the surface has it.
+    let lit = plot::overlay::Lit {
+        cursor_card: ask.detail.is_none(),
+        ..plot::overlay::Lit::default()
+    };
+    let over = plot::overlay::overlay_lit(model, &layout, view, &st, &lit, theme, &mut m);
     if say {
         let p = layout.plot;
         println!(

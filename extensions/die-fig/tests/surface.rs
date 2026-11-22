@@ -185,6 +185,38 @@ fn fig_file_charts_a_file_no_buffer_visits_and_fig_spec_writes_it_as_a_spec() {
 }
 
 #[test]
+fn backslash_v_from_a_fig_files_figure_goes_to_the_files_text_not_where_it_came_from() {
+    // Call 1426: `\v` from a figure `:fig rates.fig` made went back to the buffer `:fig` was
+    // typed in.
+    let dir = TempDir::new("fig-file-back");
+    std::fs::write(dir.path().join("rates.csv"), crossing()).unwrap();
+    let spec = dir.path().join("rates.fig");
+    std::fs::write(
+        &spec,
+        "{\"type\": \"line\", \"data\": \"rates.csv\", \"x\": \"x\", \"y\": \"a\"}\n",
+    )
+    .unwrap();
+    let mut h = harness();
+    let (notes, _) = h.open_text("notes", "notes\n").unwrap();
+    let args = Args {
+        text: Some(spec.display().to_string()),
+        ..Args::default()
+    };
+    h.run("fig", &args).unwrap();
+    h.run_until_idle();
+    let w = h.focused().unwrap();
+    let fig = h.window_buffer(w).unwrap();
+    assert_eq!(h.buffer_name(fig), Some("rates.fig *fig*"));
+    keys(&mut h, "\\v");
+    let back = h.window_buffer(w).unwrap();
+    assert_ne!(back, notes, "not the buffer it came from");
+    let path = h.file(back).map(|f| f.path.clone());
+    assert_eq!(path, Some(spec.clone()), "the file's text");
+    keys(&mut h, "l");
+    assert_eq!(h.window_buffer(w), Some(back), "and it stays text");
+}
+
+#[test]
 fn fig_bang_charts_what_a_command_prints() {
     let mut h = harness();
     h.open_text("notes", "notes\n").unwrap();

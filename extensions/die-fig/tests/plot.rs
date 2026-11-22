@@ -3651,3 +3651,181 @@ fn the_log_s_keys_give_way_from_the_right_before_the_figure_s_name_is_cut() {
     }
     assert!(seen.starts_with(&[3, 2, 1]), "{seen:?}");
 }
+
+#[test]
+fn a_short_plot_drops_value_ticks_until_they_clear_each_other() {
+    // Call 1432: at 200 × 120, thresholds.json and many.json drew their ticks on each other.
+    for name in [
+        "thresholds.json",
+        "many.json",
+        "requests.csv",
+        "stacked-area.json",
+    ] {
+        let model = load(name);
+        for size in [(200.0, 120.0), (220.0, 140.0), (260.0, 160.0)] {
+            let (scene, l, _) = lay(&model, &View::default(), size);
+            let ticks: Vec<Rect> = texts(&scene)
+                .into_iter()
+                .filter(|(t, _)| {
+                    l.labels
+                        .iter()
+                        .any(|x| x.role == Role::YTick && x.text == *t)
+                })
+                .map(|(_, r)| r)
+                .collect();
+            for (i, a) in ticks.iter().enumerate() {
+                for b in &ticks[i + 1..] {
+                    assert!(!overlaps(a, b), "{name} at {size:?}: {a:?} and {b:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_error_glyph_stays_inside_its_disc() {
+    // The mismatch glyph's right piece read as poking past its disc (errors-mismatch.png).
+    use die_fig::ErrorKind;
+    let r = Rect::new(10.0, 10.0, 96.0, 96.0);
+    let (cx, cy, radius) = (58.0, 58.0, 48.0);
+    for kind in [
+        ErrorKind::Unreadable,
+        ErrorKind::Malformed,
+        ErrorKind::Mismatch,
+        ErrorKind::Empty,
+    ] {
+        let mut scene = Scene::new(120.0, 120.0, 1.0);
+        plot::errors::glyph(&mut scene, kind, r, &Theme::mono_dark());
+        // Past the disc itself, every point a path draws or bends towards, with half its
+        // stroke, keeps within 82 % of the radius: the document and the axes reach about 80 %.
+        for item in scene.items.iter().skip(1) {
+            let Item::Path { path, stroke, .. } = item else {
+                continue;
+            };
+            let half = stroke.as_ref().map_or(0.0, |s| s.width / 2.0);
+            for v in &path.verbs {
+                let pts: Vec<(f32, f32)> = match *v {
+                    Verb::Move(x, y) | Verb::Line(x, y) => vec![(x, y)],
+                    Verb::Quad(a, b, x, y) => vec![(a, b), (x, y)],
+                    Verb::Cubic(a, b, c, d, x, y) => vec![(a, b), (c, d), (x, y)],
+                    Verb::Close => vec![],
+                };
+                for (x, y) in pts {
+                    let reach = (x - cx).hypot(y - cy) + half;
+                    assert!(
+                        reach <= radius * 0.82,
+                        "{kind:?}: ({x}, {y}) reaches {reach}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_short_chart_drops_its_legend_axis_titles_and_title_before_its_plot() {
+    // many.json: a title, twelve series' legend and both axes' titles. Beside the detail panel
+    // at the bottom of a 400 × 240 area it has 144 px; in a tiny tile, 120.
+    let model = load("many.json");
+    for size in [(400.0, 144.0), (200.0, 120.0)] {
+        let (scene, l, _) = lay(&model, &View::default(), size);
+        assert!(l.plot.h >= 48.0, "{size:?}: a plot of {} px", l.plot.h);
+        for (t, r) in texts(&scene) {
+            assert!(
+                r.x >= -0.5
+                    && r.y >= -0.5
+                    && r.right() <= size.0 + 0.5
+                    && r.bottom() <= size.1 + 0.5,
+                "{size:?}: {t} at {r:?} is cut at the edge"
+            );
+        }
+    }
+    // At 200 × 120 the x axis keeps two labels, thinned, not one.
+    let (scene, l, _) = lay(&model, &View::default(), (200.0, 120.0));
+    let under = texts(&scene)
+        .into_iter()
+        .filter(|(_, r)| r.y >= l.plot.bottom())
+        .count();
+    assert!(under >= 2, "{under} x labels");
+    // It keeps what it has room for: at 880 × 470 everything.
+    let (scene, _, _) = lay(&model, &View::default(), (880.0, 470.0));
+    assert!(has_text(&scene, "Queue depth by region"));
+}
+
+#[test]
+fn beside_the_panel_a_chart_keeps_the_areas_paddings() {
+    let model = load("requests.csv");
+    let (_, whole, _) = lay(&model, &View::default(), (880.0, 470.0));
+    let (_, beside, _) = plot::base_beside(
+        &model,
+        &View::default(),
+        (607.0, 470.0),
+        880.0,
+        1.0,
+        &Theme::mono_dark(),
+        &mut FixedMeasure,
+    );
+    assert_eq!(
+        beside.title.x, whole.title.x,
+        "the title doesn't move as the panel opens"
+    );
+}
+
+/// The look pass after phase 3: at 200x120 the SLO's label sat over checkout's spike.
+#[test]
+fn a_rules_label_goes_where_no_line_crosses_it() {
+    let model = load("thresholds.json");
+    for size in [(200.0, 120.0), (400.0, 240.0), (880.0, 470.0)] {
+        let (scene, l, _) = lay(&model, &View::default(), size);
+        let plate = scene
+            .items
+            .iter()
+            .find_map(|i| match i {
+                Item::Path {
+                    path,
+                    fill: Some(Paint::Solid { alpha, .. }),
+                    stroke: None,
+                } if (*alpha - 0.85).abs() < 1e-3 => {
+                    let pts: Vec<(f32, f32)> = path
+                        .verbs
+                        .iter()
+                        .flat_map(|v| match *v {
+                            Verb::Move(x, y) | Verb::Line(x, y) => vec![(x, y)],
+                            Verb::Quad(a, b, x, y) => vec![(a, b), (x, y)],
+                            Verb::Cubic(a, b, c, d, x, y) => vec![(a, b), (c, d), (x, y)],
+                            Verb::Close => vec![],
+                        })
+                        .collect();
+                    let x0 = pts.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
+                    let x1 = pts.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
+                    let y0 = pts.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+                    let y1 = pts.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+                    Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+                }
+                _ => None,
+            })
+            .expect("the SLO's label on its plate");
+        for s in &model.series {
+            let pts: Vec<(f32, f32)> =
+                s.xs.iter()
+                    .zip(s.ys.iter())
+                    .map(|(&x, &y)| l.at(x, y))
+                    .collect();
+            for w in pts.windows(2) {
+                // Sampled along the segment: none of it inside the plate.
+                for k in 0..=16 {
+                    let t = k as f32 / 16.0;
+                    let p = (
+                        w[0].0 + (w[1].0 - w[0].0) * t,
+                        w[0].1 + (w[1].1 - w[0].1) * t,
+                    );
+                    assert!(
+                        !plate.contains(p.0, p.1),
+                        "{size:?}: {} runs through the SLO's label",
+                        s.name
+                    );
+                }
+            }
+        }
+    }
+}

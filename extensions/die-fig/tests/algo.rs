@@ -608,10 +608,14 @@ fn layered_routes_a_long_edge_round_the_nodes_it_passes() {
     assert_eq!(p, layered(14, &edges));
     assert_layered(14, &edges, &p);
     assert_eq!(assert_routes(14, &edges, &p, &routes), 0);
-    assert_eq!((p[12].0, p[9].0, p[13].0), (0.0, 0.0, 0.0));
     assert_eq!(routes[3].len(), 3, "12 -> 13 spans four layers");
     assert_eq!(routes[5], routes[3], "a duplicate takes the first's bends");
-    assert!(routes[3].iter().all(|q| q.0 != 0.0));
+    // It passes node 9's layer a unit or more from it, wherever balancing put them.
+    let at9 = routes[3]
+        .iter()
+        .find(|q| q.1 == p[9].1)
+        .expect("a bend on 9's layer");
+    assert!((at9.0 - p[9].0).abs() >= 1.0, "{at9:?} by 9 at {:?}", p[9]);
 }
 
 #[test]
@@ -1428,4 +1432,49 @@ fn segment_distance_is_to_the_nearest_point_of_the_segment() {
     assert_eq!(segment_distance((-3.0, 4.0), a, b), 5.0);
     assert_eq!(segment_distance((13.0, -4.0), a, b), 5.0);
     assert_eq!(segment_distance((3.0, 4.0), a, a), 5.0);
+}
+
+#[test]
+fn layered_balances_a_parent_over_its_children() {
+    // A root, three managers, and 2, 5 and 3 leaves under them: an org chart as layers.
+    let mut edges = vec![(0, 1), (0, 2), (0, 3)];
+    let mut next = 4;
+    for (m, leaves) in [(1usize, 2usize), (2, 5), (3, 3)] {
+        for _ in 0..leaves {
+            edges.push((m, next));
+            next += 1;
+        }
+    }
+    let p = layered(next, &edges);
+    assert_layered(next, &edges, &p);
+    for parent in 0..4 {
+        let xs: Vec<f64> = edges
+            .iter()
+            .filter(|e| e.0 == parent)
+            .map(|e| p[e.1].0)
+            .collect();
+        let (lo, hi) = xs
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &x| {
+                (a.min(x), b.max(x))
+            });
+        assert!(
+            p[parent].0 >= lo - 1e-9 && p[parent].0 <= hi + 1e-9,
+            "{parent} at {} is outside its children's {lo}..{hi}",
+            p[parent].0
+        );
+    }
+    // The middle manager, with five leaves, sits over its middle one.
+    let mid: Vec<f64> = edges
+        .iter()
+        .filter(|e| e.0 == 2)
+        .map(|e| p[e.1].0)
+        .collect();
+    let mut sorted = mid.clone();
+    sorted.sort_by(f64::total_cmp);
+    assert!(
+        (p[2].0 - sorted[2]).abs() < 0.51,
+        "{} over {sorted:?}",
+        p[2].0
+    );
 }

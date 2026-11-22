@@ -14,5 +14,5 @@ pub use layered::{Routed, layered, layered_routes};
 pub use lttb::lttb;
 pub use pyramid::Pyramid;
 pub use search::tier;
-pub use stress::stress;
+pub use stress::{force, stress, stress_sparse};
 pub use tree::tree;
