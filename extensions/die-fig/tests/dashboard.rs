@@ -1189,3 +1189,25 @@ fn a_graph_panel_is_as_tall_as_its_ranks_need_and_its_nodes_never_meet() {
     let labelled = gl.labels.iter().flatten().count();
     assert_eq!(labelled, nodes.len(), "every node labelled");
 }
+
+/// The look pass after phase 4: at 400 × 600 health.fig stacked its charts each at its least
+/// height, a strip of a plot under its legend. A line of figures takes at least 45 % of the
+/// room under the header, and the page scrolls; at m4's size nothing changes.
+#[test]
+fn a_narrow_dashboard_scrolls_rather_than_squeezing_its_charts() {
+    let m = model_of("health.fig");
+    let v = DashView::initial(&m);
+    let l = lay(&m, &v, (400.0, 600.0));
+    let room = 600.0 - l.header.bottom - 16.0;
+    assert!(l.max_scroll > 0.0);
+    for i in [4, 5] {
+        let p = l.panel(i).unwrap();
+        assert!(p.frame.h >= (room * 0.45).floor(), "{i}: {:?}", p.frame);
+        let (c, _) = p.chart().unwrap();
+        assert!(c.plot.h >= 90.0, "{i}: a plot to read, {:?}", c.plot);
+    }
+    // At m4's size the charts still share the room under the tiles, and nothing scrolls.
+    let wide = lay(&m, &v, (880.0, 610.0));
+    assert_eq!(wide.max_scroll, 0.0);
+    assert_eq!(wide.panel(4).unwrap().frame.bottom(), 610.0 - 16.0);
+}

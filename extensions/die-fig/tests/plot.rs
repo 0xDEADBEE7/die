@@ -3852,3 +3852,38 @@ fn a_short_plot_ends_its_y_at_the_data_rather_than_doubling_it() {
     }
     assert!(checked > 0, "a plot under 120 px");
 }
+
+/// The look pass after phase 4: a failed tile (an area too short to stack the glyph over its
+/// status) showed the glyph alone. Where it's wide, the status and the error go beside the
+/// glyph, saying the place once.
+#[test]
+fn a_short_wide_error_figure_puts_its_status_and_error_beside_its_glyph() {
+    for e in kinds() {
+        let what = e.kind.name();
+        let one = std::slice::from_ref(&e);
+        let s = symbolic(one, (266.0, 64.0));
+        tidy(&s, what);
+        let ts = texts(&s);
+        let label = ["Unreadable", "Malformed", "Mismatch", "Empty"][e.kind as usize];
+        assert_eq!(ts.len(), 2, "{what}: the status and the error, {ts:?}");
+        assert_eq!(ts[0].0, label, "{what}");
+        assert!(
+            ts[1]
+                .0
+                .starts_with(&die_fig::plot::errors::summary(&e)[..8]),
+            "{what}: {ts:?}"
+        );
+        assert!(paths(&s) >= 3, "{what}: its glyph and the status icon");
+        // The words beside the glyph, both starting at one x.
+        assert!(
+            (ts[0].1.x - ts[1].1.x).abs() < 20.0 && ts[0].1.x > 40.0,
+            "{ts:?}"
+        );
+    }
+    // A message that names its place already says it once.
+    let e = FigError::new("deploys.csv: no such file").in_file(Path::new("deploys.csv"), None);
+    assert_eq!(
+        die_fig::plot::errors::summary(&e),
+        "deploys.csv: no such file"
+    );
+}

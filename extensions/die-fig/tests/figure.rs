@@ -835,3 +835,113 @@ fn tile_specs_write_back_the_same() {
         assert_eq!(a, again, "{f}");
     }
 }
+
+/// The look pass after phase 4: a meter with no thresholds never said `of max`, however wide
+/// it was, and one of a plain hundred would have said its share twice.
+#[test]
+fn a_meter_with_no_status_says_of_max_where_it_fits_and_never_of_a_plain_hundred() {
+    let t = Table::new(vec![Column::number("used", vec![7.2])]).unwrap();
+    let m = build(
+        r#"{"type": "meter", "label": "Memory", "data": "x.csv", "value": {"max": "used"}, "max": 10}"#,
+        &t,
+        None,
+    );
+    let said = |m: &TileModel, w: f32| -> Vec<String> {
+        let l = draw::layout(m, Rect::new(0.0, 0.0, w, 64.0), &mut FixedMeasure);
+        let boxes = text_boxes(&l);
+        for (i, (ta, a)) in boxes.iter().enumerate() {
+            assert!(a.x >= 15.5 && a.right() <= w - 15.5, "{w}: {ta} leaves");
+            for (tb, b) in &boxes[i + 1..] {
+                assert!(!overlaps(a, b), "{w}: {ta} over {tb}");
+            }
+        }
+        l.pieces.iter().map(|p| p.text.clone()).collect()
+    };
+    let wide = said(&m, 267.0);
+    assert!(wide.iter().any(|t| t == " \u{b7} 7.2 of 10"), "{wide:?}");
+    let narrow = said(&m, 120.0);
+    assert!(!narrow.iter().any(|t| t.contains(" of ")), "{narrow:?}");
+    let cpu = build(
+        r#"{"type": "meter", "label": "CPU", "data": "x.csv", "value": {"max": "used"}, "max": 100}"#,
+        &Table::new(vec![Column::number("used", vec![52.4])]).unwrap(),
+        None,
+    );
+    let wide = said(&cpu, 420.0);
+    assert!(!wide.iter().any(|t| t.contains(" of ")), "{wide:?}");
+}
+
+/// The look pass after phase 4: at m4's width a sparkline cut its label to `Requests pe…` to
+/// share the top with its value. Its label stays whole over the line, the value beside it.
+#[test]
+fn a_sparkline_keeps_its_label_whole_and_puts_its_value_beside_the_line() {
+    let t = day();
+    let m = build(
+        r#"{"type": "sparkline", "label": "Requests per minute", "data": "x.csv", "x": "time", "y": "rpm"}"#,
+        &t,
+        None,
+    );
+    let r = Rect::new(0.0, 0.0, 197.0, 100.0);
+    let l = draw::layout(&m, r, &mut FixedMeasure);
+    let label = l.pieces.iter().find(|p| p.role == Role::Label).unwrap();
+    assert_eq!(label.text, "Requests per minute");
+    let value = l.pieces.iter().find(|p| p.role == Role::Value).unwrap();
+    let trend = l.trend.expect("its line");
+    let vb = value.bounds(&mut FixedMeasure);
+    assert!(
+        vb.x >= trend.right(),
+        "the value right of the line: {vb:?} {trend:?}"
+    );
+    assert!(
+        vb.y < trend.bottom() && vb.bottom() > trend.y,
+        "level with it: {vb:?} {trend:?}"
+    );
+    assert!(trend.y > label.y + 4.0, "the line under the label");
+    let boxes = text_boxes(&l);
+    for (i, (ta, a)) in boxes.iter().enumerate() {
+        assert!(a.right() <= 197.0 - 15.5, "{ta} leaves");
+        for (tb, b) in &boxes[i + 1..] {
+            assert!(!overlaps(a, b), "{ta} over {tb}");
+        }
+    }
+    // Wide, the label and the value share the top as before.
+    let wide = draw::layout(&m, Rect::new(0.0, 0.0, 420.0, 100.0), &mut FixedMeasure);
+    let (lab, val) = (
+        wide.pieces.iter().find(|p| p.role == Role::Label).unwrap(),
+        wide.pieces.iter().find(|p| p.role == Role::Value).unwrap(),
+    );
+    assert!((lab.y - val.y).abs() < 12.0 && wide.trend.unwrap().y > val.y);
+}
+
+/// The look pass after phase 4: in a custom range one tile dropped `vs previous 1h 35m` where
+/// the others kept it. A row's stats say as much of the period as the most cramped can.
+#[test]
+fn a_rows_stats_say_as_much_of_their_period_as_each_other() {
+    let t = m4_tiles();
+    let mut seen = Vec::new();
+    for w in [420.0, 197.0, 185.0, 170.0, 150.0, 120.0] {
+        let r = Rect::new(0.0, 0.0, w, 100.0);
+        let fit = (t.iter())
+            .map(|m| draw::needs(m, r, &mut FixedMeasure))
+            .fold(figure::RowFit::default(), figure::RowFit::meet);
+        let forms: Vec<u8> = t
+            .iter()
+            .filter_map(|m| {
+                let l = draw::layout(&TileModel { fit, ..m.clone() }, r, &mut FixedMeasure);
+                let d = l.pieces.iter().find(|p| p.role == Role::Delta)?;
+                Some(if d.text.contains(" vs previous ") {
+                    0
+                } else if d.text.contains(" vs prior ") {
+                    1
+                } else {
+                    2
+                })
+            })
+            .collect();
+        assert!(forms.windows(2).all(|p| p[0] == p[1]), "{w}: {forms:?}");
+        seen.extend(forms.first().copied());
+    }
+    assert!(
+        seen.contains(&0) && seen.iter().any(|&f| f > 0),
+        "whole at m4's size, less where it's cramped: {seen:?}"
+    );
+}

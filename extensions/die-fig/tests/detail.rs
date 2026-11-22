@@ -1012,3 +1012,63 @@ fn grouped_bars_side_by_side_have_no_total_in_their_band_tree() {
     );
     assert_eq!(row(&t, "p95").value, "51");
 }
+
+/// The look pass after phase 4: the panel cut its rows at a whole row and left a gap above the
+/// hint while rows remained below. The next row now starts in that room, cut at the body's
+/// foot under a fade of the panel's ground, and takes no pointer.
+#[test]
+fn rows_below_the_fold_fill_the_body_the_next_fading_at_its_foot() {
+    let theme = Theme::mono_dark();
+    let mut m = FixedMeasure;
+    let mut peeked = 0;
+    for t in trees() {
+        for rect in [
+            Rect::new(0.0, 0.0, 280.0, 470.0),
+            Rect::new(0.0, 0.0, 400.0, 190.0),
+        ] {
+            let st = PanelState::default();
+            let l = detail::layout(&t, &st, rect);
+            let next = l.top + l.shown.len();
+            let room = l.body.bottom() - l.shown.last().map_or(l.body.y, |(_, r)| r.bottom());
+            let s = detail::panel(&t, st, rect, 2.0, &theme, &mut m);
+            let fade = s.items.iter().find_map(|i| match i {
+                Draw::Path {
+                    fill: Some(die_fig::scene::Paint::Linear { to, .. }),
+                    ..
+                } => Some(to.1),
+                _ => None,
+            });
+            if next >= l.lines.len() || room < 6.0 {
+                assert_eq!(fade, None, "{}: nothing below, no fade", t.title);
+                continue;
+            }
+            assert_eq!(
+                fade,
+                Some(l.body.bottom()),
+                "{}: the fade ends at the foot",
+                t.title
+            );
+            let row = &t.rows[l.lines[next]];
+            let key: String = row.key.chars().take(3).collect();
+            // A heading's capitals are set one by one; a row's key is one text.
+            assert!(
+                row.kind == RowKind::Section
+                    || s.items
+                        .iter()
+                        .any(|i| matches!(i, Draw::Text { text, .. } if text.starts_with(&key))),
+                "{}: the next row ({:?}) starts under the whole ones",
+                t.title,
+                row.key
+            );
+            assert!(
+                !s.regions
+                    .iter()
+                    .any(|r| r.hit == Hit::Detail(l.lines[next] as u32)),
+                "{}: a row cut at the foot takes no pointer",
+                t.title
+            );
+            peeked += 1;
+        }
+    }
+    assert!(peeked > 0, "some panel has rows below");
+}
