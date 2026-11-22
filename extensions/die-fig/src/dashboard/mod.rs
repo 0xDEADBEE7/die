@@ -36,8 +36,8 @@ pub mod layout;
 pub mod time;
 
 pub use draw::{base, overlay};
-pub use hit::{DashHit, DashHover, hit, hover};
-pub use layout::{DashLayout, layout};
+pub use hit::{DashHit, DashHover, PanelHover, hit, hover};
+pub use layout::{DashLayout, layout, layout_full};
 pub use time::{DashView, PanelView, RANGES, Range, tween};
 
 use crate::data::{ReadOptions, Table};

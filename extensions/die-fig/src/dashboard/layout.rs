@@ -74,6 +74,8 @@ const UNDER_TITLE: f32 = 34.0;
 const UNDER_SUBTITLE: f32 = 54.0;
 /// Under a chart's x labels, to the frame.
 const CHART_FOOT: f32 = 10.0;
+/// How much narrower than its frame a chart lays out, at the right.
+const CHART_RIGHT: f32 = 8.0;
 /// The least frame that shows a subtitle.
 const SUBTITLE_MIN_H: f32 = 150.0;
 /// A nested dashboard's title row, and its inner margin.
@@ -894,17 +896,25 @@ impl Cx<'_, '_> {
                     bottom: CHART_FOOT + extra.1,
                     ends: false,
                 };
+                // Laid out a little narrower than the frame: an end tick label may reach
+                // into the chart's padding, and keeps 12 px from the ring that way (m4's plot
+                // ends 24 px in).
+                let size = ((size.0 - CHART_RIGHT).max(0.0), size.1);
                 let (scene, layout, hits) =
                     plot::base_inset(cm, &view, size, insets, scale, theme, self.m);
                 (whole, Some(scene), PanelFigure::Chart { layout, hits })
             }
             PanelState::Graph(g) => {
-                let top = if head > PAD { head - 10.0 } else { 4.0 };
+                // Placed so the graph's own paddings put its legend 16 px in, where a chart's
+                // is, and its nodes as far from the ring as a chart's plot.
+                let (px, pt, pb) = plot::layout::paddings(frame.w, (frame.h - head).max(0.0));
+                let (x, top) = ((PAD - px).max(1.0), (head - pt).max(1.0));
+                let foot = (PAD - pb).max(4.0);
                 let body = Rect::new(
-                    4.0,
+                    x,
                     top,
-                    (frame.w - 8.0).max(0.0),
-                    (frame.h - top - 4.0).max(0.0),
+                    (frame.w - 2.0 * x).max(0.0),
+                    (frame.h - top - foot).max(0.0),
                 );
                 let (scene, layout) = graph::base(g, &view, (body.w, body.h), scale, theme, self.m);
                 (body, Some(scene), PanelFigure::Graph { layout })
