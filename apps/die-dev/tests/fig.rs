@@ -14,7 +14,13 @@
 //! a pan, a ⌘-wheel zoom, the panel and Tab into it, `/` as it's typed and Esc, `t`, `0`, an edit
 //! of the JSON the graph follows with the pin kept, and `\v` back. And a dashboard through your
 //! config: health.fig opens as its dashboard, a hover on a linked chart, `Tab` to a panel, `f`
-//! full size and back, `T` to the last hour, and `\v` to its text and back.
+//! full size and back, `T` to the last hour, and `\v` to its text and back. And dashboards as
+//! you'd use them, start to end, in a process with a HOME of its own: health.fig's panels
+//! presented once their jobs land, a hover at 10:05 on the left chart drawing the moment in the
+//! right one and each tile's mini crosshair, a click, Tab, `f` and back, `T` to the last hour, a
+//! brush on both charts and `u`; broken-panel.fig's two bad panels beside four good ones, `!`
+//! and back; live.fig asking first, ticker.sh's rows streaming in with the time following, a
+//! pan stopping it and `G` again, and `\v` to the text with every process the figure ran gone.
 
 use die_test_cap as _;
 
@@ -23,9 +29,19 @@ use die::core::{
     PointerEvent, PointerKind, WindowId, parse_keys,
 };
 use die_fig::Fig;
+use die_fig::dashboard::draw::focus_ring;
+use die_fig::dashboard::{DashModel, PanelState};
 use die_fig::data::SeriesKey;
+use die_fig::figure::{TileHover, hover_at};
 use die_fig::interact::Cursor;
+use die_fig::plot::ErrorView;
+use die_fig::scene::{Item, Paint, Rect, Stroke, Verb};
 use die_fig::surface::Shared;
+use die_fig::surface::dash::DashPane;
+use die_fig::theme::Color;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 /// Your cells on your panel: 19 by 40 pixels at 2x.
@@ -1255,4 +1271,657 @@ fn a_dashboard_round_trip_its_linked_hover_tab_f_t_and_back_to_its_text() {
         Some(4)
     );
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// ------------------------------------------------------- dashboards as the owner uses them
+
+/// Set in the process the dashboard test runs itself again in, which has a HOME of its own: a
+/// live command's PATH comes from a login shell, and that reads its HOME's profile.
+const OWN_HOME: &str = "DIE_DEV_FIG_DASHBOARD_CHILD";
+
+/// One of die-fig's examples copied into `d`, its mode with it (the scripts run).
+fn example(d: &Path, rel: &str) -> PathBuf {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../extensions/die-fig/examples/data")
+        .join(rel);
+    let to = d.join(from.file_name().unwrap());
+    std::fs::copy(&from, &to).unwrap();
+    to
+}
+
+/// What `f` makes of a window's dashboard and the figure's model.
+fn on_dash<R>(st: &Shared, win: WindowId, f: impl FnOnce(&DashPane, &DashModel) -> R) -> R {
+    let s = st.borrow();
+    let dp = s.panes[&win]
+        .dash
+        .as_ref()
+        .expect("a dashboard in the window");
+    let m = (s.dash.as_ref().and_then(|d| d.model.as_ref())).expect("its model");
+    f(dp, m)
+}
+
+/// Panel `i`'s frame in the area's logical px, as last laid out.
+fn frame(st: &Shared, win: WindowId, i: usize) -> Rect {
+    on_dash(st, win, |dp, _| {
+        dp.layout
+            .as_ref()
+            .expect("laid out")
+            .panel(i)
+            .expect("a panel")
+            .frame
+    })
+}
+
+/// Panel `i`'s plot in the area's logical px.
+fn panel_plot(st: &Shared, win: WindowId, i: usize) -> Rect {
+    on_dash(st, win, |dp, _| {
+        let p = dp.layout.as_ref().unwrap().panel(i).unwrap();
+        let (l, _) = p.chart().expect("a chart");
+        let (ox, oy) = p.origin();
+        Rect::new(l.plot.x + ox, l.plot.y + oy, l.plot.w, l.plot.h)
+    })
+}
+
+/// The area's x of time `t` on panel `i`'s chart, and the chart's x domain.
+fn panel_x(st: &Shared, win: WindowId, i: usize, t: f64) -> (f32, (f64, f64)) {
+    on_dash(st, win, |dp, _| {
+        let p = dp.layout.as_ref().unwrap().panel(i).unwrap();
+        let (l, _) = p.chart().expect("a chart");
+        (l.x.map(t) + p.origin().0, l.x.domain())
+    })
+}
+
+/// The dashboard's shared time.
+fn shared_time(st: &Shared, win: WindowId) -> (f64, f64) {
+    on_dash(st, win, |dp, _| dp.view.time.expect("a time"))
+}
+
+/// The presented pixels of a buffer inside `r` (the area's logical px) that `want` picks, at
+/// their logical places.
+fn pixels_in(
+    h: &Harness,
+    id: PixelBufferId,
+    r: Rect,
+    want: impl Fn(&[u8]) -> bool,
+) -> Vec<(f32, f32)> {
+    let (w, ht, px) = h.pixels(id).expect("presented");
+    let s = CELL.scale as f32;
+    let (x0, x1) = ((r.x * s).max(0.0) as u32, ((r.right() * s) as u32).min(w));
+    let (y0, y1) = ((r.y * s).max(0.0) as u32, ((r.bottom() * s) as u32).min(ht));
+    let mut out = vec![];
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = (y * w + x) as usize * 4;
+            if want(&px[i..i + 4]) {
+                out.push((x as f32 / s, y as f32 / s));
+            }
+        }
+    }
+    out
+}
+
+/// An opaque pixel of colour `c`.
+fn is(c: Color) -> impl Fn(&[u8]) -> bool {
+    move |p| p == [c.0, c.1, c.2, 255]
+}
+
+/// The middle of some pixels across.
+fn mid_x(pts: &[(f32, f32)]) -> f32 {
+    pts.iter().map(|p| p.0).sum::<f32>() / pts.len() as f32
+}
+
+/// A tile's trend line in its panel's scene: the points of the path stroked in `colour`.
+fn trend_line(scene: &die_fig::scene::Scene, colour: Color) -> Vec<(f32, f32)> {
+    (scene.items.iter())
+        .find_map(|it| match it {
+            Item::Path {
+                path,
+                fill: None,
+                stroke:
+                    Some(Stroke {
+                        paint: Paint::Solid { color, .. },
+                        ..
+                    }),
+            } if *color == colour => Some(
+                (path.verbs.iter())
+                    .filter_map(|v| match v {
+                        Verb::Move(x, y) | Verb::Line(x, y) => Some((*x, *y)),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .expect("a trend line")
+}
+
+/// Whether panel `i`'s figure is in the presented base, not only its frame and title: a
+/// tile's trend line and the dot on its newest point, a chart's line in each series' colour.
+fn drawn(h: &Harness, st: &Shared, win: WindowId, base: PixelBufferId, i: usize) -> bool {
+    let theme = st.borrow().theme.clone();
+    let inside = frame(st, win, i).inflate(-3.0);
+    let colours: Vec<Color> = on_dash(st, win, |_, m| match m.panels[i].chart() {
+        Some(cm) => cm.series.iter().map(|s| cm.color(s, &theme)).collect(),
+        None => vec![theme.series[0], theme.other],
+    });
+    colours
+        .iter()
+        .all(|c| pixels_in(h, base, inside, is(*c)).len() >= 8)
+}
+
+/// The union of what a buffer presented since the last ask, in logical px.
+fn presented(h: &mut Harness, id: PixelBufferId) -> Option<Rect> {
+    let s = CELL.scale as f32;
+    (presents(h).into_iter())
+        .filter(|(b, _)| *b == id)
+        .map(|(_, r)| {
+            let (x, y) = (r.x as f32 / s, r.y as f32 / s);
+            Rect::new(x, y, r.width as f32 / s, r.height as f32 / s)
+        })
+        .reduce(|a, b| a.union(&b))
+}
+
+/// The process groups a live figure's commands have running.
+fn running(st: &Shared) -> Vec<u32> {
+    let s = st.borrow();
+    let Some(l) = s.live.as_ref() else {
+        return vec![];
+    };
+    l.keys().iter().filter_map(|k| l.status(k)?.pid).collect()
+}
+
+/// The rows a live figure's stream keeps.
+fn streamed(st: &Shared) -> usize {
+    let s = st.borrow();
+    let Some(l) = s.live.as_ref() else {
+        return 0;
+    };
+    let mut statuses = l.keys().into_iter().filter_map(|k| l.status(&k));
+    statuses.find(|s| s.stream).map_or(0, |s| s.rows)
+}
+
+/// The dashboard's newest sample.
+fn newest(st: &Shared) -> f64 {
+    let s = st.borrow();
+    let m = s.dash.as_ref().and_then(|d| d.model.as_ref()).unwrap();
+    m.newest().expect("a newest sample")
+}
+
+/// Waits on the real clock for the commands to print, moving the fake one on so fig's poll
+/// takes what they printed, until `done` or about 10 s.
+fn wait_for(h: &mut Harness, mut done: impl FnMut(&mut Harness) -> bool) -> bool {
+    for _ in 0..200 {
+        if done(h) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        let errors = h.advance(Duration::from_millis(40));
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    done(h)
+}
+
+/// Every process now in one of these groups, as `ps` sees them, zombies too.
+fn in_groups(groups: &BTreeSet<u32>) -> Vec<String> {
+    let out = Command::new("/bin/ps")
+        .args(["-ax", "-o", "pgid=,pid=,stat=,command="])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.lines()
+        .filter(|l| {
+            let pgid = l.split_whitespace().next().and_then(|p| p.parse().ok());
+            pgid.is_some_and(|p| groups.contains(&p))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The processes this one started that are still there, zombies too (but the `ps` asking).
+fn own_children() -> Vec<String> {
+    let me = std::process::id().to_string();
+    let out = Command::new("/bin/ps")
+        .args(["-ax", "-o", "ppid=,pid=,stat=,command="])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.lines()
+        .filter(|l| l.split_whitespace().next() == Some(me.as_str()))
+        .filter(|l| !l.contains("/bin/ps -ax"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn dashboards_as_you_use_them_health_a_broken_panel_and_live_data_start_to_end() {
+    if std::env::var_os(OWN_HOME).is_some() {
+        dashboards_start_to_end();
+        return;
+    }
+    // Again in a process of its own, with a HOME, a ZDOTDIR and a SHELL of its own, so the
+    // login shell that live commands get their PATH from reads no profile of yours.
+    let home = dir("dash-home");
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "dashboards_as_you_use_them_health_a_broken_panel_and_live_data_start_to_end",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(OWN_HOME, "1")
+        .env("HOME", &home)
+        .env("ZDOTDIR", &home)
+        .env("SHELL", "/bin/sh")
+        .env_remove("ENV")
+        .env_remove("BASH_ENV")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && said.contains("1 passed"),
+        "the test in its own HOME: {said}"
+    );
+}
+
+/// The test, in the process with its own HOME.
+fn dashboards_start_to_end() {
+    let d = dir("dash-owner");
+    let health = example(&d, "dash/health.fig");
+    for f in [
+        "dash/requests.csv",
+        "dash/service.csv",
+        "dash/broken-panel.fig",
+    ] {
+        example(&d, f);
+    }
+    let mut h = harness();
+    h.set_window_size(100, 34);
+    h.run_until_idle();
+    let win = h.focused().unwrap();
+    let none = Mods::default();
+    presents(&mut h);
+
+    // health.fig opens as its dashboard. Its plan and each data file's read are jobs; once they
+    // land, the base is presented over every panel with its figure in it: each tile's trend
+    // and the dot on its newest point, each chart's lines in their series' colours.
+    open(&mut h, &health);
+    let fig = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(fig), Some("health.fig *fig*"));
+    let st = h.with_ext(|f: &mut Fig, _| f.figure(fig)).unwrap().unwrap();
+    let theme = st.borrow().theme.clone();
+    let (base, over) = st.borrow().panes[&win].buffers().expect("its two buffers");
+    let n = on_dash(&st, win, |_, m| {
+        assert!(m.panels.iter().all(|p| p.ready()), "every panel draws");
+        m.panels.len()
+    });
+    assert_eq!(n, 6, "four tiles and two charts");
+    let shown = presented(&mut h, base).expect("the base presented");
+    for i in 0..n {
+        let f = frame(&st, win, i);
+        assert!(
+            shown.contains(f.x, f.y) && shown.contains(f.right() - 0.5, f.bottom() - 0.5),
+            "panel {i} at {f:?} presented in {shown:?}"
+        );
+        assert!(drawn(&h, &st, win, base, i), "panel {i}'s figure drawn");
+    }
+    // At rest nothing is drawn again; its files are looked at each second while it shows.
+    h.advance(Duration::from_secs(2));
+    let p = presents(&mut h);
+    assert!(p.is_empty(), "nothing drawn at rest: {p:?}");
+
+    // A hover on the left chart at 10:05: the overlay alone is presented, with the chart's
+    // card, the linked moment in the right chart (a dashed hairline at 10:05 and the area's dot
+    // on it) and each tile's mini crosshair on the part of its trend that holds 10:05.
+    let (t, at) = on_dash(&st, win, |dp, m| {
+        let (start, _) = dp.view.time.expect("the last six hours");
+        let t = start + 4.0 * 3600.0 + 300.0;
+        let cm = m.panels[4].chart().expect("a chart");
+        assert!(cm.series[0].xs.contains(&t), "a sample at 10:05");
+        let p = dp.layout.as_ref().unwrap().panel(4).unwrap();
+        let (l, _) = p.chart().unwrap();
+        let (ox, oy) = p.origin();
+        (t, (l.x.map(t) + ox, l.plot.y + oy + l.plot.h * 0.5))
+    });
+    pointer(&mut h, win, PointerKind::Move, at, none, 0);
+    let hover = on_dash(&st, win, |dp, m| {
+        assert_eq!(dp.hovered, Some(4), "the left chart hovered");
+        let hover = dp.subs[4].hover.clone();
+        let Some(Cursor::Point { series, row }) = &hover else {
+            panic!("a sample hovered: {hover:?}");
+        };
+        let cm = m.panels[4].chart().unwrap();
+        let s = cm.series.iter().find(|s| &s.key == series).unwrap();
+        assert_eq!(s.xs[*row as usize], t, "the hover on 10:05");
+        hover
+    });
+    let p = presents(&mut h);
+    assert!(
+        !p.is_empty() && p.iter().all(|(id, _)| *id == over),
+        "the overlay alone: {p:?}"
+    );
+    let card = pixels_in(&h, over, frame(&st, win, 4), is(theme.tooltip)).len();
+    assert!(card > 400, "the card's ground in the left chart: {card} px");
+    let (plot5, (x5, _)) = (panel_plot(&st, win, 5), panel_x(&st, win, 5, t));
+    let line = pixels_in(&h, over, Rect::new(x5 - 1.0, plot5.y, 2.0, plot5.h), |p| {
+        p[3] > 0
+    });
+    let k = CELL.scale as f32;
+    let mut rows: Vec<u32> = line.iter().map(|p| (p.1 * k) as u32).collect();
+    rows.dedup();
+    let of = (plot5.h * k) as usize;
+    assert!(
+        rows.len() * 10 > of * 3 && rows.len() * 10 < of * 8,
+        "a dashed line at 10:05 in the right chart: {} of {of} rows inked",
+        rows.len()
+    );
+    let area = on_dash(&st, win, |_, m| {
+        let cm = m.panels[5].chart().unwrap();
+        cm.color(&cm.series[0], &theme)
+    });
+    let dot = pixels_in(
+        &h,
+        over,
+        Rect::new(x5 - 6.0, plot5.y - 2.0, 12.0, plot5.h + 4.0),
+        is(area),
+    );
+    assert!(dot.len() >= 10, "the area's dot on it: {} px", dot.len());
+    for i in 0..4 {
+        let f = frame(&st, win, i);
+        let mini = pixels_in(&h, over, f, is(theme.series[0]));
+        assert!(
+            mini.len() >= 10,
+            "tile {i}'s mini crosshair: {} px",
+            mini.len()
+        );
+        // On the point of the trend's part that holds 10:05, where the base drew it.
+        let want = on_dash(&st, win, |dp, _| {
+            let p = dp.layout.as_ref().unwrap().panel(i).unwrap();
+            let tm = p.tile().expect("a tile");
+            let Some(TileHover::Trend { point, .. }) = hover_at(tm, t) else {
+                panic!("tile {i} has 10:05 on its trend");
+            };
+            let line = trend_line(&p.scene, theme.other);
+            assert_eq!(line.len(), tm.trend.len(), "tile {i}'s trend as drawn");
+            (line[point].0 + p.frame.x, line[point].1 + p.frame.y)
+        });
+        let ys: Vec<(f32, f32)> = mini.iter().map(|p| (p.1, p.0)).collect();
+        let got = (mid_x(&mini), mid_x(&ys));
+        assert!(
+            near(got, want, 1.0),
+            "tile {i}'s crosshair at {got:?}, 10:05's point at {want:?}"
+        );
+    }
+
+    // A click on the left chart focuses it and puts its cursor on 10:05; the status line says
+    // which panel, and its frame takes the focus ring. Tab takes the focus to the right chart.
+    let ring = |h: &Harness, i: usize| {
+        let f = frame(&st, win, i);
+        let edge = Rect::new(f.x - 1.5, f.y + f.h * 0.3, 3.0, f.h * 0.4);
+        pixels_in(h, base, edge, is(focus_ring(&theme))).len()
+    };
+    assert_eq!((ring(&h, 4), ring(&h, 5)), (0, 0), "no ring before a focus");
+    click(&mut h, win, at);
+    on_dash(&st, win, |dp, _| {
+        assert_eq!(dp.view.focused, Some(4));
+        assert_eq!(dp.subs[4].cursor, hover, "the cursor on 10:05");
+    });
+    assert!(h.screen().contains("panel 5/6"), "{}", h.screen());
+    assert!(
+        ring(&h, 4) >= 10 && ring(&h, 5) == 0,
+        "the left chart's ring"
+    );
+    keys(&mut h, "<Tab>");
+    assert_eq!(on_dash(&st, win, |dp, _| dp.view.focused), Some(5));
+    assert!(h.screen().contains("panel 6/6"), "{}", h.screen());
+    assert!(
+        ring(&h, 5) >= 10 && ring(&h, 4) == 0,
+        "the right chart's ring"
+    );
+
+    // f shows the right chart over the whole dashboard, drawn there, and f again puts it back.
+    let small = frame(&st, win, 5);
+    let (aw, _) = st.borrow().panes[&win].size();
+    presents(&mut h);
+    keys(&mut h, "f");
+    assert_eq!(on_dash(&st, win, |dp, _| dp.view.full), Some(5));
+    let big = frame(&st, win, 5);
+    assert!(big.w > aw * 0.9, "full size: {big:?} of {aw}");
+    assert!(presented(&mut h, base).is_some(), "presented full size");
+    assert!(drawn(&h, &st, win, base, 5), "drawn full size");
+    keys(&mut h, "f");
+    assert_eq!(on_dash(&st, win, |dp, _| dp.view.full), None);
+    assert_eq!(frame(&st, win, 5), small, "back in its place");
+
+    // T, then 1h: the last hour, eased, its chip saying so.
+    keys(&mut h, "T");
+    assert!(h.prompt_text().is_some(), "the ranges asked for");
+    keys(&mut h, "1h<CR>");
+    h.advance(Duration::from_millis(400));
+    let hour = shared_time(&st, win);
+    assert!((hour.1 - hour.0 - 3600.0).abs() < 1e-6, "{hour:?}");
+    let chip = on_dash(&st, win, |dp, _| {
+        let chip = dp.layout.as_ref().unwrap().header.chip.as_ref();
+        chip.expect("the chip").text.text.clone()
+    });
+    assert_eq!(chip, "Last hour");
+
+    // A brush across the left chart zooms both charts to what it covered, as one undo step,
+    // and u puts the hour back.
+    let steps = on_dash(&st, win, |dp, _| dp.undo.undoable());
+    let p4 = panel_plot(&st, win, 4);
+    let y = p4.y + p4.h * 0.5;
+    let (a, b) = (p4.x + p4.w * 0.25, p4.x + p4.w * 0.6);
+    drag(&mut h, win, &[(a, y), (a + 20.0, y), (b, y)]);
+    h.advance(Duration::from_millis(400));
+    let (t0, t1) = shared_time(&st, win);
+    let want = 3600.0 * 0.35;
+    assert!(
+        ((t1 - t0) - want).abs() < want * 0.1,
+        "zoomed to the brush: {} s",
+        t1 - t0
+    );
+    for i in [4, 5] {
+        let (_, (d0, d1)) = panel_x(&st, win, i, t0);
+        assert!(
+            (d0 - t0).abs() < 1.0 && (d1 - t1).abs() < 1.0,
+            "panel {i} shows {d0}..{d1}, the time {t0}..{t1}"
+        );
+    }
+    assert_eq!(on_dash(&st, win, |dp, _| dp.undo.undoable()), steps + 1);
+    keys(&mut h, "u");
+    h.advance(Duration::from_millis(400));
+    assert_eq!(shared_time(&st, win), hour, "u: the hour again");
+    assert_eq!(on_dash(&st, win, |dp, _| dp.undo.undoable()), steps);
+
+    // broken-panel.fig in the same window: its two bad panels show their error figures and the
+    // other four draw. ! on a bad one turns its figure over to its log and back, the others as
+    // they were.
+    open(&mut h, &d.join("broken-panel.fig"));
+    let fig = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(fig), Some("broken-panel.fig *fig*"));
+    let st = h.with_ext(|f: &mut Fig, _| f.figure(fig)).unwrap().unwrap();
+    let (base, _) = st.borrow().panes[&win].buffers().unwrap();
+    let failed: Vec<usize> = on_dash(&st, win, |_, m| {
+        let bad = |i: &usize| matches!(m.panels[*i].state, PanelState::Failed(_));
+        (0..m.panels.len()).filter(bad).collect()
+    });
+    assert_eq!(failed, [1, 5], "the missing file and the mismatch");
+    for i in [0, 2, 3, 4] {
+        assert!(drawn(&h, &st, win, base, i), "panel {i} drawn");
+    }
+    let ground = theme.surface;
+    for &i in &failed {
+        let inside = frame(&st, win, i).inflate(-3.0);
+        let ink = pixels_in(&h, base, inside, |p| {
+            p[..3] != [ground.0, ground.1, ground.2]
+        });
+        assert!(
+            ink.len() > 200,
+            "panel {i}'s error figure: {} px",
+            ink.len()
+        );
+    }
+    keys(&mut h, "<Tab><Tab>");
+    assert_eq!(on_dash(&st, win, |dp, _| dp.view.focused), Some(1));
+    let looks = |h: &Harness| -> Vec<Vec<(f32, f32)>> {
+        let inside = |i| frame(&st, win, i).inflate(-3.0);
+        (0..6)
+            .map(|i| {
+                pixels_in(h, base, inside(i), |p| {
+                    p[..3] != [ground.0, ground.1, ground.2]
+                })
+            })
+            .collect()
+    };
+    let symbolic = looks(&h);
+    keys(&mut h, "!");
+    assert!(matches!(
+        on_dash(&st, win, |dp, _| dp.view.panels[1].error),
+        ErrorView::Log { .. }
+    ));
+    let log = looks(&h);
+    assert_ne!(log[1], symbolic[1], "its log drawn in its frame");
+    for i in [0, 2, 3, 4, 5] {
+        assert_eq!(log[i], symbolic[i], "panel {i} as it was");
+    }
+    keys(&mut h, "!");
+    assert_eq!(
+        on_dash(&st, win, |dp, _| dp.view.panels[1].error),
+        ErrorView::Symbolic
+    );
+    assert_eq!(looks(&h), symbolic, "the symbolic figure again");
+
+    // live.fig: nothing runs before your yes to each command. Then ticker.sh's rows stream
+    // in, the chart and the stats draw them, and the shared time follows the newest.
+    let l = dir("dash-live");
+    let live = example(&l, "live/live.fig");
+    for f in ["live/ticker.sh", "live/errors.sh"] {
+        example(&l, f);
+    }
+    let src = open(&mut h, &live);
+    let fig = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(fig), Some("live.fig *fig*"));
+    let st = h.with_ext(|f: &mut Fig, _| f.figure(fig)).unwrap().unwrap();
+    let (base, _) = st.borrow().panes[&win].buffers().unwrap();
+    let screen = h.screen();
+    assert!(
+        screen.contains("Stream \"./ticker.sh\" for live.fig? (y/n)"),
+        "{screen}"
+    );
+    assert!(running(&st).is_empty(), "nothing runs before the yes");
+    keys(&mut h, "y<CR>");
+    let screen = h.screen();
+    assert!(
+        screen.contains("Run \"./errors.sh\" every 5s for live.fig? (y/n)"),
+        "{screen}"
+    );
+    keys(&mut h, "y<CR>");
+    let mut groups = BTreeSet::new();
+    let mut seen = |h: &mut Harness, st: &Shared| {
+        groups.extend(running(st));
+        h.scene();
+    };
+    let ready = |st: &Shared, i: usize| {
+        let s = st.borrow();
+        let m = s.dash.as_ref().and_then(|d| d.model.as_ref());
+        m.is_some_and(|m| m.panels[i].ready())
+    };
+    assert!(
+        wait_for(&mut h, |h| {
+            seen(h, &st);
+            ready(&st, 0) && ready(&st, 2) && ready(&st, 3) && streamed(&st) >= 5
+        }),
+        "rows came: {} streamed",
+        streamed(&st)
+    );
+    assert!(drawn(&h, &st, win, base, 2), "the stream's chart drawn");
+    let following = |st: &Shared| on_dash(st, win, |dp, _| dp.follow);
+    let header = |st: &Shared| {
+        on_dash(st, win, |_, m| {
+            m.live.as_ref().map(|l| l.text.clone()).unwrap_or_default()
+        })
+    };
+    assert!(following(&st), "it follows");
+    assert!(header(&st).starts_with("live"), "{}", header(&st));
+    assert!(h.screen().contains("following"), "{}", h.screen());
+    let (rows, (_, end)) = (streamed(&st), shared_time(&st, win));
+    assert!(
+        wait_for(&mut h, |h| {
+            seen(h, &st);
+            streamed(&st) > rows && shared_time(&st, win).1 > end
+        }),
+        "new rows slide the time"
+    );
+    assert_eq!(shared_time(&st, win).1, newest(&st), "at the newest");
+
+    // T to the last second, then the wheel on the chart pans back: following stops, the header
+    // says paused, and new rows leave the time where it is. G follows again, at the newest.
+    assert!(
+        wait_for(&mut h, |h| {
+            seen(h, &st);
+            streamed(&st) >= 15
+        }),
+        "three seconds of rows"
+    );
+    keys(&mut h, "T");
+    keys(&mut h, "-1s<CR>");
+    h.advance(Duration::from_millis(400));
+    let (a, b) = shared_time(&st, win);
+    assert!((b - a - 1.0).abs() < 1e-6 && following(&st), "{a} {b}");
+    let mid = {
+        let p = panel_plot(&st, win, 2);
+        (p.x + p.w / 2.0, p.y + p.h / 2.0)
+    };
+    let wheel = PointerKind::Scroll { dx: 0.0, dy: -2.0 };
+    pointer(&mut h, win, wheel, mid, none, 0);
+    h.advance(Duration::from_millis(400));
+    assert!(!following(&st), "panned back");
+    assert_eq!(header(&st), "paused");
+    assert!(!h.screen().contains("following"), "{}", h.screen());
+    let (parked, rows) = (shared_time(&st, win), streamed(&st));
+    assert!(parked.1 < newest(&st));
+    assert!(
+        wait_for(&mut h, |h| {
+            seen(h, &st);
+            streamed(&st) > rows + 2
+        }),
+        "rows still come"
+    );
+    assert_eq!(shared_time(&st, win), parked, "and the time stays");
+    keys(&mut h, "G");
+    h.advance(Duration::from_millis(400));
+    assert!(following(&st), "G follows again");
+    let (a, b) = shared_time(&st, win);
+    assert_eq!(b, newest(&st), "at the newest");
+    assert!((b - a - 1.0).abs() < 1e-6, "its width kept");
+    assert!(h.screen().contains("following"), "{}", h.screen());
+    seen(&mut h, &st);
+    assert!(!groups.is_empty(), "ticker.sh ran in a group of its own");
+
+    // \v: live.fig's text in the window, the figure gone, and with it ticker.sh and every
+    // process in its group, reaped (no zombie).
+    keys(&mut h, "\\v");
+    h.run_until_idle();
+    assert_eq!(h.focused_buffer(), Some(src), "its text");
+    assert!(!h.is_live(fig), "the figure gone");
+    let start = std::time::Instant::now();
+    while !in_groups(&groups).is_empty() && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(100));
+        h.advance(Duration::from_millis(100));
+    }
+    let left = in_groups(&groups);
+    assert!(left.is_empty(), "the commands' processes left: {left:?}");
+    let children = own_children();
+    assert!(
+        children.is_empty(),
+        "processes this test started: {children:?}"
+    );
+    h.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&l);
 }
