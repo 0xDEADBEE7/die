@@ -48,7 +48,9 @@ pub const VALUE: f32 = 26.0;
 pub const VALUE_MIN: f32 = 18.0;
 /// The unit's size, and its gap after the value.
 pub const UNIT: f32 = 14.0;
-const UNIT_GAP: f32 = 4.0;
+/// m4 puts the unit 4 px past the value's advance in a browser's font; die-draw's figures sit
+/// closer to their advance, so 6 px reads as m4's gap.
+const UNIT_GAP: f32 = 6.0;
 /// The delta line's size.
 pub const DELTA: f32 = 11.5;
 /// m4's baselines in a 100 px tile: the label's, the value's and the delta's.
@@ -73,6 +75,12 @@ const ARROW_GAP: f32 = 4.5;
 pub const TRACK_H: f32 = 8.0;
 const TRACK_R: f32 = 4.0;
 const TRACK_GAP: f32 = 12.0;
+/// A meter's status icon's radius, from it to its word, and from the status to the share.
+const ICON_R: f32 = 5.5;
+const ICON_GAP: f32 = 5.0;
+const STATUS_GAP: f32 = 10.0;
+/// How far a threshold's tick reaches past the track's edges.
+const TICK_OUT: f32 = 3.0;
 /// A sparkline's wash under its line.
 pub const WASH: f32 = 0.12;
 /// A sparkline taller than this puts its label and value on top.
@@ -375,29 +383,34 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
         )
     };
     let status = model.status();
-    let icon_w = 2.0 * 5.5 + 6.0;
     let word = status.map(status_name).unwrap_or_default();
     let sw = m.width(&share, share_spec);
     let ow = m.width(&of, of_spec);
-    let ww = m.width(word, lspec) + 12.0;
+    // The status's icon (and its word, then a gap) before the share.
+    let icon_w = if status.is_some() {
+        2.0 * ICON_R + STATUS_GAP
+    } else {
+        0.0
+    };
+    let ww = if status.is_some() {
+        ICON_GAP + m.width(word, lspec)
+    } else {
+        0.0
+    };
     let lw = m.width(&model.label, lspec);
-    // What the right side keeps, widest first, with room for the label's start.
+    // What the right side keeps, widest first, with room for the label's start: `of max` goes
+    // first, then the status's word; its icon stays while the fill wears its colour, so the
+    // status never rests on colour alone (the label is cut instead).
     let label_min = lw.min(48.0);
     let fits = |w: f32| label_min + 16.0 + w <= inner;
-    let (show_of, show_word, show_icon) = if fits(
-        icon_w * f32::from(u8::from(status.is_some()))
-            + ww * f32::from(u8::from(status.is_some()))
-            + sw
-            + ow,
-    ) {
-        (true, status.is_some(), status.is_some())
-    } else if fits(sw + ow + if status.is_some() { icon_w } else { 0.0 }) {
-        (true, false, status.is_some())
-    } else if fits(sw + if status.is_some() { icon_w } else { 0.0 }) {
-        (false, false, status.is_some())
+    let (show_of, show_word) = if fits(icon_w + ww + sw + ow) {
+        (true, status.is_some())
+    } else if fits(icon_w + ww + sw) {
+        (false, status.is_some())
     } else {
-        (false, false, false)
+        (false, false)
     };
+    let show_icon = status.is_some();
     let mut right = r.right() - PAD;
     if show_of && !of.is_empty() {
         l.pieces.push(Piece {
@@ -423,9 +436,9 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
         anchor: Anchor::End,
     });
     right -= sw;
-    if let Some(s) = status {
+    if let Some(s) = status.filter(|_| show_icon) {
+        right -= STATUS_GAP;
         if show_word {
-            right -= 12.0;
             l.pieces.push(Piece {
                 role: Role::Status,
                 text: word.to_string(),
@@ -434,13 +447,10 @@ fn meter_layout(model: &TileModel, r: Rect, m: &mut dyn Measure) -> TileLayout {
                 spec: lspec,
                 anchor: Anchor::End,
             });
-            right -= ww - 12.0;
+            right -= ww;
         }
-        if show_icon {
-            let gap = if show_word { 6.0 } else { 10.0 };
-            l.icon = Some((s, (right - gap - 5.5, ly - cap_l / 2.0)));
-            right -= gap + 11.0;
-        }
+        l.icon = Some((s, (right - ICON_R, ly - cap_l / 2.0)));
+        right -= 2.0 * ICON_R;
     }
     let room = (right - 16.0 - x).max(0.0);
     let label = m.fit(&model.label, lspec, room);
@@ -733,7 +743,7 @@ pub fn base(model: &TileModel, rect: Rect, theme: &Theme, m: &mut dyn Measure) -
         meter_track(&mut scene, model, t, theme);
     }
     if let Some((s, c)) = l.icon {
-        status_icon(&mut scene, s, c, 5.5, theme);
+        status_icon(&mut scene, s, c, ICON_R, theme);
     }
     scene.push(Item::PopClip);
     scene
@@ -785,6 +795,19 @@ fn meter_track(scene: &mut Scene, model: &TileModel, t: Rect, theme: &Theme) {
         fill: Some(Paint::solid(theme.grid, 1.0)),
         stroke: None,
     });
+    // Each threshold's tick under the fill: across the empty track and past its edges, so a
+    // filled stretch stays one clean bar with the ticks' ends beside it.
+    for th in &model.thresholds {
+        if th.at <= 0.0 || th.at >= 1.0 {
+            continue;
+        }
+        let x = t.x + t.w * th.at as f32;
+        scene.push(Item::Path {
+            path: PathData::polyline(&[(x, t.y - TICK_OUT), (x, t.bottom() + TICK_OUT)]),
+            fill: None,
+            stroke: Some(Stroke::hairline(theme.muted, 0.9)),
+        });
+    }
     let f = model.fraction() as f32;
     if f > 0.0 {
         let w = (t.w * f).max(1.0);
@@ -796,17 +819,6 @@ fn meter_track(scene: &mut Scene, model: &TileModel, t: Rect, theme: &Theme) {
             path: PathData::rounded(Rect::new(t.x, t.y, w, t.h), [r; 4]),
             fill: Some(Paint::solid(fill, 1.0)),
             stroke: None,
-        });
-    }
-    for th in &model.thresholds {
-        if th.at <= 0.0 || th.at >= 1.0 {
-            continue;
-        }
-        let x = (t.x + t.w * th.at as f32).round() + 0.5;
-        scene.push(Item::Path {
-            path: PathData::polyline(&[(x, t.y - 3.0), (x, t.bottom() + 3.0)]),
-            fill: None,
-            stroke: Some(Stroke::solid(1.0, theme.muted, 0.9)),
         });
     }
 }
@@ -971,12 +983,13 @@ pub fn overlay_in(
                 let header = model.point_text(point);
                 let size = card_size(&header, &rows, m);
                 let near = Rect::new(p.0 - 6.0, p.1 - 6.0, 12.0, 12.0);
-                let avoid = if model.kind == TileKind::Sparkline && rect.h >= BLOCK_H {
-                    near
+                let r = if model.kind == TileKind::Sparkline && rect.h >= BLOCK_H {
+                    // A sparkline drawn large: beside the crosshair at the line's top, as a
+                    // chart's card goes, never over the tile's edge.
+                    beside(size, p.0, t.y + 4.0, rect.intersect(&area).unwrap_or(rect))
                 } else {
-                    rect
+                    place(size, rect, near, p.0, area)
                 };
-                let r = place(size, avoid, near, p.0, area);
                 draw_card(&mut scene, r, &header, &rows, theme, m);
             }
         }
@@ -1083,12 +1096,12 @@ fn tile_card(model: &TileModel) -> (String, Vec<CardRow>) {
                 let hi = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                 rows.push(CardRow {
                     value: with_unit(&model.full(lo), unit),
-                    name: "least".into(),
+                    name: "lowest".into(),
                     key: None,
                 });
                 rows.push(CardRow {
                     value: with_unit(&model.full(hi), unit),
-                    name: "most".into(),
+                    name: "highest".into(),
                     key: None,
                 });
             }
@@ -1186,6 +1199,32 @@ fn place(size: (f32, f32), avoid: Rect, near: Rect, x: f32, area: Rect) -> Rect 
         w,
         h,
     )
+}
+
+/// A card of `size` beside the crosshair at `x`, its top at `top`: right of it where it fits
+/// in `within`, else left of it, slid inside.
+fn beside(size: (f32, f32), x: f32, top: f32, within: Rect) -> Rect {
+    let (w, h) = size;
+    let right = x + CARD_CLEAR + 4.0;
+    let left = if right + w <= within.right() - 4.0 {
+        right
+    } else {
+        (x - CARD_CLEAR - 4.0 - w).max(within.x + 4.0)
+    };
+    let y = top.clamp(
+        within.y + 4.0,
+        (within.bottom() - 4.0 - h).max(within.y + 4.0),
+    );
+    Rect::new(left, y, w, h)
+}
+
+/// The mini crosshair a dashboard's linked time `t` draws on the tile's trend, without a card:
+/// at the trend's point nearest `t` within half a part ([`TileModel::trend_at`]); None for a
+/// tile without a trend, or a time too far from it.
+pub fn hover_at(model: &TileModel, t: f64) -> Option<TileHover> {
+    model
+        .trend_at(t)
+        .map(|point| TileHover::Trend { point, card: false })
 }
 
 fn draw_card(

@@ -243,6 +243,8 @@ pub struct ChartLayout {
     pub totals: Vec<(u32, Rect)>,
     /// Whether the card was last put left of its anchor, for its hysteresis.
     pub(crate) flipped: Cell<bool>,
+    /// A heatmap's colour legend, where it's drawn.
+    pub ramp: Option<super::ramp::RampLegend>,
 }
 
 impl ChartLayout {
@@ -348,7 +350,8 @@ fn scale_for(
             let k = (range.1 - range.0) as f64 / span;
             let r0 = range.0 as f64 - a * k;
             let r1 = r0 + n * k;
-            let inner = if rect { 0.06 } else { 0.2 };
+            // A heatmap's cells fill their slots, each keeping its own 2 px gap.
+            let inner = if rect { 0.0 } else { 0.2 };
             Scale::Band {
                 domain: bands.to_vec(),
                 range: (r0 as f32, r1 as f32),
@@ -663,6 +666,21 @@ fn attempt(
             .min(w * 0.25);
     }
 
+    // A heatmap's colour legend, where the legend goes: under the title, or (placed once the
+    // plot is) at the right.
+    let ramp_scale = (keep.legend_rows > 0 && model.chart.view.legend != LegendPos::None)
+        .then(|| super::ramp::scale_of(model))
+        .flatten();
+    let mut ramp = None;
+    if let Some(sc) = ramp_scale {
+        if right_legend {
+            right_w = super::ramp::RAMP_W.min(w * 0.25);
+        } else if let Some(r) = super::ramp::RampLegend::place(model, sc, pad, y, wide, true, m) {
+            y = r.bounds.bottom().max(y);
+            ramp = Some(r);
+        }
+    }
+
     // The y axis's title, above its ticks. With every series hidden there's nothing to read
     // off an axis: no ticks, no grid, the plot left to say so.
     let axes = model.chart.view.axes && !nothing_shown(model, view);
@@ -683,7 +701,7 @@ fn attempt(
         && keep.axis_titles
         && let Some(t) = value_title.as_deref().filter(|t| !t.is_empty())
     {
-        let gap = if header || !items.is_empty() {
+        let gap = if header || !items.is_empty() || ramp.is_some() {
             6.0
         } else {
             0.0
@@ -1162,6 +1180,12 @@ fn attempt(
         }
     }
 
+    // The colour legend at the right, from the plot's top.
+    if right_legend && let Some(sc) = ramp_scale {
+        let x0 = plot.right() + 16.0;
+        ramp = super::ramp::RampLegend::place(model, sc, x0, plot.y, w - pad - x0, false, m);
+    }
+
     // The marks bleed past the plot's edges where the data reaches them at fit. The scales
     // are the screen's: across it, and up it.
     let (xs_scale, ys_scale) = (across, up_scale);
@@ -1208,6 +1232,7 @@ fn attempt(
         bars: Vec::new(),
         totals: Vec::new(),
         flipped: Cell::new(false),
+        ramp,
     }
 }
 
@@ -1627,6 +1652,9 @@ pub(crate) fn chrome(
     for e in &l.ends {
         scene.push(e.name.item(theme));
         scene.push(e.value.item(theme));
+    }
+    if let Some(r) = &l.ramp {
+        r.draw(scene, theme);
     }
 }
 

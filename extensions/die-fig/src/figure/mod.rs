@@ -31,7 +31,7 @@
 
 pub mod draw;
 
-pub use draw::{TileHover, base, hit, overlay, overlay_in};
+pub use draw::{TileHover, base, hit, hover_at, overlay, overlay_in};
 
 use crate::data::transform::{AggOp, quantile};
 use crate::data::{Column, Table, Values};
@@ -255,14 +255,16 @@ impl TileModel {
     }
 
     /// What the value aggregates, as the card says it: "sum of rpm", "count of rows",
-    /// "newest rpm".
+    /// "highest memory_gb", "newest rpm".
     pub fn aggregate_text(&self) -> String {
         let f = self.field.as_deref();
         match (self.kind, self.op, f) {
             (TileKind::Sparkline, _, Some(f)) => format!("newest {f}"),
             (_, AggOp::Count, None) => "count of rows".into(),
             (_, AggOp::Count, Some(f)) => format!("count of {f}"),
-            (_, AggOp::Last, Some(f)) => format!("newest {f}"),
+            (_, AggOp::Last | AggOp::Max | AggOp::Min, Some(f)) => {
+                format!("{} {f}", op_word(self.op))
+            }
             (_, op, Some(f)) => format!("{} of {f}", op_word(op)),
             (_, op, None) => op_word(op).to_string(),
         }
@@ -339,7 +341,7 @@ impl TileModel {
 
     /// A meter's fill: the value's share of its max, 0 to 1 (0 with no value).
     pub fn fraction(&self) -> f64 {
-        if self.value.is_nan() || !(self.max > 0.0) {
+        if self.value.is_nan() || self.max.is_nan() || self.max <= 0.0 {
             return 0.0;
         }
         (self.value / self.max).clamp(0.0, 1.0)
@@ -347,7 +349,7 @@ impl TileModel {
 
     /// A meter's status: the highest threshold its value has reached.
     pub fn status(&self) -> Option<Status> {
-        let f = if self.value.is_nan() || !(self.max > 0.0) {
+        let f = if self.value.is_nan() || self.max.is_nan() || self.max <= 0.0 {
             return None;
         } else {
             self.value / self.max
@@ -384,8 +386,8 @@ fn op_word(op: AggOp) -> &'static str {
         AggOp::Count => "count",
         AggOp::Sum => "sum",
         AggOp::Mean => "mean",
-        AggOp::Min => "least",
-        AggOp::Max => "most",
+        AggOp::Min => "lowest",
+        AggOp::Max => "highest",
         AggOp::P50 => "median",
         AggOp::P95 => "p95",
         AggOp::Last => "newest",
@@ -981,9 +983,9 @@ pub fn detail(model: &TileModel) -> DetailTree {
                 let mean = ys.iter().sum::<f64>() / ys.len() as f64;
                 let u = model.unit.as_deref();
                 t.rows
-                    .push(DetailRow::field("least", with_unit(&model.full(lo), u)));
+                    .push(DetailRow::field("lowest", with_unit(&model.full(lo), u)));
                 t.rows
-                    .push(DetailRow::field("most", with_unit(&model.full(hi), u)));
+                    .push(DetailRow::field("highest", with_unit(&model.full(hi), u)));
                 t.rows
                     .push(DetailRow::field("mean", with_unit(&short_number(mean), u)));
                 t.rows

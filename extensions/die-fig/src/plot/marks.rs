@@ -173,16 +173,24 @@ pub(crate) fn series(
         }
         MarkKind::Point => points(model, l, theme, scene, si, color, look),
         MarkKind::Rect => {
-            let lo_hi = rect_extent(model);
+            // Each cell in the ramp's colour; one with no value hollow, its outline in the
+            // grid's grey, so a gap in the data never reads as the least value.
+            let scale = super::ramp::scale_of(model);
             for i in 0..s.xs.len() {
                 if let Some(r) = cell_rect(l, s, i) {
                     let v = s.sizes.as_ref().map_or(f64::NAN, |v| v[i]);
-                    let c = ramp(theme, color, lo_hi, v);
-                    scene.push(Item::Path {
-                        path: PathData::rounded(r, [2.0; 4]),
-                        fill: Some(Paint::solid(c, 1.0)),
-                        stroke: None,
-                    });
+                    match scale.and_then(|sc| sc.color(v, theme)) {
+                        Some(c) => scene.push(Item::Path {
+                            path: PathData::rounded(r, [CELL_RADIUS; 4]),
+                            fill: Some(Paint::solid(c, 1.0)),
+                            stroke: None,
+                        }),
+                        None => scene.push(Item::Path {
+                            path: PathData::rounded(r.inflate(-0.5), [CELL_RADIUS; 4]),
+                            fill: None,
+                            stroke: Some(Stroke::solid(1.0, theme.grid, 1.0)),
+                        }),
+                    }
                 }
             }
         }
@@ -574,33 +582,6 @@ fn points(
     }
 }
 
-/// The value extent of a heatmap's cells.
-fn rect_extent(model: &ChartModel) -> (f64, f64) {
-    let mut lo = f64::INFINITY;
-    let mut hi = f64::NEG_INFINITY;
-    for s in model.series.iter().filter(|s| s.mark == MarkKind::Rect) {
-        for &v in s.sizes.iter().flat_map(|v| v.iter()) {
-            if v.is_finite() {
-                lo = lo.min(v);
-                hi = hi.max(v);
-            }
-        }
-    }
-    (lo, hi)
-}
-
-/// A sequential colour: from the surface's tint of `color` to `color` itself.
-fn ramp(theme: &Theme, color: Color, (lo, hi): (f64, f64), v: f64) -> Color {
-    let t = if v.is_nan() {
-        0.0
-    } else if hi > lo {
-        ((v - lo) / (hi - lo)).clamp(0.0, 1.0) as f32
-    } else {
-        1.0
-    };
-    mix(theme.surface, color, 0.12 + 0.88 * t)
-}
-
 /// `a` mixed toward `b` by `t`.
 pub(crate) fn mix(a: Color, b: Color, t: f32) -> Color {
     let f = |x: u8, y: u8| {
@@ -611,7 +592,12 @@ pub(crate) fn mix(a: Color, b: Color, t: f32) -> Color {
     Color(f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
 }
 
-/// A heatmap cell's rectangle, with a 2 px surface gap.
+/// A heatmap cell's corner radius.
+pub const CELL_RADIUS: f32 = 2.0;
+
+/// A heatmap cell's rectangle: its slot (the heatmap's bands have no padding) less a pixel on
+/// each side, so neighbours keep a 2 px surface gap (the dataviz rule for touching fills), its
+/// edges on whole physical pixels so every gap is as sharp as the next.
 pub(crate) fn cell_rect(l: &ChartLayout, s: &SeriesInfo, i: usize) -> Option<Rect> {
     let (x, y) = (s.xs[i], s.ys[i]);
     if x.is_nan() || y.is_nan() {
@@ -619,7 +605,17 @@ pub(crate) fn cell_rect(l: &ChartLayout, s: &SeriesInfo, i: usize) -> Option<Rec
     }
     let (bx, bw) = l.x.band_of(x as usize)?;
     let (by, bh) = l.y.band_of(y as usize)?;
-    Some(Rect::new(bx, by, bw, bh))
+    let k = l.scale.max(1.0);
+    let snap = |v: f32| (v * k).round() / k;
+    let inset = |w: f32| if w > 6.0 { 1.0 } else { 0.0 };
+    let (x0, x1) = (snap(bx + inset(bw)), snap(bx + bw - inset(bw)));
+    let (y0, y1) = (snap(by + inset(bh)), snap(by + bh - inset(bh)));
+    Some(Rect::new(
+        x0,
+        y0,
+        (x1 - x0).max(1.0 / k),
+        (y1 - y0).max(1.0 / k),
+    ))
 }
 
 fn cells(model: &ChartModel, view: &View, l: &ChartLayout, scene: &mut Scene) {
