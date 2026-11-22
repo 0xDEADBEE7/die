@@ -960,3 +960,38 @@ fn the_fig_layouts_shapes_say_what_is_wrong() {
         assert!(e.at.is_some(), "{text}");
     }
 }
+
+#[test]
+fn a_brush_on_a_linked_chart_shows_in_every_linked_chart() {
+    let m = model_of("health.fig");
+    let v = DashView::initial(&m);
+    let l = lay(&m, &v, (880.0, 610.0));
+    let (a, b) = (point_at(&l, 4, at(8, 0)), point_at(&l, 4, at(9, 0)));
+    let mut h = dashboard::hover(&m, &l, b.0, b.1).unwrap();
+    h.brush = Some((a, b));
+    let o = dashboard::overlay(&m, &l, &v, Some(&h), &Theme::mono_dark(), &mut FixedMeasure);
+    // The brush's wash in each chart, from 08:00 to 09:00 on its own axis.
+    let washes: Vec<Rect> = o
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Path {
+                path,
+                fill: Some(die_fig::scene::Paint::Solid { alpha, .. }),
+                stroke: None,
+            } if (*alpha - 0.08).abs() < 1e-6 => path.bounds(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(washes.len(), 2, "{washes:?}");
+    for (w, i) in washes.iter().zip([4, 5]) {
+        let (x0, _) = point_at(&l, i, at(8, 0));
+        let (x1, _) = point_at(&l, i, at(9, 0));
+        assert!(
+            (w.x - x0).abs() < 1.0 && (w.right() - x1).abs() < 1.0,
+            "panel {i}: {w:?}"
+        );
+    }
+    // No card while brushing, nor a moment's line.
+    assert!(!o.items.iter().any(|i| matches!(i, Item::Shadow { .. })));
+}
