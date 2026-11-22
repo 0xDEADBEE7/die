@@ -57,17 +57,6 @@ const LOG_FOOT: f32 = 10.0;
 /// A status colour as text on the theme's ground: mixed towards white on a dark ground or
 /// black on a light one until it reads at 4.5 to 1, the contrast small text asks for.
 pub fn readable(c: Color, theme: &Theme) -> Color {
-    fn lum(c: Color) -> f32 {
-        let ch = |v: u8| {
-            let v = f32::from(v) / 255.0;
-            if v <= 0.04045 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * ch(c.0) + 0.7152 * ch(c.1) + 0.0722 * ch(c.2)
-    }
     let ground = lum(theme.surface);
     let ratio = |c: Color| {
         let (a, b) = (lum(c), ground);
@@ -82,6 +71,25 @@ pub fn readable(c: Color, theme: &Theme) -> Color {
         .map(|i| mix(i as f32 * 0.05))
         .find(|&c| ratio(c) >= 4.5)
         .unwrap_or(mix(1.0))
+}
+
+/// A colour's relative luminance (WCAG's).
+fn lum(c: Color) -> f32 {
+    let ch = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * ch(c.0) + 0.7152 * ch(c.1) + 0.0722 * ch(c.2)
+}
+
+/// The contrast between two colours, 1 to 21 (WCAG's ratio).
+pub fn contrast(a: Color, b: Color) -> f32 {
+    let (a, b) = (lum(a), lum(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 /// What the symbolic figure's status row says.
@@ -208,8 +216,9 @@ fn symbolic(
             + lines as f32 * MSG_LINE
             + if hint { HINT_GAP + HINT_H } else { 0.0 }
     };
-    // Words want room to be read: below 260 px across, the glyph and the title at most.
-    let wordy = aw >= 260.0;
+    // Words want room to be read: below 230 px across, the glyph and the title at most (a
+    // third of an 880 px dashboard still says what went wrong).
+    let wordy = aw >= 230.0;
     let one = msg_lines.len().min(1);
     // The hint goes before the message's second line: what went wrong matters more than how
     // to see more of it.

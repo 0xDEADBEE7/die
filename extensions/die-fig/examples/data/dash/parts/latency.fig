@@ -1,0 +1,12 @@
+{
+  "type": "dashboard",
+  "title": "Latency",
+  "data": { "svc": "../service.csv" },
+  "rows": [
+    [
+      { "type": "stat", "label": "p95 latency", "data": "svc", "value": { "p95": "p95_ms" }, "unit": "ms" },
+      { "type": "line", "title": "p95 over the day", "data": "svc", "x": "time",
+        "y": { "field": "p95_ms", "title": "" }, "span": 3 }
+    ]
+  ]
+}

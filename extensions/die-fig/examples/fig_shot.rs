@@ -34,12 +34,32 @@
 //! `--stale BAD`, the file's figure is drawn with BAD's stale badge, as a figure kept while its
 //! source fails to parse.
 //!
+//! A stat, meter or sparkline is drawn as a tile in its panel's frame, at `--size` (m4's 197 ×
+//! its natural height unless given) with a margin round it: `--also FILE` puts more tiles in a
+//! row after it (as m4's four), `--range D` takes the last D (`6h`) of the data as the
+//! dashboard's visible time, `--trend N` hovers the first tile's trend at its nth point (its
+//! card shown) and `--linked N` draws only the mini crosshair there, as a dashboard's linked
+//! time does; `--hover X,Y` finds what's there; `--no-frame` leaves the frame out. Room for a
+//! card is left under the row when something's hovered.
+//!
+//! A heatmap takes `--cursor-cell R,C` (the keyboard's cursor on a cell) and `--hover X,Y`.
+//! `--brushed` releases the `--brush`: the figure is drawn zoomed to it, without the brush.
+//!
 //! `--detail` opens the detail panel for what the cursor is on (else the hover), beside the
 //! figure as the surface lays it out (`detail::split`): the chart in what's left, the panel at
 //! the right, or the bottom of an area under 560 px wide. `--detail-series` shows the cursor's
 //! series instead. `--detail-row` puts the panel's cursor on a row (its index in the tree, as
 //! printed), `--detail-top` scrolls it, `--detail-focus` gives it focus and `--detail-unfold`
 //! opens every branch. It prints the tree.
+//!
+//! A dashboard (a `.fig` whose `type` is `dashboard`) reads its data files (commands' panels
+//! wait) and draws with these: `--focus N` (panel N focused), `--full N` (panel N full size),
+//! `--range 6h|…|all` (a chip's range), `--time HH:MM,HH:MM` (a custom time on the newest
+//! sample's day), `--scroll PX`, `--live live|updating|paused|error` (the header's status),
+//! `--hover-at N,HH:MM` (the pointer over panel N's plot at that time, halfway up),
+//! `--panel-cursor N,I` (panel N's keyboard cursor on its first series' sample I), `--shared`
+//! (`"tooltip": "shared"`) and `--panel-log N` (panel N's error figure as its log). `--hover
+//! X,Y` is the pointer at a place in the area. It prints where each panel landed.
 
 use die_test_cap as _;
 
@@ -49,7 +69,7 @@ use die_fig::data::ReadOptions;
 use die_fig::detail::{self, Item, PanelState};
 use die_fig::graph::{self, GraphLayout, GraphModel, Target};
 use die_fig::interact::{BrushKind, Cursor, Toggles, View};
-use die_fig::plot::{self, ChartModel, ErrorView, OverlayState};
+use die_fig::plot::{self, ChartLayout, ChartModel, ErrorView, OverlayState};
 use die_fig::raster::{self, BookMeasure};
 use die_fig::scene::Scene;
 use die_fig::source::{self, Built, Failed, Job, Text};
@@ -92,6 +112,20 @@ struct Ask {
     search: Option<String>,
     /// The whole area's width, where the figure is drawn beside the detail panel: its paddings.
     area_w: Option<f32>,
+    /// Whether `--size` was given.
+    sized: bool,
+    /// More tiles in the row.
+    also: Vec<String>,
+    /// The dashboard's visible time: the data's last so long.
+    range: Option<f64>,
+    /// The first tile's trend hovered at a point, with its card or (linked) without.
+    trend: Option<(usize, bool)>,
+    /// Tiles without their frame.
+    no_frame: bool,
+    /// A heatmap's cursor on a cell.
+    cursor_cell: Option<(u32, u32)>,
+    /// The brush released: its zoom drawn, not the brush.
+    brushed: bool,
 }
 
 /// What the detail flags ask for.
@@ -133,13 +167,21 @@ fn pair(v: &str, sep: char) -> Result<Vec<f32>, String> {
 }
 
 fn run() -> Result<(), String> {
-    let mut args = std::env::args().skip(1);
+    // The dashboard flags are a dashboard's only: a tile's `--range` is the tile's.
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    let is_dash = all.first().is_some_and(|f| is_dashboard(Path::new(f)));
+    let (dash, rest) = match is_dash {
+        true => dash_flags(all.into_iter())?,
+        false => (DashAsk::default(), all),
+    };
+    let mut args = rest.into_iter();
     let usage = "fig_shot <file> <out.png> [--size WxH] [--scale S] [--light] [--cursor N] \
                  [--hover X,Y] [--brush X0,X1[,Y0,Y1]] [--reference N|ID] [--svg OUT.svg] [--log] \
                  [--log-top N] [--log-mark N] [--stale BAD] [--cursor-node ID] [--hover-node ID] \
                  [--hover-edge A,B] [--pin ID@X,Y] [--zoom F] [--layout L] [--labels off] [--ghost] \
                  [--detail] [--detail-series] [--detail-row N] [--detail-top N] [--detail-focus] \
-                 [--detail-unfold] [--search Q]";
+                 [--detail-unfold] [--search Q] [--also FILE] [--range D] [--trend N] \
+                 [--linked N] [--no-frame] [--cursor-cell R,C] [--brushed]";
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage.to_owned());
     };
@@ -167,6 +209,13 @@ fn run() -> Result<(), String> {
         detail: None,
         search: None,
         area_w: None,
+        sized: false,
+        also: vec![],
+        range: None,
+        trend: None,
+        no_frame: false,
+        cursor_cell: None,
+        brushed: false,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
@@ -177,6 +226,7 @@ fn run() -> Result<(), String> {
                     return Err("--size is WxH".into());
                 }
                 ask.size = (v[0], v[1]);
+                ask.sized = true;
             }
             "--scale" => ask.scale = pair(&value()?, ',')?[0],
             "--light" => ask.light = true,
@@ -238,6 +288,24 @@ fn run() -> Result<(), String> {
             "--detail-focus" => ask.detail.get_or_insert_with(DetailAsk::default).focus = true,
             "--detail-unfold" => ask.detail.get_or_insert_with(DetailAsk::default).unfold = true,
             "--search" => ask.search = Some(value()?),
+            "--also" => ask.also.push(value()?),
+            "--range" => {
+                let v = value()?;
+                let d = die_fig::spec::chart::parse_duration(&v)
+                    .ok_or(format!("--range {v}: a time like 6h"))?;
+                ask.range = Some(d.as_secs_f64());
+            }
+            "--trend" => ask.trend = Some((pair(&value()?, ',')?[0] as usize, true)),
+            "--linked" => ask.trend = Some((pair(&value()?, ',')?[0] as usize, false)),
+            "--no-frame" => ask.no_frame = true,
+            "--brushed" => ask.brushed = true,
+            "--cursor-cell" => {
+                let v = pair(&value()?, ',')?;
+                if v.len() != 2 {
+                    return Err("--cursor-cell is R,C".into());
+                }
+                ask.cursor_cell = Some((v[0] as u32, v[1] as u32));
+            }
             other => return Err(format!("{other}: no such flag\n{usage}")),
         }
     }
@@ -261,8 +329,14 @@ fn run() -> Result<(), String> {
         },
         false => ErrorView::Symbolic,
     };
+    if let Some(spec) = dash_of(path, &zone) {
+        return dash_shot(spec, path, &output, &ask, &dash, &theme, &mut book);
+    }
     if let Some(g) = graph_of(path, &zone) {
         return graph_shot(g, &name, &output, &ask, &theme, &mut book);
+    }
+    if let Some(t) = tile_of(path, &zone)? {
+        return tile_shot(t, &output, &ask, &zone, &theme, &mut book);
     }
     let built = match build(path, &zone) {
         Ok(b) => b,
@@ -352,6 +426,20 @@ fn run() -> Result<(), String> {
         .as_deref()
         .and_then(|r| r.parse::<usize>().ok())
         .and_then(cursor_at);
+    if ask.brushed
+        && let Some(b) = ask.brush.take()
+    {
+        let mut m = BookMeasure {
+            book: &mut book,
+            scale: ask.scale,
+        };
+        let (_, layout, _) = plot::base(&model, &view, ask.size, ask.scale, &theme, &mut m);
+        let (kind, from, to) = brush_of(&model, &layout, &b);
+        if let Some(v) = plot::brush(&model, &layout, &view, kind, from, to) {
+            println!("brushed to x {:?}, y {:?}", v.x, v.y);
+            view = v;
+        }
+    }
     let badge = |scene: &mut Scene, scale: f32, book: &mut Book| {
         if let Some(e) = &stale {
             let mut m = BookMeasure { book, scale };
@@ -766,24 +854,13 @@ fn draw(
     let emphasis = ask
         .hover
         .and_then(|(x, y)| plot::nearest_series(model, &layout, &hits, view, x, y));
-    let brush = ask.brush.as_ref().map(|b| {
-        let p = layout.plot;
-        let kind = plot::brush_kind(model);
-        let (y0, y1) = match b.as_slice() {
-            [_, _, y0, y1, ..] => (*y0, *y1),
-            _ => (p.y + p.h * 0.25, p.y + p.h * 0.75),
-        };
-        let x1 = b.get(1).copied().unwrap_or(b[0]);
-        let kind = if b.len() >= 4 && kind == BrushKind::X {
-            BrushKind::Box
-        } else {
-            kind
-        };
-        (kind, (b[0], y0), (x1, y1))
-    });
+    let brush = ask.brush.as_ref().map(|b| brush_of(model, &layout, b));
     let st = OverlayState {
         hover: hover.clone(),
-        cursor: ask.cursor.and_then(cursor_at),
+        cursor: ask
+            .cursor_cell
+            .map(|(row, col)| Cursor::Cell { row, col })
+            .or_else(|| ask.cursor.and_then(cursor_at)),
         pointer: ask.hover,
         brush,
         emphasis: emphasis.clone(),
@@ -810,4 +887,428 @@ fn draw(
     }
     scene.items.extend(over.items);
     Ok(scene)
+}
+
+/// The brush `--brush` asks for: its kind (a box when it gives y too) and its corners.
+fn brush_of(
+    model: &ChartModel,
+    layout: &ChartLayout,
+    b: &[f32],
+) -> (BrushKind, (f32, f32), (f32, f32)) {
+    let p = layout.plot;
+    let kind = plot::brush_kind(model);
+    let (y0, y1) = match b {
+        [_, _, y0, y1, ..] => (*y0, *y1),
+        _ => (p.y + p.h * 0.25, p.y + p.h * 0.75),
+    };
+    let x1 = b.get(1).copied().unwrap_or(b[0]);
+    let kind = if b.len() >= 4 && kind == BrushKind::X {
+        BrushKind::Box
+    } else {
+        kind
+    };
+    (kind, (b[0], y0), (x1, y1))
+}
+
+/// A tile: its figure and table, read as `\v` reads a spec (its data from its directory).
+type Tile = (Figure, die_fig::data::Table);
+
+/// The tile a file is, with its data read; None when it's another figure or doesn't parse.
+fn tile_of(path: &Path, zone: &TimeZone) -> Result<Option<Tile>, String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let opt = ReadOptions::new(zone.clone());
+    let Ok(parsed) = die_fig::spec::parse(&text, name, dir, &opt) else {
+        return Ok(None);
+    };
+    let data = match &parsed.figure {
+        Figure::Stat(s) => &s.data,
+        Figure::Meter(m) => &m.data,
+        Figure::Sparkline(s) => &s.data,
+        _ => return Ok(None),
+    };
+    let table = match &data.source {
+        die_fig::spec::DataRef::Inline(t) => (**t).clone(),
+        die_fig::spec::DataRef::File(p) => {
+            let text = source::read_file(p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            source::read_data(&text, data, n, &opt).map_err(|e| format!("{}: {e}", p.display()))?
+        }
+        other => {
+            return Err(format!(
+                "fig_shot reads a tile's data from a file: {other:?}"
+            ));
+        }
+    };
+    Ok(Some((parsed.figure, table)))
+}
+
+/// The newest time in a table: its time columns' latest.
+fn newest(t: &die_fig::data::Table) -> Option<f64> {
+    t.columns
+        .iter()
+        .filter(|c| c.kind() == die_fig::data::ColumnKind::Time)
+        .flat_map(|c| (0..c.len()).map(move |r| c.f64_at(r)))
+        .filter(|v| v.is_finite())
+        .fold(None, |a: Option<f64>, v| Some(a.map_or(v, |a| a.max(v))))
+}
+
+/// A row of tiles drawn as the flags ask: see the docs at the top.
+fn tile_shot(
+    first: Tile,
+    output: &str,
+    ask: &Ask,
+    zone: &TimeZone,
+    theme: &Theme,
+    book: &mut Book,
+) -> Result<(), String> {
+    use die_fig::figure::{self, TileHover, TileModel};
+    use die_fig::scene::{Item, Paint, PathData, Rect, Stroke};
+    let mut tiles = vec![first];
+    for f in &ask.also {
+        let t = tile_of(Path::new(f), zone)?.ok_or(format!("{f} isn't a tile"))?;
+        tiles.push(t);
+    }
+    let models: Vec<TileModel> = tiles
+        .iter()
+        .map(|(f, t)| {
+            let range = ask.range.and_then(|d| newest(t).map(|n| (n - d, n)));
+            TileModel::build_in(f, t, range, zone).map_err(|e| e.to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    let (w, h) = if ask.sized {
+        ask.size
+    } else {
+        (197.0, models[0].natural_height())
+    };
+    let margin = 16.0;
+    let gap = 12.0;
+    let n = models.len() as f32;
+    let hovering = ask.hover.is_some() || ask.trend.is_some_and(|t| t.1);
+    let room = if hovering { 210.0 } else { 0.0 };
+    let size = (
+        2.0 * margin + n * w + (n - 1.0) * gap,
+        2.0 * margin + h + room,
+    );
+    let rect = |i: usize| Rect::new(margin + i as f32 * (w + gap), margin, w, h);
+    let area = Rect::new(0.0, 0.0, size.0, size.1);
+    let draw = |scale: f32, book: &mut Book, say: bool| -> (Scene, Scene) {
+        let mut m = BookMeasure { book, scale };
+        let mut scene = Scene::new(size.0, size.1, scale);
+        let mut over = Scene::new(size.0, size.1, scale);
+        // A row's tiles agree on one value size and a meter's word, as a dashboard's do.
+        let fit = (models.iter().enumerate())
+            .map(|(i, t)| figure::draw::needs(t, rect(i), &mut m))
+            .fold(figure::RowFit::default(), figure::RowFit::meet);
+        let models: Vec<TileModel> = (models.iter())
+            .map(|t| TileModel { fit, ..t.clone() })
+            .collect();
+        for (i, model) in models.iter().enumerate() {
+            let r = rect(i);
+            if !ask.no_frame {
+                scene.push(Item::Path {
+                    path: PathData::rounded(r, [8.0; 4]),
+                    fill: Some(Paint::solid(theme.surface, 1.0)),
+                    stroke: Some(Stroke::hairline(theme.grid, 1.0)),
+                });
+            }
+            let b = figure::base(model, r, theme, &mut m);
+            scene.items.extend(b.items);
+            let hover = match (ask.hover, ask.trend) {
+                (Some(at), _) => figure::draw::hit_with(model, r, at, &mut m),
+                (None, Some((point, card))) if i == 0 => Some(TileHover::Trend { point, card }),
+                _ => None,
+            };
+            let o = figure::overlay_in(model, hover, r, area, theme, &mut m);
+            over.items.extend(o.items);
+            if say {
+                println!(
+                    "tile {i} {:?} {:?}: {} {:?} over {} ({} rows); change {:?}; trend {} points; hover {:?}",
+                    model.kind,
+                    model.label,
+                    model.text(),
+                    model.unit,
+                    model.range_text(),
+                    model.rows,
+                    model.change_text(),
+                    model.trend.len(),
+                    hover,
+                );
+            }
+        }
+        (scene, over)
+    };
+    let (base, over) = draw(ask.scale, book, true);
+    let bytes = composite(&base, &over, theme, book)?;
+    std::fs::write(output, bytes).map_err(|e| format!("{output}: {e}"))?;
+    if let Some(svg) = &ask.svg {
+        let (mut scene, over) = draw(1.0, book, false);
+        scene.items.extend(over.items);
+        std::fs::write(svg, die_fig::svg::write(&scene)).map_err(|e| format!("{svg}: {e}"))?;
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------ dashboards
+
+/// What the dashboard flags ask for.
+#[derive(Clone, Default)]
+struct DashAsk {
+    focus: Option<usize>,
+    full: Option<usize>,
+    range: Option<String>,
+    time: Option<(String, String)>,
+    scroll: f32,
+    live: Option<String>,
+    hover_at: Option<(usize, String)>,
+    cursor: Option<(usize, usize)>,
+    shared: bool,
+    log: Option<usize>,
+}
+
+/// The dashboard flags taken out of the arguments, the rest left for the figure's.
+fn dash_flags(args: impl Iterator<Item = String>) -> Result<(DashAsk, Vec<String>), String> {
+    let mut d = DashAsk::default();
+    let mut rest = Vec::new();
+    let mut args = args.peekable();
+    let num = |v: &str| -> Result<usize, String> {
+        v.trim().parse().map_err(|_| format!("{v}: not a number"))
+    };
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().ok_or(format!("{flag} needs a value"));
+        match flag.as_str() {
+            "--focus" => d.focus = Some(num(&value()?)?),
+            "--full" => d.full = Some(num(&value()?)?),
+            "--range" => d.range = Some(value()?),
+            "--time" => {
+                let v = value()?;
+                let (a, b) = v.split_once(',').ok_or("--time is HH:MM,HH:MM")?;
+                d.time = Some((a.to_string(), b.to_string()));
+            }
+            "--scroll" => d.scroll = pair(&value()?, ',')?[0],
+            "--live" => d.live = Some(value()?),
+            "--hover-at" => {
+                let v = value()?;
+                let (n, t) = v.split_once(',').ok_or("--hover-at is N,HH:MM")?;
+                d.hover_at = Some((num(n)?, t.to_string()));
+            }
+            "--panel-cursor" => {
+                let v = value()?;
+                let (n, i) = v.split_once(',').ok_or("--panel-cursor is N,I")?;
+                d.cursor = Some((num(n)?, num(i)?));
+            }
+            "--shared" => d.shared = true,
+            "--panel-log" => d.log = Some(num(&value()?)?),
+            _ => rest.push(flag),
+        }
+    }
+    Ok((d, rest))
+}
+
+/// Whether a file parses as a dashboard, said quietly.
+fn is_dashboard(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let opt = ReadOptions::new(TimeZone::UTC);
+    die_fig::spec::parse(&text, name, dir, &opt)
+        .is_ok_and(|p| matches!(p.figure, Figure::Dashboard(_)))
+}
+
+/// The dashboard a file is, if it parses as one.
+fn dash_of(path: &Path, zone: &TimeZone) -> Option<die_fig::spec::DashboardSpec> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let parsed = die_fig::spec::parse(&text, name, dir, &ReadOptions::new(zone.clone())).ok()?;
+    for w in &parsed.warnings {
+        eprintln!("fig_shot: warning: {w}");
+    }
+    match parsed.figure {
+        Figure::Dashboard(d) => Some(d),
+        _ => None,
+    }
+}
+
+/// A time of day on the day of `newest` in `zone`, as seconds.
+fn time_of_day(hm: &str, newest: f64, zone: &TimeZone) -> Result<f64, String> {
+    let (h, m) = hm.split_once(':').ok_or(format!("{hm}: not HH:MM"))?;
+    let (h, m): (i8, i8) = (
+        h.parse().map_err(|_| format!("{hm}: not HH:MM"))?,
+        m.parse().map_err(|_| format!("{hm}: not HH:MM"))?,
+    );
+    let ts = jiff::Timestamp::from_second(newest as i64).map_err(|e| e.to_string())?;
+    let day = ts.to_zoned(zone.clone()).date();
+    let at = day
+        .at(h, m, 0, 0)
+        .to_zoned(zone.clone())
+        .map_err(|e| e.to_string())?;
+    Ok(at.timestamp().as_second() as f64)
+}
+
+/// A dashboard drawn as the flags ask: see the docs at the top.
+#[allow(clippy::too_many_arguments)]
+fn dash_shot(
+    spec: die_fig::spec::DashboardSpec,
+    path: &Path,
+    output: &str,
+    ask: &Ask,
+    d: &DashAsk,
+    theme: &Theme,
+    book: &mut Book,
+) -> Result<(), String> {
+    use die_fig::dashboard::{self, DashModel, DashView, LiveStatus, Origin, PanelView};
+    let mut spec = spec;
+    if d.shared {
+        spec.tooltip = die_fig::spec::Tooltip::Shared;
+    }
+    let zone = TimeZone::system();
+    let opt = ReadOptions::new(zone.clone());
+    let file = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    let resolve = |p: &Path| dashboard::open(p, &opt);
+    let origin = Origin {
+        file: Some(&file),
+        dir: &dir,
+        zone: &zone,
+    };
+    let first = DashModel::build(&spec, &dashboard::Sources::new(), &resolve, &origin);
+    let mut sources = dashboard::read(first.wants(), &opt);
+    sources.live = match d.live.as_deref() {
+        None => None,
+        Some("live") => Some(LiveStatus::updated(12.0)),
+        Some("updating") => Some(LiveStatus::updating()),
+        Some("paused") => Some(LiveStatus::paused()),
+        Some("error") => Some(LiveStatus::error(130.0)),
+        Some(other) => return Err(format!("--live {other}: live, updating, paused or error")),
+    };
+    let model = DashModel::build(&spec, &sources, &resolve, &origin);
+    let mut view = DashView::initial(&model);
+    view.focused = d.focus;
+    view.full = d.full;
+    view.scroll = d.scroll;
+    if let Some(r) = &d.range {
+        let range = dashboard::RANGES
+            .iter()
+            .find(|x| x.key == r)
+            .ok_or(format!("--range {r}: 15m, 1h, 6h, 24h, 7d, 30d or all"))?;
+        view = view.with_range(&model, range.secs);
+    }
+    let newest = model.newest();
+    if let Some((a, b)) = &d.time {
+        let n = newest.ok_or("--time needs linked panels")?;
+        view.time = Some((time_of_day(a, n, &zone)?, time_of_day(b, n, &zone)?));
+    }
+    if let Some(i) = d.log {
+        let p = view.panels.get_mut(i).ok_or(format!("no panel {i}"))?;
+        p.error = ErrorView::Log { top: 0, mark: 0 };
+    }
+    if let Some((n, i)) = d.cursor {
+        let cm = model
+            .panels
+            .get(n)
+            .and_then(|p| p.chart())
+            .ok_or(format!("panel {n} isn't a chart"))?;
+        let key = cm.keys().into_iter().next().ok_or("no series")?;
+        let p: &mut PanelView = view.panels.get_mut(n).ok_or(format!("no panel {n}"))?;
+        p.cursor = Some(Cursor::Point {
+            series: key,
+            row: i as u32,
+        });
+    }
+    let shot = |scale: f32, book: &mut Book, say: bool| -> Result<(Scene, Scene), String> {
+        let mut m = BookMeasure { book, scale };
+        let layout = dashboard::layout(&model, &view, ask.size, scale, theme, &mut m);
+        let pointer = match &d.hover_at {
+            Some((n, hm)) => {
+                let p = layout
+                    .panel(*n)
+                    .ok_or(format!("panel {n} isn't laid out"))?;
+                let (l, _) = p.chart().ok_or(format!("panel {n} isn't a chart"))?;
+                let t = time_of_day(hm, newest.ok_or("no time")?, &zone)?;
+                let (ox, oy) = p.origin();
+                Some((l.x.map(t) + ox, l.plot.y + l.plot.h * 0.5 + oy))
+            }
+            None => ask.hover,
+        };
+        let hover = pointer.and_then(|(x, y)| dashboard::hover(&model, &layout, x, y));
+        let base = dashboard::base(&layout, &view, theme, &mut m);
+        let over = dashboard::overlay(&model, &layout, &view, hover.as_ref(), theme, &mut m);
+        if say {
+            println!(
+                "dashboard {:?}: {} panels; header to {:.0}; chip {:?}; live {:?}; scroll {:.0} of {:.0}; time {:?}",
+                model.title,
+                model.panels.len(),
+                layout.header.bottom,
+                layout
+                    .header
+                    .chip
+                    .as_ref()
+                    .map(|c| (c.text.text.clone(), c.rect)),
+                layout
+                    .header
+                    .live
+                    .as_ref()
+                    .map(|l| l.text.as_ref().map(|t| t.text.clone())),
+                layout.scroll,
+                layout.max_scroll,
+                view.chip(&model),
+            );
+            for p in layout.panels.iter().flatten() {
+                let pm = &model.panels[p.index];
+                let what = match &p.figure {
+                    dashboard::layout::PanelFigure::Chart { layout: l, .. } => format!(
+                        "chart, plot {:.0},{:.0} {:.0}x{:.0}",
+                        l.plot.x + p.frame.x,
+                        l.plot.y + p.frame.y,
+                        l.plot.w,
+                        l.plot.h
+                    ),
+                    dashboard::layout::PanelFigure::Graph { .. } => "graph".into(),
+                    dashboard::layout::PanelFigure::Tile { model: t } => format!("tile {t:?}"),
+                    dashboard::layout::PanelFigure::Waiting(w) => format!("waiting: {w}"),
+                    dashboard::layout::PanelFigure::Failed => match &pm.state {
+                        dashboard::PanelState::Failed(f) => format!(
+                            "failed: {}",
+                            f.errors.first().map(|e| e.to_string()).unwrap_or_default()
+                        ),
+                        _ => "failed".into(),
+                    },
+                };
+                println!(
+                    "  panel {} {:?}{} frame {:.1},{:.1} {:.1}x{:.1}: {what}",
+                    p.index,
+                    pm.title,
+                    if pm.linked { " linked" } else { "" },
+                    p.frame.x,
+                    p.frame.y,
+                    p.frame.w,
+                    p.frame.h
+                );
+            }
+            for t in model.trust() {
+                println!("  asks: {}", t.question("this dashboard"));
+            }
+            println!(
+                "  hover {:?}; overlay {:?}",
+                hover.as_ref().map(|h| (h.panel, h.time, &h.target)),
+                over.bounds()
+            );
+        }
+        Ok((base, over))
+    };
+    let (base, over) = shot(ask.scale, book, true)?;
+    let bytes = composite(&base, &over, theme, book)?;
+    std::fs::write(output, bytes).map_err(|e| format!("{output}: {e}"))?;
+    if let Some(svg) = &ask.svg {
+        let (mut scene, over) = shot(1.0, book, false)?;
+        scene.items.extend(over.items);
+        std::fs::write(svg, die_fig::svg::write(&scene)).map_err(|e| format!("{svg}: {e}"))?;
+    }
+    Ok(())
 }

@@ -412,10 +412,16 @@ fn a_midnight_among_hours_is_major_and_names_its_day() {
     let z = utc();
     let t = scale::ticks(
         &time(at("2025-11-21T18:00:00Z"), at("2025-11-22T06:00:00Z"), &z),
-        6,
+        4,
     );
     assert_eq!(labels(&t), ["18:00", "21:00", "22 Nov", "03:00", "06:00"]);
     assert_eq!(majors(&t), [false, false, true, false, false]);
+    // Two hours between one and three: six hours read in two-hour steps, as m4's do.
+    let t = scale::ticks(
+        &time(at("2025-11-21T06:00:00Z"), at("2025-11-21T12:00:00Z"), &z),
+        4,
+    );
+    assert_eq!(labels(&t), ["06:00", "08:00", "10:00", "12:00"]);
 }
 
 #[test]

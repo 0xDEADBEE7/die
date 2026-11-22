@@ -157,8 +157,10 @@ impl Unit {
     }
 }
 
-/// d3's calendar steps: the unit, how many of it, and about how long that is.
-const INTERVALS: [(Unit, i64, f64); 18] = [
+/// d3's calendar steps, with two hours between one and three (a six-hour range reads in
+/// two-hour steps, as the design's m4 has it): the unit, how many of it, and about how long
+/// that is.
+const INTERVALS: [(Unit, i64, f64); 19] = [
     (Unit::Second, 1, 1.0),
     (Unit::Second, 5, 5.0),
     (Unit::Second, 15, 15.0),
@@ -168,6 +170,7 @@ const INTERVALS: [(Unit, i64, f64); 18] = [
     (Unit::Minute, 15, 15.0 * MINUTE),
     (Unit::Minute, 30, 30.0 * MINUTE),
     (Unit::Hour, 1, HOUR),
+    (Unit::Hour, 2, 2.0 * HOUR),
     (Unit::Hour, 3, 3.0 * HOUR),
     (Unit::Hour, 6, 6.0 * HOUR),
     (Unit::Hour, 12, 12.0 * HOUR),

@@ -1,0 +1,157 @@
+{
+  "type": "dashboard",
+  "title": "A tall dashboard",
+  "data": {
+    "req": "requests.csv",
+    "svc": "service.csv"
+  },
+  "time": {
+    "field": "time",
+    "range": "6h"
+  },
+  "rows": [
+    [
+      {
+        "type": "stat",
+        "label": "Requests",
+        "data": "req",
+        "value": {
+          "sum": "total"
+        },
+        "trend": "time"
+      },
+      {
+        "type": "stat",
+        "label": "Errors",
+        "data": "svc",
+        "value": {
+          "sum": "errors"
+        },
+        "trend": "time"
+      },
+      {
+        "type": "stat",
+        "label": "Sessions",
+        "data": "svc",
+        "value": {
+          "max": "sessions"
+        },
+        "trend": "time"
+      }
+    ],
+    [
+      {
+        "type": "line",
+        "title": "API requests",
+        "data": "req",
+        "x": "time",
+        "y": {
+          "field": "api",
+          "title": ""
+        }
+      },
+      {
+        "type": "area",
+        "title": "Errors per minute",
+        "data": "svc",
+        "x": "time",
+        "y": {
+          "field": "errors",
+          "title": ""
+        }
+      }
+    ],
+    [
+      {
+        "type": "line",
+        "title": "Worker jobs",
+        "data": "req",
+        "x": "time",
+        "y": {
+          "field": "worker",
+          "title": ""
+        }
+      },
+      {
+        "type": "area",
+        "title": "p95 latency, ms",
+        "data": "svc",
+        "x": "time",
+        "y": {
+          "field": "p95_ms",
+          "title": ""
+        }
+      }
+    ],
+    [
+      {
+        "type": "line",
+        "title": "Batch jobs",
+        "data": "req",
+        "x": "time",
+        "y": {
+          "field": "batch",
+          "title": ""
+        }
+      },
+      {
+        "type": "area",
+        "title": "Active sessions",
+        "data": "svc",
+        "x": "time",
+        "y": {
+          "field": "sessions",
+          "title": ""
+        }
+      }
+    ],
+    [
+      {
+        "type": "line",
+        "title": "Requests per 5 minutes",
+        "data": "req",
+        "x": "time",
+        "y": {
+          "field": "total",
+          "title": ""
+        }
+      },
+      {
+        "type": "area",
+        "title": "Error rate, %",
+        "data": "svc",
+        "x": "time",
+        "y": {
+          "field": "error_rate",
+          "title": ""
+        }
+      }
+    ],
+    [
+      {
+        "type": "line",
+        "title": "Everything at once",
+        "data": "req",
+        "transform": [
+          {
+            "fold": [
+              "api",
+              "worker",
+              "batch"
+            ],
+            "as": [
+              "service",
+              "rpm"
+            ]
+          }
+        ],
+        "x": "time",
+        "y": {
+          "field": "rpm",
+          "title": ""
+        },
+        "color": "service"
+      }
+    ]
+  ]
+}

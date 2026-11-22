@@ -8,6 +8,7 @@
 //! - [`overlay`]: the crosshair, dots, card, chips, brush, reference and the emphasis wash;
 //! - [`nav`]: the cursor's motions and the view's zoom, pan, brush and reset, within limits;
 //! - [`hover`]: what the pointer is on;
+//! - [`ramp`]: a heatmap's colour scale, sequential or diverging, and its legend;
 //! - [`detail`]: the detail panel's trees for a point, a series, a band and a cell, and the
 //!   names a search looks through.
 //!
@@ -23,6 +24,7 @@ pub mod layout;
 pub mod marks;
 pub mod nav;
 pub mod overlay;
+pub mod ramp;
 
 pub use errors::{ErrorView, LogLayout, error_figure, log_layout, log_page, stale_badge};
 pub use hover::{hover, nearest_series};
@@ -1750,6 +1752,9 @@ pub fn read_data(d: &DataSpec, source: Option<&str>, opt: &ReadOptions) -> Resul
         DataRef::Named(n) => Err(FigError::new(format!(
             "\"{n}\" names a dashboard's data, which a chart alone can't read"
         ))),
+        DataRef::Borrow { name, .. } => Err(FigError::new(format!(
+            "\"#{name}\" borrows a dashboard's data, which a chart alone can't read"
+        ))),
     }
 }
 
@@ -1798,7 +1803,35 @@ pub fn base_beside(
     theme: &Theme,
     m: &mut dyn Measure,
 ) -> (Scene, ChartLayout, HitIndex) {
-    let mut layout = layout::lay_out(model, view, size, area_w, scale, m);
+    base_with(model, view, size, area_w, None, scale, theme, m)
+}
+
+/// [`base`] with the paddings given ([`layout::Insets`]) rather than the area's own: a
+/// dashboard's panel, whose frame and title are the panel's.
+pub fn base_inset(
+    model: &ChartModel,
+    view: &View,
+    size: (f32, f32),
+    insets: layout::Insets,
+    scale: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> (Scene, ChartLayout, HitIndex) {
+    base_with(model, view, size, size.0, Some(insets), scale, theme, m)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn base_with(
+    model: &ChartModel,
+    view: &View,
+    size: (f32, f32),
+    area_w: f32,
+    insets: Option<layout::Insets>,
+    scale: f32,
+    theme: &Theme,
+    m: &mut dyn Measure,
+) -> (Scene, ChartLayout, HitIndex) {
+    let mut layout = layout::lay_out(model, view, size, area_w, insets, scale, m);
     layout.bars = marks::bars(model, view, &layout);
     layout.totals = marks::bar_totals(model, view, &layout, theme, m)
         .into_iter()

@@ -1,0 +1,10 @@
+{
+  "type": "stat",
+  "label": "Active sessions",
+  "data": "service.csv",
+  "value": {
+    "last": "sessions"
+  },
+  "delta": "previous",
+  "trend": "time"
+}

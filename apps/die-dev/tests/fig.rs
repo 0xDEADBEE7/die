@@ -12,7 +12,9 @@
 //! And a graph as you'd use it, start to end: services.json opened, `\v` and its layout's frame,
 //! a hover's dwell with its card, a click, h j k l, a node dragged and pinned, `u` and `<C-r>`,
 //! a pan, a ⌘-wheel zoom, the panel and Tab into it, `/` as it's typed and Esc, `t`, `0`, an edit
-//! of the JSON the graph follows with the pin kept, and `\v` back.
+//! of the JSON the graph follows with the pin kept, and `\v` back. And a dashboard through your
+//! config: health.fig opens as its dashboard, a hover on a linked chart, `Tab` to a panel, `f`
+//! full size and back, `T` to the last hour, and `\v` to its text and back.
 
 use die_test_cap as _;
 
@@ -1185,5 +1187,72 @@ fn a_graph_as_you_use_it_hover_click_keys_drag_pan_zoom_panel_search_table_an_ed
     assert_eq!(h.window_buffer(win), Some(src));
     assert_eq!(h.window_buffer(win2), Some(src));
     assert!(!h.is_live(fig), "the figure gone with what it ran");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_dashboard_round_trip_its_linked_hover_tab_f_t_and_back_to_its_text() {
+    let d = dir("dash");
+    let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../extensions/die-fig/examples/data/dash");
+    for f in ["health.fig", "requests.csv", "service.csv"] {
+        std::fs::copy(from.join(f), d.join(f)).unwrap();
+    }
+    let mut h = harness();
+    h.set_window_size(100, 34);
+    h.run_until_idle();
+    let src = open(&mut h, &d.join("health.fig"));
+    let fig = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(fig), Some("health.fig *fig*"));
+    let win = h.focused().unwrap();
+    let st = h.with_ext(|f: &mut Fig, _| f.figure(fig)).unwrap().unwrap();
+    let panels = |st: &Shared| {
+        let st = st.borrow();
+        let m = st.dash.as_ref().and_then(|d| d.model.as_ref());
+        m.map_or(0, |m| m.panels.iter().filter(|p| p.ready()).count())
+    };
+    assert_eq!(panels(&st), 6, "every panel draws");
+    // A hover on the left chart: its card and the moment in the right one, the overlay alone.
+    let plot = {
+        let st = st.borrow();
+        let dp = st.panes[&win].dash.as_ref().unwrap();
+        let p = dp.layout.as_ref().unwrap().panel(4).unwrap();
+        let (l, _) = p.chart().unwrap();
+        let (ox, oy) = p.origin();
+        die_fig::scene::Rect::new(l.plot.x + ox, l.plot.y + oy, l.plot.w, l.plot.h)
+    };
+    presents(&mut h);
+    let at = (plot.x + plot.w / 2.0, plot.y + plot.h / 2.0);
+    pointer(&mut h, win, PointerKind::Move, at, Mods::default(), 0);
+    let (base, _) = st.borrow().panes[&win].buffers().unwrap();
+    let calls = presents(&mut h);
+    assert!(!calls.is_empty() && calls.iter().all(|(id, _)| *id != base));
+    let time = |st: &Shared| st.borrow().panes[&win].dash.as_ref().unwrap().view.time;
+    keys(&mut h, "<Tab><Tab><Tab><Tab><Tab>f");
+    assert_eq!(
+        st.borrow().panes[&win].dash.as_ref().unwrap().view.full,
+        Some(4)
+    );
+    keys(&mut h, "fT1h<CR>");
+    h.advance(Duration::from_millis(400));
+    let (a, b) = time(&st).unwrap();
+    assert!((b - a - 3600.0).abs() < 1e-6);
+    assert!(h.screen().contains("panel 5/6"), "{}", h.screen());
+    keys(&mut h, "\\v");
+    assert_eq!(h.focused_buffer(), Some(src), "its text");
+    keys(&mut h, "\\v");
+    let again = h.focused_buffer().unwrap();
+    assert_eq!(h.buffer_name(again), Some("health.fig *fig*"), "and back");
+    // With the dashboard's view as it was left: the last hour, panel 5 focused.
+    let st = h
+        .with_ext(|f: &mut Fig, _| f.figure(again))
+        .unwrap()
+        .unwrap();
+    let (a, b) = time(&st).unwrap();
+    assert!((b - a - 3600.0).abs() < 1e-6);
+    assert_eq!(
+        st.borrow().panes[&win].dash.as_ref().unwrap().view.focused,
+        Some(4)
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -6,11 +6,12 @@
 //! - [`chart`]: the grammar: marks, encodings, layers, transforms, inheritance;
 //! - [`graph`]: the graph spec beyond fig's;
 //! - [`dash`]: dashboards, stats and meters;
+//! - [`tile`]: the sparkline figure;
 //! - [`guess`]: a figure from a bare table, by the design's inference rules;
 //! - [`write`]: a figure back to JSON text, for `:fig-spec`.
 //!
 //! `"type"` is one of `chart`, `line`, `area`, `bar`, `scatter`, `heatmap`, `histogram`,
-//! `graph`, `stat`, `meter` and `dashboard`. Unknown fields are tolerated: a node's and an
+//! `graph`, `stat`, `meter`, `sparkline` and `dashboard`. Unknown fields are tolerated: a node's and an
 //! edge's are kept in their `raw` object, and data rows keep theirs in [`Table::raw`]. A key
 //! within two edits of a known one (one for a known key of three or four letters, none for one
 //! or two) is a warning that names the key it may have meant, but in a node or an edge, whose
@@ -52,7 +53,9 @@
 //!   (a constant), or an object of `field` or `value`, `type` (`number`, `time`, `category`,
 //!   `text`), `unit` (`s` or `ms`, for epoch times), `title`, `scale` (`auto`, `linear`, `log`,
 //!   `time`, `band`), `domain` (`[lo, hi]`), `zero` and `format`; and `tooltip` and `detail`, a
-//!   field or a list of them;
+//!   field or a list of them. A heatmap's `color` takes `"scale": "diverging"` or `{"type":
+//!   "diverging", "mid": 0}` for values either side of a midpoint (0 unless given), and
+//!   `"sequential"` (the default) for a ramp from the least to the most;
 //! - `mark`: `line`, `area`, `bar`, `point`, `rect`, `rule`, `band` or `text`, or an object of
 //!   `type`, `curve` (`linear`, `step`), `points`, `stack` (`none`, `zero`, `normalize`, or a
 //!   boolean) and `horizontal`. Bars and areas stack from zero unless told otherwise. This is
@@ -84,16 +87,18 @@ pub mod dash;
 pub mod fig;
 pub mod graph;
 pub mod guess;
+pub mod tile;
 pub mod write;
 
 pub use guess::guess;
+pub use tile::SparklineSpec;
 pub use write::write;
 
 use crate::data::transform::{AggOp, Transform};
 use crate::data::{ColumnKind, ReadOptions, SeriesKey, Table};
 use crate::error::{FigError, Pos, Result};
 use crate::json::{self, Key, Kind, Node};
-use crate::style::FigStyle;
+use crate::style::{FigStyle, Status};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -121,6 +126,16 @@ pub enum DataRef {
     Named(String),
     /// The buffer itself is the data.
     Source,
+    /// Another dashboard's data, by its key: `"x.fig#req"`, the file relative to the spec's
+    /// directory, resolved. A dashboard's panels and data may borrow it.
+    Borrow {
+        /// The `.fig` file whose dashboard has the data.
+        file: PathBuf,
+        /// Its key in that dashboard's `data`.
+        name: String,
+        /// Where the reference is in the spec.
+        at: Pos,
+    },
 }
 
 /// A figure's data: where from, in what format, and how to read it.
@@ -261,6 +276,9 @@ pub struct Channel {
     pub zero: Option<bool>,
     /// How its values are written.
     pub format: Option<String>,
+    /// A colour scale's midpoint: Some makes a heatmap's colours diverge either side of it
+    /// (`"scale": {"type": "diverging", "mid": 0}`), None is a sequential ramp.
+    pub mid: Option<f64>,
     /// Where it is in the spec.
     pub at: Option<Pos>,
 }
@@ -466,6 +484,8 @@ pub struct StatSpec {
     pub trend: Option<String>,
     /// How the value is written.
     pub format: Option<String>,
+    /// What the value is counted in, written small after it: `"ms"`, `"%"`.
+    pub unit: Option<String>,
     /// Which way is good.
     pub good: GoodWhen,
 }
@@ -512,6 +532,19 @@ pub struct MeterSpec {
     pub max: f64,
     /// How the value is written.
     pub format: Option<String>,
+    /// What the value is counted in: `"GB"`.
+    pub unit: Option<String>,
+    /// Where the meter's fill changes status, lowest first.
+    pub thresholds: Vec<Threshold>,
+}
+
+/// A meter's threshold: past `at` (a fraction of the meter's max) its fill takes `status`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Threshold {
+    /// Where, as a fraction of the max: 0 to 1.
+    pub at: f64,
+    /// The status the fill takes past it.
+    pub status: Status,
 }
 
 /// A dashboard panel's content.
@@ -519,17 +552,44 @@ pub struct MeterSpec {
 pub enum Panel {
     /// A figure in the spec.
     Figure(Box<Figure>),
-    /// A spec in another file, relative to this one's directory.
+    /// A spec in another file, relative to this one's directory: that whole figure, its paths
+    /// from its own directory, a dashboard drawn as a nested group.
     File(PathBuf),
+    /// Panels stacked down one column of the row.
+    Column(Vec<PanelSpec>),
 }
 
-/// A dashboard panel and how many columns of its row it spans.
+/// A dashboard panel and its share of its row's width.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PanelSpec {
     /// What it shows.
     pub panel: Panel,
-    /// The columns it spans.
+    /// Its share of the row's width, against the other panels' (1 by default).
     pub span: u16,
+    /// Where it is in the spec.
+    pub at: Pos,
+}
+
+/// A row of a dashboard: its panels, left to right, and its share of the height.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    /// Its panels.
+    pub panels: Vec<PanelSpec>,
+    /// Its share of the height left after the rows of tiles, against the other rows' (1 when
+    /// None: the shorthand, a row written as a list of panels).
+    pub height: Option<f64>,
+    /// Where it is in the spec.
+    pub at: Pos,
+}
+
+/// Which panels show a card when the pointer is over a linked panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Tooltip {
+    /// The hovered panel alone; the others draw the moment's line and dots.
+    #[default]
+    Single,
+    /// Every linked panel (`"tooltip": "shared"`).
+    Shared,
 }
 
 /// A dashboard: rows of panels over shared data and a shared time range.
@@ -541,8 +601,10 @@ pub struct DashboardSpec {
     pub data: Vec<(String, DataSpec)>,
     /// The time range its panels share.
     pub time: Option<TimeSpec>,
+    /// Which panels show a card on a hover.
+    pub tooltip: Tooltip,
     /// Its rows of panels.
-    pub rows: Vec<Vec<PanelSpec>>,
+    pub rows: Vec<Row>,
 }
 
 /// A dashboard's shared time range.
@@ -565,6 +627,8 @@ pub enum Figure {
     Stat(StatSpec),
     /// A meter tile.
     Meter(MeterSpec),
+    /// A sparkline: one series' trend, small.
+    Sparkline(SparklineSpec),
     /// A dashboard.
     Dashboard(DashboardSpec),
 }
@@ -740,15 +804,14 @@ fn is_spec(node: &Node) -> bool {
 }
 
 /// Every figure type, for messages.
-const TYPES: &str =
-    "chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter or dashboard";
+const TYPES: &str = "chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter, sparkline or dashboard";
 
 /// Whether an object with a `"type"` is more likely a row of data than a spec: its type is no
 /// figure's, and it has none of the keys a figure draws from.
 fn is_row(node: &Node) -> bool {
     let figure_type = |t: &str| {
         chart::Shorthand::from_name(t).is_some()
-            || ["graph", "stat", "meter", "dashboard"].contains(&t)
+            || ["graph", "stat", "meter", "sparkline", "dashboard"].contains(&t)
     };
     let draws = [
         "data", "mark", "layers", "nodes", "edges", "series", "buckets", "rows",
@@ -791,6 +854,7 @@ pub(crate) fn figure(node: &Node, cx: &mut Cx<'_>) -> Result<Figure> {
         "histogram" if has("buckets") => fig::histogram(node, cx).map(Figure::Chart),
         "stat" => dash::stat(node, cx).map(Figure::Stat),
         "meter" => dash::meter(node, cx).map(Figure::Meter),
+        "sparkline" => tile::sparkline(node, cx).map(Figure::Sparkline),
         "dashboard" => dash::dashboard(node, cx).map(Figure::Dashboard),
         other => match chart::Shorthand::from_name(other) {
             Some(sh) => chart::parse(node, sh, cx).map(Figure::Chart),
@@ -1101,20 +1165,32 @@ fn unplace_figure(f: &mut Figure) {
         }
         Figure::Stat(s) => unplace_data(&mut s.data),
         Figure::Meter(m) => unplace_data(&mut m.data),
+        Figure::Sparkline(s) => unplace_data(&mut s.data),
         Figure::Dashboard(d) => {
             for (_, data) in &mut d.data {
                 unplace_data(data);
             }
-            for p in d.rows.iter_mut().flatten() {
-                if let Panel::Figure(f) = &mut p.panel {
-                    unplace_figure(f);
-                }
+            for r in &mut d.rows {
+                r.at = Pos::default();
+                r.panels.iter_mut().for_each(unplace_panel);
             }
         }
     }
 }
 
+fn unplace_panel(p: &mut PanelSpec) {
+    p.at = Pos::default();
+    match &mut p.panel {
+        Panel::Figure(f) => unplace_figure(f),
+        Panel::Column(ps) => ps.iter_mut().for_each(unplace_panel),
+        Panel::File(_) => {}
+    }
+}
+
 fn unplace_data(d: &mut DataSpec) {
+    if let DataRef::Borrow { at, .. } = &mut d.source {
+        *at = Pos::default();
+    }
     if let DataRef::Inline(t) = &mut d.source
         && let Some(raw) = &t.raw
     {

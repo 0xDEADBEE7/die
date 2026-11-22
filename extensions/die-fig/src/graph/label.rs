@@ -14,7 +14,8 @@
 //! first (degree, then node order), so where there's room for only some, the hubs keep theirs;
 //! one with no free side but a side that only crosses a few edges (two, or a hub's own count up
 //! to six) goes there on a ground of the surface's colour, which parts the edges under it; one
-//! that would cover a label or a node is culled. As the view zooms in, nodes spread and more
+//! that would cover a label or a node tries two rings further out, and is culled where those
+//! are no better. As the view zooms in, nodes spread and more
 //! labels find room. `show-label: true` labels go first and are never culled (on the least bad
 //! side where none is free); `false` ones never show.
 
@@ -150,6 +151,8 @@ pub(crate) struct Field {
     /// Each drawn node's centre and reach, by node index.
     node_at: Vec<Option<((f32, f32), f32)>>,
     segs: Vec<((f32, f32), (f32, f32))>,
+    /// Each segment's edge: a curve is many segments, and crossing it is crossing one edge.
+    seg_edge: Vec<u32>,
     hard: Vec<((f32, f32), (f32, f32))>,
     cell_labels: Vec<Vec<u32>>,
     cell_soft: Vec<Vec<u32>>,
@@ -176,6 +179,7 @@ impl Field {
             soft: Vec::new(),
             nodes: Vec::new(),
             segs: Vec::new(),
+            seg_edge: Vec::new(),
             hard: Vec::new(),
             soft_nodes: vec![false; layout.nodes.len()],
             node_at: vec![None; layout.nodes.len()],
@@ -202,7 +206,8 @@ impl Field {
                 }
             }
         }
-        for e in layout.edges.iter().flatten() {
+        for (k, e) in layout.edges.iter().enumerate() {
+            let Some(e) = e else { continue };
             let mut pts = e.pts.clone();
             if let Some(a) = e.arrow {
                 pts.push(a[0]);
@@ -214,6 +219,7 @@ impl Field {
                 }
                 let id = f.segs.len() as u32;
                 f.segs.push((s[0], s[1]));
+                f.seg_edge.push(k as u32);
                 for c in f.cells(r) {
                     f.cell_segs[c].push(id);
                 }
@@ -402,6 +408,7 @@ impl Field {
             }
         }
         self.query = self.query.wrapping_add(1);
+        let mut edges: Vec<u32> = Vec::new();
         for &c in &cells {
             for &s in &self.cell_segs[c] {
                 if self.stamp[s as usize] == self.query {
@@ -409,7 +416,9 @@ impl Field {
                 }
                 self.stamp[s as usize] = self.query;
                 let (a, z) = self.segs[s as usize];
-                if seg_meets(a, z, &near) {
+                let e = self.seg_edge[s as usize];
+                if !edges.contains(&e) && seg_meets(a, z, &near) {
+                    edges.push(e);
                     crossed += 1.0;
                 }
             }
@@ -682,7 +691,14 @@ pub(crate) fn place(
         // A hub's label crosses some of its own edges wherever it goes: it may cross as many
         // as it has (up to six) before it's culled.
         let edges_ok = BASE_EDGES.max(model.degree(i).min(6));
-        if let Some(l) = choose(&mut field, cands, i, edges_ok, block_ok) {
+        let mut pick = choose(&mut field, cands, i, edges_ok, block_ok);
+        // Any other label tries the further rings too before it's culled, where there's room
+        // (a sparse graph in a narrow panel), still clearly nearer its own node than another.
+        if pick.is_none() && !forced && model.degree(i) < HUB {
+            let far = further(&text, g.at, g.r, LABEL_GAP, spec, m);
+            pick = choose(&mut field, far, i, edges_ok, block_ok);
+        }
+        if let Some(l) = pick {
             field.add_label(l.rect);
             out[i] = Some(l);
         }

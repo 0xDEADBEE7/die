@@ -158,6 +158,8 @@ pub enum AggOp {
     P50,
     /// The 95th percentile.
     P95,
+    /// The last value present, in the rows' order: a stat's newest by its trend's field.
+    Last,
 }
 
 /// An op's name in a spec, for messages.
@@ -170,6 +172,7 @@ fn op_name(op: AggOp) -> &'static str {
         AggOp::Max => "max",
         AggOp::P50 => "p50",
         AggOp::P95 => "p95",
+        AggOp::Last => "last",
     }
 }
 
@@ -903,6 +906,7 @@ fn reduce(op: AggOp, f: Option<&Column>, rows: &[usize]) -> f64 {
         AggOp::Max => v.iter().copied().fold(f64::NEG_INFINITY, f64::max),
         AggOp::P50 => quantile(&mut v, 0.5),
         AggOp::P95 => quantile(&mut v, 0.95),
+        AggOp::Last => v[v.len() - 1],
     }
 }
 

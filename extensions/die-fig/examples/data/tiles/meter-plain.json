@@ -1,0 +1,10 @@
+{
+  "type": "meter",
+  "label": "Memory",
+  "data": "service.csv",
+  "value": {
+    "last": "memory_gb"
+  },
+  "max": 16,
+  "unit": "GB"
+}

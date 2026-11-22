@@ -50,6 +50,10 @@ const DENSE_COST: f32 = 1.25;
 /// rather than filling with lines, a wide one's labels rather than crowding.
 const Y_MOST: usize = 10;
 const X_MOST: usize = 12;
+/// A plot shorter than this whose fitted y would reach past the data by more than this share
+/// of it ends at the data's top instead of a tick.
+const SHORT_PLOT: f32 = 120.0;
+const SHORT_HEADROOM: f64 = 1.3;
 /// What a domain's headroom over the tightest one costs, against a grid's calm.
 const HEADROOM_COST: f32 = 4.0;
 /// How far a mark may reach past the plot's edges at fit before it's clipped: a point's ring.
@@ -243,6 +247,8 @@ pub struct ChartLayout {
     pub totals: Vec<(u32, Rect)>,
     /// Whether the card was last put left of its anchor, for its hysteresis.
     pub(crate) flipped: Cell<bool>,
+    /// A heatmap's colour legend, where it's drawn.
+    pub ramp: Option<super::ramp::RampLegend>,
 }
 
 impl ChartLayout {
@@ -322,6 +328,22 @@ impl ChartLayout {
     }
 }
 
+/// Paddings a caller gives in place of the area's own: a dashboard's panel, whose frame and
+/// title are its own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Insets {
+    /// Across, each side.
+    pub x: f32,
+    /// At the top: where the legend, or the plot, starts.
+    pub top: f32,
+    /// At the bottom.
+    pub bottom: f32,
+    /// Whether end labels show where the chart's own rule would put them (`labels` auto);
+    /// false keeps them to a spec that asks (`"labels": "ends"`), as a panel's legend says the
+    /// same in less room.
+    pub ends: bool,
+}
+
 /// The area's paddings: across, at the top and at the bottom.
 pub(crate) fn paddings(w: f32, h: f32) -> (f32, f32, f32) {
     (
@@ -348,7 +370,8 @@ fn scale_for(
             let k = (range.1 - range.0) as f64 / span;
             let r0 = range.0 as f64 - a * k;
             let r1 = r0 + n * k;
-            let inner = if rect { 0.06 } else { 0.2 };
+            // A heatmap's cells fill their slots, each keeping its own 2 px gap.
+            let inner = if rect { 0.0 } else { 0.2 };
             Scale::Band {
                 domain: bands.to_vec(),
                 range: (r0 as f32, r1 as f32),
@@ -409,6 +432,9 @@ fn shape_of(model: &ChartModel, key: &SeriesKey) -> KeyShape {
     }
 }
 
+/// What a dashboard panel's chart leaves over its top tick, past a chart's own room (m4's).
+const PANEL_GAP: f32 = 7.0;
+
 /// The least plot a layout keeps by dropping the legend, the axes' titles and the title.
 const MIN_PLOT: f32 = 48.0;
 
@@ -421,6 +447,9 @@ struct Keep {
     ends: bool,
     /// The axes' titles.
     axis_titles: bool,
+    /// A heatmap's colour legend, which outlasts the series legend and the axes' titles (its
+    /// colours can't be read without it).
+    ramp: bool,
     title: bool,
 }
 
@@ -432,6 +461,7 @@ pub(crate) fn lay_out(
     view: &View,
     size: (f32, f32),
     pad_w: f32,
+    insets: Option<Insets>,
     scale: f32,
     m: &mut dyn Measure,
 ) -> ChartLayout {
@@ -440,6 +470,7 @@ pub(crate) fn lay_out(
         legend_rows: 3,
         ends: true,
         axis_titles: true,
+        ramp: true,
         title: true,
     };
     let levels = [
@@ -477,6 +508,15 @@ pub(crate) fn lay_out(
             legend_rows: 0,
             ends: false,
             axis_titles: false,
+            ramp: false,
+            ..full
+        },
+        Keep {
+            subtitle: false,
+            legend_rows: 0,
+            ends: false,
+            axis_titles: false,
+            ramp: false,
             title: false,
         },
     ];
@@ -484,7 +524,9 @@ pub(crate) fn lay_out(
     let domain = model.fit(view);
     let mut last = None;
     for (n, keep) in levels.into_iter().enumerate() {
-        let l = attempt(model, view, size, pad_w, scale, keep, &stacks, domain, m);
+        let l = attempt(
+            model, view, size, pad_w, insets, scale, keep, &stacks, domain, m,
+        );
         let (w, h) = size;
         // The first four levels hold out for a good share of the area; past them, only for a
         // plot that can be read at all.
@@ -506,6 +548,7 @@ fn attempt(
     view: &View,
     size: (f32, f32),
     pad_w: f32,
+    insets: Option<Insets>,
     scale: f32,
     keep: Keep,
     stacks: &Stacks,
@@ -513,11 +556,17 @@ fn attempt(
     m: &mut dyn Measure,
 ) -> ChartLayout {
     let (w, h) = size;
-    let (_, pad_top, pad_bottom) = paddings(w, h);
-    let pad = paddings(pad_w.max(w), h)
-        .0
-        .min(w * 0.06)
-        .max(paddings(w, h).0);
+    let (pad, pad_top, pad_bottom) = match insets {
+        Some(i) => (i.x, i.top, i.bottom),
+        None => {
+            let (_, top, bottom) = paddings(w, h);
+            let pad = paddings(pad_w.max(w), h)
+                .0
+                .min(w * 0.06)
+                .max(paddings(w, h).0);
+            (pad, top, bottom)
+        }
+    };
     let title_spec = TextSpec::new(TITLE).weight(Weight::Semibold);
     let body = TextSpec::new(BODY);
     let tick = TextSpec::new(TICK).tabular();
@@ -663,6 +712,21 @@ fn attempt(
             .min(w * 0.25);
     }
 
+    // A heatmap's colour legend, where the legend goes: under the title, or (placed once the
+    // plot is) at the right.
+    let ramp_scale = (keep.ramp && model.chart.view.legend != LegendPos::None)
+        .then(|| super::ramp::scale_of(model))
+        .flatten();
+    let mut ramp = None;
+    if let Some(sc) = ramp_scale {
+        if right_legend {
+            right_w = super::ramp::RAMP_W.min(w * 0.25);
+        } else if let Some(r) = super::ramp::RampLegend::place(model, sc, pad, y, wide, true, m) {
+            y = r.bounds.bottom().max(y);
+            ramp = Some(r);
+        }
+    }
+
     // The y axis's title, above its ticks. With every series hidden there's nothing to read
     // off an axis: no ticks, no grid, the plot left to say so.
     let axes = model.chart.view.axes && !nothing_shown(model, view);
@@ -683,7 +747,7 @@ fn attempt(
         && keep.axis_titles
         && let Some(t) = value_title.as_deref().filter(|t| !t.is_empty())
     {
-        let gap = if header || !items.is_empty() {
+        let gap = if header || !items.is_empty() || ramp.is_some() {
             6.0
         } else {
             0.0
@@ -701,12 +765,16 @@ fn attempt(
         });
         y = base + 12.0 - m.ascent(tick_plain) * 0.0;
     } else {
-        // Room for the top tick label's upper half.
+        // Room for the top tick label's upper half; in a dashboard's panel, as much again as
+        // m4 leaves under its legend or subtitle, so the top tick doesn't crowd them.
         y += if axes {
             m.ascent(tick) * 0.6 + 2.0
         } else {
             4.0
         };
+        if insets.is_some() && axes {
+            y += PANEL_GAP;
+        }
     }
     let plot_top = y.ceil();
 
@@ -775,6 +843,19 @@ fn attempt(
         if let Some(&(d, c, _, _)) = best {
             yd = loosened(model, view, d, c, (plot_bottom, plot_top), whole);
             y_count = c;
+        }
+        // A short plot whose calmest grid would leave much of it empty over the data (an 84 px
+        // panel's 0 to 2,000 for data to 1,060): the data's own top, a little over, its ticks
+        // the nice ones under it, so the marks keep the plot's height.
+        let (dlo, dhi) = domain.1;
+        let floor = yd.0.min(dlo);
+        if plot_h < SHORT_PLOT
+            && dhi > floor
+            && dhi.is_finite()
+            && (yd.1 - floor) > SHORT_HEADROOM * (dhi - floor)
+        {
+            yd = (yd.0, dhi + (dhi - floor) * 0.04);
+            y_count = 2;
         }
     }
     // A scatter's points keep their whole dot inside the plot at its fit, and its top tick
@@ -914,7 +995,9 @@ fn attempt(
         && match labels_rule {
             crate::spec::Labels::None => false,
             crate::spec::Labels::Ends => true,
-            crate::spec::Labels::Auto => lines.len() <= 4 && legend_keys(model).len() >= 2,
+            crate::spec::Labels::Auto => {
+                insets.is_none_or(|i| i.ends) && lines.len() <= 4 && legend_keys(model).len() >= 2
+            }
         };
     let mut right = w
         - pad
@@ -1162,6 +1245,12 @@ fn attempt(
         }
     }
 
+    // The colour legend at the right, from the plot's top.
+    if right_legend && let Some(sc) = ramp_scale {
+        let x0 = plot.right() + 16.0;
+        ramp = super::ramp::RampLegend::place(model, sc, x0, plot.y, w - pad - x0, false, m);
+    }
+
     // The marks bleed past the plot's edges where the data reaches them at fit. The scales
     // are the screen's: across it, and up it.
     let (xs_scale, ys_scale) = (across, up_scale);
@@ -1208,6 +1297,7 @@ fn attempt(
         bars: Vec::new(),
         totals: Vec::new(),
         flipped: Cell::new(false),
+        ramp,
     }
 }
 
@@ -1627,6 +1717,9 @@ pub(crate) fn chrome(
     for e in &l.ends {
         scene.push(e.name.item(theme));
         scene.push(e.value.item(theme));
+    }
+    if let Some(r) = &l.ramp {
+        r.draw(scene, theme);
     }
 }
 
