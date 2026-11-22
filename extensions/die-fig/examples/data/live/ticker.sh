@@ -22,7 +22,8 @@ BEGIN {
     print "time,rpm,errors"
     fflush()
     for (i = 0; ; i++) {
-        rpm = 1200 + 300 * sin(i / 20) + (i * 37) % 50
+        # A swell every 5 minutes, a ripple every 45 s and a little noise.
+        rpm = 1200 + 220 * sin(i / 240) + 70 * sin(i / 36) + (i * 37) % 30
         printf "%s,%d,%d\n", iso(start + i / 5), rpm, ((i * 13) % 17 == 0)
         fflush()
         system("sleep 0.2")
