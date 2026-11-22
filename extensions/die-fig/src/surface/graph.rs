@@ -644,6 +644,21 @@ impl Keys for GraphAct<'_> {
         self.put_cursor(r);
         true
     }
+
+    fn find(&mut self, c: Cursor) {
+        self.pane.found_node = Some(c.clone());
+        self.put_cursor(c);
+    }
+
+    fn back(&mut self, cursor: Option<Cursor>, view: View) {
+        self.pane.cursor = cursor;
+        self.pane.found_node = None;
+        self.set(view, Change::Follow);
+    }
+
+    fn put(&mut self, c: Cursor) {
+        self.put_cursor(c);
+    }
 }
 
 impl Pane {

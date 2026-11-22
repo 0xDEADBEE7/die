@@ -855,6 +855,9 @@ fn item_shown(st: &FigState, view: &View, item: &Item) -> bool {
 /// The names a search looks through: a chart's series and categories, a graph's nodes, each
 /// with the mark it names; what window `w`'s view hides left out, so a find is always drawn.
 fn search_names(st: &FigState, w: die_core::WindowId) -> Option<Vec<(String, Item)>> {
+    if st.dash_drawn(w) {
+        return st.dash_names(w);
+    }
     let view = st.panes.get(&w).map(|p| p.view.clone()).unwrap_or_default();
     let names = match (&st.graph, &st.model) {
         (Some(g), _) => g.search_names(),
@@ -872,6 +875,12 @@ fn search_names(st: &FigState, w: die_core::WindowId) -> Option<Vec<(String, Ite
 /// A search's find in a window: the cursor on what `item` names, the view keeping it in sight,
 /// and its mark brought forward until `Esc` (a chart's series or category, a graph's node).
 fn found(st: &mut FigState, w: die_core::WindowId, now: std::time::Duration, item: &Item) {
+    if st.dash_drawn(w) {
+        if let Some(c) = st.dash_cursor_of(w, item) {
+            st.keys(w, now, |k| k.find(c));
+        }
+        return;
+    }
     if st.graph.is_some() {
         let Some(c) = item.cursor() else { return };
         st.graph_act(w, now, |g| {
@@ -906,7 +915,11 @@ struct Before {
 impl Before {
     /// Window `w` of `st` as it is now.
     fn of(st: &FigState, w: die_core::WindowId) -> Before {
-        let p = st.panes.get(&w);
+        // On a dashboard, the focused panel's pane.
+        let p = match st.dash_focused(w) {
+            Some((_, sub)) if st.dash_drawn(w) => Some(sub),
+            _ => st.panes.get(&w),
+        };
         Before {
             cursor: p.and_then(|p| p.cursor.clone()),
             view: p.map(|p| p.view.clone()).unwrap_or_default(),
@@ -930,6 +943,11 @@ impl Before {
             p.lit_bands.clear();
         };
         let v = self.view.clone();
+        if st.dash_drawn(w) {
+            let cursor = self.cursor.clone();
+            st.keys(w, now, |k| k.back(cursor, v));
+            return;
+        }
         if st.is_graph() {
             st.graph_act(w, now, |g| {
                 restore(g.pane);
@@ -953,16 +971,21 @@ fn find_next(
     now: std::time::Duration,
     by: i32,
 ) -> Result {
-    let (cursor, view) = match st.panes.get(&w) {
+    let pane = match st.dash_focused(w) {
+        Some((_, sub)) if st.dash_drawn(w) => Some(sub),
+        _ => st.panes.get(&w),
+    };
+    let (cursor, view) = match pane {
         Some(p) => (p.cursor.clone(), p.view.clone()),
         None => (None, View::default()),
     };
+    let dash = st.dash_drawn(w);
     let Some(search) = st.search.as_ref() else {
         return Err(Error::Msg("fig: no search yet".into()));
     };
     let mut stops: Vec<Item> = Vec::new();
     for m in search.matches() {
-        if !stops.iter().any(|s| s.same(&m.item)) && item_shown(st, &view, &m.item) {
+        if !stops.iter().any(|s| s.same(&m.item)) && (dash || item_shown(st, &view, &m.item)) {
             stops.push(m.item.clone());
         }
     }
@@ -1240,6 +1263,9 @@ fn graph_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result
 /// `s`: the settings as a menu, each answer one setting turned over, one undo step.
 fn settings(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, w) = here(ctx, a)?;
+    if state.borrow().dash_drawn(w) {
+        return dash_settings(ctx, state, w);
+    }
     if state.borrow().is_graph() {
         return graph_settings(ctx, state, w);
     }
@@ -1270,6 +1296,43 @@ fn settings(ctx: &mut Ctx, a: &Args) -> Result {
             .chart
             .as_ref()
             .is_some_and(|c| st.toggles.value(c, setting));
+        ctx.messages.push(format!(
+            "settings: {} {}",
+            setting.name(),
+            if on { "on" } else { "off" }
+        ));
+        st.refresh(ctx);
+        Ok(())
+    });
+    Ok(())
+}
+
+/// `s` on a dashboard: the focused chart panel's settings as a menu, each answer one setting of
+/// that panel turned over, its model built again.
+fn dash_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result {
+    let (i, toggles, chart) = state.borrow().dash_settings(w).ok_or_else(|| {
+        Error::Msg("fig: s turns the focused chart's settings: Tab focuses one".into())
+    })?;
+    let items: Vec<String> = Setting::ALL
+        .iter()
+        .map(|s| {
+            let on = toggles.value(&chart, *s);
+            format!("{}: {}", s.name(), if on { "on" } else { "off" })
+        })
+        .collect();
+    let spec = PromptSpec::new("Settings: ")
+        .candidates(items)
+        .require_match();
+    ctx.prompt(spec, move |ctx, answer| {
+        let name = answer.as_deref().and_then(|a| a.split(':').next());
+        let Some(setting) = name.and_then(Setting::from_name) else {
+            return Ok(());
+        };
+        let mut st = state.borrow_mut();
+        st.dash_flip(ctx, i, setting);
+        let mut t = toggles;
+        t.flip(&chart, setting);
+        let on = t.value(&chart, setting);
         ctx.messages.push(format!(
             "settings: {} {}",
             setting.name(),

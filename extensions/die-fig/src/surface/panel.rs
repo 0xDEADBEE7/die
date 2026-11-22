@@ -171,11 +171,19 @@ impl FigState {
     /// Open the detail panel in window `w` for `item`, else what the cursor is on. Why not, if
     /// it can't.
     pub fn open_panel(&mut self, w: die_core::WindowId, item: Option<Item>) -> Result<(), String> {
-        let src = self.panel_source();
-        let p = self
-            .panes
-            .get(&w)
-            .ok_or("fig: the figure isn't shown yet")?;
+        // On a dashboard, the focused panel's figure; else the figure's.
+        let (src, p, version) = match self.dash_drawn(w) {
+            true => self
+                .dash_source(w)
+                .ok_or("fig: Tab or a click focuses a chart or a graph first")?,
+            false => {
+                let p = self
+                    .panes
+                    .get(&w)
+                    .ok_or("fig: the figure isn't shown yet")?;
+                (self.panel_source(), p, self.model_gen)
+            }
+        };
         let item = match item {
             Some(i) => i,
             None => {
@@ -189,7 +197,7 @@ impl FigState {
             .tree(&p.view, &item)
             .ok_or("fig: the cursor is on nothing with a detail")?;
         let state = PanelState::open(&tree, Some(&item));
-        let built = (self.model_gen, p.view.hidden.clone(), p.view.only.clone());
+        let built = (version, p.view.hidden.clone(), p.view.only.clone());
         let cursor = p.cursor.clone();
         let Some(p) = self.panes.get_mut(&w) else {
             return Ok(());
@@ -288,6 +296,18 @@ impl FigState {
     /// (its count, least, most, mean and last), the cursor where it was.
     pub fn jump(&mut self, ctx: &mut Ctx, w: die_core::WindowId, item: &Item) {
         let now = ctx.now();
+        if self.dash_drawn(w) {
+            if let Item::Series(_) = item {
+                if let Err(why) = self.open_panel(w, Some(item.clone())) {
+                    ctx.messages.push(why);
+                }
+                return;
+            }
+            if let Some(c) = self.dash_cursor_of(w, item) {
+                self.dash_keys(w, now, |k| k.put(c));
+            }
+            return;
+        }
         let here = self.panes.get(&w).and_then(|p| p.cursor.clone());
         let series = match item {
             Item::Series(k) => Some(k.clone()),

@@ -3129,6 +3129,13 @@ pub trait Keys {
     fn reference(&mut self) -> bool;
     /// `` ` ``: the cursor to the reference. False with none.
     fn to_reference(&mut self) -> bool;
+    /// A search's find: the cursor there, the view keeping it in sight, its mark brought
+    /// forward until `Esc`.
+    fn find(&mut self, _c: Cursor) {}
+    /// The cursor and the view put back as they were (a search let go).
+    fn back(&mut self, _cursor: Option<Cursor>, _view: View) {}
+    /// The cursor on a place, the view keeping it in sight: a jump from the detail panel.
+    fn put(&mut self, _c: Cursor) {}
 }
 
 impl Keys for Act<'_> {
@@ -3161,6 +3168,17 @@ impl Keys for Act<'_> {
     }
     fn to_reference(&mut self) -> bool {
         Act::to_reference(self)
+    }
+    fn find(&mut self, c: Cursor) {
+        self.found(c);
+    }
+    fn back(&mut self, cursor: Option<Cursor>, view: View) {
+        self.pane.cursor = cursor;
+        self.pane.found = None;
+        self.set(view, Change::Follow);
+    }
+    fn put(&mut self, c: Cursor) {
+        self.put_cursor(c);
     }
 }
 

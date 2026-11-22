@@ -830,3 +830,292 @@ fn a_chart_of_a_stream_alone_asks_waits_quietly_and_draws_as_rows_come() {
     assert!(status(&mut s).contains("1 series"), "{}", status(&mut s));
     s.h.shutdown();
 }
+
+/// The window as presented, base and overlay composited, as a PNG at `path`.
+fn shoot(s: &mut Setup, path: &Path) {
+    let (base, over) = buffers(s);
+    let (aw, ah) = {
+        let st = state(s);
+        let st = st.borrow();
+        st.panes[&s.win].area_px()
+    };
+    let (bw, _, b) = s.h.pixels(base).expect("the base");
+    let (ow, _, o) = s.h.pixels(over).unwrap_or((bw, 0, vec![]));
+    let mut out = vec![0u8; (aw * ah * 4) as usize];
+    for y in 0..ah {
+        for x in 0..aw {
+            let bi = ((y * bw + x) * 4) as usize;
+            let oi = ((y * ow + x) * 4) as usize;
+            let i = ((y * aw + x) * 4) as usize;
+            let a = o.get(oi + 3).copied().unwrap_or(0) as u32;
+            for c in 0..3 {
+                let top = o.get(oi + c).copied().unwrap_or(0) as u32;
+                out[i + c] = (top + b[bi + c] as u32 * (255 - a) / 255).min(255) as u8;
+            }
+            out[i + 3] = 255;
+        }
+    }
+    let png = die_draw::image::encode(aw, ah, &out).unwrap();
+    std::fs::write(path, png).unwrap();
+}
+
+#[test]
+#[ignore = "renders"]
+fn renders_for_the_look() {
+    let Some(dir) = std::env::var_os("DIE_FIG_RENDERS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    // The linked crosshair: the pointer over the left chart at 10:05.
+    let mut s = health();
+    let t = {
+        let st = state(&mut s);
+        let st = st.borrow();
+        st.dash
+            .as_ref()
+            .unwrap()
+            .model
+            .as_ref()
+            .unwrap()
+            .newest()
+            .unwrap()
+            - 7200.0
+            + 300.0
+    };
+    let x = x_of(&mut s, 4, t);
+    let p = plot_of(&mut s, 4);
+    mv(&mut s, (x, p.y + p.h * 0.35));
+    shoot(&mut s, &dir.join("health-linked.png"));
+    // A focused panel, its cursor at 10:05 and its card, the moment in the other chart.
+    let mut s = health();
+    let p5 = plot_of(&mut s, 5);
+    let x = x_of(&mut s, 5, t);
+    click(&mut s, (x, p5.y + p5.h * 0.5));
+    s.h.send(die_core::Input::PointerLeft);
+    shoot(&mut s, &dir.join("health-focused.png"));
+    // Full size.
+    let mut s = health();
+    keys(&mut s.h, "<Tab><Tab><Tab><Tab><Tab>f");
+    let p = plot_of(&mut s, 4);
+    mv(&mut s, (p.x + p.w * 0.66, p.y + p.h * 0.4));
+    shoot(&mut s, &dir.join("health-full.png"));
+    // A tile hovered: its card.
+    let mut s = health();
+    let f = frame(&mut s, 0);
+    mv(&mut s, (f.x + f.w * 0.3, f.y + f.h * 0.5));
+    shoot(&mut s, &dir.join("health-tile-hover.png"));
+    // live.fig after a few stream rows.
+    let mut s = open_at(&fixture("live/live.fig"), 176, 61);
+    keys(&mut s.h, "y<CR>y<CR>");
+    assert!(
+        wait_for(&mut s, |s| ready(s, 2) && ready(s, 3)),
+        "rows came"
+    );
+    std::thread::sleep(Duration::from_millis(2500));
+    s.h.advance(Duration::from_millis(40));
+    let p = plot_of(&mut s, 2);
+    mv(&mut s, (p.x + p.w * 0.8, p.y + p.h * 0.5));
+    shoot(&mut s, &dir.join("live.png"));
+    s.h.shutdown();
+    // A tall dashboard scrolled, and a broken one with a panel's log.
+    let mut s = open_at(&fixture("dash/tall.fig"), 176, 61);
+    for _ in 0..5 {
+        scroll(&mut s, (440.0, 400.0), (0.0, 3.0), Mods::default());
+    }
+    settle(&mut s);
+    shoot(&mut s, &dir.join("tall-scrolled.png"));
+    let mut s = open_at(&fixture("dash/broken-panel.fig"), 176, 61);
+    shoot(&mut s, &dir.join("broken-panel.png"));
+}
+
+#[test]
+fn return_opens_the_focused_panels_detail_beside_the_dashboard_and_it_follows_the_cursor() {
+    let mut s = health();
+    let errors = keys_errors(&mut s.h, "<CR>");
+    assert!(!errors.is_empty(), "nothing focused: {errors:?}");
+    let at = plot_mid(&mut s, 4);
+    click(&mut s, at);
+    let wide = frame(&mut s, 5).right();
+    keys(&mut s.h, "<CR>");
+    let title = |s: &mut Setup| {
+        let st = state(s);
+        let st = st.borrow();
+        st.panes[&s.win]
+            .panel
+            .as_ref()
+            .map(|p| p.tree.title.clone())
+    };
+    let first = title(&mut s).expect("the detail panel");
+    // The dashboard lays out in what the panel leaves.
+    assert!(frame(&mut s, 5).right() < wide - 100.0);
+    keys(&mut s.h, "lll");
+    assert_ne!(title(&mut s), Some(first), "it follows the cursor");
+    // Tab goes through the panels, then the detail panel's stop.
+    keys(&mut s.h, "<Tab><Tab>");
+    let focused_panel = state(&mut s).borrow().panes[&s.win].panel_focused();
+    assert!(focused_panel, "after the last panel, the detail panel");
+    keys(&mut s.h, "<Tab>");
+    assert_eq!(focused(&mut s), Some(0));
+    keys(&mut s.h, "<Esc>");
+    assert!(state(&mut s).borrow().panes[&s.win].panel.is_none());
+}
+
+#[test]
+fn search_finds_in_the_focused_panel_and_s_turns_its_settings() {
+    let mut s = health();
+    let at = plot_mid(&mut s, 4);
+    click(&mut s, at);
+    keys(&mut s.h, "/work<CR>");
+    match panel_cursor(&mut s, 4) {
+        Some(Cursor::Point { series, .. }) => assert_eq!(&*series.name, "worker"),
+        c => panic!("{c:?}"),
+    }
+    keys(&mut s.h, "s");
+    keys(&mut s.h, "markers<CR>");
+    let toggled = {
+        let st = state(&mut s);
+        let st = st.borrow();
+        st.dash.as_ref().unwrap().toggles[4]
+    };
+    assert_eq!(toggled.markers, Some(true), "{toggled:?}");
+    let errors = run(&mut s.h, "fig-table");
+    assert!(errors.is_empty(), "{errors:?}");
+    let table = s.h.buffer_list().into_iter().find(|b| {
+        s.h.buffer_name(*b)
+            .is_some_and(|n| n.starts_with("*fig table"))
+    });
+    let text = s.h.text(table.unwrap()).unwrap().rope().to_string();
+    assert!(
+        text.starts_with("time\t"),
+        "{}",
+        &text[..40.min(text.len())]
+    );
+}
+
+#[test]
+fn backslash_v_on_a_dashboard_spec_shows_it_and_toggles_back_to_the_text() {
+    let path = fixture("dash/health.fig");
+    let mut h = harness();
+    h.set_window_size(176, 61);
+    h.run_until_idle();
+    let src = h.open_file(&path).unwrap();
+    h.show(src, die_core::ShowIn::Current).unwrap();
+    h.run_until_idle();
+    let win = h.focused().unwrap();
+    // A .fig opens as its figure.
+    let buf = h.window_buffer(win).unwrap();
+    assert_ne!(buf, src);
+    let mut s = Setup { h, src, buf, win };
+    assert!(state(&mut s).borrow().dash.is_some());
+    let errors = run(&mut s.h, "fig-toggle");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(s.h.window_buffer(win), Some(src), "its text");
+    let errors = run(&mut s.h, "fig-toggle");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_ne!(s.h.window_buffer(win), Some(src), "its figure again");
+}
+
+#[test]
+fn a_live_figure_no_window_shows_stops_its_commands_and_its_timers() {
+    let mut s = open_at(&fixture("live/live.fig"), 176, 61);
+    keys(&mut s.h, "y<CR>y<CR>");
+    assert!(
+        wait_for(&mut s, |s| !pids(s).is_empty() && ready(s, 2)),
+        "running"
+    );
+    let running = pids(&mut s);
+    // The window goes back to the notes: no window shows the figure.
+    keys(&mut s.h, "<C-^>");
+    assert_ne!(s.h.window_buffer(s.win), Some(s.buf));
+    std::thread::sleep(Duration::from_millis(1500));
+    for pid in running {
+        assert!(!alive(pid), "{pid} stopped");
+    }
+    assert_eq!(s.h.next_timer(), None, "no timers at rest");
+    s.h.shutdown();
+}
+
+fn up(state_dir: &TempDir) -> die_core::Harness {
+    let exts: Vec<Box<dyn die_core::Extension>> = vec![
+        Box::new(die_vim::Vim::default()),
+        Box::new(die_fig::Fig::with_zone(jiff::tz::TimeZone::UTC)),
+    ];
+    let config = die_core::Config {
+        session: Some(state_dir.path().to_path_buf()),
+        ..die_core::Config::default()
+    };
+    let mut h = die_core::Harness::with_config(exts, config).unwrap();
+    h.resume_session();
+    h.set_window_size(176, 61);
+    h.set_cell_pixels(CELL);
+    h.run_until_idle();
+    h
+}
+
+#[test]
+fn a_restart_keeps_the_time_the_focus_full_size_each_panels_view_and_your_yeses() {
+    let state_dir = TempDir::new("dash-session");
+    let mut h = up(&state_dir);
+    let (src, win) = h.open_text("notes.txt", "notes\n").unwrap();
+    h.run_until_idle();
+    let args = Args {
+        text: Some(fixture("dash/health.fig").display().to_string()),
+        ..Args::default()
+    };
+    h.run("fig", &args).unwrap();
+    h.run_until_idle();
+    let buf = h.window_buffer(win).unwrap();
+    let mut s = Setup { h, src, buf, win };
+    keys(&mut s.h, "T");
+    keys(&mut s.h, "1h<CR>");
+    let at = plot_mid(&mut s, 5);
+    click(&mut s, at);
+    keys(&mut s.h, "f");
+    settle(&mut s);
+    let (t, cursor) = (time(&mut s), panel_cursor(&mut s, 5));
+    s.trust_yes();
+    let mut h = s.h;
+    h.hand_over_session().unwrap();
+    drop(h);
+    let mut h = up(&state_dir);
+    h.run_until_idle();
+    let win = h.focused().unwrap();
+    let buf = h.window_buffer(win).unwrap();
+    let mut s = Setup {
+        h,
+        src: buf,
+        buf,
+        win,
+    };
+    let st = state(&mut s);
+    assert!(st.borrow().dash.is_some(), "the dashboard came back");
+    drop(st);
+    assert_eq!(time(&mut s), t);
+    assert_eq!(focused(&mut s), Some(5));
+    assert_eq!(panel_cursor(&mut s, 5), cursor);
+    let full = state(&mut s).borrow().panes[&s.win]
+        .dash
+        .as_ref()
+        .unwrap()
+        .view
+        .full;
+    assert_eq!(full, Some(5));
+    let kept = state(&mut s)
+        .borrow()
+        .trust
+        .borrow()
+        .command(Some(Path::new("/x/y.fig")), "./a.sh");
+    assert_eq!(kept, die_fig::live::Answer::Yes, "your yes came back");
+}
+
+impl Setup {
+    /// A yes to a made-up command, as the prompt would keep it.
+    fn trust_yes(&mut self) {
+        let st = state(self);
+        st.borrow()
+            .trust
+            .borrow_mut()
+            .allow_command(Some(Path::new("/x/y.fig")), "./a.sh");
+        st.borrow_mut().trust_rev += 1;
+    }
+}

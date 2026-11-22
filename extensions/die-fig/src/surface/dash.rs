@@ -689,6 +689,30 @@ impl DashPane {
                 (PanelState::Tile(_), PanelState::Tile(_)) => {}
                 // Still waiting, or failed (kept as it was where it drew): as it was.
                 (_, PanelState::Waiting(_) | PanelState::Failed(_)) => {}
+                // Waiting until now (its data, a yes): it draws, with the view and the cursor it
+                // was given (a restart's) where they fit, else its figure's opening view.
+                (PanelState::Waiting(_) | PanelState::Failed(_), next) => {
+                    let (fits, initial) = match next {
+                        PanelState::Chart(m) => (
+                            sub.cursor.as_ref().is_none_or(|c| cursor_fits(m, c)),
+                            m.initial_view(),
+                        ),
+                        PanelState::Graph(g) => (
+                            match &sub.cursor {
+                                Some(Cursor::Node(id)) => g.index_of(id).is_some(),
+                                c => c.is_none(),
+                            },
+                            g.initial_view(),
+                        ),
+                        _ => (sub.cursor.is_none(), View::default()),
+                    };
+                    if !fits {
+                        sub.cursor = None;
+                    }
+                    if sub.view == View::default() {
+                        sub.view = initial;
+                    }
+                }
                 (_, next) => {
                     let view = match next {
                         PanelState::Chart(m) => m.initial_view(),
@@ -965,6 +989,20 @@ impl DashPane {
             time,
             brush,
         })
+    }
+}
+
+/// Whether a cursor names a sample, a band or a cell the chart has.
+fn cursor_fits(m: &crate::plot::ChartModel, c: &Cursor) -> bool {
+    match c {
+        Cursor::Point { series, row } => (m.series.iter())
+            .find(|s| &s.key == series)
+            .is_some_and(|s| (*row as usize) < s.xs.len()),
+        Cursor::Band { band, .. } => (*band as usize) < m.x.bands.len().max(m.y.bands.len()),
+        Cursor::Cell { row, col } => {
+            (*row as usize) < m.y.bands.len() && (*col as usize) < m.x.bands.len()
+        }
+        Cursor::Node(_) => false,
     }
 }
 
@@ -1525,6 +1563,23 @@ pub(super) fn draw(
             s.rehover = true;
         }
     }
+    // The detail panel follows the focused panel's cursor and its data.
+    if p.panel.is_some()
+        && let Some(f) = dp.view.focused
+        && let (Some(pm), Some(sub)) = (model.panels.get(f), dp.subs.get(f))
+    {
+        p.cursor = sub.cursor.clone();
+        p.view = View {
+            x: None,
+            y: None,
+            ..sub.view.clone()
+        };
+        let src = super::panel::Source {
+            chart: pm.chart(),
+            graph: pm.graph(),
+        };
+        p.sync_panel(src, d.version);
+    }
     let shown = dp.shown(now);
     let scale = p.scale();
     let key = DashKey {
@@ -1542,9 +1597,14 @@ pub(super) fn draw(
         live: model.live.clone(),
         detail: p.panel.is_some(),
     };
+    let panel_key = super::panel::panel_key_of(p, gens.0);
     if dp.drawn.as_ref() != Some(&key) {
         draw_base(p, &mut dp, model, &shown, failed, theme, kit);
         dp.drawn = Some(key);
+        p.panel_drawn = panel_key;
+    } else if p.panel_drawn != panel_key {
+        super::panel::draw_panel_only(p, theme, kit);
+        p.panel_drawn = panel_key;
     }
     // The hover worked out again where the view moved under a still pointer.
     if let Some(mut layout) = dp.layout.take() {
@@ -2182,6 +2242,98 @@ impl FigState {
         let dp = self.panes.get(&w)?.dash.as_ref()?;
         let i = dp.view.focused?;
         Some((i, dp.subs.get(i)?))
+    }
+
+    /// The focused panel's figure in window `w`, for the detail panel: its chart or graph, and
+    /// its pane. None with no chart or graph focused.
+    pub(super) fn dash_source(
+        &self,
+        w: die_core::WindowId,
+    ) -> Option<(super::panel::Source<'_>, &Pane, u64)> {
+        let d = self.dash.as_ref()?;
+        let model = d.model.as_ref()?;
+        let (i, sub) = self.dash_focused(w)?;
+        let pm = model.panels.get(i)?;
+        let src = super::panel::Source {
+            chart: pm.chart(),
+            graph: pm.graph(),
+        };
+        (src.chart.is_some() || src.graph.is_some()).then_some((src, sub, d.version))
+    }
+
+    /// The cursor a search's or the detail panel's item names on the focused panel.
+    pub fn dash_cursor_of(&self, w: die_core::WindowId, item: &Item) -> Option<Cursor> {
+        let model = self.dash.as_ref()?.model.as_ref()?;
+        let (i, _) = self.dash_focused(w)?;
+        match &model.panels.get(i)?.state {
+            PanelState::Chart(cm) => cm.cursor_of(item),
+            PanelState::Graph(_) => item.cursor(),
+            _ => None,
+        }
+    }
+
+    /// The names a search on the focused panel looks through: a chart's series and categories,
+    /// a graph's nodes, what its view hides left out.
+    pub fn dash_names(&self, w: die_core::WindowId) -> Option<Vec<(String, Item)>> {
+        let model = self.dash.as_ref()?.model.as_ref()?;
+        let (i, sub) = self.dash_focused(w)?;
+        let names = match &model.panels.get(i)?.state {
+            PanelState::Chart(cm) => (cm.names().into_iter())
+                .filter(|(_, it)| match it {
+                    Item::Series(k) => cm.visible(&sub.view, k),
+                    _ => true,
+                })
+                .collect(),
+            PanelState::Graph(g) => (g.search_names().into_iter())
+                .filter(|(_, it)| match it {
+                    Item::Node { id, .. } => {
+                        g.index_of(id).is_some_and(|n| g.visible(&sub.view, n))
+                    }
+                    _ => true,
+                })
+                .collect(),
+            _ => return None,
+        };
+        Some(names)
+    }
+
+    /// The focused chart panel's settings (`s`) and its chart, by number.
+    pub fn dash_settings(
+        &self,
+        w: die_core::WindowId,
+    ) -> Option<(usize, Toggles, crate::spec::Chart)> {
+        let d = self.dash.as_ref()?;
+        let (i, _) = self.dash_focused(w)?;
+        let cm = d.model.as_ref()?.panels.get(i)?.chart()?;
+        Some((
+            i,
+            d.toggles.get(i).copied().unwrap_or_default(),
+            cm.chart.clone(),
+        ))
+    }
+
+    /// The focused chart panel's setting `s` turned over, its model built again.
+    pub fn dash_flip(
+        &mut self,
+        ctx: &mut die_core::Ctx,
+        i: usize,
+        setting: crate::interact::Setting,
+    ) {
+        let Some(d) = self.dash.as_mut() else { return };
+        let Some(chart) = d
+            .model
+            .as_ref()
+            .and_then(|m| m.panels.get(i)?.chart())
+            .map(|c| c.chart.clone())
+        else {
+            return;
+        };
+        if d.toggles.len() <= i {
+            d.toggles.resize(i + 1, Toggles::default());
+        }
+        d.toggles[i].flip(&chart, setting);
+        self.rev += 1;
+        self.dash_rebuild(ctx);
     }
 
     /// The focused panel's data as TSV, its line for the cursor: a chart's (in its view's
