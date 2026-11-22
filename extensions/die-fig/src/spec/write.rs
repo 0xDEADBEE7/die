@@ -27,14 +27,14 @@ use super::graph::{edge_extras, layout_name, node_extras};
 use super::{
     Aggregate, Channel, ChannelValue, Chart, Curve, DashboardSpec, DataRef, DataSpec, Delta,
     Encoding, Figure, GoodWhen, GraphEdge, GraphNode, GraphSpec, Labels, Layer, Layout, LegendPos,
-    Mark, MarkKind, MeterSpec, Panel, PanelSpec, ReadHints, ScaleKind, Stack, StatSpec,
-    ViewSettings, field, id_of, opt_string,
+    Mark, MarkKind, MeterSpec, Panel, PanelSpec, ReadHints, ScaleKind, SparklineSpec, Stack,
+    StatSpec, ViewSettings, field, id_of, opt_string,
 };
 use crate::data::transform::{AggOp, FilterOp, Transform};
 use crate::data::{Column, SeriesKey, Table, Values};
 use crate::error::Pos;
 use crate::json::{Kind, Node};
-use crate::style::FigStyle;
+use crate::style::{FigStyle, Status};
 
 /// A figure as a spec's text.
 pub fn write(figure: &Figure) -> String {
@@ -96,6 +96,7 @@ fn figure_j(f: &Figure, names: &[String]) -> J {
         Figure::Graph(g) => graph_j(g),
         Figure::Stat(s) => stat_j(s, names),
         Figure::Meter(m) => meter_j(m, names),
+        Figure::Sparkline(s) => sparkline_j(s, names),
         Figure::Dashboard(d) => dashboard_j(d),
     }
 }
@@ -223,6 +224,7 @@ fn channel_j(c: &Channel) -> J {
         && c.domain.is_none()
         && c.zero.is_none()
         && c.format.is_none()
+        && c.mid.is_none()
         && c.value.is_none();
     if bare && let Some(f) = &c.field {
         return J::s(f);
@@ -239,8 +241,13 @@ fn channel_j(c: &Channel) -> J {
     }
     o.opt("unit", &c.unit);
     o.opt("title", &c.title);
-    if let Some(s) = c.scale {
-        o.put("scale", J::s(scale_name(s)));
+    match (c.scale, c.mid) {
+        (_, Some(mid)) => o.put(
+            "scale",
+            J::Obj(vec![("type", J::s("diverging")), ("mid", J::Num(mid))]),
+        ),
+        (Some(s), None) => o.put("scale", J::s(scale_name(s))),
+        (None, None) => {}
     }
     if let Some((lo, hi)) = c.domain {
         o.put("domain", J::Arr(vec![J::Num(lo), J::Num(hi)]));
@@ -947,6 +954,7 @@ fn stat_j(s: &StatSpec, names: &[String]) -> J {
     }
     o.opt("trend", &s.trend);
     o.opt("format", &s.format);
+    o.opt("unit", &s.unit);
     match s.good {
         GoodWhen::Up => {}
         GoodWhen::Down => o.put("good", J::s("down")),
@@ -963,6 +971,31 @@ fn meter_j(m: &MeterSpec, names: &[String]) -> J {
     o.put("value", value_j(&m.value));
     o.put("max", J::Num(m.max));
     o.opt("format", &m.format);
+    o.opt("unit", &m.unit);
+    if !m.thresholds.is_empty() {
+        let ts = m.thresholds.iter().map(|t| {
+            let status = match t.status {
+                Status::Good => "good",
+                Status::Warning => "warning",
+                Status::Serious => "serious",
+                Status::Critical => "critical",
+            };
+            J::Obj(vec![("at", J::Num(t.at)), ("status", J::s(status))])
+        });
+        o.put("thresholds", J::Arr(ts.collect()));
+    }
+    o.done()
+}
+
+fn sparkline_j(s: &SparklineSpec, names: &[String]) -> J {
+    let mut o = O::default();
+    o.put("type", J::s("sparkline"));
+    o.put("label", J::s(&s.label));
+    o.put("data", data_j(&s.data, names));
+    o.put("x", J::s(&s.x));
+    o.put("y", J::s(&s.y));
+    o.opt("format", &s.format);
+    o.opt("unit", &s.unit);
     o.done()
 }
 

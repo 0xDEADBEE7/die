@@ -34,6 +34,16 @@
 //! `--stale BAD`, the file's figure is drawn with BAD's stale badge, as a figure kept while its
 //! source fails to parse.
 //!
+//! A stat, meter or sparkline is drawn as a tile in its panel's frame, at `--size` (m4's 197 ×
+//! its natural height unless given) with a margin round it: `--also FILE` puts more tiles in a
+//! row after it (as m4's four), `--range D` takes the last D (`6h`) of the data as the
+//! dashboard's visible time, `--trend N` hovers the first tile's trend at its nth point (its
+//! card shown) and `--linked N` draws only the mini crosshair there, as a dashboard's linked
+//! time does; `--hover X,Y` finds what's there; `--no-frame` leaves the frame out. Room for a
+//! card is left under the row when something's hovered.
+//!
+//! A heatmap takes `--cursor-cell R,C` (the keyboard's cursor on a cell) and `--hover X,Y`.
+//!
 //! `--detail` opens the detail panel for what the cursor is on (else the hover), beside the
 //! figure as the surface lays it out (`detail::split`): the chart in what's left, the panel at
 //! the right, or the bottom of an area under 560 px wide. `--detail-series` shows the cursor's
@@ -92,6 +102,18 @@ struct Ask {
     search: Option<String>,
     /// The whole area's width, where the figure is drawn beside the detail panel: its paddings.
     area_w: Option<f32>,
+    /// Whether `--size` was given.
+    sized: bool,
+    /// More tiles in the row.
+    also: Vec<String>,
+    /// The dashboard's visible time: the data's last so long.
+    range: Option<f64>,
+    /// The first tile's trend hovered at a point, with its card or (linked) without.
+    trend: Option<(usize, bool)>,
+    /// Tiles without their frame.
+    no_frame: bool,
+    /// A heatmap's cursor on a cell.
+    cursor_cell: Option<(u32, u32)>,
 }
 
 /// What the detail flags ask for.
@@ -139,7 +161,8 @@ fn run() -> Result<(), String> {
                  [--log-top N] [--log-mark N] [--stale BAD] [--cursor-node ID] [--hover-node ID] \
                  [--hover-edge A,B] [--pin ID@X,Y] [--zoom F] [--layout L] [--labels off] [--ghost] \
                  [--detail] [--detail-series] [--detail-row N] [--detail-top N] [--detail-focus] \
-                 [--detail-unfold] [--search Q]";
+                 [--detail-unfold] [--search Q] [--also FILE] [--range D] [--trend N] \
+                 [--linked N] [--no-frame] [--cursor-cell R,C]";
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage.to_owned());
     };
@@ -167,6 +190,12 @@ fn run() -> Result<(), String> {
         detail: None,
         search: None,
         area_w: None,
+        sized: false,
+        also: vec![],
+        range: None,
+        trend: None,
+        no_frame: false,
+        cursor_cell: None,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
@@ -177,6 +206,7 @@ fn run() -> Result<(), String> {
                     return Err("--size is WxH".into());
                 }
                 ask.size = (v[0], v[1]);
+                ask.sized = true;
             }
             "--scale" => ask.scale = pair(&value()?, ',')?[0],
             "--light" => ask.light = true,
@@ -238,6 +268,23 @@ fn run() -> Result<(), String> {
             "--detail-focus" => ask.detail.get_or_insert_with(DetailAsk::default).focus = true,
             "--detail-unfold" => ask.detail.get_or_insert_with(DetailAsk::default).unfold = true,
             "--search" => ask.search = Some(value()?),
+            "--also" => ask.also.push(value()?),
+            "--range" => {
+                let v = value()?;
+                let d = die_fig::spec::chart::parse_duration(&v)
+                    .ok_or(format!("--range {v}: a time like 6h"))?;
+                ask.range = Some(d.as_secs_f64());
+            }
+            "--trend" => ask.trend = Some((pair(&value()?, ',')?[0] as usize, true)),
+            "--linked" => ask.trend = Some((pair(&value()?, ',')?[0] as usize, false)),
+            "--no-frame" => ask.no_frame = true,
+            "--cursor-cell" => {
+                let v = pair(&value()?, ',')?;
+                if v.len() != 2 {
+                    return Err("--cursor-cell is R,C".into());
+                }
+                ask.cursor_cell = Some((v[0] as u32, v[1] as u32));
+            }
             other => return Err(format!("{other}: no such flag\n{usage}")),
         }
     }
@@ -263,6 +310,9 @@ fn run() -> Result<(), String> {
     };
     if let Some(g) = graph_of(path, &zone) {
         return graph_shot(g, &name, &output, &ask, &theme, &mut book);
+    }
+    if let Some(t) = tile_of(path, &zone)? {
+        return tile_shot(t, &output, &ask, &zone, &theme, &mut book);
     }
     let built = match build(path, &zone) {
         Ok(b) => b,
@@ -783,7 +833,10 @@ fn draw(
     });
     let st = OverlayState {
         hover: hover.clone(),
-        cursor: ask.cursor.and_then(cursor_at),
+        cursor: ask
+            .cursor_cell
+            .map(|(row, col)| Cursor::Cell { row, col })
+            .or_else(|| ask.cursor.and_then(cursor_at)),
         pointer: ask.hover,
         brush,
         emphasis: emphasis.clone(),
@@ -810,4 +863,139 @@ fn draw(
     }
     scene.items.extend(over.items);
     Ok(scene)
+}
+
+/// A tile: its figure and table, read as `\v` reads a spec (its data from its directory).
+type Tile = (Figure, die_fig::data::Table);
+
+/// The tile a file is, with its data read; None when it's another figure or doesn't parse.
+fn tile_of(path: &Path, zone: &TimeZone) -> Result<Option<Tile>, String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let opt = ReadOptions::new(zone.clone());
+    let Ok(parsed) = die_fig::spec::parse(&text, name, dir, &opt) else {
+        return Ok(None);
+    };
+    let data = match &parsed.figure {
+        Figure::Stat(s) => &s.data,
+        Figure::Meter(m) => &m.data,
+        Figure::Sparkline(s) => &s.data,
+        _ => return Ok(None),
+    };
+    let table = match &data.source {
+        die_fig::spec::DataRef::Inline(t) => (**t).clone(),
+        die_fig::spec::DataRef::File(p) => {
+            let text = source::read_file(p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            source::read_data(&text, data, n, &opt).map_err(|e| format!("{}: {e}", p.display()))?
+        }
+        other => {
+            return Err(format!(
+                "fig_shot reads a tile's data from a file: {other:?}"
+            ));
+        }
+    };
+    Ok(Some((parsed.figure, table)))
+}
+
+/// The newest time in a table: its time columns' latest.
+fn newest(t: &die_fig::data::Table) -> Option<f64> {
+    t.columns
+        .iter()
+        .filter(|c| c.kind() == die_fig::data::ColumnKind::Time)
+        .flat_map(|c| (0..c.len()).map(move |r| c.f64_at(r)))
+        .filter(|v| v.is_finite())
+        .fold(None, |a: Option<f64>, v| Some(a.map_or(v, |a| a.max(v))))
+}
+
+/// A row of tiles drawn as the flags ask: see the docs at the top.
+fn tile_shot(
+    first: Tile,
+    output: &str,
+    ask: &Ask,
+    zone: &TimeZone,
+    theme: &Theme,
+    book: &mut Book,
+) -> Result<(), String> {
+    use die_fig::figure::{self, TileHover, TileModel};
+    use die_fig::scene::{Item, Paint, PathData, Rect, Stroke};
+    let mut tiles = vec![first];
+    for f in &ask.also {
+        let t = tile_of(Path::new(f), zone)?.ok_or(format!("{f} isn't a tile"))?;
+        tiles.push(t);
+    }
+    let models: Vec<TileModel> = tiles
+        .iter()
+        .map(|(f, t)| {
+            let range = ask.range.and_then(|d| newest(t).map(|n| (n - d, n)));
+            TileModel::build_in(f, t, range, zone).map_err(|e| e.to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    let (w, h) = if ask.sized {
+        ask.size
+    } else {
+        (197.0, models[0].natural_height())
+    };
+    let margin = 16.0;
+    let gap = 12.0;
+    let n = models.len() as f32;
+    let hovering = ask.hover.is_some() || ask.trend.is_some_and(|t| t.1);
+    let room = if hovering { 150.0 } else { 0.0 };
+    let size = (
+        2.0 * margin + n * w + (n - 1.0) * gap,
+        2.0 * margin + h + room,
+    );
+    let rect = |i: usize| Rect::new(margin + i as f32 * (w + gap), margin, w, h);
+    let area = Rect::new(0.0, 0.0, size.0, size.1);
+    let draw = |scale: f32, book: &mut Book, say: bool| -> (Scene, Scene) {
+        let mut m = BookMeasure { book, scale };
+        let mut scene = Scene::new(size.0, size.1, scale);
+        let mut over = Scene::new(size.0, size.1, scale);
+        for (i, model) in models.iter().enumerate() {
+            let r = rect(i);
+            if !ask.no_frame {
+                scene.push(Item::Path {
+                    path: PathData::rounded(r, [8.0; 4]),
+                    fill: Some(Paint::solid(theme.surface, 1.0)),
+                    stroke: Some(Stroke::hairline(theme.grid, 1.0)),
+                });
+            }
+            let b = figure::base(model, r, theme, &mut m);
+            scene.items.extend(b.items);
+            let hover = match (ask.hover, ask.trend) {
+                (Some(at), _) => figure::draw::hit_with(model, r, at, &mut m),
+                (None, Some((point, card))) if i == 0 => Some(TileHover::Trend { point, card }),
+                _ => None,
+            };
+            let o = figure::overlay_in(model, hover, r, area, theme, &mut m);
+            over.items.extend(o.items);
+            if say {
+                println!(
+                    "tile {i} {:?} {:?}: {} {:?} over {} ({} rows); change {:?}; trend {} points; hover {:?}",
+                    model.kind,
+                    model.label,
+                    model.text(),
+                    model.unit,
+                    model.range_text(),
+                    model.rows,
+                    model.change_text(),
+                    model.trend.len(),
+                    hover,
+                );
+            }
+        }
+        (scene, over)
+    };
+    let (base, over) = draw(ask.scale, book, true);
+    let bytes = composite(&base, &over, theme, book)?;
+    std::fs::write(output, bytes).map_err(|e| format!("{output}: {e}"))?;
+    if let Some(svg) = &ask.svg {
+        let (mut scene, over) = draw(1.0, book, false);
+        scene.items.extend(over.items);
+        std::fs::write(svg, die_fig::svg::write(&scene)).map_err(|e| format!("{svg}: {e}"))?;
+    }
+    Ok(())
 }

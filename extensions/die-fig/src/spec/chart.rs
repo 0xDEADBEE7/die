@@ -491,7 +491,9 @@ pub(crate) fn channel(n: &Node, key: &str, cx: &mut Cx<'_>) -> Result<Channel> {
                 },
             };
             c.title = opt_string(n, "title")?;
-            c.scale = field(n, "scale").map(scale_kind).transpose()?;
+            if let Some(sc) = field(n, "scale") {
+                (c.scale, c.mid) = channel_scale(sc, cx)?;
+            }
             c.domain = field(n, "domain").map(|d| domain(d, cx.opt)).transpose()?;
             c.zero = opt_bool(n, "zero")?;
             c.format = opt_string(n, "format")?;
@@ -538,6 +540,38 @@ pub fn scale_name(s: ScaleKind) -> &'static str {
         ScaleKind::Log => "log",
         ScaleKind::Time => "time",
         ScaleKind::Band => "band",
+    }
+}
+
+/// A channel's `scale`: a kind's name, or for a colour `"sequential"` (the default ramp) or
+/// `"diverging"` (about 0), or an object of `type` and, for a diverging one, `mid`.
+fn channel_scale(n: &Node, cx: &mut Cx<'_>) -> Result<(Option<ScaleKind>, Option<f64>)> {
+    match &n.kind {
+        Kind::Str(s) if &**s == "diverging" => Ok((None, Some(0.0))),
+        Kind::Str(s) if &**s == "sequential" => Ok((None, None)),
+        Kind::Obj(o) => {
+            cx.check(o, &["type", "mid"]);
+            let Some(t) = field(n, "type") else {
+                return Err(FigError::at("a scale needs a \"type\"", n.at));
+            };
+            let mid = field(n, "mid");
+            match t.as_str() {
+                Some("diverging") => {
+                    let m = mid.map(|m| number(m, "mid")).transpose()?.unwrap_or(0.0);
+                    if !m.is_finite() {
+                        return Err(FigError::at("\"mid\" must be a number", n.at));
+                    }
+                    Ok((None, Some(m)))
+                }
+                _ if mid.is_some() => Err(FigError::at(
+                    "\"mid\" is a diverging scale's midpoint",
+                    mid.map_or(n.at, |m| m.at),
+                )),
+                Some("sequential") => Ok((None, None)),
+                _ => Ok((Some(scale_kind(t)?), None)),
+            }
+        }
+        _ => Ok((Some(scale_kind(n)?), None)),
     }
 }
 
@@ -1230,6 +1264,7 @@ pub fn agg_name(op: AggOp) -> &'static str {
         AggOp::Max => "max",
         AggOp::P50 => "p50",
         AggOp::P95 => "p95",
+        AggOp::Last => "last",
     }
 }
 
@@ -1244,11 +1279,12 @@ pub(crate) fn aggregate(n: &Node, key: &str) -> Result<(AggOp, Option<String>)> 
         AggOp::Max,
         AggOp::P50,
         AggOp::P95,
+        AggOp::Last,
     ];
     let bad = || {
         FigError::at(
             format!(
-                "\"{key}\" must be \"count\" or one of count, sum, mean, min, max, p50 and p95 over a field, as {{\"sum\": \"rpm\"}}"
+                "\"{key}\" must be \"count\" or one of count, sum, mean, min, max, p50, p95 and last over a field, as {{\"sum\": \"rpm\"}}"
             ),
             n.at,
         )

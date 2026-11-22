@@ -1,0 +1,28 @@
+{
+  "type": "meter",
+  "label": "Memory",
+  "data": "hosts.csv",
+  "value": {
+    "max": "memory_gb"
+  },
+  "max": 16,
+  "unit": "GB",
+  "thresholds": [
+    {
+      "at": 0,
+      "status": "good"
+    },
+    {
+      "at": 0.6,
+      "status": "warning"
+    },
+    {
+      "at": 0.8,
+      "status": "serious"
+    },
+    {
+      "at": 0.9,
+      "status": "critical"
+    }
+  ]
+}
