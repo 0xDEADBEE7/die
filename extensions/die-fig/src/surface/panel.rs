@@ -44,11 +44,14 @@ pub struct Panel {
     pub(super) carry: f32,
 }
 
-/// What a panel's trees come from: the figure's chart or graph.
+/// What a panel's trees come from: the figure's chart or graph, or a dashboard's tile.
 #[derive(Clone, Copy)]
 pub(super) struct Source<'a> {
     pub chart: Option<&'a ChartModel>,
     pub graph: Option<&'a GraphModel>,
+    /// A tile's numbers: its tree is the tile's whole ([`crate::figure::detail`]), whatever
+    /// the cursor's on.
+    pub tile: Option<&'a crate::figure::TileModel>,
 }
 
 impl Source<'_> {
@@ -59,6 +62,11 @@ impl Source<'_> {
             (None, Some(c)) => c.detail_of(view, item),
             _ => None,
         }
+    }
+
+    /// A tile's tree, if it's a tile's.
+    fn tile_tree(&self) -> Option<DetailTree> {
+        self.tile.map(crate::figure::detail)
     }
 
     /// The item the cursor is on.
@@ -109,6 +117,20 @@ impl Pane {
         let moved = self.cursor.is_some() && self.cursor != panel.cursor;
         let built = (model_gen, self.view.hidden.clone(), self.view.only.clone());
         if !moved && built == panel.built {
+            return;
+        }
+        // A tile's: its numbers again, its place kept.
+        if let Some(tree) = src.tile_tree() {
+            let mut state = PanelState::open(&tree, None);
+            state.focused = panel.state.focused;
+            if panel.state.row < tree.rows.len() {
+                state.row = panel.state.row;
+            }
+            state.top = panel.state.top;
+            (panel.tree, panel.state, panel.item) = (tree, state, None);
+            panel.built = built;
+            panel.rev += 1;
+            self.reveal_panel();
             return;
         }
         let item = match moved {
@@ -165,31 +187,54 @@ impl FigState {
         Source {
             chart: self.model.as_deref(),
             graph: self.graph.as_deref(),
+            tile: None,
         }
     }
 
     /// Open the detail panel in window `w` for `item`, else what the cursor is on. Why not, if
     /// it can't.
     pub fn open_panel(&mut self, w: die_core::WindowId, item: Option<Item>) -> Result<(), String> {
-        let src = self.panel_source();
-        let p = self
-            .panes
-            .get(&w)
-            .ok_or("fig: the figure isn't shown yet")?;
-        let item = match item {
-            Some(i) => i,
-            None => {
-                let c = (p.cursor.as_ref())
-                    .ok_or("fig: no cursor yet: h l j k or a click puts it on the data")?;
-                src.item(c)
-                    .ok_or("fig: the cursor is on nothing with a detail")?
+        // On a dashboard, the focused panel's figure; else the figure's.
+        let (src, p, version) = match self.dash_drawn(w) {
+            true => self
+                .dash_source(w)
+                .ok_or_else(|| match self.dash_focused_kind(w) {
+                    None => "fig: no panel has the focus: Tab or a click gives it one".to_string(),
+                    Some(k) => format!(
+                        "fig: ⏎ shows a chart's, a graph's or a tile's detail; this panel is {k}"
+                    ),
+                })?,
+            false => {
+                let p = self
+                    .panes
+                    .get(&w)
+                    .ok_or("fig: the figure isn't shown yet")?;
+                (self.panel_source(), p, self.model_gen)
             }
         };
-        let tree = src
-            .tree(&p.view, &item)
-            .ok_or("fig: the cursor is on nothing with a detail")?;
-        let state = PanelState::open(&tree, Some(&item));
-        let built = (self.model_gen, p.view.hidden.clone(), p.view.only.clone());
+        let (item, tree) = match (src.tile_tree(), item) {
+            // A tile's detail is its numbers, wherever its cursor is.
+            (Some(tree), _) => (None, tree),
+            (None, Some(i)) => {
+                let tree = src
+                    .tree(&p.view, &i)
+                    .ok_or("fig: the cursor is on nothing with a detail")?;
+                (Some(i), tree)
+            }
+            (None, None) => {
+                let c = (p.cursor.as_ref())
+                    .ok_or("fig: no cursor yet: h l j k or a click puts it on the data")?;
+                let i = src
+                    .item(c)
+                    .ok_or("fig: the cursor is on nothing with a detail")?;
+                let tree = src
+                    .tree(&p.view, &i)
+                    .ok_or("fig: the cursor is on nothing with a detail")?;
+                (Some(i), tree)
+            }
+        };
+        let state = PanelState::open(&tree, item.as_ref());
+        let built = (version, p.view.hidden.clone(), p.view.only.clone());
         let cursor = p.cursor.clone();
         let Some(p) = self.panes.get_mut(&w) else {
             return Ok(());
@@ -198,7 +243,7 @@ impl FigState {
         p.panel = Some(Panel {
             tree,
             state,
-            item: Some(item),
+            item,
             cursor,
             built,
             rev,
@@ -288,6 +333,18 @@ impl FigState {
     /// (its count, least, most, mean and last), the cursor where it was.
     pub fn jump(&mut self, ctx: &mut Ctx, w: die_core::WindowId, item: &Item) {
         let now = ctx.now();
+        if self.dash_drawn(w) {
+            if let Item::Series(_) = item {
+                if let Err(why) = self.open_panel(w, Some(item.clone())) {
+                    ctx.messages.push(why);
+                }
+                return;
+            }
+            if let Some(c) = self.dash_cursor_of(w, item) {
+                self.dash_keys(w, now, |k| k.put(c));
+            }
+            return;
+        }
         let here = self.panes.get(&w).and_then(|p| p.cursor.clone());
         let series = match item {
             Item::Series(k) => Some(k.clone()),

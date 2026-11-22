@@ -1572,6 +1572,33 @@ fn hint(
     }
 }
 
+/// How far up from the body's foot rows fade out when more of them are below.
+const FADE: f32 = 16.0;
+/// The least of a row that shows under the whole ones: less is a sliver, left out.
+const PEEK_MIN: f32 = 6.0;
+
+/// The rows after those `l` shows whole that start in the body's room left under them, each
+/// with its line's rectangle (cut by the body's foot when drawn): what fills the panel while
+/// rows remain below. None when the rest of the room is a sliver.
+fn peek_rows(tree: &DetailTree, l: &PanelLayout) -> Vec<(usize, Rect)> {
+    let mut out = Vec::new();
+    let next = l.top + l.shown.len();
+    let mut y = l.shown.last().map_or(l.body.y, |(_, r)| r.bottom());
+    if l.body.bottom() - y < PEEK_MIN {
+        return out;
+    }
+    let (x0, x1) = l.inner;
+    for &i in l.lines.iter().skip(next) {
+        if y >= l.body.bottom() - 0.01 {
+            break;
+        }
+        let h = line_height(&tree.rows[i]);
+        out.push((i, Rect::new(x0 - 8.0, y, x1 - x0 + 14.0, h)));
+        y += h;
+    }
+    out
+}
+
 /// The panel drawn at `rect` (in the area's coordinates, which the scene's are): its ground and
 /// inner hairline, the header, the rows shown from `state.top` with the cursor's lit, a
 /// scrollbar when they overflow, and the hint at the foot where there's room. Regions:
@@ -1673,7 +1700,15 @@ pub fn panel(
     }
     let mut rows_hit: Vec<(Rect, Hit)> = Vec::new();
     let mut folds_hit: Vec<(Rect, Hit)> = Vec::new();
-    for &(i, lr) in &l.shown {
+    // The rows shown whole, then those that start in the room left under them, cut at the
+    // body's foot and fading out there, so the panel is full while rows remain below.
+    let peeks = peek_rows(tree, &l);
+    let drawn = l
+        .shown
+        .iter()
+        .map(|&(i, lr)| (i, lr, false))
+        .chain(peeks.iter().map(|&(i, lr)| (i, lr, true)));
+    for (i, lr, peek) in drawn {
         let r = &tree.rows[i];
         let base = baseline(lr);
         let mid = base - m.cap(body_spec) / 2.0;
@@ -1766,10 +1801,12 @@ pub fn panel(
                 if r.kind == RowKind::Branch {
                     let tx = kx - GUTTER;
                     triangle(&mut scene, tx, mid, r.folded, theme.muted);
-                    folds_hit.push((
-                        Rect::new(tx - 4.0, lit.y, GUTTER + 4.0, lit.h),
-                        Hit::DetailFold(i as u32),
-                    ));
+                    if !peek {
+                        folds_hit.push((
+                            Rect::new(tx - 4.0, lit.y, GUTTER + 4.0, lit.h),
+                            Hit::DetailFold(i as u32),
+                        ));
+                    }
                 }
                 let vxr = vx.max(kx + 36.0).min(x1 - 24.0);
                 text(
@@ -1798,9 +1835,24 @@ pub fn panel(
                 }
             }
         }
-        rows_hit.push((lit, Hit::Detail(i as u32)));
+        if !peek {
+            rows_hit.push((lit, Hit::Detail(i as u32)));
+        }
     }
     scene.push(scene::Item::PopClip);
+    if let Some(&(_, first)) = peeks.first() {
+        let foot = l.body.bottom();
+        let top = (foot - FADE).max(first.y);
+        scene.push(scene::Item::Path {
+            path: PathData::rect(Rect::new(rect.x + 1.0, top, rect.w - 1.0, foot - top)),
+            fill: Some(Paint::Linear {
+                from: (0.0, top),
+                to: (0.0, foot),
+                stops: vec![(0.0, ground, 0.0), (1.0, ground, 1.0)],
+            }),
+            stroke: None,
+        });
+    }
     // Rows first, so the triangles over them win.
     for (r, h) in rows_hit.into_iter().chain(folds_hit) {
         scene.region(r, h);

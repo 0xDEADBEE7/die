@@ -11,7 +11,7 @@ use die_fig::graph::nav::{self, Dir};
 use die_fig::graph::overlay::card_rect;
 use die_fig::graph::{self, Emphasis, GraphLayout, GraphModel, OverlayState, Target};
 use die_fig::interact::{Action, Cursor, View};
-use die_fig::scene::{FixedMeasure, Item, Rect, Scene};
+use die_fig::scene::{FixedMeasure, Item, Measure, Rect, Scene};
 use die_fig::spec::{self, Figure, GraphSpec, Layout};
 use die_fig::theme::Theme;
 use jiff::tz::TimeZone;
@@ -1496,4 +1496,72 @@ fn a_cards_edge_keeps_room_from_a_neighbours_label_it_doesnt_cover() {
             );
         }
     }
+}
+
+/// The look pass after phase 4: an edge's card that cut billing's label left billing unnamed
+/// beside it. A label the card cuts, its node in view, moves beside its node clear of the card.
+#[test]
+fn a_label_the_card_cuts_moves_beside_its_node_clear_of_the_card() {
+    let mut m = FixedMeasure;
+    let mut moved = 0;
+    for f in ["services.json", "pipeline.json", "org.csv"] {
+        let g = fixture(f);
+        let (_, l) = base(&g, &View::default(), (880.0, 470.0));
+        for (k, e) in l.edges.iter().enumerate() {
+            let Some(e) = e else { continue };
+            let st = OverlayState {
+                hover: Some(Target::Edge(k as u32)),
+                pointer: Some(e.pts[e.pts.len() / 2]),
+                ..Default::default()
+            };
+            let o = graph::overlay(&g, &l, &View::default(), &st, &Theme::mono_dark(), &mut m);
+            let card = card_rect(&o).expect("a card");
+            let shown: Vec<(String, Rect)> = o
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Text {
+                        text,
+                        x,
+                        y,
+                        spec,
+                        anchor,
+                        ..
+                    } => {
+                        let w = m.width(text, *spec);
+                        let left = match anchor {
+                            die_fig::scene::Anchor::Start => *x,
+                            die_fig::scene::Anchor::Middle => x - w / 2.0,
+                            die_fig::scene::Anchor::End => x - w,
+                        };
+                        let a = m.cap(*spec);
+                        Some((text.to_string(), Rect::new(left, y - a, w, a)))
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (i, lab) in l.labels.iter().enumerate() {
+                let Some(lab) = lab else { continue };
+                let n = l.node(i).expect("a labelled node is drawn");
+                if !overlaps(&lab.rect, &card) || card.inflate(-1.0).contains(n.at.0, n.at.1) {
+                    continue;
+                }
+                for (_, b) in shown.iter().filter(|(t, _)| *t == lab.text) {
+                    assert!(
+                        !overlaps(b, &card),
+                        "{f}: {:?} moved under the card",
+                        lab.text
+                    );
+                    let near = (b.x + b.w / 2.0 - n.at.0).hypot(b.y + b.h / 2.0 - n.at.1);
+                    assert!(
+                        near < 90.0,
+                        "{f}: {:?} strays {near} from its node",
+                        lab.text
+                    );
+                    moved += 1;
+                }
+            }
+        }
+    }
+    assert!(moved > 0, "some card cuts a label, which moves");
 }

@@ -8,8 +8,9 @@
 //!   colour alone), the title `Can't draw NAME` (or `Nothing to draw in NAME`), the first error
 //!   with its place, and a hint of the keys. A small area drops the hint, then the message's
 //!   second line, then the status and the message (the glyph and the title), then the title
-//!   (the glyph and its status), then shows the glyph alone, then the title alone, so nothing
-//!   ever overlaps.
+//!   (the glyph and its status); an area too short for that but wide (a failed tile) puts the
+//!   glyph at the left with the status over the error beside it; then it shows the glyph alone,
+//!   then the title alone, so nothing ever overlaps.
 //! - **Log**: every error and warning of the newest parse in the monospace, as rustc writes them:
 //!   the kind and the message, the file and line:column, the source line with a caret under the
 //!   column (clipped to the width, the caret kept in view), and what was tried. It scrolls by
@@ -57,17 +58,6 @@ const LOG_FOOT: f32 = 10.0;
 /// A status colour as text on the theme's ground: mixed towards white on a dark ground or
 /// black on a light one until it reads at 4.5 to 1, the contrast small text asks for.
 pub fn readable(c: Color, theme: &Theme) -> Color {
-    fn lum(c: Color) -> f32 {
-        let ch = |v: u8| {
-            let v = f32::from(v) / 255.0;
-            if v <= 0.04045 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * ch(c.0) + 0.7152 * ch(c.1) + 0.0722 * ch(c.2)
-    }
     let ground = lum(theme.surface);
     let ratio = |c: Color| {
         let (a, b) = (lum(c), ground);
@@ -82,6 +72,25 @@ pub fn readable(c: Color, theme: &Theme) -> Color {
         .map(|i| mix(i as f32 * 0.05))
         .find(|&c| ratio(c) >= 4.5)
         .unwrap_or(mix(1.0))
+}
+
+/// A colour's relative luminance (WCAG's).
+fn lum(c: Color) -> f32 {
+    let ch = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * ch(c.0) + 0.7152 * ch(c.1) + 0.0722 * ch(c.2)
+}
+
+/// The contrast between two colours, 1 to 21 (WCAG's ratio).
+pub fn contrast(a: Color, b: Color) -> f32 {
+    let (a, b) = (lum(a), lum(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 /// What the symbolic figure's status row says.
@@ -114,6 +123,8 @@ pub fn title(kind: ErrorKind, name: &str) -> String {
 pub fn summary(e: &FigError) -> String {
     let msg = e.msg.strip_prefix("nothing to draw: ").unwrap_or(&e.msg);
     match e.place() {
+        // A message that names its place already (`requests.csv: no such file`) says it once.
+        Some(p) if msg.starts_with(&format!("{p}: ")) => msg.to_string(),
         Some(p) => format!("{p}: {msg}"),
         None => msg.to_string(),
     }
@@ -150,6 +161,9 @@ enum Rung {
     Full { lines: usize, hint: bool },
     /// Glyph and title.
     Titled,
+    /// An area too short to stack the glyph over its status but wide (a failed tile): the
+    /// glyph at the left, and beside it the status over the first error.
+    Row,
     /// Glyph and the status: its icon and label, without the count.
     Status,
     /// The glyph alone.
@@ -208,8 +222,9 @@ fn symbolic(
             + lines as f32 * MSG_LINE
             + if hint { HINT_GAP + HINT_H } else { 0.0 }
     };
-    // Words want room to be read: below 260 px across, the glyph and the title at most.
-    let wordy = aw >= 260.0;
+    // Words want room to be read: below 230 px across, the glyph and the title at most (a
+    // third of an 880 px dashboard still says what went wrong).
+    let wordy = aw >= 230.0;
     let one = msg_lines.len().min(1);
     // The hint goes before the message's second line: what went wrong matters more than how
     // to see more of it.
@@ -236,6 +251,8 @@ fn symbolic(
         Rung::Titled
     } else if g + GLYPH_GAP + STATUS_H <= ah && status_width(first, errors, false, m) <= aw {
         Rung::Status
+    } else if ah >= ROW_GLYPH.min(ROW_TEXT_H) && aw >= ROW_GLYPH + ROW_GAP + ROW_MIN_TEXT {
+        Rung::Row
     } else if g <= ah && g <= aw {
         Rung::Glyph
     } else if title_h <= ah && aw >= 24.0 {
@@ -243,8 +260,13 @@ fn symbolic(
     } else {
         Rung::Nothing
     });
+    if rung == Rung::Row {
+        row(scene, first, errors, &message, (w, h), (aw, ah), theme, m);
+        return;
+    }
     let block = match rung {
         Rung::Full { lines, hint } => full(lines, hint),
+        Rung::Row => 0.0,
         Rung::Titled => g + GLYPH_GAP + title_h,
         Rung::Status => g + GLYPH_GAP + STATUS_H,
         Rung::Glyph => g,
@@ -307,6 +329,60 @@ fn symbolic(
             y += HINT_GAP;
             draw_hint(scene, &keys, cx - hint_w / 2.0, y, theme, m);
         }
+    }
+}
+
+/// The row rung's glyph, its gap to the words, the least room the words take, and their two
+/// lines' height (the status, a gap, the message).
+const ROW_GLYPH: f32 = 36.0;
+const ROW_GAP: f32 = 14.0;
+const ROW_MIN_TEXT: f32 = 120.0;
+const ROW_TEXT_H: f32 = STATUS_H + 4.0 + MSG_LINE;
+
+/// The row rung: the glyph at the left, the status beside it over the first error (its place
+/// and message, cut at a word to the room), the whole centred in the area.
+#[allow(clippy::too_many_arguments)]
+fn row(
+    scene: &mut Scene,
+    first: &FigError,
+    errors: &[FigError],
+    message: &str,
+    (w, h): (f32, f32),
+    (aw, ah): (f32, f32),
+    theme: &Theme,
+    m: &mut dyn Measure,
+) {
+    let msg_spec = TextSpec::new(12.0);
+    let g = ROW_GLYPH.min(ah);
+    let room = (aw - g - ROW_GAP).min(420.0);
+    let sw = status_width(first, errors, true, m);
+    let count = sw <= room;
+    let sw = if count {
+        sw
+    } else {
+        status_width(first, errors, false, m)
+    };
+    let msg = fit_words(message, msg_spec, room, m);
+    let text_w = sw.max(m.width(&msg, msg_spec)).min(room);
+    let x = ((w - (g + ROW_GAP + text_w)) / 2.0).round();
+    let gy = ((h - g) / 2.0).round();
+    glyph(scene, first.kind, Rect::new(x, gy, g, g), theme);
+    let tx = x + g + ROW_GAP;
+    let both = ah >= ROW_TEXT_H && !msg.is_empty();
+    let block = if both { ROW_TEXT_H } else { STATUS_H };
+    let ty = ((h - block) / 2.0).round();
+    status_row(scene, first, errors, count, tx + sw / 2.0, ty, theme, m);
+    if both {
+        let top = ty + STATUS_H + 4.0;
+        let base = top + (MSG_LINE + m.ascent(msg_spec) - m.descent(msg_spec)) / 2.0;
+        scene.push(text_item(
+            &msg,
+            tx,
+            base,
+            msg_spec,
+            Anchor::Start,
+            theme.text,
+        ));
     }
 }
 

@@ -513,6 +513,9 @@ pub fn overlay(
         card_rect.is_some_and(|r| l.intersect(&r).is_some_and(|o| o.w > 0.5 && o.h > 0.5))
     };
     let mut covers: Vec<Item> = Vec::new();
+    // The labels the card cuts whose nodes it leaves in view: each moves beside its node where
+    // a free spot is, so no node is left unnamed beside the card.
+    let mut cut: Vec<usize> = Vec::new();
     for (i, l) in layout.labels.iter().enumerate() {
         let Some(l) = l else { continue };
         let again = shown_labels
@@ -530,13 +533,39 @@ pub fn overlay(
                 fill: Some(Paint::solid(theme.surface, 1.0)),
                 stroke: None,
             });
+            if !orphan {
+                cut.push(i);
+            }
         }
     }
+    let moved = match card_rect {
+        Some(card) if !cut.is_empty() => moved_labels(
+            model,
+            layout,
+            &cut,
+            card,
+            &shown_labels,
+            &hard,
+            dimmed.as_deref(),
+            m,
+        ),
+        _ => Vec::new(),
+    };
     for (l, focus, _) in &shown_labels {
         if cuts(&l.rect) {
             continue;
         }
         let color = if *focus { theme.strong } else { theme.text };
+        label(&mut scene, l, color, 1.0, theme);
+    }
+    for (i, l) in &moved {
+        // As the base drew it: under the wash where its node is dimmed.
+        let dim = dimmed.as_ref().is_some_and(|d| d.get(*i) == Some(&true));
+        let color = if dim {
+            mix(theme.text, theme.surface, WASH)
+        } else {
+            theme.text
+        };
         label(&mut scene, l, color, 1.0, theme);
     }
     if !layout.contained {
@@ -548,6 +577,61 @@ pub fn overlay(
     }
 
     scene
+}
+
+/// The base labels of `cut` (nodes the card at `card` leaves in view but whose labels it cuts),
+/// each placed again beside its node where a spot is free of the card, the other labels, the
+/// nodes and the edges drawn bright (as the base places a label, its further rings too); a
+/// label with no such spot stays cleared.
+#[allow(clippy::too_many_arguments)]
+fn moved_labels(
+    model: &GraphModel,
+    layout: &GraphLayout,
+    cut: &[usize],
+    card: Rect,
+    shown: &[Shown],
+    hard: &[Seg],
+    dimmed: Option<&[bool]>,
+    m: &mut dyn Measure,
+) -> Vec<(usize, super::NodeLabel)> {
+    let mut field = Field::of(layout);
+    // The card blocks as a label does, with a little room kept round it.
+    field.add_label(card.inflate(KEEP_CLEAR));
+    for &(a, b) in hard {
+        field.add_hard(a, b);
+    }
+    if let Some(dim) = dimmed {
+        field.soften_nodes(|i| dim.get(i).is_some_and(|&d| d));
+    }
+    for (j, l) in layout.labels.iter().enumerate() {
+        if let Some(l) = l
+            && !cut.contains(&j)
+        {
+            field.add_label(l.rect);
+        }
+    }
+    for (l, _, _) in shown {
+        field.add_label(l.rect);
+    }
+    let mut out = Vec::new();
+    for &i in cut {
+        let (Some(g), Some(base)) = (layout.node(i), &layout.labels[i]) else {
+            continue;
+        };
+        let spec = label_spec();
+        let mut cands = spots(&base.text, g.at, g.r, LABEL_GAP, spec, m);
+        cands.extend(further(&base.text, g.at, g.r, LABEL_GAP, spec, m));
+        let edges_ok = 2u32.max(model.degree(i).min(6));
+        if let Some(l) = choose(&mut field, cands, i, edges_ok, 0)
+            && l.rect.intersect(&card).is_none()
+            && layout.region.contains(l.rect.x, l.rect.y)
+            && layout.region.contains(l.rect.right(), l.rect.bottom())
+        {
+            field.add_label(l.rect);
+            out.push((i, l));
+        }
+    }
+    out
 }
 
 /// What a card keeps off: a rectangle (a label, the header) or a node's disc.

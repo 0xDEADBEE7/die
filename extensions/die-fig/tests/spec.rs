@@ -1148,7 +1148,7 @@ fn every_transform_reads_with_its_defaults() {
         ),
         (
             r#"{"type": "line", "data": "d", "transform": [{"aggregate": "sum"}]}"#,
-            "\"aggregate\" must be \"count\" or one of count, sum, mean, min, max, p50 and p95 over a field, as {\"sum\": \"rpm\"}",
+            "\"aggregate\" must be \"count\" or one of count, sum, mean, min, max, p50, p95 and last over a field, as {\"sum\": \"rpm\"}",
             "\"sum\"",
         ),
         (
@@ -1244,7 +1244,7 @@ fn every_error_has_its_place() {
     let cases: [(&str, &str, &str); 6] = [
         (
             r#"{"type": "pie", "data": "d"}"#,
-            "unknown figure type \"pie\": expected chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter or dashboard",
+            "unknown figure type \"pie\": expected chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter, sparkline or dashboard",
             "\"pie\"",
         ),
         (
@@ -1259,7 +1259,7 @@ fn every_error_has_its_place() {
         ),
         (
             r#"{"title": "no type", "x": 1}"#,
-            "a figure needs a \"type\": chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter or dashboard",
+            "a figure needs a \"type\": chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter, sparkline or dashboard",
             "{",
         ),
         // The reader's own errors keep their places.
@@ -1370,10 +1370,10 @@ fn a_dashboard_is_rows_of_panels_over_named_data() {
     let spans: Vec<Vec<u16>> = d
         .rows
         .iter()
-        .map(|r| r.iter().map(|p| p.span).collect())
+        .map(|r| r.panels.iter().map(|p| p.span).collect())
         .collect();
     assert_eq!(spans, [vec![1, 1, 2], vec![3, 1]]);
-    let Panel::Figure(f) = &d.rows[0][0].panel else {
+    let Panel::Figure(f) = &d.rows[0].panels[0].panel else {
         panic!()
     };
     let Figure::Stat(s) = &**f else { panic!() };
@@ -1390,7 +1390,7 @@ fn a_dashboard_is_rows_of_panels_over_named_data() {
         (s.trend.as_deref(), s.delta.clone(), s.good),
         (Some("time"), None, GoodWhen::Up)
     );
-    let Panel::Figure(f) = &d.rows[0][1].panel else {
+    let Panel::Figure(f) = &d.rows[0].panels[1].panel else {
         panic!()
     };
     let Figure::Meter(m) = &**f else { panic!() };
@@ -1405,7 +1405,7 @@ fn a_dashboard_is_rows_of_panels_over_named_data() {
             field: None
         }
     );
-    let Panel::Figure(f) = &d.rows[0][2].panel else {
+    let Panel::Figure(f) = &d.rows[0].panels[2].panel else {
         panic!()
     };
     let Figure::Stat(s) = &**f else { panic!() };
@@ -1418,13 +1418,13 @@ fn a_dashboard_is_rows_of_panels_over_named_data() {
         (s.label.as_str(), s.delta.clone(), s.good),
         ("ms", Some(Delta::Previous), GoodWhen::Down)
     );
-    let Panel::Figure(f) = &d.rows[1][0].panel else {
+    let Panel::Figure(f) = &d.rows[1].panels[0].panel else {
         panic!()
     };
     let Figure::Chart(c) = &**f else { panic!() };
     assert_eq!(c.data.source, DataRef::Named("req".into()));
     assert_eq!(
-        d.rows[1][1].panel,
+        d.rows[1].panels[1].panel,
         Panel::File(PathBuf::from("/specs/errors.fig.json"))
     );
 }
@@ -1436,7 +1436,7 @@ fn a_dashboards_panels_and_tiles_say_what_is_wrong() {
     let Figure::Dashboard(d) = read(one).figure else {
         panic!()
     };
-    let Panel::Figure(f) = &d.rows[0][0].panel else {
+    let Panel::Figure(f) = &d.rows[0].panels[0].panel else {
         panic!()
     };
     let Figure::Stat(s) = &**f else { panic!() };
@@ -1456,7 +1456,7 @@ fn a_dashboards_panels_and_tiles_say_what_is_wrong() {
         ),
         (
             r#"{"type": "dashboard", "rows": [[{"type": "dashboard", "rows": [[{"file": "x"}]]}]]}"#,
-            "a panel can't be a dashboard",
+            "a panel can't be a dashboard; put it in a file and use {\"file\": …}",
             "{\"type\": \"dashboard\", \"rows\": [[{\"file",
         ),
         (
@@ -1938,7 +1938,7 @@ fn a_relative_dir_is_made_absolute_so_paths_read_back_the_same() {
         panic!()
     };
     assert!(p.is_absolute() && p.ends_with("specs/d.csv"), "{p:?}");
-    let Panel::File(p) = &d.rows[0][1].panel else {
+    let Panel::File(p) = &d.rows[0].panels[1].panel else {
         panic!()
     };
     assert!(p.is_absolute() && p.ends_with("specs/p.fig.json"), "{p:?}");
