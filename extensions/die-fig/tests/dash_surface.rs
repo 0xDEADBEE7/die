@@ -1155,3 +1155,58 @@ fn a_stat_alone_is_a_dashboard_of_one_tile_with_its_card() {
     click(&mut s, (f.x + f.w * 0.3, f.y + f.h * 0.5));
     assert_eq!(focused(&mut s), Some(0));
 }
+
+#[test]
+fn the_hover_is_worked_out_again_when_the_time_moves_under_a_still_pointer() {
+    let mut s = health();
+    let at = plot_mid(&mut s, 4);
+    mv(&mut s, at);
+    let hover = |s: &mut Setup| {
+        let st = state(s);
+        let st = st.borrow();
+        st.panes[&s.win].dash.as_ref().unwrap().subs[4]
+            .hover
+            .clone()
+    };
+    let before = hover(&mut s);
+    assert!(before.is_some());
+    // The wheel pans the shared time; the pointer rests where it was.
+    scroll(&mut s, at, (0.0, -6.0), Mods::default());
+    let after = hover(&mut s);
+    assert!(after.is_some());
+    assert_ne!(after, before, "the sample under the pointer now");
+}
+
+#[test]
+fn an_edit_of_the_spec_is_followed_and_the_panels_never_flash_to_waiting() {
+    let path = fixture("dash/health.fig");
+    let mut h = harness();
+    h.set_window_size(176, 61);
+    h.run_until_idle();
+    let src = h.open_file(&path).unwrap();
+    h.show(src, die_core::ShowIn::Current).unwrap();
+    h.run_until_idle();
+    let win = h.focused().unwrap();
+    let buf = h.window_buffer(win).unwrap();
+    let mut s = Setup { h, src, buf, win };
+    keys(&mut s.h, "<Tab><Tab><Tab><Tab><Tab>");
+    let text = s.h.text(src).unwrap().rope().to_string();
+    let at = text.find("Service health").unwrap();
+    s.h.text_mut(src)
+        .unwrap()
+        .tx(die_core::Origin::Extension)
+        .replace(at..at + "Service health".len(), "Service wealth")
+        .commit()
+        .unwrap();
+    // Before the plan and the reads land, every panel still draws.
+    s.h.advance(Duration::from_millis(200));
+    let title = |s: &mut Setup| {
+        let st = state(s);
+        let st = st.borrow();
+        let m = st.dash.as_ref().unwrap().model.as_ref().unwrap();
+        (m.title.clone(), m.panels.iter().all(|p| p.ready()))
+    };
+    s.h.run_until_idle();
+    assert_eq!(title(&mut s), (Some("Service wealth".into()), true));
+    assert_eq!(focused(&mut s), Some(4), "the focus kept");
+}
