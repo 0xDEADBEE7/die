@@ -44,13 +44,12 @@ const USAGE: &str = "usage: cargo xtask <task>
                        only those whose file changed since the merge base with main
   ci [--full] [--worktree | --rev R]
                        the checks in a fresh clone of HEAD (or R), or of the working
-                       tree as git would commit it. guards, clean-build and msrv are
-                       skipped unless the diff from the merge base with main touches
-                       Cargo.toml, Cargo.lock, .cargo/, rust-toolchain.toml, a build
-                       script, xtask/ or tools/test-cap/, and the tests run at
-                       DIE_PROP_CASES=100 unless it's set, without the #[ignore] ones.
-                       --full runs every step and every test, ignored ones too, at the
-                       old property counts
+                       tree as git would commit it. guards and clean-build are skipped
+                       unless the diff from the merge base with main touches Cargo.toml,
+                       Cargo.lock, .cargo/, rust-toolchain.toml, a build script, xtask/
+                       or tools/test-cap/, and the tests run at DIE_PROP_CASES=100 unless
+                       it's set, without the #[ignore] ones. --full runs every step and
+                       every test, ignored ones too, at the old property counts
   ci --linux [--worktree | --rev R]
                        the tests, the oracle and the Linux clean-build on aarch64
                        Linux, in a container on colima (exit test (f))

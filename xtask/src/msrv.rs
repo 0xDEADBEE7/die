@@ -2,8 +2,9 @@
 //! the oldest DIE builds with. rust-toolchain.toml pins a newer one for the checks, so rustfmt
 //! and `budget`'s counts can't move; a build with any Rust from `rust-version` up works too
 //! (docs/using-die.md, "What a build needs"). rustup runs it, at `X.Y.0` for a `rust-version`
-//! of `X.Y`, the oldest that allows. Code that uses a newer std API also fails clippy's
-//! `incompatible_msrv`, in every `ci`.
+//! of `X.Y`, the oldest that allows. Every `ci` runs it: clippy's `incompatible_msrv` finds a
+//! newer std function or type, but not a newer trait impl or macro, such as 1.96's
+//! `From<T>` for `LazyLock` or `assert_matches!`.
 
 use crate::util::{Result, read, run as run_cmd};
 use std::path::Path;

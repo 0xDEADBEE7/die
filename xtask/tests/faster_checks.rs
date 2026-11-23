@@ -79,7 +79,7 @@ fn plan(full: bool, changed: &[&str]) -> Plan {
 #[test]
 fn a_change_with_no_trigger_skips_them_and_says_why() {
     let p = plan(false, &["crates/die-core/src/text.rs", "docs/m0-log.md"]);
-    assert_eq!(p.skip, ci::SLOW_STEPS);
+    assert_eq!(p.skip, ["guards", "clean-build"]);
     assert!(p.steps_note.contains("skipped"), "{}", p.steps_note);
     assert!(p.steps_note.contains("--full"), "{}", p.steps_note);
     assert!(
@@ -91,7 +91,7 @@ fn a_change_with_no_trigger_skips_them_and_says_why() {
 
 #[test]
 fn no_change_at_all_skips_them() {
-    assert_eq!(plan(false, &[]).skip, ci::SLOW_STEPS);
+    assert_eq!(plan(false, &[]).skip, ["guards", "clean-build"]);
 }
 
 #[test]
@@ -366,7 +366,10 @@ fn a_branch_that_touches_the_lockfile_runs_the_slow_steps_end_to_end() {
     write(&p.join("src/a.rs"), "changed\n").unwrap();
     commit_all(p, "source only");
     let changed = changed_at_rev(p, "HEAD");
-    assert_eq!(ci::plan(false, &changed, None).skip, ci::SLOW_STEPS);
+    assert_eq!(
+        ci::plan(false, &changed, None).skip,
+        ["guards", "clean-build"]
+    );
     write(&p.join("Cargo.lock"), "version = 4\n").unwrap();
     commit_all(p, "lockfile");
     let changed = changed_at_rev(p, "HEAD");
