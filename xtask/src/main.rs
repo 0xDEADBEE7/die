@@ -2,10 +2,10 @@
 use die_test_cap as _;
 
 use std::path::Path;
-use xtask::util::{Result, root, task_dir};
+use xtask::util::{Result, fetch_lockfile, root, task_dir};
 use xtask::{
-    api, app, budget, ci, clean, cross, fonts, ghostty, guards, lint, linux, mutate, restart_loop,
-    sources,
+    api, app, budget, ci, clean, cross, fonts, ghostty, guards, lint, linux, msrv, mutate,
+    restart_loop, sources,
 };
 
 const USAGE: &str = "usage: cargo xtask <task>
@@ -36,6 +36,8 @@ const USAGE: &str = "usage: cargo xtask <task>
                        pkg-config, which no build script calls unless allowlisted (D16)
   cross-check          clippy -D warnings (so cargo check) of the workspace for
                        x86_64 and aarch64 Linux, with no C compiler or pkg-config
+  msrv                 cargo check of the workspace with the Rust that Cargo.toml's
+                       rust-version names, through rustup
   mutate [--changed] [--cases N]
                        die-core's planted bugs; the property tests must catch each, by
                        a named test, the memory limit or the time limit. --changed runs
@@ -61,9 +63,24 @@ fn main() {
     }
 }
 
+/// The tasks that run cargo `--offline` on crates a build of DIE doesn't fetch: other
+/// targets' and the tests'. `ci` fetches for its own clone.
+const OFFLINE: [&str; 7] = [
+    "lint",
+    "sources",
+    "guards",
+    "clean-build",
+    "cross-check",
+    "mutate",
+    "msrv",
+];
+
 fn dispatch(args: &[String]) -> Result {
     let root = root();
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let Some(task) = a.first().filter(|t| OFFLINE.contains(t)) {
+        fetch_lockfile(&root, task)?;
+    }
     match a.as_slice() {
         ["budget"] => budget::run(&root),
         ["lint"] => lint::run(&root),
@@ -82,6 +99,7 @@ fn dispatch(args: &[String]) -> Result {
         ["clean-build"] => clean::run(&root, false),
         ["clean-build", "--keep"] => clean::run(&root, true),
         ["cross-check"] => cross::run(&root, &task_dir(&root, "cross")),
+        ["msrv"] => msrv::run(&root, &task_dir(&root, "msrv")),
         ["mutate", rest @ ..] => match mutate::Options::parse(rest) {
             Some(options) => mutate::run(&root, options),
             None => Err(USAGE.into()),

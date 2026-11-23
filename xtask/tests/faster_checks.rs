@@ -248,6 +248,7 @@ fn run(cmd: &mut Command) {
     output(cmd).unwrap();
 }
 
+/// Git in `dir`, with none of your config's signing or hooks, as another Mac's may have.
 fn in_repo(dir: &Path, args: &[&str]) {
     run(git(dir)
         .args([
@@ -257,6 +258,8 @@ fn in_repo(dir: &Path, args: &[&str]) {
             "user.email=t@t",
             "-c",
             "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
         ])
         .args(args));
 }

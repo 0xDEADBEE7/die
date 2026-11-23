@@ -9,6 +9,7 @@ cargo xtask app          # builds ~/Applications/DIE.app from a release build
 open ~/Applications/DIE.app
 ```
 
+- **On a new Mac**, see [what a build needs](#what-a-build-needs) first.
 - `cargo xtask app` links `~/.local/bin/die` if that directory is on your PATH. Otherwise it prints the one line to add to your shell config. It replaces a link there but never a file. `--home DIR` installs under DIR instead, to try it without touching yours.
 - There is one instance. Launching it again from the Dock or Finder does nothing.
 - **What it opens on:** with no file named, your [jellyfish](#jellyfish), over the one window the session brought back, and `q` lets it go; a session's splits come back as they were, with no jellyfish. `die foo.rs` opens on the file, and a restart on what was there.
@@ -44,6 +45,28 @@ Or for git alone, `git config --global core.editor "die --wait"`.
 - **`:cq` gives up** on the file: `die --wait` returns 1, so git stops the commit or the rebase, and the file goes as with `:q!`, with what you typed. On a file nothing waits on, `:cq` says "This buffer has no clients" and does nothing.
 - **Then** a buffer made for `die --wait` goes, unsaved text and all, and its window shows what any window shows after a kill: the buffer you used last that no window shows. Your Emacs's `server-edit` goes back to what that window showed, which is the same unless another window shows it. A file that was open before `die --wait` stays open and on screen, and goes last in the buffer list. `die --wait a b` shows `b`. Done with it, `a` comes up, and it returns once both are done. `:q!` and `:cq` bring nothing up and say nothing, as your Evil's `:q!` runs only `server-buffer-done`. Several can wait at once, each for its own files.
 - **It returns 0** once you're done, so a commit message left as git wrote it aborts the commit, as git decides. It returns 1 after `:cq`, if none of its files would open, or if DIE quits or crashes before you're done, so that git stops rather than go on with a message or a rebase's list saved half done. That's where it differs from `emacsclient`, which returns 0 when Emacs goes. A restart (`:rebuild`, `:restart`) hands it to the new DIE, which waits on its files as they were. With no DIE running it starts one and waits, and while DIE is starting or restarting it waits up to 15 s for it.
+
+### What a build needs
+
+- **The Xcode Command Line Tools** (`xcode-select --install`), for git and the linker.
+- **Rust through [rustup](https://rustup.rs).** The first cargo command in the checkout installs the Rust that `rust-toolchain.toml` pins, 1.96.0 now, with rustfmt, clippy and the std for x86_64 and aarch64 Linux, which the checks use.
+- **The crates.** The first build fetches the ones `Cargo.lock` names from crates.io, and libghostty-rs from GitHub at the rev `Cargo.toml` pins. The terminal's engine, built for Apple silicon, is in the checkout, under `crates/die-term-sys/vendor`, so nothing builds or fetches it.
+- **The fonts.** `cargo xtask app` fetches Ioskeley Mono Term from GitHub into `fonts/` when it isn't there, and checks each file by SHA-256. `cargo xtask fonts` does only that. You can copy `fonts/` from another checkout instead: a file whose checksum doesn't match stops the build.
+
+**Where rustup can't fetch the pinned Rust**, as on a network that blocks static.rust-lang.org:
+
+- Point rustup at a mirror your network allows with `RUSTUP_DIST_SERVER`, and `RUSTUP_UPDATE_ROOT` for rustup's own updates, or at its proxy with `HTTPS_PROXY`, which cargo and the fonts' download follow too. Then the pin installs as above.
+- Or build with a Rust you have, if it's at least `Cargo.toml`'s `rust-version`, 1.95 now (`cargo xtask msrv` checks that DIE builds with it). In the checkout:
+
+  ```sh
+  rustup toolchain list         # what you have, such as 1.95.0-aarch64-apple-darwin
+  rustup override set 1.95.0    # a name from that list: any other is a download
+  cargo xtask app
+  ```
+
+  rustup takes a directory's override over its `rust-toolchain.toml`, and `cargo +1.96.0` or `RUSTUP_TOOLCHAIN` over both. So `cargo xtask app` and `:rebuild` build with 1.95.0, and no tracked file changes. The override takes nothing from `rust-toolchain.toml`, so rustup fetches no rustfmt, clippy or Linux std either. `rustup override unset` in the checkout goes back to the pin.
+- The checks (`cargo fmt`, `cargo xtask budget`, `cross-check` and `ci`) are meant for the pin. Another rustfmt can format, and so count, differently, and cross-check needs the Linux std.
+- With a Rust that isn't from rustup, nothing reads `rust-toolchain.toml`. Cargo only refuses a Rust older than `rust-version`.
 
 ## DIE's own keys
 
