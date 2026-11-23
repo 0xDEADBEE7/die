@@ -258,7 +258,10 @@ fn prop_tests(tree: &Path, target: &Path, cases: u32, limit: Duration, log: &Pat
         .args(["--", "--include-ignored"])
         .env("DIE_PROP_CASES", cases.to_string())
         .env("DIE_PROP_SHRINK", "0")
-        .env("CARGO_PROFILE_TEST_DEBUG", "false");
+        .env("CARGO_PROFILE_TEST_DEBUG", "false")
+        // In no colour, as its output is read, and a CLICOLOR_FORCE of yours colours cargo's
+        // even into a file: `Finished` with it no longer starts a line, so no build time.
+        .env("CARGO_TERM_COLOR", "never");
     run_limited(&mut cmd, limit, log)
 }
 
