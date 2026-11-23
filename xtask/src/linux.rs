@@ -248,7 +248,7 @@ fn docker() -> Command {
 }
 
 /// rust-toolchain.toml's channel.
-fn channel(root: &Path) -> Result<String> {
+pub(crate) fn channel(root: &Path) -> Result<String> {
     let path = root.join("rust-toolchain.toml");
     let t: toml::Table = read(&path)?
         .parse()

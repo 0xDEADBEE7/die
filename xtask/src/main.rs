@@ -4,8 +4,8 @@ use die_test_cap as _;
 use std::path::Path;
 use xtask::util::{Result, root, task_dir};
 use xtask::{
-    api, app, budget, ci, clean, cross, fonts, ghostty, guards, lint, linux, mutate, restart_loop,
-    sources,
+    api, app, budget, ci, clean, cross, fonts, ghostty, guards, lint, linux, msrv, mutate,
+    restart_loop, sources,
 };
 
 const USAGE: &str = "usage: cargo xtask <task>
@@ -36,18 +36,21 @@ const USAGE: &str = "usage: cargo xtask <task>
                        pkg-config, which no build script calls unless allowlisted (D16)
   cross-check          clippy -D warnings (so cargo check) of the workspace for
                        x86_64 and aarch64 Linux, with no C compiler or pkg-config
+  msrv                 cargo check of the workspace with the Rust that Cargo.toml's
+                       rust-version names, through rustup
   mutate [--changed] [--cases N]
                        die-core's planted bugs; the property tests must catch each, by
                        a named test, the memory limit or the time limit. --changed runs
                        only those whose file changed since the merge base with main
   ci [--full] [--worktree | --rev R]
                        the checks in a fresh clone of HEAD (or R), or of the working
-                       tree as git would commit it. guards and clean-build are skipped
-                       unless the diff from the merge base with main touches Cargo.toml,
-                       Cargo.lock, .cargo/, rust-toolchain.toml, a build script, xtask/
-                       or tools/test-cap/, and the tests run at DIE_PROP_CASES=100 unless
-                       it's set, without the #[ignore] ones. --full runs every step and
-                       every test, ignored ones too, at the old property counts
+                       tree as git would commit it. guards, clean-build and msrv are
+                       skipped unless the diff from the merge base with main touches
+                       Cargo.toml, Cargo.lock, .cargo/, rust-toolchain.toml, a build
+                       script, xtask/ or tools/test-cap/, and the tests run at
+                       DIE_PROP_CASES=100 unless it's set, without the #[ignore] ones.
+                       --full runs every step and every test, ignored ones too, at the
+                       old property counts
   ci --linux [--worktree | --rev R]
                        the tests, the oracle and the Linux clean-build on aarch64
                        Linux, in a container on colima (exit test (f))
@@ -82,6 +85,7 @@ fn dispatch(args: &[String]) -> Result {
         ["clean-build"] => clean::run(&root, false),
         ["clean-build", "--keep"] => clean::run(&root, true),
         ["cross-check"] => cross::run(&root, &task_dir(&root, "cross")),
+        ["msrv"] => msrv::run(&root, &task_dir(&root, "msrv")),
         ["mutate", rest @ ..] => match mutate::Options::parse(rest) {
             Some(options) => mutate::run(&root, options),
             None => Err(USAGE.into()),

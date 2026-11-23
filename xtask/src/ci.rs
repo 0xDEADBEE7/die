@@ -1,11 +1,11 @@
 //! `cargo xtask ci`: the checks, in a fresh clone (docs/m0-plan.md §3, "How work lands").
-//! `guards` and `clean-build` run only when a change could affect them, the property tests run
-//! at a lower count, and the tests marked `#[ignore]` don't run: the limits in ms, the windows
-//! and the slowest. `--full` runs everything, ignored tests too, at the old counts, at each
-//! checkpoint.
+//! `guards`, `clean-build` and `msrv` run only when a change could affect them, the property
+//! tests run at a lower count, and the tests marked `#[ignore]` don't run: the limits in ms, the
+//! windows and the slowest. `--full` runs everything, ignored tests too, at the old counts, at
+//! each checkpoint.
 
 use crate::util::{self, Result, TempDir, cargo, copy_worktree, git};
-use crate::{budget, clean, cross, fonts, ghostty, guards, lint, sources};
+use crate::{budget, clean, cross, fonts, ghostty, guards, lint, msrv, sources};
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -18,8 +18,9 @@ pub enum Source {
 }
 
 /// The steps that check the build setup and the checks themselves, which a change elsewhere
-/// can't affect in the ways they look for.
-pub const SLOW_STEPS: [&str; 2] = ["guards", "clean-build"];
+/// can't affect in the ways they look for. Code can still need a newer Rust than `msrv` builds
+/// with: a newer std API fails clippy's `incompatible_msrv`, and anything else `ci --full`.
+pub const SLOW_STEPS: [&str; 3] = ["guards", "clean-build", "msrv"];
 
 /// The property tests' case count in `ci`. The old counts are `cases()` in die-core's
 /// `tests/prop.rs`, which `--full` runs.
@@ -27,8 +28,8 @@ pub const PROP_CASES: &str = "100";
 
 const PROP_VAR: &str = "DIE_PROP_CASES";
 
-/// Whether a change to `path`, relative to the repository's root, can change what `guards`
-/// and `clean-build` find: a manifest or lockfile anywhere, cargo's or the toolchain's
+/// Whether a change to `path`, relative to the repository's root, can change what `guards`,
+/// `clean-build` and `msrv` find: a manifest or lockfile anywhere, cargo's or the toolchain's
 /// settings, a build script, the checks themselves, the memory limit every test links, or
 /// the engine archives and their lock.
 pub fn touches_build_setup(path: &str) -> bool {
@@ -132,7 +133,8 @@ pub fn plan(full: bool, changed: &Result<Vec<String>>, cases_set: Option<&str>) 
         Some(n) => PropCases::AlreadySet(n.to_string()),
         None => PropCases::Lowered,
     };
-    let slow = SLOW_STEPS.join(" and ");
+    let [a, b, c] = SLOW_STEPS;
+    let slow = format!("{a}, {b} and {c}");
     let (skip, steps_note) = match changed {
         _ if full => (Vec::new(), format!("{slow} run, for --full")),
         Err(e) => (
@@ -222,6 +224,7 @@ pub fn run(root: &Path, source: Source, full: bool) -> Result {
             "cross-check",
             Box::new(|| cross::run(&tree, &work.join("cross"))),
         ),
+        ("msrv", Box::new(|| msrv::run(&tree, &work.join("msrv")))),
         (
             "test",
             Box::new(|| {
