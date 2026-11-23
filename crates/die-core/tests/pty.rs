@@ -11,10 +11,12 @@ use die_core::pty::{BATCH, HANGUP_WAIT, OUTPUT_TURN, trampoline};
 use die_core::*;
 use std::cell::RefCell;
 use std::io;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::ExitStatus;
 use std::rc::Rc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -413,16 +415,40 @@ fn all_of_a_floods_output_comes_before_its_exit() {
     assert_eq!(ended.borrow_mut().take().unwrap().unwrap().code(), Some(0));
 }
 
+/// The fds past 2 this binary was started with. What ran it left them open without
+/// close-on-exec, as a shell or a harness can, so they reach every program it starts. They
+/// aren't DIE's.
+static INHERITED: OnceLock<Vec<RawFd>> = OnceLock::new();
+
+/// [`INHERITED`], read before anything else opens a fd.
+fn inherited() -> Vec<RawFd> {
+    let listed: Vec<RawFd> = std::fs::read_dir("/dev/fd")
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+        .filter(|fd| *fd > 2)
+        .collect();
+    // The listing's own fd was the lowest free one, and is again now that it's closed.
+    let own = std::fs::File::open("/dev/null").unwrap().as_raw_fd();
+    listed.into_iter().filter(|fd| *fd != own).collect()
+}
+
 fn no_fd_of_one_terminal_reaches_anothers_program() {
     let mut ctx = editor();
     let first = start(&mut ctx, PtyCommand::new("/bin/sh"), size(80, 24));
     let _file = std::fs::File::open("/dev/null").unwrap();
-    let t = start(&mut ctx, sh("ls -l /dev/fd/"), size(80, 24));
+    // `/bin/ls`, not an `ls` first on your PATH, and in no colour, which CLICOLOR would give it.
+    // `-L`, as on Linux each fd is a link, and `-l` gives the link's target last, not its number.
+    let ls = PtyCommand::new("/bin/ls")
+        .args(["-lL", "/dev/fd/"])
+        .env_remove("CLICOLOR")
+        .env_remove("CLICOLOR_FORCE");
+    let t = start(&mut ctx, ls, size(80, 24));
     wait_end(&mut ctx, &t);
     let said = text(&t);
-    // Each fd, with its type: the terminal's 0, 1 and 2, and past them only the directories `ls`
-    // has open itself. Another terminal's fds, or /dev/null, would be devices.
-    let fds: Vec<(char, u32)> = said
+    // Each fd, with its type, by number, as `ls` puts 12 between 1 and 2: the terminal's 0, 1
+    // and 2, and past them only the directories `ls` has open itself and what this binary was
+    // started with. Another terminal's fds, or /dev/null, would be devices.
+    let mut fds: Vec<(char, RawFd)> = said
         .lines()
         .filter(|l| !l.starts_with("total"))
         .filter_map(|l| {
@@ -432,8 +458,15 @@ fn no_fd_of_one_terminal_reaches_anothers_program() {
             ))
         })
         .collect();
+    fds.sort_by_key(|f| f.1);
+    let theirs = INHERITED.get().unwrap();
+    let said = format!("{said}\nwhat ran this test left {theirs:?} open");
     assert!(fds.iter().take(3).all(|f| f.0 == 'c'), "{said}");
-    assert!(fds.iter().skip(3).all(|f| f.0 == 'd'), "{said}");
+    let ok = fds
+        .iter()
+        .skip(3)
+        .all(|f| f.0 == 'd' || theirs.contains(&f.1));
+    assert!(ok, "{said}");
     assert_eq!(
         fds.iter().take(3).map(|f| f.1).collect::<Vec<_>>(),
         [0, 1, 2],
@@ -474,17 +507,19 @@ fn nothing_is_left_running_after_shutdown() {
         size(80, 24),
     );
     let plain = start(&mut ctx, PtyCommand::new("/bin/sh").arg("-i"), size(80, 24));
-    plain.pty.write(b"sleep 600 & echo started\n");
+    // Its job's pid as the shell says it, since the terminal echoes the line before the shell
+    // has run it, and the job may not be `sleep` yet when the shell has.
+    plain.pty.write(b"sleep 600 & echo job=$!\n");
     wait_for(&mut ctx, &deaf, "ready");
-    wait_for(&mut ctx, &plain, "started");
-    let job = std::process::Command::new("/usr/bin/pgrep")
-        .args(["-P", &plain.pty.pid().unwrap().to_string(), "sleep"])
-        .output()
-        .unwrap();
-    let job: u32 = String::from_utf8_lossy(&job.stdout)
-        .trim()
-        .parse()
-        .expect("its job");
+    let said = |t: &Term| {
+        text(t).split("job=").skip(1).find_map(|s| {
+            let end = s.find(|c: char| !c.is_ascii_digit())?;
+            s[..end].parse::<u32>().ok()
+        })
+    };
+    let found = ctx.run_until(WAIT, |_| said(&plain).is_some());
+    assert!(found, "its job: {:?}", text(&plain));
+    let job = said(&plain).unwrap();
     let pids = [deaf.pty.pid().unwrap(), plain.pty.pid().unwrap(), job];
     ctx.shutdown();
     for pid in pids {
@@ -502,6 +537,8 @@ fn main() {
     if std::env::args().any(|a| a == NO_LOCALE) {
         return as_if_from_the_dock();
     }
+    // Before anything opens a fd.
+    INHERITED.get_or_init(inherited);
     let tests: &[(&str, Test)] = &[
         (
             "a_shell_echoes_what_it_is_sent",

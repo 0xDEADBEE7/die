@@ -1337,16 +1337,17 @@ fn a_save_keeps_extended_attributes_and_acls() {
         tool(cmd, args, p).unwrap_or_else(|| panic!("{cmd} {args:?}"))
     };
     let d = Dir::new("attributes");
-    // Only macOS's `chmod` takes an ACL, and Linux's `fs::copy` doesn't carry them anyway.
+    // Only macOS's `chmod` takes an ACL, and Linux's `fs::copy` doesn't carry them anyway. The
+    // tools are the system's, by path: GNU's first on your PATH would skip this, or fail it.
     let probe = d.file("probe", b"");
-    if tool("chmod", &["+a", "everyone allow read"], &probe).is_none() {
+    if tool("/bin/chmod", &["+a", "everyone allow read"], &probe).is_none() {
         return;
     }
     fs::remove_file(&probe).unwrap();
     for (name, want) in [("a.txt", 0o644), ("b.txt", 0o444)] {
         let p = d.file(name, b"one\n");
-        run("xattr", &["-w", "user.tag", "kept"], &p);
-        run("chmod", &["+a", "everyone allow read"], &p);
+        run("/usr/bin/xattr", &["-w", "user.tag", "kept"], &p);
+        run("/bin/chmod", &["+a", "everyone allow read"], &p);
         fs::set_permissions(&p, fs::Permissions::from_mode(want)).unwrap();
         let mut c = ctx();
         let b = c.open_file(&p).unwrap();
@@ -1354,8 +1355,9 @@ fn a_save_keeps_extended_attributes_and_acls() {
         c.save_force(b).unwrap();
         assert_eq!(fs::read(&p).unwrap(), b"one\ntwo\n");
         assert_eq!(mode(&p), want);
-        assert!(run("xattr", &["-l"], &p).contains("user.tag"), "{name}");
-        let acl = run("ls", &["-le"], &p);
+        let attrs = run("/usr/bin/xattr", &["-l"], &p);
+        assert!(attrs.contains("user.tag"), "{name}");
+        let acl = run("/bin/ls", &["-le"], &p);
         assert!(acl.contains("everyone allow read"), "{name}: {acl}");
     }
     assert_eq!(d.names(), ["a.txt", "b.txt"]);

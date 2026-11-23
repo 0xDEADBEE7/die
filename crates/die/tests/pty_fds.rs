@@ -17,14 +17,18 @@ static FAILED: AtomicBool = AtomicBool::new(false);
 
 type Said = Arc<Mutex<(Vec<u8>, bool)>>;
 
-/// `ls -l /dev/fd/` on a PTY, from inside the loop, and what it said once it ended.
+/// `ls -lL /dev/fd/` on a PTY, from inside the loop, and what it said once it ended. It's in no
+/// colour, which CLICOLOR would give it, and `-L` lists what each fd is rather than Linux's link
+/// to it, so each line ends in its fd.
 fn listing(r: &Remote) -> Result<String, String> {
     let said = Said::default();
     let (out, end) = (said.clone(), said.clone());
     r.call(move |shell, _| {
         let cmd = PtyCommand::new("/bin/ls")
-            .arg("-l")
+            .arg("-lL")
             .arg("/dev/fd/")
+            .env_remove("CLICOLOR")
+            .env_remove("CLICOLOR_FORCE")
             .on_output(move |_, bytes| {
                 out.lock().unwrap().0.extend_from_slice(bytes);
                 Ok(())
@@ -56,11 +60,13 @@ fn listing(r: &Remote) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&said.lock().unwrap().0).into_owned())
 }
 
-/// Past the terminal's 0, 1 and 2, only directories: what `ls` has open itself. A Metal cache
-/// file would be a regular file (`-`), and another terminal a device.
+/// By number, as `ls` puts 12 between 1 and 2: past the terminal's 0, 1 and 2, only
+/// directories, what `ls` has open itself. A Metal cache file would be a regular file (`-`), and
+/// another terminal a device. A fd DIE was started with fails it too, since the trampoline marks
+/// those close-on-exec as well.
 fn no_fd_metal_opened_reaches_a_program(r: &Remote) -> Result<(), String> {
     let said = listing(r)?;
-    let fds: Vec<(char, u32)> = said
+    let mut fds: Vec<(char, u32)> = said
         .lines()
         .filter(|l| !l.starts_with("total"))
         .filter_map(|l| {
@@ -70,6 +76,7 @@ fn no_fd_metal_opened_reaches_a_program(r: &Remote) -> Result<(), String> {
             ))
         })
         .collect();
+    fds.sort_by_key(|f| f.1);
     let ok = fds.iter().take(3).map(|f| f.1).eq([0, 1, 2])
         && fds.iter().take(3).all(|f| f.0 == 'c')
         && fds.iter().skip(3).all(|f| f.0 == 'd');
