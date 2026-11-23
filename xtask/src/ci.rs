@@ -175,6 +175,7 @@ pub fn run(root: &Path, source: Source, full: bool) -> Result {
     let tmp = TempDir::at(work.join("tree"))?;
     let tree = tmp.path().to_path_buf();
     println!("ci: {}", checkout(root, &source, &tree)?);
+    util::fetch_lockfile(&tree, "ci")?;
     let cases_set = std::env::var(PROP_VAR).ok();
     let plan = plan(full, &changed(root, &source), cases_set.as_deref());
     println!("ci: {}", plan.steps_note);

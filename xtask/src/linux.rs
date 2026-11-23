@@ -28,7 +28,7 @@
 //! xtask doesn't start or stop colima.
 
 use crate::ci::{self, Source, Step, run_steps};
-use crate::util::{Result, TempDir, cargo, output, read, rustc, show};
+use crate::util::{OFFLINE_MISSES, Result, TempDir, cargo, output, read, rustc, show};
 use crate::{clean, fonts, guards};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -69,7 +69,7 @@ pub fn run(root: &Path, source: Source) -> Result {
              pulling it is a download, so ask first"
         ));
     }
-    crates_io_only(tree)?;
+    crates_io_only(tree, "ci --linux")?;
     fonts::run_fonts(root)?;
     for v in [REGISTRY_VOLUME, GIT_VOLUME, TARGET_VOLUME] {
         output(docker().args(["volume", "create", v]))?;
@@ -134,8 +134,9 @@ pub fn run(root: &Path, source: Source) -> Result {
     }
 }
 
-/// The checks' container: fail with `NEEDS_FETCH` if the registry lacks a
-/// crate the lockfile names (any other fetch error is printed and fails),
+/// The checks' container: fail with `NEEDS_FETCH` if the registry or git
+/// volume lacks what the lockfile names, as cargo says it in
+/// `util::OFFLINE_MISSES` (any other fetch error is printed and fails),
 /// purge every package `clean::forbidden_package` names (clean-build checks
 /// that none is left), then run `linux-host`. `docker cp` keeps the host's
 /// owner, so git, which the log plant's copy of the tree asks for its files,
@@ -143,10 +144,13 @@ pub fn run(root: &Path, source: Source) -> Result {
 fn checks_script() -> String {
     let keep = clean::libc_dev_ere();
     let pkg_config = clean::PKG_CONFIG.join("|");
+    let misses: String = OFFLINE_MISSES
+        .iter()
+        .map(|m| format!("-e '{m}' "))
+        .collect();
     format!(
         "if ! cargo fetch --locked --offline --quiet 2>/tmp/fetch.err; then\n\
-         \x20 grep -qF -e 'offline mode (via `--offline`)' -e 'but --offline was specified' \
-         /tmp/fetch.err && exit {NEEDS_FETCH}\n\
+         \x20 grep -qF {misses}/tmp/fetch.err && exit {NEEDS_FETCH}\n\
          \x20 cat /tmp/fetch.err >&2; exit 1\n\
          fi\n\
          dpkg-query --show --showformat '${{db:Status-Status}} ${{Package}}\\n' \
@@ -163,8 +167,8 @@ fn checks_script() -> String {
 
 /// Fail unless every source in `tree`'s Cargo.lock is crates.io, or the engine
 /// wrapper's repository at the commit its lock pins, and its `.cargo/config.toml`
-/// replaces no source: the run fetches those only.
-fn crates_io_only(tree: &Path) -> Result {
+/// replaces no source: the run fetches those only. `who` names the task in an error.
+pub fn crates_io_only(tree: &Path, who: &str) -> Result {
     let mut others = other_sources(&read(&tree.join("Cargo.lock"))?);
     if !others.is_empty()
         && let Ok(wrapper) = wrapper_source(tree)
@@ -173,7 +177,7 @@ fn crates_io_only(tree: &Path) -> Result {
     }
     if !others.is_empty() {
         return Err(format!(
-            "ci --linux: Cargo.lock has sources other than crates.io:\n  {}\nThe run may fetch \
+            "{who}: Cargo.lock has sources other than crates.io:\n  {}\nThe run may fetch \
              crates.io crates only. Fetching from another source is a download to ask about \
              first",
             others.join("\n  ")
@@ -189,7 +193,7 @@ fn crates_io_only(tree: &Path) -> Result {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         if t.contains_key("source") || t.contains_key("registries") {
             return Err(format!(
-                "ci --linux: {name} has a [source] or [registries] table, which can send \
+                "{who}: {name} has a [source] or [registries] table, which can send \
                  crates.io's fetches elsewhere. The run may fetch from crates.io only"
             ));
         }
@@ -536,19 +540,22 @@ checksum = \"0\"
         write(&tree.join("Cargo.lock"), LOCK).unwrap();
         let config = tree.join(".cargo/config.toml");
         write(&config, "[alias]\nxtask = \"run --package xtask --\"\n").unwrap();
-        crates_io_only(tree).unwrap();
+        crates_io_only(tree, "lint").unwrap();
         write(
             &config,
             "[source.crates-io]\nreplace-with = \"mirror\"\n\n\
              [source.mirror]\nregistry = \"sparse+https://example.com/\"\n",
         )
         .unwrap();
-        let err = crates_io_only(tree).unwrap_err();
-        assert!(err.contains(".cargo/config.toml has a [source]"), "{err}");
+        let err = crates_io_only(tree, "lint").unwrap_err();
+        assert!(
+            err.starts_with("lint: .cargo/config.toml has a [source]"),
+            "{err}"
+        );
         std::fs::remove_file(&config).unwrap();
         let git = LOCK.replace(CRATES_IO, "git+https://github.com/cessen/ropey#0");
         write(&tree.join("Cargo.lock"), &git).unwrap();
-        let err = crates_io_only(tree).unwrap_err();
+        let err = crates_io_only(tree, "lint").unwrap_err();
         assert!(err.contains("ropey 1.6.1 (git+"), "{err}");
         assert!(err.contains("a download to ask about"), "{err}");
         // The engine wrapper's repository, at the rev its lock pins and no other.
@@ -566,10 +573,10 @@ checksum = \"0\"
              source = \"git+https://github.com/uzaaft/libghostty-rs?rev={rev}#{rev}\"\n"
         );
         write(&tree.join("Cargo.lock"), &pinned).unwrap();
-        crates_io_only(tree).unwrap();
+        crates_io_only(tree, "lint").unwrap();
         let other = pinned.replace(&format!("#{rev}"), "#0000");
         write(&tree.join("Cargo.lock"), &other).unwrap();
-        assert!(crates_io_only(tree).is_err());
+        assert!(crates_io_only(tree, "lint").is_err());
     }
 
     #[test]
@@ -593,6 +600,9 @@ checksum = \"0\"
         let s = checks_script();
         assert!(s.contains(&clean::libc_dev_ere()), "{s}");
         assert!(s.contains("exit 75"), "{s}");
+        for m in OFFLINE_MISSES {
+            assert!(s.contains(&format!("-e '{m}' ")), "{s}");
+        }
         assert!(!s.contains("/dev/null"), "{s}");
         assert!(s.ends_with("-- linux-host"), "{s}");
     }

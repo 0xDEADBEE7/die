@@ -100,6 +100,61 @@ pub fn git(root: &Path) -> Command {
     c
 }
 
+/// What cargo 1.96 says when `--offline` needs something its cache lacks: a crate not
+/// downloaded, a crate its index has no entry for, a git dependency not checked out.
+pub const OFFLINE_MISSES: [&str; 3] = [
+    "but --offline was specified",
+    "offline mode (via `--offline`)",
+    "you are in the offline mode (--offline)",
+];
+
+/// Whether a cargo `--offline` run's error is only that its cache lacks something.
+pub fn offline_miss(err: &str) -> bool {
+    OFFLINE_MISSES.iter().any(|m| err.contains(m))
+}
+
+/// Whether a `cargo fetch --locked --offline` error is only crates not downloaded. cargo
+/// downloads once `--locked` resolution has matched Cargo.lock, so they're the lockfile's own.
+/// A missing index entry or git checkout comes earlier, in resolution, which may be asking for
+/// a Cargo.toml's dependency that the lockfile doesn't have.
+fn lacks_downloads(err: &str) -> bool {
+    err.contains("failed to download `") && err.contains(OFFLINE_MISSES[0])
+}
+
+/// Make sure cargo's cache has every crate `root`'s Cargo.lock names, for every target, before
+/// a task that runs cargo `--offline`. A build fetches only what it builds, so the first such
+/// task on a new machine fetches the rest, once, from the lockfile's own sources: crates.io and
+/// the engine wrapper's pinned rev (`linux::crates_io_only`). With them there, it's silent and
+/// needs no network. It fetches only when the lockfile resolves offline, so a lockfile that's
+/// out of date with a Cargo.toml fetches nothing.
+pub fn fetch_lockfile(root: &Path, who: &str) -> Result {
+    let fetch = || {
+        let mut c = Command::new(cargo());
+        c.current_dir(root).args(["fetch", "--locked", "--quiet"]);
+        c
+    };
+    match output(fetch().arg("--offline")) {
+        Err(e) if lacks_downloads(&e) => {}
+        Err(e) if offline_miss(&e) => {
+            return Err(format!(
+                "{e}\n{who}: Cargo.lock doesn't resolve offline, because cargo's cache lacks an \
+                 index entry or a git checkout. Either a Cargo.toml asks for something the \
+                 lockfile doesn't have, or nothing here has resolved this lockfile yet. A fetch \
+                 then could reach a source the lockfile doesn't name, so nothing was fetched. \
+                 Bring Cargo.lock up to date, or if it is, run `cargo fetch --locked` in a \
+                 checkout of this commit"
+            ));
+        }
+        done => return done.map(drop),
+    }
+    crate::linux::crates_io_only(root, who)?;
+    println!(
+        "{who}: fetching the lockfile's crates for every target from crates.io, and libghostty-rs \
+         at its pinned rev, once (later runs need no network)"
+    );
+    run(&mut fetch())
+}
+
 /// Where `task` keeps its working files and build cache. Under `CARGO_TARGET_DIR` when
 /// that's set, so a worktree whose cache is a clone of a warm one starts warm; under `root`'s
 /// own `target` otherwise.
@@ -287,4 +342,37 @@ pub fn sha256(path: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// cargo 1.96's errors from `cargo fetch --locked --offline`.
+    #[test]
+    fn only_crates_not_downloaded_are_fetched_for() {
+        let download = "error: failed to download `linux-raw-sys v0.12.1`\n\nCaused by:\n  \
+                        attempting to make an HTTP request, but --offline was specified";
+        assert!(offline_miss(download) && lacks_downloads(download));
+        // In resolution, so possibly a Cargo.toml's dependency that Cargo.lock lacks.
+        let resolving = [
+            "error: no matching package named `regex-automata` found\nlocation searched: \
+             crates.io index\nnote: offline mode (via `--offline`) can sometimes cause \
+             surprising resolution failures",
+            "Caused by:\n  can't checkout from 'https://github.com/uzaaft/libghostty-rs': you are \
+             in the offline mode (--offline)",
+        ];
+        for e in resolving {
+            assert!(offline_miss(e) && !lacks_downloads(e), "{e}");
+        }
+        let others = [
+            "error: cannot create the lock file /w/Cargo.lock because --locked was passed to \
+             prevent this\nhelp: to generate the lock file without accessing the network, \
+             remove the --locked flag and use --offline instead.",
+            "error: failed to parse manifest at `/w/Cargo.toml`",
+        ];
+        for e in others {
+            assert!(!offline_miss(e), "{e}");
+        }
+    }
 }
