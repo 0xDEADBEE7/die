@@ -506,17 +506,19 @@ fn nothing_is_left_running_after_shutdown() {
         size(80, 24),
     );
     let plain = start(&mut ctx, PtyCommand::new("/bin/sh").arg("-i"), size(80, 24));
-    plain.pty.write(b"sleep 600 & echo started\n");
+    // Its job's pid as the shell says it, since the terminal echoes the line before the shell
+    // has run it, and the job may not be `sleep` yet when the shell has.
+    plain.pty.write(b"sleep 600 & echo job=$!\n");
     wait_for(&mut ctx, &deaf, "ready");
-    wait_for(&mut ctx, &plain, "started");
-    let job = std::process::Command::new("/usr/bin/pgrep")
-        .args(["-P", &plain.pty.pid().unwrap().to_string(), "sleep"])
-        .output()
-        .unwrap();
-    let job: u32 = String::from_utf8_lossy(&job.stdout)
-        .trim()
-        .parse()
-        .expect("its job");
+    let said = |t: &Term| {
+        text(t).split("job=").skip(1).find_map(|s| {
+            let end = s.find(|c: char| !c.is_ascii_digit())?;
+            s[..end].parse::<u32>().ok()
+        })
+    };
+    let found = ctx.run_until(WAIT, |_| said(&plain).is_some());
+    assert!(found, "its job: {:?}", text(&plain));
+    let job = said(&plain).unwrap();
     let pids = [deaf.pty.pid().unwrap(), plain.pty.pid().unwrap(), job];
     ctx.shutdown();
     for pid in pids {
