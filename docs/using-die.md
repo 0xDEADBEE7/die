@@ -50,7 +50,7 @@ Or for git alone, `git config --global core.editor "die --wait"`.
 
 - **The Xcode Command Line Tools** (`xcode-select --install`), for git and the linker.
 - **Rust through [rustup](https://rustup.rs).** The first cargo command in the checkout installs the Rust that `rust-toolchain.toml` pins, 1.96.0 now, with rustfmt, clippy and the std for x86_64 and aarch64 Linux, which the checks use.
-- **The crates.** The first build fetches the ones `Cargo.lock` names from crates.io, and libghostty-rs from GitHub at the rev `Cargo.toml` pins. The terminal's engine is in the checkout, under `crates/die-term-sys/vendor`, so nothing builds or fetches it.
+- **The crates.** The first build fetches the ones `Cargo.lock` names from crates.io, and libghostty-rs from GitHub at the rev `Cargo.toml` pins. The terminal's engine, built for Apple silicon, is in the checkout, under `crates/die-term-sys/vendor`, so nothing builds or fetches it.
 - **The fonts.** `cargo xtask app` fetches Ioskeley Mono Term from GitHub into `fonts/` when it isn't there, and checks each file by SHA-256. `cargo xtask fonts` does only that. You can copy `fonts/` from another checkout instead: a file whose checksum doesn't match stops the build.
 
 **Where rustup can't fetch the pinned Rust**, as on a network that blocks static.rust-lang.org:
