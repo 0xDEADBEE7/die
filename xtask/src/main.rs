@@ -65,13 +65,14 @@ fn main() {
 
 /// The tasks that run cargo `--offline` on crates a build of DIE doesn't fetch: other
 /// targets' and the tests'. `ci` fetches for its own clone.
-const OFFLINE: [&str; 6] = [
+const OFFLINE: [&str; 7] = [
     "lint",
     "sources",
     "guards",
     "clean-build",
     "cross-check",
     "mutate",
+    "msrv",
 ];
 
 fn dispatch(args: &[String]) -> Result {
