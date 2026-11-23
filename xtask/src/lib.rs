@@ -16,6 +16,7 @@ pub mod ghostty;
 pub mod guards;
 pub mod lint;
 pub mod linux;
+pub mod msrv;
 pub mod mutate;
 pub mod restart_loop;
 pub mod sources;

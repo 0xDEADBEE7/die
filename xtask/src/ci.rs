@@ -5,7 +5,7 @@
 //! checkpoint.
 
 use crate::util::{self, Result, TempDir, cargo, copy_worktree, git};
-use crate::{budget, clean, cross, fonts, ghostty, guards, lint, sources};
+use crate::{budget, clean, cross, fonts, ghostty, guards, lint, msrv, sources};
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -222,6 +222,9 @@ pub fn run(root: &Path, source: Source, full: bool) -> Result {
             "cross-check",
             Box::new(|| cross::run(&tree, &work.join("cross"))),
         ),
+        // On every run, since any code can need a newer Rust: clippy's `incompatible_msrv`
+        // finds a newer std function or type, but not a newer trait impl or macro.
+        ("msrv", Box::new(|| msrv::run(&tree, &work.join("msrv")))),
         (
             "test",
             Box::new(|| {
