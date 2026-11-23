@@ -2,7 +2,7 @@
 use die_test_cap as _;
 
 use std::path::Path;
-use xtask::util::{Result, root, task_dir};
+use xtask::util::{Result, fetch_lockfile, root, task_dir};
 use xtask::{
     api, app, budget, ci, clean, cross, fonts, ghostty, guards, lint, linux, mutate, restart_loop,
     sources,
@@ -61,9 +61,23 @@ fn main() {
     }
 }
 
+/// The tasks that run cargo `--offline` on crates a build of DIE doesn't fetch: other
+/// targets' and the tests'. `ci` fetches for its own clone.
+const OFFLINE: [&str; 6] = [
+    "lint",
+    "sources",
+    "guards",
+    "clean-build",
+    "cross-check",
+    "mutate",
+];
+
 fn dispatch(args: &[String]) -> Result {
     let root = root();
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let Some(task) = a.first().filter(|t| OFFLINE.contains(t)) {
+        fetch_lockfile(&root, task)?;
+    }
     match a.as_slice() {
         ["budget"] => budget::run(&root),
         ["lint"] => lint::run(&root),
