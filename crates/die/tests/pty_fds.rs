@@ -17,14 +17,15 @@ static FAILED: AtomicBool = AtomicBool::new(false);
 
 type Said = Arc<Mutex<(Vec<u8>, bool)>>;
 
-/// `ls -l /dev/fd/` on a PTY, from inside the loop, and what it said once it ended. It's in no
-/// colour, which CLICOLOR would give it, so each line ends in its fd.
+/// `ls -lL /dev/fd/` on a PTY, from inside the loop, and what it said once it ended. It's in no
+/// colour, which CLICOLOR would give it, and `-L` lists what each fd is rather than Linux's link
+/// to it, so each line ends in its fd.
 fn listing(r: &Remote) -> Result<String, String> {
     let said = Said::default();
     let (out, end) = (said.clone(), said.clone());
     r.call(move |shell, _| {
         let cmd = PtyCommand::new("/bin/ls")
-            .arg("-l")
+            .arg("-lL")
             .arg("/dev/fd/")
             .env_remove("CLICOLOR")
             .env_remove("CLICOLOR_FORCE")

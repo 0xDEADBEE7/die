@@ -437,8 +437,9 @@ fn no_fd_of_one_terminal_reaches_anothers_program() {
     let first = start(&mut ctx, PtyCommand::new("/bin/sh"), size(80, 24));
     let _file = std::fs::File::open("/dev/null").unwrap();
     // `/bin/ls`, not an `ls` first on your PATH, and in no colour, which CLICOLOR would give it.
+    // `-L`, as on Linux each fd is a link, and `-l` gives the link's target last, not its number.
     let ls = PtyCommand::new("/bin/ls")
-        .args(["-l", "/dev/fd/"])
+        .args(["-lL", "/dev/fd/"])
         .env_remove("CLICOLOR")
         .env_remove("CLICOLOR_FORCE");
     let t = start(&mut ctx, ls, size(80, 24));
