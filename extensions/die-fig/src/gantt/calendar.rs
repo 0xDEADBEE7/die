@@ -214,19 +214,44 @@ impl Days {
     }
 }
 
+/// A duration a task gives: so many weeks, and the rest in seconds. A week is as many days as
+/// the plan's calendar counts in one: five where weekends don't count, else seven.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Span {
+    /// The weeks.
+    pub weeks: f64,
+    /// The rest, in seconds.
+    pub secs: f64,
+}
+
+impl Span {
+    /// So many days.
+    pub fn days(n: f64) -> Span {
+        Span {
+            weeks: 0.0,
+            secs: n * DAY,
+        }
+    }
+
+    /// The whole of it in seconds, a week being `per_week` days.
+    pub fn in_secs(self, per_week: f64) -> f64 {
+        self.weeks * per_week * DAY + self.secs
+    }
+}
+
 /// A duration a task gives: `"3d"`, `"2w"`, `"36h"`, `"90m"`, `"1d12h"`, each a number and a
-/// unit of `w`, `d`, `h`, `m` or `s`; a bare number is days. In seconds; None for anything
-/// else, and for less than nothing.
-pub fn parse_duration(s: &str) -> Option<f64> {
+/// unit of `w`, `d`, `h`, `m` or `s`; a bare number is days. None for anything else, and for
+/// less than nothing.
+pub fn parse_duration(s: &str) -> Option<Span> {
     let s = s.trim();
     if s.is_empty() {
         return None;
     }
     if let Ok(days) = s.parse::<f64>() {
-        return (days.is_finite() && days >= 0.0).then_some(days * DAY);
+        return (days.is_finite() && days >= 0.0).then_some(Span::days(days));
     }
     let mut rest = s;
-    let mut secs = 0.0;
+    let mut span = Span::days(0.0);
     while !rest.is_empty() {
         let n = rest
             .find(|c: char| !(c.is_ascii_digit() || c == '.'))
@@ -236,18 +261,17 @@ pub fn parse_duration(s: &str) -> Option<f64> {
         let u = rest
             .find(|c: char| c.is_ascii_digit() || c == '.' || c == ' ')
             .unwrap_or(rest.len());
-        let unit = match &rest[..u] {
-            "w" => 7.0 * DAY,
-            "d" => DAY,
-            "h" => 3600.0,
-            "m" => 60.0,
-            "s" => 1.0,
+        match &rest[..u] {
+            "w" => span.weeks += v,
+            "d" => span.secs += v * DAY,
+            "h" => span.secs += v * 3600.0,
+            "m" => span.secs += v * 60.0,
+            "s" => span.secs += v,
             _ => return None,
         };
-        secs += v * unit;
         rest = rest[u..].trim_start();
     }
-    (secs.is_finite() && secs < 1e12).then_some(secs)
+    (span.in_secs(7.0).is_finite() && span.in_secs(7.0) < 1e12).then_some(span)
 }
 
 /// So many of a thing: "1 day", "3 days".

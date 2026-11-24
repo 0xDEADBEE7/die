@@ -15,6 +15,7 @@
 use super::GanttModel;
 use crate::data::SeriesKey;
 use crate::graph::geom::{HeaderAsk, Keep, LEVELS, header_of, side_pad};
+use crate::graph::label::seg_meets;
 use crate::interact::View;
 use crate::plot::layout::{BODY, Ink, KeyShape, Label, LegendItem, Role, TICK, paddings};
 use crate::scale::{self, Scale, Tick};
@@ -471,6 +472,13 @@ pub(crate) fn lay_out(
         if at + wide > plot.right() - 2.0 || at < plot.x {
             continue;
         }
+        // Not where a link runs through it.
+        let room = Rect::new(at - 2.0, g.mid() - 8.0, wide + 4.0, 16.0);
+        let crossed = (links.iter())
+            .any(|k| (k.pts.windows(2)).any(|w| seg_meets(w[0], w[1], &room)));
+        if crossed {
+            continue;
+        }
         let label = Label {
             role: Role::End,
             text,
@@ -694,8 +702,9 @@ fn frame(
 }
 
 /// The ticks' labels in the axis strip: each centred on its tick, a major one's in the text
-/// colour, those that would run into a neighbour or out of the area left out (the major ones
-/// kept first).
+/// colour. Where they don't all fit clear of each other, every second is written, or every
+/// third, and so on: evenly, the ones that keep the most major ticks. One that would run out
+/// of the area is left out.
 fn tick_labels(
     ticks: &[Tick],
     x: &Scale,
@@ -705,28 +714,33 @@ fn tick_labels(
 ) -> Vec<Label> {
     let spec = TextSpec::new(TICK).tabular();
     let base = (axis.y + axis.h / 2.0 + m.cap(spec) / 2.0).round();
-    let mut kept: Vec<(usize, Rect)> = Vec::new();
-    for major in [true, false] {
-        for (i, t) in ticks.iter().enumerate().filter(|(_, t)| t.major == major) {
-            let at = x.map(t.value);
+    let n = ticks.len();
+    let boxes: Vec<Rect> = (ticks.iter())
+        .map(|t| {
             let wide = m.width(&t.label, spec);
-            let r = Rect::new(at - wide / 2.0, axis.y, wide, axis.h);
-            if r.x < axis.x - 14.0 || r.right() > (axis.right() + 14.0).min(width - 4.0) {
-                continue;
+            Rect::new(x.map(t.value) - wide / 2.0, axis.y, wide, axis.h)
+        })
+        .collect();
+    let inside =
+        |r: &Rect| r.x >= axis.x - 14.0 && r.right() <= (axis.right() + 14.0).min(width - 4.0);
+    let mut kept: Vec<usize> = Vec::new();
+    'stride: for k in 1..=n.max(1) {
+        // Of a stride's sets, the one with the most major ticks first.
+        let mut firsts: Vec<usize> = (0..k.min(n)).collect();
+        let majors = |r: usize| (r..n).step_by(k).filter(|&i| ticks[i].major).count();
+        firsts.sort_by_key(|&r| (std::cmp::Reverse(majors(r)), r));
+        for r in firsts {
+            let set: Vec<usize> = (r..n).step_by(k).filter(|&i| inside(&boxes[i])).collect();
+            let clear =
+                (set.windows(2)).all(|w| boxes[w[1]].x - boxes[w[0]].right() >= TICK_CLEAR);
+            if clear {
+                kept = set;
+                break 'stride;
             }
-            let clear = r.inflate(TICK_CLEAR / 2.0);
-            if kept
-                .iter()
-                .any(|(_, k)| k.inflate(TICK_CLEAR / 2.0).intersect(&clear).is_some())
-            {
-                continue;
-            }
-            kept.push((i, r));
         }
     }
-    kept.sort_by_key(|k| k.0);
     kept.into_iter()
-        .map(|(i, _)| Label {
+        .map(|i| Label {
             role: Role::XTick,
             text: ticks[i].label.clone(),
             x: x.map(ticks[i].value),

@@ -331,8 +331,22 @@ pub fn overlay(
         for (_, r) in &l.legend {
             avoid.push((Keep::Rect(*r), 6.0));
         }
-        if !l.axis.is_empty() {
-            avoid.push((Keep::Rect(l.axis), 3.0));
+        // Every other bar a little, so of two places the one that covers less wins.
+        for (j, t) in l.tasks.iter().enumerate() {
+            if let Some(t) = t
+                && j != i
+                && !ends.contains(&j)
+                && let Some(b) = t.bar.intersect(&plot)
+            {
+                avoid.push((Keep::Rect(b), 1.5));
+            }
+        }
+        // The axis and the marks' labels, less than a row of the card left out: a card says
+        // all of what it has to before it keeps off them.
+        for strip in [l.axis, l.strip] {
+            if !strip.is_empty() {
+                avoid.push((Keep::Rect(strip), 1.5));
+            }
         }
         let lines: Vec<(Vec<(f32, f32)>, f32)> = (links.iter())
             .map(|&n| (l.links[n].pts.clone(), 3.0))
@@ -343,6 +357,22 @@ pub fn overlay(
             flipped: &l.flipped,
         };
         let (card, r) = card.place(&area, (ax, g.mid()), reach, &avoid, &lines, m);
+        // A label the card would cut goes whole, so no piece of it peeks out at its edge.
+        let cut = |b: Rect| b.intersect(&r).is_some_and(|o| o.w > 0.5 && o.h > 0.5);
+        let spec = TextSpec::new(TICK);
+        let mut cuts: Vec<Rect> = (l.tick_labels.iter().map(|t| t.bounds(m))).collect();
+        for mk in &l.marks {
+            if let Some((text, x, y, anchor)) = &mk.label {
+                cuts.push(crate::plot::layout::text_box(text, *x, *y, spec, *anchor, m));
+            }
+        }
+        for b in cuts.into_iter().filter(|b| cut(*b)) {
+            scene.push(Item::Path {
+                path: PathData::rect(b.inflate(1.0)),
+                fill: Some(Paint::solid(theme.surface, 1.0)),
+                stroke: None,
+            });
+        }
         card.draw(&mut scene, r, theme, m);
     }
     scene

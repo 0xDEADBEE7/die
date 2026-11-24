@@ -310,7 +310,7 @@ struct Given {
     label: Option<String>,
     start: Option<f64>,
     end: Option<f64>,
-    duration: Option<f64>,
+    duration: Option<calendar::Span>,
     after: Vec<String>,
     /// Whether `after` came as one string from JSON, which names one task unless no task is
     /// called that.
@@ -577,7 +577,7 @@ impl GanttModel {
             };
             let duration = match dur_c.map(|c| (c, rows.cell(c, row))) {
                 None | Some((_, Cell::None)) => None,
-                Some((_, Cell::Num(v))) if v >= 0.0 => Some(v * DAY),
+                Some((_, Cell::Num(v))) if v >= 0.0 => Some(calendar::Span::days(v)),
                 Some((c, cell)) => {
                     let read = match &cell {
                         Cell::Str(s) => calendar::parse_duration(s),
@@ -746,13 +746,20 @@ impl GanttModel {
             }
         }
 
-        // Whole days: every start and end at midnight, every duration a whole number of days.
+        // Whole days: every start and end at midnight, every duration a whole number of days,
+        // a week being five of them where weekends don't count.
         let days = Days::of(&spec.calendar, zone);
+        let per_week = if days.weekdays { 5.0 } else { 7.0 };
         let whole_days = given.iter().all(|g| {
             g.start.is_none_or(|t| days.at_midnight(t))
                 && g.end.is_none_or(|t| days.at_midnight(t))
-                && g.duration.is_none_or(|d| (d / DAY).fract() == 0.0)
+                && (g.duration).is_none_or(|d| (d.in_secs(per_week) / DAY).fract() == 0.0)
         });
+        // Each duration in seconds: with times of day in the plan, a week is seven days.
+        let per_week = if whole_days { per_week } else { 7.0 };
+        let lasts: Vec<Option<f64>> = (given.iter())
+            .map(|g| g.duration.map(|d| d.in_secs(per_week)))
+            .collect();
         let mut warnings = Vec::new();
         if !whole_days && !days.every_day() {
             warnings.push(FigError::new(
@@ -766,7 +773,7 @@ impl GanttModel {
         for (i, g) in given.iter().enumerate() {
             let kids = !children[i].is_empty();
             let waits = !after[i].is_empty();
-            let plan = match (g.start, g.end, g.duration) {
+            let plan = match (g.start, g.end, lasts[i]) {
                 (Some(s), _, _) if g.milestone => Some(Plan::At(s)),
                 (None, Some(e), _) if g.milestone => Some(Plan::At(e)),
                 (None, None, _) if g.milestone && waits => Some(Plan::AfterMoment),
@@ -1174,18 +1181,35 @@ impl GanttModel {
     }
 
     /// The time a view shows when it fits the plan: its tasks' and marks' whole span (a day at
-    /// the least), padded 3 % each side.
+    /// the least; an hour, in a plan with times of day), padded 3 % each side, and in a plan
+    /// of whole days out to whole days.
     pub fn fit(&self) -> (f64, f64) {
         let (mut lo, mut hi) = self.extent;
         if !(lo.is_finite() && hi.is_finite()) {
             (lo, hi) = (self.now, self.now);
         }
-        if hi - lo < DAY {
+        let least = if self.whole_days { DAY } else { 3600.0 };
+        if hi - lo < least {
             let mid = (lo + hi) / 2.0;
-            (lo, hi) = (mid - DAY / 2.0, mid + DAY / 2.0);
+            (lo, hi) = (mid - least / 2.0, mid + least / 2.0);
         }
         let pad = (hi - lo) * 0.03;
-        (lo - pad, hi + pad)
+        let (lo, hi) = (lo - pad, hi + pad);
+        if !self.whole_days {
+            return (lo, hi);
+        }
+        // Out to whole days, so no sliver of a day shows at an edge.
+        let first = self.days.date(lo).map(|d| self.days.start(d));
+        let last = (self.days.date(hi))
+            .map(|d| (d, self.days.start(d)))
+            .map(|(d, at)| match at < hi {
+                true => self.days.start(d.tomorrow().unwrap_or(d)),
+                false => at,
+            });
+        match (first, last) {
+            (Some(a), Some(b)) if a.is_finite() && b.is_finite() && b > a => (a, b),
+            _ => (lo, hi),
+        }
     }
 
     /// Whether the plan's dates are in more than one year: its dates are written with theirs.
