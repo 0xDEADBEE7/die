@@ -66,7 +66,7 @@ pub(crate) fn cursor_data(model: &ChartModel, cursor: &Cursor) -> Option<(f64, f
         }
         Cursor::Band { band, .. } => Some((f64::from(*band) + 0.5, f64::NAN)),
         Cursor::Cell { row, col } => Some((f64::from(*col) + 0.5, f64::from(*row) + 0.5)),
-        Cursor::Node(_) => None,
+        Cursor::Node(_) | Cursor::Task(_) => None,
     }
 }
 

@@ -105,7 +105,7 @@ impl ChartModel {
             Cursor::Point { series, row } => self.point_detail(view, series, *row),
             Cursor::Band { band, series } => self.band_detail(view, *band, series.as_ref()),
             Cursor::Cell { row, col } => self.cell_detail(*row, *col),
-            Cursor::Node(_) => None,
+            Cursor::Node(_) | Cursor::Task(_) => None,
         }
     }
 

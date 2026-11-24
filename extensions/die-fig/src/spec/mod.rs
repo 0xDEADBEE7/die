@@ -7,11 +7,12 @@
 //! - [`graph`]: the graph spec beyond fig's;
 //! - [`dash`]: dashboards, stats and meters;
 //! - [`tile`]: the sparkline figure;
+//! - [`gantt`]: gantt charts: tasks over time, inline or from a table;
 //! - [`guess`]: a figure from a bare table, by the design's inference rules;
 //! - [`write`]: a figure back to JSON text, for `:fig-spec`.
 //!
 //! `"type"` is one of `chart`, `line`, `area`, `bar`, `scatter`, `heatmap`, `histogram`,
-//! `graph`, `stat`, `meter`, `sparkline` and `dashboard`. Unknown fields are tolerated: a node's and an
+//! `graph`, `gantt`, `stat`, `meter`, `sparkline` and `dashboard`. Unknown fields are tolerated: a node's and an
 //! edge's are kept in their `raw` object, and data rows keep theirs in [`Table::raw`]. A key
 //! within two edits of a known one (one for a known key of three or four letters, none for one
 //! or two) is a warning that names the key it may have meant, but in a node or an edge, whose
@@ -22,13 +23,16 @@
 //! [`parse`] goes by the file's extension first (`.csv`, `.tsv` and `.tab`, `.jsonl` and
 //! `.ndjson`, `.json`), then by the text: JSON starting `{` or `[`, JSONL when the whole text
 //! isn't one value but its first line is an object, else CSV or TSV. A JSON object is a spec
-//! when it has a string `"type"`, a `"mark"`, `"layers"`, `"nodes"` or `"buckets"`, or fig's
+//! when it has a string `"type"`, a `"mark"`, `"layers"`, `"nodes"`, `"tasks"` or `"buckets"`, or
+//! fig's
 //! `"series"` with `"points"`; an object whose every value is an array is data, as is a JSON
 //! array. One line of JSONL whose `"type"` is no figure's and that has none of a figure's
-//! `data`, `mark`, `layers`, `nodes`, `edges`, `series`, `buckets` or `rows` is a row of data,
+//! `data`, `mark`, `layers`, `nodes`, `edges`, `series`, `buckets`, `rows` or `tasks` is a row of
+//! data,
 //! when it makes a figure; else the spec's error stands. Bare data is read and [`guess`]ed, and
-//! the guess's data is the table itself; but a table with an `id` and a `parent` column is a
-//! tree, a [`GraphSpec`] of a node a row ([`graph::from_table`]).
+//! the guess's data is the table itself; but a table with a `start` column of times and an `end`
+//! or a `duration` is a gantt ([`gantt::from_table`]), and one with an `id` and a `parent`
+//! column is a tree, a [`GraphSpec`] of a node a row ([`graph::from_table`]).
 //!
 //! `dir` is made absolute against the working directory first (an empty one stays empty), so a
 //! file's path, which [`write`] gives as it was resolved, reads back as the same path.
@@ -85,6 +89,7 @@
 pub mod chart;
 pub mod dash;
 pub mod fig;
+pub mod gantt;
 pub mod graph;
 pub mod guess;
 pub mod tile;
@@ -469,6 +474,129 @@ pub struct GraphSpec {
     pub view: ViewSettings,
 }
 
+/// Which column of a gantt's rows is what. Each is a channel naming a field (`"start":
+/// "begins"`, or `{"field": "ts", "type": "time", "unit": "s"}` for epoch numbers); None finds
+/// the column by its usual names ([`gantt::names`]).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct GanttFields {
+    /// A task's id, which `after` and `parent` name.
+    pub id: Option<Channel>,
+    /// Its name, written at its row.
+    pub label: Option<Channel>,
+    /// When it starts.
+    pub start: Option<Channel>,
+    /// When it ends.
+    pub end: Option<Channel>,
+    /// How long it takes, in place of a start or an end: `"3d"`, `"1w"`, `"36h"`, or a number
+    /// of days.
+    pub duration: Option<Channel>,
+    /// The tasks it comes after: an id, or several.
+    pub after: Option<Channel>,
+    /// Its group: a heading its tasks sit under.
+    pub group: Option<Channel>,
+    /// The task it's a part of.
+    pub parent: Option<Channel>,
+    /// The share of it done: 0 to 1, or 0 to 100 when any task's is above 1.
+    pub progress: Option<Channel>,
+    /// Whether it's a milestone: a moment, not a span.
+    pub milestone: Option<Channel>,
+    /// What colours the bars, in place of the group.
+    pub color: Option<Channel>,
+}
+
+/// Where a gantt's today line is.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum Today {
+    /// At the clock's now: the default.
+    #[default]
+    Now,
+    /// At a time the spec gives, in UTC seconds: a plan read later, a picture that mustn't
+    /// change.
+    At(f64),
+    /// Nowhere.
+    Off,
+}
+
+/// A time a gantt's spec gives, with the text it was written as: a date without a time of day
+/// takes in its whole day where it ends a span in a plan of whole days, and is written back as
+/// it was.
+#[derive(Clone, Debug, PartialEq)]
+pub struct When {
+    /// The time, in UTC seconds.
+    pub secs: f64,
+    /// As the spec wrote it.
+    pub text: Box<str>,
+}
+
+impl When {
+    /// Whether it was written as a date alone, with no time of day.
+    pub fn is_date(&self) -> bool {
+        !self.text.contains(['T', 't', ':'])
+    }
+}
+
+/// The days a gantt's durations count, in a plan of whole days: every day unless it says.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Calendar {
+    /// Monday to Friday only: `"calendar": "weekdays"`.
+    pub weekdays: bool,
+    /// Days off besides: each a day, or every day from the first to the second.
+    pub off: Vec<(When, Option<When>)>,
+}
+
+/// A mark on a gantt's time: a line at a moment (a deadline, a release), or a shaded span (a
+/// freeze, a holiday) when it has an end.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GanttMark {
+    /// Where the line is (`at`), or where the span starts (`start`).
+    pub at: When,
+    /// Where a span ends; None for a line.
+    pub end: Option<When>,
+    /// What it's called.
+    pub label: Option<String>,
+    /// Its `fig` block.
+    pub fig: FigStyle,
+    /// Where it is in the spec.
+    pub pos: Pos,
+}
+
+/// A gantt chart: tasks over time, a row each, with what each comes after.
+///
+/// The tasks are rows of a table: `tasks` inline (JSON objects, kept in [`Table::raw`]) or
+/// `data` as any chart's. [`crate::gantt::GanttModel`] resolves them: see its docs for what a
+/// task's fields mean.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GanttSpec {
+    /// Its title.
+    pub title: Option<String>,
+    /// The line under the title.
+    pub subtitle: Option<String>,
+    /// Its tasks' rows.
+    pub data: DataSpec,
+    /// Whether the rows were written as `tasks` rather than `data`: [`write`] writes them back
+    /// so.
+    pub tasks: bool,
+    /// The transforms on the rows, in order.
+    pub transform: Vec<Transform>,
+    /// Which column is what. Boxed: eleven channels would make a gantt's spec many times the
+    /// size of any other figure's.
+    pub fields: Box<GanttFields>,
+    /// The days its durations count.
+    pub calendar: Calendar,
+    /// The today line.
+    pub today: Today,
+    /// Lines and spans on its time.
+    pub marks: Vec<GanttMark>,
+    /// The fields the card shows, after its own.
+    pub tooltip: Vec<String>,
+    /// The fields the detail panel shows; empty shows them all.
+    pub detail: Vec<String>,
+    /// The arrows from each task to those that come after it (`view.links`).
+    pub links: bool,
+    /// How it's shown: `grid`, `axes`, `legend`, `render_options` and `motion`, as a chart's.
+    pub view: ViewSettings,
+}
+
 /// A stat tile: one number, its change and its trend.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatSpec {
@@ -623,6 +751,8 @@ pub enum Figure {
     Chart(Chart),
     /// A network graph.
     Graph(GraphSpec),
+    /// A gantt chart.
+    Gantt(GanttSpec),
     /// A stat tile.
     Stat(StatSpec),
     /// A meter tile.
@@ -762,9 +892,14 @@ fn bare_jsonl(text: &str, opt: &ReadOptions) -> Result<Figure> {
     inferred(table, DataFormat::Jsonl)
 }
 
-/// The guess at a table read from bare data, its format kept: a tree when it has an id and a
-/// parent column ([`graph::from_table`]), else a chart.
+/// The guess at a table read from bare data, its format kept: a gantt when it has a start
+/// column of times and an end or a duration ([`gantt::from_table`]), a tree when it has an id
+/// and a parent column ([`graph::from_table`]), else a chart.
 fn inferred(table: Table, f: DataFormat) -> Result<Figure> {
+    if let Some(mut g) = gantt::from_table(&table) {
+        g.data.format = Some(f);
+        return Ok(Figure::Gantt(g));
+    }
     if let Some(g) = graph::from_table(&table) {
         return g.map(Figure::Graph);
     }
@@ -795,6 +930,7 @@ fn is_spec(node: &Node) -> bool {
             .is_some_and(|m| m.as_str().is_some() || m.as_obj().is_some())
         || rows_of_objects("layers")
         || rows_of_objects("nodes")
+        || rows_of_objects("tasks")
         || rows_of_objects("buckets")
         || fig::is_line_series(node.get("series"))
     {
@@ -804,17 +940,17 @@ fn is_spec(node: &Node) -> bool {
 }
 
 /// Every figure type, for messages.
-const TYPES: &str = "chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter, sparkline or dashboard";
+const TYPES: &str = "chart, line, area, bar, scatter, heatmap, histogram, graph, gantt, stat, meter, sparkline or dashboard";
 
 /// Whether an object with a `"type"` is more likely a row of data than a spec: its type is no
 /// figure's, and it has none of the keys a figure draws from.
 fn is_row(node: &Node) -> bool {
     let figure_type = |t: &str| {
         chart::Shorthand::from_name(t).is_some()
-            || ["graph", "stat", "meter", "sparkline", "dashboard"].contains(&t)
+            || ["graph", "gantt", "stat", "meter", "sparkline", "dashboard"].contains(&t)
     };
     let draws = [
-        "data", "mark", "layers", "nodes", "edges", "series", "buckets", "rows",
+        "data", "mark", "layers", "nodes", "edges", "series", "buckets", "rows", "tasks",
     ];
     node.get("type")
         .and_then(Node::as_str)
@@ -833,6 +969,8 @@ pub(crate) fn figure(node: &Node, cx: &mut Cx<'_>) -> Result<Figure> {
     let Some((ty, at)) = ty else {
         return if has("nodes") {
             fig::graph(node, cx).map(Figure::Graph)
+        } else if has("tasks") {
+            gantt::parse(node, cx).map(Figure::Gantt)
         } else if has("buckets") {
             fig::histogram(node, cx).map(Figure::Chart)
         } else if field(node, "series").is_some_and(|s| s.as_arr().is_some()) {
@@ -848,6 +986,7 @@ pub(crate) fn figure(node: &Node, cx: &mut Cx<'_>) -> Result<Figure> {
     };
     match ty.as_str() {
         "graph" => fig::graph(node, cx).map(Figure::Graph),
+        "gantt" => gantt::parse(node, cx).map(Figure::Gantt),
         "line" if field(node, "series").is_some_and(|s| s.as_arr().is_some()) => {
             fig::line(node, cx).map(Figure::Chart)
         }
@@ -1161,6 +1300,31 @@ fn unplace_figure(f: &mut Figure) {
             for e in &mut g.edges {
                 e.at = Pos::default();
                 unplace_node(&mut e.raw);
+            }
+        }
+        Figure::Gantt(g) => {
+            unplace_data(&mut g.data);
+            let f = &mut g.fields;
+            for ch in [
+                &mut f.id,
+                &mut f.label,
+                &mut f.start,
+                &mut f.end,
+                &mut f.duration,
+                &mut f.after,
+                &mut f.group,
+                &mut f.parent,
+                &mut f.progress,
+                &mut f.milestone,
+                &mut f.color,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                ch.at = None;
+            }
+            for m in &mut g.marks {
+                m.pos = Pos::default();
             }
         }
         Figure::Stat(s) => unplace_data(&mut s.data),

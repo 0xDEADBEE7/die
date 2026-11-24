@@ -975,6 +975,16 @@ pub(crate) fn view_settings(
     base: ViewSettings,
     cx: &mut Cx<'_>,
 ) -> Result<ViewSettings> {
+    view_settings_of(node, base, VIEW, cx)
+}
+
+/// [`view_settings`] for a figure whose `view` has the keys `known` (a chart's and its own).
+pub(crate) fn view_settings_of(
+    node: &Node,
+    base: ViewSettings,
+    known: &[&str],
+    cx: &mut Cx<'_>,
+) -> Result<ViewSettings> {
     let mut v = base;
     if let Some(menu) = field(node, "fig").and_then(|f| field(f, "menu")) {
         let o = obj(menu, "\"menu\"")?;
@@ -997,7 +1007,7 @@ pub(crate) fn view_settings(
         return Ok(v);
     };
     let o = obj(view, "\"view\"")?;
-    cx.check(o, VIEW);
+    cx.check(o, known);
     if let Some(b) = opt_bool(view, "grid")? {
         v.grid = b;
     }

@@ -1,0 +1,16 @@
+{
+  "type": "gantt",
+  "title": "Launch day runbook",
+  "subtitle": "Tuesday 12 January · a plan in hours",
+  "tasks": [
+    {"id": "freeze", "label": "Freeze deploys", "group": "Prepare", "start": "2027-01-12T08:00", "duration": "30m"},
+    {"id": "backup", "label": "Snapshot the database", "group": "Prepare", "after": "freeze", "duration": "45m"},
+    {"id": "canary", "label": "Canary to 5 %", "group": "Roll out", "after": "backup", "duration": "1h"},
+    {"id": "watch", "label": "Watch error rates", "group": "Roll out", "after": "canary", "duration": "30m"},
+    {"id": "go", "label": "Go or no-go", "group": "Roll out", "after": "watch", "milestone": true},
+    {"id": "full", "label": "Roll out to everyone", "group": "Roll out", "after": "go", "duration": "1h30m"},
+    {"id": "announce", "label": "Publish the announcement", "group": "Tell people", "start": "2027-01-12T13:00", "after": "full", "milestone": true},
+    {"id": "support", "label": "Support on call", "group": "Tell people", "start": "2027-01-12T12:00", "end": "2027-01-12T18:00"}
+  ],
+  "today": false
+}

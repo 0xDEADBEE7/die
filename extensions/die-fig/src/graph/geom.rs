@@ -216,17 +216,42 @@ impl GraphLayout {
 }
 
 /// What the header keeps at a size.
-#[derive(Clone, Copy)]
-struct Keep {
-    title: bool,
-    subtitle: bool,
-    legend_rows: usize,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Keep {
+    pub(crate) title: bool,
+    pub(crate) subtitle: bool,
+    pub(crate) legend_rows: usize,
 }
+
+/// What the header keeps as the area shrinks, the roomiest first: everything, then no subtitle
+/// and one row of legend, then no legend, then nothing.
+pub(crate) const LEVELS: [Keep; 4] = [
+    Keep {
+        title: true,
+        subtitle: true,
+        legend_rows: 2,
+    },
+    Keep {
+        title: true,
+        subtitle: false,
+        legend_rows: 1,
+    },
+    Keep {
+        title: true,
+        subtitle: false,
+        legend_rows: 0,
+    },
+    Keep {
+        title: false,
+        subtitle: false,
+        legend_rows: 0,
+    },
+];
 
 /// The padding across a figure `w` wide in an area `pad_w` wide (the whole window's, beside the
 /// detail panel): the area's, so nothing moves as the panel opens, but never more than a
 /// sliver of the figure's own width.
-fn side_pad(w: f32, h: f32, pad_w: f32) -> f32 {
+pub(crate) fn side_pad(w: f32, h: f32, pad_w: f32) -> f32 {
     let own = paddings(w, h).0;
     paddings(pad_w.max(w), h).0.min(w * 0.06).max(own)
 }
@@ -243,31 +268,9 @@ pub(crate) fn lay_out(
     theme: &Theme,
     m: &mut dyn Measure,
 ) -> GraphLayout {
-    let levels = [
-        Keep {
-            title: true,
-            subtitle: true,
-            legend_rows: 2,
-        },
-        Keep {
-            title: true,
-            subtitle: false,
-            legend_rows: 1,
-        },
-        Keep {
-            title: true,
-            subtitle: false,
-            legend_rows: 0,
-        },
-        Keep {
-            title: false,
-            subtitle: false,
-            legend_rows: 0,
-        },
-    ];
     let (w, h) = size;
     let mut chosen = None;
-    for keep in levels {
+    for keep in LEVELS {
         let hd = header(model, view, size, pad_w, keep, m);
         if hd.region.h >= (0.6 * h).max(90.0).min(h * 0.85) {
             chosen = Some(hd);
@@ -419,16 +422,59 @@ fn crowding(nodes: &[Option<NodeGeom>]) -> f32 {
 }
 
 /// The header at a level: its text, the legend, and the region left under it.
-struct Header {
-    chrome: Vec<Label>,
-    title: Rect,
-    legend: Vec<(SeriesKey, Rect)>,
-    items: Vec<LegendItem>,
-    region: Rect,
+pub(crate) struct Header {
+    pub(crate) chrome: Vec<Label>,
+    pub(crate) title: Rect,
+    pub(crate) legend: Vec<(SeriesKey, Rect)>,
+    pub(crate) items: Vec<LegendItem>,
+    pub(crate) region: Rect,
+}
+
+/// What a figure's header says: a graph's, and a gantt's, which is laid out the same.
+pub(crate) struct HeaderAsk<'a> {
+    /// The title.
+    pub(crate) title: Option<&'a str>,
+    /// The line under it: the spec's subtitle, else the figure's summary.
+    pub(crate) subtitle: String,
+    /// Whether the spec gave the subtitle: it then shows without a title too.
+    pub(crate) subtitle_given: bool,
+    /// The legend's entries, each a key and its name; none for no legend.
+    pub(crate) entries: Vec<(SeriesKey, &'a str)>,
+    /// The legend's keys' shape.
+    pub(crate) shape: KeyShape,
 }
 
 fn header(
     model: &GraphModel,
+    view: &View,
+    size: (f32, f32),
+    pad_w: f32,
+    keep: Keep,
+    m: &mut dyn Measure,
+) -> Header {
+    let entries = match model.groups.len() >= 2 {
+        true => (0..model.groups.len())
+            .map(|g| (model.group_key(g), model.groups[g].as_str()))
+            .collect(),
+        false => Vec::new(),
+    };
+    let ask = HeaderAsk {
+        title: model.spec.title.as_deref(),
+        subtitle: match model.spec.subtitle.as_deref() {
+            Some(s) => s.to_string(),
+            None => model.summary(),
+        },
+        subtitle_given: model.spec.subtitle.is_some(),
+        entries,
+        shape: KeyShape::Dot,
+    };
+    header_of(&ask, view, size, pad_w, keep, m)
+}
+
+/// The header of a figure at a level: the title, the subtitle, and the legend wrapped to
+/// rows with "+N more" where they don't all fit.
+pub(crate) fn header_of(
+    ask: &HeaderAsk<'_>,
     view: &View,
     size: (f32, f32),
     pad_w: f32,
@@ -445,7 +491,7 @@ fn header(
     let mut title = Rect::default();
     let mut y = pad_top;
     let mut any = false;
-    let title_text = model.spec.title.as_deref().filter(|t| !t.is_empty());
+    let title_text = ask.title.filter(|t| !t.is_empty());
     if keep.title
         && let Some(t) = title_text
     {
@@ -465,15 +511,12 @@ fn header(
         y = base + m.descent(title_spec);
         any = true;
     }
-    let subtitle = match model.spec.subtitle.as_deref() {
-        Some(s) => s.to_string(),
-        None => model.summary(),
-    };
+    let subtitle = &ask.subtitle;
     // With no title the summary would stand alone at the top: it shows only under one, or
     // when the spec gives a subtitle.
     let show_sub = keep.subtitle
         && !subtitle.is_empty()
-        && (model.spec.subtitle.is_some() || (keep.title && title_text.is_some()));
+        && (ask.subtitle_given || (keep.title && title_text.is_some()));
     if show_sub {
         let base = if any {
             y + 20.0 - m.descent(title_spec)
@@ -482,7 +525,7 @@ fn header(
         };
         let l = Label {
             role: Role::Title,
-            text: m.fit(&subtitle, body, wide),
+            text: m.fit(subtitle, body, wide),
             x: pad,
             y: base,
             spec: body,
@@ -501,13 +544,13 @@ fn header(
     }
     let mut legend = Vec::new();
     let mut items = Vec::new();
-    if model.groups.len() >= 2 && keep.legend_rows > 0 {
+    if !ask.entries.is_empty() && keep.legend_rows > 0 {
         let max_name = (wide - KEY_W - KEY_GAP).clamp(0.0, 220.0);
-        let entries: Vec<(SeriesKey, String, f32)> = (0..model.groups.len())
-            .map(|g| {
-                let name = m.fit(&model.groups[g], body, max_name);
+        let entries: Vec<(SeriesKey, String, f32)> = (ask.entries.iter())
+            .map(|(key, name)| {
+                let name = m.fit(name, body, max_name);
                 let iw = KEY_W + KEY_GAP + m.width(&name, body);
-                (model.group_key(g), name, iw)
+                (key.clone(), name, iw)
             })
             .collect();
         // Rows, left to right, leaving room for "+N more" on the last if not all fit.
@@ -555,8 +598,11 @@ fn header(
                 legend.push((key.clone(), Rect::new(x, top, *iw, ROW).inflate(2.0)));
                 items.push(LegendItem {
                     key: key.clone(),
-                    shape: KeyShape::Dot,
-                    swatch: Rect::new(x + 2.5, mid - 4.5, 9.0, 9.0),
+                    shape: ask.shape,
+                    swatch: match ask.shape {
+                        KeyShape::Square => Rect::new(x + 2.0, mid - 5.0, 10.0, 10.0),
+                        _ => Rect::new(x + 2.5, mid - 4.5, 9.0, 9.0),
+                    },
                     name: Label {
                         role: Role::Legend,
                         text: name.clone(),

@@ -79,11 +79,19 @@ pub enum Item {
         /// The id of the node it's to.
         to: Box<str>,
     },
+    /// A gantt's task: its index in the gantt's model and its key (its identity: its id, else
+    /// its label made unique).
+    Task {
+        /// Its index among the gantt's tasks, in source order.
+        index: u32,
+        /// Its key.
+        id: Box<str>,
+    },
 }
 
 impl Item {
-    /// The item a cursor is on. None for a node: a cursor names it by id alone, and an item
-    /// carries its index too (the graph's model has it).
+    /// The item a cursor is on. None for a node or a task: a cursor names it by id alone, and
+    /// an item carries its index too (the graph's model has it, or the gantt's).
     pub fn of_cursor(c: &Cursor) -> Option<Item> {
         match c {
             Cursor::Point { series, row } => Some(Item::Point {
@@ -98,12 +106,12 @@ impl Item {
                 row: *row,
                 col: *col,
             }),
-            Cursor::Node(_) => None,
+            Cursor::Node(_) | Cursor::Task(_) => None,
         }
     }
 
     /// Where the figure's cursor goes for it, when it names a place a cursor can be: a point, a
-    /// band, a cell or a node. A series needs its chart
+    /// band, a cell, a node or a task. A series needs its chart
     /// ([`crate::plot::ChartModel::cursor_of`]) and an edge its graph (the nearer end): None.
     pub fn cursor(&self) -> Option<Cursor> {
         match self {
@@ -120,6 +128,7 @@ impl Item {
                 col: *col,
             }),
             Item::Node { id, .. } => Some(Cursor::Node(id.clone())),
+            Item::Task { id, .. } => Some(Cursor::Task(id.clone())),
             Item::Series(_) | Item::Edge { .. } => None,
         }
     }
@@ -133,24 +142,27 @@ impl Item {
         }
     }
 
-    /// Whether it and `other` name one mark: as `==`, but a node by its id alone and an edge
-    /// by its index alone, so an item made from a cursor (which has no index) still finds it.
+    /// Whether it and `other` name one mark: as `==`, but a node or a task by its id alone and
+    /// an edge by its index alone, so an item made from a cursor (which has no index) still
+    /// finds it.
     pub fn same(&self, other: &Item) -> bool {
         match (self, other) {
             (Item::Node { id: a, .. }, Item::Node { id: b, .. }) => a == b,
+            (Item::Task { id: a, .. }, Item::Task { id: b, .. }) => a == b,
             (Item::Edge { index: a, .. }, Item::Edge { index: b, .. }) => a == b,
             _ => self == other,
         }
     }
 
     /// Whether it names the mark the cursor `c` is on, or one holding it: a series holds its
-    /// points and parts, a band whole its parts, a node is named by its id.
+    /// points and parts, a band whole its parts, a node or a task is named by its id.
     pub fn holds(&self, c: &Cursor) -> bool {
         match (self, c) {
             (Item::Series(k), Cursor::Point { series, .. }) => k == series,
             (Item::Series(k), Cursor::Band { series, .. }) => series.as_ref() == Some(k),
             (Item::Band { band, series: None }, Cursor::Band { band: b, .. }) => band == b,
             (Item::Node { id, .. }, Cursor::Node(n)) => id == n,
+            (Item::Task { id, .. }, Cursor::Task(t)) => id == t,
             _ => Item::of_cursor(c).is_some_and(|i| &i == self),
         }
     }

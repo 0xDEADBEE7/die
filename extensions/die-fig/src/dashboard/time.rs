@@ -132,6 +132,7 @@ impl DashView {
             let view = match &model.panels[i].state {
                 PanelState::Chart(m) => m.initial_view(),
                 PanelState::Graph(g) => g.initial_view(),
+                PanelState::Gantt(g) => g.initial_view(),
                 _ => View::default(),
             };
             self.panels.push(PanelView {

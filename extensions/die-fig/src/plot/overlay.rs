@@ -75,8 +75,8 @@ const CARD_ROW: f32 = 21.0;
 const DOT: f32 = 4.0;
 const DOT_BIG: f32 = 5.5;
 /// A chip's height and its padding across.
-const CHIP_H: f32 = 19.0;
-const CHIP_PAD: f32 = 7.0;
+pub(crate) const CHIP_H: f32 = 19.0;
+pub(crate) const CHIP_PAD: f32 = 7.0;
 /// How far inside the area's edge the card keeps.
 const INSET: f32 = 4.0;
 
@@ -196,7 +196,7 @@ fn valid(model: &ChartModel, view: &View, c: &Cursor) -> bool {
         }),
         Cursor::Band { band, .. } => (*band as usize) < model.x.bands.len().max(1),
         Cursor::Cell { .. } => model.is_heatmap(),
-        Cursor::Node(_) => false,
+        Cursor::Node(_) | Cursor::Task(_) => false,
     }
 }
 
@@ -616,7 +616,7 @@ fn moment(
             }
             card.place_beside(l, scene, x - reach, x + reach, ay, span, theme, m);
         }
-        Cursor::Node(_) => {}
+        Cursor::Node(_) | Cursor::Task(_) => {}
     }
 }
 
@@ -1037,7 +1037,9 @@ fn clear_ticks(l: &ChartLayout, theme: &Theme, scene: &mut Scene, r: Rect, m: &m
     }
 }
 
-fn chip(
+/// A chip: `text` centred in a rounded box, inverted (the cursor's ground and ink) or
+/// outlined on the card's ground.
+pub(crate) fn chip(
     theme: &Theme,
     scene: &mut Scene,
     r: Rect,
@@ -1361,9 +1363,23 @@ fn readout_chip(
     text: &str,
     m: &mut dyn Measure,
 ) {
+    readout_at(l.size.0, theme, scene, cx, top, text, m);
+}
+
+/// A brush's readout in an area `width` wide: a chip centred on `cx`, its top 6 px under
+/// `top`, kept inside the area.
+pub(crate) fn readout_at(
+    width: f32,
+    theme: &Theme,
+    scene: &mut Scene,
+    cx: f32,
+    top: f32,
+    text: &str,
+    m: &mut dyn Measure,
+) {
     let spec = TextSpec::new(TICK).tabular();
     let w = m.width(text, spec) + 2.0 * CHIP_PAD;
-    let left = (cx - w / 2.0).clamp(INSET, (l.size.0 - INSET - w).max(INSET));
+    let left = (cx - w / 2.0).clamp(INSET, (width - INSET - w).max(INSET));
     let chip_r = Rect::new(left, top + 6.0, w, CHIP_H);
     scene.push(Item::Path {
         path: PathData::rounded(chip_r, [4.0; 4]),

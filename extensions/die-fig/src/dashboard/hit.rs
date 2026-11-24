@@ -52,6 +52,14 @@ pub enum PanelHover {
     },
     /// On a graph: the node or edge.
     Graph(Option<Target>),
+    /// On a gantt: the task, by its bar or its label.
+    Gantt {
+        /// The task under the pointer.
+        task: Option<crate::gantt::Target>,
+        /// Whether the pointer hovers there (no gesture under way, no key since it moved): off
+        /// any bar, the date under it is said.
+        hovering: bool,
+    },
     /// On a tile.
     Tile(Option<TileHover>),
     /// On the panel's title.
@@ -173,6 +181,10 @@ pub fn hover(model: &DashModel, layout: &DashLayout, x: f32, y: f32) -> Option<D
             (super::PanelState::Graph(g), PanelFigure::Graph { layout: gl }) => {
                 PanelHover::Graph(graph::hover(g, gl, at.0, at.1))
             }
+            (super::PanelState::Gantt(g), PanelFigure::Gantt { layout: gl }) => PanelHover::Gantt {
+                task: crate::gantt::hover(g, gl, at.0, at.1),
+                hovering: true,
+            },
             (_, PanelFigure::Tile { model: tm }) => {
                 let rect = Rect::new(0.0, 0.0, p.frame.w, p.frame.h);
                 PanelHover::Tile(figure::hit(tm, rect, at))

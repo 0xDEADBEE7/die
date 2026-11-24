@@ -447,6 +447,7 @@ fn model(csv: &str) -> ChartModel {
         open: vec![],
         toggles: Toggles::default(),
         auto: None,
+        now: 0.0,
     };
     source::build(job).ok().unwrap().model.unwrap()
 }
@@ -463,6 +464,7 @@ fn the_build_waits_for_a_command_and_is_built_from_what_it_printed() {
         open: vec![],
         toggles: Toggles::default(),
         auto: None,
+        now: 0.0,
     };
     let Err(f) = source::build(job()) else {
         panic!("no output yet: it waits")

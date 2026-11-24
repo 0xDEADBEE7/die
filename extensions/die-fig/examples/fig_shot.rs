@@ -42,6 +42,17 @@
 //! time does; `--hover X,Y` finds what's there; `--no-frame` leaves the frame out. Room for a
 //! card is left under the row when something's hovered.
 //!
+//! A gantt (a spec whose `type` is `gantt`, or a table with a `start` and an `end` or a
+//! `duration`) takes these: `--now TIME` (the clock its today line reads: the system's unless
+//! given), `--cursor-task ID` (the cursor on a task, its card shown, its row brought into
+//! view), `--hover-task ID` (the pointer on a task's bar), `--hover X,Y` (the pointer at a
+//! place: a task's card, or the date there off any bar), `--brush X0,X1` (a drag across the
+//! plot; `--brushed` zooms to it), `--zoom F` (the time, about the cursor's task, else the
+//! middle), `--scroll PX` (the rows), `--hide NAME` (a colour's name hidden; again for more),
+//! `--search Q` (the tasks matching Q lit, the best with the cursor on it) and `--detail` (the
+//! panel for the cursor's task, else the hovered one, beside it). It prints the tasks, the
+//! rows, where the plot landed, the time shown and what's hovered.
+//!
 //! A heatmap takes `--cursor-cell R,C` (the keyboard's cursor on a cell) and `--hover X,Y`.
 //! `--brushed` releases the `--brush`: the figure is drawn zoomed to it, without the brush.
 //!
@@ -61,7 +72,8 @@
 //! (`"tooltip": "shared"`), `--panel-log N` (panel N's error figure as its log) and `--feed
 //! CMD=FILE` (a run or stream source's command taken as having printed FILE, so a live
 //! dashboard draws as a still frame). `--hover X,Y` is the pointer at a place in the area. It
-//! prints where each panel landed.
+//! prints where each panel landed, and what it is: `chart`, `graph`, `gantt` (with its plot and
+//! its rows), a tile. `--now TIME` is the clock a gantt panel's today line reads.
 
 use die_test_cap as _;
 
@@ -69,6 +81,7 @@ use die_draw::Book;
 use die_fig::FigError;
 use die_fig::data::ReadOptions;
 use die_fig::detail::{self, Item, PanelState};
+use die_fig::gantt::{self, GanttLayout, GanttModel};
 use die_fig::graph::{self, GraphLayout, GraphModel, Target};
 use die_fig::interact::{BrushKind, Cursor, Toggles, View};
 use die_fig::plot::{self, ChartLayout, ChartModel, ErrorView, OverlayState};
@@ -128,6 +141,15 @@ struct Ask {
     cursor_cell: Option<(u32, u32)>,
     /// The brush released: its zoom drawn, not the brush.
     brushed: bool,
+    /// A gantt's clock, as given.
+    now: Option<String>,
+    /// A gantt's cursor on a task, and the pointer on one.
+    cursor_task: Option<String>,
+    hover_task: Option<String>,
+    /// A gantt's rows scrolled.
+    scroll: Option<f32>,
+    /// A gantt's names hidden.
+    hide: Vec<String>,
 }
 
 /// What the detail flags ask for.
@@ -183,7 +205,8 @@ fn run() -> Result<(), String> {
                  [--hover-edge A,B] [--pin ID@X,Y] [--zoom F] [--layout L] [--labels off] [--ghost] \
                  [--detail] [--detail-series] [--detail-row N] [--detail-top N] [--detail-focus] \
                  [--detail-unfold] [--search Q] [--also FILE] [--range D] [--trend N] \
-                 [--linked N] [--no-frame] [--cursor-cell R,C] [--brushed]";
+                 [--linked N] [--no-frame] [--cursor-cell R,C] [--brushed] [--now TIME] \
+                 [--cursor-task ID] [--hover-task ID] [--scroll PX] [--hide NAME]";
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage.to_owned());
     };
@@ -218,6 +241,11 @@ fn run() -> Result<(), String> {
         no_frame: false,
         cursor_cell: None,
         brushed: false,
+        now: None,
+        cursor_task: None,
+        hover_task: None,
+        scroll: None,
+        hide: vec![],
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
@@ -301,6 +329,11 @@ fn run() -> Result<(), String> {
             "--linked" => ask.trend = Some((pair(&value()?, ',')?[0] as usize, false)),
             "--no-frame" => ask.no_frame = true,
             "--brushed" => ask.brushed = true,
+            "--now" => ask.now = Some(value()?),
+            "--cursor-task" => ask.cursor_task = Some(value()?),
+            "--hover-task" => ask.hover_task = Some(value()?),
+            "--scroll" => ask.scroll = Some(pair(&value()?, ',')?[0]),
+            "--hide" => ask.hide.push(value()?),
             "--cursor-cell" => {
                 let v = pair(&value()?, ',')?;
                 if v.len() != 2 {
@@ -340,7 +373,8 @@ fn run() -> Result<(), String> {
     if let Some(t) = tile_of(path, &zone)? {
         return tile_shot(t, &output, &ask, &zone, &theme, &mut book);
     }
-    let built = match build(path, &zone) {
+    let now = now_of(&ask, &zone)?;
+    let built = match build(path, &zone, now) {
         Ok(b) => b,
         Err(f) => {
             for e in f.all() {
@@ -397,12 +431,15 @@ fn run() -> Result<(), String> {
         });
     }
     let stale: Option<FigError> = match &ask.stale {
-        Some(bad) => match build(Path::new(bad), &zone) {
+        Some(bad) => match build(Path::new(bad), &zone, now) {
             Ok(_) => return Err(format!("{bad} builds: it has no error for a badge")),
             Err(f) => Some(f.first().clone()),
         },
         None => None,
     };
+    if let Some(g) = built.gantt {
+        return gantt_shot(g, &output, &ask, &theme, &mut book);
+    }
     let Some(model) = built.model else {
         return Err("fig_shot draws charts; this is another kind of figure".into());
     };
@@ -658,6 +695,181 @@ fn graph_shot(
     Ok(())
 }
 
+/// A gantt drawn as the flags ask: see the docs at the top.
+fn gantt_shot(
+    model: GanttModel,
+    output: &str,
+    ask: &Ask,
+    theme: &Theme,
+    book: &mut Book,
+) -> Result<(), String> {
+    let task =
+        |id: &str| -> Result<usize, String> { model.index_of(id).ok_or(format!("no task {id}")) };
+    let mut view = model.initial_view();
+    for name in &ask.hide {
+        if !model.names.contains(name) {
+            return Err(format!("--hide {name}: the names are {:?}", model.names));
+        }
+        view.hidden.insert(die_fig::data::SeriesKey::new(name, 0));
+    }
+    // Beside the detail panel, the gantt lays out in what it leaves.
+    let split = ask.detail.map(|_| detail::split(ask.size));
+    let fsize = split.map_or(ask.size, |(f, _, _)| (f.w, f.h));
+    let lay = |view: &View, scale: f32, book: &mut Book| -> (Scene, GanttLayout) {
+        let mut m = BookMeasure { book, scale };
+        gantt::base_beside(&model, view, fsize, ask.size.0, scale, theme, &mut m)
+    };
+    let found = ask.search.as_deref().map(|q| {
+        let s = die_fig::search::Search::with(model.search_names(), q);
+        let lit: Vec<usize> = (s.matches().iter())
+            .filter_map(|m| match &m.item {
+                Item::Task { id, .. } => model.index_of(id),
+                _ => None,
+            })
+            .collect();
+        let best = s.best().and_then(|m| m.item.cursor());
+        println!(
+            "search {q:?}: {} matches, best {:?}",
+            s.matches().len(),
+            best
+        );
+        (lit, best)
+    });
+    let cursor = match (&ask.cursor_task, &found) {
+        (Some(id), _) => Some(model.cursor(task(id)?)),
+        (None, Some((_, best))) => best.clone(),
+        _ => None,
+    };
+    if let Some(px) = ask.scroll {
+        let (_, l) = lay(&view, ask.scale, book);
+        view = gantt::nav::pan(&model, &l, &view, 0.0, -px);
+    } else if let Some(c) = &cursor {
+        let (_, l) = lay(&view, ask.scale, book);
+        view = gantt::nav::reveal(&model, &l, &view, c);
+    }
+    if let Some(f) = ask.zoom {
+        let (_, l) = lay(&view, ask.scale, book);
+        view = gantt::nav::zoom_about(&model, &l, &view, f, None, cursor.as_ref());
+    }
+    let mut brush = ask
+        .brush
+        .as_ref()
+        .map(|b| (b[0], *b.get(1).unwrap_or(&b[0])));
+    if ask.brushed
+        && let Some((a, b)) = brush.take()
+    {
+        let (_, l) = lay(&view, ask.scale, book);
+        if let Some(v) = gantt::nav::brush(&model, &l, &view, a, b) {
+            println!("brushed to {:?}", v.x);
+            view = v;
+        }
+    }
+    let shot = |view: &View,
+                scale: f32,
+                book: &mut Book,
+                say: bool|
+     -> Result<(Scene, Scene), String> {
+        let (scene, l) = lay(view, scale, book);
+        let mut st = gantt::OverlayState {
+            cursor: cursor.clone(),
+            cursor_card: split.is_none(),
+            brush,
+            ..Default::default()
+        };
+        if let Some((lit, best)) = &found {
+            st.matches = lit.clone();
+            st.emphasis = best.clone();
+        }
+        if let Some(id) = &ask.hover_task {
+            let i = task(id)?;
+            let g = l.task(i).ok_or(format!("{id} has no row"))?;
+            st.pointer = Some((g.bar.x + g.bar.w / 2.0, g.mid()));
+            st.hover = Some(gantt::Target::Task(i as u32));
+        }
+        if let Some((x, y)) = ask.hover {
+            st.pointer = Some((x, y));
+            st.hover = gantt::hover(&model, &l, x, y);
+        }
+        let mut m = BookMeasure { book, scale };
+        let over = gantt::overlay(&model, &l, view, &st, theme, &mut m);
+        if say {
+            let zone = &model.zone;
+            let at = |t: f64| die_fig::scale::format_time_full(t, 60.0, zone);
+            println!(
+                "gantt {} tasks, {} rows ({} links drawn); plot {:.1},{:.1} {:.1}x{:.1}, gutter {:.1} wide; rows {:.0} px scrolled {:.0}; time {} to {}; whole days {}; hover {:?}; overlay {:?}",
+                model.len(),
+                l.rows.len(),
+                l.links.len(),
+                l.plot.x,
+                l.plot.y,
+                l.plot.w,
+                l.plot.h,
+                l.gutter.w,
+                l.content,
+                l.scroll,
+                at(l.domain.0),
+                at(l.domain.1),
+                model.whole_days,
+                st.hover.map(|t| model.key(t.task())),
+                over.bounds(),
+            );
+        }
+        let mut scene = scene;
+        if let (Some((_, rect, _)), Some(d)) = (split, ask.detail) {
+            // The panel for the cursor's task, else the hovered one, beside the gantt.
+            let at = cursor
+                .as_ref()
+                .and_then(|c| model.task_of(c))
+                .or(st.hover.map(gantt::Target::task))
+                .ok_or("--detail needs --cursor-task or --hover-task")?;
+            let mut tree = gantt::detail::task_tree(&model, at);
+            if d.unfold {
+                tree.unfold_all();
+            }
+            let mut state = PanelState::open(&tree, Some(&model.item(at)));
+            if let Some(r) = d.row {
+                state.row = r.min(tree.rows.len().saturating_sub(1));
+            }
+            state.top = d.top;
+            state.focused = d.focus;
+            detail::reveal(&tree, &mut state, rect);
+            let mut m = BookMeasure { book, scale };
+            let panel = detail::panel(&tree, state, rect, scale, theme, &mut m);
+            if say {
+                println!(
+                    "detail {} at {rect:?}: {} — {}",
+                    model.key(at),
+                    tree.title,
+                    tree.kind
+                );
+                for (i, r) in tree.rows.iter().enumerate() {
+                    println!(
+                        "  {i:>3} {}{:?} {} = {}{}",
+                        "  ".repeat(usize::from(r.depth)),
+                        r.kind,
+                        r.key,
+                        r.value,
+                        if i == state.row { "  <" } else { "" }
+                    );
+                }
+            }
+            (scene.width, scene.height) = ask.size;
+            scene.items.extend(panel.items);
+            scene.regions.extend(panel.regions);
+        }
+        Ok((scene, over))
+    };
+    let (base, over) = shot(&view, ask.scale, book, true)?;
+    let bytes = composite(&base, &over, theme, book)?;
+    std::fs::write(output, bytes).map_err(|e| format!("{output}: {e}"))?;
+    if let Some(svg) = &ask.svg {
+        let (mut scene, over) = shot(&view, 1.0, book, false)?;
+        scene.items.extend(over.items);
+        std::fs::write(svg, die_fig::svg::write(&scene)).map_err(|e| format!("{svg}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// The base and the overlay drawn into buffers of their own and laid one on the other as the
 /// host lays the window's overlay on its base (premultiplied, exact), as a PNG: drawn as one
 /// scene, the overlay's wash would round the surface under it a level off.
@@ -779,8 +991,9 @@ fn beside(
     Ok(scene)
 }
 
-/// A file built by the job `\v` runs, its data read from disk, times in `zone`.
-fn build(path: &Path, zone: &TimeZone) -> Result<Built, Failed> {
+/// A file built by the job `\v` runs, its data read from disk, times in `zone`, the clock at
+/// `now`.
+fn build(path: &Path, zone: &TimeZone, now: f64) -> Result<Built, Failed> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let dir = path.parent().unwrap_or(Path::new("."));
     let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -792,6 +1005,7 @@ fn build(path: &Path, zone: &TimeZone) -> Result<Built, Failed> {
         open: vec![],
         toggles: Toggles::default(),
         auto: None,
+        now,
     })
 }
 
@@ -1160,6 +1374,15 @@ fn time_of_day(hm: &str, newest: f64, zone: &TimeZone) -> Result<f64, String> {
     Ok(at.timestamp().as_second() as f64)
 }
 
+/// The clock a gantt's today line reads: `--now`'s time, else the system's.
+fn now_of(ask: &Ask, zone: &TimeZone) -> Result<f64, String> {
+    match &ask.now {
+        Some(t) => die_fig::data::time::parse_time(t, &ReadOptions::new(zone.clone()))
+            .ok_or(format!("--now {t}: not a time")),
+        None => Ok(source::clock()),
+    }
+}
+
 /// A dashboard drawn as the flags ask: see the docs at the top.
 #[allow(clippy::too_many_arguments)]
 fn dash_shot(
@@ -1185,6 +1408,7 @@ fn dash_shot(
         file: Some(&file),
         dir: &dir,
         zone: &zone,
+        now: now_of(ask, &zone)?,
     };
     let first = DashModel::build(&spec, &dashboard::Sources::new(), &resolve, &origin);
     let mut sources = dashboard::read(first.wants(), &opt);
@@ -1290,6 +1514,16 @@ fn dash_shot(
                         l.plot.h
                     ),
                     dashboard::layout::PanelFigure::Graph { .. } => "graph".into(),
+                    dashboard::layout::PanelFigure::Gantt { layout: l } => format!(
+                        "gantt, plot {:.0},{:.0} {:.0}x{:.0}, {} rows ({:.0} px, scrolled {:.0})",
+                        l.plot.x + p.frame.x + p.body.x,
+                        l.plot.y + p.frame.y + p.body.y,
+                        l.plot.w,
+                        l.plot.h,
+                        l.rows.len(),
+                        l.content,
+                        l.scroll
+                    ),
                     dashboard::layout::PanelFigure::Tile { model: t } => format!("tile {t:?}"),
                     dashboard::layout::PanelFigure::Waiting(w) => format!("waiting: {w}"),
                     dashboard::layout::PanelFigure::Failed => match &pm.state {

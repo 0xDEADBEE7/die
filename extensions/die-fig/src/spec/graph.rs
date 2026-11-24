@@ -121,7 +121,7 @@ fn named<'t>(table: &'t Table, names: &[&str]) -> Option<&'t Column> {
 
 /// A cell as an id or a label: a number as JSON writes it (`7`, not `7.0`), a string as it is;
 /// None when it's missing or empty.
-fn cell_text(c: &Column, row: usize) -> Option<String> {
+pub(crate) fn cell_text(c: &Column, row: usize) -> Option<String> {
     match &c.values {
         Values::Number(_) | Values::Time(_) => {
             let v = c.f64_at(row);
@@ -135,7 +135,7 @@ fn cell_text(c: &Column, row: usize) -> Option<String> {
     }
 }
 
-fn number_text(v: f64) -> String {
+pub(crate) fn number_text(v: f64) -> String {
     if v.fract() == 0.0 && v.abs() < 1e15 {
         format!("{}", v as i64)
     } else {
@@ -145,7 +145,7 @@ fn number_text(v: f64) -> String {
 
 /// A row's place: its line in a CSV with a header (row 0 on line 2), column 1. The byte is
 /// unknown (0); a row whose fields hold line breaks puts the rows after it off by those.
-fn row_at(row: usize) -> Pos {
+pub(crate) fn row_at(row: usize) -> Pos {
     Pos {
         line: row as u32 + 2,
         col: 1,
@@ -155,7 +155,7 @@ fn row_at(row: usize) -> Pos {
 
 /// A row as a JSON object of its cells, for the detail panel: the source object where the rows
 /// came from JSON, else each column's cell (a number, a string, or null where it's missing).
-fn row_node(table: &Table, row: usize, at: Pos) -> Node {
+pub(crate) fn row_node(table: &Table, row: usize, at: Pos) -> Node {
     if let Some(raw) = table.raw.as_ref().and_then(|r| r.get(row)) {
         return raw.clone();
     }

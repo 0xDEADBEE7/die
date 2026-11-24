@@ -19,6 +19,9 @@
 //!   to the fewest decimals that read back as the same seconds, missing cells `null`;
 //! - a file by its path, as it was resolved against the spec's (absolute) directory; a command
 //!   with its `every`; the buffer as `"-"`; another dashboard's data as `"x.fig#name"`;
+//! - a gantt's rows as `tasks` if it was written so (each task's own object), else as `data`;
+//!   only the channels the spec gave; a `calendar` that isn't every day; `today` where it isn't
+//!   a line at now; a mark's and a day off's times as they were written;
 //! - a dashboard's rows as lists of panels, or `{"height", "panels"}` where a row has a height;
 //!   a column of panels as `{"column": […]}`, and a panel's `span` where it isn't 1.
 //!
@@ -28,9 +31,9 @@ use super::chart::{MAX_BINS, agg_name, format_duration, format_name, kind_name, 
 use super::graph::{edge_extras, layout_name, node_extras};
 use super::{
     Aggregate, Channel, ChannelValue, Chart, Curve, DashboardSpec, DataRef, DataSpec, Delta,
-    Encoding, Figure, GoodWhen, GraphEdge, GraphNode, GraphSpec, Labels, Layer, Layout, LegendPos,
-    Mark, MarkKind, MeterSpec, Panel, PanelSpec, ReadHints, ScaleKind, SparklineSpec, Stack,
-    StatSpec, Tooltip, ViewSettings, field, id_of, opt_string,
+    Encoding, Figure, GanttSpec, GoodWhen, GraphEdge, GraphNode, GraphSpec, Labels, Layer, Layout,
+    LegendPos, Mark, MarkKind, MeterSpec, Panel, PanelSpec, ReadHints, ScaleKind, SparklineSpec,
+    Stack, StatSpec, Today, Tooltip, ViewSettings, field, id_of, opt_string,
 };
 use crate::data::transform::{AggOp, FilterOp, Transform};
 use crate::data::{Column, SeriesKey, Table, Values};
@@ -96,6 +99,7 @@ fn figure_j(f: &Figure, names: &[String]) -> J {
     match f {
         Figure::Chart(c) => chart_j(c, names),
         Figure::Graph(g) => graph_j(g),
+        Figure::Gantt(g) => gantt_j(g, names),
         Figure::Stat(s) => stat_j(s, names),
         Figure::Meter(m) => meter_j(m, names),
         Figure::Sparkline(s) => sparkline_j(s, names),
@@ -858,6 +862,107 @@ fn graph_j(g: &GraphSpec) -> J {
 }
 
 /// Whether a node's object still says what the node is.
+/// A gantt: its rows as they were given (`tasks`, or `data`), the channels the spec gave, and
+/// what isn't the default.
+fn gantt_j(g: &GanttSpec, names: &[String]) -> J {
+    let mut o = O::default();
+    o.put("type", J::s("gantt"));
+    o.opt("title", &g.title);
+    o.opt("subtitle", &g.subtitle);
+    match &g.data.source {
+        DataRef::Inline(t) if g.tasks => o.put("tasks", tasks_j(t)),
+        _ => o.put("data", data_j(&g.data, names)),
+    }
+    if !g.transform.is_empty() {
+        o.put(
+            "transform",
+            J::Arr(g.transform.iter().map(transform_j).collect()),
+        );
+    }
+    for (key, c) in g.fields.each() {
+        if let Some(c) = c {
+            o.put(key, channel_j(c));
+        }
+    }
+    if !g.tooltip.is_empty() {
+        o.put("tooltip", J::strs(&g.tooltip));
+    }
+    if !g.detail.is_empty() {
+        o.put("detail", J::strs(&g.detail));
+    }
+    let cal = &g.calendar;
+    let days = if cal.weekdays { "weekdays" } else { "all" };
+    if !cal.off.is_empty() {
+        let off = cal.off.iter().map(|(a, b)| match b {
+            None => J::s(&a.text),
+            Some(b) => J::Obj(vec![("start", J::s(&a.text)), ("end", J::s(&b.text))]),
+        });
+        o.put(
+            "calendar",
+            J::Obj(vec![("days", J::s(days)), ("off", J::Arr(off.collect()))]),
+        );
+    } else if cal.weekdays {
+        o.put("calendar", J::s(days));
+    }
+    match g.today {
+        Today::Now => {}
+        Today::At(t) => o.put("today", time_j(t)),
+        Today::Off => o.put("today", J::Bool(false)),
+    }
+    if !g.marks.is_empty() {
+        let marks = g.marks.iter().map(|m| {
+            let mut mo = O::default();
+            match &m.end {
+                None => mo.put("at", J::s(&m.at.text)),
+                Some(end) => {
+                    mo.put("start", J::s(&m.at.text));
+                    mo.put("end", J::s(&end.text));
+                }
+            }
+            mo.opt("label", &m.label);
+            if m.fig != FigStyle::default() {
+                mo.put("fig", style_j(&m.fig));
+            }
+            mo.done()
+        });
+        o.put("marks", J::Arr(marks.collect()));
+    }
+    let mut view = match view_j(&g.view, &ViewSettings::default()) {
+        J::Obj(v) => v,
+        _ => Vec::new(),
+    };
+    if !g.links {
+        view.push(("links", J::Bool(false)));
+    }
+    if !view.is_empty() {
+        o.put("view", J::Obj(view));
+    }
+    o.done()
+}
+
+/// A gantt's inline tasks: each row's own object; a table with none (a spec built by hand) as
+/// an object a row of its cells.
+fn tasks_j(t: &Table) -> J {
+    if let Some(raw) = &t.raw {
+        return J::Arr(raw.iter().map(node_j).collect());
+    }
+    let rows = (0..t.rows).map(|r| {
+        let mut cells: Vec<(String, J)> = t
+            .columns
+            .iter()
+            .map(|c| (c.name.to_string(), cell_j(c, r)))
+            .filter(|(_, v)| *v != J::Null)
+            .collect();
+        if let Some(st) = t.styles.as_ref().and_then(|s| s.get(r))
+            && *st != FigStyle::default()
+        {
+            cells.push(("fig".into(), style_j(st)));
+        }
+        J::Map(cells)
+    });
+    J::Arr(rows.collect())
+}
+
 fn node_fits(n: &GraphNode) -> bool {
     let raw = &n.raw;
     raw.as_obj().is_some()

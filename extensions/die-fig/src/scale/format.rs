@@ -529,17 +529,17 @@ fn precision(z: &Zoned, step: f64) -> Level {
 }
 
 /// "10:25".
-fn clock(z: &Zoned) -> String {
+pub(crate) fn clock(z: &Zoned) -> String {
     format!("{:02}:{:02}", z.hour(), z.minute())
 }
 
 /// "Nov".
-fn month(z: &Zoned) -> &'static str {
+pub(crate) fn month(z: &Zoned) -> &'static str {
     MONTHS[(z.month() - 1).clamp(0, 11) as usize]
 }
 
 /// "Fri".
-fn weekday(z: &Zoned) -> &'static str {
+pub(crate) fn weekday(z: &Zoned) -> &'static str {
     WEEKDAYS[z.weekday().to_monday_zero_offset().clamp(0, 6) as usize]
 }
 

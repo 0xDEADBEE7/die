@@ -215,6 +215,7 @@ impl TileModel {
             Figure::Sparkline(s) => sparkline(s, table, range, on, zone),
             Figure::Chart(_) => Err(not_a_tile("a chart")),
             Figure::Graph(_) => Err(not_a_tile("a graph")),
+            Figure::Gantt(_) => Err(not_a_tile("a gantt")),
             Figure::Dashboard(_) => Err(not_a_tile("a dashboard")),
         }
     }
