@@ -10,7 +10,9 @@
 //!
 //! A link runs from the earlier task's end to the later one's start in right angles: out
 //! [`LINK_OUT`] px, down or up to the other's row, and in; where the later starts too close
-//! (or before), it goes round between the rows.
+//! (or before), it turns once and comes into the later's bar from above or below, [`LINK_IN`]
+//! px in from its start, or, where that bar is too short for it (and for a milestone), goes
+//! round between the rows.
 
 use super::GanttModel;
 use crate::data::SeriesKey;
@@ -45,12 +47,14 @@ pub const DIAMOND: f32 = 12.0;
 /// The ring a milestone wears in the surface's colour.
 pub const DIAMOND_RING: f32 = 2.0;
 /// A summary's bar's height, and how far its end ticks reach under it.
-pub const SUMMARY: (f32, f32) = (6.0, 4.0);
+pub const SUMMARY: (f32, f32) = (4.0, 4.0);
 /// How far a link runs out of a bar before it turns.
 pub const LINK_OUT: f32 = 8.0;
 /// A link whose later task starts less than this right of where the earlier ends goes round
 /// between the rows.
 pub const LINK_NEAR: f32 = 16.0;
+/// How far in from a bar's start a link that comes into it from above lands.
+pub const LINK_IN: f32 = 6.0;
 /// A link's arrowhead: its length and half its width.
 pub const ARROW: (f32, f32) = (5.0, 2.75);
 /// The ticks' labels' strip's height, and the marks' labels' under it.
@@ -825,27 +829,35 @@ fn route(a: &TaskGeom, b: &TaskGeom) -> Route {
     let (tx, ty) = (b.into().0 - ring(b), b.into().1);
     let out = fx + LINK_OUT;
     let base = tx - ARROW.0;
-    let pts = if tx - fx >= LINK_NEAR {
-        vec![(fx, fy), (out, fy), (out, ty), (base, ty)]
-    } else {
-        // Round between the rows: down (or up) past the earlier's row, back, then in.
-        let between = if ty >= fy {
-            a.strip.bottom()
-        } else {
-            a.strip.y
+    let side = [(tx, ty), (base, ty - ARROW.1), (base, ty + ARROW.1)];
+    if tx - fx >= LINK_NEAR {
+        return (vec![(fx, fy), (out, fy), (out, ty), (base, ty)], side);
+    }
+    // Too close to come in from the left. Where the later's bar reaches far enough, the link
+    // turns once and comes down (or up) into it from above, a little in from its start: a
+    // chain of tasks each starting as the last ends is a stair of single turns.
+    let down = ty >= fy;
+    let x = out.max(b.bar.x + LINK_IN);
+    if b.shape != Shape::Milestone && x <= b.bar.right() - LINK_IN / 2.0 {
+        let (edge, back) = match down {
+            true => (b.bar.y, b.bar.y - ARROW.0),
+            false => (b.bar.bottom(), b.bar.bottom() + ARROW.0),
         };
-        let back = tx - LINK_OUT;
-        vec![
-            (fx, fy),
-            (out, fy),
-            (out, between),
-            (back, between),
-            (back, ty),
-            (base, ty),
-        ]
-    };
-    let arrow = [(tx, ty), (base, ty - ARROW.1), (base, ty + ARROW.1)];
-    (pts, arrow)
+        let arrow = [(x, edge), (x - ARROW.1, back), (x + ARROW.1, back)];
+        return (vec![(fx, fy), (x, fy), (x, back)], arrow);
+    }
+    // Else round between the rows: down (or up) past the earlier's row, back, then in.
+    let between = if down { a.strip.bottom() } else { a.strip.y };
+    let back = tx - LINK_OUT;
+    let pts = vec![
+        (fx, fy),
+        (out, fy),
+        (out, between),
+        (back, between),
+        (back, ty),
+        (base, ty),
+    ];
+    (pts, side)
 }
 
 /// Today's line and the spec's marks, those in view, with their labels in the strip where

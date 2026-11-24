@@ -352,10 +352,11 @@ pub(crate) fn bar(
             stroke: Some(Stroke::solid(DIAMOND_RING, theme.surface, 1.0)),
         }),
         Shape::Summary => {
-            // A summary is the chrome's, not a colour's: muted, its part done in the text's.
+            // A summary is the chrome's, not a colour's, and quieter than the tasks under it:
+            // the neutral, its part done in the muted text's; lit, a step up each.
             let (rest, done) = match color == g.color {
-                true => (theme.muted, theme.text),
-                false => (mix(theme.muted, theme.strong, 0.25), theme.strong),
+                true => (theme.other, theme.muted),
+                false => (theme.muted, theme.text),
             };
             scene.push(Item::Path {
                 path: summary(g.bar, None),

@@ -601,12 +601,17 @@ fn the_layout_at_880_by_470() {
     assert_eq!(b.strip.y, l.plot.y + 28.0);
     // The rows don't stretch: three of them, and no scrollbar.
     assert_eq!((l.content, l.scroll, l.scrollbar), (84.0, 0.0, None));
-    // A link to a task that starts where the other ends goes round between the rows.
+    // A link to a task that starts where the other ends turns once, 8 px out, and comes down
+    // into the bar's top.
     let link = &l.links[0];
-    assert_eq!((link.from, link.to, link.pts.len()), (0, 1, 6));
+    assert_eq!((link.from, link.to, link.pts.len()), (0, 1, 3));
     assert_eq!(link.pts[0], a.out());
-    assert_eq!(link.pts[2].1, a.strip.bottom());
-    assert_eq!(link.arrow[0], b.into());
+    assert_eq!(link.pts[1], (a.bar.right() + 8.0, a.mid()));
+    assert_eq!(link.arrow[0], (a.bar.right() + 8.0, b.bar.y));
+    // One to a milestone there goes round between the rows and in at its left point.
+    let to_m = &l.links[1];
+    assert_eq!((to_m.from, to_m.to, to_m.pts.len()), (1, 2, 6));
+    assert_eq!(to_m.pts[2].1, b.strip.bottom());
     // The ticks are labelled in the axis strip, each centred on its gridline.
     assert!(!l.tick_labels.is_empty());
     assert!(
