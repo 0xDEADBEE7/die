@@ -270,6 +270,32 @@ fn one_date_alone_or_milestone_true_is_a_moment() {
 }
 
 #[test]
+fn a_task_without_an_id_is_named_by_its_label() {
+    let m = plan(&[
+        r#"{"label": "Draw", "start": "2026-11-02", "duration": "2d"}"#,
+        r#"{"label": "Draw", "after": "Draw", "duration": "1d"}"#,
+        r#"{"label": "Build", "after": "ship", "duration": "1d"}"#,
+        r#"{"id": "ship", "label": "Ship", "after": "Draw", "milestone": true}"#,
+        r#"{"id": 7, "after": "ship", "duration": "1d"}"#,
+    ]);
+    // A label two tasks share names the first; the second's key is made unique. An id may be
+    // a number, and a task with no label is called by its id.
+    let keys: Vec<&str> = m.tasks.iter().map(|t| &*t.key).collect();
+    assert_eq!(keys, ["Draw", "Draw (2)", "Build", "ship", "7"]);
+    assert_eq!(m.label(4), "7");
+    assert_eq!(m.tasks[1].after, [0]);
+    assert_eq!(m.tasks[2].after, [3]);
+    assert_eq!(m.cursor(1), cursor("Draw (2)"));
+    assert_eq!(m.index_of("Draw (2)"), Some(1));
+    // A search finds a task by its label, and by its key where that differs.
+    let names: Vec<String> = m.names().into_iter().map(|n| n.0).collect();
+    assert_eq!(
+        names,
+        ["Draw", "Draw", "Draw (2)", "Build", "Ship", "ship", "7"]
+    );
+}
+
+#[test]
 fn a_task_that_starts_before_one_it_comes_after_ends_is_in_conflict() {
     let m = plan(&[
         r#"{"id": "api", "label": "API", "start": "2026-11-02", "end": "2026-11-06"}"#,

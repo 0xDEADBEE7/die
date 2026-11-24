@@ -643,26 +643,30 @@ impl GanttModel {
             });
         }
 
-        // Keys: an id, else the label, made unique. Ids must be unique as given.
+        // Keys: an id, which must be unique as given; else the label, made unique. The ids
+        // first, so a task named by its label never takes the name another has as its id.
         let mut index: BTreeMap<Box<str>, u32> = BTreeMap::new();
-        let mut keys: Vec<Box<str>> = Vec::with_capacity(n);
+        let mut keys: Vec<Box<str>> = vec![Box::default(); n];
         for (row, g) in given.iter().enumerate() {
-            if let Some(id) = &g.id
-                && index.contains_key(id.as_str())
-                && given[index[id.as_str()] as usize].id.as_deref() == Some(id)
-            {
+            let Some(id) = &g.id else { continue };
+            if index.contains_key(id.as_str()) {
                 let msg = format!("task ids must be unique: {id} is given twice");
-                let col = id_c.map(|c| c.name.clone());
                 return Err(Fault {
                     error: Box::new(FigError::at(msg, rows.at(row))),
                     row: Some(row),
-                    column: col,
+                    column: id_c.map(|c| c.name.clone()),
                 });
             }
-            let base = match (&g.id, &g.label) {
-                (Some(id), _) => id.clone(),
-                (None, Some(l)) => l.clone(),
-                (None, None) => format!("task {}", row + 1),
+            index.insert(id.as_str().into(), row as u32);
+            keys[row] = id.as_str().into();
+        }
+        for (row, g) in given.iter().enumerate() {
+            if g.id.is_some() {
+                continue;
+            }
+            let base = match &g.label {
+                Some(l) => l.clone(),
+                None => format!("task {}", row + 1),
             };
             let mut key = base.clone();
             let mut k = 2;
@@ -671,7 +675,7 @@ impl GanttModel {
                 k += 1;
             }
             index.insert(key.as_str().into(), row as u32);
-            keys.push(key.into());
+            keys[row] = key.into();
         }
 
         // What each comes after, and what each is a part of.
