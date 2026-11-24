@@ -10,7 +10,7 @@
 //!   share its width by `span`; a row whose panels can't all have their least width wraps
 //!   onto as few lines as let them, its panels shared evenly between the lines. A line of tiles only (or of columns of tiles) takes the
 //!   tiles' natural height; the other lines share what's left by their row's `height`, each at
-//!   least its panels' least (charts and graphs 180 px) and at least 45 % of the room under
+//!   least its panels' least (charts and graphs 180 px, a gantt its axis and four rows) and at least 45 % of the room under
 //!   the header (up to 320 px), so a narrow area that stacks its charts scrolls rather than
 //!   squeezing each to a strip. When the least heights don't fit, the rows scroll under the
 //!   header, with a 4 px scrollbar in the right margin.
@@ -29,6 +29,7 @@
 use super::{Cell, CellKind, DashModel, DashView, Group, LiveState, PanelKind, PanelState};
 use crate::algo::HitIndex;
 use crate::figure::{self, RowFit, TileModel};
+use crate::gantt::{self, GanttLayout};
 use crate::graph::{self, GraphLayout};
 use crate::interact::View;
 use crate::plot::layout::{Ink, Insets, text_box};
@@ -66,6 +67,11 @@ pub const MIN_FIGURE: f32 = 180.0;
 pub const MIN_WIDTH: f32 = 220.0;
 /// A graph panel's height over its plot: its title and subtitle, its legend, its foot.
 const GRAPH_CHROME: f32 = 104.0;
+/// A gantt panel's height over its rows: its title and subtitle, its time axis and its marks'
+/// labels, its foot.
+const GANTT_CHROME: f32 = 110.0;
+/// How many rows a gantt panel shows at the least: the rest scroll inside it.
+const GANTT_ROWS: f32 = 4.0;
 /// A tile panel's height when it has no model to say (waiting, failed).
 pub const TILE_HEIGHT: f32 = 100.0;
 /// The share of the room under the header a line of figures takes at least, and the most that
@@ -181,6 +187,11 @@ pub enum PanelFigure {
         /// Where everything landed.
         layout: GraphLayout,
     },
+    /// A gantt.
+    Gantt {
+        /// Where everything landed.
+        layout: GanttLayout,
+    },
     /// A tile, over the dashboard's visible time where it has the time field.
     Tile {
         /// Its model as drawn.
@@ -237,6 +248,14 @@ impl PanelLayout {
     pub fn graph(&self) -> Option<&GraphLayout> {
         match &self.figure {
             PanelFigure::Graph { layout, .. } => Some(layout),
+            _ => None,
+        }
+    }
+
+    /// Its gantt's layout, if it shows a gantt.
+    pub fn gantt(&self) -> Option<&GanttLayout> {
+        match &self.figure {
+            PanelFigure::Gantt { layout, .. } => Some(layout),
             _ => None,
         }
     }
@@ -610,6 +629,12 @@ impl Cx<'_, '_> {
                 let plot = graph::geom::least_plot_height(g);
                 (MIN_FIGURE.max((GRAPH_CHROME + plot).ceil()), None)
             }
+            // The axis and a few rows at the least: it shares its line's height as a chart
+            // does, and scrolls its own rows inside.
+            (PanelState::Gantt(_), _) => (
+                MIN_FIGURE.max(GANTT_CHROME + GANTT_ROWS * gantt::geom::ROW),
+                None,
+            ),
             _ => (MIN_FIGURE, None),
         }
     }
@@ -991,6 +1016,26 @@ impl Cx<'_, '_> {
                 );
                 let (scene, layout) = graph::base(g, &view, (body.w, body.h), scale, theme, self.m);
                 (body, Some(scene), PanelFigure::Graph { layout })
+            }
+            PanelState::Gantt(g) => {
+                // Placed so the gantt's own paddings put its labels and its legend 16 px in,
+                // where the panel's title starts, whatever the panel's width (its body reaches
+                // past the frame by what its padding is more than the panel's), and its axis
+                // under the panel's head.
+                let under = (frame.h - head).max(0.0);
+                let (px, pt, pb) = plot::layout::paddings(frame.w, under);
+                let x = PAD - px;
+                let x = PAD - plot::layout::paddings(frame.w - 2.0 * x, under).0;
+                let top = (head - pt).max(1.0);
+                let foot = (PAD - pb).max(4.0);
+                let body = Rect::new(
+                    x,
+                    top,
+                    (frame.w - 2.0 * x).max(0.0),
+                    (frame.h - top - foot).max(0.0),
+                );
+                let (scene, layout) = gantt::base(g, &view, (body.w, body.h), scale, theme, self.m);
+                (body, Some(scene), PanelFigure::Gantt { layout })
             }
             PanelState::Tile(t) => {
                 // Over the visible time along the dashboard's time field, where the tile's

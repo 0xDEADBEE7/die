@@ -219,7 +219,7 @@ fn instants(zone: &TimeZone, dt: DateTime) -> Vec<f64> {
 }
 
 /// The first instant of `d` in `zone`: midnight, or the end of a gap that swallows it.
-fn start_of(d: Date, zone: &TimeZone) -> Option<f64> {
+pub(crate) fn start_of(d: Date, zone: &TimeZone) -> Option<f64> {
     Some(seconds(d.to_zoned(zone.clone()).ok()?.timestamp()))
 }
 

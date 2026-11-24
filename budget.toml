@@ -135,7 +135,7 @@ note = "shared by the extensions, outside guard 7: fonts, text runs, PNG and the
 name = "die-fig"
 path = "extensions/die-fig"
 extension = true
-note = "an extension, outside guard 7: figures from data (charts, network graphs, dashboards) drawn in pixels, in fig's ethos"
+note = "an extension, outside guard 7: figures from data (charts, network graphs, gantt charts, dashboards) drawn in pixels, in fig's ethos"
 
 [[crate]]
 name = "xtask"

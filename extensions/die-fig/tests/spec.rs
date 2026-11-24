@@ -1244,7 +1244,7 @@ fn every_error_has_its_place() {
     let cases: [(&str, &str, &str); 6] = [
         (
             r#"{"type": "pie", "data": "d"}"#,
-            "unknown figure type \"pie\": expected chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter, sparkline or dashboard",
+            "unknown figure type \"pie\": expected chart, line, area, bar, scatter, heatmap, histogram, graph, gantt, stat, meter, sparkline or dashboard",
             "\"pie\"",
         ),
         (
@@ -1259,7 +1259,7 @@ fn every_error_has_its_place() {
         ),
         (
             r#"{"title": "no type", "x": 1}"#,
-            "a figure needs a \"type\": chart, line, area, bar, scatter, heatmap, histogram, graph, stat, meter, sparkline or dashboard",
+            "a figure needs a \"type\": chart, line, area, bar, scatter, heatmap, histogram, graph, gantt, stat, meter, sparkline or dashboard",
             "{",
         ),
         // The reader's own errors keep their places.

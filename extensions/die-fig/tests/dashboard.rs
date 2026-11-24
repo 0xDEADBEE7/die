@@ -48,6 +48,7 @@ fn model_of(name: &str) -> DashModel {
         file: Some(&file),
         dir: &d,
         zone: &zone,
+        now: 0.0,
     };
     let first = DashModel::build(&spec, &Sources::new(), &resolve, &origin);
     let sources = dashboard::read(first.wants(), &o);
@@ -85,6 +86,7 @@ fn model_from(text: &str, files: &[(&str, &str)], sources: &Sources) -> DashMode
         file: Some(&main),
         dir: &specs,
         zone: &zone,
+        now: 0.0,
     };
     DashModel::build(&spec, sources, &resolve, &origin)
 }
@@ -616,6 +618,7 @@ fn a_file_or_a_borrow_out_of_the_directory_by_dotdot_or_a_link_asks_first() {
         file: Some(&file),
         dir: &dash,
         zone: &zone,
+        now: 0.0,
     };
     let m = DashModel::build(&spec, &Sources::new(), &resolve, &origin);
     let _ = std::fs::remove_dir_all(&base);
@@ -657,6 +660,7 @@ fn files_nest_four_deep_with_or_without_a_file_of_its_own() {
         file: None,
         dir: Path::new("/specs"),
         zone: &zone,
+        now: 0.0,
     };
     let m = DashModel::build(&spec, &Sources::new(), &resolve, &origin);
     assert_eq!(failure(&m, 0).msg, "files nest at most 4 deep");

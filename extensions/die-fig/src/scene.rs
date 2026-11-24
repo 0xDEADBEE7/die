@@ -491,6 +491,8 @@ pub enum Hit {
     },
     /// A graph's node, by its id.
     Node(Box<str>),
+    /// A gantt's task, by its key: its bar, or its label in the gutter.
+    Task(Box<str>),
     /// A panel's plot, where no mark is.
     Plot(u16),
     /// Padding, titles, the gaps between panels: off the plot.
