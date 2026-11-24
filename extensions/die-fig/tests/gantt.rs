@@ -1089,3 +1089,110 @@ fn a_gantt_is_built_from_its_file_as_a_chart_is() {
     assert_eq!(f.first().msg, "\"b\" comes after itself: b → c → b");
     assert_eq!(f.first().at.map(|a| a.line), Some(6));
 }
+
+/// A plan built in a zone of its own.
+fn model_in(text: &str, zone: &str) -> GanttModel {
+    let zone =
+        TimeZone::get(zone).unwrap_or_else(|e| panic!("the system's zoneinfo has {zone}: {e}"));
+    let opt = ReadOptions::new(zone.clone());
+    let parsed = spec::parse(text, "plan.fig", Path::new("/plans"), &opt).unwrap();
+    let Figure::Gantt(g) = parsed.figure else {
+        panic!("not a gantt: {text}")
+    };
+    let DataRef::Inline(table) = g.data.source.clone() else {
+        panic!("its tasks aren't inline: {text}")
+    };
+    GanttModel::build(g, table, &zone, NOW).unwrap_or_else(|e| panic!("{e} in\n{text}"))
+}
+
+#[test]
+fn a_plan_of_whole_days_holds_where_the_clocks_change() {
+    // Sydney's clocks go forward on Sun 4 Oct 2026 (a day of 23 hours): midnight is 14:00 UTC
+    // the day before until then, and 13:00 UTC after.
+    let utc = |s: &str| s.parse::<jiff::Timestamp>().unwrap().as_second() as f64;
+    let text = plan_with(
+        &[
+            r#"{"id": "a", "start": "2026-10-02", "end": "2026-10-05"}"#,
+            r#"{"id": "b", "after": "a", "duration": "3d"}"#,
+            r#"{"id": "c", "start": "2026-10-01", "duration": "1w"}"#,
+        ],
+        r#", "today": false"#,
+    );
+    let m = model_in(&text, "Australia/Sydney");
+    assert!(m.whole_days, "midnights in the zone, not in UTC");
+    // Friday to Monday is four days, the short one too, and its end is the next midnight.
+    assert_eq!(
+        span(&m, "a"),
+        (utc("2026-10-01T14:00:00Z"), utc("2026-10-05T13:00:00Z"))
+    );
+    assert_eq!(m.day_count(at(&m, "a")), Some(4));
+    assert_eq!(
+        (m.start_text(at(&m, "a")), m.end_text(at(&m, "a"))),
+        ("Fri 2 Oct".to_string(), "Mon 5 Oct".to_string())
+    );
+    // What comes after starts on the Tuesday and runs three days of 24 hours.
+    assert_eq!(
+        span(&m, "b"),
+        (utc("2026-10-05T13:00:00Z"), utc("2026-10-08T13:00:00Z"))
+    );
+    // A week across the change is seven days by the calendar, an hour short by the clock.
+    assert_eq!(
+        span(&m, "c"),
+        (utc("2026-09-30T14:00:00Z"), utc("2026-10-07T13:00:00Z"))
+    );
+    assert_eq!(m.day_count(at(&m, "c")), Some(7));
+    // Working days: Friday and Monday, either side of the short Sunday.
+    let weekdays = model_in(
+        &plan_with(
+            &[
+                r#"{"id": "a", "start": "2026-10-02", "duration": "2d"}"#,
+                r#"{"id": "b", "after": "a", "milestone": true}"#,
+            ],
+            r#", "today": false, "calendar": "weekdays""#,
+        ),
+        "Australia/Sydney",
+    );
+    assert_eq!(
+        span(&weekdays, "a"),
+        (utc("2026-10-01T14:00:00Z"), utc("2026-10-05T13:00:00Z"))
+    );
+    assert_eq!(weekdays.end_text(at(&weekdays, "a")), "Mon 5 Oct");
+    assert_eq!(span(&weekdays, "b").0, utc("2026-10-05T13:00:00Z"));
+    // The same dates read in UTC are a different plan of whole days, a day each still.
+    let there = model_in(&text, "UTC");
+    assert_eq!(there.day_count(at(&there, "a")), Some(4));
+}
+
+#[test]
+fn a_gantt_of_a_command_s_rows_waits_for_them_and_is_built_from_what_it_printed() {
+    let spec_text =
+        r#"{"type": "gantt", "data": {"run": "./plan.sh", "every": "5m"}, "today": false}"#;
+    // Nothing printed yet: it waits, and says what to start.
+    let Err(f) = source::build_with(job(spec_text, "plan.fig", vec![]), &[]) else {
+        panic!("no output yet: it waits")
+    };
+    assert!(f.is_waiting());
+    assert_eq!(f.errors[0].msg, "waiting for ./plan.sh");
+    assert_eq!((f.feeds.len(), f.feeds[0].table), (1, 0));
+    let want = f.feeds[0].spec.clone();
+    assert_eq!(want.cmd(), "./plan.sh");
+    // What it printed, as the editor's live data hands it over: the plan is built from it.
+    let opt = ReadOptions::new(TimeZone::UTC);
+    let printed = "task,start,end,after\nSpec,2026-11-02,2026-11-06,\nBuild,,2026-11-20,Spec\n";
+    let table = std::sync::Arc::new(die_fig::data::csv::read_csv(printed, &opt).unwrap());
+    let Ok(b) = source::build_with(job(spec_text, "plan.fig", vec![]), &[(want.clone(), table)])
+    else {
+        panic!("built from the command's table")
+    };
+    let m = b.gantt.expect("a gantt's model");
+    assert_eq!((m.len(), b.feeds[0].spec == want), (2, true));
+    assert_eq!(m.links.len(), 1);
+    // A header and no rows: nothing to draw, naming the command.
+    let empty =
+        std::sync::Arc::new(die_fig::data::csv::read_csv("task,start,end\n", &opt).unwrap());
+    let Err(f) = source::build_with(job(spec_text, "plan.fig", vec![]), &[(want, empty)]) else {
+        panic!("nothing to draw")
+    };
+    assert!(!f.is_waiting());
+    assert_eq!(f.errors[0].kind, ErrorKind::Empty);
+}
