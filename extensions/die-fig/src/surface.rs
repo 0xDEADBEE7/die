@@ -1512,7 +1512,7 @@ impl FigState {
                 (*band as usize) < cols && series.as_ref().is_none_or(|k| keys.contains(k))
             }
             Some(Cursor::Cell { row, col }) => (*row as usize) < rows && (*col as usize) < cols,
-            Some(Cursor::Node(_)) => false,
+            Some(Cursor::Node(_) | Cursor::Task(_)) => false,
             None => true,
         };
         let from_graph = self.graph.is_some();

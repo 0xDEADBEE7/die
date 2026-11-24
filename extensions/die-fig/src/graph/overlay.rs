@@ -502,7 +502,7 @@ pub fn overlay(
         for (_, r) in &layout.legend {
             avoid.push((Keep::Rect(*r), 6.0));
         }
-        let (card, r) = card.place(layout, anchor, reach, &avoid, &lines, m);
+        let (card, r) = card.place(&CardArea::of(layout), anchor, reach, &avoid, &lines, m);
         card_spot = Some((card, r));
     }
     // A label the card would cut goes whole, so no piece of it peeks out at the card's edge:
@@ -636,9 +636,31 @@ fn moved_labels(
 
 /// What a card keeps off: a rectangle (a label, the header) or a node's disc.
 #[derive(Clone, Copy, Debug)]
-enum Keep {
+pub(crate) enum Keep {
+    /// A rectangle.
     Rect(Rect),
+    /// A disc: its centre and radius.
     Disc((f32, f32), f32),
+}
+
+/// The area a card is placed in: its size, a cell's width (how far past the edge the card
+/// goes before it flips back) and which side it was last on, for its hysteresis.
+#[derive(Clone, Copy)]
+pub(crate) struct CardArea<'a> {
+    pub(crate) size: (f32, f32),
+    pub(crate) cell_width: f32,
+    pub(crate) flipped: &'a std::cell::Cell<bool>,
+}
+
+impl<'a> CardArea<'a> {
+    /// A graph's area.
+    fn of(layout: &'a GraphLayout) -> CardArea<'a> {
+        CardArea {
+            size: layout.size,
+            cell_width: layout.cell_width,
+            flipped: &layout.flipped,
+        }
+    }
 }
 
 impl Keep {
@@ -847,26 +869,28 @@ fn labels(
 
 /// A card's row: a key dot, a value, a name.
 #[derive(Clone)]
-struct Row {
-    key: Option<Color>,
-    value: String,
-    name: String,
+pub(crate) struct Row {
+    pub(crate) key: Option<Color>,
+    pub(crate) value: String,
+    pub(crate) name: String,
 }
 
-/// The card: a title over rows, values first.
+/// The card: a title over rows, values first, and a note under them (a gantt's conflict).
 #[derive(Clone)]
-struct Card {
+pub(crate) struct Card {
     title: String,
-    rows: Vec<Row>,
+    pub(crate) rows: Vec<Row>,
     /// The rows it keeps however small it gets: a node's group and degree (and hops), an
     /// edge's label or weight.
     keep: usize,
+    /// A line under the rows, in a colour of its own.
+    note: Option<(String, Color)>,
     title_w: f32,
     val_w: f32,
     name_w: f32,
     keyed: bool,
-    w: f32,
-    h: f32,
+    pub(crate) w: f32,
+    pub(crate) h: f32,
 }
 
 fn vspec() -> TextSpec {
@@ -970,6 +994,18 @@ impl Card {
                 )
             }
         };
+        Card::new(title, rows, keep, None, m)
+    }
+
+    /// A card of a title over `rows`, the first `keep` of which it keeps however small it
+    /// gets, with a `note` under them.
+    pub(crate) fn new(
+        title: String,
+        rows: Vec<Row>,
+        keep: usize,
+        note: Option<(String, Color)>,
+        m: &mut dyn Measure,
+    ) -> Card {
         let keyed = rows.iter().any(|r| r.key.is_some());
         let val_w = rows
             .iter()
@@ -982,6 +1018,7 @@ impl Card {
             .fold(0.0, f32::max)
             .min(NAME_MAX);
         let title_w = m.width(&title, tspec());
+        let note_w = (note.as_ref()).map_or(0.0, |(n, _)| m.width(n, nspec()));
         let body = PAD
             + if keyed { KEY_W + 8.0 } else { 0.0 }
             + val_w
@@ -990,12 +1027,14 @@ impl Card {
             + PAD;
         let w = body
             .max(title_w + 2.0 * PAD)
+            .max(note_w + 2.0 * PAD)
             .min(VALUE_MAX + NAME_MAX + 80.0)
             .ceil();
-        let h = Card::height(rows.len());
+        let h = Card::height(rows.len(), note.is_some());
         Card {
             title,
             keep,
+            note,
             rows,
             title_w,
             val_w,
@@ -1006,12 +1045,13 @@ impl Card {
         }
     }
 
-    /// Its height for its rows.
-    fn height(rows: usize) -> f32 {
-        if rows == 0 {
+    /// Its height for its rows, and its note's line.
+    fn height(rows: usize, note: bool) -> f32 {
+        let lines = rows + usize::from(note);
+        if lines == 0 {
             34.0
         } else {
-            32.0 + rows as f32 * CARD_ROW + 7.0
+            32.0 + lines as f32 * CARD_ROW + 7.0
         }
     }
 
@@ -1021,7 +1061,7 @@ impl Card {
         let mut c = self.clone();
         while c.h > max_h && !c.rows.is_empty() {
             c.rows.pop();
-            c.h = Card::height(c.rows.len());
+            c.h = Card::height(c.rows.len(), c.note.is_some());
         }
         if c.w > max_w {
             let excess = c.w - max_w;
@@ -1043,7 +1083,7 @@ impl Card {
     /// spare). The place and whether it's on the left; None where nowhere fits it whole.
     fn best_place(
         &self,
-        layout: &GraphLayout,
+        layout: &CardArea<'_>,
         anchor: (f32, f32),
         reach: f32,
         avoid: &[(Keep, f32)],
@@ -1153,9 +1193,9 @@ impl Card {
     /// fit at all, cut to fit beside the anchor or above or below it (whichever keeps more
     /// rows) and placed again; where even that fails, slid into the area off the anchor. The
     /// card as it's drawn, and where.
-    fn place(
+    pub(crate) fn place(
         &self,
-        layout: &GraphLayout,
+        layout: &CardArea<'_>,
         anchor: (f32, f32),
         reach: f32,
         avoid: &[(Keep, f32)],
@@ -1171,7 +1211,7 @@ impl Card {
         for n in (least..=self.rows.len()).rev() {
             let mut c = self.clone();
             c.rows.truncate(n);
-            c.h = Card::height(n);
+            c.h = Card::height(n, c.note.is_some());
             let dropped = (self.rows.len() - n) as f32 * ROW_DROP;
             if best.as_ref().is_some_and(|(b, _, _)| dropped >= *b) {
                 // Shorter still can only cost more than the best so far.
@@ -1250,7 +1290,7 @@ impl Card {
         (card, Rect::new(r.x.round(), r.y.round(), r.w, r.h))
     }
 
-    fn draw(&self, scene: &mut Scene, r: Rect, theme: &Theme, m: &mut dyn Measure) {
+    pub(crate) fn draw(&self, scene: &mut Scene, r: Rect, theme: &Theme, m: &mut dyn Measure) {
         scene.push(Item::Shadow {
             rect: r,
             radius: CARD_RADIUS,
@@ -1309,6 +1349,19 @@ impl Card {
                 spec: nspec(),
                 anchor: Anchor::Start,
                 color: mix(theme.text, theme.muted, 0.35),
+                alpha: 1.0,
+                max_width: None,
+            });
+        }
+        if let Some((note, color)) = &self.note {
+            let y0 = r.y + 32.0 + self.rows.len() as f32 * CARD_ROW;
+            scene.push(Item::Text {
+                text: m.fit(note, nspec(), r.w - 2.0 * PAD).into(),
+                x: r.x + PAD,
+                y: y0 + 14.5,
+                spec: nspec(),
+                anchor: Anchor::Start,
+                color: *color,
                 alpha: 1.0,
                 max_width: None,
             });

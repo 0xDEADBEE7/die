@@ -29,4 +29,7 @@ pub enum Cursor {
     },
     /// A graph's node, by its id.
     Node(Box<str>),
+    /// A gantt's task, by its key: its id, else its label, made unique by the model
+    /// ([`crate::gantt::GanttModel::cursor`]).
+    Task(Box<str>),
 }

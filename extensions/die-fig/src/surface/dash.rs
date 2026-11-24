@@ -1106,7 +1106,7 @@ fn cursor_fits(m: &crate::plot::ChartModel, c: &Cursor) -> bool {
         Cursor::Cell { row, col } => {
             (*row as usize) < m.y.bands.len() && (*col as usize) < m.x.bands.len()
         }
-        Cursor::Node(_) => false,
+        Cursor::Node(_) | Cursor::Task(_) => false,
     }
 }
 

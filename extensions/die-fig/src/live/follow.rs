@@ -140,5 +140,6 @@ pub fn keep_cursor(old: &ChartModel, new: &ChartModel, cursor: &Cursor) -> Optio
             })
         }
         Cursor::Node(id) => Some(Cursor::Node(id.clone())),
+        Cursor::Task(key) => Some(Cursor::Task(key.clone())),
     }
 }

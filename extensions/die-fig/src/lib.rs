@@ -17,7 +17,8 @@
 //! - [`detail`], [`search`], [`graph`], [`figure`], [`dashboard`], [`source`], [`live`],
 //!   [`surface`] and [`cells`]: the detail panel, search's model, the network figure, tiles,
 //!   dashboards, where data comes from, commands run and streamed, the DIE surface, and the
-//!   braille fallback.
+//!   braille fallback;
+//! - [`gantt`]: the gantt figure: tasks over time, a row each, with what each comes after.
 //!
 //! Nothing of fig's runs until `fig-toggle` asks for a figure: no timer, no job.
 #![warn(missing_docs)]
@@ -32,6 +33,7 @@ pub mod data;
 pub mod detail;
 pub mod error;
 pub mod figure;
+pub mod gantt;
 pub mod graph;
 pub mod interact;
 pub mod json;
@@ -1712,6 +1714,7 @@ fn cursor_value(c: &Option<Cursor>) -> Value {
         }
         Some(Cursor::Cell { row, col }) => json!({"cell": [row, col]}),
         Some(Cursor::Node(id)) => json!({"node": &**id}),
+        Some(Cursor::Task(key)) => json!({"task": &**key}),
         None => Value::Null,
     }
 }
@@ -1726,6 +1729,9 @@ fn cursor_of(v: &Value) -> Option<Cursor> {
     }
     if let Some(id) = v.get("node").and_then(Value::as_str) {
         return Some(Cursor::Node(id.into()));
+    }
+    if let Some(key) = v.get("task").and_then(Value::as_str) {
+        return Some(Cursor::Task(key.into()));
     }
     if let Some(c) = v.get("cell").and_then(Value::as_array) {
         let n = |i: usize| c.get(i).and_then(Value::as_u64).map(|n| n as u32);
