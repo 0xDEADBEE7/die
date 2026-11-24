@@ -8,7 +8,8 @@
 //! job, [`build`], off the main thread: the job is given the text of every buffer that visits a
 //! file, so a data file open in a buffer is read from the buffer and follows its edits, and the
 //! rest from disk, polled. A chart's model is built there, and so is a graph's, laid out once
-//! (fig's stress layout is `O(n²)`). A dashboard (or a tile alone, a dashboard of one panel)
+//! (fig's stress layout is `O(n²)`), and a gantt's, its tasks read as a chart's data is and
+//! their dates worked out against the clock the job was given. A dashboard (or a tile alone, a dashboard of one panel)
 //! is parsed here and its panels are built by the editor in jobs of their own, each as its
 //! data comes ([`crate::surface::dash`]).
 //!
@@ -20,13 +21,15 @@
 
 use crate::data::{ReadOptions, Table};
 use crate::error::{ErrorKind, FigError, Pos, Result};
+use crate::gantt::GanttModel;
 use crate::graph::GraphModel;
 use crate::interact::Toggles;
 use crate::live::LiveSpec;
 use crate::plot::ChartModel;
 use crate::spec::chart::with_hints;
 use crate::spec::{
-    Chart, DataFormat, DataRef, DataSpec, Figure, GraphSpec, Layout, Parsed, format_of_name,
+    Chart, DataFormat, DataRef, DataSpec, Figure, GanttSpec, GraphSpec, Layout, Parsed,
+    format_of_name,
 };
 use die_core::BufferId;
 use jiff::tz::TimeZone;
@@ -125,6 +128,17 @@ pub struct Job {
     /// The layout `auto` picked for the graph shown, which a graph whose spec still says
     /// `auto` keeps while it's followed, so an edit doesn't lay it out another way.
     pub auto: Option<Layout>,
+    /// The clock, in UTC seconds since the epoch: where a gantt's today line is. The job never
+    /// reads the system's.
+    pub now: f64,
+}
+
+/// The system clock's now, in UTC seconds since the epoch: what a [`Job`] made by the editor
+/// is given.
+pub fn clock() -> f64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
 /// A command one of a chart's tables comes from, run or streamed by [`crate::live`].
@@ -153,6 +167,9 @@ pub struct Built {
     pub model: Option<ChartModel>,
     /// The graph's model, laid out, when the figure is a graph.
     pub graph: Option<GraphModel>,
+    /// The gantt's model, its dates worked out, when the figure is a gantt: its table is
+    /// `tables`' one.
+    pub gantt: Option<GanttModel>,
     /// What the spec had that was odd but not wrong.
     pub warnings: Vec<FigError>,
     /// The files read from disk, and when each last changed: polled while shown. A figure
@@ -286,6 +303,7 @@ pub fn build_with(job: Job, live: &[(LiveSpec, Arc<Table>)]) -> std::result::Res
                     tables: vec![],
                     model: None,
                     graph: Some(g),
+                    gantt: None,
                     warnings,
                     files,
                     followed: vec![],
@@ -295,10 +313,24 @@ pub fn build_with(job: Job, live: &[(LiveSpec, Arc<Table>)]) -> std::result::Res
                 Err(e) => Err(failed(vec![e], warnings, files)),
             };
         }
-        // Until the gantt's model lands (the next step).
-        Figure::Gantt(_) => {
-            let e = FigError::new("gantt charts aren't drawn yet");
-            return Err(failed(vec![e], warnings, files));
+        Figure::Gantt(spec) => {
+            let reader = Reader {
+                open: &job.open,
+                opt: &opt,
+                dir: &job.dir,
+                spec: if inferred { None } else { Some(&text) },
+                live,
+                files: std::mem::take(&mut files),
+                followed: vec![],
+                read: vec![],
+                feeds: vec![],
+            };
+            let parsed = Parsed {
+                figure,
+                inferred,
+                warnings,
+            };
+            return gantt(spec, parsed, reader, &job, &text);
         }
         // A dashboard, or a tile alone: its data is read and its panels built by the editor,
         // each in a job as its data comes, the panels still waiting drawn as frames.
@@ -310,6 +342,7 @@ pub fn build_with(job: Job, live: &[(LiveSpec, Arc<Table>)]) -> std::result::Res
                 tables: vec![],
                 model: None,
                 graph: None,
+                gantt: None,
                 warnings,
                 files,
                 followed: vec![],
@@ -393,11 +426,114 @@ pub fn build_with(job: Job, live: &[(LiveSpec, Arc<Table>)]) -> std::result::Res
         tables,
         model: Some(model),
         graph: None,
+        gantt: None,
         warnings,
         files: reader.files,
         followed: reader.followed,
         feeds: reader.feeds,
         text,
+    })
+}
+
+/// A gantt built: its tasks' rows read as a chart's data is (a file, a buffer that visits it,
+/// inline, a command's, or the figure's own text where a bare table was guessed as one), then
+/// the model. A command that hasn't printed yet leaves it waiting; an error about a row of a
+/// data file is in that file, at the cell where the rows are the file's.
+fn gantt(
+    spec: GanttSpec,
+    parsed: Parsed,
+    mut reader: Reader<'_>,
+    job: &Job,
+    text: &Arc<str>,
+) -> std::result::Result<Built, Failed> {
+    let Parsed {
+        figure,
+        inferred,
+        mut warnings,
+    } = parsed;
+    // A bare table guessed as a gantt is its own data.
+    let own = inferred && spec.data.source == DataRef::Source;
+    let table = match own {
+        true => read_data(text, &spec.data, &job.name, reader.opt).map(Arc::new),
+        false => reader.table(0, &spec.data),
+    };
+    let fail = |errors: Vec<FigError>, warnings, reader: Reader<'_>| Failed {
+        errors,
+        warnings,
+        text: text.clone(),
+        files: reader.files,
+        feeds: reader.feeds,
+    };
+    let table = match table {
+        Ok(t) => t,
+        Err(e) => return Err(fail(vec![e], warnings, reader)),
+    };
+    let waits = waited(&reader.feeds);
+    if !waits.is_empty() {
+        let errors = waits.into_iter().map(waiting_for).collect();
+        return Err(fail(errors, warnings, reader));
+    }
+    // What was read on the way, as the log says it.
+    let said = |mut e: FigError, reader: &Reader<'_>| {
+        if own {
+            e = e.note(read_as(&job.name, text));
+        }
+        for r in &reader.read {
+            e = e.note(r.said());
+        }
+        e
+    };
+    let read = reader.read.first();
+    // An error or a warning at a row of a data file is in that file.
+    let in_data = |e: FigError| match (read, e.at) {
+        (Some(r), Some(_)) => e.in_file(&r.path, Some(&r.text)),
+        _ => e,
+    };
+    let built = GanttModel::build_placed(spec.clone(), table.clone(), &job.zone, job.now);
+    let model = match built {
+        Ok(m) => m,
+        Err(fault) => {
+            let mut e = fault.error;
+            if let (Some(row), Some(r)) = (fault.row, read) {
+                let tabular = matches!(r.format, DataFormat::Csv | DataFormat::Tsv);
+                let cell = (fault.column.as_deref())
+                    .filter(|_| spec.transform.is_empty())
+                    .and_then(|c| r.cell(&table, row, c));
+                e.at = match (cell, tabular && !spec.transform.is_empty()) {
+                    (Some(at), _) => Some(at),
+                    // A table's rows aren't the file's lines once they've been transformed.
+                    (None, true) => None,
+                    (None, false) => e.at,
+                };
+                e = in_data(e);
+            }
+            let e = said(e, &reader);
+            return Err(fail(vec![e], warnings, reader));
+        }
+    };
+    warnings.extend(model.warnings.iter().cloned().map(&in_data));
+    let name = match (read, job.name.is_empty()) {
+        (Some(r), _) => Some(shown(&r.path)),
+        (None, false) => Some(job.name.clone()),
+        (None, true) => None,
+    };
+    let model = match name {
+        Some(n) => model.named(n),
+        None => model,
+    };
+    Ok(Built {
+        figure,
+        inferred,
+        chart: None,
+        tables: vec![table],
+        model: None,
+        graph: None,
+        gantt: Some(model),
+        warnings,
+        files: reader.files,
+        followed: reader.followed,
+        feeds: reader.feeds,
+        text: text.clone(),
     })
 }
 

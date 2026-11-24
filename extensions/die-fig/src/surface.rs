@@ -1196,6 +1196,7 @@ impl FigState {
             open,
             toggles,
             auto: self.auto_pick.clone(),
+            now: crate::source::clock(),
         };
         self.builds += 1;
         // This build applies the settings as they are now: a rebuild for them is no more use.
@@ -1372,6 +1373,17 @@ impl FigState {
     /// why not (the error figure where there's none).
     fn built(&mut self, ctx: &mut Ctx, out: std::result::Result<source::Built, Failed>) {
         self.rev += 1;
+        // Until the surface draws a gantt (the next step): its error figure says so.
+        let out = match out {
+            Ok(b) if b.gantt.is_some() => Err(Failed {
+                errors: vec![FigError::new("gantt charts aren't drawn yet")],
+                warnings: b.warnings,
+                text: b.text,
+                files: b.files,
+                feeds: b.feeds,
+            }),
+            other => other,
+        };
         match out {
             Ok(b) => {
                 if b.warnings != self.warned {
