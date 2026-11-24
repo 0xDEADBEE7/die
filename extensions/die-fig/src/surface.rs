@@ -3328,7 +3328,7 @@ impl Act<'_> {
     }
 }
 
-/// The keys' actions, on a chart or a graph alike (the design's controls).
+/// The keys' actions, on a chart, a graph or a gantt alike (the design's controls).
 pub trait Keys {
     /// `h l j k w b gg G H M L ] [`: the cursor moved as `action` says, `count` times, the view
     /// following it. False if it didn't move.

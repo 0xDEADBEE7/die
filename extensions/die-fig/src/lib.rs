@@ -698,7 +698,7 @@ fn zoom_factor(a: &Args, by: i32) -> f64 {
     interact::consts::ZOOM_STEP.powi(count(a).min(ZOOM_COUNT) as i32 * by)
 }
 
-/// A key that acts on the pane, a chart's or a graph's, through [`surface::Keys`].
+/// A key that acts on the pane, a chart's, a graph's or a gantt's, through [`surface::Keys`].
 fn act(ctx: &mut Ctx, a: &Args, f: impl FnOnce(&mut dyn Keys, &Args)) -> Result {
     on_fig(ctx, a, false, |st, w, ctx| {
         st.keys(w, ctx.now(), |k| f(k, a));
@@ -741,53 +741,57 @@ const MOTIONS: [(&str, &str, &str); 11] = [
     (
         "fig-left",
         "h",
-        "h: the cursor to the previous point along x (a bar, a cell). A count repeats.",
+        "h: the cursor to the previous point along x (a bar, a cell); on a gantt, to the task that starts before. A count repeats.",
     ),
     (
         "fig-right",
         "l",
-        "l: the cursor to the next point along x. A count repeats.",
+        "l: the cursor to the next point along x; on a gantt, to the task that starts after. A count repeats.",
     ),
     (
         "fig-down",
         "j",
-        "j: the cursor to the series below it at its x (a stack's segment).",
+        "j: the cursor to the series below it at its x (a stack's segment); on a gantt, to the task below, a count repeating.",
     ),
     (
         "fig-up",
         "k",
-        "k: the cursor to the series above it at its x.",
+        "k: the cursor to the series above it at its x; on a gantt, to the task above.",
     ),
     (
         "fig-peak-next",
         "w",
-        "w: the cursor to the next peak or trough of its series.",
+        "w: the cursor to the next peak or trough of its series; on a gantt, to the next milestone.",
     ),
     (
         "fig-peak-prev",
         "b",
-        "b: the cursor to the previous peak or trough of its series.",
+        "b: the cursor to the previous peak or trough of its series; on a gantt, to the previous milestone.",
     ),
-    ("fig-first", "gg", "gg: the cursor to the first point."),
+    (
+        "fig-first",
+        "gg",
+        "gg: the cursor to the first point (a gantt's first task).",
+    ),
     (
         "fig-last",
         "G",
-        "G: the cursor to the last point; on live data the view follows the newest.",
+        "G: the cursor to the last point (a gantt's last task); on live data the view follows the newest.",
     ),
     (
         "fig-view-left",
         "H",
-        "H: the cursor to the view's left edge.",
+        "H: the cursor to the view's left edge; on a gantt, to the top task in view.",
     ),
     (
         "fig-view-middle",
         "M",
-        "M: the cursor to the view's middle.",
+        "M: the cursor to the view's middle; on a gantt, to the middle task in view.",
     ),
     (
         "fig-view-right",
         "L",
-        "L: the cursor to the view's right edge.",
+        "L: the cursor to the view's right edge; on a gantt, to the bottom task in view.",
     ),
 ];
 
@@ -841,14 +845,14 @@ const SCROLLS: [(&str, &str, &str, f32, f32); 6] = [
     (
         "fig-scroll-down",
         "zj",
-        "zj: scroll the view down an eighth, where y isn't fit to the data.",
+        "zj: scroll the view down an eighth, where y isn't fit to the data; a gantt's rows.",
         0.0,
         -0.125,
     ),
     (
         "fig-scroll-up",
         "zk",
-        "zk: scroll the view up an eighth, where y isn't fit to the data.",
+        "zk: scroll the view up an eighth, where y isn't fit to the data; a gantt's rows.",
         0.0,
         0.125,
     ),
@@ -1775,6 +1779,22 @@ fn write_spec(ctx: &mut Ctx, a: &Args) -> Result {
                 }
                 Figure::Chart(c)
             }
+            // A gantt with its settings as `s` left them; one guessed from a bare table
+            // names its data: the file it came from, else the table itself, inline.
+            Figure::Gantt(g) => {
+                let mut g = st.toggles.apply_gantt(&g);
+                if st.inferred && g.data.source == DataRef::Source {
+                    match (&st.file, st.tables.first()) {
+                        (Some(path), _) => {
+                            g.data.source = DataRef::File(path.clone());
+                            g.data.format = path.to_str().and_then(spec::format_of_name);
+                        }
+                        (None, Some(t)) => g.data.source = DataRef::Inline(t.clone()),
+                        (None, None) => {}
+                    }
+                }
+                Figure::Gantt(g)
+            }
             other => other,
         };
         let stem = st.file.as_deref().and_then(stem_of);
@@ -2134,12 +2154,12 @@ impl Extension for Fig {
             (
                 "fig-neighbour-next",
                 1,
-                "]: on a graph, the cursor to the next neighbour of its node, clockwise from straight up; again goes on round the same node.",
+                "]: on a graph, the cursor to the next neighbour of its node, clockwise from straight up; again goes on round the same node. On a gantt, to a task that comes after the cursor's; again goes round the same task's, or on down the chain where it has one.",
             ),
             (
                 "fig-neighbour-prev",
                 -1,
-                "[: on a graph, the cursor to the previous neighbour of its node.",
+                "[: on a graph, the cursor to the previous neighbour of its node. On a gantt, to a task the cursor's comes after.",
             ),
         ] {
             reg.command(name, doc, move |ctx, a| {
@@ -2172,7 +2192,7 @@ impl Extension for Fig {
         }
         reg.command(
             "fig-zoom-in",
-            "+ = K: zoom in about the cursor, or the middle. A count repeats; one undo step.",
+            "+ = K: zoom in about the cursor, or the middle (a gantt's time, about its cursor's task). A count repeats; one undo step.",
             |ctx, a| act(ctx, a, |act, a| act.zoom_keys(zoom_factor(a, 1))),
         );
         reg.command(
@@ -2182,7 +2202,7 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-zero",
-            "0: reset the view to fit the data; after a count, a digit of it.",
+            "0: reset the view to fit the data (a gantt's time to its plan); after a count, a digit of it.",
             |ctx, a| {
                 if let Some(n) = a.count {
                     ctx.set_prefix(Prefix {
@@ -2218,7 +2238,7 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-hide",
-            "x: hide the cursor's series (on a graph, its node's group).",
+            "x: hide the cursor's series (on a graph, its node's group; on a gantt, the name that colours its task).",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
                     let none = st.panes.get(&w).is_some_and(|p| p.cursor.is_none());
@@ -2234,7 +2254,7 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-only",
-            "o: show only the cursor's series (on a graph, its node's group), or all of them again.",
+            "o: show only the cursor's series (on a graph, its node's group; on a gantt, the name that colours its task), or all of them again.",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
                     let none = st.panes.get(&w).is_some_and(|p| p.cursor.is_none());
@@ -2250,7 +2270,7 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-show-all",
-            "X: show every series (on a graph, every group).",
+            "X: show every series (on a graph, every group; on a gantt, every name).",
             |ctx, a| act(ctx, a, |act, _| act.show_all()),
         );
         reg.command(
@@ -2271,7 +2291,7 @@ impl Extension for Fig {
         });
         reg.command(
             "fig-reference",
-            "m: set the reference at the cursor, or clear it there: every card then shows the change since.",
+            "m: set the reference at the cursor, or clear it there: every card then shows the change since. A gantt has no reference.",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
                     if st.gantt_here(w) {
@@ -2449,7 +2469,11 @@ impl Extension for Fig {
                 })
             },
         );
-        reg.command("fig-find", "/: find a series or category by name.", search);
+        reg.command(
+            "fig-find",
+            "/: find a series or category by name; on a graph a node, on a gantt a task by its label or its id.",
+            search,
+        );
         reg.command(
             "fig-find-next",
             "n: the next match of the last search.",
@@ -2462,12 +2486,12 @@ impl Extension for Fig {
         );
         reg.command(
             "fig-table",
-            "t: the data as TSV in a buffer beside the figure, hidden series left out.",
+            "t: the data as TSV in a buffer beside the figure, hidden series left out (a gantt's tasks with the dates worked out for them).",
             table,
         );
         reg.command(
             "fig-settings",
-            "s: the view's settings (grid, axes, log y, stack, labels, markers), each answer one undo step.",
+            "s: the view's settings (grid, axes, log y, stack, labels, markers; a graph's labels and layout; a gantt's grid, axes, links and today line), each answer one undo step.",
             settings,
         );
         reg.command(

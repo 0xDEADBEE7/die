@@ -214,6 +214,33 @@ fn a_fig_gantt_opens_as_its_figure_and_draws_and_backslash_v_flips_to_its_text()
     // The layout the pointer and the keys ask is the gantt's: its rows and its time.
     let (rows, tasks) = drawn(&mut s, |g, l| (l.rows.len(), g.len()));
     assert_eq!((rows, tasks), (14, 11), "eleven tasks under three headings");
+    // E and C draw it from the same model, in a job: a PNG the window's size, an SVG with its
+    // labels.
+    let picture = st.borrow().picture(Some(s.win)).expect("a picture");
+    let (png, pw, ph) = picture.png(1.0).expect("a PNG");
+    assert!(png.starts_with(b"\x89PNG"), "a PNG");
+    let size = st.borrow().panes[&s.win].size();
+    assert_eq!((pw as f32, ph as f32), size);
+    let svg = picture.svg().expect("an SVG");
+    assert!(
+        svg.contains("Write the spec") && svg.contains("Release 2.0"),
+        "its labels"
+    );
+    // ?: the gantt's own key card, until any key.
+    keys(&mut s.h, "?");
+    assert!(st.borrow().panes[&s.win].help);
+    assert!(
+        over_bounds(&mut s).is_some_and(|b| b.h > 300.0),
+        "the card drawn"
+    );
+    assert!(
+        die_fig::surface::GANTT_KEY_CARD
+            .iter()
+            .any(|(k, _)| *k == "] ["),
+        "a gantt's keys"
+    );
+    keys(&mut s.h, "j");
+    assert!(!st.borrow().panes[&s.win].help, "any key closes it");
     // \v: its text, and its figure again.
     keys(&mut s.h, "\\v");
     assert_eq!(s.h.window_buffer(s.win), Some(src), "its text");
@@ -384,6 +411,12 @@ fn a_drag_across_the_plot_zooms_the_time_u_undoes_it_and_0_fits() {
     let y = plot.y + plot.h - 6.0;
     let (x0, x1) = (plot.x + plot.w * 0.25, plot.x + plot.w * 0.5);
     let (t0, t1) = drawn(&mut s, |_, l| (l.time(x0), l.time(x1)));
+    // Esc mid-drag drops the brush: its release does nothing.
+    press(&mut s, (x0, y));
+    drag(&mut s, (x0 + 40.0, y));
+    keys(&mut s.h, "<Esc>");
+    release(&mut s, (x0 + 40.0, y));
+    assert_eq!((view(&mut s).x, undoable(&mut s)), (None, 0), "dropped");
     press(&mut s, (x0, y));
     drag(&mut s, (x0 + 30.0, y));
     // While it's drawn, the brush shows and the time holds still.
@@ -755,6 +788,14 @@ fn x_hides_the_cursors_colour_name_cap_x_shows_all_and_a_legend_click_does_the_s
     let at = key(&mut s, "Maya");
     double_click(&mut s, at);
     assert_eq!(view(&mut s).only, Some(maya), "a double-click: only it");
+    // ⌥-click shows only it too, and again shows all.
+    keys(&mut s.h, "X");
+    let at = key(&mut s, "Ravi");
+    click_with(&mut s, at, ALT);
+    assert_eq!(view(&mut s).only, Some(SeriesKey::new("Ravi", 0)));
+    let at = key(&mut s, "Ravi");
+    click_with(&mut s, at, ALT);
+    assert_eq!(view(&mut s).only, None);
     // x with no cursor, and on a plan no name colours, says why.
     keys(&mut s.h, "X");
     let errors = keys_errors(&mut s.h, "x");
@@ -1124,4 +1165,39 @@ fn a_dashboards_gantt_panel_draws_takes_the_focus_and_the_keys_hovers_and_shows_
     let t = s.h.text(b).unwrap();
     let line = t.line_of(t.cursor(tw).unwrap());
     assert!(lines[line].starts_with("bill-2\t"), "{}", lines[line]);
+}
+
+#[test]
+fn fig_spec_writes_a_guessed_gantt_with_its_data_by_its_file_and_its_settings() {
+    // A bare table with a start and an end is guessed as a gantt. It can't pin its today (the
+    // clock's is drawn); nothing here depends on where that is.
+    let dir = TempDir::new("gantt-spec");
+    let path = dir.path().join("tasks.csv");
+    let csv = "id,label,start,end,after\na,Alpha,2026-11-02,2026-11-04,\nb,Beta,2026-11-05,2026-11-10,a\n";
+    std::fs::write(&path, csv).unwrap();
+    let mut s = open_dash(&path, 176, 50);
+    let st = state(&mut s);
+    assert!(st.borrow().is_gantt() && st.borrow().inferred, "guessed");
+    assert_eq!(drawn(&mut s, |g, l| (g.len(), l.links.len())), (2, 1));
+    keys(&mut s.h, "s");
+    keys(&mut s.h, "links<CR>");
+    keys(&mut s.h, ":fig-spec<CR>");
+    let spec = s.h.window_buffer(s.win).unwrap();
+    assert_eq!(s.h.buffer_name(spec), Some("tasks.fig"));
+    let text = s.h.text(spec).unwrap().rope().to_string();
+    assert!(text.contains("\"gantt\""), "{text}");
+    assert!(text.contains("tasks.csv"), "the data by its file: {text}");
+    assert!(!text.contains("\"-\""), "not the buffer's own text: {text}");
+    // It reads back as a gantt with the links off, as `s` left them.
+    let back = die_fig::spec::parse(
+        &text,
+        "tasks.fig",
+        dir.path(),
+        &die_fig::data::ReadOptions::new(TimeZone::UTC),
+    )
+    .expect("it parses");
+    match back.figure {
+        die_fig::spec::Figure::Gantt(g) => assert!(!g.links, "links off: {text}"),
+        _ => panic!("a gantt: {text}"),
+    }
 }
