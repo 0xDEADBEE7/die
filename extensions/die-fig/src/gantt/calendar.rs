@@ -67,7 +67,7 @@ impl Days {
 
     /// Whether a day counts towards a duration.
     pub fn works(&self, d: Date) -> bool {
-        !(self.weekdays && Days::weekend(d)) && !self.listed(d)
+        !(self.listed(d) || self.weekdays && Days::weekend(d))
     }
 
     /// Whether a day is shaded: a Saturday, a Sunday, or a day off.

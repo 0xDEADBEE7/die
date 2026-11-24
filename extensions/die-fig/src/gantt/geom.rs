@@ -399,9 +399,14 @@ pub(crate) fn lay_out(
                 (t.label.as_str(), indent, Ink::Text)
             }
         };
+        // Cut to the gutter where it's in sight: a row scrolled out isn't drawn.
+        let seen = y + rh > plot.y && y < plot.bottom();
         let label = Label {
             role: Role::YTick,
-            text: m.fit(text, spec, (label_room - indent).max(0.0)),
+            text: match seen {
+                true => m.fit(text, spec, (label_room - indent).max(0.0)),
+                false => text.to_string(),
+            },
             x: f.gutter.x + indent,
             y: (y + rh / 2.0 + m.cap(spec) / 2.0).round(),
             spec,
@@ -457,8 +462,9 @@ pub(crate) fn lay_out(
     // A milestone's date beside it: right of it, past a link that leaves it, where it fits
     // before the plot's edge.
     let date_spec = TextSpec::new(TICK).tabular();
-    for i in 0..model.len() {
-        let Some(g) = tasks[i].as_ref().filter(|g| g.shape == Shape::Milestone) else {
+    let mut dates: Vec<(usize, Label)> = Vec::new();
+    for (i, g) in tasks.iter().enumerate() {
+        let Some(g) = g.as_ref().filter(|g| g.shape == Shape::Milestone) else {
             continue;
         };
         let t = &model.tasks[i];
@@ -489,6 +495,9 @@ pub(crate) fn lay_out(
             ink: Ink::Muted,
             alpha: 1.0,
         };
+        dates.push((i, label));
+    }
+    for (i, label) in dates {
         if let Some(g) = tasks[i].as_mut() {
             g.date = Some(label);
         }
@@ -802,8 +811,11 @@ fn task_geom(
     }
 }
 
+/// A link's path and its arrowhead's three corners.
+type Route = (Vec<(f32, f32)>, [(f32, f32); 3]);
+
 /// A link's path and arrowhead from task `a`'s end to task `b`'s start.
-fn route(a: &TaskGeom, b: &TaskGeom) -> (Vec<(f32, f32)>, [(f32, f32); 3]) {
+fn route(a: &TaskGeom, b: &TaskGeom) -> Route {
     // A milestone's ring is part of what the link leaves and meets.
     let ring = |g: &TaskGeom| match g.shape {
         Shape::Milestone => DIAMOND_RING * 0.5,

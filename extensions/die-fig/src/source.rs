@@ -493,7 +493,7 @@ fn gantt(
     let model = match built {
         Ok(m) => m,
         Err(fault) => {
-            let mut e = fault.error;
+            let mut e = *fault.error;
             if let (Some(row), Some(r)) = (fault.row, read) {
                 let tabular = matches!(r.format, DataFormat::Csv | DataFormat::Tsv);
                 let cell = (fault.column.as_deref())

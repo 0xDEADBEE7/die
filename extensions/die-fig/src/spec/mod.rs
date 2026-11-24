@@ -578,8 +578,9 @@ pub struct GanttSpec {
     pub tasks: bool,
     /// The transforms on the rows, in order.
     pub transform: Vec<Transform>,
-    /// Which column is what.
-    pub fields: GanttFields,
+    /// Which column is what. Boxed: eleven channels would make a gantt's spec many times the
+    /// size of any other figure's.
+    pub fields: Box<GanttFields>,
     /// The days its durations count.
     pub calendar: Calendar,
     /// The today line.

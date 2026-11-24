@@ -31,6 +31,8 @@ use crate::theme::Theme;
 pub const CURSOR_RING: (f32, f32) = (3.5, 2.0);
 /// The most of the spec's `tooltip` fields a card lists.
 pub const CARD_FIELDS: usize = 4;
+/// The widest a task's name is written in a conflict's note, in px.
+const NOTE_NAME: f32 = 120.0;
 
 /// What the overlay shows.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -451,7 +453,6 @@ fn card(model: &GanttModel, i: usize, theme: &Theme, m: &mut dyn Measure) -> Car
         rows.push(row(model.end_text(i), "End"));
         rows.push(row(model.duration_text(i), "Duration"));
     }
-    let keep = rows.len();
     let done = match t.children.is_empty() {
         true => t.progress,
         false => t.done,
@@ -466,6 +467,12 @@ fn card(model: &GanttModel, i: usize, theme: &Theme, m: &mut dyn Measure) -> Car
             ..row(model.groups[g as usize].clone(), "Group")
         });
     }
+    if !t.after.is_empty() {
+        let names: Vec<&str> = t.after.iter().map(|&p| model.label(p as usize)).collect();
+        rows.push(row(names.join(", "), "After"));
+    }
+    // Those it keeps however small it gets; the fields after them go first.
+    let keep = rows.len();
     // What colours it, where that isn't its group: the field's own row, with its key.
     let color_field = (model.columns.color.as_deref()).filter(|_| !model.by_group);
     if let (Some(field), Some(n)) = (color_field, t.name) {
@@ -474,15 +481,15 @@ fn card(model: &GanttModel, i: usize, theme: &Theme, m: &mut dyn Measure) -> Car
             ..row(model.names[n as usize].clone(), field)
         });
     }
-    if !t.after.is_empty() {
-        let names: Vec<&str> = t.after.iter().map(|&p| model.label(p as usize)).collect();
-        rows.push(row(names.join(", "), "After"));
-    }
     let listed = (model.spec.tooltip.iter())
         .filter(|f| Some(f.as_str()) != color_field)
         .filter_map(|f| model.field(i, f).map(|v| row(v, f)))
         .take(CARD_FIELDS);
     rows.extend(listed);
-    let note = model.late_text(i).map(|n| (n, theme.status[1]));
+    // A conflict's note, the other task's name cut so the note is no wider than a card.
+    let note = t.late.and_then(|(p, _)| {
+        let name = m.fit(model.label(p as usize), TextSpec::new(12.0), NOTE_NAME);
+        model.late_said(i, &name).map(|n| (n, theme.status[1]))
+    });
     Card::new(t.label.clone(), rows, keep, note, m)
 }

@@ -178,7 +178,7 @@ pub fn base_beside(
     if let Some((_, thumb)) = l.scrollbar {
         scene.push(Item::Path {
             path: PathData::rounded(thumb, [thumb.w / 2.0; 4]),
-            fill: Some(Paint::solid(theme.muted, 0.45)),
+            fill: Some(Paint::solid(theme.muted, 0.55)),
             stroke: None,
         });
     }

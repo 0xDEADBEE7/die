@@ -203,7 +203,7 @@ pub struct Columns {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fault {
     /// What went wrong.
-    pub error: FigError,
+    pub error: Box<FigError>,
     /// The table's row at fault, after the spec's transforms.
     pub row: Option<usize>,
     /// The column of the cell at fault.
@@ -213,7 +213,7 @@ pub struct Fault {
 impl Fault {
     fn plain(error: FigError) -> Fault {
         Fault {
-            error,
+            error: Box::new(error),
             row: None,
             column: None,
         }
@@ -418,7 +418,7 @@ impl Rows<'_> {
     /// An error about a row's cell.
     fn fault(&self, msg: String, row: usize, col: &Column) -> Fault {
         Fault {
-            error: FigError::at(msg, self.at(row)),
+            error: Box::new(FigError::at(msg, self.at(row))),
             row: Some(row),
             column: Some(col.name.clone()),
         }
@@ -515,7 +515,7 @@ impl GanttModel {
         zone: &TimeZone,
         now: f64,
     ) -> Result<GanttModel> {
-        GanttModel::build_placed(spec, table, zone, now).map_err(|f| f.error)
+        GanttModel::build_placed(spec, table, zone, now).map_err(|f| *f.error)
     }
 
     /// [`GanttModel::build`], an error with the table's row and column it's about.
@@ -654,7 +654,7 @@ impl GanttModel {
                 let msg = format!("task ids must be unique: {id} is given twice");
                 let col = id_c.map(|c| c.name.clone());
                 return Err(Fault {
-                    error: FigError::at(msg, rows.at(row)),
+                    error: Box::new(FigError::at(msg, rows.at(row))),
                     row: Some(row),
                     column: col,
                 });
@@ -676,7 +676,10 @@ impl GanttModel {
 
         // What each comes after, and what each is a part of.
         let unknown = |what: &str, id: &str, row: usize, col: Option<&Column>| Fault {
-            error: FigError::at(format!("unknown task \"{id}\" in \"{what}\""), rows.at(row)),
+            error: Box::new(FigError::at(
+                format!("unknown task \"{id}\" in \"{what}\""),
+                rows.at(row),
+            )),
             row: Some(row),
             column: col.map(|c| c.name.clone()),
         };
@@ -712,7 +715,7 @@ impl GanttModel {
             }
         }
         let placed = |i: usize, msg: String, col: Option<&Column>| Fault {
-            error: FigError::at(msg, rows.at(i)),
+            error: Box::new(FigError::at(msg, rows.at(i))),
             row: Some(i),
             column: col.map(|c| c.name.clone()),
         };
@@ -1286,16 +1289,19 @@ impl GanttModel {
 
     /// A conflict as the card says it: "Starts 2 days before API ends".
     pub fn late_text(&self, i: usize) -> Option<String> {
-        let (p, by) = self.tasks[i].late?;
+        let (p, _) = self.tasks[i].late?;
+        self.late_said(i, self.label(p as usize))
+    }
+
+    /// [`GanttModel::late_text`] with the other task called `name`: its label, cut to fit.
+    pub fn late_said(&self, i: usize, name: &str) -> Option<String> {
+        let (_, by) = self.tasks[i].late?;
         let how = if self.whole_days {
             calendar::days_text((by / DAY).round().max(1.0) as i64, i64::MAX)
         } else {
             calendar::span_text(by)
         };
-        Some(format!(
-            "Starts {how} before {} ends",
-            self.label(p as usize)
-        ))
+        Some(format!("Starts {how} before {name} ends"))
     }
 
     /// What a search can find: each task by its label, and by its key where that differs, with
