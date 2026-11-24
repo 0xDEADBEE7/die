@@ -3435,9 +3435,13 @@ impl FigState {
         self.gantt.is_some()
     }
 
-    /// Whether the keys in window `w` are a gantt's: the figure's own.
+    /// Whether the keys in window `w` are a gantt's: the figure's own, or a dashboard's
+    /// focused panel's.
     pub fn gantt_here(&self, w: WindowId) -> bool {
-        self.gantt.is_some() && !self.dash_drawn(w)
+        match self.dash_drawn(w) {
+            true => self.dash_focused_kind(w) == Some("a gantt"),
+            false => self.gantt.is_some(),
+        }
     }
 }
 

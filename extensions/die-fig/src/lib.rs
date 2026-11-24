@@ -1235,7 +1235,7 @@ fn table(ctx: &mut Ctx, a: &Args) -> Result {
                     None => "fig: t shows the focused panel's data: Tab or a click focuses one"
                         .into(),
                     Some(k) => format!(
-                        "fig: t shows a chart's or a graph's data; this panel is {k} (⏎ shows its numbers)"
+                        "fig: t shows a chart's, a graph's or a gantt's data; this panel is {k} (⏎ shows its numbers)"
                     ),
                 })
             })?,
@@ -1437,11 +1437,17 @@ fn dash_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result 
     if let Some((i, toggles, spec, layout)) = graph {
         return dash_graph_settings(ctx, state, w, i, toggles, spec, layout);
     }
+    let gantt = state.borrow().dash_gantt_settings(w);
+    if let Some((i, toggles, spec)) = gantt {
+        return dash_gantt_settings(ctx, state, i, toggles, spec);
+    }
     let found = state.borrow().dash_settings(w);
     let (i, toggles, chart) = found.ok_or_else(|| {
         Error::Msg(match state.borrow().dash_focused_kind(w) {
             None => "fig: s turns the focused panel's settings: Tab or a click focuses one".into(),
-            Some(k) => format!("fig: s turns a chart's or a graph's settings; this panel is {k}"),
+            Some(k) => format!(
+                "fig: s turns a chart's, a graph's or a gantt's settings; this panel is {k}"
+            ),
         })
     })?;
     let items: Vec<String> = Setting::ALL
@@ -1464,6 +1470,40 @@ fn dash_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result 
         let mut t = toggles;
         t.flip(&chart, setting);
         let on = t.value(&chart, setting);
+        ctx.messages.push(format!(
+            "settings: {} {}",
+            setting.name(),
+            if on { "on" } else { "off" }
+        ));
+        st.refresh(ctx);
+        Ok(())
+    });
+    Ok(())
+}
+
+/// `s` on a dashboard's focused gantt: its grid, its axis, its links and its today line, each
+/// on or off; the panel built again through the dashboard's job, as a chart panel's settings
+/// are.
+fn dash_gantt_settings(
+    ctx: &mut Ctx,
+    state: Shared,
+    i: usize,
+    toggles: Toggles,
+    spec: spec::GanttSpec,
+) -> Result {
+    let prompt = PromptSpec::new("Settings: ")
+        .candidates(gantt_menu(&toggles, &spec))
+        .require_match();
+    ctx.prompt(prompt, move |ctx, answer| {
+        let name = answer.as_deref().and_then(|a| a.split(':').next());
+        let Some(setting) = name.and_then(GanttSetting::from_name) else {
+            return Ok(());
+        };
+        let mut st = state.borrow_mut();
+        st.dash_gantt_flip(ctx, i, setting);
+        let mut t = toggles;
+        t.flip_gantt(&spec, setting);
+        let on = t.gantt_value(&spec, setting);
         ctx.messages.push(format!(
             "settings: {} {}",
             setting.name(),
@@ -1548,7 +1588,7 @@ fn search(ctx: &mut Ctx, a: &Args) -> Result {
         let names = search_names(&st, w).ok_or_else(|| {
             Error::Msg(match (st.dash_drawn(w), st.dash_focused_kind(w)) {
                 (true, Some(k)) => {
-                    format!("fig: / finds in a chart or a graph; this panel is {k}")
+                    format!("fig: / finds in a chart, a graph or a gantt; this panel is {k}")
                 }
                 (true, None) => {
                     "fig: / finds in the focused panel: Tab or a click focuses one".into()
@@ -2104,7 +2144,12 @@ impl Extension for Fig {
         ] {
             reg.command(name, doc, move |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
-                    let none = st.panes.get(&w).is_some_and(|p| p.cursor.is_none());
+                    // On a dashboard, the focused panel's cursor.
+                    let pane = match st.dash_focused(w) {
+                        Some((_, sub)) if st.dash_drawn(w) => Some(sub),
+                        _ => st.panes.get(&w),
+                    };
+                    let none = pane.is_some_and(|p| p.cursor.is_none());
                     st.keys(w, ctx.now(), |k| {
                         k.move_cursor(&Action::Neighbour(by), count(a))
                     });

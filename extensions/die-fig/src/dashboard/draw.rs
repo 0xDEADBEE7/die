@@ -378,6 +378,30 @@ pub fn overlay(
                     put(&mut scene, over, p.origin(), None);
                 }
             }
+            (super::PanelState::Gantt(g), PanelFigure::Gantt { layout: gl }) => {
+                let (task, hovering) = match mine.map(|h| &h.target) {
+                    Some(PanelHover::Gantt { task, hovering }) => (*task, *hovering),
+                    _ => (None, false),
+                };
+                // A brush across its plot, and the pointer while it hovers (off any bar, the
+                // date under it).
+                let brush = mine
+                    .and_then(|h| h.brush)
+                    .map(|(a, b)| (p.local(a.0, a.1).0, p.local(b.0, b.1).0));
+                let pointer = mine.filter(|_| hovering).map(|h| p.local(h.at.0, h.at.1));
+                if task.is_some() || cursor.is_some() || pointer.is_some() || brush.is_some() {
+                    let st = crate::gantt::OverlayState {
+                        hover: task,
+                        cursor,
+                        pointer,
+                        brush,
+                        cursor_card: card,
+                        ..Default::default()
+                    };
+                    let over = crate::gantt::overlay(g, gl, &p.view, &st, theme, m);
+                    put(&mut scene, over, p.origin(), None);
+                }
+            }
             (_, PanelFigure::Tile { model: tm }) => {
                 let local_rect = Rect::new(0.0, 0.0, p.frame.w, p.frame.h);
                 let th = match mine.map(|h| &h.target) {

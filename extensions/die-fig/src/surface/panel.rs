@@ -206,7 +206,7 @@ impl FigState {
                 .ok_or_else(|| match self.dash_focused_kind(w) {
                     None => "fig: no panel has the focus: Tab or a click gives it one".to_string(),
                     Some(k) => format!(
-                        "fig: ⏎ shows a chart's, a graph's or a tile's detail; this panel is {k}"
+                        "fig: ⏎ shows a chart's, a graph's, a gantt's or a tile's detail; this panel is {k}"
                     ),
                 })?,
             false => {

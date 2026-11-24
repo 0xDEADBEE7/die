@@ -918,3 +918,210 @@ fn a_restart_keeps_the_view_the_cursor_and_the_settings() {
         "not the undo history"
     );
 }
+
+// ---------------------------------------------------------------- a dashboard's gantt panel
+
+/// `:fig PATH` in a window `cols` × `rows` cells, the dashboard drawn and its data read.
+fn open_dash(path: &std::path::Path, cols: usize, rows: usize) -> Setup {
+    let mut h = harness();
+    h.set_window_size(cols, rows);
+    h.run_until_idle();
+    let (src, win) = h.open_text("notes.txt", "notes\n").unwrap();
+    h.run_until_idle();
+    let args = die_core::Args {
+        text: Some(path.display().to_string()),
+        ..die_core::Args::default()
+    };
+    h.run("fig", &args).unwrap();
+    h.run_until_idle();
+    h.scene();
+    let errors = h.take_errors();
+    assert!(errors.is_empty(), "{errors:?}");
+    let buf = h.window_buffer(win).unwrap();
+    assert_ne!(buf, src, "the figure shows in the window");
+    Setup { h, src, buf, win }
+}
+
+/// Ask a dashboard's panel `i`: its gantt's model, its layout as last drawn, and the figure's
+/// origin in the area.
+fn panel<R>(
+    s: &mut Setup,
+    i: usize,
+    f: impl FnOnce(&GanttModel, &GanttLayout, (f32, f32)) -> R,
+) -> R {
+    let st = state(s);
+    let st = st.borrow();
+    let model = st.dash.as_ref().unwrap().model.as_ref().expect("built");
+    let g = model.panels[i].gantt().expect("a gantt panel");
+    let dp = st.panes[&s.win].dash.as_ref().expect("a dashboard");
+    let pl = dp.layout.as_ref().unwrap().panel(i).expect("laid out");
+    f(g, pl.gantt().expect("a gantt's layout"), pl.origin())
+}
+
+/// Panel `i`'s cursor.
+fn panel_cursor(s: &mut Setup, i: usize) -> Option<Cursor> {
+    let st = state(s);
+    let st = st.borrow();
+    st.panes[&s.win].dash.as_ref().unwrap().subs[i]
+        .cursor
+        .clone()
+}
+
+/// The focused panel.
+fn focused(s: &mut Setup) -> Option<usize> {
+    let st = state(s);
+    let st = st.borrow();
+    st.panes[&s.win].dash.as_ref().unwrap().view.focused
+}
+
+#[test]
+fn a_dashboards_gantt_panel_draws_takes_the_focus_and_the_keys_hovers_and_shows_its_tasks() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/dash/delivery.fig");
+    let mut s = open_dash(&path, 176, 76);
+    let st = state(&mut s);
+    assert!(st.borrow().error.is_none(), "{:?}", st.borrow().error);
+    // Two tiles, the burn-down and the plan: the fourth panel is the gantt, with its title
+    // and subtitle the panel's own.
+    let (kinds, title) = {
+        let st = st.borrow();
+        let m = st.dash.as_ref().unwrap().model.as_ref().expect("built");
+        let kinds: Vec<_> = m.panels.iter().map(|p| p.kind).collect();
+        (kinds, m.panels[3].title.clone())
+    };
+    use die_fig::dashboard::PanelKind::{Chart, Gantt, Tile};
+    assert_eq!(kinds, [Tile, Tile, Chart, Gantt]);
+    assert_eq!(title.as_deref(), Some("Q4 engineering plan"));
+    // It draws: twelve tasks under its axis, its bars inked on the base inside its frame.
+    let (tasks, rows, plot, origin) =
+        panel(&mut s, 3, |g, l, o| (g.len(), l.rows.len(), l.plot, o));
+    assert_eq!((tasks, rows), (12, 12), "twelve tasks, a row each");
+    let (base, _) = buffers(&mut s);
+    let (w, _, px) = s.h.pixels(base).expect("drawn");
+    let bar = panel(&mut s, 3, |g, l, o| {
+        let b = l.task(g.index_of("auth-2").unwrap()).unwrap().bar;
+        Rect::new(b.x + o.0, b.y + o.1, b.w, b.h)
+    });
+    let at = mid(bar);
+    let scale = CELL.scale as f32;
+    let i = ((at.1 * scale) as u32 * w + (at.0 * scale) as u32) as usize * 4;
+    assert_ne!(
+        px[i..i + 3],
+        [0x1a, 0x1a, 0x1a],
+        "a bar's colour at its middle"
+    );
+    assert!(
+        plot.h >= 4.0 * 28.0,
+        "room for four rows at the least: {plot:?}"
+    );
+    // Tab focuses it, the fourth stop; its keys are a gantt's.
+    assert_eq!(focused(&mut s), None);
+    keys(&mut s.h, "<Tab><Tab><Tab><Tab>");
+    assert_eq!(focused(&mut s), Some(3));
+    keys(&mut s.h, "j");
+    assert_eq!(
+        panel_cursor(&mut s, 3),
+        Some(task("auth")),
+        "the first task in view"
+    );
+    keys(&mut s.h, "j");
+    assert_eq!(panel_cursor(&mut s, 3), Some(task("auth-1")));
+    keys(&mut s.h, "]");
+    assert_eq!(
+        panel_cursor(&mut s, 3),
+        Some(task("auth-2")),
+        "] follows its arrow"
+    );
+    let errors = keys_errors(&mut s.h, "m");
+    assert!(
+        errors.iter().any(|e| e == "fig: a gantt has no reference"),
+        "{errors:?}"
+    );
+    // Its hover shows its card: the pane finds the task, and the dashboard's overlay draws it.
+    assert_eq!(
+        over_bounds(&mut s).map(|b| b.w > 100.0),
+        Some(true),
+        "the cursor's card"
+    );
+    let bill = panel(&mut s, 3, |g, l, o| {
+        let b = l.task(g.index_of("bill-2").unwrap()).unwrap().bar;
+        (b.x + b.w / 2.0 + o.0, b.y + b.h / 2.0 + o.1)
+    });
+    mv(&mut s, bill);
+    let (hovered, text) = {
+        let st = st.borrow();
+        let model = st.dash.as_ref().unwrap().model.as_ref().unwrap();
+        let dp = st.panes[&s.win].dash.as_ref().unwrap();
+        let layout = dp.layout.as_ref().unwrap();
+        let hover = die_fig::dashboard::hover(model, layout, bill.0, bill.1).expect("on a panel");
+        let theme = die_fig::theme::Theme::mono_dark();
+        let over = die_fig::dashboard::overlay(
+            model,
+            layout,
+            &dp.view,
+            Some(&hover),
+            &theme,
+            &mut FixedMeasure,
+        );
+        let text: Vec<String> = (over.items.iter())
+            .filter_map(|i| match i {
+                Drawn::Text { text, .. } => Some(text.to_string()),
+                _ => None,
+            })
+            .collect();
+        (dp.subs[3].hover.clone(), text)
+    };
+    assert_eq!(
+        hovered,
+        Some(task("bill-2")),
+        "the panel's pane hovers the task"
+    );
+    for want in ["Usage metering", "Start", "Progress"] {
+        assert!(
+            text.iter().any(|t| t == want),
+            "the card says {want}: {text:?}"
+        );
+    }
+    // A click puts its cursor there; a drag across its plot zooms its own time, not the page.
+    click(&mut s, bill);
+    assert_eq!(panel_cursor(&mut s, 3), Some(task("bill-2")));
+    let fit = panel(&mut s, 3, |_, l, _| l.domain);
+    let y = origin.1 + plot.y + plot.h - 4.0;
+    let (x0, x1) = (
+        origin.0 + plot.x + plot.w * 0.3,
+        origin.0 + plot.x + plot.w * 0.6,
+    );
+    gesture(&mut s, &[(x0, y), (x0 + 30.0, y), (x1, y)]);
+    settle(&mut s);
+    let zoomed = panel(&mut s, 3, |_, l, _| l.domain);
+    assert!(
+        zoomed.1 - zoomed.0 < (fit.1 - fit.0) * 0.5,
+        "{fit:?} → {zoomed:?}"
+    );
+    keys(&mut s.h, "u");
+    settle(&mut s);
+    assert_eq!(
+        panel(&mut s, 3, |_, l, _| l.domain),
+        fit,
+        "u: the dashboard's undo"
+    );
+    // t shows its tasks, on the cursor's row.
+    keys(&mut s.h, "t");
+    let b =
+        s.h.find_buffer("*fig table: delivery.fig*")
+            .expect("the table");
+    let table = s.h.text(b).unwrap().rope().to_string();
+    let lines: Vec<&str> = table.lines().collect();
+    assert!(
+        lines[0].starts_with("id\tlabel\tgroup\tstart\tend"),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(lines.len(), 13, "the header and twelve tasks");
+    let tw = (s.h.window_list().into_iter())
+        .find(|w| s.h.window_buffer(*w) == Some(b))
+        .unwrap();
+    let t = s.h.text(b).unwrap();
+    let line = t.line_of(t.cursor(tw).unwrap());
+    assert!(lines[line].starts_with("bill-2\t"), "{}", lines[line]);
+}

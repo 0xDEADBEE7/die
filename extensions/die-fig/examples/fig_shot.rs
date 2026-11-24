@@ -72,7 +72,8 @@
 //! (`"tooltip": "shared"`), `--panel-log N` (panel N's error figure as its log) and `--feed
 //! CMD=FILE` (a run or stream source's command taken as having printed FILE, so a live
 //! dashboard draws as a still frame). `--hover X,Y` is the pointer at a place in the area. It
-//! prints where each panel landed.
+//! prints where each panel landed, and what it is: `chart`, `graph`, `gantt` (with its plot and
+//! its rows), a tile. `--now TIME` is the clock a gantt panel's today line reads.
 
 use die_test_cap as _;
 
@@ -372,11 +373,7 @@ fn run() -> Result<(), String> {
     if let Some(t) = tile_of(path, &zone)? {
         return tile_shot(t, &output, &ask, &zone, &theme, &mut book);
     }
-    let now = match &ask.now {
-        Some(t) => die_fig::data::time::parse_time(t, &ReadOptions::new(zone.clone()))
-            .ok_or(format!("--now {t}: not a time"))?,
-        None => source::clock(),
-    };
+    let now = now_of(&ask, &zone)?;
     let built = match build(path, &zone, now) {
         Ok(b) => b,
         Err(f) => {
@@ -1377,6 +1374,15 @@ fn time_of_day(hm: &str, newest: f64, zone: &TimeZone) -> Result<f64, String> {
     Ok(at.timestamp().as_second() as f64)
 }
 
+/// The clock a gantt's today line reads: `--now`'s time, else the system's.
+fn now_of(ask: &Ask, zone: &TimeZone) -> Result<f64, String> {
+    match &ask.now {
+        Some(t) => die_fig::data::time::parse_time(t, &ReadOptions::new(zone.clone()))
+            .ok_or(format!("--now {t}: not a time")),
+        None => Ok(source::clock()),
+    }
+}
+
 /// A dashboard drawn as the flags ask: see the docs at the top.
 #[allow(clippy::too_many_arguments)]
 fn dash_shot(
@@ -1402,6 +1408,7 @@ fn dash_shot(
         file: Some(&file),
         dir: &dir,
         zone: &zone,
+        now: now_of(ask, &zone)?,
     };
     let first = DashModel::build(&spec, &dashboard::Sources::new(), &resolve, &origin);
     let mut sources = dashboard::read(first.wants(), &opt);
@@ -1507,6 +1514,16 @@ fn dash_shot(
                         l.plot.h
                     ),
                     dashboard::layout::PanelFigure::Graph { .. } => "graph".into(),
+                    dashboard::layout::PanelFigure::Gantt { layout: l } => format!(
+                        "gantt, plot {:.0},{:.0} {:.0}x{:.0}, {} rows ({:.0} px, scrolled {:.0})",
+                        l.plot.x + p.frame.x + p.body.x,
+                        l.plot.y + p.frame.y + p.body.y,
+                        l.plot.w,
+                        l.plot.h,
+                        l.rows.len(),
+                        l.content,
+                        l.scroll
+                    ),
                     dashboard::layout::PanelFigure::Tile { model: t } => format!("tile {t:?}"),
                     dashboard::layout::PanelFigure::Waiting(w) => format!("waiting: {w}"),
                     dashboard::layout::PanelFigure::Failed => match &pm.state {

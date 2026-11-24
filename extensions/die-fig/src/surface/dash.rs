@@ -9,7 +9,8 @@
 //!   it prints ([`super::feeds`]). A panel that fails shows its error figure; one whose rebuild
 //!   fails keeps its figure with the stale badge.
 //! - **Panels.** Each panel's view, cursor, hover and gesture live in a pane of its own, as a lone
-//!   chart's or graph's window has them, so a panel keeps every key and gesture it has alone.
+//!   chart's, graph's or gantt's window has them, so a panel keeps every key and gesture it has
+//!   alone (a gantt panel's time is its own: it isn't linked to the dashboard's).
 //!   Its layout is the dashboard's, lent to its pane for each act.
 //! - **Linked time.** The panels on the dashboard's `time.field` share one x domain: a zoom, a pan,
 //!   a brush or a key on one moves them all, eased together, as one undo step (a dashboard has
@@ -24,7 +25,9 @@
 //!   or down, else the panel under the pointer: a linked chart's scroll is the shared time's); the
 //!   hover is worked out again when the view moves; the pointer leaving clears it.
 
-use super::{Act, FigState, GraphAct, Keys, Kit, Pane, changed, key_card, measured, ms, target};
+use super::{
+    Act, FigState, GanttAct, GraphAct, Keys, Kit, Pane, changed, key_card, measured, ms, target,
+};
 use crate::dashboard::layout::{DashLayout, PanelFigure, PanelLayout};
 use crate::dashboard::{
     self, DashHit, DashHover, DashModel, DashView, LiveState, LiveStatus, Origin, PanelHover,
@@ -150,6 +153,7 @@ impl DashState {
             zone: zone.clone(),
             open,
             toggles: self.toggles.clone(),
+            now: source::clock(),
         }
     }
 }
@@ -178,7 +182,8 @@ pub fn spec_of(figure: &Figure) -> Option<DashboardSpec> {
 }
 
 /// What a dashboard's job is given to build its panels: the spec, the data in hand, where the
-/// spec is, the zone, the buffers' texts, and each panel's settings.
+/// spec is, the zone, the buffers' texts, each panel's settings, and the clock (UTC seconds
+/// since the epoch, for a gantt panel's today line: the job never reads the system's).
 struct DashJob {
     spec: DashboardSpec,
     sources: Sources,
@@ -187,6 +192,7 @@ struct DashJob {
     zone: TimeZone,
     open: Vec<(PathBuf, Snapshot)>,
     toggles: Vec<Toggles>,
+    now: f64,
 }
 
 /// Files read from disk, and when each last changed: polled while a window shows the figure.
@@ -229,9 +235,10 @@ impl DashJob {
             file: self.file.as_deref(),
             dir: &self.dir,
             zone: &self.zone,
+            now: self.now,
         };
         let mut model = DashModel::build(&self.spec, &self.sources, &resolve, &origin);
-        apply_toggles(&mut model, &self.toggles, &self.zone);
+        apply_toggles(&mut model, &self.toggles, &self.zone, self.now);
         let (files, followed) = read.into_inner();
         DashBuilt {
             model,
@@ -242,8 +249,9 @@ impl DashJob {
 }
 
 /// Each panel's settings (`s`) applied: a chart's model built again from its tables with them,
-/// a graph's laid out again (its labels, its layout).
-fn apply_toggles(model: &mut DashModel, toggles: &[Toggles], zone: &TimeZone) {
+/// a graph's laid out again (its labels, its layout), a gantt's built again from its table (its
+/// grid, axis, links and today line).
+fn apply_toggles(model: &mut DashModel, toggles: &[Toggles], zone: &TimeZone, now: f64) {
     for (p, t) in model.panels.iter_mut().zip(toggles) {
         if *t == Toggles::default() {
             continue;
@@ -263,9 +271,38 @@ fn apply_toggles(model: &mut DashModel, toggles: &[Toggles], zone: &TimeZone) {
                     p.state = PanelState::Graph(Arc::new(m));
                 }
             }
+            PanelState::Gantt(g) => {
+                // Its table is the one its transforms made: they aren't applied again.
+                let mut spec = t.apply_gantt(&g.spec);
+                spec.transform.clear();
+                if let Ok(m) = crate::gantt::GanttModel::build(spec, g.table.clone(), zone, now) {
+                    p.state = PanelState::Gantt(Arc::new(m));
+                }
+            }
             _ => {}
         }
     }
+}
+
+/// A gantt panel's spec as the dashboard gave it, as far as its settings go: what `s` turned
+/// put back (a today line turned off was on; where, the settings needn't know).
+fn gantt_before(g: &crate::gantt::GanttModel, t: &Toggles) -> crate::spec::GanttSpec {
+    let mut spec = g.spec.clone();
+    if let Some(on) = t.grid {
+        spec.view.grid = !on;
+    }
+    if let Some(on) = t.axes {
+        spec.view.axes = !on;
+    }
+    if let Some(on) = t.links {
+        spec.links = !on;
+    }
+    match t.today {
+        Some(true) => spec.today = crate::spec::Today::Off,
+        Some(false) => spec.today = crate::spec::Today::Now,
+        None => {}
+    }
+    spec
 }
 
 /// A graph panel's spec as the dashboard gave it, before its settings turned its labels.
@@ -667,7 +704,7 @@ impl DashPane {
         self.tile_hover = None;
         for s in &mut self.subs {
             (s.hover, s.near, s.legend, s.strip, s.target) = (None, None, None, None, None);
-            s.row_hover = None;
+            (s.row_hover, s.task) = (None, None);
         }
     }
 
@@ -784,6 +821,23 @@ impl DashPane {
                     }
                     sub.view.pinned.retain(|id, _| ng.index_of(id).is_some());
                 }
+                (PanelState::Gantt(_), PanelState::Gantt(ng)) => {
+                    // The cursor by its task's key; names that are gone leave the hidden set.
+                    let has =
+                        |c: &Option<Cursor>| c.as_ref().is_some_and(|c| ng.task_of(c).is_some());
+                    if !has(&sub.cursor) {
+                        sub.cursor = None;
+                    }
+                    if !has(&sub.found_node) {
+                        sub.found_node = None;
+                    }
+                    let keys = ng.keys();
+                    sub.view.hidden.retain(|k| keys.contains(k));
+                    if sub.view.only.as_ref().is_some_and(|k| !keys.contains(k)) {
+                        sub.view.only = None;
+                    }
+                    sub.anchor = None;
+                }
                 (PanelState::Tile(_), PanelState::Tile(_)) => {}
                 // Still waiting, or failed (kept as it was where it drew): as it was.
                 (_, PanelState::Waiting(_) | PanelState::Failed(_)) => {}
@@ -802,6 +856,10 @@ impl DashPane {
                             },
                             g.initial_view(),
                         ),
+                        PanelState::Gantt(g) => (
+                            sub.cursor.as_ref().is_none_or(|c| g.task_of(c).is_some()),
+                            g.initial_view(),
+                        ),
                         _ => (sub.cursor.is_none(), View::default()),
                     };
                     if !fits {
@@ -815,6 +873,7 @@ impl DashPane {
                     let view = match next {
                         PanelState::Chart(m) => m.initial_view(),
                         PanelState::Graph(g) => g.initial_view(),
+                        PanelState::Gantt(g) => g.initial_view(),
                         _ => View::default(),
                     };
                     *sub = Pane::new(view, None, Steps::default());
@@ -1074,6 +1133,10 @@ impl DashPane {
                     }
                 }
                 PanelState::Graph(_) => PanelHover::Graph(sub.target),
+                PanelState::Gantt(_) => PanelHover::Gantt {
+                    task: sub.task,
+                    hovering: sub.hovering && !sub.gesturing(),
+                },
                 PanelState::Tile(_) => {
                     let th = self.tile_hover.filter(|(j, _)| *j == i).map(|(_, h)| h);
                     if pm.linked
@@ -1130,6 +1193,7 @@ fn lend(layout: &mut DashLayout, i: usize, sub: &mut Pane) {
             sub.hits = Some(hits);
         }
         PanelFigure::Graph { layout } => sub.graph = Some(layout),
+        PanelFigure::Gantt { layout } => sub.gantt = Some(layout),
         other => p.figure = other,
     }
 }
@@ -1137,12 +1201,14 @@ fn lend(layout: &mut DashLayout, i: usize, sub: &mut Pane) {
 /// Take panel `i`'s figure back from its pane.
 fn take_back(layout: &mut DashLayout, i: usize, sub: &mut Pane) {
     let (l, h, g) = (sub.layout.take(), sub.hits.take(), sub.graph.take());
+    let t = sub.gantt.take();
     let Some(p) = layout.panels.get_mut(i).and_then(Option::as_mut) else {
         return;
     };
-    match (l, h, g) {
-        (Some(layout), Some(hits), _) => p.figure = PanelFigure::Chart { layout, hits },
-        (_, _, Some(layout)) => p.figure = PanelFigure::Graph { layout },
+    match (l, h, g, t) {
+        (Some(layout), Some(hits), ..) => p.figure = PanelFigure::Chart { layout, hits },
+        (_, _, Some(layout), _) => p.figure = PanelFigure::Graph { layout },
+        (_, _, _, Some(layout)) => p.figure = PanelFigure::Gantt { layout },
         _ => {}
     }
 }
@@ -1427,7 +1493,7 @@ impl DashPane {
             self.page = Page::Swallowed;
             return Then::None;
         }
-        if title || pm.chart().is_none() && pm.graph().is_none() {
+        if title || pm.chart().is_none() && pm.graph().is_none() && pm.gantt().is_none() {
             self.page = Page::Swallowed;
             return Then::None;
         }
@@ -1485,6 +1551,16 @@ impl DashPane {
                     now,
                     kit,
                     say: None,
+                };
+                open = a.pointer(p, l, swallow, &mut *arm);
+            }
+            PanelState::Gantt(g) => {
+                let mut a = GanttAct {
+                    pane: sub,
+                    model: g,
+                    toggles: t,
+                    motion: g.spec.view.motion,
+                    now,
                 };
                 open = a.pointer(p, l, swallow, &mut *arm);
             }
@@ -1586,7 +1662,7 @@ impl DashPane {
             }
             return Then::None;
         }
-        if pm.chart().is_some() || pm.graph().is_some() {
+        if pm.chart().is_some() || pm.graph().is_some() || pm.gantt().is_some() {
             let l = layout.panel(i).map_or(at, |pl| pl.local(at.0, at.1));
             return self.on_panel(layout, model, toggles, i, p, l, false, now, kit, arm);
         }
@@ -1651,6 +1727,14 @@ impl DashPane {
                 now,
                 kit,
                 say: None,
+            }
+            .finish(),
+            PanelState::Gantt(g) => GanttAct {
+                pane: sub,
+                model: g,
+                toggles: t,
+                motion: g.spec.view.motion,
+                now,
             }
             .finish(),
             _ => {}
@@ -1780,7 +1864,7 @@ pub(super) fn draw(
         let src = super::panel::Source {
             chart: pm.chart(),
             graph: pm.graph(),
-            gantt: None,
+            gantt: pm.gantt().map(|g| &**g),
             tile,
         };
         p.sync_panel(src, d.version);
@@ -1830,6 +1914,7 @@ pub(super) fn draw(
             match &model.panels[i].state {
                 PanelState::Chart(cm) => sub.hover_again(Some(cm)),
                 PanelState::Graph(g) => sub.graph_hover(g),
+                PanelState::Gantt(g) => sub.gantt_hover(g),
                 _ => sub.rehover = false,
             }
             take_back(&mut layout, i, sub);
@@ -1894,6 +1979,9 @@ fn draw_base(
         if let PanelFigure::Graph { layout: g } = &mut pl.figure {
             g.cell_width = cw;
         }
+        if let PanelFigure::Gantt { layout: g } = &mut pl.figure {
+            g.cell_width = cw;
+        }
     }
     (scene.width, scene.height) = size;
     p.fig_regions = scene.regions.len();
@@ -1926,7 +2014,7 @@ fn draw_base(
     p.scene = Some(scene);
     p.drawn = None;
     p.layout = None;
-    p.graph = None;
+    (p.graph, p.gantt) = (None, None);
     dp.layout = Some(layout);
     p.base_gen += 1;
 }
@@ -2272,6 +2360,20 @@ impl FigState {
                 take_back(&mut layout, i, sub);
                 Some(r)
             }
+            PanelState::Gantt(g) => {
+                let sub = &mut dp.subs[i];
+                lend(&mut layout, i, sub);
+                let mut a = GanttAct {
+                    pane: sub,
+                    model: g,
+                    toggles: t,
+                    motion: g.spec.view.motion,
+                    now,
+                };
+                let r = f(&mut a);
+                take_back(&mut layout, i, sub);
+                Some(r)
+            }
             PanelState::Tile(_) => {
                 let len = layout
                     .panel(i)
@@ -2541,8 +2643,8 @@ impl FigState {
         Some((i, dp.subs.get(i)?))
     }
 
-    /// The focused panel's figure in window `w`, for the detail panel: its chart or graph, and
-    /// its pane. None with no chart or graph focused.
+    /// The focused panel's figure in window `w`, for the detail panel: its chart, graph, gantt
+    /// or tile, and its pane. None with none of them focused.
     pub(super) fn dash_source(
         &self,
         w: die_core::WindowId,
@@ -2560,10 +2662,10 @@ impl FigState {
         let src = super::panel::Source {
             chart: pm.chart(),
             graph: pm.graph(),
-            gantt: None,
+            gantt: pm.gantt().map(|g| &**g),
             tile,
         };
-        (src.chart.is_some() || src.graph.is_some() || src.tile.is_some())
+        (src.chart.is_some() || src.graph.is_some() || src.gantt.is_some() || src.tile.is_some())
             .then_some((src, sub, d.version))
     }
 
@@ -2576,6 +2678,7 @@ impl FigState {
         Some(match &p.state {
             PanelState::Chart(_) => "a chart",
             PanelState::Graph(_) => "a graph",
+            PanelState::Gantt(_) => "a gantt",
             PanelState::Tile(t) => match t.model.kind {
                 figure::TileKind::Stat => "a stat",
                 figure::TileKind::Meter => "a meter",
@@ -2658,6 +2761,7 @@ impl FigState {
         match &model.panels.get(i)?.state {
             PanelState::Chart(cm) => cm.cursor_of(item),
             PanelState::Graph(_) => item.cursor(),
+            PanelState::Gantt(g) => item.cursor().filter(|c| g.task_of(c).is_some()),
             _ => None,
         }
     }
@@ -2682,9 +2786,52 @@ impl FigState {
                     _ => true,
                 })
                 .collect(),
+            PanelState::Gantt(g) => (g.search_names().into_iter())
+                .filter(|(_, it)| match it {
+                    Item::Task { id, .. } => {
+                        g.index_of(id).is_some_and(|n| g.visible(&sub.view, n))
+                    }
+                    _ => true,
+                })
+                .collect(),
             _ => return None,
         };
         Some(names)
+    }
+
+    /// The focused gantt panel's settings (`s`): its number, its toggles and its spec as the
+    /// dashboard gave it.
+    pub fn dash_gantt_settings(
+        &self,
+        w: die_core::WindowId,
+    ) -> Option<(usize, Toggles, crate::spec::GanttSpec)> {
+        let d = self.dash.as_ref()?;
+        let (i, _) = self.dash_focused(w)?;
+        let g = d.model.as_ref()?.panels.get(i)?.gantt()?;
+        let t = d.toggles.get(i).copied().unwrap_or_default();
+        Some((i, t, gantt_before(g, &t)))
+    }
+
+    /// The focused gantt panel's setting turned over, its model built again through the
+    /// dashboard's job (from the data in hand: no file is read).
+    pub fn dash_gantt_flip(
+        &mut self,
+        ctx: &mut die_core::Ctx,
+        i: usize,
+        setting: crate::interact::GanttSetting,
+    ) {
+        let Some(d) = self.dash.as_mut() else { return };
+        let Some(g) = d.model.as_ref().and_then(|m| m.panels.get(i)?.gantt()) else {
+            return;
+        };
+        let t = d.toggles.get(i).copied().unwrap_or_default();
+        let spec = gantt_before(g, &t);
+        if d.toggles.len() <= i {
+            d.toggles.resize(i + 1, Toggles::default());
+        }
+        d.toggles[i].flip_gantt(&spec, setting);
+        self.rev += 1;
+        self.dash_rebuild(ctx);
     }
 
     /// The focused chart panel's settings (`s`) and its chart, by number.
@@ -2727,8 +2874,8 @@ impl FigState {
     }
 
     /// The focused panel's data as TSV, its line for the cursor: a chart's (in its view's
-    /// order, hidden series left out) or a graph's two tables. None with no chart or graph
-    /// focused.
+    /// order, hidden series left out), a graph's two tables or a gantt's tasks. None with no
+    /// chart, graph or gantt focused.
     pub fn dash_table(&self, w: die_core::WindowId) -> Option<(String, Option<usize>)> {
         let model = self.dash.as_ref()?.model.as_ref()?;
         let (i, sub) = self.dash_focused(w)?;
@@ -2737,6 +2884,10 @@ impl FigState {
             PanelState::Graph(g) => {
                 let t = g.tsv(&sub.view, sub.cursor.as_ref());
                 Some((format!("{}\n{}", t.nodes, t.edges), t.line))
+            }
+            PanelState::Gantt(g) => {
+                let line = sub.cursor.as_ref().and_then(|c| g.tsv_line(&sub.view, c));
+                Some((g.tsv(&sub.view), line))
             }
             _ => None,
         }

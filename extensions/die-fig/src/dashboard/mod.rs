@@ -4,8 +4,9 @@
 //! The editor drives a dashboard as it drives a chart:
 //!
 //! - [`DashModel::build`] resolves a [`DashboardSpec`] against its data, already read
-//!   ([`Sources`]), every panel with its own result: a chart's, a graph's or a tile's model, a
-//!   nested `.fig` file's figure (a dashboard there is a nested group), a panel still waiting
+//!   ([`Sources`]), every panel with its own result: a chart's, a graph's, a gantt's or a
+//!   tile's model (a panel's figure is a chart, a graph, a gantt or a tile), a nested `.fig`
+//!   file's figure (a dashboard there is a nested group), a panel still waiting
 //!   for its data (a command not yet run), or the errors that keep it from drawing. One bad
 //!   panel shows its error figure and the others draw. The model lists what it wants read
 //!   ([`DashModel::wants`]) and what needs your yes before it's run or opened
@@ -43,6 +44,7 @@ pub use time::{DashView, PanelView, RANGES, Range, tween};
 use crate::data::{ReadOptions, Table};
 use crate::error::{ErrorKind, FigError, Pos, Result};
 use crate::figure::TileModel;
+use crate::gantt::GanttModel;
 use crate::graph::GraphModel;
 use crate::plot::{AxisKind, ChartModel};
 use crate::spec::chart::parse_duration;
@@ -329,6 +331,9 @@ pub struct Origin<'a> {
     pub dir: &'a Path,
     /// The zone times without an offset are in.
     pub zone: &'a TimeZone,
+    /// The clock, in UTC seconds since the epoch: where a gantt panel's today line is. The
+    /// build never reads the system's.
+    pub now: f64,
 }
 
 /// What kind of figure a panel is, which sizes it whatever its state.
@@ -338,6 +343,8 @@ pub enum PanelKind {
     Chart,
     /// A network graph.
     Graph,
+    /// A gantt: it takes a figure's height and scrolls its own rows inside.
+    Gantt,
     /// A stat or a meter: a row of tiles takes their natural height.
     Tile,
     /// Unknown: a `file` panel that couldn't be read.
@@ -370,6 +377,9 @@ pub enum PanelState {
     Chart(ChartModel),
     /// A graph, laid out (shared with the editor's panes, which ease its pins).
     Graph(Arc<GraphModel>),
+    /// A gantt, its dates worked out (shared with the editor's panes, which ease its time and
+    /// its rows).
+    Gantt(Arc<GanttModel>),
     /// A tile.
     Tile(Tile),
     /// Its data is still coming: its frame and title only.
@@ -418,6 +428,14 @@ impl PanelModel {
         }
     }
 
+    /// Its gantt, if it shows one.
+    pub fn gantt(&self) -> Option<&Arc<GanttModel>> {
+        match &self.state {
+            PanelState::Gantt(g) => Some(g),
+            _ => None,
+        }
+    }
+
     /// Its tile, if it shows one.
     pub fn tile(&self) -> Option<&Tile> {
         match &self.state {
@@ -443,7 +461,10 @@ impl PanelModel {
     pub fn ready(&self) -> bool {
         matches!(
             self.state,
-            PanelState::Chart(_) | PanelState::Graph(_) | PanelState::Tile(_)
+            PanelState::Chart(_)
+                | PanelState::Graph(_)
+                | PanelState::Gantt(_)
+                | PanelState::Tile(_)
         )
     }
 }
@@ -547,6 +568,7 @@ struct Builder<'a> {
     origin_file: Option<PathBuf>,
     resolve: &'a dyn Fn(&Path) -> Result<Figure>,
     zone: &'a TimeZone,
+    now: f64,
     time_field: Option<String>,
     panels: Vec<PanelModel>,
     wants: Vec<Want>,
@@ -568,6 +590,7 @@ impl DashModel {
             origin_file: origin.file.map(Path::to_path_buf),
             resolve,
             zone: origin.zone,
+            now: origin.now,
             time_field: spec.time.as_ref().map(|t| t.field.clone()),
             panels: Vec::new(),
             wants: Vec::new(),
@@ -919,11 +942,27 @@ impl Builder<'_> {
                     Err(e) => fail(vec![scope.placed(e)], &name),
                 }
             }
-            // Until gantt panels land (the next step): its error figure says so.
-            Figure::Gantt(_) => fail(
-                vec![FigError::at("a gantt can't be a panel yet", at)],
-                &name,
-            ),
+            // A gantt: its tasks' rows read as a tile's data is (inline, a file, a command, one
+            // of the dashboard's named sources), then its dates worked out against the clock
+            // the build was given. Its time is its own: not the dashboard's shared time.
+            Figure::Gantt(g) => {
+                panel.kind = PanelKind::Gantt;
+                let mut g = g.clone();
+                panel.title = g.title.take().filter(|t| !t.is_empty());
+                panel.subtitle = g.subtitle.take().filter(|t| !t.is_empty());
+                let data = g.data.clone();
+                match self.table(&data, scope, &[]) {
+                    Got::Table(t, note) => match GanttModel::build(g, t, self.zone, self.now) {
+                        Ok(m) => PanelState::Gantt(Arc::new(m)),
+                        Err(e) => {
+                            let e = note.into_iter().fold(scope.placed(e), FigError::note);
+                            fail(vec![e], &name)
+                        }
+                    },
+                    Got::Waiting(w) => PanelState::Waiting(w),
+                    Got::Failed(e) => fail(vec![e], &name),
+                }
+            }
             Figure::Stat(_) | Figure::Meter(_) | Figure::Sparkline(_) => {
                 panel.kind = PanelKind::Tile;
                 let data = match fig {
