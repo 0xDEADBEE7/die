@@ -754,7 +754,10 @@ fn gantt_shot(
         let (_, l) = lay(&view, ask.scale, book);
         view = gantt::nav::zoom_about(&model, &l, &view, f, None, cursor.as_ref());
     }
-    let mut brush = ask.brush.as_ref().map(|b| (b[0], *b.get(1).unwrap_or(&b[0])));
+    let mut brush = ask
+        .brush
+        .as_ref()
+        .map(|b| (b[0], *b.get(1).unwrap_or(&b[0])));
     if ask.brushed
         && let Some((a, b)) = brush.take()
     {

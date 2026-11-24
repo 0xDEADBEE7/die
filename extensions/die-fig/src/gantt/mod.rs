@@ -1212,16 +1212,18 @@ impl GanttModel {
         }
     }
 
+    /// The last time the plan shows: the latest of its tasks' ends as they're written (a last
+    /// day, a milestone's moment) and its marks.
+    pub fn last_shown(&self) -> f64 {
+        let tasks = (0..self.len()).map(|i| self.end_shown(i));
+        let marks = self.marks.iter().map(|m| m.start);
+        tasks.chain(marks).fold(self.extent.0, f64::max)
+    }
+
     /// Whether the plan's dates are in more than one year: its dates are written with theirs.
     pub fn years(&self) -> bool {
         let y = |t: f64| calendar::year_of(t, &self.zone);
-        // The last instant shown is the last day's, not the midnight after it.
-        let last = if self.whole_days {
-            self.extent.1 - 1.0
-        } else {
-            self.extent.1
-        };
-        y(self.extent.0) != y(last.max(self.extent.0))
+        y(self.extent.0) != y(self.last_shown())
     }
 
     /// A time as the card writes it: "Mon 2 Nov" in a plan of whole days, "Mon 2 Nov 14:30"
@@ -1441,10 +1443,7 @@ impl GanttModel {
         parts.push(format!("{n} task{}", if n == 1 { "" } else { "s" }));
         let (lo, hi) = self.extent;
         if lo.is_finite() && hi.is_finite() {
-            let last = match self.days.date(hi).and_then(|d| d.yesterday().ok()) {
-                Some(d) if self.whole_days && hi > lo => self.days.start(d),
-                _ => hi,
-            };
+            let last = self.last_shown();
             let day = |t: f64| {
                 let d = calendar::short_day(t, &self.zone);
                 match (self.years(), calendar::year_of(t, &self.zone)) {

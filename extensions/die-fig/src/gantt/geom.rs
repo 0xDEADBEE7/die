@@ -474,8 +474,8 @@ pub(crate) fn lay_out(
         }
         // Not where a link runs through it.
         let room = Rect::new(at - 2.0, g.mid() - 8.0, wide + 4.0, 16.0);
-        let crossed = (links.iter())
-            .any(|k| (k.pts.windows(2)).any(|w| seg_meets(w[0], w[1], &room)));
+        let crossed =
+            (links.iter()).any(|k| (k.pts.windows(2)).any(|w| seg_meets(w[0], w[1], &room)));
         if crossed {
             continue;
         }
@@ -731,8 +731,7 @@ fn tick_labels(
         firsts.sort_by_key(|&r| (std::cmp::Reverse(majors(r)), r));
         for r in firsts {
             let set: Vec<usize> = (r..n).step_by(k).filter(|&i| inside(&boxes[i])).collect();
-            let clear =
-                (set.windows(2)).all(|w| boxes[w[1]].x - boxes[w[0]].right() >= TICK_CLEAR);
+            let clear = (set.windows(2)).all(|w| boxes[w[1]].x - boxes[w[0]].right() >= TICK_CLEAR);
             if clear {
                 kept = set;
                 break 'stride;

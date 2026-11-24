@@ -110,111 +110,115 @@ pub fn overlay(
         }
     }
 
-    scene.push(Item::PushClip(
-        rows.inflate(6.0)
-            .intersect(&Rect::new(0.0, plot.y, l.size.0, plot.h))
-            .unwrap_or(rows),
-    ));
     // The labels drawn again in the strong text: the base's cleared first, under the strip.
     let relabel: Vec<usize> = (lit.iter().chain(&ends).chain(&st.matches))
         .copied()
         .filter(|&i| seen(i).is_some())
         .collect();
-    for &i in &relabel {
-        let Some(g) = l.task(i) else { continue };
-        let b = l.rows[g.row as usize].label.bounds(m).inflate(1.0);
-        scene.push(Item::Path {
-            path: PathData::rect(b),
-            fill: Some(Paint::solid(theme.surface, 1.0)),
-            stroke: None,
-        });
-    }
-    for &i in &lit {
-        let Some(g) = l.task(i) else { continue };
-        let band = Rect::new(
-            rows.x - 6.0,
-            g.strip.y + 1.0,
-            rows.w + 12.0,
-            g.strip.h - 2.0,
-        );
-        scene.push(Item::Path {
-            path: PathData::rounded(band, [6.0; 4]),
-            fill: Some(Paint::solid(
-                theme.text,
-                if theme.dark { 0.04 } else { 0.05 },
-            )),
-            stroke: None,
-        });
-    }
-    let mut done: Vec<usize> = Vec::new();
-    for &i in &relabel {
-        let Some(g) = l.task(i) else { continue };
-        if done.contains(&i) {
-            continue;
-        }
-        done.push(i);
-        let label = &l.rows[g.row as usize].label;
-        scene.push(Item::Text {
-            text: label.text.as_str().into(),
-            x: label.x,
-            y: label.y,
-            spec: label.spec,
-            anchor: label.anchor,
-            color: theme.strong,
-            alpha: 1.0,
-            max_width: None,
-        });
-    }
-    scene.push(Item::PopClip);
-
-    scene.push(Item::PushClip(plot));
-    for &n in &links {
-        let k = &l.links[n];
-        let color = if k.conflict {
-            theme.status[1]
-        } else {
-            theme.text
-        };
-        link(&mut scene, k, color, 1.0, true);
-    }
-    // The tasks at the links' other ends come forward over them, as they are.
-    for &i in &ends {
-        if let Some(g) = l.task(i) {
-            bar(&mut scene, model, i, g, g.color, theme);
-        }
-    }
-    for &i in &bright {
-        if let Some(g) = l.task(i) {
-            bar(&mut scene, model, i, g, lift(g.color, theme), theme);
-        }
-    }
-    for &i in &lit {
-        let Some(g) = l.task(i) else { continue };
-        if Some(i) == cursor {
-            // The ring's room: nothing of the base shows between the bar and its ring.
+    if !relabel.is_empty() {
+        scene.push(Item::PushClip(
+            rows.inflate(6.0)
+                .intersect(&Rect::new(0.0, plot.y, l.size.0, plot.h))
+                .unwrap_or(rows),
+        ));
+        for &i in &relabel {
+            let Some(g) = l.task(i) else { continue };
+            let b = l.rows[g.row as usize].label.bounds(m).inflate(1.0);
             scene.push(Item::Path {
-                path: outline(g, CURSOR_RING.0 + CURSOR_RING.1 / 2.0),
+                path: PathData::rect(b),
                 fill: Some(Paint::solid(theme.surface, 1.0)),
                 stroke: None,
             });
         }
-        bar(&mut scene, model, i, g, lift(g.color, theme), theme);
-        scene.push(Item::Path {
-            path: outline(g, 0.5),
-            fill: None,
-            stroke: Some(Stroke::solid(1.0, theme.strong, 0.6)),
-        });
-        if Some(i) == cursor {
-            let mut ring = Stroke::solid(CURSOR_RING.1, theme.strong, 1.0);
-            ring.join = Join::Round;
+        for &i in &lit {
+            let Some(g) = l.task(i) else { continue };
+            let band = Rect::new(
+                rows.x - 6.0,
+                g.strip.y + 1.0,
+                rows.w + 12.0,
+                g.strip.h - 2.0,
+            );
             scene.push(Item::Path {
-                path: outline(g, CURSOR_RING.0),
-                fill: None,
-                stroke: Some(ring),
+                path: PathData::rounded(band, [6.0; 4]),
+                fill: Some(Paint::solid(
+                    theme.text,
+                    if theme.dark { 0.04 } else { 0.05 },
+                )),
+                stroke: None,
             });
         }
+        let mut done: Vec<usize> = Vec::new();
+        for &i in &relabel {
+            let Some(g) = l.task(i) else { continue };
+            if done.contains(&i) {
+                continue;
+            }
+            done.push(i);
+            let label = &l.rows[g.row as usize].label;
+            scene.push(Item::Text {
+                text: label.text.as_str().into(),
+                x: label.x,
+                y: label.y,
+                spec: label.spec,
+                anchor: label.anchor,
+                color: theme.strong,
+                alpha: 1.0,
+                max_width: None,
+            });
+        }
+        scene.push(Item::PopClip);
     }
-    scene.push(Item::PopClip);
+
+    if !(links.is_empty() && ends.is_empty() && bright.is_empty() && lit.is_empty()) {
+        scene.push(Item::PushClip(plot));
+        for &n in &links {
+            let k = &l.links[n];
+            let color = if k.conflict {
+                theme.status[1]
+            } else {
+                theme.text
+            };
+            link(&mut scene, k, color, 1.0, true);
+        }
+        // The tasks at the links' other ends come forward over them, as they are.
+        for &i in &ends {
+            if let Some(g) = l.task(i) {
+                bar(&mut scene, model, i, g, g.color, theme);
+            }
+        }
+        for &i in &bright {
+            if let Some(g) = l.task(i) {
+                bar(&mut scene, model, i, g, lift(g.color, theme), theme);
+            }
+        }
+        for &i in &lit {
+            let Some(g) = l.task(i) else { continue };
+            if Some(i) == cursor {
+                // The ring's room: nothing of the base shows between the bar and its ring.
+                scene.push(Item::Path {
+                    path: outline(g, CURSOR_RING.0 + CURSOR_RING.1 / 2.0),
+                    fill: Some(Paint::solid(theme.surface, 1.0)),
+                    stroke: None,
+                });
+            }
+            bar(&mut scene, model, i, g, lift(g.color, theme), theme);
+            scene.push(Item::Path {
+                path: outline(g, 0.5),
+                fill: None,
+                stroke: Some(Stroke::solid(1.0, theme.strong, 0.6)),
+            });
+            if Some(i) == cursor {
+                let mut ring = Stroke::solid(CURSOR_RING.1, theme.strong, 1.0);
+                ring.join = Join::Round;
+                scene.push(Item::Path {
+                    path: outline(g, CURSOR_RING.0),
+                    fill: None,
+                    stroke: Some(ring),
+                });
+            }
+        }
+        scene.push(Item::PopClip);
+    }
 
     // The date under the pointer, off any bar.
     let over_plot =
@@ -363,7 +367,9 @@ pub fn overlay(
         let mut cuts: Vec<Rect> = (l.tick_labels.iter().map(|t| t.bounds(m))).collect();
         for mk in &l.marks {
             if let Some((text, x, y, anchor)) = &mk.label {
-                cuts.push(crate::plot::layout::text_box(text, *x, *y, spec, *anchor, m));
+                cuts.push(crate::plot::layout::text_box(
+                    text, *x, *y, spec, *anchor, m,
+                ));
             }
         }
         for b in cuts.into_iter().filter(|b| cut(*b)) {
