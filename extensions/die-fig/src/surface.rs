@@ -19,17 +19,21 @@
 //! focuses the window only focuses it ([`FOCUS_GRACE_MS`]). The right button, Space and
 //! Ctrl-click open nothing: there is no dial (the owner, 2026-11-22).
 //!
-//! A graph is shown as a chart is, with a graph's gestures and keys ([`graph`]); the detail
-//! panel opens beside either, the figure laid out in what it leaves ([`panel`]). A dashboard (or
+//! A figure is a chart, a graph or a gantt. A graph is shown as a chart is, with a graph's
+//! gestures and keys ([`graph`]), and so is a gantt with its own ([`gantt`]: a brush that zooms
+//! the time, rows that scroll, the wheel's two meanings); the detail panel opens beside any of
+//! them, the figure laid out in what it leaves ([`panel`]). A dashboard (or
 //! a tile alone) is a figure of figures, each panel driven as it would be alone ([`dash`]); the
 //! commands a figure's data comes from are asked for, run and streamed while it shows
 //! ([`feeds`]).
 
 pub mod dash;
 mod feeds;
+pub mod gantt;
 pub mod graph;
 pub mod panel;
 
+pub use gantt::GanttAct;
 pub use graph::GraphAct;
 pub use panel::{Kill, Panel};
 
@@ -37,6 +41,7 @@ use crate::algo::HitIndex;
 use crate::data::{ColumnKind, SeriesKey, Table};
 use crate::detail::Item as Mark;
 use crate::error::{ErrorKind, FigError};
+use crate::gantt::{GanttLayout, GanttModel};
 use crate::graph::{GraphLayout, GraphModel, Target};
 use crate::interact::consts::{
     CLICK_SLOP, FOCUS_GRACE_MS, MOTION_MS, NEAREST_SERIES, SCROLL_BURST_MS, ZOOM_STEP,
@@ -50,7 +55,7 @@ use crate::scene::{
 };
 use crate::search::Search;
 use crate::source::{self, Failed, Job, Snapshot, Source, Text};
-use crate::spec::{Chart, Figure, GraphSpec, Layout};
+use crate::spec::{Chart, Figure, GanttSpec, GraphSpec, Layout};
 use crate::theme::{self, Theme};
 use die_core::{
     BufferId, Button, CellPixels, Ctx, Event, Frame, KeyEvent, KeyKind, Mods, PixelProducer,
@@ -175,20 +180,23 @@ struct Burst {
 }
 
 /// An ease from one view to another, with both domains made explicit so they can be tweened;
-/// a graph's pins glide with it.
+/// a graph's pins glide with it, and a gantt's rows.
 struct Ease {
     tween: Tween<View>,
     /// The graph whose pinned nodes glide, when it's a graph's.
     graph: Option<Arc<GraphModel>>,
+    /// The gantt whose time and rows glide, when it's a gantt's.
+    gantt: Option<Arc<GanttModel>>,
 }
 
 impl Ease {
     /// The view part way, at `now`.
     fn at(&self, now: u64) -> View {
         let t = self.tween.progress(now);
-        match &self.graph {
-            Some(g) => crate::graph::nav::tween(g, &self.tween.from, &self.tween.to, t),
-            None => plot::nav::tween(&self.tween.from, &self.tween.to, t),
+        match (&self.graph, &self.gantt) {
+            (Some(g), _) => crate::graph::nav::tween(g, &self.tween.from, &self.tween.to, t),
+            (None, Some(g)) => crate::gantt::nav::tween(g, &self.tween.from, &self.tween.to, t),
+            (None, None) => plot::nav::tween(&self.tween.from, &self.tween.to, t),
         }
     }
 }
@@ -225,6 +233,8 @@ struct OverKey {
     strip: Option<Rect>,
     /// A graph's overlay, whole.
     graph: Option<crate::graph::OverlayState>,
+    /// A gantt's overlay, whole.
+    gantt: Option<crate::gantt::OverlayState>,
     /// What a chart's search lights, and whether its cursor's card shows.
     lit: plot::overlay::Lit,
 }
@@ -323,12 +333,17 @@ pub struct Pane {
     pub dwell: Option<Cursor>,
     /// What the dwell's timer will bring into focus, and the timer.
     dwell_next: Option<(Option<Cursor>, Sub)>,
-    /// `]` and `[`'s anchor: the node they turn about, and the node they left the cursor on.
+    /// `]` and `[`'s anchor: the node (a gantt's task) they turn about, and the one they left
+    /// the cursor on.
     anchor: Option<(Box<str>, Box<str>)>,
-    /// The node a search found on a graph, in focus until `Esc`.
+    /// The node a search found on a graph (a gantt's task), in focus until `Esc`.
     pub found_node: Option<Cursor>,
-    /// The nodes the search typed so far matches, lit while it's typed.
+    /// The nodes (a gantt's tasks) the search typed so far matches, lit while it's typed.
     pub matches: Vec<usize>,
+    /// Where a gantt landed, as last drawn.
+    pub gantt: Option<GanttLayout>,
+    /// The task of a gantt under the pointer.
+    pub task: Option<crate::gantt::Target>,
     /// The detail panel, if it's open.
     pub panel: Option<Panel>,
     /// The panel as last drawn.
@@ -396,6 +411,8 @@ impl Pane {
             anchor: None,
             found_node: None,
             matches: vec![],
+            gantt: None,
+            task: None,
             panel: None,
             panel_drawn: None,
             fig_regions: 0,
@@ -540,6 +557,7 @@ impl Pane {
             self.ease = Some(Ease {
                 tween: Tween::new(from, to, t, MOTION_MS),
                 graph: None,
+                gantt: None,
             });
         }
         self.view = v;
@@ -853,8 +871,10 @@ pub struct FigState {
     pub tables: Vec<Arc<Table>>,
     /// The chart's model, as last built.
     pub model: Option<Arc<ChartModel>>,
-    /// The graph's model, laid out, as last built: a figure is a chart or a graph.
+    /// The graph's model, laid out, as last built: a figure is a chart, a graph or a gantt.
     pub graph: Option<Arc<GraphModel>>,
+    /// The gantt's model, its dates worked out, as last built.
+    pub gantt: Option<Arc<GanttModel>>,
     /// Goes up with each model.
     pub model_gen: u64,
     /// Why the last build failed: the error figure says so, or the stale badge over the last
@@ -976,6 +996,7 @@ impl FigState {
                 tables: vec![],
                 model: None,
                 graph: None,
+                gantt: None,
                 model_gen: 0,
                 error: None,
                 fail_gen: 0,
@@ -1068,9 +1089,18 @@ impl FigState {
 
     /// Whether discrete changes ease: the spec's `motion`.
     fn motion(&self) -> bool {
-        match &self.graph {
-            Some(g) => g.spec.view.motion,
-            None => self.chart.as_ref().is_none_or(|c| c.view.motion),
+        match (&self.graph, &self.gantt) {
+            (Some(g), _) => g.spec.view.motion,
+            (None, Some(g)) => g.spec.view.motion,
+            (None, None) => self.chart.as_ref().is_none_or(|c| c.view.motion),
+        }
+    }
+
+    /// The gantt's spec as parsed, before the settings.
+    pub fn gantt_spec(&self) -> Option<&GanttSpec> {
+        match &self.figure {
+            Some(Figure::Gantt(g)) => Some(g),
+            _ => None,
         }
     }
 
@@ -1107,8 +1137,8 @@ impl FigState {
         plot::log_layout(&self.log_errors(), &self.text, &self.name)
     }
 
-    /// The status line: the name, how many series, how many hidden, whether it follows live
-    /// data, and why the last build failed.
+    /// The status line: the name, how many series (a graph's nodes and edges, a gantt's tasks),
+    /// how many hidden, whether it follows live data, and why the last build failed.
     pub fn status(&self) -> String {
         let mut s = self.name.clone();
         if let Some(g) = &self.graph {
@@ -1120,6 +1150,16 @@ impl FigState {
                 }
                 if !p.view.pinned.is_empty() {
                     s.push_str(&format!("  {} pinned", p.view.pinned.len()));
+                }
+            }
+        }
+        if let Some(g) = &self.gantt {
+            let n = g.len();
+            s.push_str(&format!("  {n} task{}", if n == 1 { "" } else { "s" }));
+            if let Some(p) = self.last.and_then(|w| self.panes.get(&w)) {
+                let hidden = n - g.shown(&p.view).len();
+                if hidden > 0 {
+                    s.push_str(&format!("  {hidden} hidden"));
                 }
             }
         }
@@ -1312,6 +1352,9 @@ impl FigState {
         if let Some(spec) = self.graph_spec().cloned() {
             return self.rebuild_graph(ctx, spec);
         }
+        if let Some(spec) = self.gantt_spec().cloned() {
+            return self.rebuild_gantt(ctx, spec);
+        }
         let Some(chart) = self.chart.clone() else {
             return;
         };
@@ -1369,21 +1412,44 @@ impl FigState {
         ));
     }
 
+    /// The gantt's model again from its spec as parsed and its table as read, for a setting
+    /// turned (its grid, axis, links, today line): in a job, the last frame up until it's done.
+    /// No file is read: the table is the one the last build from the text read.
+    fn rebuild_gantt(&mut self, ctx: &mut Ctx, spec: GanttSpec) {
+        let Some(table) = self.tables.first().cloned() else {
+            return;
+        };
+        let (toggles, zone) = (self.toggles, self.zone.clone());
+        let source = self.gantt.as_ref().and_then(|g| g.source.clone());
+        let now = source::clock();
+        let me = self.me.clone();
+        self.rebuilding = Some(ctx.spawn(
+            move || source::gantt_model(&spec, table, toggles, &zone, now, source),
+            move |ctx, out| {
+                if let Some(s) = me.upgrade() {
+                    let mut st = s.borrow_mut();
+                    st.rebuilding = None;
+                    match out {
+                        Ok(model) => st.new_gantt(model),
+                        Err(error) => {
+                            let f = Failed {
+                                text: st.text.clone(),
+                                ..Failed::one(error)
+                            };
+                            st.failed(ctx, f);
+                        }
+                    }
+                    st.refresh(ctx);
+                }
+                Ok(())
+            },
+        ));
+    }
+
     /// A build's outcome: the new figure, or the last one kept with the stale badge saying
     /// why not (the error figure where there's none).
     fn built(&mut self, ctx: &mut Ctx, out: std::result::Result<source::Built, Failed>) {
         self.rev += 1;
-        // Until the surface draws a gantt (the next step): its error figure says so.
-        let out = match out {
-            Ok(b) if b.gantt.is_some() => Err(Failed {
-                errors: vec![FigError::new("gantt charts aren't drawn yet")],
-                warnings: b.warnings,
-                text: b.text,
-                files: b.files,
-                feeds: b.feeds,
-            }),
-            other => other,
-        };
         match out {
             Ok(b) => {
                 if b.warnings != self.warned {
@@ -1413,30 +1479,35 @@ impl FigState {
                         .map(|(top, mark)| (top, mark.min(lines.starts.len().saturating_sub(1))));
                 }
                 self.chart_feeds = b.feeds;
-                match (dash, b.model, b.graph) {
+                match (dash, b.model, b.graph, b.gantt) {
                     (Some(spec), ..) => {
-                        if self.model.is_some() || self.graph.is_some() {
-                            (self.model, self.graph) = (None, None);
+                        if self.model.is_some() || self.graph.is_some() || self.gantt.is_some() {
+                            (self.model, self.graph, self.gantt) = (None, None, None);
                             self.model_gen += 1;
                             for p in self.panes.values_mut() {
                                 (p.layout, p.graph, p.hover, p.target) = (None, None, None, None);
+                                (p.gantt, p.task) = (None, None);
                                 (p.cursor, p.panel, p.ease) = (None, None, None);
                                 p.gesture = Gesture::None;
                             }
                         }
                         self.dash_built(ctx, spec);
                     }
-                    (None, Some(m), _) => {
+                    (None, Some(m), ..) => {
                         self.leave_dash();
                         self.new_model(m, ctx.now());
                     }
-                    (None, None, Some(g)) => {
+                    (None, None, Some(g), _) => {
                         self.leave_dash();
                         self.new_graph(g);
                     }
-                    (None, None, None) => {
+                    (None, None, None, Some(g)) => {
                         self.leave_dash();
-                        (self.model, self.graph) = (None, None);
+                        self.new_gantt(g);
+                    }
+                    (None, None, None, None) => {
+                        self.leave_dash();
+                        (self.model, self.graph, self.gantt) = (None, None, None);
                         self.model_gen += 1;
                     }
                 }
@@ -1527,7 +1598,7 @@ impl FigState {
             Some(Cursor::Node(_) | Cursor::Task(_)) => false,
             None => true,
         };
-        let from_graph = self.graph.is_some();
+        let (from_graph, from_gantt) = (self.graph.is_some(), self.gantt.is_some());
         self.auto_pick = None;
         let (ext_x, ext_y) = model.extent();
         // A domain that no longer meets the data's extent shows nothing: it fits again.
@@ -1544,14 +1615,17 @@ impl FigState {
             if !fits(&p.view.reference) {
                 p.view.reference = None;
             }
-            if from_graph {
+            if from_graph || from_gantt {
                 // From a graph to a chart: its window (in layout units), its pins and its
-                // groups mean nothing here.
+                // groups mean nothing here. Nor do a gantt's time, rows and names.
                 (p.view.x, p.view.y, p.view.follow, p.ease) = (None, None, false, None);
                 (p.view.hidden, p.view.only) = (Default::default(), None);
                 p.view.pinned.clear();
                 (p.calm, p.panel) = (None, None);
                 if let Gesture::NodeDrag { .. } = p.gesture {
+                    p.gesture = Gesture::Swallowed;
+                }
+                if from_gantt && p.gesturing() {
                     p.gesture = Gesture::Swallowed;
                 }
             }
@@ -1581,9 +1655,10 @@ impl FigState {
             p.rehover = true;
             (p.graph, p.target, p.dwell, p.dwell_next, p.anchor) = (None, None, None, None, None);
             (p.found_node, p.matches) = (None, vec![]);
+            (p.gantt, p.task) = (None, None);
         }
         self.model = Some(Arc::new(model));
-        self.graph = None;
+        (self.graph, self.gantt) = (None, None);
         self.model_gen += 1;
         self.rev += 1;
     }
@@ -1611,13 +1686,17 @@ impl FigState {
                 (p.dwell, p.dwell_next) = (None, None);
             }
             p.view.pinned.retain(|id, _| model.index_of(id).is_some());
-            if self.model.is_some() {
-                // From a chart to a graph: its domains mean nothing here.
+            if self.model.is_some() || self.gantt.is_some() {
+                // From a chart to a graph: its domains mean nothing here. Nor do a gantt's.
                 (p.view.x, p.view.y, p.ease) = (None, None, None);
                 (p.view.hidden, p.view.only) = (Default::default(), None);
+                if self.gantt.is_some() && p.gesturing() {
+                    p.gesture = Gesture::Swallowed;
+                }
             }
             (p.layout, p.hits, p.hover, p.near, p.anchor) = (None, None, None, None, None);
             (p.target, p.matches) = (None, vec![]);
+            (p.gantt, p.task) = (None, None);
             p.rehover = true;
         }
         // Laid out another way: the old layout's units, and the pins in them, mean nothing,
@@ -1647,7 +1726,58 @@ impl FigState {
             self.auto_pick = Some(model.layout.clone());
         }
         self.graph = Some(Arc::new(model));
-        self.model = None;
+        (self.model, self.gantt) = (None, None);
+        self.model_gen += 1;
+        self.rev += 1;
+    }
+
+    /// A gantt to draw: what names a task that's gone lets go (the cursor, the search's find,
+    /// `]` and `[`'s anchor), names that are gone leave the hidden set and the one shown
+    /// alone, and the rest stays as it was: the time shown and the rows' scroll, where the
+    /// figure was a gantt already (an edit followed, a setting turned, a file polled). From a
+    /// chart or a graph, their window and what they hid mean nothing here: the plan fits.
+    fn new_gantt(&mut self, model: GanttModel) {
+        let has = |c: &Option<Cursor>| match c {
+            Some(c @ Cursor::Task(_)) => model.task_of(c).is_some(),
+            Some(_) => false,
+            None => true,
+        };
+        let keys = model.keys();
+        let from_other = self.model.is_some() || self.graph.is_some();
+        for p in self.panes.values_mut() {
+            if !has(&p.cursor) {
+                p.cursor = None;
+            }
+            if !has(&p.found_node) {
+                p.found_node = None;
+            }
+            if from_other {
+                (p.view.x, p.view.y, p.ease) = (None, None, None);
+                (p.view.hidden, p.view.only) = (Default::default(), None);
+                (p.calm, p.panel) = (None, None);
+                if p.gesturing() {
+                    p.gesture = Gesture::Swallowed;
+                }
+            }
+            // A gantt has no reference, pins or follow: what a kept view said of them goes.
+            (p.view.reference, p.view.follow) = (None, false);
+            p.view.pinned.clear();
+            p.view.hidden.retain(|k| keys.contains(k));
+            if p.view.only.as_ref().is_some_and(|k| !keys.contains(k)) {
+                p.view.only = None;
+            }
+            let gone = |k: &str| model.index_of(k).is_none();
+            if p.anchor.as_ref().is_some_and(|(a, b)| gone(a) || gone(b)) {
+                p.anchor = None;
+            }
+            (p.layout, p.hits, p.near) = (None, None, None);
+            (p.graph, p.target, p.dwell, p.dwell_next) = (None, None, None, None);
+            (p.hover, p.task, p.matches) = (None, None, vec![]);
+            p.rehover = true;
+        }
+        self.auto_pick = None;
+        self.gantt = Some(Arc::new(model));
+        (self.model, self.graph) = (None, None);
         self.model_gen += 1;
         self.rev += 1;
     }
@@ -1800,7 +1930,7 @@ impl FigState {
             // it moves again. The keyboard's cursor stays.
             (p.pointer, p.hovering) = (None, false);
             (p.hover, p.near, p.legend, p.strip) = (None, None, None, None);
-            (p.target, p.row_hover) = (None, None);
+            (p.target, p.task, p.row_hover) = (None, None, None);
             // A dashboard's panels let go of theirs too, until the pointer moves.
             if let Some(dp) = p.dash.as_mut() {
                 dp.drop_hover();
@@ -1834,7 +1964,8 @@ impl FigState {
         let now = ms(ctx.now());
         let Some(buf) = self.buf else { return };
         // A restart's panel opens in the first window drawn, for the cursor it kept.
-        if self.panel_seed && (self.model.is_some() || self.graph.is_some()) {
+        if self.panel_seed && (self.model.is_some() || self.graph.is_some() || self.gantt.is_some())
+        {
             let ws: Vec<WindowId> = (self.panes.iter())
                 .filter(|(_, p)| p.base.is_some() && p.cursor.is_some())
                 .map(|(w, _)| *w)
@@ -1851,15 +1982,17 @@ impl FigState {
             text: &self.text,
             name: &self.name,
         };
-        let (model, graph) = (self.model.clone(), self.graph.clone());
-        let shows = match (&model, &graph) {
-            (_, Some(g)) => Shows::Graph(g),
-            (Some(m), None) => Shows::Chart(m),
-            (None, None) => Shows::Nothing,
+        let (model, graph, gantt) = (self.model.clone(), self.graph.clone(), self.gantt.clone());
+        let shows = match (&model, &graph, &gantt) {
+            (_, Some(g), _) => Shows::Graph(g),
+            (_, None, Some(g)) => Shows::Gantt(g),
+            (Some(m), None, None) => Shows::Chart(m),
+            (None, None, None) => Shows::Nothing,
         };
         let src = panel::Source {
             chart: model.as_deref(),
             graph: graph.as_deref(),
+            gantt: gantt.as_deref(),
             tile: None,
         };
         let me = self.me.clone();
@@ -1917,6 +2050,7 @@ impl FigState {
             if p.rehover {
                 match shows {
                     Shows::Graph(g) => p.graph_hover(g),
+                    Shows::Gantt(g) => p.gantt_hover(g),
                     _ => p.hover_again(model.as_deref()),
                 }
             }
@@ -1977,7 +2111,7 @@ impl FigState {
         let Some(pane) = self.panes.get_mut(&p.window) else {
             return;
         };
-        let drawn = model.is_some() || self.graph.is_some() || dashboard;
+        let drawn = model.is_some() || self.graph.is_some() || self.gantt.is_some() || dashboard;
         if pane.log.is_none() && drawn {
             // The panel takes what's over it, then a graph's gestures, else a chart's.
             if self.panel_pointer(ctx, p, at, swallow) {
@@ -1998,6 +2132,9 @@ impl FigState {
             }
             if self.graph.is_some() {
                 return self.graph_pointer(ctx, p, at, swallow);
+            }
+            if self.gantt.is_some() {
+                return self.gantt_pointer(ctx, p, at, swallow);
             }
         }
         let Some(pane) = self.panes.get_mut(&p.window) else {
@@ -2099,6 +2236,10 @@ impl FigState {
         }
         if self.graph.is_some() {
             self.graph_act(w, now, |g| g.finish());
+            return;
+        }
+        if self.gantt.is_some() {
+            self.gantt_act(w, now, |g| g.finish());
             return;
         }
         let (Some(model), toggles, motion) = (self.model.clone(), self.toggles, self.motion())
@@ -2300,6 +2441,27 @@ impl FigState {
             }
             return true;
         }
+        if self.gantt.is_some() {
+            let Some((snap, v)) = self.panes.get_mut(&w).and_then(step) else {
+                return false;
+            };
+            self.rev += 1;
+            self.gantt_act(w, now, |g| {
+                // A name shown again may bring the cursor's task back; one hidden takes it.
+                g.set(v, Change::Follow);
+                let gone = (g.pane.cursor.as_ref())
+                    .and_then(|c| g.model.task_of(c))
+                    .is_some_and(|i| !g.model.visible(&g.pane.view, i));
+                if gone {
+                    g.pane.cursor = None;
+                }
+            });
+            if snap.toggles != self.toggles {
+                self.toggles = snap.toggles;
+                self.rebuild(ctx);
+            }
+            return true;
+        }
         let Some(snap) = self
             .act(w, now, |a| {
                 let current = Snap {
@@ -2344,6 +2506,29 @@ impl FigState {
         if self.toggles == before {
             return;
         }
+        if let Some(p) = self.panes.get_mut(&w) {
+            p.undo.push(Snap {
+                view: p.view.clone(),
+                toggles: before,
+            });
+        }
+        self.rev += 1;
+        self.rebuild(ctx);
+    }
+
+    /// A gantt's `s`: a setting turned over (its grid, axis, links or today line), one undo
+    /// step, the model built again from the table in hand.
+    pub fn flip_gantt(
+        &mut self,
+        ctx: &mut Ctx,
+        w: WindowId,
+        setting: crate::interact::GanttSetting,
+    ) {
+        let Some(spec) = self.gantt_spec().cloned() else {
+            return;
+        };
+        let before = self.toggles;
+        self.toggles.flip_gantt(&spec, setting);
         if let Some(p) = self.panes.get_mut(&w) {
             p.undo.push(Snap {
                 view: p.view.clone(),
@@ -3220,7 +3405,8 @@ impl Keys for Act<'_> {
 }
 
 impl FigState {
-    /// A key's action on a window's figure, a chart's or a graph's. None with neither drawn.
+    /// A key's action on a window's figure, a chart's, a graph's or a gantt's. None with none
+    /// drawn.
     pub fn keys<R>(
         &mut self,
         w: WindowId,
@@ -3233,6 +3419,9 @@ impl FigState {
         if self.graph.is_some() {
             return self.graph_act(w, now, |g| f(g));
         }
+        if self.gantt.is_some() {
+            return self.gantt_act(w, now, |g| f(g));
+        }
         self.act(w, now, |a| f(a))
     }
 
@@ -3240,14 +3429,26 @@ impl FigState {
     pub fn is_graph(&self) -> bool {
         self.graph.is_some()
     }
+
+    /// Whether the figure is a gantt.
+    pub fn is_gantt(&self) -> bool {
+        self.gantt.is_some()
+    }
+
+    /// Whether the keys in window `w` are a gantt's: the figure's own.
+    pub fn gantt_here(&self, w: WindowId) -> bool {
+        self.gantt.is_some() && !self.dash_drawn(w)
+    }
 }
 
 /// What a job draws a figure's picture from: everything a model is built of (or a graph's model,
-/// laid out), the view, the size and the colours, with fonts of its own (ruling 12).
+/// laid out, or a gantt's), the view, the size and the colours, with fonts of its own (ruling
+/// 12).
 pub struct Picture {
     /// A dashboard, laid out on the main thread at 2× and 1×.
     dash: Option<(Scene, Scene)>,
     graph: Option<Arc<GraphModel>>,
+    gantt: Option<Arc<GanttModel>>,
     chart: Option<Chart>,
     tables: Vec<Arc<Table>>,
     toggles: Toggles,
@@ -3270,6 +3471,13 @@ impl Picture {
             let mut book = Book::load(self.fonts.as_deref()).ok();
             let (scene, _) = measured(book.as_mut(), scale, |m| {
                 crate::graph::base(g, &self.view, self.size, scale, &self.theme, m)
+            });
+            return Ok((scene, book));
+        }
+        if let Some(g) = &self.gantt {
+            let mut book = Book::load(self.fonts.as_deref()).ok();
+            let (scene, _) = measured(book.as_mut(), scale, |m| {
+                crate::gantt::base(g, &self.view, self.size, scale, &self.theme, m)
             });
             return Ok((scene, book));
         }
@@ -3310,6 +3518,7 @@ impl FigState {
             return Some(Picture {
                 dash: Some(scenes),
                 graph: None,
+                gantt: None,
                 chart: None,
                 tables: vec![],
                 toggles: self.toggles,
@@ -3320,10 +3529,10 @@ impl FigState {
                 fonts: self.kit.borrow().fonts.clone(),
             });
         }
-        let graph = self.graph.clone();
-        let chart = match (&graph, &self.chart, &self.model) {
-            (Some(_), ..) => None,
-            (None, Some(c), Some(_)) => Some(c.clone()),
+        let (graph, gantt) = (self.graph.clone(), self.gantt.clone());
+        let chart = match (graph.is_some() || gantt.is_some(), &self.chart, &self.model) {
+            (true, ..) => None,
+            (false, Some(c), Some(_)) => Some(c.clone()),
             _ => return None,
         };
         let pane = w.and_then(|w| self.panes.get(&w));
@@ -3335,6 +3544,7 @@ impl FigState {
         Some(Picture {
             dash: None,
             graph,
+            gantt,
             chart,
             tables: self.tables.clone(),
             toggles: self.toggles,
@@ -3356,11 +3566,12 @@ struct Failure<'a> {
     name: &'a str,
 }
 
-/// What a figure shows: a chart, a graph, or nothing yet.
+/// What a figure shows: a chart, a graph, a gantt, or nothing yet.
 #[derive(Clone, Copy)]
 enum Shows<'a> {
     Chart(&'a ChartModel),
     Graph(&'a GraphModel),
+    Gantt(&'a GanttModel),
     Nothing,
 }
 
@@ -3371,7 +3582,7 @@ impl Shows<'_> {
 }
 
 /// Draw a pane's base, opaque on the surface's colour, presented whole: the log where it's up;
-/// else the chart or graph (beside the detail panel when it's open), with the stale badge over
+/// else the chart, graph or gantt (beside the detail panel when it's open), with the stale badge over
 /// it while the last build failed; else the error figure; else, while the first build runs,
 /// nothing.
 fn draw_base(
@@ -3386,7 +3597,7 @@ fn draw_base(
     let size = p.size();
     let fsize = p.figure_size();
     let log = p.log;
-    let mut glayout = None;
+    let (mut glayout, mut tlayout) = (None, None);
     let (mut scene, layout, hits) = measured(kit.book.as_mut(), scale, |m| {
         let figure = |errors: &[FigError], state: ErrorView, m: &mut dyn Measure| {
             plot::error_figure(errors, why.text, why.name, state, size, scale, theme, m)
@@ -3401,6 +3612,14 @@ fn draw_base(
                     plot::stale_badge(&mut s, f.first(), theme, m);
                 }
                 glayout = Some(l);
+                (s, None, None)
+            }
+            (None, Shows::Gantt(g), failed) => {
+                let (mut s, l) = crate::gantt::base_beside(g, view, fsize, size.0, scale, theme, m);
+                if let Some(f) = failed {
+                    plot::stale_badge(&mut s, f.first(), theme, m);
+                }
+                tlayout = Some(l);
                 (s, None, None)
             }
             (None, Shows::Chart(model), failed) => {
@@ -3474,6 +3693,14 @@ fn draw_base(
         }
         l
     });
+    let tflipped = (p.gantt.as_ref()).map(|l| l.flipped.get());
+    p.gantt = tlayout.map(|mut l| {
+        l.cell_width = p.cell.width as f32 / scale;
+        if let Some(f) = tflipped {
+            l.flipped.set(f);
+        }
+        l
+    });
     p.hits = hits;
     p.base_gen += 1;
 }
@@ -3507,6 +3734,10 @@ fn draw_overlay(p: &mut Pane, shows: Shows<'_>, view: &View, theme: &Theme, kit:
         Shows::Graph(g) if p.log.is_none() => Some(p.graph_overlay(g)),
         _ => None,
     };
+    let tst = match shows {
+        Shows::Gantt(g) if p.log.is_none() => Some(p.gantt_overlay(g)),
+        _ => None,
+    };
     let key = OverKey {
         base: p.base_gen,
         hover: st.hover.clone(),
@@ -3518,6 +3749,7 @@ fn draw_overlay(p: &mut Pane, shows: Shows<'_>, view: &View, theme: &Theme, kit:
         help: p.help,
         strip: p.strip,
         graph: gst.clone(),
+        gantt: tst.clone(),
         lit: p.chart_lit(),
     };
     if p.over_key.as_ref() == Some(&key) {
@@ -3530,6 +3762,10 @@ fn draw_overlay(p: &mut Pane, shows: Shows<'_>, view: &View, theme: &Theme, kit:
             (Shows::Graph(g), _, Some(l)) => match &gst {
                 Some(gst) => crate::graph::overlay(g, l, view, gst, theme, m),
                 None => Scene::default(),
+            },
+            (Shows::Gantt(g), ..) => match (&tst, &p.gantt) {
+                (Some(tst), Some(l)) => crate::gantt::overlay(g, l, view, tst, theme, m),
+                _ => Scene::default(),
             },
             (Shows::Chart(model), Some(l), _) if p.log.is_none() => {
                 plot::overlay::overlay_lit(model, l, view, &st, &key.lit, theme, m)
@@ -3550,6 +3786,7 @@ fn draw_overlay(p: &mut Pane, shows: Shows<'_>, view: &View, theme: &Theme, kit:
     if p.help {
         let card: &[(&str, &str)] = match shows {
             Shows::Graph(_) => &GRAPH_KEY_CARD,
+            Shows::Gantt(_) => &GANTT_KEY_CARD,
             _ => &KEY_CARD,
         };
         measured(kit.book.as_mut(), scale, |m| {
@@ -3666,7 +3903,32 @@ pub const GRAPH_KEY_CARD: [(&str, &str); 19] = [
     ("double-click", "detail, or fit"),
 ];
 
-/// The key card, centred over the area: a chart's keys, or a graph's.
+/// The keys `?` shows on a gantt, a pair a row.
+pub const GANTT_KEY_CARD: [(&str, &str); 21] = [
+    ("j k", "task below, above"),
+    ("h l", "task that starts before, after"),
+    ("] [", "a task that comes after; one it comes after"),
+    ("w b", "next, previous milestone"),
+    ("gg G", "first, last task"),
+    ("H M L", "top, middle, bottom task in view"),
+    ("+ - 0", "zoom the time in, out; fit the plan"),
+    ("zh zl zj zk zz", "scroll the time, the rows; centre"),
+    ("x o X", "hide, only, show all: by colour name"),
+    ("u C-r", "undo, redo a view change"),
+    ("/ n N", "find a task, next, previous"),
+    ("⏎ Tab", "detail panel, into it and back"),
+    ("t", "the tasks as TSV beside"),
+    ("s", "grid, axes, links, today"),
+    ("E C", "export, copy the picture"),
+    ("!", "errors and warnings, as a log"),
+    ("Esc", "cancel, clear"),
+    ("drag", "zoom the time to the brush"),
+    ("⌥-drag", "pan the time and the rows"),
+    ("scroll ⌘-scroll", "rows or time; zoom about the pointer"),
+    ("click double-click", "cursor; detail, or fit"),
+];
+
+/// The key card, centred over the area: a chart's keys, a graph's or a gantt's.
 fn key_card(scene: &mut Scene, rows: &[(&str, &str)], theme: &Theme, m: &mut dyn Measure) {
     let (keys, what) = (
         TextSpec::new(12.0).weight(Weight::Semibold),

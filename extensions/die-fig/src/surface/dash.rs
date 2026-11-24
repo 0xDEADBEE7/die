@@ -1780,6 +1780,7 @@ pub(super) fn draw(
         let src = super::panel::Source {
             chart: pm.chart(),
             graph: pm.graph(),
+            gantt: None,
             tile,
         };
         p.sync_panel(src, d.version);
@@ -2559,6 +2560,7 @@ impl FigState {
         let src = super::panel::Source {
             chart: pm.chart(),
             graph: pm.graph(),
+            gantt: None,
             tile,
         };
         (src.chart.is_some() || src.graph.is_some() || src.tile.is_some())

@@ -10,6 +10,7 @@
 use super::{FigState, Kit, Pane, measured};
 use crate::data::SeriesKey;
 use crate::detail::{self, DetailTree, Item, PanelAction, PanelKey, PanelState};
+use crate::gantt::GanttModel;
 use crate::graph::GraphModel;
 use crate::interact::consts::{CLICK_SLOP, SCROLL_BURST_MS};
 use crate::interact::{Cursor, Gesture, View};
@@ -44,11 +45,12 @@ pub struct Panel {
     pub(super) carry: f32,
 }
 
-/// What a panel's trees come from: the figure's chart or graph, or a dashboard's tile.
+/// What a panel's trees come from: the figure's chart, graph or gantt, or a dashboard's tile.
 #[derive(Clone, Copy)]
 pub(super) struct Source<'a> {
     pub chart: Option<&'a ChartModel>,
     pub graph: Option<&'a GraphModel>,
+    pub gantt: Option<&'a GanttModel>,
     /// A tile's numbers: its tree is the tile's whole ([`crate::figure::detail`]), whatever
     /// the cursor's on.
     pub tile: Option<&'a crate::figure::TileModel>,
@@ -57,9 +59,10 @@ pub(super) struct Source<'a> {
 impl Source<'_> {
     /// The tree of what an item names.
     fn tree(&self, view: &View, item: &Item) -> Option<DetailTree> {
-        match (self.graph, self.chart) {
-            (Some(g), _) => g.detail_of(item),
-            (None, Some(c)) => c.detail_of(view, item),
+        match (self.graph, self.gantt, self.chart) {
+            (Some(g), ..) => g.detail_of(item),
+            (None, Some(g), _) => g.detail_of(item),
+            (None, None, Some(c)) => c.detail_of(view, item),
             _ => None,
         }
     }
@@ -71,9 +74,10 @@ impl Source<'_> {
 
     /// The item the cursor is on.
     fn item(&self, cursor: &Cursor) -> Option<Item> {
-        match self.graph {
-            Some(g) => g.item_of(cursor),
-            None => Item::of_cursor(cursor),
+        match (self.graph, self.gantt) {
+            (Some(g), _) => g.item_of(cursor),
+            (None, Some(g)) => g.item_of(cursor),
+            (None, None) => Item::of_cursor(cursor),
         }
     }
 }
@@ -182,11 +186,12 @@ impl Pane {
 }
 
 impl FigState {
-    /// The panel's source: the figure's chart or graph.
+    /// The panel's source: the figure's chart, graph or gantt.
     pub(super) fn panel_source(&self) -> Source<'_> {
         Source {
             chart: self.model.as_deref(),
             graph: self.graph.as_deref(),
+            gantt: self.gantt.as_deref(),
             tile: None,
         }
     }
@@ -328,7 +333,7 @@ impl FigState {
     }
 
     /// The figure's cursor to what a panel row names: a sample, a band, a cell, a node (an
-    /// edge has nowhere of its own); the view keeps it in sight. On a chart, a row naming a
+    /// edge has nowhere of its own), a gantt's task; the view keeps it in sight. On a chart, a row naming a
     /// series, or the value the cursor is on already, opens the series' own tree in the panel
     /// (its count, least, most, mean and last), the cursor where it was.
     pub fn jump(&mut self, ctx: &mut Ctx, w: die_core::WindowId, item: &Item) {
@@ -351,7 +356,7 @@ impl FigState {
             Item::Point { series, .. } if item.cursor() == here => Some(series.clone()),
             _ => None,
         };
-        if let (None, Some(k)) = (&self.graph, series) {
+        if let (None, None, Some(k)) = (&self.graph, &self.gantt, series) {
             let focused = self.panes.get(&w).is_some_and(|p| p.panel_focused());
             if let Err(why) = self.open_panel(w, Some(Item::Series(k))) {
                 ctx.messages.push(why);
@@ -364,6 +369,14 @@ impl FigState {
         if self.graph.is_some() {
             if let Some(c) = item.cursor() {
                 self.graph_act(w, now, |g| g.put_cursor(c));
+            }
+            return;
+        }
+        if let Some(g) = self.gantt.clone() {
+            // A task the view hides (its name, by `x` or the legend) has no row to go to.
+            let c = item.cursor().filter(|c| g.task_of(c).is_some());
+            if let Some(c) = c {
+                self.gantt_act(w, now, |g| g.put_cursor(c));
             }
             return;
         }

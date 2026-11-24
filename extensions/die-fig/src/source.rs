@@ -489,7 +489,9 @@ fn gantt(
         (Some(r), Some(_)) => e.in_file(&r.path, Some(&r.text)),
         _ => e,
     };
-    let built = GanttModel::build_placed(spec.clone(), table.clone(), &job.zone, job.now);
+    // With the settings turned (its grid, axis, links and today line), as a chart's are.
+    let turned = job.toggles.apply_gantt(&spec);
+    let built = GanttModel::build_placed(turned, table.clone(), &job.zone, job.now);
     let model = match built {
         Ok(m) => m,
         Err(fault) => {
@@ -727,6 +729,24 @@ pub fn graph_model(
     Ok(match name.is_empty() {
         true => model,
         false => model.named(name),
+    })
+}
+
+/// A gantt's model again from its spec as parsed and its table as read, with the settings
+/// turned (its grid, axis, links and today line) and the clock as given: nothing is read.
+/// `source` is the name its subtitle says, as the model before had it.
+pub fn gantt_model(
+    spec: &GanttSpec,
+    table: Arc<Table>,
+    toggles: Toggles,
+    zone: &TimeZone,
+    now: f64,
+    source: Option<String>,
+) -> Result<GanttModel> {
+    let model = GanttModel::build(toggles.apply_gantt(spec), table, zone, now)?;
+    Ok(match source {
+        Some(name) => model.named(name),
+        None => model,
     })
 }
 

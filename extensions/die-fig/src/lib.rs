@@ -1,4 +1,5 @@
-//! die-fig: figures from data in a DIE buffer (charts, network graphs and dashboards) drawn in
+//! die-fig: figures from data in a DIE buffer (charts, network graphs, gantts and dashboards:
+//! a figure is a chart, a graph or a gantt, or a dashboard of them and of tiles) drawn in
 //! pixels, in the ethos of fig, as an extension (scope D14). It depends on die-core and
 //! die-draw alone, so it's platform-neutral and out of the product: `cargo xtask lint` holds it
 //! to that. Its parts:
@@ -58,7 +59,7 @@ use die_core::{
     Args, BufferId, Ctx, Error, Extension, Mode, Origin, Prefix, PromptSpec, Registry, Result,
     ShowIn, Side, State,
 };
-use interact::{Action, Cursor, LayoutPick, Setting, Toggles, View};
+use interact::{Action, Cursor, GanttSetting, LayoutPick, Setting, Toggles, View};
 use jiff::tz::TimeZone;
 use source::Source;
 use spec::{DataRef, Figure, GraphSpec};
@@ -557,6 +558,17 @@ fn not_a_figure() -> Error {
     Error::Msg("fig: not a figure".into())
 }
 
+/// What `m` and `` ` `` say on a gantt, which has no reference.
+const NO_REFERENCE: &str = "fig: a gantt has no reference";
+
+/// Why `x` or `o` did nothing on a gantt: no cursor (`none`), or a task no name colours.
+fn no_name(none: bool) -> Error {
+    Error::Msg(match none {
+        true => "fig: no cursor yet: j k or a click puts it on a task".into(),
+        false => "fig: the cursor's task has no group or colour to hide by".into(),
+    })
+}
+
 /// Run `f` on the figure's state and pane when its log is up in the window the command came
 /// from; None otherwise, for the key's other meaning.
 fn in_log(
@@ -880,8 +892,12 @@ const WINDOW_KEYS: [(&str, &str); 32] = [
 ];
 
 /// Whether a search's item is drawn under `view`: a graph's node whose group shows (and whose
-/// `fig` block doesn't hide it), a chart's series that shows; a category always.
+/// `fig` block doesn't hide it), a gantt's task that has a row, a chart's series that shows; a
+/// category always.
 fn item_shown(st: &FigState, view: &View, item: &Item) -> bool {
+    if let (Some(g), Item::Task { id, .. }) = (&st.gantt, item) {
+        return g.index_of(id).is_some_and(|i| g.visible(view, i));
+    }
     match (&st.graph, &st.model, item) {
         (Some(g), _, Item::Node { id, .. }) => g.index_of(id).is_some_and(|i| g.visible(view, i)),
         (None, Some(m), Item::Series(k)) => m.visible(view, k),
@@ -889,16 +905,17 @@ fn item_shown(st: &FigState, view: &View, item: &Item) -> bool {
     }
 }
 
-/// The names a search looks through: a chart's series and categories, a graph's nodes, each
-/// with the mark it names; what window `w`'s view hides left out, so a find is always drawn.
+/// The names a search looks through: a chart's series and categories, a graph's nodes, a
+/// gantt's tasks (by label and by id), each with the mark it names; what window `w`'s view hides left out, so a find is always drawn.
 fn search_names(st: &FigState, w: die_core::WindowId) -> Option<Vec<(String, Item)>> {
     if st.dash_drawn(w) {
         return st.dash_names(w);
     }
     let view = st.panes.get(&w).map(|p| p.view.clone()).unwrap_or_default();
-    let names = match (&st.graph, &st.model) {
-        (Some(g), _) => g.search_names(),
-        (None, Some(m)) => m.names(),
+    let names = match (&st.graph, &st.gantt, &st.model) {
+        (Some(g), ..) => g.search_names(),
+        (None, Some(g), _) => g.search_names(),
+        (None, None, Some(m)) => m.names(),
         _ => return None,
     };
     Some(
@@ -924,6 +941,11 @@ fn found(st: &mut FigState, w: die_core::WindowId, now: std::time::Duration, ite
             g.pane.found_node = Some(c.clone());
             g.put_cursor(c);
         });
+        return;
+    }
+    if st.gantt.is_some() {
+        let Some(c) = item.cursor() else { return };
+        st.gantt_act(w, now, |g| g.find(c));
         return;
     }
     let Some(c) = st.model.as_ref().and_then(|m| m.cursor_of(item)) else {
@@ -987,6 +1009,11 @@ impl Before {
         }
         if st.is_graph() {
             st.graph_act(w, now, |g| {
+                restore(g.pane);
+                g.set(v, surface::Change::Follow);
+            });
+        } else if st.is_gantt() {
+            st.gantt_act(w, now, |g| {
                 restore(g.pane);
                 g.set(v, surface::Change::Follow);
             });
@@ -1191,7 +1218,9 @@ fn copy_image(ctx: &mut Ctx, a: &Args) -> Result {
 
 /// `t`: the data as TSV in a buffer beside the figure, where all of Vim works, its cursor on the
 /// figure's cursor's row. A graph's is one buffer of two tables, the nodes and then the edges,
-/// a blank line between, each with its header.
+/// a blank line between, each with its header. A gantt's is its tasks with the dates the plan
+/// worked out for them: `id`, `label`, `group`, `start`, `end`, `duration`, `progress`, `after`,
+/// then the data's other columns; the tasks the view hides left out.
 fn table(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, w) = here(ctx, a)?;
     let (text, line, name, dir) = {
@@ -1213,6 +1242,11 @@ fn table(ctx: &mut Ctx, a: &Args) -> Result {
             (Some(g), _) => {
                 let t = g.tsv(&view, cursor.as_ref());
                 (format!("{}\n{}", t.nodes, t.edges), t.line)
+            }
+            _ if st.gantt.is_some() => {
+                let g = st.gantt.as_ref().ok_or_else(not_a_figure)?;
+                let line = cursor.as_ref().and_then(|c| g.tsv_line(&view, c));
+                (g.tsv(&view), line)
             }
             (None, Some(m)) => m.tsv_at(&view, cursor.as_ref()),
             _ => return Err(Error::Msg("fig: nothing is drawn yet".into())),
@@ -1303,6 +1337,49 @@ fn graph_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result
     Ok(())
 }
 
+/// A gantt's `s`: its grid, its axis, its links and its today line, each on or off; each
+/// answer one undo step, the model built again from the table in hand.
+fn gantt_settings(ctx: &mut Ctx, state: Shared, w: die_core::WindowId) -> Result {
+    let items: Vec<String> = {
+        let st = state.borrow();
+        let Some(spec) = st.gantt_spec() else {
+            return Err(Error::Msg("fig: nothing is drawn yet".into()));
+        };
+        gantt_menu(&st.toggles, spec)
+    };
+    let spec = PromptSpec::new("Settings: ")
+        .candidates(items)
+        .require_match();
+    ctx.prompt(spec, move |ctx, answer| {
+        let name = answer.as_deref().and_then(|a| a.split(':').next());
+        let Some(setting) = name.and_then(GanttSetting::from_name) else {
+            return Ok(());
+        };
+        let mut st = state.borrow_mut();
+        st.flip_gantt(ctx, w, setting);
+        let on = (st.gantt_spec()).is_some_and(|g| st.toggles.gantt_value(g, setting));
+        ctx.messages.push(format!(
+            "settings: {} {}",
+            setting.name(),
+            if on { "on" } else { "off" }
+        ));
+        st.refresh(ctx);
+        Ok(())
+    });
+    Ok(())
+}
+
+/// A gantt's settings as the menu lists them: `grid: on`, `axes: on`, `links: on`, `today: on`.
+fn gantt_menu(toggles: &Toggles, spec: &spec::GanttSpec) -> Vec<String> {
+    GanttSetting::ALL
+        .iter()
+        .map(|s| {
+            let on = toggles.gantt_value(spec, *s);
+            format!("{}: {}", s.name(), if on { "on" } else { "off" })
+        })
+        .collect()
+}
+
 /// `s`: the settings as a menu, each answer one setting turned over, one undo step.
 fn settings(ctx: &mut Ctx, a: &Args) -> Result {
     let (state, w) = here(ctx, a)?;
@@ -1311,6 +1388,9 @@ fn settings(ctx: &mut Ctx, a: &Args) -> Result {
     }
     if state.borrow().is_graph() {
         return graph_settings(ctx, state, w);
+    }
+    if state.borrow().is_gantt() {
+        return gantt_settings(ctx, state, w);
     }
     let items: Vec<String> = {
         let st = state.borrow();
@@ -1520,13 +1600,18 @@ fn search(ctx: &mut Ctx, a: &Args) -> Result {
                 return Ok(());
             }
             let best = search.best().map(|m| m.item.clone());
-            // The figure lights what matches: a graph's nodes, a chart's series and categories.
+            // The figure lights what matches: a graph's nodes, a gantt's tasks, a chart's series
+            // and categories.
             let (mut nodes, mut series, mut bands) = (vec![], vec![], vec![]);
             for m in search.matches() {
-                match (&m.item, &st.graph) {
-                    (Item::Node { id, .. }, Some(g)) => nodes.extend(g.index_of(id)),
-                    (Item::Series(k), None) if !series.contains(k) => series.push(k.clone()),
-                    (Item::Band { band, series: None }, None) if !bands.contains(band) => {
+                match (&m.item, &st.graph, &st.gantt) {
+                    (Item::Node { id, .. }, Some(g), _) => nodes.extend(g.index_of(id)),
+                    // A task found by its label and by its id is lit once.
+                    (Item::Task { id, .. }, None, Some(g)) => {
+                        nodes.extend(g.index_of(id).filter(|i| !nodes.contains(i)))
+                    }
+                    (Item::Series(k), None, _) if !series.contains(k) => series.push(k.clone()),
+                    (Item::Band { band, series: None }, None, _) if !bands.contains(band) => {
                         bands.push(*band)
                     }
                     _ => {}
@@ -1843,6 +1928,27 @@ impl Fig {
             if let Some(on) = st.toggles.labels.filter(|_| st.is_graph()) {
                 v["labels"] = json!(on);
             }
+            // A gantt's settings as `s` left them. A figure not built since the restart that
+            // gave it some keeps them too: only a gantt's are given back.
+            if st.is_gantt() || st.figure.is_none() {
+                let t = &st.toggles;
+                let mut turned = json!({});
+                let mut any = false;
+                for (s, on) in [
+                    (GanttSetting::Grid, t.grid),
+                    (GanttSetting::Axes, t.axes),
+                    (GanttSetting::Links, t.links),
+                    (GanttSetting::Today, t.today),
+                ] {
+                    if let Some(on) = on {
+                        turned[s.name()] = json!(on);
+                        any = true;
+                    }
+                }
+                if any {
+                    v["gantt"] = turned;
+                }
+            }
             if st.kept_panel() {
                 v["panel"] = Value::Bool(true);
             }
@@ -2070,10 +2176,12 @@ impl Extension for Fig {
             "x: hide the cursor's series (on a graph, its node's group).",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
+                    let none = st.panes.get(&w).is_some_and(|p| p.cursor.is_none());
                     match st.keys(w, ctx.now(), |k| k.hide()) {
                         Some(false) if st.is_graph() => {
                             Err(Error::Msg("fig: the cursor's node has no group".into()))
                         }
+                        Some(false) if st.is_gantt() => Err(no_name(none)),
                         _ => Ok(()),
                     }
                 })
@@ -2084,10 +2192,12 @@ impl Extension for Fig {
             "o: show only the cursor's series (on a graph, its node's group), or all of them again.",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
+                    let none = st.panes.get(&w).is_some_and(|p| p.cursor.is_none());
                     match st.keys(w, ctx.now(), |k| k.only()) {
                         Some(false) if st.is_graph() => {
                             Err(Error::Msg("fig: the cursor's node has no group".into()))
                         }
+                        Some(false) if st.is_gantt() => Err(no_name(none)),
                         _ => Ok(()),
                     }
                 })
@@ -2119,6 +2229,9 @@ impl Extension for Fig {
             "m: set the reference at the cursor, or clear it there: every card then shows the change since.",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
+                    if st.gantt_here(w) {
+                        return Err(Error::Msg(NO_REFERENCE.into()));
+                    }
                     match st.keys(w, ctx.now(), |a| a.reference()) {
                         Some(true) => Ok(()),
                         _ => Err(Error::Msg("fig: no cursor yet".into())),
@@ -2131,6 +2244,9 @@ impl Extension for Fig {
             "`: the cursor to the reference.",
             |ctx, a| {
                 on_fig(ctx, a, false, |st, w, ctx| {
+                    if st.gantt_here(w) {
+                        return Err(Error::Msg(NO_REFERENCE.into()));
+                    }
                     match st.keys(w, ctx.now(), |a| a.to_reference()) {
                         Some(true) => Ok(()),
                         _ => Err(Error::Msg(
@@ -2176,6 +2292,7 @@ impl Extension for Fig {
                     let lone = st.error.is_some()
                         && st.model.is_none()
                         && st.graph.is_none()
+                        && st.gantt.is_none()
                         && !st.dash_drawn(w);
                     // A dashboard's focused panel that failed, or has its log up.
                     log || lone || st.dash_error(w, None).is_some()
@@ -2484,6 +2601,13 @@ impl Extension for Fig {
                 st.toggles.layout =
                     (v.get("layout").and_then(Value::as_str)).and_then(LayoutPick::from_name);
                 st.toggles.labels = v.get("labels").and_then(Value::as_bool);
+                if let Some(g) = v.get("gantt") {
+                    let on = |s: GanttSetting| g.get(s.name()).and_then(Value::as_bool);
+                    st.toggles.grid = on(GanttSetting::Grid);
+                    st.toggles.axes = on(GanttSetting::Axes);
+                    st.toggles.links = on(GanttSetting::Links);
+                    st.toggles.today = on(GanttSetting::Today);
+                }
                 st.panel_seed = v.get("panel") == Some(&Value::Bool(true));
                 st.dash_seed = v.get("dash").cloned();
             }

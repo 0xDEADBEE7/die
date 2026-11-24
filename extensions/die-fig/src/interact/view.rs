@@ -4,7 +4,7 @@
 
 use super::cursor::Cursor;
 use crate::data::SeriesKey;
-use crate::spec::{Chart, GraphSpec, Labels, Layout, MarkKind, ScaleKind, Stack};
+use crate::spec::{Chart, GanttSpec, GraphSpec, Labels, Layout, MarkKind, ScaleKind, Stack, Today};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// How many changes an undo history keeps (briefs/mouse-ux.md §9): the oldest go first.
@@ -83,6 +83,44 @@ impl Setting {
     }
 }
 
+/// One of the settings `s` offers on a gantt, each a toggle over what its spec says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GanttSetting {
+    /// The gridlines down the plot, the lines under the groups and the shaded days.
+    Grid,
+    /// The time axis's tick labels.
+    Axes,
+    /// The arrows from each task to those that come after it.
+    Links,
+    /// The today line.
+    Today,
+}
+
+impl GanttSetting {
+    /// Every setting, in the menu's order.
+    pub const ALL: [GanttSetting; 4] = [
+        GanttSetting::Grid,
+        GanttSetting::Axes,
+        GanttSetting::Links,
+        GanttSetting::Today,
+    ];
+
+    /// Its name in the menu, the messages and the session.
+    pub fn name(self) -> &'static str {
+        match self {
+            GanttSetting::Grid => "grid",
+            GanttSetting::Axes => "axes",
+            GanttSetting::Links => "links",
+            GanttSetting::Today => "today",
+        }
+    }
+
+    /// The setting with this name.
+    pub fn from_name(name: &str) -> Option<GanttSetting> {
+        GanttSetting::ALL.into_iter().find(|s| s.name() == name)
+    }
+}
+
 /// A graph's layout as the settings choose it, over what the spec says (or the graph picks).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayoutPick {
@@ -149,6 +187,10 @@ pub struct Toggles {
     pub markers: Option<bool>,
     /// A graph's layout.
     pub layout: Option<LayoutPick>,
+    /// A gantt's arrows between tasks.
+    pub links: Option<bool>,
+    /// A gantt's today line.
+    pub today: Option<bool>,
 }
 
 /// Whether a layer's marks stack, or could: bars and areas.
@@ -229,6 +271,58 @@ impl Toggles {
     pub fn flip_graph_labels(&mut self, spec: &GraphSpec) {
         let to = !self.graph_labels(spec);
         self.labels = (to != (spec.view.labels != Labels::None)).then_some(to);
+    }
+
+    fn gantt_slot(&mut self, s: GanttSetting) -> &mut Option<bool> {
+        match s {
+            GanttSetting::Grid => &mut self.grid,
+            GanttSetting::Axes => &mut self.axes,
+            GanttSetting::Links => &mut self.links,
+            GanttSetting::Today => &mut self.today,
+        }
+    }
+
+    /// What a gantt's spec itself says of `s`.
+    pub fn gantt_spec_value(spec: &GanttSpec, s: GanttSetting) -> bool {
+        match s {
+            GanttSetting::Grid => spec.view.grid,
+            GanttSetting::Axes => spec.view.axes,
+            GanttSetting::Links => spec.links,
+            GanttSetting::Today => spec.today != Today::Off,
+        }
+    }
+
+    /// What `s` is for a gantt: turned, else the spec's.
+    pub fn gantt_value(&self, spec: &GanttSpec, s: GanttSetting) -> bool {
+        let mut t = *self;
+        (t.gantt_slot(s)).unwrap_or_else(|| Toggles::gantt_spec_value(spec, s))
+    }
+
+    /// A gantt's `s` turned over; back to the spec's own when that's what it comes to.
+    pub fn flip_gantt(&mut self, spec: &GanttSpec, s: GanttSetting) {
+        let to = !self.gantt_value(spec, s);
+        *self.gantt_slot(s) = (to != Toggles::gantt_spec_value(spec, s)).then_some(to);
+    }
+
+    /// A gantt's spec with these turned: its grid, its axis, its links and its today line (on
+    /// over a spec that says none, it's at the clock's now).
+    pub fn apply_gantt(&self, spec: &GanttSpec) -> GanttSpec {
+        let mut g = spec.clone();
+        if let Some(on) = self.grid {
+            g.view.grid = on;
+        }
+        if let Some(on) = self.axes {
+            g.view.axes = on;
+        }
+        if let Some(on) = self.links {
+            g.links = on;
+        }
+        match self.today {
+            Some(false) => g.today = Today::Off,
+            Some(true) if g.today == Today::Off => g.today = Today::Now,
+            _ => {}
+        }
+        g
     }
 
     /// `chart` with these turned: what the model is built from.

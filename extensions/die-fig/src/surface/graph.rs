@@ -106,6 +106,7 @@ impl GraphAct<'_> {
             Some(Ease {
                 tween: Tween::new(from, to, t, MOTION_MS),
                 graph: Some(self.model.clone()),
+                gantt: None,
             })
         };
         self.pane.ease = ease;
