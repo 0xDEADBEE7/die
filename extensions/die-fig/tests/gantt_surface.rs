@@ -871,6 +871,31 @@ fn an_edit_that_removes_the_cursors_task_lets_the_cursor_go_and_keeps_the_view_a
     // Mended, it's a figure again with no badge.
     replace_src(&mut s, &one);
     assert_eq!(st.borrow().badge(), None);
+    // Edited into a chart, the gantt's time, rows, names and cursor mean nothing: they go, and
+    // the chart draws fresh; and a chart edited into a gantt opens on the whole plan.
+    click_task(&mut s, "a");
+    assert!(view(&mut s).x.is_some() && cursor(&mut s).is_some());
+    let chart = r#"{"type": "line", "data": {"values": "x,y\n1,2\n2,3\n3,5"}, "x": "x", "y": "y"}"#;
+    replace_src(&mut s, chart);
+    assert!(
+        !st.borrow().is_gantt() && st.borrow().model.is_some(),
+        "a chart now"
+    );
+    assert_eq!((view(&mut s), cursor(&mut s)), (Default::default(), None));
+    assert!(
+        st.borrow().panes[&s.win].gantt.is_none(),
+        "no gantt's layout left"
+    );
+    keys(&mut s.h, "l+");
+    settle(&mut s);
+    assert!(view(&mut s).x.is_some(), "the chart zoomed");
+    replace_src(&mut s, OWNERS);
+    assert!(
+        st.borrow().is_gantt() && st.borrow().model.is_none(),
+        "a gantt again"
+    );
+    assert_eq!((view(&mut s), cursor(&mut s)), (Default::default(), None));
+    assert_eq!(drawn(&mut s, |g, l| (g.len(), l.order().len())), (4, 4));
 }
 
 fn up(state_dir: &TempDir) -> Harness {
