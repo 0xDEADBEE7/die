@@ -295,6 +295,11 @@ pub fn build_with(job: Job, live: &[(LiveSpec, Arc<Table>)]) -> std::result::Res
                 Err(e) => Err(failed(vec![e], warnings, files)),
             };
         }
+        // Until the gantt's model lands (the next step).
+        Figure::Gantt(_) => {
+            let e = FigError::new("gantt charts aren't drawn yet");
+            return Err(failed(vec![e], warnings, files));
+        }
         // A dashboard, or a tile alone: its data is read and its panels built by the editor,
         // each in a job as its data comes, the panels still waiting drawn as frames.
         other => {

@@ -853,6 +853,7 @@ impl Builder<'_> {
         let title = match fig {
             Figure::Chart(c) => c.title.clone(),
             Figure::Graph(g) => g.title.clone(),
+            Figure::Gantt(g) => g.title.clone(),
             Figure::Stat(s) => Some(s.label.clone()),
             Figure::Meter(m) => Some(m.label.clone()),
             Figure::Sparkline(l) => Some(l.label.clone()),
@@ -918,6 +919,11 @@ impl Builder<'_> {
                     Err(e) => fail(vec![scope.placed(e)], &name),
                 }
             }
+            // Until gantt panels land (the next step): its error figure says so.
+            Figure::Gantt(_) => fail(
+                vec![FigError::at("a gantt can't be a panel yet", at)],
+                &name,
+            ),
             Figure::Stat(_) | Figure::Meter(_) | Figure::Sparkline(_) => {
                 panel.kind = PanelKind::Tile;
                 let data = match fig {
@@ -1203,6 +1209,7 @@ fn kind_name(f: &Figure) -> &'static str {
     match f {
         Figure::Chart(_) => "a chart",
         Figure::Graph(_) => "a graph",
+        Figure::Gantt(_) => "a gantt",
         Figure::Stat(_) => "a stat",
         Figure::Meter(_) => "a meter",
         Figure::Sparkline(_) => "a sparkline",
