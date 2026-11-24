@@ -1,6 +1,6 @@
 [package]
 name = "die-fig"
-description = "Figures from data in a DIE buffer: charts, network graphs and dashboards drawn in pixels, in the ethos of fig (scope D14)"
+description = "Figures from data in a DIE buffer: charts, network graphs, gantt charts and dashboards drawn in pixels, in the ethos of fig (scope D14)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
