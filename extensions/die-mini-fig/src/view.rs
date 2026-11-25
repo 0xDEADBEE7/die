@@ -9,10 +9,9 @@
 //! data files are looked at once a second, and read again when one has changed.
 
 use crate::canvas::{Canvas, Pen, Rect, Theme};
-use crate::dash::{self, Drawn};
-use crate::data::{self, Tables};
+use crate::dash::{self, Drawn, Ready};
 use crate::hit::{self, Dir, Hit};
-use crate::spec::{self, Fig, Source};
+use crate::spec;
 use die_core::{
     BufferId, CellPixels, Ctx, Event, Frame, PixelBufferId, PixelProducer, PixelRect, PointerKind,
     RenderInfo, Sub, Surface, SurfacePointer, WindowId,
@@ -51,8 +50,8 @@ pub struct View {
     pub from: Option<BufferId>,
     book: Rc<RefCell<Book>>,
     theme: Theme,
-    /// The spec and its tables, or why they can't be read.
-    figure: Result<(Fig, Tables), String>,
+    /// The spec read and ready to draw, or why it can't be read.
+    figure: Result<Ready, String>,
     /// When each file it was read from last changed.
     stamps: Vec<(Option<SystemTime>, PathBuf)>,
     /// The cells in pixels, and the area in physical pixels, from the latest `Resize`.
@@ -105,13 +104,10 @@ impl View {
         let fig = spec::read(&self.path);
         let mut files = vec![self.path.clone()];
         if let Ok(fig) = &fig {
-            files.extend(fig.sources.values().filter_map(|s| match s {
-                Source::File(p) => Some(p.clone()),
-                Source::Rows(_) => None,
-            }));
+            files.extend(fig.files());
         }
         self.stamps = files.into_iter().map(|p| (modified(&p), p)).collect();
-        self.figure = fig.and_then(|fig| data::load(&fig).map(|tables| (fig, tables)));
+        self.figure = fig.map(Ready::new);
         self.base = None;
     }
 
@@ -213,7 +209,7 @@ impl View {
                 return;
             };
             self.drawn = match &self.figure {
-                Ok((fig, tables)) => dash::draw(&mut c, th, fig, tables, self.scroll),
+                Ok(ready) => dash::draw(&mut c, th, ready, self.scroll),
                 Err(why) => {
                     dash::message(&mut c, th, why);
                     Drawn::default()
@@ -234,7 +230,7 @@ impl View {
             let top = self
                 .figure
                 .as_ref()
-                .map_or(0.0, |(fig, _)| dash::header(fig) - 4.0);
+                .map_or(0.0, |r| dash::header(&r.fig) - 4.0);
             let y = f.y.max(top);
             c.outline(
                 Rect::new(f.x, y, f.w, f.bottom() - y),
@@ -297,10 +293,10 @@ impl View {
 
     /// Scroll a panel's frame into the area under the header, its top first.
     fn show_panel(&mut self, panel: usize) {
-        let (Some(f), Ok((fig, _))) = (self.drawn.frames.get(panel), &self.figure) else {
+        let (Some(f), Ok(ready)) = (self.drawn.frames.get(panel), &self.figure) else {
             return;
         };
-        let (top, h) = (dash::header(fig), self.size().1);
+        let (top, h) = (dash::header(&ready.fig), self.size().1);
         if f.y < top {
             self.scroll_to(self.scroll - (top - f.y));
         } else if f.bottom() > h - 12.0 {
@@ -372,11 +368,11 @@ impl Surface for View {
         }
     }
 
-    /// The figure's title, and what the cursor is on, or the focused panel's title; or why
-    /// the figure can't be read.
+    /// The figure's title, and what the cursor is on, or the focused panel's title, or why a
+    /// panel can't be drawn; or why the figure can't be read.
     fn status(&self) -> Option<String> {
         let fig = match &self.figure {
-            Ok((fig, _)) => fig,
+            Ok(r) => &r.fig,
             Err(why) => return Some(format!("mini-fig: {why}")),
         };
         let name = self.path.file_name().map(|n| n.to_string_lossy());
@@ -386,7 +382,8 @@ impl Surface for View {
         };
         let panel = self.focus.and_then(|i| fig.panels().nth(i));
         let panel = panel.map(|p| p.title.clone()).filter(|t| !t.is_empty());
-        let on = self.hit().map(hit::words).or(panel);
+        let failed = self.figure.as_ref().ok().and_then(Ready::failed);
+        let on = self.hit().map(hit::words).or(panel).or(failed);
         Some(match on {
             Some(on) => format!("mini-fig: {title} · {on}"),
             None => format!("mini-fig: {title}"),

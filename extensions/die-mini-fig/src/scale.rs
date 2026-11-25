@@ -9,6 +9,7 @@
 use jiff::civil::{Date, DateTime, Time};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Zoned};
+use std::collections::HashMap;
 
 /// A scale's kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,8 +28,9 @@ pub struct Scale {
     pub domain: (f64, f64),
     /// Where the domain's ends go.
     pub range: (f32, f32),
-    /// A band scale's categories, in order.
+    /// A band scale's categories, in order, and each one's number by its name.
     pub bands: Vec<String>,
+    index: HashMap<String, usize>,
 }
 
 /// A tick: its value, and its label.
@@ -91,20 +93,28 @@ impl Scale {
     pub fn band(bands: Vec<String>, range: (f32, f32)) -> Scale {
         let n = bands.len().max(1) as f64;
         let domain = (-0.5, n - 0.5);
+        let index = bands.iter().enumerate().map(|(i, b)| (b.clone(), i));
         Scale {
+            index: index.collect(),
             bands,
             ..Scale::of(Kind::Band, domain, range)
         }
     }
 
     fn of(kind: Kind, domain: (f64, f64), range: (f32, f32)) -> Scale {
-        let bands = Vec::new();
+        let (bands, index) = (Vec::new(), HashMap::new());
         Scale {
             kind,
             domain,
             range,
             bands,
+            index,
         }
+    }
+
+    /// A band's number, by its name.
+    pub fn band_of(&self, name: &str) -> Option<usize> {
+        self.index.get(name).copied()
     }
 
     /// The domain widened to round ends: a linear one to its outer ticks (and apart, if it was

@@ -137,8 +137,9 @@ pub fn card(c: &mut Canvas, th: &Theme, hit: &Hit, bounds: Rect) {
     if y < bounds.y + 4.0 {
         y = ay + 16.0;
     }
-    let x = x.clamp(bounds.x + 4.0, (bounds.right() - w - 4.0).max(bounds.x));
-    let y = y.clamp(bounds.y + 4.0, (bounds.bottom() - h - 4.0).max(bounds.y));
+    // Against the far side, then the near one: in an area smaller than the card, its start.
+    let x = x.min(bounds.right() - w - 4.0).max(bounds.x + 4.0);
+    let y = y.min(bounds.bottom() - h - 4.0).max(bounds.y + 4.0);
     let r = Rect::new(x, y, w, h);
     c.fill(r, 8.0, th.card, 1.0);
     c.outline(r, 8.0, Pen::new(1.0, th.ring));

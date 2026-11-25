@@ -2,12 +2,14 @@
 //! rectangle under its title, each mark left behind as a hit.
 //!
 //! One builder makes every chart's axes and grid ([`frame`]) and one its legend ([`legend`]).
-//! A channel is bands when it's a category, text, a heatmap's, or a bar's numbers; else it runs
-//! along time, a log scale or a linear one. Bars take in zero, and lines whose values are
-//! nearer it than their span, unless `"zero"` says; scatters don't. A bar's series stack in its band, as die-fig's do, or with `"stack": false`
-//! share it side by side; each band's total is written past it when every total fits. Bars
-//! over time are as wide as the closest two times allow. A heatmap's colour is die-fig's ramp: blue from dark to light, or red through
-//! grey to blue when diverging, centred on zero.
+//! A channel is bands when it's a category, text that isn't mostly numbers, a heatmap's, or a
+//! bar's numbers; else it runs along time, a log scale or a linear one (a bar's values always
+//! linear, from zero). Bars take in zero, and lines whose values are nearer it than their span,
+//! unless `"zero"` says; scatters don't. A bar's series stack in its band, as die-fig's do, or
+//! with `"stack": false` share it side by side; each band's total is written past it when every
+//! total fits. Bars over time are as wide as the closest two times allow. A heatmap has a cell
+//! a place, the last row there, in die-fig's ramp: blue from dark to light, or red through grey
+//! to blue when diverging, centred on zero.
 
 use crate::canvas::{Align, Canvas, Ink, Pen, Rect, Theme, hex, mix};
 use crate::dash::Job;
@@ -16,7 +18,7 @@ use crate::hit::{Hit, Shape};
 use crate::scale::{self, Kind as Along, Scale};
 use crate::spec::{Channel, Kind, Panel};
 use die_draw::Rgb;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// die-fig's ramps on a dark surface, least to most.
 const SEQUENTIAL: &str = "104281 1c5cab 2a78d6 5598e7 86b6ef b7d3f6";
@@ -89,7 +91,7 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
     let series = split(th, p, t, by, None)?;
     let mut layers = Vec::new();
     for l in p.layers.iter().filter(|l| !l.rule) {
-        let Some(lt) = l.data.as_ref().and_then(|d| job.tables.get(d)) else {
+        let Some(Ok(lt)) = l.data.as_ref().and_then(|d| job.tables.get(d)) else {
             continue;
         };
         let more = split(th, p, lt, l.by.as_deref(), Some(th.dim))?;
@@ -193,7 +195,7 @@ fn points(
     if ych.zero.unwrap_or(line && near) && !ych.log {
         more.push(0.0);
     }
-    let bands = |ch: &Channel, col: &Column| ch.category || col.kind == Cells::Text;
+    let bands = |ch: &Channel, col: &Column| ch.category || !col.numbers();
     let xa = axis(xch, xc, &all, bands(xch, xc), &cx.range(xch))?;
     let ya = axis(ych, yc, &all, bands(ych, yc), &more)?;
     let titles = (title(xch, false), title(ych, true));
@@ -234,11 +236,16 @@ fn points(
             };
             c.line(&path, pen, clip);
         }
+        // A point alone between gaps draws nothing on a line: it has its dot.
+        let gap = |i: Option<usize>| {
+            i.and_then(|i| pts.get(i))
+                .is_none_or(|q| !clip.contains(q.0, q.1))
+        };
         for (i, (&r, &pt)) in rows.iter().zip(&pts).enumerate() {
             if !clip.contains(pt.0, pt.1) {
                 continue;
             }
-            if !line || p.mark.points {
+            if !line || p.mark.points || (gap(i.checked_sub(1)) && gap(Some(i + 1))) {
                 let size = if line { 3.0 } else { 4.0 };
                 c.dot(pt, size + 1.5, th.surface);
                 c.dot(pt, size, s.color);
@@ -260,6 +267,9 @@ fn bars(c: &mut Canvas, cx: &Ctx, b: Rect, series: &[Series]) -> Result<Vec<Hit>
     };
     let banded = ich.category || ic.kind != Cells::Time;
     let all: Vec<usize> = series.iter().flat_map(|s| s.rows.iter().copied()).collect();
+    if !all.iter().any(|&r| vc.num[r].is_finite()) {
+        return Err(format!("no numbers in \"{}\"", vch.field));
+    }
     // Each row's bar runs between two values: from zero, or from where its stack had got to.
     let mut ends = vec![(0.0, f64::NAN); cx.t.len()];
     let mut tops: HashMap<&str, (f64, f64)> = HashMap::new();
@@ -302,7 +312,11 @@ fn bars(c: &mut Canvas, cx: &Ctx, b: Rect, series: &[Series]) -> Result<Vec<Hit>
         Axis::Span(k, lo, hi, _) => Axis::Span(k, lo - gap / 2.0, hi + gap / 2.0, gap),
         bands => bands,
     };
-    let va = axis(vch, vc, &[], false, &more)?;
+    let linear = Channel {
+        log: false,
+        ..vch.clone()
+    };
+    let va = axis(&linear, vc, &[], false, &more)?;
     let (xa, ya) = if horizontal { (va, ia) } else { (ia, va) };
     let titles = (title(cx.x.0, false), title(cx.y.0, true));
     let plot = frame(c, th, b, (&xa, &ya), titles);
@@ -339,7 +353,8 @@ fn bars(c: &mut Canvas, cx: &Ctx, b: Rect, series: &[Series]) -> Result<Vec<Hit>
             } else {
                 Rect::new(start, lo, w, long)
             };
-            c.fill(bar, (w / 4.0).min(3.0), s.color, 1.0);
+            let round = if w < 4.0 { 0.0 } else { (w / 4.0).min(3.0) };
+            c.fill(bar, round, s.color, 1.0);
             let both = reach.entry(ic.text[r].as_str()).or_insert((bar, 0.0));
             both.0 = both.0.union(bar);
             both.1 += vc.num[r];
@@ -444,21 +459,21 @@ fn heatmap(c: &mut Canvas, cx: &Ctx, b: Rect) -> Result<Vec<Hit>, String> {
     let plot = frame(c, th, b.inset(0.0, 36.0, 0.0, 0.0), (&xa, &ya), titles);
     let sw = plot.rect.w / plot.x.bands.len().max(1) as f32;
     let sh = plot.rect.h / plot.y.bands.len().max(1) as f32;
-    let mut hits = Vec::new();
+    // A cell a place, by its y and x bands: the last row there, as it would be drawn over.
+    let mut last = BTreeMap::new();
     for r in all {
         let (x, y) = (place(&plot.x, cx.x.1, r), place(&plot.y, cx.y.1, r));
-        if !(x.is_finite() && y.is_finite()) {
-            continue;
+        if let (Some(i), Some(j)) = (plot.x.band_at(x), plot.y.band_at(y)) {
+            last.insert((j, i), (r, x, y));
         }
+    }
+    let mut hits = Vec::new();
+    for ((j, i), (r, x, y)) in last {
         let cell = Rect::new(x - sw / 2.0 + 1.0, y - sh / 2.0 + 1.0, sw - 2.0, sh - 2.0);
         let v = cc.num[r];
         let color = if v.is_finite() { colour(v) } else { th.grid };
         c.fill(cell, 2.0, color, 1.0);
-        let key = (
-            cx.index,
-            plot.y.band_at(y).unwrap_or(0),
-            plot.x.band_at(x).unwrap_or(0),
-        );
+        let key = (cx.index, j, i);
         let rows = card_rows(p, t, r);
         let title = String::new();
         let shape = Shape::Rect(cell);
@@ -661,15 +676,22 @@ fn split(
         }]);
     };
     let col = t.need(by)?;
+    let names = col.distinct();
+    let slot: HashMap<&str, usize> = names.iter().enumerate().map(|(i, n)| (&**n, i)).collect();
+    let mut rows = vec![Vec::new(); names.len()];
+    for (r, cell) in col.text.iter().enumerate() {
+        if let Some(&i) = slot.get(cell.as_str()) {
+            rows[i].push(r);
+        }
+    }
     let mut out = Vec::new();
-    for (i, name) in col.distinct().into_iter().enumerate() {
-        let style = p.series.get(&name);
+    for (i, (name, rows)) in names.iter().zip(rows).enumerate() {
+        let style = p.series.get(name);
         let named = style
             .and_then(|s| s.color.as_deref())
             .and_then(|n| th.named(n));
         let color = named.or(fallback).unwrap_or(th.slot(i));
-        let rows = (0..t.len()).filter(|&r| col.text[r] == name).collect();
-        let dash = style.is_some_and(|s| s.dash);
+        let (name, dash) = (name.clone(), style.is_some_and(|s| s.dash));
         out.push(Series {
             name,
             color,
@@ -690,17 +712,20 @@ fn axis(
     more: &[f64],
 ) -> Result<Axis, String> {
     if bands {
-        let mut seen: Vec<String> = Vec::new();
-        for s in rows.iter().map(|&r| &col.text[r]) {
-            if !s.is_empty() && !seen.contains(s) {
-                seen.push(s.clone());
-            }
-        }
-        return Ok(Axis::Bands(seen));
+        let mut seen = HashSet::new();
+        let cells = rows.iter().map(|&r| col.text[r].as_str());
+        let fresh = cells.filter(|s| !s.is_empty() && seen.insert(*s));
+        return Ok(Axis::Bands(fresh.map(str::to_string).collect()));
     }
     let vals = rows.iter().map(|&r| col.num[r]).chain(more.iter().copied());
     let span = data::extent(vals.filter(|v| !ch.log || *v > 0.0));
-    let (lo, hi) = span.ok_or(format!("no numbers in \"{}\"", ch.field))?;
+    let (lo, hi) = span.ok_or_else(|| match ch.log {
+        true => format!(
+            "no numbers above zero in \"{}\" for its log scale",
+            ch.field
+        ),
+        false => format!("no numbers in \"{}\"", ch.field),
+    })?;
     let along = match (ch.log, col.kind) {
         (true, _) => Along::Log,
         (false, Cells::Time) => Along::Time,
@@ -743,8 +768,9 @@ fn title(ch: &Channel, y: bool) -> Option<&str> {
 /// Where a row's cell goes on a scale: its band's centre, or its number's place.
 fn place(s: &Scale, col: &Column, r: usize) -> f32 {
     if s.kind == Along::Band {
-        let i = s.bands.iter().position(|b| *b == col.text[r]);
-        return i.map_or(f32::NAN, |i| s.map(i as f64));
+        return s
+            .band_of(&col.text[r])
+            .map_or(f32::NAN, |i| s.map(i as f64));
     }
     s.map(col.num[r])
 }

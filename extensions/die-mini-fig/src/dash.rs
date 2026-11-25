@@ -4,7 +4,11 @@
 //! (so a long dashboard runs on below the area, to be scrolled). Across a row the cells share
 //! the width by `span`, 12 px apart, and a column stacks its panels. A panel is a rounded frame
 //! with its title and subtitle and its chart, tile or tree under them; a lone panel without a
-//! title is the whole figure, without a frame. What a panel can't draw it says in a line.
+//! title is the whole figure, without a frame. What a panel can't draw (its spec, or its table)
+//! it says in a line in its frame, and the others are drawn.
+//!
+//! A figure is made [`Ready`] once a read: its tables, and each panel's rows transformed and cut
+//! to the time range, so a scroll or a size draws it again without making them again.
 
 use crate::canvas::{Align, Canvas, Ink, Pen, Rect, Theme};
 use crate::data::{self, Table, Tables};
@@ -24,7 +28,9 @@ pub struct Job<'a> {
     pub panel: &'a Panel,
     /// Its rows: its table transformed, and cut to the dashboard's time.
     pub table: Option<&'a Table>,
-    /// Every table, for its layers and a stat's previous range.
+    /// Its table transformed but not cut, for a stat's change against the range before.
+    pub whole: Option<&'a Table>,
+    /// Every table, for its layers.
     pub tables: &'a Tables,
     /// The dashboard's time field and the range it shows.
     pub time: Option<(&'a str, (f64, f64))>,
@@ -32,8 +38,44 @@ pub struct Job<'a> {
     pub index: usize,
 }
 
-/// What a drawing leaves: each panel's frame and every mark's hit, in key order, and where the
-/// rows end (past the area's foot when they scroll).
+/// A figure read, ready to draw at any size and scroll: its spec, its tables, the time range it
+/// shows, and each panel's rows (in key order), or why it has none.
+pub struct Ready {
+    pub fig: Fig,
+    pub tables: Tables,
+    pub window: Option<(f64, f64)>,
+    rows: Vec<Made>,
+}
+
+/// A panel's rows, and the whole of them for a stat's change; none without data; or why not.
+type Made = Result<Option<(Table, Option<Table>)>, String>;
+
+impl Ready {
+    /// A spec's tables read, and its panels' rows made from them.
+    pub fn new(fig: Fig) -> Ready {
+        let tables = data::load(&fig);
+        let window = data::window(&fig, &tables);
+        let rows = fig.panels().map(|p| rows(&fig, &tables, p, window));
+        Ready {
+            rows: rows.collect(),
+            fig,
+            tables,
+            window,
+        }
+    }
+
+    /// Why the first panel that can't be drawn can't: its spec, or its table.
+    pub fn failed(&self) -> Option<String> {
+        let mut panels = self.fig.panels().zip(&self.rows);
+        panels.find_map(|(p, rows)| match (&p.kind, rows) {
+            (Kind::Failed(why), _) | (_, Err(why)) => Some(why.clone()),
+            _ => None,
+        })
+    }
+}
+
+/// What a drawing leaves: each panel's frame and every mark's hit, in key order (no two at one
+/// place), and where the rows end (past the area's foot when they scroll).
 #[derive(Clone, Debug, Default)]
 pub struct Drawn {
     pub frames: Vec<Rect>,
@@ -42,28 +84,41 @@ pub struct Drawn {
 }
 
 /// The figure on the canvas, its rows `scroll` px up under the header.
-pub fn draw(c: &mut Canvas, th: &Theme, fig: &Fig, tables: &Tables, scroll: f32) -> Drawn {
+pub fn draw(c: &mut Canvas, th: &Theme, ready: &Ready, scroll: f32) -> Drawn {
+    let fig = &ready.fig;
     let (w, _) = c.size();
     let (mut frames, height) = layout(fig, c.size());
-    let window = data::window(fig, tables);
     let lone = frames.len() == 1 && fig.panels().all(|p| p.title.is_empty());
     let mut hits = Vec::new();
-    for (index, (p, f)) in fig.panels().zip(frames.iter_mut()).enumerate() {
+    let panels = fig.panels().zip(&ready.rows).zip(frames.iter_mut());
+    for (index, ((p, rows), f)) in panels.enumerate() {
         f.y -= scroll;
-        let table = rows(fig, tables, p, window);
+        let made = rows.as_ref().ok().and_then(Option::as_ref);
         let job = Job {
             theme: th,
             panel: p,
-            table: table.as_ref().ok().and_then(Option::as_ref),
-            tables,
-            time: fig.time.as_ref().map(|t| t.field.as_str()).zip(window),
+            table: made.map(|m| &m.0),
+            whole: made.and_then(|m| m.1.as_ref()),
+            tables: &ready.tables,
+            time: fig
+                .time
+                .as_ref()
+                .map(|t| t.field.as_str())
+                .zip(ready.window),
             index,
         };
-        hits.extend(panel(c, &job, *f, lone, table.as_ref().err()));
+        hits.extend(panel(c, &job, *f, lone, rows.as_ref().err()));
+    }
+    // Each hit's place along its series becomes its rank there, so two marks a kind put at one
+    // place (a band's stacked rows) are told apart, in the order they were drawn.
+    hits.sort_by_key(|h| h.key);
+    for i in 0..hits.len() {
+        let next =
+            i > 0 && hits[i - 1].key.0 == hits[i].key.0 && hits[i - 1].key.1 == hits[i].key.1;
+        hits[i].key.2 = if next { hits[i - 1].key.2 + 1 } else { 0 };
     }
     let top = header(fig);
     hits.retain(|h| h.anchor().1 >= top);
-    hits.sort_by_key(|h| h.key);
     c.fill(Rect::new(0.0, 0.0, w, top - 4.0), 0.0, th.surface, 1.0);
     let title = Ink::new(15.0, th.strong).bold();
     c.text(
@@ -117,9 +172,11 @@ pub fn message(c: &mut Canvas, th: &Theme, why: &str) {
 /// rows end.
 pub fn layout(fig: &Fig, (w, h): (f32, f32)) -> (Vec<Rect>, f32) {
     let top = header(fig);
+    // A row of tiles, a tile among them that can't be read still one.
     let tiles = |r: &Row| {
+        let mut panels = r.cells.iter().flat_map(|c| &c.panels);
         let stat = |p: &Panel| matches!(p.kind, Kind::Stat(_));
-        r.cells.iter().all(|c| c.panels.iter().all(stat))
+        panels.clone().any(stat) && panels.all(|p| stat(p) || matches!(p.kind, Kind::Failed(_)))
     };
     let tall = |r: &Row| {
         let column = |k: usize| k as f32 * (TILE + GAP) - GAP;
@@ -204,22 +261,22 @@ fn span(secs: f64) -> String {
 }
 
 /// A panel's rows: its table transformed, and cut to the dashboard's time when it has that
-/// column. None for a panel without data (a tree).
-fn rows(
-    fig: &Fig,
-    tables: &Tables,
-    p: &Panel,
-    window: Option<(f64, f64)>,
-) -> Result<Option<Table>, String> {
+/// column; and the whole of them too for a stat's change, which is against the range before.
+/// None for a panel without data (a tree); why, when its table can't be read.
+fn rows(fig: &Fig, tables: &Tables, p: &Panel, window: Option<(f64, f64)>) -> Made {
     let Some(name) = &p.data else {
         return Ok(None);
     };
     let t = tables.get(name).ok_or(format!("no table \"{name}\""))?;
-    let t = t.transform(&p.transform)?;
-    Ok(Some(match (window, &fig.time) {
-        (Some(w), Some(time)) => t.within(&time.field, w),
-        _ => t,
-    }))
+    let whole = t.as_ref().map_err(String::clone)?.transform(&p.transform)?;
+    let (Some(w), Some(time)) = (window, &fig.time) else {
+        return Ok(Some((whole, None)));
+    };
+    let change = matches!(&p.kind, Kind::Stat(s) if s.delta);
+    Ok(Some((
+        whole.within(&time.field, w),
+        change.then_some(whole),
+    )))
 }
 
 /// A panel in its frame: the frame, its title and subtitle, and its chart, tile or tree under
@@ -258,7 +315,7 @@ fn panel(c: &mut Canvas, job: &Job, f: Rect, lone: bool, failed: Option<&String>
         }
     }
     let got = match (failed, &p.kind) {
-        (Some(e), _) => Err(e.clone()),
+        (Some(e), _) | (None, Kind::Failed(e)) => Err(e.clone()),
         (None, Kind::Stat(_)) => tile::draw(c, job, f),
         (None, Kind::Tree(_)) => tree::draw(c, job, inner),
         (None, _) => chart::draw(c, job, inner),

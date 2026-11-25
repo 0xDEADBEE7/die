@@ -34,7 +34,10 @@ fn each_of_the_owners_specs_parses_and_its_data_loads() {
     for path in &paths {
         let name = path.file_name().unwrap().to_string_lossy();
         let fig = spec::read(path).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let tables = data::load(&fig).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let tables = data::load(&fig);
+        for (t, read) in &tables {
+            assert!(read.is_ok(), "{name}: {t}: {read:?}");
+        }
         assert!(fig.panels().count() > 0, "{name}: no panels");
         if fig.time.as_ref().is_some_and(|t| t.secs.is_some()) {
             assert!(
@@ -49,14 +52,16 @@ fn each_of_the_owners_specs_parses_and_its_data_loads() {
                 continue;
             }
             let source = p.data.as_ref().unwrap_or_else(|| panic!("{what}: no data"));
-            let table = &tables[source];
+            let table = tables[source].as_ref().unwrap();
             let table = table.transform(&p.transform).unwrap();
             assert!(!table.is_empty(), "{what}: no rows");
             for f in fields(p) {
                 assert!(table.column(&f).is_some(), "{what}: no column \"{f}\"");
             }
             for l in p.layers.iter().filter(|l| !l.rule) {
-                let t: &Table = &tables[l.data.as_ref().expect("a line layer's data")];
+                let t: &Table = tables[l.data.as_ref().expect("a line layer's data")]
+                    .as_ref()
+                    .unwrap();
                 assert!(
                     t.column(l.by.as_deref().unwrap()).is_some(),
                     "{what}: a layer"
@@ -87,10 +92,11 @@ fn a_dashboard_reads_its_tables_and_its_time_range() {
                                 "edges": [{"from": 1, "to": 2}]}]}]}]}"#;
     std::fs::write(dir.join("d.fig"), spec).unwrap();
     let fig = spec::read(&dir.join("d.fig")).unwrap();
-    let tables = data::load(&fig).unwrap();
+    let tables = data::load(&fig);
     let (lo, hi) = data::window(&fig, &tables).unwrap();
     assert_eq!(hi - lo, 86_400.0);
-    assert_eq!(tables["t"].within("time", (lo, hi)).len(), 1);
+    let t = tables["t"].as_ref().unwrap();
+    assert_eq!(t.within("time", (lo, hi)).len(), 1);
     assert_eq!(fig.rows.len(), 2);
     assert_eq!((fig.rows[1].height, fig.rows[1].cells[0].span), (1.5, 2.0));
     let line = &fig.rows[1].cells[0].panels[0];

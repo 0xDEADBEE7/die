@@ -2,7 +2,8 @@
 //!
 //! serde_json reads the JSON; one pass then makes every figure a dashboard: a lone chart, tile
 //! or tree is a dashboard of one panel, its title the figure's. Keys mini-fig doesn't know are
-//! ignored. What it can't read is an error of one line saying why.
+//! ignored. What it can't read is an error of one line saying why: a dashboard's panel that
+//! can't be read is a [`Kind::Failed`] panel saying it, and the rest are read.
 //!
 //! A panel is `"type"`: `line`, `bar`, `scatter`, `heatmap`, `stat` or `graph` (a tree), or
 //! `chart` with a `"mark"` of `line`, `bar` or `point`. Data is a name in the dashboard's
@@ -65,18 +66,21 @@ pub struct Cell {
 }
 
 /// What a panel draws.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum Kind {
+    #[default]
     Line,
     Bar,
     Scatter,
     Heatmap,
     Stat(Stat),
     Tree(Graph),
+    /// A panel that can't be read, and why.
+    Failed(String),
 }
 
 /// A panel: a chart, a tile or a tree.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Panel {
     pub kind: Kind,
     pub title: String,
@@ -224,12 +228,11 @@ pub struct Edge {
 
 impl Fig {
     /// The data files it reads, for watching.
-    pub fn files(&self) -> Vec<PathBuf> {
-        let files = self.sources.values().filter_map(|s| match s {
+    pub fn files(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.sources.values().filter_map(|s| match s {
             Source::File(p) => Some(p.clone()),
             Source::Rows(_) => None,
-        });
-        files.collect()
+        })
     }
 
     /// Every panel, row by row, cell by cell, top to bottom: the order keys move in.
@@ -276,7 +279,7 @@ pub fn parse(text: &str, dir: &Path) -> Result<Fig, String> {
         let mut p: RawPanel = from(v, "the figure")?;
         b.fig.title = std::mem::take(&mut p.title);
         b.fig.subtitle = std::mem::take(&mut p.subtitle);
-        let panels = vec![b.panel(p)?];
+        let panels = vec![b.read(p)?];
         let cells = vec![Cell { span: 1.0, panels }];
         b.fig.rows.push(Row { height: 1.0, cells });
     }
@@ -393,26 +396,37 @@ impl Builder<'_> {
         };
         let mut cells = Vec::new();
         for p in raw.panels {
-            let span = p.span.unwrap_or(1.0).max(0.1);
+            let span = p.span.unwrap_or(1.0).clamp(0.1, 100.0);
             let panels = match p.column {
                 Some(column) => column.into_iter().map(|p| self.panel(p)).collect(),
-                None => self.panel(p).map(|p| vec![p]),
-            }?;
+                None => vec![self.panel(p)],
+            };
             cells.push(Cell { span, panels });
         }
-        let height = raw.height.unwrap_or(1.0).max(0.1);
+        let height = raw.height.unwrap_or(1.0).clamp(0.1, 100.0);
         Ok(Row { height, cells })
     }
 
-    /// A panel.
-    fn panel(&mut self, p: RawPanel) -> Result<Panel, String> {
+    /// A dashboard's panel, or one that says why it can't be read.
+    fn panel(&mut self, p: RawPanel) -> Panel {
+        self.read(p).unwrap_or_else(|why| Panel {
+            kind: Kind::Failed(why),
+            ..Panel::default()
+        })
+    }
+
+    /// A panel, or why it can't be read.
+    fn read(&mut self, p: RawPanel) -> Result<Panel, String> {
         let name = (if p.title.is_empty() {
             &p.label
         } else {
             &p.title
         })
         .clone();
-        let at = |e: String| format!("panel \"{name}\": {e}");
+        let at = |e: String| match name.as_str() {
+            "" => e,
+            name => format!("panel \"{name}\": {e}"),
+        };
         let mark = p.mark.as_str().unwrap_or("");
         let what = if p.kind == "chart" || p.kind.is_empty() {
             mark

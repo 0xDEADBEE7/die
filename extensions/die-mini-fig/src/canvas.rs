@@ -266,9 +266,16 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// A rectangle filled at `alpha`, its corners rounded by `r`.
+    /// A rectangle filled at `alpha`, its corners rounded by `r` (square ones the quick way).
     pub fn fill(&mut self, b: Rect, r: f32, color: Rgb, alpha: f32) {
-        self.fill_path(rounded(b, r), color, alpha);
+        let s = self.scale;
+        match sk::Rect::from_xywh(b.x * s, b.y * s, b.w * s, b.h * s) {
+            Some(px) if r <= 0.0 => {
+                let (paint, id) = (Canvas::paint(color, alpha), sk::Transform::identity());
+                self.pixmap.fill_rect(px, &paint, id, None);
+            }
+            _ => self.fill_path(rounded(b, r), color, alpha),
+        }
     }
 
     /// A rectangle's outline, its corners rounded by `r`.
@@ -296,11 +303,11 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// A polyline cut to `clip`, broken where a point isn't finite.
+    /// A polyline cut to `clip`, broken where a point isn't finite, and [`thin`]ned.
     pub fn line(&mut self, pts: &[(f32, f32)], pen: Pen, clip: Rect) {
         let mut pb = sk::PathBuilder::new();
         let mut end = None;
-        for w in pts.windows(2) {
+        for w in thin(pts).windows(2) {
             let Some((a, b)) = cut(w[0], w[1], clip) else {
                 continue;
             };
@@ -364,6 +371,31 @@ impl<'a> Canvas<'a> {
         }
         w / s
     }
+}
+
+/// A polyline's points as it looks: of a run of more than four in one logical px column, its
+/// first, lowest, highest and last, in their order; a point that isn't finite kept, a break.
+fn thin(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let column = |p: &(f32, f32)| (p.0.is_finite() && p.1.is_finite()).then(|| p.0.floor());
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < pts.len() {
+        let at = column(&pts[i]);
+        let n = pts[i..]
+            .iter()
+            .take_while(|p| at.is_some() && column(p) == at)
+            .count()
+            .max(1);
+        let run = &pts[i..i + n];
+        if n <= 4 {
+            out.extend_from_slice(run);
+        } else {
+            let y = |a: &usize, b: &usize| run[*a].1.total_cmp(&run[*b].1);
+            let (lo, hi) = ((0..n).min_by(y).unwrap_or(0), (0..n).max_by(y).unwrap_or(0));
+            out.extend([run[0], run[lo.min(hi)], run[lo.max(hi)], run[n - 1]]);
+        }
+        i += n;
+    }
+    out
 }
 
 /// A rectangle's path, its corners rounded by `r` (at most half a side).
@@ -434,5 +466,12 @@ mod tests {
         );
         assert_eq!(cut((-5.0, 20.0), (15.0, 20.0), r), None);
         assert_eq!(cut((f32::NAN, 1.0), (2.0, 2.0), r), None);
+        // Six points in one column draw as their first, lowest, highest and last; a gap stays.
+        let ys = [3.0, 9.0, 1.0, 5.0, 2.0, 4.0];
+        let mut pts: Vec<(f32, f32)> = ys.iter().map(|&y| (0.5, y)).collect();
+        pts.extend([(f32::NAN, 0.0), (2.0, 2.0)]);
+        let kept: Vec<f32> = thin(&pts).iter().map(|p| p.1).collect();
+        assert_eq!(kept[..4], [3.0, 9.0, 1.0, 4.0]);
+        assert_eq!(kept[5], 2.0);
     }
 }

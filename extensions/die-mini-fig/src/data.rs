@@ -4,7 +4,8 @@
 //! from all of its cells: Number when every cell that isn't missing is a plain number, Time when
 //! every one is an ISO time (read by jiff, a time without an offset in the local zone), else
 //! Text. Every column keeps its cells as written, so a column of hours ("00", "01") can still be
-//! a category. Filter and sort are written once, here, as is the dashboard's time range.
+//! a category, and a text column its numbers, so a chart can read past a stray "abc". Filter
+//! and sort are written once, here, as is the dashboard's time range.
 
 use crate::spec::{Fig, Keep, Source, Transform};
 use jiff::Timestamp;
@@ -30,7 +31,7 @@ pub struct Column {
     pub kind: Kind,
     /// Each cell as written, "" when missing.
     pub text: Vec<String>,
-    /// Each cell's number or time; NaN when missing, and in a Text column.
+    /// Each cell's number or time; NaN when missing or not a number.
     pub num: Vec<f64>,
 }
 
@@ -40,34 +41,33 @@ pub struct Table {
     pub columns: Vec<Column>,
 }
 
-/// A figure's tables by their names in [`Fig::sources`].
-pub type Tables = BTreeMap<String, Table>;
+/// A figure's tables by their names in [`Fig::sources`], or why each can't be read.
+pub type Tables = BTreeMap<String, Result<Table, String>>;
 
-/// The cells that mean "no value".
+/// The cells that mean "no value", in any case.
 const MISSING: [&str; 6] = ["", "NA", "N/A", "null", "NaN", "-"];
+
+/// Whether a cell means "no value".
+fn missing(s: &str) -> bool {
+    MISSING.iter().any(|m| m.eq_ignore_ascii_case(s.trim()))
+}
 
 impl Column {
     /// A column from its cells as written, its kind inferred.
     pub fn new(name: &str, text: Vec<String>, zone: &TimeZone) -> Column {
-        let present = || text.iter().filter(|s| !MISSING.contains(&s.trim()));
+        let present = || text.iter().filter(|s| !missing(s));
+        let numbers = text.iter().map(|s| number(s).unwrap_or(f64::NAN));
         let (kind, num) = if present().all(|s| number(s).is_some()) {
-            (
-                Kind::Number,
-                text.iter().map(|s| number(s).unwrap_or(f64::NAN)).collect(),
-            )
+            (Kind::Number, numbers.collect())
         } else if present().all(|s| time(s, zone).is_some()) {
             let at = |s: &String| time(s, zone).unwrap_or(f64::NAN);
             (Kind::Time, text.iter().map(at).collect())
         } else {
-            (Kind::Text, vec![f64::NAN; text.len()])
+            (Kind::Text, numbers.collect())
         };
-        let text = text.into_iter().map(|s| {
-            if MISSING.contains(&s.trim()) {
-                String::new()
-            } else {
-                s
-            }
-        });
+        let text = text
+            .into_iter()
+            .map(|s| if missing(&s) { String::new() } else { s });
         Column {
             name: name.to_string(),
             kind,
@@ -79,6 +79,13 @@ impl Column {
     /// Whether it holds numbers or times.
     pub fn numeric(&self) -> bool {
         self.kind != Kind::Text
+    }
+
+    /// Whether a chart reads it along a scale: numbers or times, or text that's mostly numbers
+    /// (its stray cells gaps).
+    pub fn numbers(&self) -> bool {
+        let present = self.text.iter().filter(|s| !s.is_empty()).count();
+        self.numeric() || self.num.iter().filter(|v| v.is_finite()).count() * 2 > present
     }
 
     /// Its finite values' least and greatest.
@@ -226,17 +233,14 @@ impl Table {
     }
 }
 
-/// Every table a figure reads; the first that can't be read is the error.
-pub fn load(fig: &Fig) -> Result<Tables, String> {
-    let mut tables = Tables::new();
-    for (name, source) in &fig.sources {
-        let table = match source {
-            Source::File(path) => Table::read(path)?,
-            Source::Rows(rows) => Table::from_rows(rows),
-        };
-        tables.insert(name.clone(), table);
-    }
-    Ok(tables)
+/// Every table a figure reads, or why it can't be read: one that can't spoils only its panels.
+pub fn load(fig: &Fig) -> Tables {
+    let read = |source: &Source| match source {
+        Source::File(path) => Table::read(path),
+        Source::Rows(rows) => Ok(Table::from_rows(rows)),
+    };
+    let tables = fig.sources.iter().map(|(name, s)| (name.clone(), read(s)));
+    tables.collect()
 }
 
 /// The dashboard's time range: `secs` back from the newest time in its field in any table, as
@@ -244,7 +248,10 @@ pub fn load(fig: &Fig) -> Result<Tables, String> {
 pub fn window(fig: &Fig, tables: &Tables) -> Option<(f64, f64)> {
     let time = fig.time.as_ref()?;
     let secs = time.secs?;
-    let columns = tables.values().filter_map(|t| t.column(&time.field));
+    let columns = tables
+        .values()
+        .flatten()
+        .filter_map(|t| t.column(&time.field));
     let times = columns.filter(|c| c.kind == Kind::Time);
     let newest = times
         .filter_map(Column::extent)
@@ -387,6 +394,11 @@ mod tests {
         assert!(t.need("n").unwrap().num[1].is_nan());
         assert_eq!(t.need("hour").unwrap().text[0], "00");
         assert_eq!(t.need("s").unwrap().text, ["sold, 24 h", "a \"b\""]);
+        // "n/a" in any case is missing; a stray "abc" leaves the rest numbers to a chart.
+        let t = Table::from_csv("a,b\n5,5\nn/a,abc\n7,7\n").unwrap();
+        let (a, b) = (t.need("a").unwrap(), t.need("b").unwrap());
+        assert_eq!((a.kind, b.kind), (Number, Text));
+        assert!(b.numbers() && b.num[0] == 5.0 && b.num[1].is_nan() && b.text[1] == "abc");
     }
 
     #[test]

@@ -96,7 +96,7 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
             .fold(b.w + 12.0, f32::min);
         let ink = if n.size > 1.0 { ink.bold() } else { ink };
         let w = (c.width(&n.label, ink) + 28.0).min(room - 12.0).max(40.0);
-        let left = (x - w / 2.0).clamp(b.x, (b.right() - w).max(b.x));
+        let left = (x - w / 2.0).min(b.right() - w).max(b.x);
         boxes[i] = Some(Rect::new(left, y, w, BOX));
     }
     for e in &g.edges {
@@ -125,9 +125,12 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
     }
     let mut hits = Vec::new();
     for (i, n) in g.nodes.iter().enumerate() {
-        let (Some(r), Some((d, _))) = (boxes[i], at[i]) else {
+        let (Some(r), Some((d, x))) = (boxes[i], at[i]) else {
             continue;
         };
+        // Its place along its level: how many there come before it, the same at any width.
+        let before = |j: usize| at[j].is_some_and(|(dj, xj)| dj == d && (xj, j) < (x, i));
+        let along = (0..g.nodes.len()).filter(|&j| before(j)).count();
         let tone = tint(&n.group);
         c.fill(r, 6.0, mix(th.surface, tone, 0.22), 1.0);
         c.outline(r, 6.0, Pen::new(1.0, tone));
@@ -144,7 +147,7 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
             rows.push(("group".to_string(), n.group.clone()));
         }
         rows.extend(n.fields.iter().cloned());
-        let key = (job.index, d, r.x.max(0.0) as usize);
+        let key = (job.index, d, along);
         hits.push(Hit {
             shape: Shape::Rect(r),
             key,

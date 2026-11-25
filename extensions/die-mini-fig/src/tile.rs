@@ -8,7 +8,7 @@ use crate::chart::cell;
 use crate::dash::Job;
 use crate::data::{self, Column, Kind as Cells};
 use crate::hit::{Hit, Shape};
-use crate::scale::{full, short, with_format, with_unit};
+use crate::scale::{Scale, full, short, with_format, with_unit};
 use crate::spec::{Good, Kind, Stat};
 
 /// The most points a sparkline has.
@@ -122,10 +122,8 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
 /// the row before. None when there's nothing before.
 fn before(job: &Job, s: &Stat, rows: &[usize]) -> Option<(f64, String)> {
     let t = job.table?;
-    let whole = job.panel.data.as_ref().and_then(|d| job.tables.get(d));
-    let whole = whole.and_then(|w| w.transform(&job.panel.transform).ok());
     let timed = |f: &str| t.column(f).is_some_and(|c| c.kind == Cells::Time);
-    match (job.time, whole) {
+    match (job.time, job.whole) {
         (Some((field, (lo, hi))), Some(whole)) if timed(field) => {
             let prior = whole.within(field, (lo - (hi - lo), lo));
             let (at, col) = (prior.need(field).ok()?, prior.need(&s.field).ok()?);
@@ -171,22 +169,13 @@ fn spark(c: &mut Canvas, job: &Job, (x, y, rows): (&Column, &Column, &[usize]), 
     ) else {
         return;
     };
-    let fx = |v: f64| {
-        b.x + if x1 > x0 {
-            ((v - x0) / (x1 - x0)) as f32 * b.w
-        } else {
-            b.w
-        }
-    };
-    let fy = |v: f64| {
-        b.bottom()
-            - if y1 > y0 {
-                ((v - y0) / (y1 - y0)) as f32 * b.h
-            } else {
-                b.h / 2.0
-            }
-    };
-    let pts: Vec<(f32, f32)> = xs.iter().zip(&ys).map(|(&x, &y)| (fx(x), fy(y))).collect();
+    let fx = Scale::linear((x0, x1), (b.x, b.right()));
+    let fy = Scale::linear((y0, y1), (b.bottom(), b.y));
+    let pts: Vec<(f32, f32)> = xs
+        .iter()
+        .zip(&ys)
+        .map(|(&x, &y)| (fx.map(x), fy.map(y)))
+        .collect();
     let th = job.theme;
     c.line(&pts, Pen::new(1.5, th.dim), b.inset(-3.0, -3.0, -3.0, -3.0));
     if let Some(&end) = pts.last() {

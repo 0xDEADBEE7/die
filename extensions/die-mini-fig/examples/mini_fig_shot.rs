@@ -16,7 +16,7 @@ use die_test_cap as _;
 
 use die_draw::Book;
 use die_mini_fig::canvas::{Canvas, Rect, Theme};
-use die_mini_fig::{dash, data, hit, spec};
+use die_mini_fig::{dash, hit, spec};
 use std::path::Path;
 
 fn main() {
@@ -58,15 +58,13 @@ fn run() -> Result<(), String> {
     let mut book = Book::load(None)?;
     let th = Theme::default();
     let mut c = Canvas::new(&mut book, size, scale, th.surface).ok_or("no pixels at that size")?;
-    let read = spec::read(Path::new(spec_path));
-    let figure = read.and_then(|fig| data::load(&fig).map(|tables| (fig, tables)));
-    match figure {
+    match spec::read(Path::new(spec_path)).map(dash::Ready::new) {
         Err(why) => {
             dash::message(&mut c, &th, &why);
             println!("can't draw: {why}");
         }
-        Ok((fig, tables)) => {
-            let drawn = dash::draw(&mut c, &th, &fig, &tables, scroll);
+        Ok(ready) => {
+            let drawn = dash::draw(&mut c, &th, &ready, scroll);
             for (i, f) in drawn.frames.iter().enumerate() {
                 let n = drawn.hits.iter().filter(|h| h.key.0 == i).count();
                 println!(
