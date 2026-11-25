@@ -1,5 +1,5 @@
-//! `rebuild`: `cargo xtask app` from inside DIE, with what cargo says in `*rebuild*`, then a
-//! restart into the new build if it built. A failed build leaves this DIE running and installs
+//! `rebuild`: `cargo xtask app` from inside DIE, for the config this DIE was built from, with what
+//! cargo says in `*rebuild*`, then a restart into the new build if it built. A failed build leaves this DIE running and installs
 //! nothing, since `xtask app` puts a bundle in place only once it's whole, and a new build that
 //! dies at its start leaves this one running too, as any `restart` does.
 
@@ -36,6 +36,35 @@ pub fn root_for(named: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// The config `rebuild` builds: the crate the file `named` names, which `cargo xtask app` writes
+/// in the bundle beside the checkout, so that a DIE built from a config outside DIE, as the
+/// owner's die-config, is built from it again. None for a bundle that names none, from before
+/// configs were named, which builds what `cargo xtask app` finds.
+pub fn config_for(named: &Path) -> Result<Option<PathBuf>, String> {
+    let Ok(text) = std::fs::read_to_string(named) else {
+        return Ok(None);
+    };
+    let config = PathBuf::from(text.trim_end_matches('\n'));
+    match config.join("Cargo.toml").is_file() {
+        true => Ok(Some(config)),
+        false => Err(format!(
+            "This DIE.app was built from the config at {}, which isn't a crate any more. Run \
+             `cargo xtask app --config DIR` in your DIE checkout once",
+            config.display()
+        )),
+    }
+}
+
+/// Where cargo's file names in `*rebuild*` are from: its workspace's root. That's DIE's for a
+/// config inside the checkout at `root`, and for one outside it the config's own, whose DIE
+/// crates come by paths cargo gives whole.
+pub fn output_dir<'a>(root: &'a Path, config: Option<&'a Path>) -> &'a Path {
+    match config {
+        Some(config) if !config.starts_with(root) => config,
+        _ => root,
+    }
+}
+
 /// Whether `root` is DIE's workspace, so that `cargo xtask app` there is the one meant.
 fn is_die(root: &Path) -> bool {
     root.join("crates/die/Cargo.toml").is_file() && root.join("xtask").is_dir()
@@ -48,19 +77,22 @@ pub fn home_of(bundle: &Path) -> Option<PathBuf> {
     Some(home.to_path_buf())
 }
 
-/// `cargo xtask app --home HOME` in `root`, which replaces `HOME/Applications/DIE.app`. A DIE
-/// started from the Dock has launchd's PATH, so cargo is found on the PATH every command gets
+/// `cargo xtask app --config CONFIG --home HOME` in `root`, which builds `config` and replaces
+/// `HOME/Applications/DIE.app`; with no config, the one `cargo xtask app` finds. A DIE started
+/// from the Dock has launchd's PATH, so cargo is found on the PATH every command gets
 /// (`die_core::process::path`).
-pub fn xtask_app(root: &Path, home: &Path) -> Command {
+pub fn xtask_app(root: &Path, home: &Path, config: Option<&Path>) -> Command {
     let mut cmd = Command::new("cargo");
-    cmd.current_dir(root)
-        .args(["xtask", "app", "--home"])
-        .arg(home);
+    cmd.current_dir(root).args(["xtask", "app"]);
+    if let Some(config) = config {
+        cmd.arg("--config").arg(config);
+    }
+    cmd.arg("--home").arg(home);
     cmd
 }
 
-/// The command for a workspace, or why there's none.
-pub type CommandFn = Box<dyn Fn(&Path) -> die_core::Result<Command>>;
+/// The command for a workspace and the config to build there, or why there's none.
+pub type CommandFn = Box<dyn Fn(&Path, Option<&Path>) -> die_core::Result<Command>>;
 
 /// What `rebuild` needs from the instance it runs in.
 pub struct Setup {
@@ -70,6 +102,8 @@ pub struct Setup {
     pub restart: Box<dyn Fn()>,
     /// The file naming the checkout to build: the running bundle's `Contents/Resources/checkout`.
     pub checkout: PathBuf,
+    /// The file naming the config to build: the running bundle's `Contents/Resources/config`.
+    pub config: PathBuf,
 }
 
 /// What lasts from one rebuild to the next.
@@ -83,8 +117,8 @@ struct Shared {
 /// Register `rebuild`.
 pub fn register(reg: &mut Registry, setup: Setup) {
     let (setup, shared) = (Rc::new(setup), Rc::new(Shared::default()));
-    let doc = "Build DIE.app again with `cargo xtask app`, in the checkout this DIE came from, and \
-               restart into it if it builds";
+    let doc = "Build DIE.app again with `cargo xtask app`, in the checkout and from the config this \
+               DIE came from, and restart into it if it builds";
     reg.command("rebuild", doc, move |ctx, _| {
         if shared.running.get() {
             return Err(Error::Msg("A rebuild is already running".into()));
@@ -98,10 +132,12 @@ pub fn register(reg: &mut Registry, setup: Setup) {
 /// Run the build, with its output in `*rebuild*`.
 fn start(ctx: &mut Ctx, setup: &Rc<Setup>, shared: &Rc<Shared>) -> die_core::Result {
     let root = root_for(&setup.checkout).map_err(Error::Msg)?;
-    let cmd = (setup.command)(&root)?;
-    // File names in cargo's errors are from `root`, so that `gf` and `<CR>` open them.
+    let config = config_for(&setup.config).map_err(Error::Msg)?;
+    let cmd = (setup.command)(&root, config.as_deref())?;
+    // File names in cargo's errors are from its workspace's root, so that `gf` and `<CR>` open
+    // them.
     let header = format!("{} in {}\n\n", shown(&cmd), root.display());
-    let buf = ctx.output_buffer(REBUILD, &header, &root)?;
+    let buf = ctx.output_buffer(REBUILD, &header, output_dir(&root, config.as_deref()))?;
     let end = last_line_start(ctx.text(buf)?);
     for w in showing(ctx, buf) {
         ctx.text_mut(buf)?.set_cursor(w, end);

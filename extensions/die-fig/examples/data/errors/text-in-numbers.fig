@@ -1,8 +1,0 @@
-{
-  "type": "line",
-  "title": "Latency by service",
-  "data": "latency-ms.csv",
-  "x": "time",
-  "y": {"field": "ms", "type": "number", "title": "Latency, ms"},
-  "color": "service"
-}

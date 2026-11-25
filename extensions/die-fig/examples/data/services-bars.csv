@@ -1,8 +1,0 @@
-service,p50,p95
-api,42,118
-auth,18,51
-billing,66,240
-search,31,97
-worker,88,312
-mailer,12,40
-cache,3,9

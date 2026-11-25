@@ -1,6 +1,6 @@
 [package]
 name = "die-dev"
-description = "Your DIE config while DIE is being built"
+description = "Your DIE config while DIE is being built, with no extension: the base a config with extensions builds on"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,18 +16,6 @@ path = "src/main.rs"
 
 [dependencies]
 die.workspace = true
-# Your emacs-orchid-client's port, as init.el loads emacs-orchid-client (scope D14).
-die-orchid-client.workspace = true
-# The whiteboard: freehand, shapes and arrows, saved as SVG, exported as PNG (scope D14).
-die-whiteboard.workspace = true
-# Your ASCII jellyfish, the buffer DIE starts on (scope D14).
-die-jellyfish.workspace = true
-# A markdown file's rendered view, toggled by `\m` (scope D14).
-die-markdown.workspace = true
-# Figures from data, charts, graphs and dashboards, toggled by `\v` (scope D14).
-die-fig.workspace = true
-# mini-fig, a spike of fig at about a tenth of its size, toggled by `\V` (scope D14).
-die-mini-fig.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true

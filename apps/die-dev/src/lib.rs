@@ -1,6 +1,10 @@
 //! Your DIE config while DIE is being built, drafted from your Emacs `init.el`, which it
-//! only reads. Bindings grow with each checkpoint, as their commands land: `\f \] \/ \x`
-//! come with K6 and K11a.
+//! only reads, with no extension: DIE's own keys, theme and status line. Bindings grow with each
+//! checkpoint, as their commands land: `\f \] \/ \x` come with K6 and K11a.
+//!
+//! Extensions aren't part of DIE (scope D14): each is a repository of its own, and a config
+//! built on this one installs them with [`main_with`] and an [`Extra`], as the owner's
+//! die-config does.
 #![warn(missing_docs)]
 
 #[cfg(test)]
@@ -9,11 +13,12 @@ use die_test_cap as _;
 pub mod theme;
 
 use die::app::Launch;
-use die::core::{Ctx, FileInfo, LineNumbers, Registry, Settings, State, Wrap};
+use die::core::{Ctx, Extension, FileInfo, LineNumbers, Registry, Settings, State, Theme, Wrap};
 use die::render::check;
 use die::render::driver::Config as Font;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 /// The files your `init.el` turns line numbers on for: python-mode, c-mode, c++-mode,
 /// emacs-lisp-mode, js-mode, mhtml-mode and css-mode, and the modes derived from them, by
@@ -83,13 +88,68 @@ pub fn parse_args(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result
     Ok(parsed)
 }
 
-/// Your config, for these files.
+/// Keys and commands a config adds, declared on the registry after this config's own.
+pub type BindingsFn = Box<dyn FnOnce(&mut Registry)>;
+
+/// The theme a config uses, given mono-dark.
+pub type ThemeFn = Box<dyn FnOnce(Theme) -> Theme>;
+
+/// What a config built on this one adds, so it doesn't copy this one: the owner's die-config
+/// is a binary crate whose `main` is `die_dev::main_with(extra)`. Every field is optional, and
+/// `Extra::default()` is this config alone.
+#[derive(Default)]
+pub struct Extra {
+    /// The extensions, after DIE's own, in this order.
+    pub extensions: Vec<Box<dyn Extension>>,
+    /// Keys and commands, declared after this config's own on the same registry, so the
+    /// extensions' commands are there to bind, and a key bound twice is the later one's.
+    pub bindings: Option<BindingsFn>,
+    /// The theme: given mono-dark, which styles only core's faces, mono-dark with the
+    /// extensions' faces styled too. DIE reports a face the theme styles that no one declared.
+    pub theme: Option<ThemeFn>,
+    /// What a run you look at opens on when no file is named ([`greeted`] says when).
+    pub greeting: Option<Greeting>,
+}
+
+/// What a run you look at opens on: a command an extension registered, and the buffer it
+/// shows, which takes the directory DIE started in.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Greeting {
+    /// The command, run with no arguments.
+    pub command: String,
+    /// The name of the buffer it shows.
+    pub buffer: String,
+}
+
+/// Your config, for these files: DIE's own, with no extension.
 pub fn config(files: Vec<PathBuf>) -> die::Config {
+    config_with(files, Extra::default())
+}
+
+/// `config` with `extra` on top: its extensions, its bindings after these, and its theme. Its
+/// greeting isn't in it: `main_with` hands that to [`greeted`] for the two real runs only.
+pub fn config_with(files: Vec<PathBuf>, extra: Extra) -> die::Config {
     let started = die::started_dir();
     let home = std::env::home_dir();
+    let Extra {
+        extensions,
+        bindings: more,
+        theme: faces,
+        greeting: _,
+    } = extra;
+    let register: BindingsFn = match more {
+        Some(more) => Box::new(move |reg: &mut Registry| {
+            bindings(reg);
+            more(reg);
+        }),
+        None => Box::new(bindings),
+    };
     let core = die::core::Config {
-        register: Some(Box::new(bindings)),
-        theme: Some(theme::mono_dark()),
+        register: Some(register),
+        theme: Some(match faces {
+            Some(faces) => faces(theme::mono_dark()),
+            None => theme::mono_dark(),
+        }),
         text_defaults: text_defaults(),
         file_settings: Some(Box::new(file_settings)),
         startup: Some(Box::new(startup)),
@@ -97,19 +157,19 @@ pub fn config(files: Vec<PathBuf>) -> die::Config {
     };
     die::Config {
         core,
-        extensions: extensions(),
+        extensions,
         status_text: Some(Box::new(status_text(&started, home.as_deref()))),
         font: Font::term(16.0, 1.0),
         files,
     }
 }
 
-/// `config`, for a run you look at, which opens on your jellyfish. `main` calls this for the two
-/// real runs only, so `config` itself stays what `--check` and the tests know: a still text
-/// buffer and no timer.
+/// `config`, for a run you look at, which opens on `greeting`. `main_with` calls this for the
+/// two real runs only, so `config` itself stays what `--check` and the tests know: a still text
+/// buffer and no timer. With no greeting, it's `config` as it was.
 ///
-/// Your startup hook runs first, and an error of its own is what comes back, the jellyfish's only
-/// when yours had none. Then the `jellyfish` command runs when all of these hold:
+/// Your startup hook runs first, and an error of its own is what comes back, the greeting's
+/// only when yours had none. Then the greeting's command runs when all of these hold:
 /// - no file was named, as `config.files` stands when this is called;
 /// - at most one window exists, so it never stands over a session's splits, where it would cost
 ///   you one at the next restore, a window on it not coming back;
@@ -117,13 +177,20 @@ pub fn config(files: Vec<PathBuf>) -> die::Config {
 ///   nothing has the focus, as after a restart that brought nothing back, where it stands in for
 ///   `*scratch*`.
 ///
-/// So a cold start is the jellyfish alone, over a session that restored one window it covers
-/// that window until `q`, and `:rebuild` shows what was there.
+/// So a cold start is the greeting alone, and over a session that restored one window it covers
+/// that window until it's let go.
 ///
-/// The jellyfish this shows is in the directory DIE started in, your home for DIE.app, and not
-/// the directory of the buffer it covers, which a `:jellyfish` of yours takes as any new buffer
-/// does: DIE starts where Emacs does, whatever the session brought back behind it.
-pub fn greeted(mut config: die::Config, launch: &Launch) -> die::Config {
+/// The greeting's buffer is in the directory DIE started in, your home for DIE.app, and not the
+/// directory of the buffer it covers, which the command run by hand takes as any new buffer does:
+/// DIE starts where Emacs does, whatever the session brought back behind it.
+pub fn greeted(
+    mut config: die::Config,
+    launch: &Launch,
+    greeting: Option<Greeting>,
+) -> die::Config {
+    let Some(greeting) = greeting else {
+        return config;
+    };
     let no_files = config.files.is_empty();
     let fresh = launch.fresh();
     let started = die::started_dir();
@@ -131,8 +198,8 @@ pub fn greeted(mut config: die::Config, launch: &Launch) -> die::Config {
     config.core.startup = Some(Box::new(move |ctx| {
         let done = before.map_or(Ok(()), |hook| hook(ctx));
         if no_files && ctx.window_list().len() <= 1 && (fresh || ctx.focused().is_none()) {
-            let shown = ctx.run("jellyfish", &die::core::Args::default());
-            if let Some(buf) = ctx.find_buffer(die_jellyfish::NAME) {
+            let shown = ctx.run(&greeting.command, &die::core::Args::default());
+            if let Some(buf) = ctx.find_buffer(&greeting.buffer) {
                 ctx.set_directory(buf, started);
             }
             return done.and(shown);
@@ -142,36 +209,47 @@ pub fn greeted(mut config: die::Config, launch: &Launch) -> die::Config {
     config
 }
 
-/// The packages your `init.el` loads, as DIE has them: emacs-orchid-client's port, with its
-/// defaults, as you set none of its options. It finds `orchid` on your login shell's PATH, which
-/// has `~/.local/bin`, as `init.el` adds it to `exec-path`. And the whiteboard, with its defaults:
-/// PNGs at 2x on the theme's background, the fonts where DIE's are. And your jellyfish, with its
-/// defaults: the water's dust and twinkles but no shoal, the window's whole width, and at rest
-/// after five minutes without a key. Registering it shows nothing: `greeted` does that. And the
-/// markdown view, with its defaults: the mode on `.md` files and markdown-mode's other
-/// extensions, front matter hidden as your preview's export strips it, links that aren't
-/// files DIE opens going to `open`, and the rendered view a page drawn as GitHub draws one, in
-/// mono-dark's colours. A file opens raw, as it always has: `\m` renders it. And fig, with its
-/// defaults: times in the system's zone, the fonts where DIE's are, the chrome in mono-dark's
-/// greys, a `.fig` or `.fig.json` file opening as its figure (`\v` flips it to its text and
-/// back), and `y` in its detail panel copying as Evil's `y` does, to the clipboard and the kill
-/// ring. Nothing of it runs until `\v` or a figure's file. And mini-fig, a spike of fig at
-/// about a tenth of its size that reads the same specs, so the two can be compared: `\V`.
-pub fn extensions() -> Vec<Box<dyn die::core::Extension>> {
-    vec![
-        Box::new(die_orchid_client::Orchid::default()),
-        Box::new(die_whiteboard::Whiteboard::default()),
-        Box::new(die_jellyfish::Jellyfish::default()),
-        Box::new(die_markdown::Markdown::default()),
-        Box::new(
-            die_fig::Fig::new(die_fig::Options {
-                open_fig_as: die_fig::OpenAs::Figure,
-                ..die_fig::Options::default()
-            })
-            .copying_with(die::vim::kill_new),
-        ),
-        Box::new(die_mini_fig::MiniFig::default()),
-    ]
+/// `die`'s `main`, for this config with `extra` on top: DIE's other modes first (a PTY's
+/// trampoline), then the arguments, then DIE.app's instance, its client, `--check` or a plain
+/// run. `extra` is called only once none of the other modes has taken the run, and only for a
+/// run that needs the config, so a config's extensions are made after the trampoline.
+pub fn main_with(extra: impl FnOnce() -> Extra) -> ExitCode {
+    if let Some(code) = die::other_mode() {
+        return ExitCode::from(code.clamp(0, 255) as u8);
+    }
+    die::render::latency::start_clock();
+    let args = match parse_args(std::env::args_os().skip(1)) {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("die: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let made = move |files| {
+        let mut extra = extra();
+        let greeting = extra.greeting.take();
+        (config_with(files, extra), greeting)
+    };
+    // A run you look at opens on the greeting when no file is named (`greeted` says when). A
+    // check takes the config as it is: its first buffer is still, and has text.
+    let code = match (args.check, die::app::bundle()) {
+        (None, Some(bundle)) if die::app::is_client(&args.launch) => {
+            die::app::client(&bundle, args.files, &args.launch)
+        }
+        (Some(names), _) => die::check(made(args.files).0, names),
+        (None, Some(bundle)) => {
+            // LaunchServices starts DIE.app in `/`: it starts at home, as Emacs.app does.
+            die::app::start_at_home();
+            let (config, greeting) = made(args.files);
+            let config = greeted(config, &args.launch, greeting);
+            die::app::run(config, bundle, args.launch)
+        }
+        (None, None) => {
+            let (config, greeting) = made(args.files);
+            die::run(greeted(config, &args.launch, greeting))
+        }
+    };
+    ExitCode::from(code.clamp(0, 255) as u8)
 }
 
 /// `init.el`'s leader, and the bindings whose commands exist so far.
@@ -193,25 +271,6 @@ fn bindings(reg: &mut Registry) {
     // `termin-open` and `ghostel`: a new terminal, and the first one.
     keys.bind(State::Normal, "<leader>e", "term");
     keys.bind(State::Normal, "<leader>g", "term-switch");
-    // emacs-orchid-client's session browser, in normal state, as `init.el` binds it.
-    keys.bind(State::Normal, "<leader>o", "orchid");
-    // The whiteboard: the board used last, or a scratch board in this window; from a board, a
-    // new scratch board.
-    keys.bind(State::Normal, "<leader>w", "whiteboard");
-    // fig: this buffer's data as a figure, or from a figure its buffer again; in visual state,
-    // the selection's. `\g`, `\d`, `\s` and `\t` are taken in init.el.
-    keys.bind(State::Normal, "<leader>v", "fig-toggle");
-    keys.bind(State::Visual, "<leader>v", "fig-toggle");
-    // mini-fig: a .fig file's figure in the spike, or from its figure the file again.
-    keys.bind(State::Normal, "<leader>V", "mini-fig-toggle");
-    // A markdown file's two views, rendered and raw. It's in the mode's keymap, so `\m` is a key
-    // only where there's markdown to render, and in the page's, which is a buffer of its own
-    // with no mode: `\m` there goes back to the file. Both only where the extension is.
-    if let Some(keys) = reg.mode_keymap(die_markdown::MODE) {
-        keys.bind(State::Normal, "<leader>m", "markdown-toggle");
-        let keys = reg.kind_keymap(die_markdown::PAGE);
-        keys.bind(State::Normal, "<leader>m", "markdown-toggle");
-    }
 }
 
 /// `init.el`'s `ghostel-shell` and `vterm-shell`: `term` starts `/bin/bash`, interactive and not

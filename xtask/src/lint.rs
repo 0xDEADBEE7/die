@@ -32,10 +32,6 @@
 //!   any target.
 //! - Every dependency is pinned to an exact version, or a git one to a commit.
 //! - die-vim depends on die-core only (D15), in every dependency table.
-//! - An extension under `extensions/` (D14) depends on die-core and die-draw alone among DIE's
-//!   crates, with die-vim and die-test-cap for its tests; die-draw, the extensions' shared
-//!   drawing crate, depends on none of DIE's crates, with die-test-cap for its tests; and
-//!   nothing under `crates/` depends on either.
 //! - The lockfile and both license files are there.
 
 use crate::util::{Result, cargo, git, output, read, rust_files};
@@ -91,13 +87,6 @@ const NEUTRAL: &[(&str, &[&str])] = &[
     ("crates/die-term", &[]),
     ("tools/evil-oracle", &[]),
     ("tools/test-cap", &[]),
-    ("extensions/die-orchid-client", &[]),
-    ("extensions/die-whiteboard", &[]),
-    ("extensions/die-jellyfish", &[]),
-    ("extensions/die-markdown", &[]),
-    ("extensions/die-draw", &[]),
-    ("extensions/die-fig", &[]),
-    ("extensions/die-mini-fig", &[]),
     (
         "crates/die-render",
         &[
@@ -245,11 +234,6 @@ pub fn run(root: &Path) -> Result {
         &parse(&root.join("crates/die-vim/Cargo.toml"))?,
         &mut errors,
     );
-    let manifests: Vec<(String, Table)> = members
-        .iter()
-        .map(|m| Ok((m.clone(), parse(&root.join(m).join("Cargo.toml"))?)))
-        .collect::<Result<_>>()?;
-    check_d14(&manifests, &mut errors);
 
     for m in &members {
         let neutral = NEUTRAL.iter().find(|(c, _)| c == m);
@@ -546,72 +530,6 @@ fn check_d15(man: &Table, errors: &mut Vec<String>) {
             errors.push(format!(
                 "crates/die-vim/Cargo.toml [{key}]: depends on {k}; die-vim may depend on die-core only (D15)"
             ));
-        }
-    }
-}
-
-/// Where the extensions DIE's workspace builds live: ports of your packages, outside the product
-/// (scope D14).
-const EXTENSIONS: &str = "extensions/";
-
-/// What an extension may depend on among DIE's own crates: die-core and die-draw, and for its
-/// tests die-vim and the memory limit.
-const EXTENSION_DEPS: &[&str] = &["die-core", "die-draw"];
-const EXTENSION_DEV_DEPS: &[&str] = &["die-core", "die-draw", "die-vim", "die-test-cap"];
-
-/// The extensions' shared drawing crate, which is under `extensions/` but depends on none of
-/// DIE's crates, and for its tests on the memory limit alone: any extension can use it, and it
-/// moves out at M4 with them.
-const DRAW: &str = "extensions/die-draw";
-const DRAW_DEV_DEPS: &[&str] = &["die-test-cap"];
-
-/// D14: an extension depends on die-core and die-draw alone among the workspace's crates, so it
-/// reaches core only through its public API, never `die` and the platform under it; die-draw
-/// depends on none of them; and nothing under `crates/` depends on an extension, so the product
-/// never leans on one. `manifests` are the members' (their directory, their manifest). Packages
-/// from elsewhere aren't the rule's.
-fn check_d14(manifests: &[(String, Table)], errors: &mut Vec<String>) {
-    let name = |man: &Table| {
-        let package = man.get("package").and_then(|p| p.get("name"));
-        package.and_then(Value::as_str).map(String::from)
-    };
-    let ours: Vec<String> = manifests.iter().filter_map(|(_, m)| name(m)).collect();
-    let extensions: Vec<String> = manifests
-        .iter()
-        .filter(|(dir, _)| dir.starts_with(EXTENSIONS))
-        .filter_map(|(_, m)| name(m))
-        .collect();
-    for (dir, man) in manifests {
-        for (key, deps) in dep_tables(man) {
-            let dev = key.ends_with("dev-dependencies");
-            let allowed = match (dir == DRAW, dev) {
-                (true, true) => DRAW_DEV_DEPS,
-                (true, false) => &[],
-                (false, true) => EXTENSION_DEV_DEPS,
-                (false, false) => EXTENSION_DEPS,
-            };
-            for (k, spec) in deps {
-                let dep = spec.get("package").and_then(Value::as_str).unwrap_or(k);
-                let ours = ours.iter().any(|o| o == dep);
-                if dir == DRAW && ours && !allowed.contains(&dep) {
-                    errors.push(format!(
-                        "{dir}/Cargo.toml [{key}]: depends on {dep}; die-draw depends on none of \
-                         DIE's crates, with die-test-cap for its tests (D14)"
-                    ));
-                } else if dir.starts_with(EXTENSIONS) && ours && !allowed.contains(&dep) {
-                    errors.push(format!(
-                        "{dir}/Cargo.toml [{key}]: depends on {dep}; an extension depends on \
-                         die-core and die-draw only, with die-vim and die-test-cap for its tests \
-                         (D14)"
-                    ));
-                }
-                if dir.starts_with("crates/") && extensions.iter().any(|e| e == dep) {
-                    errors.push(format!(
-                        "{dir}/Cargo.toml [{key}]: depends on the extension {dep}; nothing in \
-                         crates/ depends on an extension (D14)"
-                    ));
-                }
-            }
         }
     }
 }
@@ -1811,112 +1729,6 @@ mod tests {
             e[1].contains("[target.cfg(target_os = \"macos\").dependencies]: depends on objc2"),
             "{e:?}"
         );
-    }
-
-    #[test]
-    fn d14_extensions_depend_on_core_and_draw_which_depends_on_none_and_the_product_on_neither() {
-        let man = |text: &str| -> Table { text.parse().unwrap() };
-        let manifests = vec![
-            (
-                "crates/die-core".to_string(),
-                man("[package]\nname = \"die-core\"\n"),
-            ),
-            (
-                "crates/die-vim".to_string(),
-                man("[package]\nname = \"die-vim\"\n"),
-            ),
-            (
-                "crates/die".to_string(),
-                man(
-                    "[package]\nname = \"die\"\n[dev-dependencies]\nmy-ext = { workspace = true }\n",
-                ),
-            ),
-            (
-                "apps/die-dev".to_string(),
-                man(
-                    "[package]\nname = \"die-dev\"\n[dependencies]\ndie-orchid-client = { workspace = true }\n",
-                ),
-            ),
-            (
-                "extensions/die-orchid-client".to_string(),
-                man(
-                    "[package]\nname = \"die-orchid-client\"\n[dependencies]\ndie-core = { workspace = true }\n\
-                 jiff = \"=0.2.41\"\n[dev-dependencies]\ndie-vim = { workspace = true }\n\
-                 die-test-cap = { workspace = true }\n",
-                ),
-            ),
-            (
-                "extensions/my-ext".to_string(),
-                man(
-                    "[package]\nname = \"my-ext\"\n[dependencies]\nui = { package = \"die\", path = \"../../crates/die\" }\n\
-                 [target.'cfg(unix)'.dependencies]\ndie-vim = { workspace = true }\n\
-                 [dev-dependencies]\ndie-orchid-client = { workspace = true }\n",
-                ),
-            ),
-            // die-draw depends on no DIE crate, die-test-cap aside for its tests.
-            (
-                "extensions/die-draw".to_string(),
-                man(
-                    "[package]\nname = \"die-draw\"\n[dependencies]\ndie-core = { workspace = true }\n\
-                 tiny-skia = \"=0.12.0\"\n[dev-dependencies]\ndie-test-cap = { workspace = true }\n\
-                 die-vim = { workspace = true }\n",
-                ),
-            ),
-            // An extension may depend on die-draw as well as die-core.
-            (
-                "extensions/die-fig".to_string(),
-                man(
-                    "[package]\nname = \"die-fig\"\n[dependencies]\ndie-core = { workspace = true }\n\
-                 die-draw = { workspace = true }\n[dev-dependencies]\ndie-draw = { workspace = true }\n\
-                 die-vim = { workspace = true }\ndie-test-cap = { workspace = true }\n",
-                ),
-            ),
-            (
-                "crates/die-render".to_string(),
-                man(
-                    "[package]\nname = \"die-render\"\n[dependencies]\ndie-draw = { workspace = true }\n",
-                ),
-            ),
-        ];
-        let mut e = Vec::new();
-        check_d14(&manifests, &mut e);
-        assert_eq!(e.len(), 7, "{e:?}");
-        assert!(
-            e[0].contains(
-                "crates/die/Cargo.toml [dev-dependencies]: depends on the extension my-ext"
-            ),
-            "{e:?}"
-        );
-        assert!(
-            e[1].contains("extensions/my-ext/Cargo.toml [dependencies]: depends on die;"),
-            "{e:?}"
-        );
-        assert!(
-            e[2].contains("[dev-dependencies]: depends on die-orchid-client;"),
-            "{e:?}"
-        );
-        assert!(
-            e[3].contains("[target.cfg(unix).dependencies]: depends on die-vim;"),
-            "{e:?}"
-        );
-        assert!(
-            e[4].contains(
-                "extensions/die-draw/Cargo.toml [dependencies]: depends on die-core; die-draw \
-                 depends on none of DIE's crates"
-            ),
-            "{e:?}"
-        );
-        assert!(
-            e[5].contains("extensions/die-draw/Cargo.toml [dev-dependencies]: depends on die-vim;"),
-            "{e:?}"
-        );
-        assert!(
-            e[6].contains(
-                "crates/die-render/Cargo.toml [dependencies]: depends on the extension die-draw"
-            ),
-            "{e:?}"
-        );
-        assert!(!e.iter().any(|e| e.contains("die-fig")), "{e:?}");
     }
 
     #[test]

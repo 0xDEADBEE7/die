@@ -55,7 +55,8 @@ impl App {
         std::fs::create_dir_all(&dir).unwrap();
         let app = dir.join("DIE.app");
         let profile = xtask::app::Profile::Dev;
-        xtask::app::build(&root(), &app, id, profile).unwrap();
+        let config = root().join(xtask::app::DIE_DEV);
+        xtask::app::build(&root(), &config, &app, id, profile).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         App {
             state: dir.join("state"),
@@ -176,6 +177,13 @@ fn the_bundle_has_its_id_its_fonts_and_a_signature() {
         checkout.unwrap(),
         format!("{}\n", root().display()),
         "for `rebuild`"
+    );
+    let config = std::fs::read_to_string(app.app.join("Contents/Resources/config"));
+    let die_dev = root().join(xtask::app::DIE_DEV);
+    assert_eq!(
+        config.unwrap(),
+        format!("{}\n", die_dev.display()),
+        "the config, for `rebuild` too"
     );
     let verify = Command::new("codesign")
         .arg("--verify")
@@ -390,7 +398,9 @@ fn a_new_build_put_in_under_a_running_instance_restarts_with_everything() {
     std::fs::copy(&exe, &built).unwrap();
     std::fs::write(&built, code).unwrap();
     let fonts = xtask::fonts::dir(&root());
-    xtask::app::bundle(&built, &fonts, &app.app, "dev.die.DIE.test", &root()).unwrap();
+    let config = root().join(xtask::app::DIE_DEV);
+    let id = "dev.die.DIE.test";
+    xtask::app::bundle(&built, &fonts, &app.app, id, &root(), &config).unwrap();
     assert_eq!(app.pids(), [old], "the bundle went in under it");
 
     let go = || std::fs::write(app.state.join("restart-loop.go"), "").unwrap();

@@ -321,7 +321,9 @@ pub fn run(config: Config, bundle: PathBuf, asked: Launch) -> i32 {
     let again = asked.restart_loop.then(|| restart.clone());
     let register = config.core.register.take();
     let rebuilt = restart.clone();
-    let (installed, checkout) = (bundle.clone(), bundle.join("Contents/Resources/checkout"));
+    let installed = bundle.clone();
+    let checkout = bundle.join("Contents/Resources/checkout");
+    let named_config = bundle.join("Contents/Resources/config");
     config.core.register = Some(Box::new(move |reg| {
         reg.command("restart", "Start DIE again.", move |ctx, _| {
             let restart = restart.clone();
@@ -331,8 +333,8 @@ pub fn run(config: Config, bundle: PathBuf, asked: Launch) -> i32 {
             })
         });
         let home = rebuild::home_of(&installed);
-        let command = move |root: &Path| match &home {
-            Some(home) => Ok(rebuild::xtask_app(root, home)),
+        let command = move |root: &Path, config: Option<&Path>| match &home {
+            Some(home) => Ok(rebuild::xtask_app(root, home, config)),
             None => Err(die_core::Error::Msg(format!(
                 "This DIE runs from {}, which `cargo xtask app` doesn't install",
                 installed.display()
@@ -348,6 +350,7 @@ pub fn run(config: Config, bundle: PathBuf, asked: Launch) -> i32 {
                 command,
                 restart,
                 checkout,
+                config: named_config,
             },
         );
         if let Some(register) = register {

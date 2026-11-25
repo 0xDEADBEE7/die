@@ -1,6 +1,7 @@
 //! `die [--check a,b] [--handover socket] [--restart-after-frame] [--restart-loop] [--frontmost]
-//! [--background] [--wait] [--] [file...]`: your DIE config, with the files you name. In DIE.app it's the
-//! one instance, or from a terminal the client that sends files to it (`die::app`).
+//! [--background] [--wait] [--] [file...]`: your DIE config, with the files you name and no
+//! extension. In DIE.app it's the one instance, or from a terminal the client that sends files to
+//! it (`die::app`). A config with extensions has this `main` with its own [`die_dev::Extra`].
 
 #[cfg(test)]
 use die_test_cap as _;
@@ -8,31 +9,5 @@ use die_test_cap as _;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    if let Some(code) = die::other_mode() {
-        return ExitCode::from(code.clamp(0, 255) as u8);
-    }
-    die::render::latency::start_clock();
-    let args = match die_dev::parse_args(std::env::args_os().skip(1)) {
-        Ok(args) => args,
-        Err(e) => {
-            eprintln!("die: {e}");
-            return ExitCode::from(2);
-        }
-    };
-    // A run you look at opens on the jellyfish when no file is named (`greeted` says when). A
-    // check takes your config as it is: its first buffer is still, and has text.
-    let code = match (args.check, die::app::bundle()) {
-        (None, Some(bundle)) if die::app::is_client(&args.launch) => {
-            die::app::client(&bundle, args.files, &args.launch)
-        }
-        (Some(names), _) => die::check(die_dev::config(args.files), names),
-        (None, Some(bundle)) => {
-            // LaunchServices starts DIE.app in `/`: it starts at home, as Emacs.app does.
-            die::app::start_at_home();
-            let config = die_dev::greeted(die_dev::config(args.files), &args.launch);
-            die::app::run(config, bundle, args.launch)
-        }
-        (None, None) => die::run(die_dev::greeted(die_dev::config(args.files), &args.launch)),
-    };
-    ExitCode::from(code.clamp(0, 255) as u8)
+    die_dev::main_with(die_dev::Extra::default)
 }
