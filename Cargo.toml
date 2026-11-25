@@ -14,6 +14,7 @@ members = [
     "extensions/die-markdown",
     "extensions/die-draw",
     "extensions/die-fig",
+    "extensions/die-mini-fig",
     "tools/evil-oracle",
     "tools/test-cap",
     "xtask",
@@ -32,6 +33,7 @@ default-members = [
     "extensions/die-markdown",
     "extensions/die-draw",
     "extensions/die-fig",
+    "extensions/die-mini-fig",
 ]
 
 [workspace.package]
@@ -58,6 +60,8 @@ die-markdown = { path = "extensions/die-markdown" }
 die-draw = { path = "extensions/die-draw" }
 # Figures from data: charts, network graphs and dashboards drawn in pixels, in fig's ethos (scope D14).
 die-fig = { path = "extensions/die-fig" }
+# A spike of die-fig at about a tenth of its size, reading the same specs, to feel what is lost (scope D14).
+die-mini-fig = { path = "extensions/die-mini-fig" }
 evil-oracle = { path = "tools/evil-oracle" }
 die-test-cap = { path = "tools/test-cap" }
 

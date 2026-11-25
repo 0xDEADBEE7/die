@@ -137,6 +137,13 @@ path = "extensions/die-fig"
 extension = true
 note = "an extension, outside guard 7: figures from data (charts, network graphs, gantt charts, dashboards) drawn in pixels, in fig's ethos"
 
+# The cap of 4,800 code lines is the spike's own: an extension can't carry a limit here (scope D14).
+[[crate]]
+name = "die-mini-fig"
+path = "extensions/die-mini-fig"
+extension = true
+note = "an extension, outside guard 7: a spike of die-fig in under 4,800 lines, the same specs drawn by one host"
+
 [[crate]]
 name = "xtask"
 path = "xtask"

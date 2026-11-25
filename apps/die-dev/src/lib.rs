@@ -155,7 +155,8 @@ pub fn greeted(mut config: die::Config, launch: &Launch) -> die::Config {
 /// defaults: times in the system's zone, the fonts where DIE's are, the chrome in mono-dark's
 /// greys, a `.fig` or `.fig.json` file opening as its figure (`\v` flips it to its text and
 /// back), and `y` in its detail panel copying as Evil's `y` does, to the clipboard and the kill
-/// ring. Nothing of it runs until `\v` or a figure's file.
+/// ring. Nothing of it runs until `\v` or a figure's file. And mini-fig, a spike of fig at
+/// about a tenth of its size that reads the same specs, so the two can be compared: `\V`.
 pub fn extensions() -> Vec<Box<dyn die::core::Extension>> {
     vec![
         Box::new(die_orchid_client::Orchid::default()),
@@ -169,6 +170,7 @@ pub fn extensions() -> Vec<Box<dyn die::core::Extension>> {
             })
             .copying_with(die::vim::kill_new),
         ),
+        Box::new(die_mini_fig::MiniFig::default()),
     ]
 }
 
@@ -200,6 +202,8 @@ fn bindings(reg: &mut Registry) {
     // the selection's. `\g`, `\d`, `\s` and `\t` are taken in init.el.
     keys.bind(State::Normal, "<leader>v", "fig-toggle");
     keys.bind(State::Visual, "<leader>v", "fig-toggle");
+    // mini-fig: a .fig file's figure in the spike, or from its figure the file again.
+    keys.bind(State::Normal, "<leader>V", "mini-fig-toggle");
     // A markdown file's two views, rendered and raw. It's in the mode's keymap, so `\m` is a key
     // only where there's markdown to render, and in the page's, which is a buffer of its own
     // with no mode: `\m` there goes back to the file. Both only where the extension is.
