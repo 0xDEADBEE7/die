@@ -616,7 +616,7 @@ macro is hidden from it for the moment."
 
 (defun evil-oracle--evil-source-hash ()
   "SHA-256 over Evil's .el files, naming the exact Evil the fixtures came from.
-The user's Evil is vendored inside ~/.emacs.d, so it has no commit of its own."
+An Evil vendored in an Emacs config has no commit of its own."
   (let ((dir (getenv "EVIL_ORACLE_EVIL_DIR")))
     (secure-hash
      'sha256

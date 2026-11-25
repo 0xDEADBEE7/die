@@ -1,6 +1,6 @@
 {
 "term_sprites": {
-"png": "spikes/s1-renderer/results/fidelity-term-sprites.png",
+"png": "results/fidelity-term-sprites.png",
 "cell": "19x40",
 "box_hline_min_cov": 1,
 "box_vline_min_cov": 1,
@@ -154,7 +154,7 @@
 }]
 },
 "term_font_only": {
-"png": "spikes/s1-renderer/results/fidelity-term-font_only.png",
+"png": "results/fidelity-term-font_only.png",
 "cell": "19x40",
 "box_hline_min_cov": 1,
 "box_vline_min_cov": 1,
@@ -225,7 +225,7 @@
 "fallback_faces": ["PingFangSC-Regular","AppleColorEmoji","AppleSDGothicNeo-Regular"]
 },
 "term_braille_sprite": {
-"png": "spikes/s1-renderer/results/fidelity-term-braille_sprite.png",
+"png": "results/fidelity-term-braille_sprite.png",
 "cell": "19x40",
 "box_hline_min_cov": 1,
 "box_vline_min_cov": 1,
@@ -296,7 +296,7 @@
 "fallback_faces": ["PingFangSC-Regular","AppleColorEmoji","AppleSDGothicNeo-Regular"]
 },
 "installed_sprites": {
-"png": "spikes/s1-renderer/results/fidelity-installed-sprites.png",
+"png": "results/fidelity-installed-sprites.png",
 "cell": "19x40",
 "box_hline_min_cov": 1,
 "box_vline_min_cov": 1,
@@ -450,7 +450,7 @@
 }]
 },
 "installed_font_only": {
-"png": "spikes/s1-renderer/results/fidelity-installed-font_only.png",
+"png": "results/fidelity-installed-font_only.png",
 "cell": "19x40",
 "box_hline_min_cov": 1,
 "box_vline_min_cov": 1,
@@ -521,7 +521,7 @@
 "fallback_faces": ["PingFangSC-Regular","AppleColorEmoji","AppleSDGothicNeo-Regular"]
 },
 "installed_braille_sprite": {
-"png": "spikes/s1-renderer/results/fidelity-installed-braille_sprite.png",
+"png": "results/fidelity-installed-braille_sprite.png",
 "cell": "19x40",
 "box_hline_min_cov": 1,
 "box_vline_min_cov": 1,

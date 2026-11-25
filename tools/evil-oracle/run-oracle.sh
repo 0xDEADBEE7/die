@@ -5,16 +5,16 @@
 #   ./run-oracle.sh cases/motions.json  one topic
 #   ./run-oracle.sh --reverse --out DIR run cases in reverse order
 #
-# Environment (all optional):
+# Environment (all optional but EVIL_ORACLE_EVIL_DIR):
 #   EVIL_ORACLE_EMACS     Emacs binary     (default: emacs on PATH)
-#   EVIL_ORACLE_EVIL_DIR  Evil sources     (default: Evil in your Emacs config)
+#   EVIL_ORACLE_EVIL_DIR  Evil sources     (required: the directory with evil.el)
 #   EVIL_ORACLE_HOME      scratch HOME     (default: a temp directory,
 #                                           removed afterwards)
 #   EVIL_ORACLE_RUN       batch|tty: run every case file in one mode
 #
 # Emacs runs as `emacs -Q --batch' (and, for "run": "tty" case files, a
 # child `emacs -Q -nw' on a pty) with HOME pointed at the scratch
-# directory, so nothing it does can land in ~/.emacs.d.  The script still
+# directory, so nothing it does can land in your Emacs config.  The script still
 # checks afterwards and fails if anything there is newer than the run, or
 # if Emacs byte- or native-compiled anything into the scratch HOME.
 # (A running Emacs of yours that saves history there would trip it too.)
@@ -27,7 +27,11 @@ if [ -z "$emacs" ]; then
   echo "run-oracle.sh: no emacs on PATH; set EVIL_ORACLE_EMACS to your Emacs binary" >&2
   exit 2
 fi
-evil_dir=${EVIL_ORACLE_EVIL_DIR:?set EVIL_ORACLE_EVIL_DIR to an Evil checkout}
+evil_dir=${EVIL_ORACLE_EVIL_DIR:-}
+if [ -z "$evil_dir" ]; then
+  echo "run-oracle.sh: set EVIL_ORACLE_EVIL_DIR to your Evil's sources, the directory with evil.el" >&2
+  exit 2
+fi
 if [ -n "${EVIL_ORACLE_HOME:-}" ]; then
   scratch=$EVIL_ORACLE_HOME
 else
@@ -77,7 +81,7 @@ fi
 if [ -d "$real_home/.emacs.d" ]; then
   changed=$(find "$real_home/.emacs.d" -newer "$stamp" 2>/dev/null | head -20)
   if [ -n "$changed" ]; then
-    echo "run-oracle.sh: files under ~/.emacs.d changed during the run:" >&2
+    echo "run-oracle.sh: files in your Emacs config changed during the run:" >&2
     echo "$changed" >&2
     exit 3
   fi

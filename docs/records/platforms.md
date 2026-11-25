@@ -7,7 +7,7 @@ Status: **accepted 2026-10-19.** Question 11: A, Linux ships as a preview at M2'
 
 Evidence notes:
 - `registry:` means `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`.
-- `scratch:` means `$SCRATCH/`, the scratch directory of the session that wrote this. Scratch files may not last.
+- `scratch:` means the review's scratch directory, which wasn't kept.
 - Machine: Apple M5 Pro, macOS 26.5, rustc 1.96.0. The Linux cross-checks used `cargo +stable` (also 1.96.0), because the pinned toolchain has only the macOS std. Nothing was installed. Builds ran `--offline`.
 - Each claim is marked **verified** (read in source or measured), **likely** (from documentation or project reports) or **unverified**.
 

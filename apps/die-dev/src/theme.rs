@@ -1,5 +1,5 @@
 //! mono-dark, your Emacs theme, as DIE theme data. The colors and their use
-//! are copied from your Emacs theme, `mono-dark-theme.el`; each
+//! are copied from its source, `mono-dark-theme.el`; each
 //! face notes the Emacs face it comes from.
 
 use die::core::{Rgb, Style, Theme, Underline};

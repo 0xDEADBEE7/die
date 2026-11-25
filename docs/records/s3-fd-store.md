@@ -1,4 +1,4 @@
-> **Decision record for spike S3 (scope D20).** Spike code is in [spikes/s3-fd-store/](../../spikes/s3-fd-store/). The original question and your answer are in [.questions/06](../../.questions/06-restart-guarantees.md). Evidence paths under `$SCRATCH` are scratch files and may not last; `scripts/run-all.sh` reproduces all of them.
+> **Decision record for spike S3 (scope D20).** Spike code is in [spikes/s3-fd-store/](../../spikes/s3-fd-store/). The original question and your answer are in [.questions/06](../../.questions/06-restart-guarantees.md). Evidence paths are in the run's scratch directory, which wasn't kept; `scripts/run-all.sh` reproduces all of them.
 
 # S3 decision record: terminal survival (`die --fd-store`)
 
@@ -53,7 +53,7 @@ It's also bigger than estimated. The holder and its client are about 450 lines, 
 
 ## 2. Pass criteria, measured
 
-Final run: `scripts/run-all.sh` into `$SCRATCH/s0/s3/final/`. Every check also ran on its own earlier with the same results. The helper check's first run was marked failed only because my pass condition expected the wrong reply text.
+Final run: `scripts/run-all.sh` into `final/` in a private scratch directory (§5). Every check also ran on its own earlier with the same results. The helper check's first run was marked failed only because my pass condition expected the wrong reply text.
 
 | Check | Target | Measured | Result |
 |---|---|---|---|
@@ -134,7 +134,7 @@ Labels are free-form and namespaced by convention. The helper check ran S2's lik
 
 ```sh
 cd spikes/s3-fd-store
-scripts/run-all.sh $SCRATCH/s0/s3/final
+scripts/run-all.sh "$(mktemp -d)"     # a private (0700) scratch directory
 # or one check, from inside a private (0700) directory:
 target/release/die check restart --base <dir>     # also kill9, cycles, exit, lifetime,
                                                   # store-crash, winch, buffer, helper
@@ -204,7 +204,7 @@ That's about 2.5 times the "about 250 lines" in .questions/06. The core-libs rev
 
 ## 5. Raw data
 
-All under `$SCRATCH/s0/s3/`:
+All in the run's scratch directory, which wasn't kept:
 
 - `final/summary-all.json` and `final/summary-<check>.json`: the final run, one summary per check.
 - `final/<check>/`: each check's files. The holder's log is `store.log`. Per-host results are `chain.jsonl` (restart), `serve-<n>.json` (kill9), `cycles.json`, `exit.json`, `ver-<tag>.json`, `app-<phase>.json`, `flood-attach.json` and `kill-all.json`. Each shell's HUP trap writes `hup-<label>.txt`.

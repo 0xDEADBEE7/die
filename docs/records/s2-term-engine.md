@@ -1,4 +1,4 @@
-> **Decision record for spike S2 (scope D10 and D20), 2026-10-19.** Status: **accepted 2026-10-19** (see below). Evidence paths under `$SCRATCH` are scratch files and may not last.
+> **Decision record for spike S2 (scope D10 and D20), 2026-10-19.** Status: **accepted 2026-10-19** (see below). Evidence paths are in the spike's scratch directory, which wasn't kept.
 
 # S2: terminal engine wiring and helper process
 
@@ -191,7 +191,7 @@ Shared by both shapes: 987 lines (engine glue 431, host loop 172, message types 
 - **The battery** (`src/bin/battery.rs`): the earlier 86 checks unchanged, plus 6 S2 checks. Tests are in `tests/`.
 - **Tools:** `tools/verify` (signature and hashes), `tools/gen-bindings` (bindgen), `tools/wiring-only` (the wiring without the `libc` crate).
 
-**Rerun.** Set `W=$SCRATCH/s0/s2`, `SPIKE=spikes/s2-term-engine` and `CH=$W/downloads/cargo-home`.
+**Rerun.** Set `W` to a scratch directory (`W=$(mktemp -d)`, with the signed zip in `$W/downloads/tip-765ea37/`), `SPIKE` to the spike (`SPIKE=$PWD/spikes/s2-term-engine` from the DIE checkout) and `CH=$W/downloads/cargo-home`.
 
 ```sh
 # A1: re-derive the archive from the signed zip, verify the signature and hashes
@@ -278,7 +278,7 @@ There are no open questions for you. Your answer to [.questions/06](../../.quest
 
 ## 5. Raw data
 
-Paths are relative to `$SCRATCH/s0/s2/`.
+Paths are relative to the spike's scratch directory (`$W` above), which wasn't kept.
 
 - Part A, final run (cold build, fake zig, battery, tests, otool, wiring-only): `final/partA/clean-build.log`, `final/partA/battery.out`, `final/partA/battery-wiring-only.out`
 - Archive re-derivation: `derive/` (members in `derive/members.sha256`, symbols in `derive/globals.txt` and `derive/undefined.txt`); lock file `spikes/s2-term-engine/crates/die-term-sys/ghostty-vt.lock`

@@ -12,7 +12,7 @@ Throwaway prototype for scope D13: winit 0.30.13 (pinned), Metal through objc2-m
 
 ## Font
 
-The Term font is looked up in `--font DIR`, `$S1_FONT_DIR`, `./fonts`, then the spike's scratch download directory. To get it:
+The Term font is looked up in `--font DIR`, `$S1_FONT_DIR`, then `./fonts`. To get it:
 
 ```sh
 ./fetch-font.sh          # downloads v2.1.0, checks SHA-256, extracts 4 .ttf files to ./fonts

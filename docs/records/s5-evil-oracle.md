@@ -1,8 +1,8 @@
-> **Decision record for spike S5 (scope D4, §10, §12).** Written 2026-10-19. Status: **accepted 2026-10-19** (see below). Evidence paths under `$SCRATCH` are scratch files and may disappear; everything that matters is in `spikes/s5-evil-oracle/`.
+> **Decision record for spike S5 (scope D4, §10, §12).** Written 2026-10-19. Status: **accepted 2026-10-19** (see below). Scratch evidence was in the run's scratch directory, which wasn't kept; everything that matters is in `spikes/s5-evil-oracle/`.
 
 # S5 decision record: the Evil oracle
 
-Date: 2026-10-19. Evil 1.15.0 as vendored in the owner's Emacs config, named in every fixture by a SHA-256 over its `evil*.el` files (`c0253cf6…`). Emacs 30.2 (Homebrew, dev-only). Vim 9.1 (`/usr/bin/vim`, for comparison only).
+Date: 2026-10-19. Evil 1.15.0 as vendored in your Emacs config, named in every fixture by a SHA-256 over its `evil*.el` files (`c0253cf6…`). Emacs 30.2 (Homebrew, dev-only). Vim 9.1 (`/usr/bin/vim`, for comparison only).
 
 > **Status: accepted 2026-10-19.** The proposed edits are folded into scope.md. Both questions in §5 were decided as recommended, and you can veto either: die-vim follows Vim for the six Evil bugs and artifacts, and undo is Vim's `u`/`C-r`.
 
@@ -78,14 +78,14 @@ None are made yet. Each replaces the quoted text.
 |---|---|---|
 | 50+ cases run | under 10 s total wall time | **306 cases in 1.11–1.16 s** (three runs of `./run-oracle.sh`). Batch: 262 cases in 0.53 s. Tty: 44 cases in 0.25 s. The rest is Emacs startup. |
 | JSON consumed by the Rust test | all fixtures parse and validate | **Pass.** `cargo test`: 8 tests, 13 files, 306 cases. A tampering test checks that the validator catches bad cursors, tokens, states, clipboards and missing registers. |
-| `~/.emacs.d` untouched | no new or modified files | **Pass.** A listing of all 4,662 entries with mtime and size, taken before any work and again at the end, is identical. |
+| Your Emacs config untouched | no new or modified files | **Pass.** A listing of all 4,662 entries with mtime and size, taken before any work and again at the end, is identical. |
 | Deterministic | two runs give byte-identical JSON | **Pass.** Three runs and the committed fixtures are byte-identical. |
 
 Further checks:
 
 - **Cases don't leak state.** Running every case in reverse order gives byte-identical fixtures.
 - **Batch mode doesn't distort results.** With `EVIL_ORACLE_RUN=tty`, all 306 cases run in the tty Emacs with full redisplay, and every case matches the fixtures.
-- **Nothing is compiled.** `run-oracle.sh` fails if Emacs writes any `.eln` or `.elc`, even into the scratch HOME. Before that guard existed, early tty runs did native-compile some of Emacs's own libraries into the scratch HOME (never into `~/.emacs.d`). The fix was to switch compilation off on the child's command line.
+- **Nothing is compiled.** `run-oracle.sh` fails if Emacs writes any `.eln` or `.elc`, even into the scratch HOME. Before that guard existed, early tty runs did native-compile some of Emacs's own libraries into the scratch HOME (never into your Emacs config). The fix was to switch compilation off on the child's command line.
 
 ## 3. How it works
 
@@ -120,7 +120,7 @@ Batch mode differs from your GUI in a few ways the oracle corrects. `transient-m
   - `q` can record. Emacs never records keys that come from a macro, so the oracle tracks which keys were typed while recording and hands them to `end-kbd-macro`, as the keyboard would.
   - A bell inside a macro ends it, as in the GUI.
 - **The clipboard is simulated.** In your GUI, `kill-new` pushes every yank and delete to the macOS clipboard. The oracle records each of those writes instead of touching the real clipboard, and it can start a case with text that another app copied.
-- **Safety.** `run-oracle.sh` runs Emacs with `-Q` and HOME set to a scratch directory, and loads Evil read-only. Afterwards it fails if anything under `~/.emacs.d` is newer than the run, or if anything was compiled.
+- **Safety.** `run-oracle.sh` runs Emacs with `-Q` and HOME set to a scratch directory, and loads Evil read-only. Afterwards it fails if anything in the Emacs config directory is newer than the run, or if anything was compiled.
 
 ### Case format
 
@@ -171,6 +171,7 @@ The Rust test checks that every position matches its text, that `key_tokens` equ
 
 ```sh
 cd spikes/s5-evil-oracle
+export EVIL_ORACLE_EVIL_DIR=/path/to/evil   # your Evil's sources, the directory with evil.el
 # 1. Add a line to cases/<topic>.json, for example:
 #      {"id": "dw-last-word", "keys": "dw", "text": ["foo |bar"]},
 # 2. Regenerate every fixture (about 1 s):
@@ -261,7 +262,7 @@ Rows 1–4 and 8 affect everyday editing most. Row 1 is also a question for core
 
 - **Emulated recording.** Emacs can't record `q` from inside a keyboard macro, so recording is the oracle's own code (about 20 lines). Recorded and preset macros play back the same way, but it's still an emulation.
 - **Tty versus GUI.** A tty frame keeps its last column for the wrap glyph, so it wraps one column earlier than your GUI. Fixtures carry their layout, so die-vim's tests should take wrapping from `layout` rather than recompute it.
-- **Evil updates.** If you update Evil in `~/.emacs.d`, `evil_source_sha256` changes. Rerun the oracle and read the fixture diff.
+- **Evil updates.** If you update your Evil, `evil_source_sha256` changes. Rerun the oracle and read the fixture diff.
 - **Major modes.** Almost every case runs in `fundamental-mode`. Your real buffers use other modes, whose paragraph and indentation rules can differ.
 - **The baseline.** The Vim comparison uses Vim 9.1 defaults, such as `startofline` and `joinspaces`. Neovim's defaults would remove rows 2 and 15.
 
@@ -271,9 +272,9 @@ Rows 1–4 and 8 affect everyday editing most. Row 1 is also a question for core
   - `cases/`: 13 topic files you edit
   - `fixtures/`: generated, 306 cases
   - `oracle/evil-oracle.el`, `oracle/user-evil.el`: the oracle and the mirrored settings
-  - `run-oracle.sh`: the runner, with the `~/.emacs.d` and no-compilation guards
+  - `run-oracle.sh`: the runner, with the Emacs-config and no-compilation guards
   - `src/lib.rs`, `tests/fixtures.rs`: the serde types, the validator and `cargo test`
   - `vim/compare.vim`, `vim/compare.sh`: the Vim comparison; `vim/report.jsonl` holds its result for every case
-- **Scratch evidence:** `$SCRATCH/s0/s5/`
+- **Scratch evidence** (the run's scratch directory, not kept):
   - `final/checks.log`: timings, the determinism, reverse-order and tty comparisons, case counts, the Vim summary and `cargo test`
-  - `emacsd-before.txt`, `emacsd-after.txt`: the `~/.emacs.d` listings, with mtimes and sizes
+  - `emacsd-before.txt`, `emacsd-after.txt`: the Emacs config's listings, with mtimes and sizes

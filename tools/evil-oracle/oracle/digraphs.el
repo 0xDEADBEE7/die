@@ -6,7 +6,7 @@
 ;; same table, so this prints it as Rust, from your Evil's sources, read
 ;; and never written.  Rerun it if your Evil's table changes:
 ;;
-;;   EVIL_ORACLE_EVIL_DIR=path/to/evil HOME=$(mktemp -d) \
+;;   EVIL_ORACLE_EVIL_DIR=/path/to/evil HOME=$(mktemp -d) \
 ;;     emacs -Q --batch -l tools/evil-oracle/oracle/digraphs.el > crates/die-vim/src/digraphs.rs
 ;;
 ;; Each entry is three characters: the two keys and what they make.  A
