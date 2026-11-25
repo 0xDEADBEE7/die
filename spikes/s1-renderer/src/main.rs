@@ -7,8 +7,6 @@ use s1::{bench, fidelity, font, interactive};
 use std::path::PathBuf;
 use std::process::Command;
 
-const SCRATCH_FONTS: &str = "$SCRATCH/s0/s1/downloads/term";
-
 fn spike_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
 
 fn term_files(explicit: Option<&str>) -> Option<[PathBuf; 4]> {
@@ -16,7 +14,6 @@ fn term_files(explicit: Option<&str>) -> Option<[PathBuf; 4]> {
     if let Some(d) = explicit { dirs.push(d.into()); }
     if let Ok(d) = std::env::var("S1_FONT_DIR") { dirs.push(d.into()); }
     dirs.push(spike_dir().join("fonts"));
-    dirs.push(SCRATCH_FONTS.into());
     dirs.into_iter().map(|d| font::font_files(&d, "IoskeleyMonoTerm")).find(|f| f.iter().all(|p| p.exists()))
 }
 

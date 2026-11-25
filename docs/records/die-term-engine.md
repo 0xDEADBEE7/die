@@ -459,21 +459,21 @@ The archive contains precompiled C and C++ (wuffs, simdutf, Highway). Nothing is
 - The 0.53 ms frame cost was not reproduced; the reviewer measured 0.11–0.32 ms on the engine side.
 - `CURSOR_PASSWORD_INPUT` has no C setter, so it does not simplify password detection.
 
-**Evidence** (all read-only; nothing in the DIE checkout or ~/.emacs.d was modified):
+**Evidence** (all read-only; nothing in the DIE checkout or your Emacs config was modified). The files were in the review's scratch directory, which wasn't kept; paths are relative to it:
 
-- Battery through the `[patch]` wiring (81 pass / 5 known gaps): $SCRATCH/ghostel-model/proposal/patchtest/battery.out
-- Raw-FFI battery (76/76): $SCRATCH/ghostel-model/technical-skeptic/run/battery-final.out
-- Cold build with the fake `zig`: $SCRATCH/ghostel-model/technical-skeptic/run/coldbuild-final.log
-- Wrapper wiring without Zig: $SCRATCH/ghostel-model/technical-skeptic/patchws
-- Wrapper tests in a temporary checkout: $SCRATCH/ghostel-model/technical-skeptic/lgrs-test
-- Wrapper's private terminal handle (line 228): $SCRATCH/ghostel-model/technical-skeptic/dl-lgrs/repo/crates/libghostty-vt/src/terminal.rs
-- Engine headers (screen.h, render.h, terminal.h): $SCRATCH/ghostel-model/technical-skeptic/x/ghostty-vt.xcframework/macos-arm64_x86_64/Headers/ghostty/vt/
-- Ghostty tip workflow: $SCRATCH/ghostel-model/constraints-critic/dl-wf/release-tip.yml
-- Where Ghostty's app sets the password flag (lines 1444–1447): $SCRATCH/ghostel-model/technical-skeptic/src-ghostty/src/Surface.zig
-- Prelinked archive: $SCRATCH/ghostel-model/distribution/prelink/libghostty-vt.a
-- Reproducibility (`cmp` re-run, 13/13 identical): $SCRATCH/ghostel-model/distribution/arcmp
-- yazi driver choice: $SCRATCH/ghostel-model/final/dl-yazi/drivers.rs
-- yazi brand detection: $SCRATCH/ghostel-model/final/dl-yazi/brand2.rs
+- Battery through the `[patch]` wiring (81 pass / 5 known gaps): `ghostel-model/proposal/patchtest/battery.out`
+- Raw-FFI battery (76/76): `ghostel-model/technical-skeptic/run/battery-final.out`
+- Cold build with the fake `zig`: `ghostel-model/technical-skeptic/run/coldbuild-final.log`
+- Wrapper wiring without Zig: `ghostel-model/technical-skeptic/patchws`
+- Wrapper tests in a temporary checkout: `ghostel-model/technical-skeptic/lgrs-test`
+- Wrapper's private terminal handle (line 228): `ghostel-model/technical-skeptic/dl-lgrs/repo/crates/libghostty-vt/src/terminal.rs`
+- Engine headers (screen.h, render.h, terminal.h): `ghostel-model/technical-skeptic/x/ghostty-vt.xcframework/macos-arm64_x86_64/Headers/ghostty/vt/`
+- Ghostty tip workflow: `ghostel-model/constraints-critic/dl-wf/release-tip.yml`
+- Where Ghostty's app sets the password flag (lines 1444–1447): `ghostel-model/technical-skeptic/src-ghostty/src/Surface.zig`
+- Prelinked archive: `ghostel-model/distribution/prelink/libghostty-vt.a`
+- Reproducibility (`cmp` re-run, 13/13 identical): `ghostel-model/distribution/arcmp`
+- yazi driver choice: `ghostel-model/final/dl-yazi/drivers.rs`
+- yazi brand detection: `ghostel-model/final/dl-yazi/brand2.rs`
 - Checked live on 2026-10-19:
   - `git ls-remote`: Ghostty tip and main are both 765ea37ad64f; libghostty-rs master is d2036bae.
   - GitHub API: libghostty-rs PR #92 is still open.

@@ -3,7 +3,7 @@
 ;; Loaded by evil-oracle.el in `emacs -Q --batch'.  Every setting below
 ;; mirrors a line of the owner's init.el that changes how Evil edits text.
 ;; Evil itself is loaded read-only from EVIL_ORACLE_EVIL_DIR; nothing here
-;; may write under ~/.emacs.d.
+;; may write to the Emacs config.
 
 ;;; Never compile, never write.
 

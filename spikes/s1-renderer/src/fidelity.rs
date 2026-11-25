@@ -171,7 +171,7 @@ pub fn run(fonts: &[(String, [PathBuf; 4])]) -> J {
             let gv = vline_check(&img, 2, 6, 1, 4);
             let block_min = (img.ch..4 * img.ch).flat_map(|y| (8 * img.cw..12 * img.cw).map(move |x| (x, y))).map(|(x, y)| img.cov(x, y)).fold(1.0, f64::min);
             let box_ok = h.0 >= 0.7 && h.1 > 0 && v.0 >= 0.7 && v.1 > 0 && gh.iter().all(|g| g.0 >= 0.7 && g.1 > 0) && gv.0 >= 0.7;
-            let j = J::obj(vec![("png", J::s(png.display().to_string())), ("cell", J::s(format!("{}x{}", img.cw, img.ch))),
+            let j = J::obj(vec![("png", J::s(png.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap_or(&png).display().to_string())), ("cell", J::s(format!("{}x{}", img.cw, img.ch))),
                 ("box_hline_min_cov", J::N(h.0)), ("box_vline_min_cov", J::N(v.0)), ("box_grid_h_min_cov", J::N(gh.iter().map(|g| g.0).fold(1.0, f64::min))), ("box_grid_v_min_cov", J::N(gv.0)),
                 ("box_tiles", J::B(box_ok)), ("block_min_cov", J::N(block_min)), ("block_tiles", J::B(block_min >= 0.95)),
                 ("braille", braille_check(&img, 14, 18, 1, 4)),

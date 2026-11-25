@@ -162,7 +162,7 @@ exec /bin/sh \"$@\"
         let chmod = Command::new("chmod").arg("+x").arg(&shell).status();
         assert!(chmod.unwrap().success());
         // Run once first. macOS checks a new program the first time it runs, which took 0.13 to
-        // 5.2 s here and may take longer under a security agent, and the child's
+        // 5.2 s here and may take longer under an endpoint security agent, and the child's
         // command has half a second before it's left to finish in the background.
         let first = Command::new(&shell).args(["-c", "true"]).status();
         assert!(first.unwrap().success());

@@ -276,7 +276,7 @@ On a list of candidates: `<Down>` `C-n` and `<Up>` `C-p` choose a row, `<PageDow
 
 ## Extensions
 
-Extensions aren't part of DIE (scope D14). Each is a repository of its own, at `../<name>` (and github.com/0xDEADBEE7/<name> once it's pushed), whose README has its keys and how to use it:
+Extensions aren't part of DIE (scope D14). Each is a repository of its own (github.com/0xDEADBEE7/<name> once it's pushed), checked out beside DIE as `../<name>`, whose README has its keys and how to use it:
 
 - **die-orchid-client:** your emacs-orchid-client's port, orchid's session browser and chats (`\o`).
 - **die-whiteboard:** a whiteboard, freehand, shapes and arrows, saved as SVG and exported as PNG (`\w`).
@@ -285,7 +285,7 @@ Extensions aren't part of DIE (scope D14). Each is a repository of its own, at `
 - **die-fig:** figures from data, charts, network graphs, gantt charts and dashboards, in fig's ethos (`\v`).
 - **die-draw:** the drawing library the others share: fonts, text, PNG and the blit. It has no keys.
 
-**Your config, die-config** (`../die-config`), installs them. It's a binary crate named `die` on top of DIE's `apps/die-dev`, through `die_dev::main_with`: it depends on each extension it wants, lists them, binds their keys, styles their faces in mono-dark and makes the jellyfish what DIE opens on. Installing an extension is a dependency line and its entry in the list; removing one is deleting them. DIE's own `apps/die-dev` has no extension, and opens on `*scratch*`.
+**Your config, die-config** (`../die-config`, beside the DIE checkout), installs them. It's a binary crate named `die` on top of DIE's `apps/die-dev`, through `die_dev::main_with`: it depends on each extension it wants, lists them, binds their keys, styles their faces in mono-dark and makes the jellyfish what DIE opens on. Installing an extension is a dependency line and its entry in the list; removing one is deleting them. DIE's own `apps/die-dev` has no extension, and opens on `*scratch*`.
 
 **Which config DIE.app is built from.** `cargo xtask app` builds the first of these: `--config DIR`; `$DIE_CONFIG`; `die-config` beside your DIE checkout (`../die-config`) if it has a `Cargo.toml`; DIE's own `apps/die-dev`. Cargo runs in the config's directory, so its `.cargo/config.toml` applies, as die-config's local one does while you develop, patching DIE's and the extensions' git sources to your checkouts. The bundle records the config, and `:rebuild` builds that one again.
 

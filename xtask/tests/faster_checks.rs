@@ -248,7 +248,7 @@ fn run(cmd: &mut Command) {
     output(cmd).unwrap();
 }
 
-/// Git in `dir`, with none of your config's signing or hooks, as another Mac's may have.
+/// Git in `dir`, with none of your global config's signing or hooks.
 fn in_repo(dir: &Path, args: &[&str]) {
     run(git(dir)
         .args([
