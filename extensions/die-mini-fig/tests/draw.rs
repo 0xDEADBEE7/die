@@ -68,9 +68,11 @@ fn a_dashboard_lays_out_its_rows_by_height_and_its_cells_by_span() {
     let (tile, wide, top, under, last) = (frames[0], frames[2], frames[3], frames[4], frames[5]);
     assert_eq!((tile.y, tile.h), (56.0, 100.0));
     assert_eq!(frames[1].x, tile.right() + 12.0);
-    // The rows share what's left two to one, the second no shorter than a readable share.
+    // The rows share what's left two to one, the second no shorter than a readable share and
+    // the first taking the rest, so they meet the foot.
     let room = 1000.0 - 56.0 - 16.0 - 2.0 * 16.0 - 100.0;
-    assert!((wide.h - room * 2.0 / 3.0).abs() < 0.01 && last.h == 320.0);
+    assert!((wide.h - (room - 320.0)).abs() < 0.01 && last.h == 320.0);
+    assert!((end - 1000.0).abs() < 0.01);
     assert!((wide.w - 2.0 * top.w).abs() < 0.01);
     assert_eq!((under.y, under.h), (top.bottom() + 12.0, top.h));
     assert_eq!(end, last.bottom() + 16.0);
@@ -82,7 +84,7 @@ fn the_pointer_finds_the_mark_under_it_and_the_card_gives_its_fields() {
         return;
     };
     let spec = r#"{"type": "bar", "title": "B", "x": {"field": "k", "type": "category"},
-        "y": "n", "color": "g", "tooltip": ["k", "n"],
+        "y": "n", "color": "g", "tooltip": ["k", "n"], "mark": {"stack": false},
         "data": {"values": [{"k": "a", "n": 3, "g": "x"}, {"k": "a", "n": 5, "g": "y"},
                             {"k": "b", "n": 2, "g": "x"}]}}"#;
     let fig = spec::parse(spec, Path::new(".")).unwrap();
@@ -105,4 +107,41 @@ fn the_pointer_finds_the_mark_under_it_and_the_card_gives_its_fields() {
     };
     assert!((w(1) - 2.0 * w(0)).abs() < 0.01 || w(1) == 32.0);
     assert_eq!(hit::at(&drawn.hits, 1.0, 1.0), None);
+}
+
+#[test]
+fn a_stat_compares_with_the_range_before_and_bars_stack_in_the_tables_order() {
+    let Some(mut book) = book() else {
+        return;
+    };
+    let spec = r#"{"type": "dashboard", "title": "D", "time": {"field": "t", "range": "1d"},
+        "rows": [[{"type": "stat", "label": "S", "value": {"last": "v"}, "delta": "previous",
+                   "data": {"values": [{"t": "2026-11-20T00:00Z", "v": 10},
+                       {"t": "2026-11-20T12:00Z", "v": 20}, {"t": "2026-11-21T00:00Z", "v": 30}]}}],
+                 [{"type": "bar", "title": "B", "x": "k", "y": "n", "color": "g",
+                   "data": {"values": [{"k": "a", "g": "x", "n": 1}, {"k": "b", "g": "y", "n": 2},
+                       {"k": "c", "g": "x", "n": 3}, {"k": "a", "g": "y", "n": 4}]}}]]}"#;
+    let fig = spec::parse(spec, Path::new(".")).unwrap();
+    let tables = data::load(&fig).unwrap();
+    let th = Theme::default();
+    let mut c = Canvas::new(&mut book, (800.0, 900.0), 1.0, th.surface).unwrap();
+    let drawn = dash::draw(&mut c, &th, &fig, &tables, 0.0);
+    // The newest value against the newest of the day before the one shown, not the row before.
+    let tile = &drawn.hits[0].rows;
+    assert!(
+        tile.contains(&("previous 1d".into(), "10".into())),
+        "{tile:?}"
+    );
+    assert!(tile.contains(&("change".into(), "20".into())), "{tile:?}");
+    // The bands come as the table has them, and a band's bars stack.
+    let rect = |h: &hit::Hit| match h.shape {
+        hit::Shape::Rect(r) => r,
+        hit::Shape::Point(..) => panic!("a bar's hit is a rectangle"),
+    };
+    let mut bars: Vec<_> = drawn.hits[1..].iter().map(|h| (rect(h), &h.rows)).collect();
+    bars.sort_by(|a, b| a.0.x.total_cmp(&b.0.x).then(b.0.y.total_cmp(&a.0.y)));
+    let k: Vec<&str> = bars.iter().map(|b| b.1[0].1.as_str()).collect();
+    assert_eq!(k, ["a", "a", "b", "c"]);
+    let (low, high) = (bars[0].0, bars[1].0);
+    assert!(low.x == high.x && (high.bottom() - low.y).abs() < 0.01);
 }

@@ -40,6 +40,17 @@ impl Rect {
         let (w, h) = ((self.w - l - r).max(0.0), (self.h - t - b).max(0.0));
         Rect::new(self.x + l, self.y + t, w, h)
     }
+
+    /// The least rectangle holding both.
+    pub fn union(&self, o: Rect) -> Rect {
+        let (x, y) = (self.x.min(o.x), self.y.min(o.y));
+        Rect::new(
+            x,
+            y,
+            self.right().max(o.right()) - x,
+            self.bottom().max(o.bottom()) - y,
+        )
+    }
 }
 
 /// Every colour a figure is drawn in.

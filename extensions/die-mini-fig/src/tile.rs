@@ -1,15 +1,15 @@
 //! A stat tile, as die-fig's m4 look has it: the label 12 px muted, the newest value 26 px
-//! semibold with its unit after it, the change from the row before under it (an arrow, in the
+//! semibold with its unit after it, the change from the previous range under it (an arrow, in the
 //! good colour when the change is good, the serious one when bad, muted when neither), and a
 //! sparkline of the trend at the right, its newest point a dot in the first series colour.
 
 use crate::canvas::{Align, Canvas, Ink, Pen, Rect};
 use crate::chart::cell;
 use crate::dash::Job;
-use crate::data::{self, Column};
+use crate::data::{self, Column, Kind as Cells};
 use crate::hit::{Hit, Shape};
 use crate::scale::{full, short, with_format, with_unit};
-use crate::spec::{Good, Kind};
+use crate::spec::{Good, Kind, Stat};
 
 /// The most points a sparkline has.
 const SPARK: usize = 24;
@@ -48,8 +48,7 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
         b.w * 0.3,
     );
     let mut card = vec![(s.label.clone(), with_unit(&full(v), &s.unit))];
-    let before = rows.len().checked_sub(2).map(|i| col.num[rows[i]]);
-    if let (true, Some(p)) = (s.delta, before) {
+    if let (true, Some((p, period))) = (s.delta, before(job, s, &rows)) {
         let d = v - p;
         let good = match s.good {
             Good::Up => d > 0.0,
@@ -71,11 +70,19 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
                 color,
             );
         }
-        let words = format!("{} vs previous", with_unit(&short(d.abs()), &s.unit));
+        // In the unit, else in percent of what it's against, as die-fig says it.
+        let amount = match (s.unit.as_str(), p != 0.0) {
+            ("", true) => {
+                let r = (d / p * 100.0).abs();
+                let places = if r < 10.0 { ".1~f" } else { ".0f" };
+                format!("{} %", with_format(r, places))
+            }
+            (unit, _) => with_unit(&short(d.abs()), unit),
+        };
         let (words, x) = if d == 0.0 {
             ("no change".into(), left)
         } else {
-            (words, left + 15.0)
+            (format!("{amount} vs {period}"), left + 15.0)
         };
         c.text(
             &words,
@@ -84,7 +91,7 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
             Align::Start,
             b.w * 0.55,
         );
-        card.push(("previous".into(), with_unit(&full(p), &s.unit)));
+        card.push((period, with_unit(&full(p), &s.unit)));
         card.push(("change".into(), with_unit(&full(d), &s.unit)));
     }
     if let Some(tc) = trend {
@@ -108,6 +115,35 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
         color,
         rows: card,
     }])
+}
+
+/// What a change is against, and its name: the newest value in the range just before the
+/// dashboard's ("previous 3d", as die-fig has it) when the table has the dashboard's time; else
+/// the row before. None when there's nothing before.
+fn before(job: &Job, s: &Stat, rows: &[usize]) -> Option<(f64, String)> {
+    let t = job.table?;
+    let whole = job.panel.data.as_ref().and_then(|d| job.tables.get(d));
+    let whole = whole.and_then(|w| w.transform(&job.panel.transform).ok());
+    let timed = |f: &str| t.column(f).is_some_and(|c| c.kind == Cells::Time);
+    match (job.time, whole) {
+        (Some((field, (lo, hi))), Some(whole)) if timed(field) => {
+            let prior = whole.within(field, (lo - (hi - lo), lo));
+            let (at, col) = (prior.need(field).ok()?, prior.need(&s.field).ok()?);
+            let finite = (0..prior.len()).filter(|&r| col.num[r].is_finite());
+            let r = finite.max_by(|&a, &b| at.num[a].total_cmp(&at.num[b]))?;
+            let days = (hi - lo) / 86_400.0;
+            let span = if days.fract() == 0.0 {
+                format!("{days}d")
+            } else {
+                format!("{}h", ((hi - lo) / 3600.0).round())
+            };
+            Some((col.num[r], format!("previous {span}")))
+        }
+        _ => {
+            let r = rows.len().checked_sub(2).map(|i| rows[i])?;
+            Some((t.need(&s.field).ok()?.num[r], "previous".into()))
+        }
+    }
 }
 
 /// The trend: a thin grey line of `rows`' values along their x in `b`, without axes, its newest

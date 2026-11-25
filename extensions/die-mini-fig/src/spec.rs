@@ -121,7 +121,7 @@ pub struct Mark {
     pub step: bool,
     /// Bars along x, categories down y.
     pub horizontal: bool,
-    /// Bars of one category stacked.
+    /// Bars of one category stacked, as die-fig has them unless `"stack": false`.
     pub stack: bool,
 }
 
@@ -436,7 +436,7 @@ impl Builder<'_> {
             points: flag("points"),
             step: curve.starts_with("step"),
             horizontal: flag("horizontal"),
-            stack: flag("stack"),
+            stack: p.mark.get("stack").and_then(Value::as_bool) != Some(false),
         };
         let transform: Result<Vec<_>, _> = p.transform.iter().map(transform).collect();
         let mut layers = Vec::new();

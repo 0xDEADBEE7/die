@@ -24,8 +24,10 @@ pub struct Job<'a> {
     pub panel: &'a Panel,
     /// Its rows: its table transformed, and cut to the dashboard's time.
     pub table: Option<&'a Table>,
-    /// Every table, for its layers.
+    /// Every table, for its layers and a stat's previous range.
     pub tables: &'a Tables,
+    /// The dashboard's time field and the range it shows.
+    pub time: Option<(&'a str, (f64, f64))>,
     /// Its place in key order.
     pub index: usize,
 }
@@ -54,6 +56,7 @@ pub fn draw(c: &mut Canvas, th: &Theme, fig: &Fig, tables: &Tables, scroll: f32)
             panel: p,
             table: table.as_ref().ok().and_then(Option::as_ref),
             tables,
+            time: fig.time.as_ref().map(|t| t.field.as_str()).zip(window),
             index,
         };
         hits.extend(panel(c, &job, *f, lone, table.as_ref().err()));
@@ -133,14 +136,31 @@ pub fn layout(fig: &Fig, (w, h): (f32, f32)) -> (Vec<Rect>, f32) {
         .filter(|r| !tiles(r))
         .map(|r| r.height)
         .sum();
-    let room = h - top - 16.0 - gaps - fixed;
     let least = (0.45 * (h - top)).clamp(180.0, 320.0);
+    // The other rows share the room by height, each at least `least`: one whose share is less
+    // takes `least` and the rest share what's left, so the rows meet the foot when they fit.
+    let (mut free, mut open) = (h - top - 16.0 - gaps - fixed, weights);
+    let mut lifted = vec![false; fig.rows.len()];
+    loop {
+        let short = (0..fig.rows.len()).find(|&i| {
+            let r = &fig.rows[i];
+            !tiles(r) && !lifted[i] && free * r.height / open.max(0.01) < least
+        });
+        let Some(i) = short else {
+            break;
+        };
+        lifted[i] = true;
+        free -= least;
+        open -= fig.rows[i].height;
+    }
     let (mut frames, mut y) = (Vec::new(), top);
-    for r in &fig.rows {
+    for (i, r) in fig.rows.iter().enumerate() {
         let rh = if tiles(r) {
             tall(r)
+        } else if lifted[i] {
+            least
         } else {
-            (room * r.height / weights.max(0.1)).max(least)
+            free * r.height / open.max(0.01)
         };
         let spans: f32 = r.cells.iter().map(|c| c.span).sum();
         let across = w - 2.0 * MARGIN - r.cells.len().saturating_sub(1) as f32 * GAP;

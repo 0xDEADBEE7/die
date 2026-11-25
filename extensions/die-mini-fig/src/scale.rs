@@ -280,12 +280,12 @@ fn linear_ticks(lo: f64, hi: f64, count: usize) -> Vec<Tick> {
     multiples(lo, hi, s).into_iter().map(tick).collect()
 }
 
-/// A log axis's ticks: powers of ten (every other one, or fewer, when there are many), with
+/// A log axis's ticks: powers of ten (every other one, or fewer, past twice `count`), with
 /// their 2s and 5s over two decades or less; linear ticks inside one decade.
 fn log_ticks(lo: f64, hi: f64, count: usize) -> Vec<Tick> {
     let (a, b) = (lo.log10().floor() as i32, hi.log10().ceil() as i32);
     let decades = (b - a).max(1) as usize;
-    let every = decades.div_ceil(count).max(1);
+    let every = decades.div_ceil(count * 2).max(1);
     let steps: &[f64] = if decades <= 2 {
         &[1.0, 2.0, 5.0]
     } else {
@@ -592,7 +592,8 @@ mod tests {
     #[test]
     fn log_and_band_scales_place_and_tick() {
         let s = Scale::log((1.0, 1e6), (0.0, 60.0));
-        assert_eq!(labels(&s, 4), ["1", "100", "10K", "1M"]);
+        assert_eq!(labels(&s, 2), ["1", "100", "10K", "1M"]);
+        assert_eq!(labels(&s, 3).len(), 7);
         assert_eq!(s.map(1000.0), 30.0);
         assert!(s.map(0.0).is_nan());
         let s = Scale::band(vec!["a".into(), "b".into()], (0.0, 100.0));

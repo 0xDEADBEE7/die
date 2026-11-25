@@ -3,10 +3,10 @@
 //!
 //! One builder makes every chart's axes and grid ([`frame`]) and one its legend ([`legend`]).
 //! A channel is bands when it's a category, text, a heatmap's, or a bar's numbers; else it runs
-//! along time, a log scale or a linear one. Lines and bars take in zero unless `"zero": false`;
-//! scatters don't. A bar's series share its band side by side, each band split among the
-//! series it has, or stack with `"stack": true`; bars over time are as wide as the closest two
-//! times allow. A heatmap's colour is die-fig's ramp: blue from dark to light, or red through
+//! along time, a log scale or a linear one. Bars take in zero, and lines whose values are
+//! nearer it than their span, unless `"zero"` says; scatters don't. A bar's series stack in its band, as die-fig's do, or with `"stack": false`
+//! share it side by side; each band's total is written past it when every total fits. Bars
+//! over time are as wide as the closest two times allow. A heatmap's colour is die-fig's ramp: blue from dark to light, or red through
 //! grey to blue when diverging, centred on zero.
 
 use crate::canvas::{Align, Canvas, Ink, Pen, Rect, Theme, hex, mix};
@@ -65,6 +65,8 @@ struct Ctx<'a> {
     index: usize,
     /// More than one series: the card names its series.
     many: bool,
+    /// The dashboard's time field and the range it shows.
+    time: Option<(&'a str, (f64, f64))>,
 }
 
 /// A chart in `b`, with its legend; its marks' hits. An error says in a line what's missing.
@@ -103,6 +105,7 @@ pub fn draw(c: &mut Canvas, job: &Job, b: Rect) -> Result<Vec<Hit>, String> {
         y,
         index,
         many,
+        time: job.time,
     };
     let key = match p.kind {
         Kind::Bar => Key::Square,
@@ -184,11 +187,14 @@ fn points(
     let line = matches!(p.kind, Kind::Line);
     let all: Vec<usize> = (0..cx.t.len()).collect();
     let mut more: Vec<f64> = rule_ys(p).collect();
-    if ych.zero.unwrap_or(line) && !ych.log {
+    // A line takes in zero when its values are on one side of it and nearer it than their span.
+    let (lo, hi) = data::extent(all.iter().map(|&r| yc.num[r])).unwrap_or((0.0, 0.0));
+    let near = (lo >= 0.0 && lo <= hi * 0.5) || (hi <= 0.0 && hi >= lo * 0.5);
+    if ych.zero.unwrap_or(line && near) && !ych.log {
         more.push(0.0);
     }
     let bands = |ch: &Channel, col: &Column| ch.category || col.kind == Cells::Text;
-    let xa = axis(xch, xc, &all, bands(xch, xc), &[])?;
+    let xa = axis(xch, xc, &all, bands(xch, xc), &cx.range(xch))?;
     let ya = axis(ych, yc, &all, bands(ych, yc), &more)?;
     let titles = (title(xch, false), title(ych, true));
     let plot = frame(c, th, b, (&xa, &ya), titles);
@@ -270,10 +276,29 @@ fn bars(c: &mut Canvas, cx: &Ctx, b: Rect, series: &[Series]) -> Result<Vec<Hit>
             *sum += v;
         }
     }
+    // The series each band has, in order, to share it.
+    let mut members: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (si, s) in series.iter().enumerate().filter(|_| !p.mark.stack) {
+        for &r in &s.rows {
+            let m = members.entry(ic.text[r].as_str()).or_default();
+            if !m.contains(&si) {
+                m.push(si);
+            }
+        }
+    }
+    // One bar or stack a band: its total is written past it, with room for that across.
+    let single = p.mark.stack || members.values().all(|m| m.len() == 1);
     let mut more: Vec<f64> = ends.iter().flat_map(|e| [e.0, e.1]).collect();
+    let most = more.iter().copied().fold(0.0, f64::max);
+    if horizontal && single && most > 0.0 {
+        more.push(most * 1.12);
+    }
     more.extend(rule_ys(p));
     let gap = least_gap(ic, &all);
-    let ia = match axis(ich, ic, &all, banded, &[])? {
+    // Bands in the order the table has them, whatever their series.
+    let mut order = all.clone();
+    order.sort_unstable();
+    let ia = match axis(ich, ic, &order, banded, &cx.range(ich))? {
         Axis::Span(k, lo, hi, _) => Axis::Span(k, lo - gap / 2.0, hi + gap / 2.0, gap),
         bands => bands,
     };
@@ -292,18 +317,10 @@ fn bars(c: &mut Canvas, cx: &Ctx, b: Rect, series: &[Series]) -> Result<Vec<Hit>
         let lo = is.domain.0;
         (is.map(lo + gap) - is.map(lo)).abs() * 0.75
     };
-    // The series each band has, in order, to share it.
-    let mut members: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (si, s) in series.iter().enumerate().filter(|_| !p.mark.stack) {
-        for &r in &s.rows {
-            let m = members.entry(ic.text[r].as_str()).or_default();
-            if !m.contains(&si) {
-                m.push(si);
-            }
-        }
-    }
     rules(c, th, p, &plot);
     let mut hits = Vec::new();
+    // Each band's bars together, and their total.
+    let mut reach: HashMap<&str, (Rect, f64)> = HashMap::new();
     for (si, s) in series.iter().enumerate() {
         for (along, &r) in s.rows.iter().enumerate() {
             let centre = place(is, ic, r);
@@ -323,12 +340,54 @@ fn bars(c: &mut Canvas, cx: &Ctx, b: Rect, series: &[Series]) -> Result<Vec<Hit>
                 Rect::new(start, lo, w, long)
             };
             c.fill(bar, (w / 4.0).min(3.0), s.color, 1.0);
+            let both = reach.entry(ic.text[r].as_str()).or_insert((bar, 0.0));
+            both.0 = both.0.union(bar);
+            both.1 += vc.num[r];
             let slot = is.band_at(centre).unwrap_or(along);
             let key = if horizontal { (slot, si) } else { (si, slot) };
             hits.push(cx.hit(Shape::Rect(bar), key, s, r));
         }
     }
+    if single {
+        totals(c, th, &plot, horizontal, width / 0.8, &reach);
+    }
     Ok(hits)
+}
+
+/// Each band's total past its bar or stack (under a column below zero), as die-fig writes
+/// them: none at all when one doesn't fit (past the plot's end, or wider than its band).
+fn totals(
+    c: &mut Canvas,
+    th: &Theme,
+    plot: &Plot,
+    horizontal: bool,
+    step: f32,
+    reach: &HashMap<&str, (Rect, f64)>,
+) {
+    let ink = Ink::new(11.0, th.text);
+    let mut labels = Vec::new();
+    for (b, total) in reach.values() {
+        let text = scale::with_format(*total, ",.2~f");
+        let w = c.width(&text, ink);
+        let (at, fits) = if horizontal {
+            let x = b.right() + 6.0;
+            ((x, b.y + b.h / 2.0 + 4.0), x + w <= plot.rect.right() + 2.0)
+        } else {
+            let y = if *total < 0.0 {
+                b.bottom() + 14.0
+            } else {
+                b.y - 6.0
+            };
+            ((b.x + b.w / 2.0 - w / 2.0, y), w + 6.0 <= step)
+        };
+        if !fits {
+            return;
+        }
+        labels.push((text, at, w));
+    }
+    for (text, at, w) in labels {
+        c.text(&text, ink, at, Align::Start, w + 1.0);
+    }
 }
 
 /// A heatmap: a cell for each row at its x and y bands, coloured by its value on the ramp,
@@ -415,6 +474,14 @@ fn heatmap(c: &mut Canvas, cx: &Ctx, b: Rect) -> Result<Vec<Hit>, String> {
 }
 
 impl Ctx<'_> {
+    /// The dashboard's range when `ch` is its time field: such an axis spans all of it.
+    fn range(&self, ch: &Channel) -> Vec<f64> {
+        match self.time {
+            Some((field, (lo, hi))) if field == ch.field => vec![lo, hi],
+            _ => Vec::new(),
+        }
+    }
+
     /// The hit of row `r` of series `s`, at its place in key order.
     fn hit(&self, shape: Shape, (series, along): (usize, usize), s: &Series, r: usize) -> Hit {
         let title = if self.many {
