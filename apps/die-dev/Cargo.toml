@@ -26,6 +26,8 @@ die-jellyfish.workspace = true
 die-markdown.workspace = true
 # Figures from data, charts, graphs and dashboards, toggled by `\v` (scope D14).
 die-fig.workspace = true
+# mini-fig, a spike of fig at about a tenth of its size, toggled by `\V` (scope D14).
+die-mini-fig.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true

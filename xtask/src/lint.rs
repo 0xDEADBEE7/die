@@ -97,6 +97,7 @@ const NEUTRAL: &[(&str, &[&str])] = &[
     ("extensions/die-markdown", &[]),
     ("extensions/die-draw", &[]),
     ("extensions/die-fig", &[]),
+    ("extensions/die-mini-fig", &[]),
     (
         "crates/die-render",
         &[

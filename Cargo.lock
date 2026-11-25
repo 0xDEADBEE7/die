@@ -336,6 +336,7 @@ dependencies = [
  "die-fig",
  "die-jellyfish",
  "die-markdown",
+ "die-mini-fig",
  "die-orchid-client",
  "die-test-cap",
  "die-whiteboard",
@@ -386,6 +387,20 @@ dependencies = [
  "tiny-skia",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "die-mini-fig"
+version = "0.0.0"
+dependencies = [
+ "die-core",
+ "die-draw",
+ "die-test-cap",
+ "die-vim",
+ "jiff",
+ "serde",
+ "serde_json",
+ "tiny-skia",
 ]
 
 [[package]]
