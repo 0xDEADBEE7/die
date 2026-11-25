@@ -20,6 +20,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 die-test-cap.workspace = true
+die-vim.workspace = true
 
 [lints]
 workspace = true

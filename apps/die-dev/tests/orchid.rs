@@ -26,13 +26,21 @@ fn harness(root: &TempRoot, fake: &FakeRunner) -> Harness {
     let names: Vec<&str> = config.extensions.iter().map(|e| e.name()).collect();
     assert_eq!(
         names,
-        ["orchid", "whiteboard", "jellyfish", "markdown", "fig"],
+        [
+            "orchid",
+            "whiteboard",
+            "jellyfish",
+            "markdown",
+            "fig",
+            "mini-fig"
+        ],
         "your config's extensions"
     );
     let mut exts = die::built_in();
     exts.push(Box::new(Orchid::for_tests(root.path(), fake.clone())));
     exts.push(Box::new(die_whiteboard::Whiteboard::for_tests()));
     exts.push(Box::new(die_fig::Fig::default()));
+    exts.push(Box::new(die_mini_fig::MiniFig::default()));
     let mut h = Harness::with_config(exts, config.core).unwrap();
     h.open_text("notes", "my notes\n").unwrap();
     h.set_window_size(120, 40);

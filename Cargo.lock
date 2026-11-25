@@ -396,6 +396,7 @@ dependencies = [
  "die-core",
  "die-draw",
  "die-test-cap",
+ "die-vim",
  "jiff",
  "serde",
  "serde_json",

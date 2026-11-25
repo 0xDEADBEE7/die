@@ -206,6 +206,15 @@ impl<'a> Canvas<'a> {
         })
     }
 
+    /// A canvas over a picture already drawn at `scale`.
+    pub fn over(book: &'a mut Book, pixmap: sk::Pixmap, scale: f32) -> Self {
+        Canvas {
+            pixmap,
+            scale,
+            book,
+        }
+    }
+
     /// Its size in logical px.
     pub fn size(&self) -> (f32, f32) {
         let (w, h) = (self.pixmap.width() as f32, self.pixmap.height() as f32);

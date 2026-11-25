@@ -160,7 +160,7 @@ pub fn layout(fig: &Fig, (w, h): (f32, f32)) -> (Vec<Rect>, f32) {
 }
 
 /// The header's height: the title, the subtitle when there is one, the time range's chip.
-fn header(fig: &Fig) -> f32 {
+pub fn header(fig: &Fig) -> f32 {
     let subtitle = if fig.subtitle.is_empty() { 0.0 } else { 20.0 };
     let chip = if fig.time.as_ref().is_some_and(|t| t.secs.is_some()) {
         38.0
