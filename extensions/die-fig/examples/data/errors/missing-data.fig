@@ -1,8 +1,0 @@
-{
-  "type": "line",
-  "title": "Requests per minute",
-  "subtitle": "Last 6 hours",
-  "data": "requests-old.csv",
-  "x": "time",
-  "y": "api"
-}

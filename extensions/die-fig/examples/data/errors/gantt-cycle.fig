@@ -1,9 +1,0 @@
-{
-  "type": "gantt",
-  "title": "A plan that waits for itself",
-  "tasks": [
-    {"id": "a", "label": "Design", "start": "2026-11-02", "duration": "3d"},
-    {"id": "b", "label": "Build", "after": "c", "duration": "5d"},
-    {"id": "c", "label": "Test", "after": "b", "duration": "2d"}
-  ]
-}

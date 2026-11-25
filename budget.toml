@@ -97,53 +97,6 @@ path = "crates/die"
 name = "die-dev"
 path = "apps/die-dev"
 
-# Your packages' ports, chosen by you, are built here under extensions/, outside the product, its
-# budget and core (scope D14). Counted, never capped, and in no product total.
-[[crate]]
-name = "die-orchid-client"
-path = "extensions/die-orchid-client"
-extension = true
-note = "an extension, outside guard 7: your emacs-orchid-client's port"
-
-[[crate]]
-name = "die-whiteboard"
-path = "extensions/die-whiteboard"
-extension = true
-note = "an extension, outside guard 7: the whiteboard (freehand, shapes, arrows, SVG and PNG)"
-
-[[crate]]
-name = "die-jellyfish"
-path = "extensions/die-jellyfish"
-extension = true
-note = "an extension, outside guard 7: your ASCII jellyfish, the buffer DIE starts on"
-
-[[crate]]
-name = "die-markdown"
-path = "extensions/die-markdown"
-extension = true
-note = "an extension, outside guard 7: a markdown file's rendered view, a page drawn as GitHub draws a README (its typesetter is most of it), or the markup hidden in place"
-
-# die-draw is under extensions/ and counts as one: shared by them, depending on none of DIE's
-# crates (scope D14, amended 2026-11-21).
-[[crate]]
-name = "die-draw"
-path = "extensions/die-draw"
-extension = true
-note = "shared by the extensions, outside guard 7: fonts, text runs, PNG and the premultiplied blit, lifted from die-markdown (the rule of two)"
-
-[[crate]]
-name = "die-fig"
-path = "extensions/die-fig"
-extension = true
-note = "an extension, outside guard 7: figures from data (charts, network graphs, gantt charts, dashboards) drawn in pixels, in fig's ethos"
-
-# The cap of 4,800 code lines is the spike's own: an extension can't carry a limit here (scope D14).
-[[crate]]
-name = "die-mini-fig"
-path = "extensions/die-mini-fig"
-extension = true
-note = "an extension, outside guard 7: a spike of die-fig in under 4,800 lines, the same specs drawn by one host"
-
 [[crate]]
 name = "xtask"
 path = "xtask"

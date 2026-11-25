@@ -248,7 +248,9 @@ impl<'a> Loop<'a> {
 
     fn build(&self) -> Result {
         let (profile, id) = (self.options.profile, self.options.bundle_id);
-        app::build(self.root, &self.app, id, profile)
+        // DIE's own config, whatever `cargo xtask app` would find: this checks DIE.
+        let config = self.root.join(app::DIE_DEV);
+        app::build(self.root, &config, &self.app, id, profile)
     }
 
     /// A rebuild, as a change would make one: the bin compiles and links again, and a new

@@ -1,7 +1,0 @@
-{
-  "type": "line",
-  "title": "Request latency",
-  "data": "../requests.csv",
-  "x": "time",
-  "y": "latency"
-}

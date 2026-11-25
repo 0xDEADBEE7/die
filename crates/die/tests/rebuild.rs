@@ -1,12 +1,12 @@
 //! `rebuild`, with `sh` standing in for cargo: what it says goes in `*rebuild*` as it says it,
 //! a build that works restarts and leaves nothing behind, one that fails restarts nothing and
 //! leaves its first error on screen, where `gf` and `next-error` find it, and the workspace is the
-//! checkout the bundle names, whatever file you're in.
+//! checkout the bundle names, whatever file you're in, building the config it names.
 
 use die_test_cap as _;
 
 use die::core::{Args, BufferId, Ctx, Registry, ShowIn};
-use die::rebuild::{REBUILD, Setup, home_of, register, root_for};
+use die::rebuild::{REBUILD, Setup, config_for, home_of, register, root_for, xtask_app};
 
 use die::{Config, start};
 use std::cell::Cell;
@@ -38,6 +38,17 @@ impl Dir {
     fn named(&self) -> PathBuf {
         self.0.join("named-checkout")
     }
+    /// A config crate at `at`, as far as `rebuild` looks, and the one the bundle names.
+    fn config(&self, at: &Path) -> PathBuf {
+        std::fs::create_dir_all(at.join("src")).unwrap();
+        std::fs::write(at.join("Cargo.toml"), "").unwrap();
+        std::fs::write(self.named_config(), format!("{}\n", at.display())).unwrap();
+        at.to_path_buf()
+    }
+    /// What stands for the bundle's `Contents/Resources/config`.
+    fn named_config(&self) -> PathBuf {
+        self.0.join("named-config")
+    }
 }
 
 impl Drop for Dir {
@@ -50,23 +61,27 @@ impl Drop for Dir {
 /// The checkout it builds is named in `dir`.
 fn editor(dir: &Dir, script: &str) -> (Ctx, Rc<Cell<usize>>) {
     let script = script.to_owned();
-    editor_with(dir, move |root| {
+    editor_with(dir, move |root, _| {
         let mut cmd = Command::new("/bin/sh");
         cmd.current_dir(root).args(["-c", &script]);
         cmd
     })
 }
 
-fn editor_with(dir: &Dir, command: impl Fn(&Path) -> Command + 'static) -> (Ctx, Rc<Cell<usize>>) {
+fn editor_with(
+    dir: &Dir,
+    command: impl Fn(&Path, Option<&Path>) -> Command + 'static,
+) -> (Ctx, Rc<Cell<usize>>) {
     let restarts = Rc::new(Cell::new(0));
     let counted = restarts.clone();
-    let checkout = dir.named();
+    let (checkout, named_config) = (dir.named(), dir.named_config());
     let mut config = Config::default();
     config.core.register = Some(Box::new(move |reg: &mut Registry| {
         let setup = Setup {
-            command: Box::new(move |root| Ok(command(root))),
+            command: Box::new(move |root, config| Ok(command(root, config))),
             restart: Box::new(move || counted.set(counted.get() + 1)),
             checkout,
+            config: named_config,
         };
         register(reg, setup);
     }));
@@ -284,7 +299,7 @@ fn a_bundle_that_names_no_checkout_says_how_to_make_one_that_does() {
 fn a_command_that_wont_start_says_what_and_where() {
     let d = Dir::new("wont");
     let root = d.checkout("die");
-    let (mut ctx, restarts) = editor_with(&d, |root| {
+    let (mut ctx, restarts) = editor_with(&d, |root, _| {
         let mut cmd = Command::new("/no/such/cargo");
         cmd.current_dir(root);
         cmd
@@ -307,6 +322,73 @@ fn the_checkout_named_has_to_be_there_and_be_dies() {
     let gone = root_for(&d.named()).unwrap_err();
     assert!(gone.contains(&checkout.display().to_string()), "{gone}");
     assert!(gone.contains("isn't a DIE checkout"), "{gone}");
+}
+
+/// A config outside DIE, as the owner's die-config: the command is given it, and cargo's file
+/// names in `*rebuild*` are from its workspace, where gf finds them. One inside the checkout, as
+/// DIE's own apps/die-dev, leaves them DIE's.
+#[test]
+fn it_builds_the_config_the_bundle_names_and_its_errors_are_from_its_workspace() {
+    let d = Dir::new("config");
+    let root = d.checkout("die");
+    let given = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = given.clone();
+    let (mut ctx, restarts) = editor_with(&d, move |root, config| {
+        seen.borrow_mut().push(config.map(Path::to_path_buf));
+        let mut cmd = Command::new("/bin/sh");
+        cmd.current_dir(root)
+            .args(["-c", "echo ' --> src/main.rs:1:1' >&2; exit 101"]);
+        cmd
+    });
+    let outside = d.config(&d.0.join("die-config"));
+    edit_in(&mut ctx, &root);
+    ctx.type_keys(":rebuild<CR>");
+    assert_eq!(restarts.get(), 0);
+    let buf = ctx.find_buffer(REBUILD).unwrap();
+    assert_eq!(ctx.directory(buf), Some(outside.as_path()), "for gf");
+
+    let inside = d.config(&root.join("apps/die-dev"));
+    ctx.type_keys(":rebuild<CR>");
+    let buf = ctx.find_buffer(REBUILD).unwrap();
+    assert_eq!(ctx.directory(buf), Some(root.as_path()));
+    assert_eq!(*given.borrow(), [Some(outside), Some(inside)]);
+
+    // A bundle from before configs were named builds what `cargo xtask app` finds.
+    std::fs::remove_file(d.named_config()).unwrap();
+    assert_eq!(config_for(&d.named_config()), Ok(None));
+    ctx.type_keys(":rebuild<CR>");
+    assert_eq!(given.borrow().last(), Some(&None));
+}
+
+#[test]
+fn a_config_that_has_gone_says_how_to_name_another() {
+    let d = Dir::new("config-gone");
+    let root = d.checkout("die");
+    let config = d.config(&d.0.join("die-config"));
+    std::fs::remove_file(config.join("Cargo.toml")).unwrap();
+    let (mut ctx, restarts) = editor(&d, "true");
+    edit_in(&mut ctx, &root);
+    ctx.type_keys(":rebuild<CR>");
+    assert_eq!(restarts.get(), 0);
+    let last = ctx.messages.last().unwrap();
+    assert!(last.contains(&config.display().to_string()), "{last}");
+    assert!(last.contains("cargo xtask app --config"), "{last}");
+    assert_eq!(ctx.find_buffer(REBUILD), None);
+}
+
+#[test]
+fn xtask_app_is_given_the_config_before_the_home() {
+    let args = |config: Option<&Path>| -> Vec<String> {
+        let cmd = xtask_app(Path::new("/die"), Path::new("/home"), config);
+        let args = cmd.get_args().map(|a| a.to_string_lossy().into_owned());
+        args.collect()
+    };
+    let config = Path::new("/die-config");
+    assert_eq!(
+        args(Some(config)),
+        ["xtask", "app", "--config", "/die-config", "--home", "/home"]
+    );
+    assert_eq!(args(None), ["xtask", "app", "--home", "/home"]);
 }
 
 #[test]
