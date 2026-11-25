@@ -125,15 +125,15 @@ pub fn build(root: &Path, config: &Path, app: &Path, id: &str, profile: Profile)
     if !fonts::present(&fonts::dir(root))? {
         fonts::run_fonts(root)?;
     }
-    let binary = build_config(config, profile)?;
+    let binary = build_config(root, config, profile)?;
     bundle(&binary, &fonts::dir(root), app, id, root, config)
 }
 
 /// Build the config at `config` and give its `die` binary. Cargo runs in the config's own
 /// directory, so its `.cargo/config.toml` applies, as a config outside DIE patches DIE's crates to
-/// a checkout there, and `--locked` when its workspace has a lockfile, as DIE's has. Where the
-/// binary lands is cargo's to say: its target directory can be set there too.
-pub fn build_config(config: &Path, profile: Profile) -> Result<PathBuf> {
+/// a checkout there, and `--locked` when `locked` says. Where the binary lands is cargo's to say:
+/// its target directory can be set there too.
+pub fn build_config(root: &Path, config: &Path, profile: Profile) -> Result<PathBuf> {
     let meta = output(Command::new(cargo()).current_dir(config).args([
         "metadata",
         "--no-deps",
@@ -149,7 +149,7 @@ pub fn build_config(config: &Path, profile: Profile) -> Result<PathBuf> {
     let (target, workspace) = (dir("target_directory")?, dir("workspace_root")?);
     let mut cmd = Command::new(cargo());
     cmd.current_dir(config).args(["build", profile.flag()]);
-    if workspace.join("Cargo.lock").is_file() {
+    if locked(root, &workspace) {
         cmd.arg("--locked");
     }
     cmd.arg("--manifest-path")
@@ -157,6 +157,20 @@ pub fn build_config(config: &Path, profile: Profile) -> Result<PathBuf> {
         .args(["--bin", "die"]);
     run_cmd(&mut cmd)?;
     Ok(target.join(profile.dir()).join("die"))
+}
+
+/// Whether a config whose workspace is at `workspace` builds `--locked`: only when that's the
+/// workspace of DIE's checkout at `root`, whose lock DIE's commits keep current along with each
+/// change. A config outside it builds without, though it has a `Cargo.lock`: nothing keeps that
+/// lock current, as DIE's crates and the extensions reach it by path patches to checkouts whose
+/// pins move with their own commits, and `--locked` would stop at the first dependency they add
+/// or bump. Cargo then brings that lock up to date, changing only what it must.
+fn locked(root: &Path, workspace: &Path) -> bool {
+    let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    same(root, workspace) && workspace.join("Cargo.lock").is_file()
 }
 
 /// Make the bundle beside `app`, sign it, and put it in place, so that a running DIE and a
@@ -291,5 +305,29 @@ mod tests {
             e.contains("$DIE_CONFIG") && e.contains("no Cargo.toml"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn only_the_checkouts_own_workspace_builds_locked() {
+        let tmp = TempDir::new("app-locked").unwrap();
+        let top = tmp.path().canonicalize().unwrap();
+        let root = top.join("die");
+        let beside = top.join("die-config");
+        let inside = root.join("target/throwaway-config");
+        for dir in [&root, &beside, &inside] {
+            write(&dir.join("Cargo.lock"), "").unwrap();
+        }
+        assert!(locked(&root, &root), "DIE's own, by its lock");
+        assert!(
+            locked(&root, &top.join("die-config/../die")),
+            "the same workspace by another path"
+        );
+        assert!(!locked(&root, &beside), "a config outside, lock or not");
+        assert!(
+            !locked(&root, &inside),
+            "a workspace of its own inside the checkout"
+        );
+        std::fs::remove_file(root.join("Cargo.lock")).unwrap();
+        assert!(!locked(&root, &root), "no lock to hold it to");
     }
 }
