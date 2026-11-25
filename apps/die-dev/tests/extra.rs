@@ -139,11 +139,31 @@ fn a_fresh_start_with_no_file_opens_on_the_greeting_in_the_directory_die_started
     assert_eq!(names(&ctx), ["named.txt"]);
     std::fs::remove_dir_all(&dir).unwrap();
 
-    // A restart's new instance shows what was there: here, the empty buffer, which has the focus.
+    // A restart's new instance shows what was there, and the greeting where nothing came back,
+    // as `*scratch*` would.
     let restart = Launch {
         handover: Some("/nowhere/handover.sock".into()),
         ..Launch::default()
     };
+    let state = std::env::temp_dir().join(format!("die-dev-extra-state-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    std::fs::create_dir_all(&state).unwrap();
+    let mut plain = config(vec![]);
+    plain.core.session = Some(state.clone());
+    let mut ctx = die::start(plain).unwrap();
+    let scratch = ctx.focused_buffer().unwrap();
+    let notes = ctx.create_text("*notes*", "unsaved words");
+    ctx.show(notes, ShowIn::Current).unwrap();
+    ctx.kill(scratch);
+    ctx.save_session().unwrap();
+    drop(ctx);
+    let mut extra = extra();
+    extra.greeting = None;
+    let mut restarted = greeted(config_with(vec![], extra), &restart, Some(greeting()));
+    restarted.core.session = Some(state.clone());
+    let ctx = die::start(restarted).unwrap();
+    assert_eq!(names(&ctx), ["*notes*"]);
+    std::fs::remove_dir_all(&state).unwrap();
     let ctx = greeted_with(vec![], &restart, Some(greeting()));
-    assert_eq!(names(&ctx), ["*scratch*"]);
+    assert_eq!(ctx.buffer_name(ctx.focused_buffer().unwrap()), Some(HELLO));
 }
