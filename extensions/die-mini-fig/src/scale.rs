@@ -407,15 +407,19 @@ pub fn time_label(v: f64, step: f64) -> String {
     }
 }
 
-/// A time in full for the card, in the local zone: "10:25 · Fri 21 Nov".
+/// A time in full for the card, in the local zone: "10:25 · Fri 21 Nov", or at midnight (a
+/// date) "Fri 21 Nov".
 pub fn time_full(v: f64) -> String {
     let Some(z) = zoned(v, &TimeZone::system()) else {
         return MISSING.to_string();
     };
     let weekday = z.weekday().to_monday_zero_offset() as usize;
     let weekday = WEEKDAYS.split(' ').nth(weekday).unwrap_or("");
-    let (h, m) = (z.hour(), z.minute());
-    format!("{h:02}:{m:02} · {weekday} {} {}", z.day(), month(&z))
+    let day = format!("{weekday} {} {}", z.day(), month(&z));
+    match (z.hour(), z.minute()) {
+        (0, 0) => day,
+        (h, m) => format!("{h:02}:{m:02} · {day}"),
+    }
 }
 
 /// "Nov".
@@ -622,6 +626,7 @@ mod tests {
             ["23:00", "22 Nov", "01:00", "02:00", "03:00", "04:00"]
         );
         assert_eq!(time_full(at("2026-11-21T10:25")), "10:25 · Sat 21 Nov");
+        assert_eq!(time_full(at("2026-11-21T00:00")), "Sat 21 Nov");
     }
 
     #[test]
