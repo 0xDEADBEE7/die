@@ -17,7 +17,7 @@ You said, of the extensions: "For all of these extensions I think it's important
 - `extensions/die-mini-fig` is gone, with no repository, and `\V` with it.
 - die-dev's tests of extensions are deleted here (`tests/fig.rs`, `jellyfish.rs`, `markdown.rs`, `mini_fig.rs`, `orchid.rs`, `whiteboard.rs`, config.rs's orchid test and theme.rs's list of the extensions' faces); die-config recreates them from git history. die-dev has a new `tests/extra.rs`, with a fixture extension of its own: an `Extra`'s extension, keys over die-dev's, face and greeting.
 - using-die.md's sections for orchid, whiteboard, jellyfish, markdown and fig, with their rows in "What isn't there yet" and the `\o` row, are one short "Extensions" section; copies of each are in `.claude/worktrees/split-sections/` for the repositories' READMEs.
-- The die-fig skill stays in `.claude/skills/`; its fig_shot command runs from `../die-fig`.
+- The die-fig skill stays in `.claude/skills/`; its fig_shot command runs from `../die-fig`. Since the same day `.claude/` and `.questions/` are gitignored at your word ("we should gitignore .claude", "and also .questions"): both stay on this machine and leave the published repository, and the docs' links into `.questions/` work only locally.
 
 ### Calls (veto any)
 
